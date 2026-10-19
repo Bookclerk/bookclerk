@@ -486,6 +486,20 @@ pub struct WorkJob {
     pub payload: serde_json::Value,
     /// Claims of this job so far, this one included.
     pub attempt: i64,
+    /// For a scan: which titles the owner's library imports. The owner
+    /// writes every row a host returns, so the host scans with the
+    /// owner's settings, never its own. Absent for other kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan_import: Option<ScanImport>,
+}
+
+/// The owner's library import settings a host scan runs with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanImport {
+    /// Import podcast episodes.
+    pub import_episodes: bool,
+    /// Import subscription (Plus) titles.
+    pub import_plus_titles: bool,
 }
 
 /// Most rows one [`Body::ScanResults`] batch may carry.
@@ -843,6 +857,10 @@ mod tests {
                         kind: "scan".into(),
                         payload: serde_json::json!({"account": "a"}),
                         attempt: 1,
+                        scan_import: Some(ScanImport {
+                            import_episodes: false,
+                            import_plus_titles: true,
+                        }),
                     },
                     fence: 2,
                     lease_secs: 60,

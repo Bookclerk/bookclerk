@@ -1189,9 +1189,12 @@ join`) and `bookclerkd/src/cluster_link.rs`.
   through its own `JobTransport` (`TransportRunner`), with the handoff on
   `JobExecCtx::host`; an acquire is failed as `upload_unavailable` before
   it runs, since `complete` waits for its upload (step 9).
-- **Claims stay off in the daemon** until host consent (step 8, below).
-  Every job a Host is trusted with runs an owner plugin, and a Host runs
-  one only after its own operator approves it. Rejected: claiming and
+- **Claims are narrowed in the daemon** to the job kinds a Host can run
+  (`HOST_RUNNABLE_KINDS`, still empty: see "Still nothing runs" below)
+  and to the plugins its operator consented to
+  (host consent, step 8, below). Every job a Host is trusted with runs an
+  owner plugin, and a Host runs one only after its own operator approves
+  it. Rejected: claiming and
   failing what cannot run, which would spend owner attempts and starve
   owner nodes.
 - **Not decided at step 7.** How a Host's scan returns its results (book
@@ -1241,13 +1244,15 @@ operator approves it, and only with what was approved.
   covered because it keys the Host's version cache, whose hit is reused
   without a fetch: an owner that kept the approved URL and archive but
   named another cached tree would otherwise run it unreviewed. An approval whose digest is not the recorded
-  request's is refused (`409 approval_refused` from the API), so a grant
+  request's is refused (`409 approval_refused` from the API; `404` when
+  nothing is recorded, `400` for a narrowing the request does not ask for), so a grant
   the owner changed after the operator looked, even under the same
   version, is never approved unseen; the write is also a compare-and-swap
   on the recorded request. `revoke` clears the approval, keeps the
-  request, and records `revoked_at`. `bookclerk clusters list|consents`
-  and `GET /api/config/cluster-consents` show the digest, `revoked_at`,
-  and the state: `consented`,
+  request, and records `revoked_at`. `bookclerk clusters consents`
+  shows the digest and the state (its `--format json` output, like
+  `GET /api/config/cluster-consents`, also carries `revoked_at`; both
+  answer one shared view of the row). The state is one of `consented`,
   `awaiting_host_consent`, `awaiting_host_reapproval` (a new version asks
   for something outside what was reviewed: a domain, TCP target, CIDR,
   binding, flag, entrypoint, larger budget, or network at all; or the
@@ -1347,6 +1352,12 @@ H-4 step 9 (decisions 4 and 6). A Host runs scans and acquires
 spawned jailed under the consented grant through `bookclerk-workerd`, with
 the handed credentials only. There is no in-process fallback.
 
+- **Whose import settings a scan uses.** The owner writes every row a
+  Host scan returns, so a scan's `work` job carries the owner's
+  `library.import_episodes` / `import_plus_titles` (`scan_import`) and the
+  Host scans with those, never its own; a scan handed without them is
+  refused.
+
 - **Which jobs a Host claims.** A Host runs one source guest per job, so
   its claim filter admits a scan or acquire only when the job names one
   source plugin: the pinned instance's, or else the one plugin holding
@@ -1372,7 +1383,10 @@ the handed credentials only. There is no in-process fallback.
   one bad row refuses the batch. Rows are written through the store API,
   as a local scan writes them. A Host never writes library SQL.
 - **Scan rows.** A batch is accepted only for the job's source plugin,
-  never for a destination plugin the job also requires.
+  never for a destination plugin the job also requires. The fence and the
+  node's trust (with its owner's accounts) are confirmed again before each
+  row is written, so a lease lost or trust withdrawn mid-batch stops the
+  rows not yet written.
 - **Acquire plan.** `acquire.plan` answers `acquire.targets {targets,
   destinations}`: the owner's pending titles the job covers and every
   output destination deployed on the answering owner node, each with an
@@ -1419,8 +1433,15 @@ the handed credentials only. There is no in-process fallback.
   another title already has (its recorded audio or PDF key, or a sidecar
   of that audio) is refused too (`key_out_of_scope`,
   `key_of_another_book`). The Host's keys never decide where a title goes.
-  Inside a folder titles share, another title's chapter or part files are
-  not recorded, so they are not protected by name.
+  Every file a title writes is recorded per destination in `title_files`:
+  an acquire on a node records each key (audio, chapter or part files,
+  sidecars, PDF) just before writing it, and a grant claims every key of
+  its manifest for the title. A key recorded for another library title on
+  that destination is refused (`key_of_another_book`), so a folder several
+  titles share (a template without the title, podcast episodes in the
+  parent's folder, a flat layout) never lets one title overwrite another's
+  files. The claim is one conditional write per key, so of two uploads of
+  different titles racing for one key only one is granted.
 - **Host paths.** The Host uses the owner's job and title ids as work
   directory names only when each is one plain segment (ASCII letters,
   digits, `-`, `_`). Any other id fails the job before anything is
@@ -1429,19 +1450,35 @@ the handed credentials only. There is no in-process fallback.
   output destination deployed on the Host (H-2) took its copy. A failed
   copy fails the title (copies already written for it are removed), so
   the job fails rather than succeeding with a destination short a title.
+  A title whose upload then fails (the grant, a file, the commit, or a
+  cancel) has its copies removed from the Host's destinations too.
 - **Owner-decided success.** A title's commit marks it acquired and never
   completes the job. Only the closing upload (no title, no files) may ask
   to finish, and the owner completes the job only when no title in the
   job's scope is left with unacquired audio (`titles_remaining`
   otherwise). The Host's `finish` flag is a request, not proof.
+  `acquire.plan` hands out exactly those titles: one whose audio is
+  acquired but whose companion PDF is missing is left to an acquire on a
+  node holding the library, since a Host would fetch and upload the audio
+  again and a missing PDF is a soft failure that never keeps a job open.
+  The commit's gate also carries the node's trust (an owner node, or an
+  active owning user who is privileged or still linked to the title's
+  account), so a user disabled or an account unlinked after the preflight
+  commits nothing.
 - **Abort deletes.** Files go straight to the destinations, so an abort
   rolls back by deleting. An upload aborted after some files arrived (its
   fence lost before a later file or the commit, the destinations changed,
   the title re-sent, or the job finished, was released, or lost its fence
   without it)
-  has every received copy deleted by the receiving owner node. A file that
-  finished streaming just as its upload was aborted is deleted at once. An
-  upload received by another owner node is left to that node and logged.
+  has every received copy deleted by the receiving owner node, and so has
+  an upload left open when the closing commit completes the job. A failed
+  or released run's uploads are deleted before the job ends and its
+  permits are given back. A copy is deleted only while `title_files` still
+  names that upload as the key's latest writer, so a cleanup that runs
+  late (after a lost fence) leaves alone a file a later upload or acquire
+  wrote. A file that finished streaming just as its upload was aborted is
+  deleted at once. An upload received by another owner node is left to
+  that node and logged.
 - **Token lifetime.** The upload token is accepted for an hour past its
   latest extension. The grant, each accepted file, and each renewal of the
   job's lease extend it. Nothing extends it after the fence is lost, and a

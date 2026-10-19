@@ -209,8 +209,9 @@ pub enum WriteBack {
 /// # Errors
 ///
 /// Returns an error when a read or write fails. Permits taken for a failed
-/// attempt are released, and a claim whose handoff could not be recorded
-/// is given back unspent, on a best-effort basis.
+/// attempt are released, and a claim whose plugin keys could not be read
+/// or whose handoff could not be recorded is given back unspent (permits
+/// included), on a best-effort basis.
 pub async fn claim_remote_job(
     store: &LibraryStore,
     node_id: &str,
@@ -234,22 +235,38 @@ pub async fn claim_remote_job(
     let Some(claim) = handoff_routed_job(store, &request, claim).await? else {
         return Ok(None);
     };
-    let RoutedJobClaim { job, permits, .. } = claim;
+    let RoutedJobClaim {
+        job,
+        permits,
+        resumed,
+    } = claim;
     let Some(fence) = job.fence() else {
         let _ = release_permits(store, &permits).await;
         return Ok(None);
     };
-    let plugin_keys = job_plugin_keys(store, &job)
-        .await?
-        .map(|keys| keys.into_iter().collect())
-        .unwrap_or_default();
-    let source_plugin_key = job_source_plugin_key(store, &job).await?;
+    let plugin_keys = match job_plugin_keys(store, &job).await {
+        Ok(keys) => keys
+            .map(|keys| keys.into_iter().collect())
+            .unwrap_or_default(),
+        Err(err) => {
+            // Nothing went out; give the claim back unspent.
+            give_back_claim(store, &fence, &permits, resumed).await;
+            return Err(err);
+        }
+    };
+    let source_plugin_key = match job_source_plugin_key(store, &job).await {
+        Ok(key) => key,
+        Err(err) => {
+            // Nothing went out; give the claim back unspent.
+            give_back_claim(store, &fence, &permits, resumed).await;
+            return Err(err);
+        }
+    };
     match unseal_job_secrets(store, &job).await {
         Ok(secrets) => {
             if let Err(err) = record_handoff(store, node_id, &fence, &secrets).await {
                 // Nothing went out; give the claim back unspent.
-                let _ = store.release_job_claim(&fence, false).await;
-                let _ = release_permits(store, &permits).await;
+                give_back_claim(store, &fence, &permits, resumed).await;
                 return Err(err);
             }
             Ok(Some(RemoteJobClaim {
@@ -277,6 +294,37 @@ pub async fn claim_remote_job(
             failed?;
             Ok(None)
         }
+    }
+}
+
+/// Gives a claim back unspent after a failure before anything was handed
+/// to the Host: the job returns to `pending` without spending an attempt
+/// (a resumed claim is resumable again, as
+/// [`LibraryStore::release_job_claim`] does for `resumed`), and its
+/// semaphore permits are released.
+///
+/// Best effort: the caller is already returning an error, so a failure
+/// here is only logged; the lease and the permits then expire on their
+/// own, after which the job is redelivered.
+async fn give_back_claim(
+    store: &LibraryStore,
+    fence: &JobFence,
+    permits: &[SemaphorePermit],
+    resumed: bool,
+) {
+    if let Err(err) = store.release_job_claim(fence, resumed).await {
+        tracing::warn!(
+            job_id = %fence.job_id,
+            error = %err,
+            "a remote claim could not be given back; its lease will expire"
+        );
+    }
+    if let Err(err) = release_permits(store, permits).await {
+        tracing::warn!(
+            job_id = %fence.job_id,
+            error = %err,
+            "a remote claim's permits could not be released; they will expire"
+        );
     }
 }
 

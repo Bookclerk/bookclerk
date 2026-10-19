@@ -123,9 +123,6 @@ pub(super) async fn acquire_plan(
         Ok(destinations) if !destinations.is_empty() => destinations,
         _ => return Ok(error(id, "unavailable", "no_destination")),
     };
-    // Which titles are included follows the primary destination, as a
-    // local acquire's does.
-    let options = &destinations[0].options;
     let download_episodes = host.state.config.read().await.library.download_episodes;
     // The same scope the closing commit checks before it completes the job.
     let Some(books) = job_titles(library, &host.node_id, &job).await? else {
@@ -136,7 +133,12 @@ pub(super) async fn acquire_plan(
         if targets.len() >= MAX_PLAN_TARGETS {
             break;
         }
-        if !crate::jobs::acquire_job_includes_book(&book, options.download_pdf, download_episodes) {
+        // Only titles whose audio is not acquired, exactly what the closing
+        // commit waits for. A title whose audio is acquired but whose
+        // companion PDF is missing is left to an acquire on a node holding
+        // the library: a host would fetch and upload the audio again, and
+        // a missing PDF is a soft failure that never keeps a job open.
+        if !crate::jobs::acquire_job_includes_book(&book, false, download_episodes) {
             continue;
         }
         targets.push(AcquireTarget {
@@ -257,9 +259,10 @@ pub(super) async fn upload_grant(
             superseded,
         } => {
             // A re-sent title replaces its earlier upload; what that one
-            // had received is deleted before the new one takes files.
+            // had received is deleted before the new one takes files,
+            // except the keys the new one claimed (it writes them again).
             for session in &superseded {
-                super::uploads::discard_received(&host.state, session).await;
+                super::uploads::discard_received(&host.state, library, session).await;
             }
             let mut ephemeral = [0u8; 32];
             rand::rngs::OsRng.fill_bytes(&mut ephemeral);

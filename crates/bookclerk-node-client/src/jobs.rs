@@ -170,6 +170,9 @@ pub struct HostJobCtx {
     pub secrets: Arc<HandedSecrets>,
     /// Set when the fence is lost or the operator asked to cancel.
     cancel: Arc<AtomicBool>,
+    /// Set when the fence is lost (the owner said so, or the lease ran out
+    /// unconfirmed): the owner may have handed the job elsewhere.
+    lost: Arc<AtomicBool>,
     /// Set when an upload's commit completed the job on the owner, so no
     /// `complete` follows.
     finished: Arc<AtomicBool>,
@@ -195,6 +198,7 @@ impl HostJobCtx {
         job: HostJob,
         secrets: HandedSecrets,
         cancel: Arc<AtomicBool>,
+        lost: Arc<AtomicBool>,
         finished: Arc<AtomicBool>,
         shared: Arc<Shared>,
     ) -> Self {
@@ -202,6 +206,7 @@ impl HostJobCtx {
             job,
             secrets: Arc::new(secrets),
             cancel,
+            lost,
             finished,
             batches: AtomicU64::new(0),
             shared,
@@ -213,6 +218,15 @@ impl HostJobCtx {
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::SeqCst)
+    }
+
+    /// True once the job's fence is lost: the owner reported it, or the
+    /// lease ran out without a confirmed renewal. The owner may already
+    /// have handed the job to another run, which then owns the job's
+    /// titles, so this run must not undo anything it wrote under them.
+    #[must_use]
+    pub fn is_lost(&self) -> bool {
+        self.lost.load(Ordering::SeqCst)
     }
 
     /// The cancel flag, for runners that poll it elsewhere.

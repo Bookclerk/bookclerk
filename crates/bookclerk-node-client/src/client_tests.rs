@@ -140,6 +140,7 @@ fn work(job_id: &str, fence: i64, lease_secs: u64) -> Body {
             kind: "scan".into(),
             payload: serde_json::json!({}),
             attempt: 1,
+            scan_import: None,
         },
         fence,
         lease_secs,

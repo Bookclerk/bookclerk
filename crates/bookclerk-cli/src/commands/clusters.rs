@@ -19,7 +19,9 @@ use bookclerk_library::control_plane::{
     leave_cluster_link, list_cluster_links, list_remote_plugin_consents, revoke_remote_plugin,
     ClusterLink, RemoteApprover, RemotePluginConsent,
 };
-use bookclerk_plugin_host::{approve_remote_request, remote_row_consent_state, RemoteNarrowing};
+use bookclerk_plugin_host::{
+    approve_remote_request, remote_consent_view, remote_row_consent_state, RemoteNarrowing,
+};
 use clap::Subcommand;
 use serde_json::json;
 
@@ -90,30 +92,10 @@ pub enum ClustersCommand {
     },
 }
 
-/// JSON for one consent row.
+/// JSON for one consent row ([`remote_consent_view`], the view the
+/// daemon's API answers too).
 fn consent_json(row: &RemotePluginConsent) -> serde_json::Value {
-    let parse = |raw: Option<&str>| {
-        raw.and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-            .unwrap_or(serde_json::Value::Null)
-    };
-    json!({
-        "cluster_id": row.owner_cluster_id,
-        "plugin_key": row.plugin_key,
-        "requested_version": row.requested_version,
-        "requested_grant": parse(Some(&row.requested_grant_json)),
-        "requested_artifact": {
-            "url": row.requested_artifact_url,
-            "archive_sha256": row.requested_artifact_sha256,
-            "payload_root_sha256": row.requested_artifact_payload_sha256,
-        },
-        "request_digest": row.request_digest(),
-        "approved_version": row.version,
-        "grant": parse(row.grant_json.as_deref()),
-        "approved_at": row.approved_at,
-        "approved_by": row.approved_by,
-        "revoked_at": row.revoked_at,
-        "state": state(row),
-    })
+    remote_consent_view(row)
 }
 
 /// JSON for one cluster link (no key material).

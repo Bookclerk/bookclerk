@@ -1579,8 +1579,8 @@ async fn a_fence_lost_before_the_commit_writes_nothing() {
     );
 }
 
-/// H-2: a node-local instance deploys only to the node that owns it and is
-/// never placed by the scheduler.
+/// H-2: a node-local instance deploys only to the node that owns it, is
+/// never placed by the scheduler, and never pins an acquire to its node.
 #[tokio::test]
 async fn a_node_local_instance_runs_only_on_its_node() {
     let _guard = master_key_test_lock_async().await;
@@ -1627,6 +1627,19 @@ async fn a_node_local_instance_runs_only_on_its_node() {
         .await
         .unwrap();
     assert_eq!(cluster.owner_node_id, None);
+    ensure_plugin_deployment(&w.store, &actor, &cluster.id, HOST, DesiredState::Present)
+        .await
+        .unwrap();
+    let bound: std::collections::BTreeSet<String> = [PLUGIN.to_string()].into();
+    let requires =
+        resolve_job_requirements(&w.store, JobKind::Acquire, &JobPayload::default(), &bound)
+            .await
+            .unwrap();
+    assert_eq!(
+        requires,
+        vec![cluster.id.to_string()],
+        "only the cluster instance binds an acquire"
+    );
 }
 
 /// A scan's rows are accepted only as the job's source plugin: a plugin
@@ -1972,9 +1985,18 @@ async fn an_upload_is_bound_to_its_titles_key_scope() {
         "nothing was granted"
     );
     // The title's own files and sidecars, a re-acquire of its own recorded
-    // key included, are granted.
+    // key included, are granted, and so is a name another title's key only
+    // matches as a `LIKE` pattern (its `_` is no wildcard to the check).
     set_book_keys(&w.store, &book_uuid, "Author/Title/Title.m4b", None).await;
-    let own = with_extra("Author/Title/Title.jpg");
+    let mut own = with_extra("Author/Title/Title.jpg");
+    own.push(bookclerk_node_proto::UploadFile {
+        copies: vec![bookclerk_node_proto::FileCopy {
+            destination: "local".into(),
+            key: "Author/Title/Neighbou_.jpg".into(),
+        }],
+        sha256: "ef".repeat(32),
+        ..files[0].clone()
+    });
     assert!(matches!(
         grant_upload(
             &w.store,
@@ -2195,6 +2217,132 @@ async fn a_released_claim_is_given_back_unspent() {
     );
     let again = claim(&w.store).await.expect("claimable again at once");
     assert!(again.job.lease_generation > fence);
+}
+
+/// A claim whose plugin keys cannot be read is given back unspent, with
+/// its permits, rather than left `running` until its lease expires.
+#[tokio::test]
+async fn a_claim_whose_plugin_keys_cannot_be_read_is_given_back() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    // Only a privileged owner's Host may take a job that requires an
+    // instance, the one input of the plugin-key lookup that the claim
+    // itself never reads.
+    w.store
+        .set_user_role(w.riley, UserRole::Administrator)
+        .await
+        .unwrap();
+    let actor = ConfigActor::Operator { id: "test".into() };
+    let url = put_artifact_blob(&w.store, b"archive bytes").await.unwrap();
+    let archive = url.strip_prefix("blob:sha256:").unwrap().to_string();
+    add_plugin_version(
+        &w.store,
+        &actor,
+        PluginVersion {
+            plugin_key: PLUGIN.into(),
+            version: "1.0.0".into(),
+            manifest_id: "store".into(),
+            manifest_toml: String::new(),
+            settings: Default::default(),
+            artifacts: vec![PluginArtifact {
+                target: "any".into(),
+                url,
+                format: "tar.gz".into(),
+                archive_root: ".".into(),
+                archive_sha256: archive,
+                payload_root_sha256: "ab".repeat(32),
+                executable: "guest".into(),
+            }],
+            publisher_verified: false,
+            grant_json: String::new(),
+            coordinate: String::new(),
+            installed_at: String::new(),
+            installed_by: String::new(),
+        },
+    )
+    .await
+    .unwrap();
+    activate_version(&w.store, &actor, PLUGIN, "1.0.0", HOST)
+        .await
+        .unwrap();
+    let instance = create_plugin_instance(&w.store, &actor, PLUGIN, "")
+        .await
+        .unwrap();
+    let deployment =
+        ensure_plugin_deployment(&w.store, &actor, &instance.id, HOST, DesiredState::Present)
+            .await
+            .unwrap();
+    upsert_observation(
+        &w.store,
+        &DeploymentObservation {
+            deployment_id: deployment.deployment_id.clone(),
+            node_id: HOST.into(),
+            incarnation: "inc".into(),
+            status: DeploymentStatus::Running,
+            detail: String::new(),
+            applied_config_revision: None,
+            observed_at: chrono::Utc::now().to_rfc3339(),
+        },
+    )
+    .await
+    .unwrap();
+    let job_id = match w
+        .store
+        .enqueue_job(EnqueueJobSpec {
+            kind: JobKind::Scan,
+            payload: JobPayload {
+                account: Some("riley-acct".into()),
+                requires: vec![instance.id.as_str().to_string()],
+                ..Default::default()
+            },
+            priority: 0,
+            max_attempts: 3,
+            max_pending: 256,
+            run_after: None,
+        })
+        .await
+        .unwrap()
+    {
+        EnqueueOutcome::Created { id } => id,
+        other => panic!("expected a new job: {other:?}"),
+    };
+    // The instance row no longer decodes (a value that is not UTF-8 text),
+    // so reading the job's plugin keys fails after the claim was taken.
+    let corrupt = format!(
+        "UPDATE plugin_instances SET display_name = X'FF' WHERE plugin_instance_id = '{}'",
+        instance.id.as_str()
+    );
+    w.store.db().execute_unprepared(&corrupt).await.unwrap();
+
+    claim_remote_job(&w.store, HOST, JobResourceClass::Network, SETTINGS, None)
+        .await
+        .expect_err("the plugin-key lookup fails");
+    let back = w.store.get_job(&job_id).await.unwrap().unwrap();
+    assert_eq!(back.state, crate::models::JobState::Pending, "given back");
+    assert_eq!(back.attempt_count, 0, "no attempt is spent");
+    assert!(
+        live_permits(&w.store, &class_semaphore(JobResourceClass::Network), 8)
+            .await
+            .unwrap()
+            .is_empty(),
+        "the permits are given back"
+    );
+    assert!(
+        live_permits(&w.store, &instance_semaphore(instance.id.as_str()), 8)
+            .await
+            .unwrap()
+            .is_empty(),
+        "the instance permit is given back"
+    );
+
+    let repair = format!(
+        "UPDATE plugin_instances SET display_name = '' WHERE plugin_instance_id = '{}'",
+        instance.id.as_str()
+    );
+    w.store.db().execute_unprepared(&repair).await.unwrap();
+    let again = claim(&w.store).await.expect("claimable again at once");
+    assert_eq!(again.job.id, job_id);
+    assert_eq!(again.plugin_keys, vec![PLUGIN.to_string()]);
 }
 
 /// Runs host batches on an open connection, as a guest that has no
@@ -2455,4 +2603,214 @@ async fn a_leftover_permit_of_an_earlier_generation_is_not_the_claims() {
         vec![0, 1],
         "finishing frees the current slot; the leftover expires on its own"
     );
+}
+
+/// One extra `local` file at `key` added to `files`.
+fn with_local_file(
+    files: &[bookclerk_node_proto::UploadFile],
+    key: &str,
+) -> Vec<bookclerk_node_proto::UploadFile> {
+    let mut out = files.to_vec();
+    out.push(bookclerk_node_proto::UploadFile {
+        copies: vec![bookclerk_node_proto::FileCopy {
+            destination: "local".into(),
+            key: key.into(),
+        }],
+        sha256: "cd".repeat(32),
+        ..files[0].clone()
+    });
+    out
+}
+
+/// In a folder several titles share, a key recorded for another library
+/// title on that destination (a chapter file its acquire wrote, or a key
+/// another title's open upload claimed) is refused; the same key recorded
+/// only on another destination, or for a title no longer in the library,
+/// is granted, and the grant claims it for its own title.
+#[tokio::test]
+async fn a_shared_folder_never_grants_another_titles_recorded_file() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    let neighbour = w
+        .store
+        .scope(PLUGIN, "test")
+        .upsert_book(&crate::store::NewBook {
+            uuid: None,
+            ..scanned("riley-acct", "t8")
+        })
+        .await
+        .unwrap();
+    // The neighbour's acquire wrote a chapter file into the shared folder
+    // on `local`, and a cover there on `s3` only.
+    w.store
+        .record_title_file("local", "Author/Title/Neighbour - 01.mp3", &neighbour.uuid)
+        .await
+        .unwrap();
+    w.store
+        .record_title_file("s3", "Author/Title/cover.jpg", &neighbour.uuid)
+        .await
+        .unwrap();
+    w.store
+        .record_title_file("local", "Author/Title/Gone.jpg", "no-such-title")
+        .await
+        .unwrap();
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let destinations = local("Author/Title");
+    let grant = |uuid: String, files: Vec<bookclerk_node_proto::UploadFile>| {
+        let store = w.store.clone();
+        let job_id = job_id.clone();
+        let destinations = destinations.clone();
+        async move {
+            grant_upload(
+                &store,
+                HOST,
+                &job_id,
+                fence,
+                "owner",
+                &UploadGrantRequest {
+                    book_uuid: &uuid,
+                    primary_key: "Author/Title/Title.m4b",
+                    pdf_key: None,
+                    files: &files,
+                    destinations: &destinations,
+                },
+            )
+            .await
+            .unwrap()
+        }
+    };
+    assert!(matches!(
+        grant(
+            book_uuid.clone(),
+            with_local_file(&files, "Author/Title/Neighbour - 01.mp3")
+        )
+        .await,
+        UploadGrant::Refused("key_of_another_book")
+    ));
+    let granted = grant(
+        book_uuid.clone(),
+        with_local_file(
+            &with_local_file(&files, "Author/Title/cover.jpg"),
+            "Author/Title/Gone.jpg",
+        ),
+    )
+    .await;
+    let UploadGrant::Granted { upload_id, .. } = granted else {
+        panic!("a key recorded only on another destination is granted: {granted:?}");
+    };
+    for key in [
+        "Author/Title/Title.m4b",
+        "Author/Title/cover.jpg",
+        "Author/Title/Gone.jpg",
+    ] {
+        let file = w.store.title_file("local", key).await.unwrap().unwrap();
+        assert_eq!(file.book_uuid, book_uuid, "{key}");
+        assert_eq!(file.writer, upload_id, "{key}");
+    }
+    let session = load_upload(&w.store, &upload_id).await.unwrap().unwrap();
+    assert!(
+        upload_owns_key(&w.store, &session, "local", "Author/Title/cover.jpg")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !upload_owns_key(&w.store, &session, "s3", "Author/Title/cover.jpg")
+            .await
+            .unwrap(),
+        "the neighbour's s3 cover is not this upload's"
+    );
+    // Another title of the job asking for a key that open upload claimed
+    // is refused, though nothing is acquired yet.
+    assert!(matches!(
+        grant(neighbour.uuid.clone(), files.clone()).await,
+        UploadGrant::Refused("key_of_another_book")
+    ));
+    // An acquire on the owner that writes the key afterwards takes it
+    // over, so the upload no longer owns it.
+    w.store
+        .record_title_file("local", "Author/Title/cover.jpg", &book_uuid)
+        .await
+        .unwrap();
+    assert!(
+        !upload_owns_key(&w.store, &session, "local", "Author/Title/cover.jpg")
+            .await
+            .unwrap()
+    );
+}
+
+/// The commit's gate admits the node only while it is still trusted with
+/// the title: its owning user active and still linked to the title's
+/// account. Unlinking the account fails a title's gate, and disabling the
+/// user fails the closing upload's too.
+#[tokio::test]
+async fn the_commit_gate_carries_the_nodes_trust() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let (book_uuid, _) = riley_title(&w.store).await;
+    let book = crate::entities::books::Entity::find()
+        .filter(crate::entities::books::Column::Uuid.eq(&book_uuid))
+        .one(w.store.db())
+        .await
+        .unwrap()
+        .unwrap();
+    let sam_book = w
+        .store
+        .scope(PLUGIN, "test")
+        .upsert_book(&crate::store::NewBook {
+            uuid: None,
+            ..scanned("sam-acct", "s1")
+        })
+        .await
+        .unwrap();
+    let sam_book = crate::entities::books::Entity::find()
+        .filter(crate::entities::books::Column::Uuid.eq(&sam_book.uuid))
+        .one(w.store.db())
+        .await
+        .unwrap()
+        .unwrap();
+    let passes = |book: Option<crate::entities::books::Model>| {
+        let store = w.store.clone();
+        async move {
+            let (sql, binds) = uploads::commit_trust_gate(HOST, book.as_ref());
+            let reply = batch::execute_host_batch(
+                &store,
+                batch::request(
+                    &format!("trust-gate-test:{}", uuid::Uuid::new_v4()),
+                    vec![batch::query(
+                        &format!("SELECT node_id FROM nodes WHERE {sql}"),
+                        binds,
+                        1,
+                    )],
+                ),
+            )
+            .await
+            .unwrap();
+            batch::rows(&reply, 0).len() == 1
+        }
+    };
+    assert!(passes(Some(book.clone())).await);
+    assert!(passes(None).await);
+    assert!(
+        !passes(Some(sam_book)).await,
+        "another user's account is never admitted"
+    );
+    account_links::Entity::delete_many()
+        .filter(account_links::Column::AccountId.eq("riley-acct"))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    assert!(!passes(Some(book.clone())).await, "an unlinked account");
+    assert!(passes(None).await);
+    crate::entities::users::Entity::update_many()
+        .col_expr(
+            crate::entities::users::Column::Status,
+            Expr::value("disabled"),
+        )
+        .filter(crate::entities::users::Column::Id.eq(w.riley))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    assert!(!passes(None).await, "a disabled owner");
 }

@@ -179,7 +179,9 @@ pub fn verify_artifact_request(
     sig: &str,
     now: i64,
 ) -> Result<(), AuthError> {
-    if (now - request.issued_at).abs() > ARTIFACT_REQUEST_MAX_SKEW_SECS {
+    // `issued_at` is the requester's, read before the signature is checked:
+    // `abs_diff` cannot overflow on an extreme value (`now - i64::MIN`).
+    if now.abs_diff(request.issued_at) > ARTIFACT_REQUEST_MAX_SKEW_SECS.unsigned_abs() {
         return Err(AuthError::Mismatch);
     }
     let key = validate_sign_public_key(public_key).map_err(|_| AuthError::Key)?;
@@ -328,6 +330,23 @@ mod tests {
                 verify_artifact_request(&public, &other, sig, 1_000),
                 Err(AuthError::Mismatch)
             );
+        }
+        // An extreme `issued_at` (the requester's, checked before the
+        // signature) is refused without overflowing.
+        for issued_at in [i64::MIN, i64::MAX] {
+            let extreme = ArtifactRequest {
+                issued_at,
+                ..request
+            };
+            for now in [i64::MIN, 0, 1_000, i64::MAX] {
+                if now == issued_at {
+                    continue;
+                }
+                assert_eq!(
+                    verify_artifact_request(&public, &extreme, sig, now),
+                    Err(AuthError::Mismatch)
+                );
+            }
         }
         assert_eq!(parse_artifact_authorization("Bearer x"), None);
         assert_eq!(

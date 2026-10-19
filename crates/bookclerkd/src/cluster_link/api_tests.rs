@@ -316,3 +316,33 @@ async fn deny_network_turns_network_off() {
         .as_array()
         .is_none_or(|domains| domains.is_empty()));
 }
+
+/// Only a changed request is a conflict; a missing request, a bad
+/// narrowing and a store fault each answer their own status.
+#[test]
+fn approval_refusals_answer_by_cause() {
+    use super::{approval_error_response, approval_status, RemoteApprovalError};
+
+    let cases = [
+        (
+            RemoteApprovalError::NotRequested("x".into()),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            RemoteApprovalError::Invalid("x".into()),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            RemoteApprovalError::Conflict("x".into()),
+            StatusCode::CONFLICT,
+        ),
+        (
+            RemoteApprovalError::Store("x".into()),
+            StatusCode::SERVICE_UNAVAILABLE,
+        ),
+    ];
+    for (err, status) in cases {
+        assert_eq!(approval_status(&err).0, status, "{err:?}");
+        assert_eq!(approval_error_response(&err).status(), status);
+    }
+}

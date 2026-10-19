@@ -268,9 +268,12 @@ pub struct RoutedJobClaim {
 /// is a valid instance id with at least one deployment that should run, so a
 /// job pinned to an undeployed instance is claimed anywhere and fails there
 /// as before rather than waiting forever. For [`JobKind::Acquire`], every
-/// instance of a plugin key in `node_bound_plugin_keys` that is deployed to
-/// run somewhere is added: the acquire writes to that output, so it must run
-/// where the output's disk is.
+/// cluster instance of a plugin key in `node_bound_plugin_keys` that is
+/// deployed to run somewhere is added: the acquire writes to that output, so
+/// it must run where the output's disk is. A node-local instance (H-2,
+/// `owner_node_id` set) is not: it adds to the outputs of its own node only,
+/// which copies what it acquires to it, and requiring it would leave every
+/// acquire claimable on that one node alone, or nowhere.
 ///
 /// # Errors
 ///
@@ -293,7 +296,8 @@ pub async fn resolve_job_requirements(
     }
     if kind == JobKind::Acquire && !node_bound_plugin_keys.is_empty() {
         for instance in list_all_plugin_instances(store).await? {
-            if node_bound_plugin_keys.contains(&instance.plugin_key)
+            if instance.owner_node_id.is_none()
+                && node_bound_plugin_keys.contains(&instance.plugin_key)
                 && deployed_somewhere(store, &instance.id).await?
             {
                 requires.insert(instance.id.as_str().to_string());

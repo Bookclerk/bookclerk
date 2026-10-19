@@ -544,7 +544,7 @@ async fn read_http_response(
     loop {
         let body = &buf[body_start..];
         let done = if chunked {
-            decode_chunked(body)?.is_some()
+            decode_chunked(body, max_bytes)?.is_some()
         } else if let Some(length) = length {
             body.len() >= length
         } else {
@@ -560,7 +560,7 @@ async fn read_http_response(
     }
     let body = &buf[body_start..];
     let body = if chunked {
-        decode_chunked(body)?.ok_or(DialError::Http)?
+        decode_chunked(body, max_bytes)?.ok_or(DialError::Http)?
     } else if let Some(length) = length {
         body.get(..length).ok_or(DialError::Http)?.to_vec()
     } else {
@@ -595,7 +595,16 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 /// Decodes a complete chunked body; `None` while incomplete.
-fn decode_chunked(mut body: &[u8]) -> Result<Option<Vec<u8>>, DialError> {
+///
+/// `max_bytes` is the cap the caller read the response under (for an
+/// artifact, the archive limit plus head room), so a chunked answer is held
+/// to the same limit as one with a `Content-Length`.
+///
+/// # Errors
+///
+/// Returns [`DialError::Http`] for a malformed chunk size, or one whose
+/// chunk would end past `max_bytes` of body.
+fn decode_chunked(mut body: &[u8], max_bytes: usize) -> Result<Option<Vec<u8>>, DialError> {
     let mut out = Vec::new();
     // Bytes of the whole body already behind `body`.
     let mut consumed = 0usize;
@@ -617,7 +626,7 @@ fn decode_chunked(mut body: &[u8]) -> Result<Option<Vec<u8>>, DialError> {
             .filter(|end| {
                 consumed
                     .checked_add(*end)
-                    .is_some_and(|end| end <= MAX_HTTP_RESPONSE_BYTES)
+                    .is_some_and(|end| end <= max_bytes)
             })
             .ok_or(DialError::Http)?;
         let rest_start = data_end.checked_add(2).ok_or(DialError::Http)?;
@@ -850,20 +859,44 @@ mod tests {
     #[test]
     fn chunked_bodies_decode() {
         assert_eq!(
-            decode_chunked(b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n").unwrap(),
+            decode_chunked(
+                b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n",
+                MAX_HTTP_RESPONSE_BYTES
+            )
+            .unwrap(),
             Some(b"Wikipedia".to_vec())
         );
-        assert_eq!(decode_chunked(b"4\r\nWi").unwrap(), None);
-        assert!(decode_chunked(b"zz\r\n").is_err());
+        assert_eq!(
+            decode_chunked(b"4\r\nWi", MAX_HTTP_RESPONSE_BYTES).unwrap(),
+            None
+        );
+        assert!(decode_chunked(b"zz\r\n", MAX_HTTP_RESPONSE_BYTES).is_err());
         // An owner-chosen size that overflows, or that no accepted
         // response could hold, is refused instead of waited for.
         assert!(matches!(
-            decode_chunked(b"ffffffffffffffff\r\nab"),
+            decode_chunked(b"ffffffffffffffff\r\nab", usize::MAX),
             Err(DialError::Http)
         ));
         let too_big = format!("{:x}\r\nab", MAX_HTTP_RESPONSE_BYTES);
         assert!(matches!(
-            decode_chunked(too_big.as_bytes()),
+            decode_chunked(too_big.as_bytes(), MAX_HTTP_RESPONSE_BYTES),
+            Err(DialError::Http)
+        ));
+    }
+
+    /// A chunked artifact larger than the fixed frame cap decodes under the
+    /// caller's larger cap (a proxy may re-encode a `Content-Length` body
+    /// as chunked), and is still refused past that cap.
+    #[test]
+    fn a_chunked_body_is_held_to_the_callers_cap() {
+        let payload = vec![b'x'; MAX_HTTP_RESPONSE_BYTES * 2];
+        let mut body = format!("{:x}\r\n", payload.len()).into_bytes();
+        body.extend_from_slice(&payload);
+        body.extend_from_slice(b"\r\n0\r\n\r\n");
+        let cap = payload.len() + MAX_HTTP_RESPONSE_BYTES;
+        assert_eq!(decode_chunked(&body, cap).unwrap(), Some(payload.clone()));
+        assert!(matches!(
+            decode_chunked(&body, MAX_HTTP_RESPONSE_BYTES),
             Err(DialError::Http)
         ));
     }

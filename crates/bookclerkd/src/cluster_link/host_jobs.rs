@@ -29,7 +29,9 @@
 //!   listing its key on every destination, then `commit`), which writes
 //!   them straight to its destinations. A title is uploaded only once every
 //!   one of this host's own destinations has it; a failed copy fails the
-//!   title. The job completes with its closing upload's commit, never with
+//!   title, and so does any failure of its upload after the copies were
+//!   written (the grant, a file, the commit, or a cancel), which removes
+//!   those copies again. The job completes with its closing upload's commit, never with
 //!   `complete`, and the owner accepts that only once every title of the
 //!   job is acquired. A host may stage; the owner never does.
 //!
@@ -116,6 +118,10 @@ pub async fn until_cancelled<T>(
 pub struct HostScan {
     /// Account ids; empty means every handed account.
     pub accounts: Vec<String>,
+    /// Import podcast episodes (the owner's setting).
+    pub import_episodes: bool,
+    /// Import subscription (Plus) titles (the owner's setting).
+    pub import_plus_titles: bool,
 }
 
 /// One output destination of the owner node an acquire was planned with.
@@ -268,16 +274,14 @@ impl HostGuests for GuestHost {
         cancel: Arc<AtomicBool>,
     ) -> anyhow::Result<Vec<ScanBook>> {
         let source = self.open_source(bindings).await?;
-        let (import_episodes, import_plus_titles) = {
-            let cfg = self.state.config.read().await;
-            (cfg.library.import_episodes, cfg.library.import_plus_titles)
-        };
+        // The owner's import settings, not this host's: the owner writes
+        // every row into its library.
         Ok(source
             .scan_handed(bookclerk_source::ScanOptions {
                 accounts: scan.accounts,
                 page_size: 50,
-                import_episodes,
-                import_plus_titles,
+                import_episodes: scan.import_episodes,
+                import_plus_titles: scan.import_plus_titles,
                 cancel: Some(cancel),
             })
             .await?)
@@ -291,14 +295,23 @@ impl HostGuests for GuestHost {
         _cancel: Arc<AtomicBool>,
     ) -> anyhow::Result<AcquiredTitle> {
         // The pipeline has no cancel input; the transport drops this call
-        // (and with it the guest) once the job is cancelled, and the
-        // title's scratch sits under the job dir it removes.
+        // (and with it the guest) once the job is cancelled, and all of the
+        // title's scratch (its library, and the pipeline's download and
+        // packaging dirs) sits under the job dir it removes.
         let source = self.open_source(bindings).await?;
         let cfg = self.state.config.read().await.clone();
         let scratch_dir = outbox.with_extension("library");
         tokio::fs::create_dir_all(&scratch_dir).await?;
         let scratch = scratch_library(&cfg, &scratch_dir).await?;
-        let result = acquire_into(&scratch.store, &cfg, &source, title, outbox).await;
+        let result = acquire_into(
+            &scratch.store,
+            &cfg,
+            &source,
+            title,
+            outbox,
+            &title_cache_dir(outbox),
+        )
+        .await;
         drop(scratch);
         let _ = tokio::fs::remove_dir_all(&scratch_dir).await;
         result
@@ -402,14 +415,26 @@ pub fn acquire_request(
     }
 }
 
+/// Where the acquire pipeline downloads and packages a title fetched into
+/// `outbox`: beside its scratch library, inside the job dir, so a dropped
+/// acquire (a cancel, a lost fence) leaves nothing once the job dir is
+/// removed, and no other run (this host's own jobs, or a retry of the
+/// title) shares it. Only this daemon touches it; the guest fetches into
+/// its own plugin `tmp`.
+#[must_use]
+pub fn title_cache_dir(outbox: &Path) -> PathBuf {
+    outbox.with_extension("cache")
+}
+
 /// Runs the acquire pipeline for `title` against `scratch`, writing only
-/// to `outbox`.
+/// to `outbox`, with its scratch under `cache_dir`.
 async fn acquire_into(
     scratch: &LibraryStore,
     cfg: &bookclerk_config::Config,
     source: &bookclerk_plugin_host::ExternalSource,
     title: &HostTitle,
     outbox: &Path,
+    cache_dir: &Path,
 ) -> anyhow::Result<AcquiredTitle> {
     let book = &title.book;
     scratch
@@ -437,7 +462,10 @@ async fn acquire_into(
         primary: primary.kind,
         multi_destination: cfg.output.multi_destination,
     };
-    let request = acquire_request(cfg, book, &primary.options);
+    // The owner names keys from the same request; the scratch dir does not
+    // enter a key.
+    let mut request = acquire_request(cfg, book, &primary.options);
+    request.cache_dir = cache_dir.to_path_buf();
     let result =
         bookclerk_acquire::acquire_book_indexed(scratch, &destinations, request, None, source)
             .await?;
@@ -529,8 +557,16 @@ impl<G: HostGuests> JobTransport for HostJobTransport<G> {
         }
         match cmd.kind {
             JobKind::Scan => {
+                // The owner writes every row, so the scan imports what the
+                // owner's library does; an owner that did not say is
+                // refused rather than scanned with this host's settings.
+                let Some(import) = host.job.job.scan_import else {
+                    anyhow::bail!("the owner sent no import settings for the scan");
+                };
                 let scan = HostScan {
                     accounts: cmd.payload.account.clone().into_iter().collect(),
+                    import_episodes: import.import_episodes,
+                    import_plus_titles: import.import_plus_titles,
                 };
                 host_scan(&self.guests, &host, &bindings, scan, &ctx).await
             }
@@ -712,14 +748,50 @@ async fn acquire_titles<G: HostGuests>(
             // Both the guest's acquire and the title's upload stop once the
             // job is cancelled; a dropped upload's files are discarded by
             // the owner (its stream breaks, or its upload is aborted).
+            let copied = std::sync::Mutex::new(Vec::new());
+            let commit_unsettled = AtomicBool::new(false);
             let uploaded = until_cancelled(&ctx.cancel, async {
                 let done = guests
                     .acquire(bindings, &title, &outbox, Arc::clone(&ctx.cancel))
                     .await?;
-                upload_title(guests, host, &title, &outbox, &done).await
+                upload_title(
+                    guests,
+                    host,
+                    &title,
+                    &outbox,
+                    &done,
+                    &copied,
+                    &commit_unsettled,
+                )
+                .await
             })
             .await;
+            if uploaded.is_err() {
+                let copies = std::mem::take(&mut *copied.lock().unwrap_or_else(|e| e.into_inner()));
+                if commit_unsettled.load(Ordering::SeqCst) {
+                    // The commit was sent but never definitively answered
+                    // (its answer was lost, the owner went away, or the job
+                    // was cancelled meanwhile): the owner may have marked
+                    // the title acquired, and a later plan would then skip
+                    // it, so its copies here stay.
+                    if !copies.is_empty() {
+                        tracing::warn!(
+                            job_id = %host.job.job.id,
+                            book_uuid = %title.book.uuid,
+                            files = copies.len(),
+                            "the owner's answer to a title's commit is unknown; keeping its copies on this host's own destinations"
+                        );
+                    }
+                } else {
+                    // The owner never committed the title (its grant or a
+                    // file failed, or it refused the commit), so this host
+                    // keeps no copy of it either, unless the fence is lost:
+                    // a replacement run may own those keys by now.
+                    remove_local_copies(&title.book.uuid, &copies, host.is_lost()).await;
+                }
+            }
             let _ = tokio::fs::remove_dir_all(&outbox).await;
+            let _ = tokio::fs::remove_dir_all(title_cache_dir(&outbox)).await;
             match uploaded {
                 Ok(()) => acquired += 1,
                 Err(err) if ctx.is_cancelled() => return Err(err),
@@ -879,9 +951,18 @@ pub async fn upload_manifest(
     Ok(files)
 }
 
+/// One file this run wrote to one of this host's own destinations: the
+/// destination handle it was written through and the key. The handle is
+/// kept rather than re-read from [`HostGuests::local_destinations`], so a
+/// destination deployed or retired before cleanup cannot redirect the
+/// delete to a destination this run never wrote.
+pub type LocalCopy = (Arc<dyn StorageBackend>, String);
+
 /// Copies one title's files (the primary destination's keys) to every one
-/// of this host's own destinations. Any failed copy fails the title: the
-/// copies already written for it are removed (best effort).
+/// of this host's own destinations. Any failed copy fails the title. Each
+/// copy is put in `copied` as soon as it is written, so the caller removes
+/// exactly what this run wrote ([`remove_local_copies`]) whether this
+/// fails or is dropped mid-copy.
 ///
 /// # Errors
 ///
@@ -891,55 +972,88 @@ pub async fn copy_to_local_destinations<G: HostGuests>(
     book_uuid: &str,
     outbox: &Path,
     acquired: &AcquiredTitle,
+    copied: &std::sync::Mutex<Vec<LocalCopy>>,
 ) -> anyhow::Result<()> {
-    let local = guests
+    let local: Vec<Arc<dyn StorageBackend>> = guests
         .local_destinations()
         .await
-        .context("this host's own destinations")?;
+        .context("this host's own destinations")?
+        .into_iter()
+        .map(Arc::from)
+        .collect();
     // This host's own copy follows the owner's primary destination naming.
     let primary = destination_outbox(outbox, 0);
-    let mut written: Vec<(&dyn StorageBackend, &str)> = Vec::new();
-    let mut failure = None;
-    'copy: for key in acquired.keys.first().into_iter().flatten() {
+    for key in acquired.keys.first().into_iter().flatten() {
         for destination in &local {
             let meta = ObjectMeta {
                 content_type: content_type(key),
                 ..ObjectMeta::default()
             };
-            match destination.put_file(key, &primary.join(key), meta).await {
-                Ok(_) => written.push((destination.as_ref(), key.as_str())),
-                Err(err) => {
-                    tracing::warn!(book_uuid, %key, error = %err, "could not copy a title to this host's own destination");
-                    failure = Some(anyhow::anyhow!(
-                        "this host's own destination did not take {key:?}: {err}"
-                    ));
-                    break 'copy;
-                }
+            if let Err(err) = destination.put_file(key, &primary.join(key), meta).await {
+                tracing::warn!(book_uuid, %key, error = %err, "could not copy a title to this host's own destination");
+                anyhow::bail!("this host's own destination did not take {key:?}: {err}");
             }
+            copied
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((Arc::clone(destination), key.clone()));
         }
     }
-    let Some(failure) = failure else {
-        return Ok(());
-    };
-    for (destination, key) in written {
-        let _ = destination.delete(key).await;
+    Ok(())
+}
+
+/// Deletes `copies` (the files one run wrote for a title) from this host's
+/// own destinations, best effort: a title the owner did not commit keeps
+/// no copy here. Skipped when `fence_lost`: the owner may have handed the
+/// job to a replacement run, here or elsewhere, that writes the same keys,
+/// and a host-side copy carries no writer identity to tell the two apart,
+/// so a stale run's cleanup could delete the replacement's file. The
+/// stale copy is left for the replacement to overwrite.
+pub async fn remove_local_copies(book_uuid: &str, copies: &[LocalCopy], fence_lost: bool) {
+    if copies.is_empty() {
+        return;
     }
-    Err(failure)
+    if fence_lost {
+        tracing::warn!(
+            book_uuid,
+            files = copies.len(),
+            "the job's fence is lost; leaving an uncommitted title's copies on this host's own destinations to the run that holds it now"
+        );
+        return;
+    }
+    for (destination, key) in copies {
+        if let Err(err) = destination.delete(key).await {
+            tracing::warn!(book_uuid, %key, error = %err, "could not remove an uncommitted title's copy from this host's own destination");
+        }
+    }
 }
 
 /// Copies one title's files to this host's own destinations (H-2), then
 /// streams them to the owner and commits the title. Nothing is uploaded
-/// unless every one of this host's destinations got the title.
+/// unless every one of this host's destinations got the title. Each copy
+/// is put in `copied` as it is written, so the caller can remove them when
+/// the owner does not commit the title ([`remove_local_copies`]), whether
+/// this fails or is dropped. `commit_unsettled` turns true as the commit is
+/// first sent and back to false only when the owner definitively refuses
+/// it, so a caller seeing an error with it still true cannot tell whether
+/// the owner committed the title and must keep the copies.
+///
+/// # Errors
+///
+/// Returns an error when the manifest, a local copy, the grant, a file or
+/// the commit fails.
 async fn upload_title<G: HostGuests>(
     guests: &G,
     host: &HostJobCtx,
     title: &HostTitle,
     outbox: &Path,
     acquired: &AcquiredTitle,
+    copied: &std::sync::Mutex<Vec<LocalCopy>>,
+    commit_unsettled: &AtomicBool,
 ) -> anyhow::Result<()> {
     let book_uuid = title.book.uuid.as_str();
     let manifest = upload_manifest(&title.destinations, outbox, acquired).await?;
-    copy_to_local_destinations(guests, book_uuid, outbox, acquired).await?;
+    copy_to_local_destinations(guests, book_uuid, outbox, acquired, copied).await?;
     let (files, paths): (Vec<UploadFile>, Vec<PathBuf>) = manifest.into_iter().unzip();
     let upload = with_retries(|| {
         host.grant_upload(
@@ -961,9 +1075,23 @@ async fn upload_title<G: HostGuests>(
         .await
         .map_err(|err| owner_error("an uploaded file", &err))?;
     }
-    with_retries(|| host.commit_upload(&upload, None))
-        .await
-        .map_err(|err| owner_error("the title's commit", &err))?;
+    // An attempt that got no usable answer may still have committed the
+    // title; a refusal after it then only answers the retry, so it does not
+    // settle the outcome either.
+    let ambiguous = AtomicBool::new(false);
+    commit_unsettled.store(true, Ordering::SeqCst);
+    let committed = with_retries(|| async {
+        let out = host.commit_upload(&upload, None).await;
+        if matches!(out, Err(OwnerCallError::Unavailable)) {
+            ambiguous.store(true, Ordering::SeqCst);
+        }
+        out
+    })
+    .await;
+    if matches!(committed, Err(OwnerCallError::Refused(_))) && !ambiguous.load(Ordering::SeqCst) {
+        commit_unsettled.store(false, Ordering::SeqCst);
+    }
+    committed.map_err(|err| owner_error("the title's commit", &err))?;
     tracing::info!(
         job_id = %host.job.job.id,
         book_uuid,

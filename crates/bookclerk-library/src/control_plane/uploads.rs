@@ -369,47 +369,142 @@ fn manifest_problem(req: &UploadGrantRequest<'_>) -> Option<&'static str> {
     None
 }
 
+/// Key probes per read of [`claims_another_books_key`]: each binds once on
+/// both key columns, well under the smallest guest bind cap.
+const KEY_PROBES_PER_READ: usize = 32;
+
 /// True when a copy of `files` would land on a file another library title
 /// already has: its recorded audio or PDF key, or a sidecar of that audio
 /// (the same file stem with any further extension, such as its cover,
-/// `.cue` or chapter JSON). Every copy is checked, on every destination.
+/// `.cue` or chapter JSON). Every copy is checked, on every destination:
+/// these columns do not say which destination they were written on (rows
+/// acquired before `title_files` existed are known only here), so a match
+/// on any destination is refused, failing closed. The destination-scoped
+/// record of every file a title wrote is checked by `claim_upload_keys`.
+///
+/// Only the other titles' keys that could match are read, so the read
+/// stays small (and under the guest's result-row cap) however many titles
+/// are acquired: a key that matches a copy exactly or as its sidecar starts
+/// with the copy's name up to its first `.` and that `.` (a `LIKE` prefix;
+/// `%` or `_` in it, or SQLite's case folding, only widen it, and storage
+/// keys carry no `\`), or equals a copy without one. The exact rules then
+/// run on what was read.
 ///
 /// # Errors
 ///
-/// Returns an error when the read fails.
+/// Returns an error when a read fails.
 async fn claims_another_books_key(
     store: &LibraryStore,
     book_uuid: &str,
     files: &[UploadFile],
 ) -> Result<bool> {
-    let others: Vec<(Option<String>, Option<String>)> = books::Entity::find()
-        .select_only()
-        .column(books::Column::StorageKey)
-        .column(books::Column::PdfStorageKey)
-        .filter(books::Column::Uuid.ne(book_uuid))
-        .filter(
+    let copies: BTreeSet<&str> = files
+        .iter()
+        .flat_map(|file| &file.copies)
+        .map(|copy| copy.key.as_str())
+        .collect();
+    let mut prefixes = BTreeSet::new();
+    let mut whole = BTreeSet::new();
+    for key in &copies {
+        // Every longer stem of `key` extends its first one with a `.`, so
+        // the first stem's prefix covers them all (and `key` itself).
+        match sidecar_stems(key).next() {
+            Some(stem) => prefixes.insert(format!("{stem}.%")),
+            None => whole.insert(*key),
+        };
+    }
+    let probes: Vec<sea_orm::Condition> = prefixes
+        .into_iter()
+        .map(|prefix| {
             sea_orm::Condition::any()
-                .add(books::Column::StorageKey.is_not_null())
-                .add(books::Column::PdfStorageKey.is_not_null()),
-        )
-        .into_tuple()
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+                .add(books::Column::StorageKey.like(prefix.as_str()))
+                .add(books::Column::PdfStorageKey.like(prefix.as_str()))
+        })
+        .chain(whole.into_iter().map(|key| {
+            sea_orm::Condition::any()
+                .add(books::Column::StorageKey.eq(key))
+                .add(books::Column::PdfStorageKey.eq(key))
+        }))
+        .collect();
     let mut exact = BTreeSet::new();
     let mut stems = BTreeSet::new();
-    for (audio, pdf) in others {
-        for key in audio.into_iter().chain(pdf) {
-            if let Some(stem) = file_stem_key(&key) {
-                stems.insert(stem.to_string());
+    for chunk in probes.chunks(KEY_PROBES_PER_READ) {
+        let any = chunk
+            .iter()
+            .cloned()
+            .fold(sea_orm::Condition::any(), |all, probe| all.add(probe));
+        let others: Vec<(Option<String>, Option<String>)> = books::Entity::find()
+            .select_only()
+            .column(books::Column::StorageKey)
+            .column(books::Column::PdfStorageKey)
+            .filter(books::Column::Uuid.ne(book_uuid))
+            .filter(any)
+            .into_tuple()
+            .all(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        for (audio, pdf) in others {
+            for key in audio.into_iter().chain(pdf) {
+                if let Some(stem) = file_stem_key(&key) {
+                    stems.insert(stem.to_string());
+                }
+                exact.insert(key);
             }
-            exact.insert(key);
         }
     }
-    Ok(files.iter().flat_map(|file| &file.copies).any(|copy| {
-        let key = copy.key.as_str();
-        exact.contains(key) || sidecar_stems(key).any(|stem| stems.contains(stem))
-    }))
+    Ok(copies
+        .iter()
+        .any(|key| exact.contains(*key) || sidecar_stems(key).any(|stem| stems.contains(stem))))
+}
+
+/// Claims every copy of `files` for the title `book_uuid` with `upload_id`
+/// as its writer ([`LibraryStore::claim_title_file`]); answers false as
+/// soon as one is a key another library title holds on that destination
+/// (one its acquire wrote, or another title's upload claimed), so a folder
+/// several titles share never lets one overwrite another's chapter, part or
+/// sidecar files. Keys claimed before a refusal stay the title's own.
+///
+/// # Errors
+///
+/// Returns an error when a write fails.
+async fn claim_upload_keys(
+    store: &LibraryStore,
+    book_uuid: &str,
+    upload_id: &str,
+    files: &[UploadFile],
+) -> Result<bool> {
+    for copy in files.iter().flat_map(|file| &file.copies) {
+        if !store
+            .claim_title_file(&copy.destination, &copy.key, book_uuid, upload_id)
+            .await?
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// True while `key` on `destination` is still `session`'s own: its
+/// recorded latest writer is this upload. A later upload of the title, an
+/// acquire run on this node, or another title may have written the key
+/// since; the receiving node then leaves the file alone when it cleans up
+/// after `session`, so a stale abort never deletes a replacement's file.
+///
+/// # Errors
+///
+/// Returns an error when the read fails.
+pub async fn upload_owns_key(
+    store: &LibraryStore,
+    session: &UploadSession,
+    destination: &str,
+    key: &str,
+) -> Result<bool> {
+    Ok(store
+        .title_file(destination, key)
+        .await?
+        .is_some_and(|file| {
+            file.writer == session.upload_id && file.book_uuid == session.book_uuid
+        }))
 }
 
 /// `key` without its file name's last extension (`A/T/T.m4b` → `A/T/T`);
@@ -442,8 +537,11 @@ fn sidecar_stems(key: &str) -> impl Iterator<Item = &str> {
 /// the job's title, when it names one), and for a Host trusted only with
 /// its owner's accounts is one of that user's; and the manifest is well
 /// formed, every key inside the title's own scope on its destination
-/// ([`UploadDestination`]) and none another title's (`claims_another_books_key`).
-/// An earlier open upload of the same title by the same job is aborted.
+/// ([`UploadDestination`]) and none another title's: neither another
+/// title's recorded audio, PDF or audio sidecar (`claims_another_books_key`)
+/// nor any key recorded for another title on that destination
+/// (`claim_upload_keys`, which then claims every key for this upload). An
+/// earlier open upload of the same title by the same job is aborted.
 ///
 /// # Errors
 ///
@@ -469,6 +567,7 @@ pub async fn grant_upload(
     if job.kind != JobKind::Acquire {
         return Ok(UploadGrant::Refused("not_an_acquire"));
     }
+    let upload_id = uuid::Uuid::new_v4().hyphenated().to_string();
     if !req.book_uuid.is_empty() {
         let Some(book) = store.get_book_by_uuid(req.book_uuid).await? else {
             return Ok(UploadGrant::Refused("unknown_book"));
@@ -502,6 +601,9 @@ pub async fn grant_upload(
         if claims_another_books_key(store, &book.uuid, req.files).await? {
             return Ok(UploadGrant::Refused("key_of_another_book"));
         }
+        if !claim_upload_keys(store, &book.uuid, &upload_id, req.files).await? {
+            return Ok(UploadGrant::Refused("key_of_another_book"));
+        }
     }
     let manifest = serde_json::to_string(&Manifest {
         destinations: if req.book_uuid.is_empty() {
@@ -514,7 +616,6 @@ pub async fn grant_upload(
     })
     .map_err(|err| LibraryError::Other(anyhow::anyhow!("upload manifest encode: {err}")))?;
     let superseded = abort_matching(store, job_id, |row| row.book_uuid == req.book_uuid).await?;
-    let upload_id = uuid::Uuid::new_v4().hyphenated().to_string();
     let token = mint_token();
     let now = Utc::now();
     let expires_at = now + Duration::seconds(UPLOAD_TOKEN_TTL_SECS);
@@ -846,6 +947,43 @@ async fn already_committed(
     })
 }
 
+/// The trust half of a commit's gate, as SQL with its binds: the node is
+/// still trusted the way [`node_trust`] reads it, checked in the same
+/// statement that commits, so an owning user disabled or demoted, or an
+/// account unlinked, after the preflight leaves the library untouched
+/// (credential revocation is gated separately).
+///
+/// The node is an owner node, or its owning user is active and either
+/// privileged (`owner`, `administrator`) or, for a title (`book`), a
+/// `host` or `member` still linked to the title's store account. The
+/// closing upload (`book` is `None`) carries no title, so an active user
+/// of a known role suffices there.
+pub(super) fn commit_trust_gate(
+    node_id: &str,
+    book: Option<&books::Model>,
+) -> (String, Vec<bookclerk_plugin_abi::DbValue>) {
+    let (account_sql, mut account_binds) = match book {
+        Some(book) => (
+            "EXISTS (SELECT 1 FROM account_links \
+               WHERE account_links.plugin_key = ? AND account_links.account_id = ? \
+                 AND account_links.identity_id IN (SELECT portal_identities.id \
+                   FROM portal_identities WHERE portal_identities.user_id = users.id))",
+            vec![text(&book.plugin_key), text(&book.account_id)],
+        ),
+        None => ("1 = 1", Vec::new()),
+    };
+    let sql = format!(
+        "EXISTS (SELECT 1 FROM nodes WHERE nodes.node_id = ? AND (nodes.kind = 'owner' \
+           OR EXISTS (SELECT 1 FROM users WHERE users.id = nodes.owner_user_id \
+             AND users.status = 'active' \
+             AND (users.role IN ('owner', 'administrator') \
+               OR (users.role IN ('host', 'member') AND {account_sql})))))"
+    );
+    let mut binds = vec![text(node_id)];
+    binds.append(&mut account_binds);
+    (sql, binds)
+}
+
 /// Commits an upload whose every file was received.
 ///
 /// A title's upload marks the title acquired under its primary key (and
@@ -858,8 +996,9 @@ async fn already_committed(
 /// `job_cancelled`) and nothing is written.
 ///
 /// One canonical batch, every statement gated on the upload still being
-/// open, the job still running under this upload's fence, and the node's
-/// credential still being live; trust is re-checked just before. A repeat
+/// open, the job still running under this upload's fence, the node's
+/// credential still being live, and the node still trusted with the title
+/// (`commit_trust_gate`); trust is also re-checked just before. A repeat
 /// of a commit that already landed answers [`UploadCommit::Committed`]
 /// again without writing.
 ///
@@ -908,27 +1047,9 @@ pub async fn commit_upload(
         }
         (false, None) => {}
     }
-    let now = stamp(Utc::now());
-    let gate_sql = "EXISTS (SELECT 1 FROM node_upload_sessions \
-                     WHERE upload_id = ? AND state = 'committed' AND committed_at = ?)";
-    let gate = || vec![text(upload_id), text(&now)];
-    let mut statements = vec![exec(
-        "UPDATE node_upload_sessions SET state = 'committed', committed_at = ? \
-          WHERE upload_id = ? AND state = 'open' \
-            AND EXISTS (SELECT 1 FROM jobs WHERE id = ? AND state = 'running' \
-                         AND lease_owner = ? AND lease_generation = ?) \
-            AND EXISTS (SELECT 1 FROM node_credentials \
-                         WHERE node_id = ? AND revoked_at IS NULL)",
-        vec![
-            text(&now),
-            text(upload_id),
-            text(&fence.job_id),
-            text(&fence.owner),
-            batch::int(fence.generation),
-            text(&session.node_id),
-        ],
-    )];
-    if !session.book_uuid.is_empty() {
+    let model = if session.book_uuid.is_empty() {
+        None
+    } else {
         let Some(model) = books::Entity::find()
             .filter(books::Column::Uuid.eq(&session.book_uuid))
             .one(store.db())
@@ -937,6 +1058,35 @@ pub async fn commit_upload(
         else {
             return Ok(UploadCommit::Refused("unknown_book"));
         };
+        Some(model)
+    };
+    let now = stamp(Utc::now());
+    let gate_sql = "EXISTS (SELECT 1 FROM node_upload_sessions \
+                     WHERE upload_id = ? AND state = 'committed' AND committed_at = ?)";
+    let gate = || vec![text(upload_id), text(&now)];
+    let (trust_sql, trust_binds) = commit_trust_gate(&session.node_id, model.as_ref());
+    let mut binds = vec![
+        text(&now),
+        text(upload_id),
+        text(&fence.job_id),
+        text(&fence.owner),
+        batch::int(fence.generation),
+        text(&session.node_id),
+    ];
+    binds.extend(trust_binds);
+    let mut statements = vec![exec(
+        &format!(
+            "UPDATE node_upload_sessions SET state = 'committed', committed_at = ? \
+              WHERE upload_id = ? AND state = 'open' \
+                AND EXISTS (SELECT 1 FROM jobs WHERE id = ? AND state = 'running' \
+                             AND lease_owner = ? AND lease_generation = ?) \
+                AND EXISTS (SELECT 1 FROM node_credentials \
+                             WHERE node_id = ? AND revoked_at IS NULL) \
+                AND {trust_sql}"
+        ),
+        binds,
+    )];
+    if let Some(model) = &model {
         let mut binds = vec![
             text(&session.primary_key),
             text(&now),
@@ -964,7 +1114,7 @@ pub async fn commit_upload(
             ));
         }
         let event =
-            prepare_publish_domain_event(book_acquired_spec(&model, Some(&session.primary_key)))?;
+            prepare_publish_domain_event(book_acquired_spec(model, Some(&session.primary_key)))?;
         let mut binds = vec![
             text(&event.id),
             text(&event.event_type),

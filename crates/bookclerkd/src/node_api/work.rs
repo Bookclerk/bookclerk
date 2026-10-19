@@ -48,8 +48,8 @@ use bookclerk_library::control_plane::{
 use bookclerk_library::{JobResourceClass, LibraryStore};
 use bookclerk_node_proto::{
     open_secret_update, seal_instance_secrets, seal_secrets, Body, ClaimFilter, Frame, HeldFence,
-    RemoteArtifact, RemoteDeployment, RemoteVersion, SecretEntry, SecretRef, SecretValue, WorkJob,
-    ITEM_JOB, MAX_FRAME_BYTES,
+    RemoteArtifact, RemoteDeployment, RemoteVersion, ScanImport, SecretEntry, SecretRef,
+    SecretValue, WorkJob, ITEM_JOB, MAX_FRAME_BYTES,
 };
 use rand::RngCore as _;
 use zeroize::{Zeroize as _, Zeroizing};
@@ -425,6 +425,19 @@ fn claim_filter(filter: ClaimFilter) -> Result<JobClaimFilter, ()> {
     })
 }
 
+/// For a scan job, this owner's library import settings: the host scans
+/// with them, since the owner writes every row it returns.
+async fn scan_import(host: &HostContext, kind: bookclerk_library::JobKind) -> Option<ScanImport> {
+    if kind != bookclerk_library::JobKind::Scan {
+        return None;
+    }
+    let cfg = host.state.config.read().await;
+    Some(ScanImport {
+        import_episodes: cfg.library.import_episodes,
+        import_plus_titles: cfg.library.import_plus_titles,
+    })
+}
+
 /// `claim`: the next trusted job, its fence, and its sealed secrets.
 async fn claim(
     library: &LibraryStore,
@@ -480,6 +493,7 @@ async fn claim(
         sealed.map(Some)
     };
     drop(secrets);
+    let scan_import = scan_import(host, job.kind).await;
     let work = sealed.ok().map(|sealed_secrets| {
         Frame::new(
             id.clone(),
@@ -490,6 +504,7 @@ async fn claim(
                     kind: job.kind.as_str().into(),
                     payload: serde_json::to_value(&job.payload).unwrap_or_default(),
                     attempt: job.attempt_count,
+                    scan_import,
                 },
                 fence,
                 lease_secs: host.settings.lease_secs,
@@ -546,6 +561,15 @@ async fn finish(
     fence: i64,
     outcome: RemoteOutcome<'_>,
 ) -> bookclerk_library::Result<Frame> {
+    // A failed run commits none of its open uploads, so they are aborted
+    // and what they received is deleted before the job ends: until then
+    // its permits are held, so no other acquire of the account can be
+    // writing the same titles while the files go.
+    let discarded = matches!(outcome, RemoteOutcome::Fail { .. });
+    if discarded {
+        super::uploads::discard_job_uploads(&host.state, library, &host.node_id, &job_id, fence)
+            .await;
+    }
     let finished = finish_remote_job(
         library,
         &host.node_id,
@@ -559,14 +583,16 @@ async fn finish(
         RemoteFinish::Done | RemoteFinish::Lost => {
             // The job ended (or the fence is gone) without these
             // uploads committing; what they received is deleted.
-            super::uploads::discard_job_uploads(
-                &host.state,
-                library,
-                &host.node_id,
-                &job_id,
-                fence,
-            )
-            .await;
+            if !discarded {
+                super::uploads::discard_job_uploads(
+                    &host.state,
+                    library,
+                    &host.node_id,
+                    &job_id,
+                    fence,
+                )
+                .await;
+            }
             if finished == RemoteFinish::Done {
                 Frame::new(id, Body::Accepted {})
             } else {
@@ -581,7 +607,9 @@ async fn finish(
 ///
 /// A released run (a consent revoke, a host shutting down) commits none of
 /// its open uploads, so they are aborted and what they had received is
-/// deleted, as for `complete` / `fail`.
+/// deleted, as for `fail`: before the job goes back and its permits are
+/// given back, so a replacement run cannot be writing the same titles
+/// while the files go.
 async fn finish_release(
     library: &LibraryStore,
     host: &HostContext,
@@ -589,12 +617,9 @@ async fn finish_release(
     job_id: String,
     fence: i64,
 ) -> bookclerk_library::Result<Frame> {
+    super::uploads::discard_job_uploads(&host.state, library, &host.node_id, &job_id, fence).await;
     let released =
         release_remote_job(library, &host.node_id, &job_id, fence, host.settings.limits).await?;
-    if matches!(released, RemoteFinish::Done | RemoteFinish::Lost) {
-        super::uploads::discard_job_uploads(&host.state, library, &host.node_id, &job_id, fence)
-            .await;
-    }
     Ok(match released {
         RemoteFinish::Done => Frame::new(id, Body::Accepted {}),
         RemoteFinish::Lost => lost(id, job_id, fence),

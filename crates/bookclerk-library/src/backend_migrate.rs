@@ -10,8 +10,8 @@ use crate::entities::{
     account_links, accounts, books, claim_tickets, embeddings, encrypted_secrets, ignored_titles,
     job_temp_paths, jobs, listening_progress, oidc_auth_codes, oidc_clients, oidc_refresh_tokens,
     oidc_rp_states, operator_sessions, portal_identities, portal_sessions, saved_filters,
-    security_audit_events, title_request_sources, title_requests, user_invites, user_preferences,
-    users, webauthn_challenges, webauthn_credentials, work_editions, works,
+    security_audit_events, title_files, title_request_sources, title_requests, user_invites,
+    user_preferences, users, webauthn_challenges, webauthn_credentials, work_editions, works,
 };
 use crate::error::{LibraryError, Result};
 
@@ -100,6 +100,7 @@ pub async fn migrate_library_backend(
     copy!(portal_identities, "portal_identities");
     copy!(works, "works");
     copy!(books, "books");
+    copy!(title_files, "title_files");
     copy!(ignored_titles, "ignored_titles");
     copy!(saved_filters, "saved_filters");
     copy!(claim_tickets, "claim_tickets");
@@ -170,6 +171,7 @@ async fn dry_run_counts(
     count!(portal_identities, "portal_identities");
     count!(works, "works");
     count!(books, "books");
+    count!(title_files, "title_files");
     count!(ignored_titles, "ignored_titles");
     count!(saved_filters, "saved_filters");
     count!(claim_tickets, "claim_tickets");
