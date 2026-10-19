@@ -8,8 +8,8 @@
 //!   cluster semaphores), then [`handoff_routed_job`] re-checks trust just
 //!   before the job's secrets are unsealed for the node.
 //! - [`renew_remote_job`]: the fenced job heartbeat plus the renewal of the
-//!   job's semaphore permits. Trust and the node credential are re-read on
-//!   every renewal.
+//!   job's semaphore permits and of the tokens of the job's open uploads.
+//!   Trust and the node credential are re-read on every renewal.
 //! - [`finish_remote_job`]: the fenced complete or fail, then the permits
 //!   are given back.
 //! - [`release_remote_job`]: the Host gives a job back unrun (its operator
@@ -31,8 +31,8 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use zeroize::Zeroizing;
 
 use super::job_routing::{
-    claim_routed_job, job_plugin_keys, job_semaphores, JobClaimFilter, JobClaimLimits,
-    JobClaimRequest, RoutedJobClaim,
+    claim_routed_job, job_plugin_keys, job_semaphores, job_source_plugin_key, JobClaimFilter,
+    JobClaimLimits, JobClaimRequest, RoutedJobClaim,
 };
 use super::semaphore::{permits_held_by, release_permits, renew_permits, SemaphorePermit};
 use super::trust::{handoff_routed_job, node_may_claim_job, node_trust, Claimant, NodeTrust};
@@ -126,6 +126,9 @@ pub struct RemoteJobClaim {
     /// The plugin keys the job runs ([`job_plugin_keys`]); empty when the
     /// job alone does not say (only possible without a claim filter).
     pub plugin_keys: Vec<String>,
+    /// The one plugin whose source guest runs the job
+    /// ([`job_source_plugin_key`]); always set under a claim filter.
+    pub source_plugin_key: Option<String>,
 }
 
 /// Outcome of [`renew_remote_job`].
@@ -185,7 +188,8 @@ pub enum WriteBack {
 /// any node holding the database may take it) and `None` is returned.
 ///
 /// `filter` is the Host's own narrowing ([`JobClaimFilter`]): only jobs of
-/// its kinds whose every plugin it consented to are claimed.
+/// its kinds whose every plugin it consented to, and whose one source
+/// plugin can be told, are claimed.
 ///
 /// # Errors
 ///
@@ -223,11 +227,13 @@ pub async fn claim_remote_job(
         .await?
         .map(|keys| keys.into_iter().collect())
         .unwrap_or_default();
+    let source_plugin_key = job_source_plugin_key(store, &job).await?;
     match unseal_job_secrets(store, &job).await {
         Ok(secrets) => Ok(Some(RemoteJobClaim {
             job,
             secrets,
             plugin_keys,
+            source_plugin_key,
         })),
         Err(err) => {
             tracing::warn!(
@@ -416,6 +422,10 @@ pub async fn renew_remote_job(
     if !complete || !renew_permits(store, &permits, ttl).await? {
         return Ok(RemoteRenew::Lost);
     }
+    // The renewed fence keeps the job's open uploads' tokens alive, so a
+    // slow title is not cut off mid-way; nothing extends them once the
+    // fence is lost.
+    super::uploads::extend_job_uploads(store, node_id, job_id, generation).await?;
     Ok(RemoteRenew::Renewed {
         cancel: job.cancel_requested,
     })

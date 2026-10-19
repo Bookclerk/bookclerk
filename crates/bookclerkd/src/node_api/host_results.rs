@@ -19,8 +19,8 @@
 //! and upload, so it is never frame text.
 
 use bookclerk_library::control_plane::{
-    accept_scan_results, accounts_owned_by, grant_upload, job_plugin_keys, live_remote_job,
-    node_trust, Claimant, NodeTrust, ScanAccept, UploadGrant, UploadGrantRequest,
+    accept_scan_results, grant_upload, job_titles, live_remote_job, ScanAccept, UploadGrant,
+    UploadGrantRequest,
 };
 use bookclerk_library::{JobKind, LibraryStore};
 use bookclerk_node_proto::{
@@ -125,43 +125,16 @@ pub(super) async fn acquire_plan(
     // local acquire's does.
     let options = &destinations[0].options;
     let download_episodes = host.state.config.read().await.library.download_episodes;
-    let keys = job_plugin_keys(library, &job).await?.unwrap_or_default();
-    let owned = match node_trust(library, &host.node_id, Claimant::Remote).await? {
-        NodeTrust::All => None,
-        NodeTrust::OwnedBy(user_id) => Some(accounts_owned_by(library, user_id).await?),
-        NodeTrust::Nothing => return Ok(lost(id, job_id, fence)),
+    // The same scope the closing commit checks before it completes the job.
+    let Some(books) = job_titles(library, &host.node_id, &job).await? else {
+        return Ok(lost(id, job_id, fence));
     };
-    let account = job.payload.account.as_deref().filter(|a| !a.is_empty());
-    let title = job.payload.title.as_deref().filter(|t| !t.is_empty());
     let mut targets = Vec::new();
-    for book in library.list_books(account).await? {
+    for book in books {
         if targets.len() >= MAX_PLAN_TARGETS {
             break;
         }
-        let named = title.is_none_or(|t| {
-            t.eq_ignore_ascii_case(&book.uuid)
-                || t.eq_ignore_ascii_case(&book.product_id)
-                || book
-                    .isbn
-                    .as_deref()
-                    .is_some_and(|i| t.eq_ignore_ascii_case(i))
-                || book
-                    .asin
-                    .as_deref()
-                    .is_some_and(|x| t.eq_ignore_ascii_case(x))
-        });
-        let in_scope = keys.contains(&book.plugin_key)
-            && owned.as_ref().is_none_or(|owned| {
-                owned.contains(&(book.plugin_key.clone(), book.account_id.clone()))
-            });
-        if !named
-            || !in_scope
-            || !crate::jobs::acquire_job_includes_book(
-                &book,
-                options.download_pdf,
-                download_episodes,
-            )
-        {
+        if !crate::jobs::acquire_job_includes_book(&book, options.download_pdf, download_episodes) {
             continue;
         }
         targets.push(AcquireTarget {
@@ -241,7 +214,13 @@ pub(super) async fn upload_grant(
             upload_id,
             token,
             expires_at,
+            superseded,
         } => {
+            // A re-sent title replaces its earlier upload; what that one
+            // had received is deleted before the new one takes files.
+            for session in &superseded {
+                super::uploads::discard_received(&host.state, session).await;
+            }
             let mut ephemeral = [0u8; 32];
             rand::rngs::OsRng.fill_bytes(&mut ephemeral);
             let sealed = seal_upload_token(

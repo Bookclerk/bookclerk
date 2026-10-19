@@ -6,7 +6,9 @@ use sea_orm::sea_query::Expr;
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter};
 
 use super::*;
-use crate::entities::{account_links, accounts, cluster_leases, jobs, node_credentials, nodes};
+use crate::entities::{
+    account_links, accounts, cluster_leases, jobs, node_credentials, node_upload_sessions, nodes,
+};
 use crate::master_key::master_key_test_lock_async;
 use crate::models::UserRole;
 use crate::models::{EnqueueJobSpec, EnqueueOutcome, JobKind, JobPayload, JobResourceClass};
@@ -527,6 +529,47 @@ async fn a_host_claims_only_consented_plugins_and_kinds() {
         .expect("a consented plugin is claimed");
     assert_eq!(claimed.job.id, job_id);
     assert_eq!(claimed.plugin_keys, vec![PLUGIN.to_string()]);
+    assert_eq!(claimed.source_plugin_key.as_deref(), Some(PLUGIN));
+}
+
+/// An unpinned job whose account id exists under two plugins has no one
+/// source a Host could run, so no filter admits it, even one consenting to
+/// both plugins: it stays pending for a node that holds the database.
+#[tokio::test]
+async fn a_job_without_one_source_plugin_passes_no_filter() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    const OTHER: &str = "path:file:///tmp/other#other";
+    let now = chrono::Utc::now().to_rfc3339();
+    accounts::ActiveModel {
+        plugin_key: Set(OTHER.into()),
+        account_id: Set("riley-acct".into()),
+        marketplace: Set("us".into()),
+        label: Set(None),
+        scan_enabled: Set(1),
+        source: Set("test".into()),
+        connection_status: Set("active".into()),
+        created_at: Set(now.clone()),
+        updated_at: Set(now),
+        ..Default::default()
+    }
+    .insert(w.store.db())
+    .await
+    .unwrap();
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let record = w.store.get_job(&job_id).await.unwrap().unwrap();
+    let keys = job_plugin_keys(&w.store, &record).await.unwrap().unwrap();
+    assert_eq!(keys.len(), 2, "both plugins hold the account");
+    assert_eq!(
+        job_source_plugin_key(&w.store, &record).await.unwrap(),
+        None
+    );
+    let both = filter(&["scan"], &[PLUGIN, OTHER]);
+    assert!(!both.admits(&w.store, &record).await.unwrap());
+    assert!(claim_filtered(&w.store, &both).await.is_none());
+    let untouched = w.store.get_job(&job_id).await.unwrap().unwrap();
+    assert_eq!(untouched.state, crate::models::JobState::Pending);
+    assert_eq!(untouched.attempt_count, 0, "no attempt is spent");
 }
 
 /// A scan of every account names no plugin, so no filter admits it.
@@ -933,6 +976,297 @@ async fn a_stale_fence_cannot_write_scan_rows_or_open_uploads() {
     ));
 }
 
+/// A closing upload's finish with `detail`.
+fn finish(detail: &str) -> UploadFinish<'_> {
+    UploadFinish {
+        detail,
+        download_episodes: false,
+    }
+}
+
+/// Opens the closing upload of `job_id` under `fence`.
+async fn closing_upload(store: &LibraryStore, job_id: &str, fence: i64) -> String {
+    let UploadGrant::Granted { upload_id, .. } = grant_upload(
+        store,
+        HOST,
+        job_id,
+        fence,
+        "owner",
+        &UploadGrantRequest {
+            book_uuid: "",
+            primary_key: "",
+            pdf_key: None,
+            files: &[],
+            destinations: &[],
+        },
+    )
+    .await
+    .unwrap() else {
+        panic!("closing upload granted");
+    };
+    upload_id
+}
+
+/// Grants, receives and commits one title's upload.
+async fn upload_title(
+    store: &LibraryStore,
+    job_id: &str,
+    fence: i64,
+    book_uuid: &str,
+    files: &[bookclerk_node_proto::UploadFile],
+) {
+    let UploadGrant::Granted { upload_id, .. } = grant_upload(
+        store,
+        HOST,
+        job_id,
+        fence,
+        "owner",
+        &UploadGrantRequest {
+            book_uuid,
+            primary_key: "Author/Title/Title.m4b",
+            pdf_key: None,
+            files,
+            destinations: &["local".to_string()],
+        },
+    )
+    .await
+    .unwrap() else {
+        panic!("granted");
+    };
+    for index in 0..files.len() {
+        assert!(record_upload_file(store, &upload_id, index).await.unwrap());
+    }
+    assert_eq!(
+        commit_upload(store, &upload_id, None, SETTINGS.limits)
+            .await
+            .unwrap(),
+        UploadCommit::Committed {
+            job_completed: false
+        }
+    );
+}
+
+/// The owner decides the job's success: a closing upload is refused while
+/// a title of the job is still unacquired (the job keeps running and its
+/// permits), and completes the job once every title is.
+#[tokio::test]
+async fn the_closing_upload_waits_for_every_title() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (first, files) = riley_title(&w.store).await;
+    let second = w
+        .store
+        .scope(PLUGIN, "test")
+        .upsert_book(&crate::store::NewBook {
+            uuid: None,
+            ..scanned("riley-acct", "t2")
+        })
+        .await
+        .unwrap()
+        .uuid;
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    upload_title(&w.store, &job_id, fence, &first, &files).await;
+    let early = closing_upload(&w.store, &job_id, fence).await;
+    assert_eq!(
+        commit_upload(&w.store, &early, Some(finish("all done")), SETTINGS.limits)
+            .await
+            .unwrap(),
+        UploadCommit::Refused("titles_remaining"),
+        "the host's word is not enough"
+    );
+    let running = w.store.get_job(&job_id).await.unwrap().unwrap();
+    assert_eq!(running.state, crate::models::JobState::Running);
+    assert!(
+        !live_permits(&w.store, &class_semaphore(JobResourceClass::Network), 8)
+            .await
+            .unwrap()
+            .is_empty(),
+        "the job keeps its permits"
+    );
+    upload_title(&w.store, &job_id, fence, &second, &files).await;
+    let closing = closing_upload(&w.store, &job_id, fence).await;
+    assert_eq!(
+        commit_upload(
+            &w.store,
+            &closing,
+            Some(finish("all done")),
+            SETTINGS.limits
+        )
+        .await
+        .unwrap(),
+        UploadCommit::Committed {
+            job_completed: true
+        }
+    );
+    assert_eq!(
+        w.store.get_job(&job_id).await.unwrap().unwrap().state,
+        crate::models::JobState::Succeeded
+    );
+}
+
+/// True when `token` opens `upload_id`.
+async fn token_opens(store: &LibraryStore, upload_id: &str, token: &str) -> bool {
+    authorize_upload(store, upload_id, token, false)
+        .await
+        .unwrap()
+        .is_some()
+}
+
+/// Sets every upload's token to have expired.
+async fn expire_tokens(store: &LibraryStore) {
+    let past = (chrono::Utc::now() - chrono::Duration::seconds(5))
+        .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    node_upload_sessions::Entity::update_many()
+        .col_expr(node_upload_sessions::Column::ExpiresAt, Expr::value(past))
+        .exec(store.db())
+        .await
+        .unwrap();
+}
+
+/// An upload's token lives on while its fence does: a renewal of the
+/// job's lease and an accepted file each extend it, and once the fence is
+/// lost a renewal extends nothing.
+#[tokio::test]
+async fn a_live_fence_keeps_its_upload_token_alive() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let UploadGrant::Granted {
+        upload_id, token, ..
+    } = grant_upload(
+        &w.store,
+        HOST,
+        &job_id,
+        fence,
+        "owner",
+        &UploadGrantRequest {
+            book_uuid: &book_uuid,
+            primary_key: "Author/Title/Title.m4b",
+            pdf_key: None,
+            files: &files,
+            destinations: &["local".to_string()],
+        },
+    )
+    .await
+    .unwrap()
+    else {
+        panic!("granted");
+    };
+    expire_tokens(&w.store).await;
+    assert!(
+        !token_opens(&w.store, &upload_id, &token).await,
+        "an expired token opens nothing"
+    );
+    assert_eq!(
+        renew_remote_job(&w.store, HOST, &job_id, fence, SETTINGS, None)
+            .await
+            .unwrap(),
+        RemoteRenew::Renewed { cancel: false }
+    );
+    assert!(
+        token_opens(&w.store, &upload_id, &token).await,
+        "a renewal extends the token"
+    );
+
+    expire_tokens(&w.store).await;
+    assert!(record_upload_file(&w.store, &upload_id, 0).await.unwrap());
+    assert!(
+        token_opens(&w.store, &upload_id, &token).await,
+        "an accepted file extends the token"
+    );
+
+    expire_tokens(&w.store).await;
+    expire_lease(&w.store, &job_id).await;
+    assert_eq!(
+        renew_remote_job(&w.store, HOST, &job_id, fence, SETTINGS, None)
+            .await
+            .unwrap(),
+        RemoteRenew::Lost
+    );
+    assert!(
+        !token_opens(&w.store, &upload_id, &token).await,
+        "a lost fence extends nothing"
+    );
+}
+
+/// Aborting an upload answers what it had received, so the receiving node
+/// can delete those copies; a second abort answers nothing, and a job's
+/// uploads are aborted by fence only for that node and generation.
+#[tokio::test]
+async fn an_abort_answers_the_files_it_had_received() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, mut files) = riley_title(&w.store).await;
+    files.push(bookclerk_node_proto::UploadFile {
+        copies: vec![bookclerk_node_proto::FileCopy {
+            destination: "local".into(),
+            key: "Author/Title/cover.jpg".into(),
+        }],
+        ..files[0].clone()
+    });
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let request = UploadGrantRequest {
+        book_uuid: &book_uuid,
+        primary_key: "Author/Title/Title.m4b",
+        pdf_key: None,
+        files: &files,
+        destinations: &["local".to_string()],
+    };
+    let UploadGrant::Granted { upload_id, .. } =
+        grant_upload(&w.store, HOST, &job_id, fence, "owner", &request)
+            .await
+            .unwrap()
+    else {
+        panic!("granted");
+    };
+    assert!(record_upload_file(&w.store, &upload_id, 0).await.unwrap());
+    // Re-sending the title supersedes the open upload, receipts and all.
+    let UploadGrant::Granted {
+        upload_id: again,
+        superseded,
+        ..
+    } = grant_upload(&w.store, HOST, &job_id, fence, "owner", &request)
+        .await
+        .unwrap()
+    else {
+        panic!("granted again");
+    };
+    assert_eq!(superseded.len(), 1);
+    assert_eq!(superseded[0].upload_id, upload_id);
+    assert_eq!(superseded[0].received, [0usize].into_iter().collect());
+    assert!(
+        !record_upload_file(&w.store, &upload_id, 1).await.unwrap(),
+        "an aborted upload records no more files"
+    );
+    assert!(abort_upload(&w.store, &upload_id).await.unwrap().is_none());
+
+    assert!(record_upload_file(&w.store, &again, 1).await.unwrap());
+    assert!(abort_job_uploads(&w.store, "host-other", &job_id, fence)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(abort_job_uploads(&w.store, HOST, &job_id, fence + 1)
+        .await
+        .unwrap()
+        .is_empty());
+    let aborted = abort_job_uploads(&w.store, HOST, &job_id, fence)
+        .await
+        .unwrap();
+    assert_eq!(aborted.len(), 1);
+    assert_eq!(aborted[0].upload_id, again);
+    assert_eq!(aborted[0].received, [1usize].into_iter().collect());
+    assert_eq!(
+        commit_upload(&w.store, &again, None, SETTINGS.limits)
+            .await
+            .unwrap(),
+        UploadCommit::Refused("upload_aborted")
+    );
+}
+
 /// The title Riley's acquire uploads, with its one file declared.
 async fn riley_title(store: &LibraryStore) -> (String, Vec<bookclerk_node_proto::UploadFile>) {
     let book = store
@@ -956,9 +1290,10 @@ async fn riley_title(store: &LibraryStore) -> (String, Vec<bookclerk_node_proto:
 }
 
 /// An upload is granted only for a title of the job, its token opens only
-/// that upload, the commit waits for every file, and the commit marks the
-/// title acquired, publishes `book_acquired`, completes the job and gives
-/// its permits back in one step; a repeat answers the same.
+/// that upload, the commit waits for every file, and the title's commit
+/// marks the title acquired and publishes `book_acquired` but cannot
+/// finish the job; only the closing upload completes it and gives its
+/// permits back, and a repeat answers the same.
 #[tokio::test]
 async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
     let _guard = master_key_test_lock_async().await;
@@ -1078,23 +1413,54 @@ async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
     assert_eq!(session.destinations, destinations);
     assert!(upload_fence_live(&w.store, &session).await.unwrap());
     assert_eq!(
-        commit_upload(&w.store, &upload_id, Some("1 title"), SETTINGS.limits)
+        commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
             .await
             .unwrap(),
         UploadCommit::Refused("files_missing")
     );
     assert!(record_upload_file(&w.store, &upload_id, 0).await.unwrap());
     assert_eq!(
-        commit_upload(&w.store, &upload_id, Some("1 title"), SETTINGS.limits)
+        commit_upload(
+            &w.store,
+            &upload_id,
+            Some(finish("1 title")),
+            SETTINGS.limits
+        )
+        .await
+        .unwrap(),
+        UploadCommit::Refused("not_a_closing_upload"),
+        "a title's upload cannot finish the job"
+    );
+    assert_eq!(
+        commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
+            .await
+            .unwrap(),
+        UploadCommit::Committed {
+            job_completed: false
+        }
+    );
+    let book = w.store.get_book_by_uuid(&book_uuid).await.unwrap().unwrap();
+    assert_eq!(book.acquire_status, crate::models::AcquireStatus::Acquired);
+    assert_eq!(book.storage_key.as_deref(), Some("Author/Title/Title.m4b"));
+    assert_eq!(
+        w.store.get_job(&job_id).await.unwrap().unwrap().state,
+        crate::models::JobState::Running
+    );
+    let closing = closing_upload(&w.store, &job_id, fence).await;
+    assert_eq!(
+        commit_upload(&w.store, &closing, None, SETTINGS.limits)
+            .await
+            .unwrap(),
+        UploadCommit::Refused("closing_upload_must_finish")
+    );
+    assert_eq!(
+        commit_upload(&w.store, &closing, Some(finish("1 title")), SETTINGS.limits)
             .await
             .unwrap(),
         UploadCommit::Committed {
             job_completed: true
         }
     );
-    let book = w.store.get_book_by_uuid(&book_uuid).await.unwrap().unwrap();
-    assert_eq!(book.acquire_status, crate::models::AcquireStatus::Acquired);
-    assert_eq!(book.storage_key.as_deref(), Some("Author/Title/Title.m4b"));
     let done = w.store.get_job(&job_id).await.unwrap().unwrap();
     assert_eq!(done.state, crate::models::JobState::Succeeded);
     assert_eq!(done.progress.as_deref(), Some("1 title"));
@@ -1113,7 +1479,7 @@ async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
         "permits are given back at the commit"
     );
     assert_eq!(
-        commit_upload(&w.store, &upload_id, Some("1 title"), SETTINGS.limits)
+        commit_upload(&w.store, &closing, Some(finish("1 title")), SETTINGS.limits)
             .await
             .unwrap(),
         UploadCommit::Committed {
@@ -1160,7 +1526,7 @@ async fn a_fence_lost_before_the_commit_writes_nothing() {
     assert!(record_upload_file(&w.store, &upload_id, 0).await.unwrap());
     expire_lease(&w.store, &job_id).await;
     assert_eq!(
-        commit_upload(&w.store, &upload_id, Some("done"), SETTINGS.limits)
+        commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
             .await
             .unwrap(),
         UploadCommit::Lost

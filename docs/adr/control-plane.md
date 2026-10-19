@@ -1237,6 +1237,51 @@ operator approves it, and only with what was approved.
   filter, release, and read scoping; plugin-host tests cover narrowing,
   re-approval and the platform rule.
 
+### Host scans and streamed uploads
+
+H-4 step 9. A Host scan returns its rows in fenced `scan.results`
+batches; a Host acquire streams each title's files to an owner node,
+which writes them straight to its output destinations (decision 4, no
+staging on the owner).
+
+- **Which jobs a Host claims.** A Host runs one source guest per job, so
+  its claim filter admits a scan or acquire only when the job names one
+  source plugin: the pinned instance's, or else the one plugin holding
+  the job's account. An unpinned job whose account id exists under several
+  plugins is never handed to a Host and stays with nodes that hold the
+  database; claiming and failing it would spend owner attempts. The `work`
+  frame names that `source_plugin_key`, and the Host selects the guest by
+  it, never by the destination plugins an acquire also lists.
+- **Cancellation.** A Host job's cancel flag (fence lost, operator cancel,
+  consent revoked) drops the running guest call within 50 ms. Dropping the
+  guest session shuts the guest down and fences its host-side authority,
+  so it stops using the handed credentials; an in-flight title upload is
+  dropped too.
+- **The Host's own destinations.** A title is uploaded only after every
+  output destination deployed on the Host (H-2) took its copy. A failed
+  copy fails the title (copies already written for it are removed), so
+  the job fails rather than succeeding with a destination short a title.
+- **Owner-decided success.** A title's commit marks it acquired and never
+  completes the job. Only the closing upload (no title, no files) may ask
+  to finish, and the owner completes the job only when no title in the
+  job's scope is left with unacquired audio (`titles_remaining`
+  otherwise). The Host's `finish` flag is a request, not proof.
+- **Abort deletes.** Files go straight to the destinations, so an abort
+  rolls back by deleting. An upload aborted after some files arrived (its
+  fence lost before a later file or the commit, the destinations changed,
+  the title re-sent, or the job finished or lost its fence without it)
+  has every received copy deleted by the receiving owner node. A file that
+  finished streaming just as its upload was aborted is deleted at once. An
+  upload received by another owner node is left to that node and logged.
+- **Token lifetime.** The upload token is accepted for an hour past its
+  latest extension. The grant, each accepted file, and each renewal of the
+  job's lease extend it. Nothing extends it after the fence is lost, and a
+  lost fence refuses every file and the commit regardless.
+- **Not done.** If a Host vanishes mid-title, so that no further file,
+  commit, renewal or finish arrives, its open upload is not swept: the
+  files it had received stay until a later attempt of the job re-sends
+  that title through the same owner node.
+
 ## Consequences
 
 - New unreleased tables: `cluster_identity`, `nodes`,

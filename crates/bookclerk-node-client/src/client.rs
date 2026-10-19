@@ -1285,6 +1285,7 @@ async fn claim_loop<R: HostJobRunner>(shared: Arc<Shared>, conn: Conn, runner: A
                         lease_secs,
                         sealed_secrets,
                         plugin_keys,
+                        source_plugin_key,
                     },
                 ..
             }) if item == ITEM_JOB => {
@@ -1295,6 +1296,7 @@ async fn claim_loop<R: HostJobRunner>(shared: Arc<Shared>, conn: Conn, runner: A
                     fence,
                     lease_secs,
                     plugin_keys,
+                    source_plugin_key,
                 };
                 tokio::spawn(run_job(
                     Arc::clone(&shared),

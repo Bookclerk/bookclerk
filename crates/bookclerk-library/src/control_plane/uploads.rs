@@ -13,13 +13,24 @@
 //! the commit is one canonical batch whose every statement is gated on the
 //! job still running under that fence and the node's credential still
 //! being live, so a fence lost at any point before the commit leaves the
-//! library untouched. The commit marks the title acquired, publishes its
-//! `book_acquired` event, and, for the job's last upload, completes the
-//! job in the same transaction.
+//! library untouched. A title's commit marks the title acquired and
+//! publishes its `book_acquired` event. Only the job's closing upload (no
+//! title, no files) completes the job, and only once the owner itself finds
+//! no title of the job left unacquired ([`job_titles`]); what the Host
+//! claims about its own progress is never enough.
+//!
+//! An aborted upload ([`abort_upload`], [`abort_job_uploads`]) answers the
+//! session as it stood, so the receiving node can delete every copy it had
+//! already received: files stream straight to the destinations, so there
+//! is no staging to drop instead.
 //!
 //! The bearer token is 32 random bytes; only its hash
 //! ([`crate::hash_token`]) is stored, and the plaintext travels to the Host
-//! sealed to its box key, never as frame text.
+//! sealed to its box key, never as frame text. It is accepted for
+//! [`UPLOAD_TOKEN_TTL_SECS`] past the latest extension: the grant, each
+//! accepted file ([`record_upload_file`]) and each renewal of the job's
+//! lease ([`extend_job_uploads`]). Nothing extends it once the fence is
+//! lost, and a lost fence refuses every file and the commit regardless.
 
 use std::collections::BTreeSet;
 
@@ -38,11 +49,14 @@ use super::semaphore::release_permits;
 use super::trust::{accounts_owned_by, node_may_claim_job, node_trust, Claimant, NodeTrust};
 use crate::entities::{books, node_upload_sessions};
 use crate::error::{LibraryError, Result};
+use crate::models::{is_downloadable, AcquireStatus, BookRecord, JobRecord};
 use crate::models::{JobKind, JobState};
 use crate::store::event_outbox::{book_acquired_spec, prepare_publish_domain_event};
 use crate::store::LibraryStore;
 
-/// How long a granted upload's token is accepted.
+/// How long a granted upload's token is accepted past its latest
+/// extension (the grant, an accepted file, or a renewal of the job's
+/// lease).
 pub const UPLOAD_TOKEN_TTL_SECS: i64 = 60 * 60;
 
 /// Session state: files may still arrive.
@@ -97,8 +111,12 @@ pub enum UploadGrant {
         /// The bearer token (zeroized on drop; seal it before it leaves
         /// the process).
         token: Zeroizing<String>,
-        /// When the token stops being accepted.
+        /// When the token stops being accepted unless extended.
         expires_at: DateTime<Utc>,
+        /// Earlier open uploads of the same title by the same job, aborted
+        /// by this grant, as they stood; the receiving node deletes what
+        /// each had received.
+        superseded: Vec<UploadSession>,
     },
     /// The fence no longer owns the job, or the node is no longer trusted
     /// with it.
@@ -113,12 +131,14 @@ impl std::fmt::Debug for UploadGrant {
             Self::Granted {
                 upload_id,
                 expires_at,
+                superseded,
                 ..
             } => f
                 .debug_struct("Granted")
                 .field("upload_id", upload_id)
                 .field("token", &"<redacted>")
                 .field("expires_at", expires_at)
+                .field("superseded", &superseded.len())
                 .finish(),
             Self::Lost => f.write_str("Lost"),
             Self::Refused(reason) => f.debug_tuple("Refused").field(reason).finish(),
@@ -178,6 +198,17 @@ pub enum UploadCommit {
     Refused(&'static str),
 }
 
+/// How the job's closing upload completes it.
+#[derive(Debug, Clone, Copy)]
+pub struct UploadFinish<'a> {
+    /// Outcome text recorded as the job's progress.
+    pub detail: &'a str,
+    /// Whether the receiving node acquires podcast episodes (its
+    /// `library.download_episodes`); an episode it would skip does not
+    /// keep the job open.
+    pub download_episodes: bool,
+}
+
 /// RFC 3339 text with nanoseconds (unique enough to mark one commit).
 fn stamp(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
@@ -191,7 +222,8 @@ fn mint_token() -> Zeroizing<String> {
 }
 
 /// True when `book` is one of the titles `title` names.
-fn names_book(title: &str, book: &crate::models::BookRecord) -> bool {
+#[must_use]
+pub fn names_book(title: &str, book: &BookRecord) -> bool {
     title.eq_ignore_ascii_case(&book.uuid)
         || title.eq_ignore_ascii_case(&book.product_id)
         || book
@@ -202,6 +234,56 @@ fn names_book(title: &str, book: &crate::models::BookRecord) -> bool {
             .asin
             .as_deref()
             .is_some_and(|asin| title.eq_ignore_ascii_case(asin))
+}
+
+/// The owner's library rows the acquire `job` run by `node_id` covers: of
+/// the job's plugins ([`job_plugin_keys`]), its account and its title when
+/// it names them, and, for a Host trusted only with its owner's accounts,
+/// one of that user's. `None` when the node is trusted with nothing.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub async fn job_titles(
+    store: &LibraryStore,
+    node_id: &str,
+    job: &JobRecord,
+) -> Result<Option<Vec<BookRecord>>> {
+    let owned = match node_trust(store, node_id, Claimant::Remote).await? {
+        NodeTrust::All => None,
+        NodeTrust::OwnedBy(user_id) => Some(accounts_owned_by(store, user_id).await?),
+        NodeTrust::Nothing => return Ok(None),
+    };
+    let keys = job_plugin_keys(store, job).await?.unwrap_or_default();
+    let account = job.payload.account.as_deref().filter(|a| !a.is_empty());
+    let title = job.payload.title.as_deref().filter(|t| !t.is_empty());
+    let mut books = store.list_books(account).await?;
+    books.retain(|book| {
+        keys.contains(&book.plugin_key)
+            && title.is_none_or(|title| names_book(title, book))
+            && owned.as_ref().is_none_or(|owned| {
+                owned.contains(&(book.plugin_key.clone(), book.account_id.clone()))
+            })
+    });
+    Ok(Some(books))
+}
+
+/// True when the acquire `job` still has a title whose audio is not
+/// acquired (an episode counts only with `download_episodes`).
+async fn job_titles_remaining(
+    store: &LibraryStore,
+    node_id: &str,
+    job: &JobRecord,
+    download_episodes: bool,
+) -> Result<bool> {
+    let Some(books) = job_titles(store, node_id, job).await? else {
+        return Ok(true);
+    };
+    Ok(books.iter().any(|book| {
+        is_downloadable(&book.content_kind)
+            && (download_episodes || book.content_kind != "episode")
+            && book.acquire_status != AcquireStatus::Acquired
+    }))
 }
 
 /// Checks the declared files: well formed, every copy on one of the
@@ -323,17 +405,7 @@ pub async fn grant_upload(
         pdf_key: req.pdf_key.map(str::to_string),
     })
     .map_err(|err| LibraryError::Other(anyhow::anyhow!("upload manifest encode: {err}")))?;
-    node_upload_sessions::Entity::update_many()
-        .col_expr(
-            node_upload_sessions::Column::State,
-            sea_orm::sea_query::Expr::value(STATE_ABORTED),
-        )
-        .filter(node_upload_sessions::Column::JobId.eq(job_id))
-        .filter(node_upload_sessions::Column::BookUuid.eq(req.book_uuid))
-        .filter(node_upload_sessions::Column::State.eq(STATE_OPEN))
-        .exec(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    let superseded = abort_matching(store, job_id, |row| row.book_uuid == req.book_uuid).await?;
     let upload_id = uuid::Uuid::new_v4().hyphenated().to_string();
     let token = mint_token();
     let now = Utc::now();
@@ -371,6 +443,7 @@ pub async fn grant_upload(
         upload_id,
         token,
         expires_at,
+        superseded,
     })
 }
 
@@ -459,8 +532,9 @@ pub async fn upload_fence_live(store: &LibraryStore, session: &UploadSession) ->
     node_may_claim_job(store, &session.node_id, Claimant::Remote, &job).await
 }
 
-/// Records that file `index` reached every destination. Answers false when
-/// the upload is no longer open.
+/// Records that file `index` reached every destination and extends the
+/// upload's token. Answers false when the upload is no longer open (it was
+/// aborted meanwhile: the caller deletes the copies it just wrote).
 ///
 /// # Errors
 ///
@@ -488,10 +562,17 @@ pub async fn record_upload_file(
         }
         let next = serde_json::to_string(&received)
             .map_err(|err| LibraryError::Other(anyhow::anyhow!("upload receipts encode: {err}")))?;
+        // An accepted file passed the fence check, so the token is extended.
         let updated = node_upload_sessions::Entity::update_many()
             .col_expr(
                 node_upload_sessions::Column::ReceivedJson,
                 sea_orm::sea_query::Expr::value(next),
+            )
+            .col_expr(
+                node_upload_sessions::Column::ExpiresAt,
+                sea_orm::sea_query::Expr::value(stamp(
+                    Utc::now() + Duration::seconds(UPLOAD_TOKEN_TTL_SECS),
+                )),
             )
             .filter(node_upload_sessions::Column::UploadId.eq(upload_id))
             .filter(node_upload_sessions::Column::State.eq(STATE_OPEN))
@@ -508,23 +589,119 @@ pub async fn record_upload_file(
     ))
 }
 
-/// Aborts an open upload (its fence was lost, or a file failed).
+/// Aborts an open upload (its fence was lost, its commit was refused for
+/// a lost fence, or the destinations changed). Answers the session as it
+/// stood when this call aborted it, its receipts final (no file is
+/// recorded on an aborted upload), so the receiving node can delete every
+/// copy it received; `None` when it was not open.
+///
+/// # Errors
+///
+/// Returns an error when a read or write fails.
+pub async fn abort_upload(store: &LibraryStore, upload_id: &str) -> Result<Option<UploadSession>> {
+    for _ in 0..8 {
+        let Some(row) = node_upload_sessions::Entity::find_by_id(upload_id.to_string())
+            .one(store.db())
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(None);
+        };
+        if row.state != STATE_OPEN {
+            return Ok(None);
+        }
+        // Compare-and-swap on the receipts, so the answer lists every file
+        // recorded before the abort.
+        let updated = node_upload_sessions::Entity::update_many()
+            .col_expr(
+                node_upload_sessions::Column::State,
+                sea_orm::sea_query::Expr::value(STATE_ABORTED),
+            )
+            .filter(node_upload_sessions::Column::UploadId.eq(upload_id))
+            .filter(node_upload_sessions::Column::State.eq(STATE_OPEN))
+            .filter(node_upload_sessions::Column::ReceivedJson.eq(row.received_json.clone()))
+            .exec(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        if updated.rows_affected == 1 {
+            let mut session = session_from_model(row)?;
+            session.state = STATE_ABORTED.into();
+            return Ok(Some(session));
+        }
+    }
+    Err(LibraryError::Unavailable(
+        "upload receipts kept changing".into(),
+    ))
+}
+
+/// Aborts every open upload of `job_id` that `keep` selects; answers the
+/// aborted sessions ([`abort_upload`]).
+async fn abort_matching(
+    store: &LibraryStore,
+    job_id: &str,
+    keep: impl Fn(&node_upload_sessions::Model) -> bool,
+) -> Result<Vec<UploadSession>> {
+    let rows = node_upload_sessions::Entity::find()
+        .filter(node_upload_sessions::Column::JobId.eq(job_id))
+        .filter(node_upload_sessions::Column::State.eq(STATE_OPEN))
+        .all(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    let mut aborted = Vec::new();
+    for row in rows.into_iter().filter(|row| keep(row)) {
+        if let Some(session) = abort_upload(store, &row.upload_id).await? {
+            aborted.push(session);
+        }
+    }
+    Ok(aborted)
+}
+
+/// Aborts every open upload `node_id` was granted under the job's lease
+/// generation `generation` (the job finished or its fence was lost, so
+/// none of them can commit); answers the aborted sessions.
+///
+/// # Errors
+///
+/// Returns an error when a read or write fails.
+pub async fn abort_job_uploads(
+    store: &LibraryStore,
+    node_id: &str,
+    job_id: &str,
+    generation: i64,
+) -> Result<Vec<UploadSession>> {
+    abort_matching(store, job_id, |row| {
+        row.node_id == node_id && row.lease_generation == generation
+    })
+    .await
+}
+
+/// Extends the token of every open upload `node_id` holds under the job's
+/// lease generation `generation`, after that lease was renewed; answers
+/// how many were extended.
 ///
 /// # Errors
 ///
 /// Returns an error when the write fails.
-pub async fn abort_upload(store: &LibraryStore, upload_id: &str) -> Result<()> {
-    node_upload_sessions::Entity::update_many()
+pub async fn extend_job_uploads(
+    store: &LibraryStore,
+    node_id: &str,
+    job_id: &str,
+    generation: i64,
+) -> Result<u64> {
+    let expires_at = stamp(Utc::now() + Duration::seconds(UPLOAD_TOKEN_TTL_SECS));
+    let updated = node_upload_sessions::Entity::update_many()
         .col_expr(
-            node_upload_sessions::Column::State,
-            sea_orm::sea_query::Expr::value(STATE_ABORTED),
+            node_upload_sessions::Column::ExpiresAt,
+            sea_orm::sea_query::Expr::value(expires_at),
         )
-        .filter(node_upload_sessions::Column::UploadId.eq(upload_id))
+        .filter(node_upload_sessions::Column::NodeId.eq(node_id))
+        .filter(node_upload_sessions::Column::JobId.eq(job_id))
+        .filter(node_upload_sessions::Column::LeaseGeneration.eq(generation))
         .filter(node_upload_sessions::Column::State.eq(STATE_OPEN))
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
-    Ok(())
+    Ok(updated.rows_affected)
 }
 
 /// True when the job finished successfully.
@@ -535,10 +712,15 @@ async fn job_done(store: &LibraryStore, job_id: &str) -> Result<bool> {
         .is_some_and(|job| job.state == JobState::Succeeded))
 }
 
-/// Commits an upload whose every file was received: marks the title
-/// acquired under its primary key (and its PDF, when uploaded), publishes
-/// `book_acquired`, and, when `finish` is set, completes the job with that
-/// text as its progress and gives its semaphore permits back.
+/// Commits an upload whose every file was received.
+///
+/// A title's upload marks the title acquired under its primary key (and
+/// its PDF, when uploaded) and publishes `book_acquired`; it never
+/// completes the job, so `finish` must be `None`. The job's closing upload
+/// (no title) must carry `finish`, and completes the job with its detail
+/// as progress and gives its semaphore permits back, but only when no
+/// title of the job is left unacquired; otherwise it is refused
+/// (`titles_remaining`) and nothing is written.
 ///
 /// One canonical batch, every statement gated on the upload still being
 /// open, the job still running under this upload's fence, and the node's
@@ -552,7 +734,7 @@ async fn job_done(store: &LibraryStore, job_id: &str) -> Result<bool> {
 pub async fn commit_upload(
     store: &LibraryStore,
     upload_id: &str,
-    finish: Option<&str>,
+    finish: Option<UploadFinish<'_>>,
     limits: JobClaimLimits,
 ) -> Result<UploadCommit> {
     let Some(session) = load_upload(store, upload_id).await? else {
@@ -575,6 +757,18 @@ pub async fn commit_upload(
     };
     if !node_may_claim_job(store, &session.node_id, Claimant::Remote, &job).await? {
         return Ok(UploadCommit::Lost);
+    }
+    // The owner decides the job's success itself.
+    match (session.book_uuid.is_empty(), finish) {
+        (false, Some(_)) => return Ok(UploadCommit::Refused("not_a_closing_upload")),
+        (true, None) => return Ok(UploadCommit::Refused("closing_upload_must_finish")),
+        (true, Some(finish)) => {
+            if job_titles_remaining(store, &session.node_id, &job, finish.download_episodes).await?
+            {
+                return Ok(UploadCommit::Refused("titles_remaining"));
+            }
+        }
+        (false, None) => {}
     }
     let now = stamp(Utc::now());
     let gate_sql = "EXISTS (SELECT 1 FROM node_upload_sessions \
@@ -668,11 +862,11 @@ pub async fn commit_upload(
             binds,
         ));
     }
-    let job_index = finish.map(|detail| {
+    let job_index = finish.map(|finish| {
         let mut binds = vec![
             text(&now),
             text(&now),
-            text(detail),
+            text(finish.detail),
             text(&fence.job_id),
             text(&fence.owner),
             batch::int(fence.generation),

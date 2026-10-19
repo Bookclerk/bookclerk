@@ -249,7 +249,19 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                         cancel,
                     },
                 )),
-                Ok(RemoteRenew::Lost) => Ok(lost(id.clone(), job_id, fence)),
+                Ok(RemoteRenew::Lost) => {
+                    // No upload under a lost fence can commit; drop what
+                    // they received.
+                    super::uploads::discard_job_uploads(
+                        &host.state,
+                        library,
+                        &host.node_id,
+                        &job_id,
+                        fence,
+                    )
+                    .await;
+                    Ok(lost(id.clone(), job_id, fence))
+                }
                 Err(err) => Err(err),
             }
         }
@@ -433,6 +445,7 @@ async fn claim(
         job,
         secrets,
         plugin_keys,
+        source_plugin_key,
     }) = claim_remote_job(library, &host.node_id, class, host.settings, filter).await?
     else {
         return Ok(none());
@@ -482,6 +495,7 @@ async fn claim(
                 lease_secs: host.settings.lease_secs,
                 sealed_secrets,
                 plugin_keys: plugin_keys.clone(),
+                source_plugin_key: source_plugin_key.clone(),
             },
         )
     });
@@ -532,22 +546,35 @@ async fn finish(
     fence: i64,
     outcome: RemoteOutcome<'_>,
 ) -> bookclerk_library::Result<Frame> {
-    Ok(
-        match finish_remote_job(
-            library,
-            &host.node_id,
-            &job_id,
-            fence,
-            host.settings.limits,
-            outcome,
-        )
-        .await?
-        {
-            RemoteFinish::Done => Frame::new(id, Body::Accepted {}),
-            RemoteFinish::Lost => lost(id, job_id, fence),
-            RemoteFinish::Refused(reason) => error(id, "refused", reason),
-        },
+    let finished = finish_remote_job(
+        library,
+        &host.node_id,
+        &job_id,
+        fence,
+        host.settings.limits,
+        outcome,
     )
+    .await?;
+    Ok(match finished {
+        RemoteFinish::Done | RemoteFinish::Lost => {
+            // The job ended (or the fence is gone) without these
+            // uploads committing; what they received is deleted.
+            super::uploads::discard_job_uploads(
+                &host.state,
+                library,
+                &host.node_id,
+                &job_id,
+                fence,
+            )
+            .await;
+            if finished == RemoteFinish::Done {
+                Frame::new(id, Body::Accepted {})
+            } else {
+                lost(id, job_id, fence)
+            }
+        }
+        RemoteFinish::Refused(reason) => error(id, "refused", reason),
+    })
 }
 
 /// `release`: the job goes back to pending unspent.

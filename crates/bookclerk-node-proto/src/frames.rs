@@ -136,6 +136,11 @@ pub enum Body {
         /// consents to every one.
         #[serde(default)]
         plugin_keys: Vec<String>,
+        /// The one plugin of `plugin_keys` whose source guest runs the
+        /// job (the others are destinations it writes); the owner hands a
+        /// host only jobs that name one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_plugin_key: Option<String>,
     },
     /// Owner → host: nothing to claim now.
     #[serde(rename = "none")]
@@ -359,7 +364,9 @@ pub enum Body {
         /// box key and bound to the node, job, fence and upload
         /// (`crate::seal_upload_token`).
         sealed_token: String,
-        /// Seconds the grant stays valid.
+        /// Seconds the token stays valid unless extended: the owner
+        /// extends it while the job's fence is live (each renewal and each
+        /// accepted file).
         expires_in_secs: u64,
     },
     /// Owner → host: a message from the host's `node.<id>` queue. The host
@@ -829,6 +836,7 @@ mod tests {
                     lease_secs: 60,
                     sealed_secrets: Some("x".into()),
                     plugin_keys: vec!["store".into()],
+                    source_plugin_key: Some("store".into()),
                 },
                 "work",
             ),

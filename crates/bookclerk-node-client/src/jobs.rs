@@ -27,6 +27,9 @@ pub struct HostJob {
     pub lease_secs: u64,
     /// Plugin keys the job runs (each consented when it was claimed).
     pub plugin_keys: Vec<String>,
+    /// The one plugin of `plugin_keys` whose source guest runs the job,
+    /// when the owner named it.
+    pub source_plugin_key: Option<String>,
 }
 
 /// The job's secrets, opened with this node's box key. Values are

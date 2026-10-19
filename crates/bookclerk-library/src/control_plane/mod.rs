@@ -85,8 +85,9 @@ pub use instances::{
 };
 pub use job_routing::{
     account_semaphore, claim_routed_job, class_semaphore, instance_semaphore, job_plugin_keys,
-    job_semaphores, node_can_run_job, resolve_job_requirements, JobClaimFilter, JobClaimLimits,
-    JobClaimRequest, RoutedJobClaim, ACCOUNT_SEMAPHORE_LIMIT, ROUTED_CLAIM_CANDIDATES,
+    job_semaphores, job_source_plugin_key, node_can_run_job, resolve_job_requirements,
+    JobClaimFilter, JobClaimLimits, JobClaimRequest, RoutedJobClaim, ACCOUNT_SEMAPHORE_LIMIT,
+    ROUTED_CLAIM_CANDIDATES,
 };
 pub use node_queue::{
     is_node_consumer_id, is_valid_node_id, node_consumer_id, node_queue_name, publish_node_message,
@@ -142,8 +143,9 @@ pub use trust::{
     Claimant, NodeTrust, ScanRequester,
 };
 pub use uploads::{
-    abort_upload, authorize_upload, commit_upload, grant_upload, load_upload, record_upload_file,
-    upload_fence_live, UploadCommit, UploadGrant, UploadGrantRequest, UploadSession,
+    abort_job_uploads, abort_upload, authorize_upload, commit_upload, extend_job_uploads,
+    grant_upload, job_titles, load_upload, names_book, record_upload_file, upload_fence_live,
+    UploadCommit, UploadFinish, UploadGrant, UploadGrantRequest, UploadSession,
     UPLOAD_TOKEN_TTL_SECS,
 };
 pub use versions::{

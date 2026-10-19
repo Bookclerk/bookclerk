@@ -28,7 +28,10 @@
 //! A Host also narrows its own claims with a [`JobClaimFilter`]: the job
 //! kinds it can run and the plugin keys its operator consented to. A job
 //! whose plugins cannot be told from the job itself (a scan of every
-//! account, a listen-sync) never passes a filter.
+//! account, a listen-sync) never passes a filter, and neither does one
+//! whose source plugin cannot ([`job_source_plugin_key`]): a Host runs one
+//! source guest per job, so an unpinned job whose account id exists under
+//! several plugins stays with nodes that hold the database.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -121,8 +124,10 @@ impl JobClaimFilter {
         self.kinds.is_empty() || self.plugin_keys.is_empty()
     }
 
-    /// True when `job` is of an admitted kind and every plugin it runs
-    /// ([`job_plugin_keys`]) is admitted.
+    /// True when `job` is of an admitted kind, every plugin it runs
+    /// ([`job_plugin_keys`]) is admitted, and its one source plugin can be
+    /// told ([`job_source_plugin_key`]), so the Host can select the guest
+    /// it runs.
     ///
     /// # Errors
     ///
@@ -131,10 +136,52 @@ impl JobClaimFilter {
         if !self.kinds.contains(job.kind.as_str()) {
             return Ok(false);
         }
-        Ok(job_plugin_keys(store, job)
+        let admitted = job_plugin_keys(store, job)
             .await?
-            .is_some_and(|keys| keys.is_subset(&self.plugin_keys)))
+            .is_some_and(|keys| keys.is_subset(&self.plugin_keys));
+        Ok(admitted && job_source_plugin_key(store, job).await?.is_some())
     }
+}
+
+/// The one plugin whose source guest runs `job`, or `None` when the job
+/// alone does not name exactly one.
+///
+/// Only a scan or acquire has one: the plugin of the instance it is pinned
+/// to, or else the one plugin holding an `accounts` row with the account
+/// it names. Required instances ([`crate::JobPayload::requires`], the
+/// destinations an acquire writes) never count. An unpinned job of every
+/// account, or one whose account id exists under several plugins, answers
+/// `None`, as do other kinds and unknown instances or accounts.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub async fn job_source_plugin_key(
+    store: &LibraryStore,
+    job: &JobRecord,
+) -> Result<Option<String>> {
+    if !matches!(job.kind, JobKind::Scan | JobKind::Acquire) {
+        return Ok(None);
+    }
+    if let Some(raw) = job.payload.plugin_instance_id.as_deref() {
+        return instance_plugin_key(store, raw).await;
+    }
+    let Some(account) = job.payload.account.as_deref().filter(|a| !a.is_empty()) else {
+        return Ok(None);
+    };
+    let keys: BTreeSet<String> = accounts::Entity::find()
+        .filter(accounts::Column::AccountId.eq(account))
+        .all(store.db())
+        .await
+        .map_err(LibraryError::Orm)?
+        .into_iter()
+        .map(|row| row.plugin_key)
+        .collect();
+    let mut keys = keys.into_iter();
+    Ok(match (keys.next(), keys.next()) {
+        (Some(key), None) => Some(key),
+        _ => None,
+    })
 }
 
 /// The plugin keys `job` runs, or `None` when the job alone does not say.

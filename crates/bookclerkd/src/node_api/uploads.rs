@@ -32,7 +32,22 @@
 //! broken connection instead ends every destination's stream with an
 //! error, so each discards what it wrote (a local destination removes its
 //! temp file, S3 aborts its multipart upload). The commit then marks the
-//! title acquired in one fenced batch ([`commit_upload`]).
+//! title acquired in one fenced batch ([`commit_upload`]). Only the job's
+//! closing upload may set `finish`, and the owner completes the job only
+//! once no title of it is left unacquired (else 422 `titles_remaining`).
+//!
+//! An upload aborted after some of its files arrived (its fence lost, its
+//! commit refused for a lost fence, the destinations changed, a re-sent
+//! title superseding it, or the job finished without it) has every copy
+//! this node received deleted again ([`discard_received`]); a file that
+//! finished streaming just as its upload was aborted is deleted at once.
+//! Files go straight to the destinations, so deletion is the rollback. An
+//! upload received by another owner node is that node's to clean: this
+//! node only logs it.
+//!
+//! The token is accepted for an hour past its latest extension: each
+//! accepted file and each renewal of the job's lease extend it, and only
+//! while the fence is live.
 //!
 //! The token never reaches a log: request tracing logs method and path
 //! only, and these handlers log upload and job ids.
@@ -49,8 +64,9 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bookclerk_library::control_plane::{
-    abort_upload, authorize_upload, commit_upload, load_or_create_node_identity,
-    record_upload_file, upload_fence_live, JobClaimLimits, UploadCommit, UploadSession,
+    abort_job_uploads, abort_upload, authorize_upload, commit_upload, load_or_create_node_identity,
+    record_upload_file, upload_fence_live, JobClaimLimits, UploadCommit, UploadFinish,
+    UploadSession,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_node_proto::{UploadAnswer, UploadCommitRequest, UPLOAD_AUTH_SCHEME};
@@ -246,6 +262,90 @@ fn this_node(state_files: &std::path::Path) -> Option<String> {
     load_or_create_node_identity(state_files)
         .ok()
         .map(|identity| identity.node_id)
+}
+
+/// Deletes the copies of declared file `index` of `session` from
+/// `destinations` (best effort; a failure is logged).
+async fn discard_file(destinations: &[OwnerDestination], session: &UploadSession, index: usize) {
+    let Some(file) = session.files.get(index) else {
+        return;
+    };
+    for copy in &file.copies {
+        let Some(destination) = destinations.iter().find(|d| d.id == copy.destination) else {
+            continue;
+        };
+        if let Err(err) = destination.backend.delete(&copy.key).await {
+            tracing::warn!(upload_id = %session.upload_id, index, destination = %copy.destination, error = %err, "could not delete an aborted upload's file");
+        }
+    }
+}
+
+/// Deletes every copy an aborted upload had received from this node's
+/// destinations, so an abort leaves no partial title behind. An upload
+/// another owner node received is left to that node (logged).
+pub(crate) async fn discard_received(state: &AppState, session: &UploadSession) {
+    if session.received.is_empty() {
+        return;
+    }
+    let files_dir = state.config.read().await.paths().files_dir.clone();
+    if this_node(&files_dir).as_deref() != Some(session.receiving_node_id.as_str()) {
+        tracing::warn!(
+            upload_id = %session.upload_id,
+            job_id = %session.job_id,
+            receiving_node_id = %session.receiving_node_id,
+            "an aborted upload was received by another owner node; its files stay there"
+        );
+        return;
+    }
+    let destinations = match owner_destinations(state).await {
+        Ok(destinations) => destinations,
+        Err(err) => {
+            tracing::warn!(upload_id = %session.upload_id, error = %err, "could not open this node's destinations to delete an aborted upload's files");
+            return;
+        }
+    };
+    for index in &session.received {
+        discard_file(&destinations, session, *index).await;
+    }
+    tracing::info!(
+        upload_id = %session.upload_id,
+        job_id = %session.job_id,
+        files = session.received.len(),
+        "deleted an aborted upload's files"
+    );
+}
+
+/// Aborts `upload_id` and deletes what it had received.
+async fn abort_and_discard(state: &AppState, library: &LibraryStore, upload_id: &str) {
+    match abort_upload(library, upload_id).await {
+        Ok(Some(session)) => discard_received(state, &session).await,
+        Ok(None) => {}
+        Err(err) => {
+            tracing::warn!(upload_id, error = %err, "could not abort an upload");
+        }
+    }
+}
+
+/// Aborts every open upload `node_id` holds under the job's lease
+/// generation `generation` (the job finished or its fence was lost) and
+/// deletes what each had received.
+pub(crate) async fn discard_job_uploads(
+    state: &AppState,
+    library: &LibraryStore,
+    node_id: &str,
+    job_id: &str,
+    generation: i64,
+) {
+    match abort_job_uploads(library, node_id, job_id, generation).await {
+        Ok(sessions) => {
+            for session in &sessions {
+                discard_received(state, session).await;
+            }
+        }
+        Err(err) => {
+            tracing::warn!(job_id, fence = generation, error = %err, "could not abort a job's uploads");
+        }
+    }
 }
 
 /// The upload a request may act on, or the refusal to answer with.
@@ -513,7 +613,7 @@ pub async fn put_file(
     match upload_fence_live(&library, &session).await {
         Ok(true) => {}
         Ok(false) => {
-            let _ = abort_upload(&library, &session.upload_id).await;
+            abort_and_discard(&state, &library, &session.upload_id).await;
             return lost();
         }
         Err(err) => {
@@ -532,10 +632,11 @@ pub async fn put_file(
         // The host named the files for the destinations it was planned
         // with; writing them to a changed set would mis-name or skip one.
         tracing::warn!(upload_id = %session.upload_id, "this owner node's destinations changed since the upload was granted; aborted");
-        let _ = abort_upload(&library, &session.upload_id).await;
+        abort_and_discard(&state, &library, &session.upload_id).await;
         return refused("destinations_changed");
     }
     let count = destinations.len();
+    let ids = destination_ids(&destinations);
     match tee(&library, &session, index, body, destinations).await {
         Ok(()) => match record_upload_file(&library, &session.upload_id, index).await {
             Ok(true) => {
@@ -548,7 +649,19 @@ pub async fn put_file(
                 );
                 answer(StatusCode::OK, "received", None, false)
             }
-            Ok(false) => lost(),
+            Ok(false) => {
+                // Aborted while this file streamed: its copies go too.
+                tracing::warn!(upload_id = %session.upload_id, index, "the upload was aborted while a file streamed; deleting it");
+                match owner_destinations(&state).await {
+                    Ok(destinations) if destination_ids(&destinations) == ids => {
+                        discard_file(&destinations, &session, index).await;
+                    }
+                    _ => {
+                        tracing::warn!(upload_id = %session.upload_id, index, "could not reopen this node's destinations to delete an aborted file")
+                    }
+                }
+                lost()
+            }
             Err(err) => {
                 tracing::warn!(upload_id = %session.upload_id, error = %err, "could not record an uploaded file");
                 unavailable()
@@ -556,7 +669,7 @@ pub async fn put_file(
         },
         Err(StreamFailure::Lost) => {
             tracing::warn!(upload_id = %session.upload_id, job_id = %session.job_id, index, "the job's fence was lost mid-upload; aborted");
-            let _ = abort_upload(&library, &session.upload_id).await;
+            abort_and_discard(&state, &library, &session.upload_id).await;
             lost()
         }
         Err(StreamFailure::Mismatch) => {
@@ -595,19 +708,30 @@ pub async fn post_commit(
     } else {
         detail
     };
-    let limits = {
+    let (limits, download_episodes) = {
         let cfg = state.config.read().await;
-        JobClaimLimits {
-            class: cfg.jobs.concurrency.network.max(1),
-            plugin_instance: cfg.jobs.concurrency.plugin_instance.max(1),
-        }
+        (
+            JobClaimLimits {
+                class: cfg.jobs.concurrency.network.max(1),
+                plugin_instance: cfg.jobs.concurrency.plugin_instance.max(1),
+            },
+            cfg.library.download_episodes,
+        )
     };
-    let finish = commit.finish.then_some(detail);
+    // The host's `finish` only asks; the commit itself checks that this is
+    // the closing upload and that no title of the job remains.
+    let finish = commit.finish.then_some(UploadFinish {
+        detail,
+        download_episodes,
+    });
     match commit_upload(&library, &session.upload_id, finish, limits).await {
         Ok(UploadCommit::Committed { job_completed }) => {
             answer(StatusCode::OK, "committed", None, job_completed)
         }
-        Ok(UploadCommit::Lost) => lost(),
+        Ok(UploadCommit::Lost) => {
+            abort_and_discard(&state, &library, &session.upload_id).await;
+            lost()
+        }
         Ok(UploadCommit::Refused(reason)) => refused(reason),
         Err(err) => {
             tracing::warn!(upload_id = %session.upload_id, error = %err, "upload commit failed");

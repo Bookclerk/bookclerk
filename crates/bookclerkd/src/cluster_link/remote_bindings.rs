@@ -212,7 +212,10 @@ impl Drop for HostJobBindings {
 }
 
 /// The catalog entry a handed job runs on: its pinned instance, or else
-/// the default instance of its one plugin.
+/// the default instance of its source plugin. The source plugin is the one
+/// the owner named, and must be one of the job's plugins; without it (an
+/// older owner) only a job of exactly one plugin has one. The job's other
+/// plugins are destinations it writes and never select the guest.
 fn job_entry(catalog: &RemoteCatalog, ctx: &HostJobCtx) -> Option<RemoteInstanceEntry> {
     let pinned = ctx
         .job
@@ -226,8 +229,14 @@ fn job_entry(catalog: &RemoteCatalog, ctx: &HostJobCtx) -> Option<RemoteInstance
             .get(instance_id)
             .filter(|entry| ctx.job.plugin_keys.contains(&entry.plugin_key));
     }
-    let [plugin_key] = ctx.job.plugin_keys.as_slice() else {
-        return None;
+    let plugin_key = match ctx.job.source_plugin_key.as_deref() {
+        Some(source) => ctx.job.plugin_keys.iter().find(|key| *key == source)?,
+        None => {
+            let [plugin_key] = ctx.job.plugin_keys.as_slice() else {
+                return None;
+            };
+            plugin_key
+        }
     };
     catalog
         .entries()
