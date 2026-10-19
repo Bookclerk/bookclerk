@@ -506,7 +506,10 @@ fn not_your_account() -> LibraryError {
 ///
 /// Targets `allowed` refuses are dropped, and a target whose accounts the
 /// kept targets already cover (an id differing only in case, or another
-/// account's label) is skipped so no account is scanned twice.
+/// account's label) is skipped so no account is scanned twice. Targets that
+/// reach more accounts are kept first, so a needle that only reaches part
+/// of another's accounts is the one skipped. A chain of labels that each
+/// name another account's id can still scan its middle account twice.
 ///
 /// # Errors
 ///
@@ -526,20 +529,7 @@ async fn scan_all_targets(
         .filter(|row| row.scan_enabled != 0)
         .map(|row| row.account_id.as_str())
         .collect();
-    let mut out: Vec<ScanTarget> = Vec::new();
-    // Accounts some earlier job already touches. A later id whose accounts
-    // are all among them (an id that differs only in case, or another
-    // account's label) would scan them twice, possibly at once on two nodes.
-    let mut covered: BTreeSet<AccountKey> = BTreeSet::new();
-    let mut push = |target: ScanTarget, out: &mut Vec<ScanTarget>| {
-        // Refused targets are dropped before coalescing, so they never
-        // hide a later target the requester may run.
-        if !allowed(&target.touched) || target.touched.is_subset(&covered) {
-            return;
-        }
-        covered.extend(target.touched.iter().cloned());
-        out.push(target);
-    };
+    let mut candidates: Vec<ScanTarget> = Vec::new();
     for id in ids {
         let matching: Vec<&accounts::Model> = rows
             .iter()
@@ -557,14 +547,11 @@ async fn scan_all_targets(
                 .collect()
         };
         if matching.iter().all(|row| row.scan_enabled != 0) {
-            push(
-                ScanTarget {
-                    account_id: id.to_string(),
-                    plugin_key: None,
-                    touched: keys(&matching),
-                },
-                &mut out,
-            );
+            candidates.push(ScanTarget {
+                account_id: id.to_string(),
+                plugin_key: None,
+                touched: keys(&matching),
+            });
             continue;
         }
         let plugins: BTreeSet<&str> = matching
@@ -579,16 +566,39 @@ async fn scan_all_targets(
                 .filter(|row| row.plugin_key == key)
                 .collect();
             if on_plugin.iter().all(|row| row.scan_enabled != 0) {
-                push(
-                    ScanTarget {
-                        account_id: id.to_string(),
-                        plugin_key: Some(key.to_string()),
-                        touched: keys(&on_plugin),
-                    },
-                    &mut out,
-                );
+                candidates.push(ScanTarget {
+                    account_id: id.to_string(),
+                    plugin_key: Some(key.to_string()),
+                    touched: keys(&on_plugin),
+                });
             }
         }
     }
+    // Wider targets are decided first: when another account's label equals
+    // an id, the needle that reaches both is kept and the one that reaches
+    // only one is then covered. Kept targets still come out in id order.
+    let mut order: Vec<usize> = (0..candidates.len()).collect();
+    order.sort_by_key(|&index| std::cmp::Reverse(candidates[index].touched.len()));
+    // Accounts some kept target already touches. A target whose accounts
+    // are all among them (an id that differs only in case, or another
+    // account's label) would scan them twice, possibly at once on two
+    // nodes.
+    let mut covered: BTreeSet<AccountKey> = BTreeSet::new();
+    let mut keep = vec![false; candidates.len()];
+    for index in order {
+        let touched = &candidates[index].touched;
+        // Refused targets are dropped before coalescing, so they never
+        // hide a later target the requester may run.
+        if !allowed(touched) || touched.is_subset(&covered) {
+            continue;
+        }
+        covered.extend(touched.iter().cloned());
+        keep[index] = true;
+    }
+    let out: Vec<ScanTarget> = candidates
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(target, kept)| kept.then_some(target))
+        .collect();
     Ok(out)
 }

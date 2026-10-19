@@ -780,6 +780,30 @@ async fn scan_all_respects_per_plugin_flags(owner_db: LibraryStore, host_db: Lib
         .unwrap();
     let accounts: Vec<Option<String>> = plan.into_iter().map(|p| p.account).collect();
     assert_eq!(accounts, vec![Some("acct-b".into())]);
+
+    // `acct-c` is labelled with `acct-d`, which sorts after it. The needle
+    // `acct-d` reaches both, so scan-all keeps it alone rather than also
+    // scanning `acct-c` on its own (twice in all).
+    add_account(&owner_db, OTHER_PLUGIN, "acct-c", true).await;
+    add_account(&owner_db, OTHER_PLUGIN, "acct-d", true).await;
+    accounts::Entity::update_many()
+        .col_expr(accounts::Column::Label, Expr::value("acct-d"))
+        .filter(accounts::Column::AccountId.eq("acct-c"))
+        .exec(owner_db.db())
+        .await
+        .unwrap();
+    let plan = plan_scan(&host_db, ScanRequester::Operator, None, None)
+        .await
+        .unwrap();
+    let accounts: Vec<String> = plan.into_iter().filter_map(|p| p.account).collect();
+    for (id, kept) in [
+        ("acct-a", true),
+        ("acct-b", false),
+        ("acct-c", false),
+        ("acct-d", true),
+    ] {
+        assert_eq!(accounts.iter().any(|a| a == id), kept, "{id}: {accounts:?}");
+    }
 }
 
 #[tokio::test]
