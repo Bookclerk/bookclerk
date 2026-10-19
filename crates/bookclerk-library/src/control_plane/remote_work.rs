@@ -40,7 +40,7 @@ use super::job_routing::{
     JobClaimRequest, RoutedJobClaim,
 };
 use super::semaphore::{
-    permits_held_by, release_permits, renew_permits, SemaphorePermit, MAX_SEMAPHORE_LIMIT,
+    permits_with_holder_prefix, release_permits, renew_permits, SemaphorePermit,
 };
 use super::trust::{
     accounts_named, handoff_routed_job, node_may_claim_job, node_trust, Claimant, NodeTrust,
@@ -496,14 +496,14 @@ async fn fenced_job(store: &LibraryStore, fence: &JobFence) -> Result<Option<Job
 /// The semaphore permits `node_id` holds for `job`, and whether every
 /// semaphore the job counts against is among them.
 ///
-/// The holder prefix ([`job_permit_holder_prefix`]) names the permits of
-/// the job's current claim, generation included: a permit left over from an
-/// earlier claim of the same job by this node never matches, and expires
-/// with its own lease. The slots below this
-/// node's configured limit are searched first and, when nothing is found
-/// there, every slot up to [`MAX_SEMAPHORE_LIMIT`]: the Host may have
-/// claimed through an owner node with a higher limit, or the limit may have
-/// been lowered since.
+/// The permits are found by holder: the prefix ([`job_permit_holder_prefix`])
+/// names the job's current claim, generation included, so a permit left
+/// over from an earlier claim of the same job by this node never matches
+/// and expires with its own lease. Every permit the claim still holds is
+/// returned, in any slot and whatever the semaphores the job would ask for
+/// now: an account relabelled while the job runs keeps the permit the claim
+/// took renewed. A semaphore the job counts against now but the claim does
+/// not hold makes the set incomplete.
 async fn held_job_permits(
     store: &LibraryStore,
     node_id: &str,
@@ -512,20 +512,11 @@ async fn held_job_permits(
 ) -> Result<(Vec<SemaphorePermit>, bool)> {
     let prefix =
         job_permit_holder_prefix(&remote_lease_owner(node_id), &job.id, job.lease_generation);
-    let mut held = Vec::new();
-    let mut complete = true;
-    let mut seen = std::collections::BTreeSet::new();
-    for request in job_semaphores(store, job, limits).await? {
-        if !seen.insert(request.name.clone()) {
-            continue;
-        }
-        let mut found = permits_held_by(store, &request.name, request.limit, &prefix).await?;
-        if found.is_empty() && request.limit < MAX_SEMAPHORE_LIMIT {
-            found = permits_held_by(store, &request.name, MAX_SEMAPHORE_LIMIT, &prefix).await?;
-        }
-        complete &= !found.is_empty();
-        held.extend(found);
-    }
+    let held = permits_with_holder_prefix(store, &prefix).await?;
+    let complete = job_semaphores(store, job, limits)
+        .await?
+        .iter()
+        .all(|request| held.iter().any(|permit| permit.semaphore == request.name));
     Ok((held, complete))
 }
 

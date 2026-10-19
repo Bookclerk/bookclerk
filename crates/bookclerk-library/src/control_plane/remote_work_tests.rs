@@ -413,6 +413,64 @@ async fn a_pinned_job_gets_only_its_plugins_secrets() {
         .is_empty());
 }
 
+/// A Host renews the permits its claim took even after the account is
+/// relabelled so the job's name no longer reaches it.
+#[tokio::test]
+async fn a_relabelled_account_keeps_the_claims_permit_renewed() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    // An Administrator's Host is trusted with every job, so the relabel
+    // does not cost it the job's trust.
+    crate::entities::users::Entity::update_many()
+        .col_expr(
+            crate::entities::users::Column::Role,
+            Expr::value(UserRole::Administrator.as_str()),
+        )
+        .filter(crate::entities::users::Column::Id.eq(w.riley))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    let label = |value: &'static str| {
+        let store = w.store.clone();
+        async move {
+            accounts::Entity::update_many()
+                .col_expr(accounts::Column::Label, Expr::value(value))
+                .filter(accounts::Column::AccountId.eq("riley-acct"))
+                .exec(store.db())
+                .await
+                .unwrap();
+        }
+    };
+    label("Riley Main").await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley main").await;
+    let claimed = claim(&w.store).await.unwrap();
+    let account = account_semaphore(PLUGIN, "riley-acct");
+    let before = live_permits(&w.store, &account, 1).await.unwrap();
+    assert_eq!(before.len(), 1);
+
+    label("Something Else").await;
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    assert_eq!(
+        renew_remote_job(
+            &w.store,
+            HOST,
+            &job_id,
+            claimed.job.lease_generation,
+            SETTINGS,
+            None
+        )
+        .await
+        .unwrap(),
+        RemoteRenew::Renewed { cancel: false }
+    );
+    let after = live_permits(&w.store, &account, 1).await.unwrap();
+    assert_eq!(after.len(), 1);
+    assert!(
+        after[0].lease.expires_at_ms > before[0].lease.expires_at_ms,
+        "the account permit the claim took is still renewed"
+    );
+}
+
 /// Jobs naming one account by id and by label share its permit: the
 /// second is not claimed while the first runs.
 #[tokio::test]
