@@ -36,7 +36,7 @@ use chrono::{DateTime, Utc};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 use super::enrollment::load_node_credential;
-use super::instances::{load_plugin_instance, PluginInstanceId};
+use super::instances::{default_instance_for_key, load_plugin_instance, PluginInstanceId};
 use super::job_routing::{JobClaimRequest, RoutedJobClaim};
 use super::semaphore::release_permits;
 use crate::entities::{account_links, accounts, nodes, portal_identities, users};
@@ -324,7 +324,10 @@ pub async fn accounts_owned_by(store: &LibraryStore, user_id: i64) -> Result<BTr
 /// - Operator authority, an Owner or an Administrator: a named account is
 ///   one job as asked. A scan of every account becomes one job per distinct
 ///   scan-enabled account id (within the pinned plugin), so the planner can
-///   route each to any node trusted with that account. With no scan-enabled
+///   route each to any node trusted with that account. When the id also
+///   names a scan-disabled account on another plugin, its job is pinned to
+///   the default instance of each plugin where it is scan-enabled, so the
+///   disabled account is never touched. With no scan-enabled
 ///   account the request stays one unsplit job, which only fully trusted
 ///   nodes may claim and which reports that nothing was scanned.
 /// - Any other active user: a named account must be theirs, and a scan of
@@ -385,11 +388,16 @@ pub async fn plan_scan(
             // An unknown pinned instance fails at run time, as before.
             return Ok(vec![payload(None)]);
         }
-        let ids = scan_enabled_account_ids(store, plugin_key.as_deref()).await?;
-        if ids.is_empty() {
+        let mut out = Vec::new();
+        for target in scan_all_targets(store, plugin_key.as_deref()).await? {
+            if let Some(job) = target_payload(store, &target, &payload).await? {
+                out.push(job);
+            }
+        }
+        if out.is_empty() {
             return Ok(vec![payload(None)]);
         }
-        return Ok(ids.iter().map(|id| payload(Some(id))).collect());
+        return Ok(out);
     };
     if pinned.is_some() && plugin_key.is_none() {
         return Err(not_your_account());
@@ -406,13 +414,49 @@ pub async fn plan_scan(
         return Ok(vec![payload(Some(account))]);
     }
     let mut out = Vec::new();
-    for id in scan_enabled_account_ids(store, plugin_key.as_deref()).await? {
-        let touched = accounts_named(store, &id, plugin_key.as_deref()).await?;
-        if wholly_owned(&touched) {
-            out.push(payload(Some(&id)));
+    for target in scan_all_targets(store, plugin_key.as_deref()).await? {
+        if !wholly_owned(&target.touched) {
+            continue;
+        }
+        if let Some(job) = target_payload(store, &target, &payload).await? {
+            out.push(job);
         }
     }
     Ok(out)
+}
+
+/// One job a scan of every account plans.
+struct ScanTarget {
+    /// The account id the job names.
+    account_id: String,
+    /// The plugin the job must stay on, when the id also names an account
+    /// with scanning turned off on another plugin.
+    plugin_key: Option<String>,
+    /// The accounts the job touches.
+    touched: BTreeSet<AccountKey>,
+}
+
+/// Builds the payload for `target`, pinning it to its plugin's default
+/// instance when it must stay on one plugin and the request pins none.
+///
+/// Returns `None` when that plugin has no instance to pin to.
+///
+/// # Errors
+///
+/// Returns the read error when the instance lookup fails.
+async fn target_payload(
+    store: &LibraryStore,
+    target: &ScanTarget,
+    payload: &impl Fn(Option<&str>) -> JobPayload,
+) -> Result<Option<JobPayload>> {
+    let mut job = payload(Some(&target.account_id));
+    if let (Some(key), None) = (&target.plugin_key, &job.plugin_instance_id) {
+        let Some(instance) = default_instance_for_key(store, key).await? else {
+            return Ok(None);
+        };
+        job.plugin_instance_id = Some(instance.id.to_string());
+    }
+    Ok(Some(job))
 }
 
 /// The error for an account the requester does not own.
@@ -420,20 +464,77 @@ fn not_your_account() -> LibraryError {
     LibraryError::Forbidden("that store account is not linked to this user".into())
 }
 
-/// Distinct scan-enabled account ids, sorted, within `plugin_key` if given.
-async fn scan_enabled_account_ids(
+/// The jobs a scan of every account plans, within `plugin_key` if given.
+///
+/// A job names an account id, and a job's account filter matches that id or
+/// label on every plugin it runs on, whatever their scan flags. So each
+/// scan-enabled id is one unpinned job when every account it would touch is
+/// scan-enabled, and otherwise one job per plugin where every account it
+/// would touch is scan-enabled, pinned to that plugin. An account that only
+/// shares its plugin with a scan-disabled account matching the same id is
+/// left out, since no job can reach it alone.
+///
+/// # Errors
+///
+/// Returns the read error when the account read fails.
+async fn scan_all_targets(
     store: &LibraryStore,
     plugin_key: Option<&str>,
-) -> Result<BTreeSet<String>> {
-    let mut query = accounts::Entity::find().filter(accounts::Column::ScanEnabled.ne(0));
+) -> Result<Vec<ScanTarget>> {
+    let mut query = accounts::Entity::find();
     if let Some(key) = plugin_key {
         query = query.filter(accounts::Column::PluginKey.eq(key));
     }
-    Ok(query
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
-        .into_iter()
-        .map(|row| row.account_id)
-        .collect())
+    let rows = query.all(store.db()).await.map_err(LibraryError::Orm)?;
+    let ids: BTreeSet<&str> = rows
+        .iter()
+        .filter(|row| row.scan_enabled != 0)
+        .map(|row| row.account_id.as_str())
+        .collect();
+    let mut out = Vec::new();
+    for id in ids {
+        let matching: Vec<&accounts::Model> = rows
+            .iter()
+            .filter(|row| {
+                row.account_id.eq_ignore_ascii_case(id)
+                    || row
+                        .label
+                        .as_deref()
+                        .is_some_and(|label| label.eq_ignore_ascii_case(id))
+            })
+            .collect();
+        let keys = |rows: &[&accounts::Model]| -> BTreeSet<AccountKey> {
+            rows.iter()
+                .map(|row| (row.plugin_key.clone(), row.account_id.clone()))
+                .collect()
+        };
+        if matching.iter().all(|row| row.scan_enabled != 0) {
+            out.push(ScanTarget {
+                account_id: id.to_string(),
+                plugin_key: None,
+                touched: keys(&matching),
+            });
+            continue;
+        }
+        let plugins: BTreeSet<&str> = matching
+            .iter()
+            .filter(|row| row.scan_enabled != 0 && row.account_id == id)
+            .map(|row| row.plugin_key.as_str())
+            .collect();
+        for key in plugins {
+            let on_plugin: Vec<&accounts::Model> = matching
+                .iter()
+                .copied()
+                .filter(|row| row.plugin_key == key)
+                .collect();
+            if on_plugin.iter().all(|row| row.scan_enabled != 0) {
+                out.push(ScanTarget {
+                    account_id: id.to_string(),
+                    plugin_key: Some(key.to_string()),
+                    touched: keys(&on_plugin),
+                });
+            }
+        }
+    }
+    Ok(out)
 }

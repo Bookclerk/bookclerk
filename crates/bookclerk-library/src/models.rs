@@ -1257,7 +1257,16 @@ impl JobKind {
     pub fn dedup_key(self, payload: &JobPayload) -> String {
         let account = payload.account.as_deref().unwrap_or("all");
         match self {
-            Self::Scan => format!("scan:account={account}"),
+            Self::Scan => match payload
+                .plugin_instance_id
+                .as_deref()
+                .filter(|id| !id.is_empty())
+            {
+                // A pinned scan covers one instance, so it must not stand in
+                // for an unpinned scan of the same account, or for another pin.
+                Some(instance) => format!("scan:account={account}:instance={instance}"),
+                None => format!("scan:account={account}"),
+            },
             Self::Acquire => {
                 let title = payload.title.as_deref().unwrap_or("all");
                 format!("acquire:title={title}:account={account}")

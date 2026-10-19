@@ -693,6 +693,73 @@ async fn scan_planner_splits_and_scopes(owner_db: LibraryStore, host_db: Library
     assert_eq!(pending.len(), 3);
 }
 
+/// Scan-all leaves a scan-disabled account alone even when another plugin
+/// holds the same id with scanning on, and a pinned scan does not stand in
+/// for the unpinned one.
+async fn scan_all_respects_per_plugin_flags(owner_db: LibraryStore, host_db: LibraryStore) {
+    let operator = ConfigActor::Operator {
+        id: "operator".into(),
+    };
+    let instance = super::instances::create_plugin_instance(&owner_db, &operator, PLUGIN, "")
+        .await
+        .unwrap();
+    add_account(&owner_db, PLUGIN, "mixed", true).await;
+    add_account(&owner_db, OTHER_PLUGIN, "mixed", false).await;
+    add_account(&owner_db, PLUGIN, "plain", true).await;
+
+    let plan = plan_scan(&host_db, ScanRequester::Operator, None, None)
+        .await
+        .unwrap();
+    let jobs: Vec<(Option<String>, Option<String>)> = plan
+        .iter()
+        .map(|p| (p.account.clone(), p.plugin_instance_id.clone()))
+        .collect();
+    assert_eq!(
+        jobs,
+        vec![
+            (Some("mixed".into()), Some(instance.id.to_string())),
+            (Some("plain".into()), None),
+        ]
+    );
+
+    // A queued pinned scan of `plain` does not swallow scan-all's unpinned one.
+    let enqueue = |payload: JobPayload| {
+        let owner_db = owner_db.clone();
+        async move {
+            owner_db
+                .enqueue_job(EnqueueJobSpec {
+                    kind: JobKind::Scan,
+                    payload,
+                    priority: 0,
+                    max_attempts: 3,
+                    max_pending: 256,
+                    run_after: None,
+                })
+                .await
+                .unwrap()
+        }
+    };
+    let pinned = JobPayload {
+        account: Some("plain".into()),
+        plugin_instance_id: Some(instance.id.to_string()),
+        ..Default::default()
+    };
+    assert!(matches!(
+        enqueue(pinned.clone()).await,
+        EnqueueOutcome::Created { .. }
+    ));
+    for payload in plan {
+        assert!(matches!(
+            enqueue(payload).await,
+            EnqueueOutcome::Created { .. }
+        ));
+    }
+    assert!(!matches!(
+        enqueue(pinned).await,
+        EnqueueOutcome::Created { .. }
+    ));
+}
+
 #[tokio::test]
 async fn sqlite_host_trust_follows_its_owners_role() {
     let (_dir, a, b) = sqlite_stores().await;
@@ -733,6 +800,22 @@ async fn sqlite_untrusted_window_does_not_hide_trusted_jobs() {
 async fn sqlite_scan_planner_splits_and_scopes() {
     let (_dir, a, b) = sqlite_stores().await;
     scan_planner_splits_and_scopes(a, b).await;
+}
+
+#[tokio::test]
+async fn sqlite_scan_all_respects_per_plugin_flags() {
+    let (_dir, a, b) = sqlite_stores().await;
+    scan_all_respects_per_plugin_flags(a, b).await;
+}
+
+#[tokio::test]
+#[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+async fn postgres_scan_all_respects_per_plugin_flags() {
+    if !postgres_tests_enabled() {
+        return;
+    }
+    let (a, b) = postgres_stores().await;
+    scan_all_respects_per_plugin_flags(a, b).await;
 }
 
 #[tokio::test]
