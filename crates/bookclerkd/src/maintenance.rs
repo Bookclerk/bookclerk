@@ -179,6 +179,11 @@ async fn run_duty(
             removed += library.prune_expired_oidc_rp_states().await?;
             fence.check().await?;
             removed += library.prune_expired_webauthn_challenges().await?;
+            fence.check().await?;
+            // An abandoned join sign-in is otherwise purged only when the
+            // next one starts.
+            removed +=
+                bookclerk_library::control_plane::purge_expired_pending_joins(library).await?;
             Ok(removed)
         }
     }

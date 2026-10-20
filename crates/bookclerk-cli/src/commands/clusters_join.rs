@@ -294,17 +294,19 @@ pub async fn join_with_sign_in(
         branch_name: &branch_name,
         software_version: env!("CARGO_PKG_VERSION"),
     };
-    // The verifier and keys live only in this process, so a failed local
-    // write is retried here: the library answers a repeat of the same
-    // exchange with the same node.
-    // A later attempt that fails differently still reports the first save
-    // failure: it names the node the library enrolled.
+    // The verifier and keys live only in this process, so a lost answer or
+    // a failed local write is retried here: the library answers a repeat of
+    // the same exchange with the same node. A later attempt that fails
+    // differently still reports the first save failure: it names the node
+    // the library enrolled.
     let mut attempt = 1;
     let mut save_failed = None;
     let joined = loop {
         match redeem_branch_code(store, &redeem, &authorization.keys).await {
-            Err(err @ JoinError::SaveFailed { .. }) if attempt < SAVE_ATTEMPTS => {
-                save_failed.get_or_insert(err);
+            Err(err) if err.is_retryable() && attempt < REDEEM_ATTEMPTS => {
+                if matches!(err, JoinError::SaveFailed { .. }) {
+                    save_failed.get_or_insert(err);
+                }
                 attempt += 1;
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
@@ -325,8 +327,9 @@ pub async fn join_with_sign_in(
     })
 }
 
-/// How many times a join tries to save a link the library already enrolled.
-const SAVE_ATTEMPTS: u32 = 3;
+/// How many times a join redeems its sign-in when the library's answer is
+/// lost or the link it enrolled cannot be saved here.
+const REDEEM_ATTEMPTS: u32 = 3;
 
 /// This machine's name, as a default branch name.
 fn default_branch_name() -> String {

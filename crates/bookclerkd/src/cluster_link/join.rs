@@ -112,7 +112,7 @@ fn join_failed(err: &JoinError) -> Response {
             join_error(StatusCode::BAD_GATEWAY, "join_unsaved", &err.to_string())
         }
         // Only a sign-in's redeem gives this, and it is retried
-        // (`is_retryable`) before it gets here.
+        // (`JoinError::is_retryable`) before it gets here.
         JoinError::SaveFailed { .. } => {
             join_error(StatusCode::BAD_GATEWAY, "join_failed", &err.to_string())
         }
@@ -305,26 +305,6 @@ pub struct CallbackBody {
 /// racing the first, or a page loaded twice) never redeem at once.
 static CALLBACKS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// True for a redeem failure a retry with the same code and keys can fix:
-/// the library unreachable (its answer may have been lost after it
-/// enrolled the node, which a retry gets again), or busy.
-fn is_retryable(err: &JoinError) -> bool {
-    use bookclerk_node_client::DialError;
-    match err {
-        // A bad address, an insecure transport, or a certificate that does
-        // not match fails the same way on every try.
-        JoinError::Dial(DialError::Insecure(_) | DialError::Invalid(_) | DialError::Tls(_)) => {
-            false
-        }
-        JoinError::Dial(DialError::Refused(status)) => *status >= 500 || *status == 429,
-        JoinError::Dial(_) => true,
-        JoinError::Http { status, .. } => *status >= 500 || *status == 429,
-        // The library keeps the node for a repeat of the same exchange.
-        JoinError::SaveFailed { .. } => true,
-        _ => false,
-    }
-}
-
 /// How long a join waits on the library to redeem: longer than one connect
 /// attempt (`bookclerk_node_client` dials each address for up to 10 s) plus
 /// TLS, so one dead address does not fail every redeem. With [`CALLBACK_WAIT`]
@@ -419,7 +399,7 @@ pub async fn post_join_callback(
     };
     let link = match joined {
         Ok(link) => link,
-        Err(err) if is_retryable(&err) => {
+        Err(err) if err.is_retryable() => {
             return join_error(
                 StatusCode::BAD_GATEWAY,
                 "join_retry",
@@ -480,16 +460,24 @@ pub async fn post_join_invite(
         Err(_) => {
             // Start the link's client once the join lands.
             let state = Arc::clone(&state);
+            // The page has already answered, so a join that fails after
+            // all is reported in this daemon's log.
             tokio::spawn(async move {
-                if let Ok(Ok(link)) = joining.await {
-                    super::start_link_now(&state, &link.owner_cluster_id).await;
+                match joining.await {
+                    Ok(Ok(link)) => {
+                        super::start_link_now(&state, &link.owner_cluster_id).await;
+                    }
+                    Ok(Err(err)) => {
+                        tracing::warn!(error = %err, "a slow invite join failed");
+                    }
+                    Err(err) => tracing::warn!(error = %err, "a slow invite join stopped"),
                 }
             });
             return join_error(
                 // Not a success: the page shows the detail, not a link.
                 StatusCode::GATEWAY_TIMEOUT,
                 "join_pending",
-                "the library is slow to answer; this branch keeps joining and appears under Libraries once it has",
+                "the library is slow to answer; this branch keeps joining and appears under Libraries once it has (if it never does, this install's log says why)",
             );
         }
     };
