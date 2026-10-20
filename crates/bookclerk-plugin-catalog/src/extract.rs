@@ -170,7 +170,12 @@ fn extract_zip(archive: &Path, dest: &Path) -> Result<()> {
         let mut entry = zip
             .by_index(i)
             .map_err(|e| CatalogError::message(e.to_string()))?;
-        let name = entry.name().to_string();
+        // An entry whose name does not decode is refused rather than
+        // guessed at; `safe_join` still checks every decoded path.
+        let name = entry
+            .name()
+            .map_err(|e| CatalogError::message(format!("archive entry name is unreadable: {e}")))?
+            .into_owned();
         if name.contains('\0') {
             return Err(CatalogError::message("archive entry name contains NUL"));
         }
