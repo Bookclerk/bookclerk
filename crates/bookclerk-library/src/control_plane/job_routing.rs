@@ -307,32 +307,75 @@ pub async fn job_semaphores(
         ));
     }
     if matches!(job.kind, JobKind::Scan | JobKind::Acquire) {
-        let pinned_key = match job
-            .payload
-            .plugin_instance_id
-            .as_deref()
-            .and_then(|id| PluginInstanceId::parse(id).ok())
-        {
-            Some(id) => load_plugin_instance(store, &id)
+        let pinned_key = pinned_plugin_key(store, job).await?;
+        // The accounts the job touches, by id or label as trust and the
+        // secret handoff resolve them, so two jobs naming one account
+        // differently still share its permit.
+        let touched: Vec<(String, String)> = match job.payload.account.as_deref() {
+            Some(account) => super::trust::accounts_named(store, account, pinned_key.as_deref())
                 .await?
-                .map(|instance| instance.plugin_key),
-            None => None,
+                .into_iter()
+                .collect(),
+            None => {
+                let mut query = accounts::Entity::find();
+                if let Some(key) = pinned_key.as_deref() {
+                    query = query.filter(accounts::Column::PluginKey.eq(key));
+                }
+                query
+                    .all(store.db())
+                    .await
+                    .map_err(LibraryError::Orm)?
+                    .into_iter()
+                    .map(|row| (row.plugin_key, row.account_id))
+                    .collect()
+            }
         };
-        let mut query = accounts::Entity::find();
-        if let Some(account) = job.payload.account.as_deref() {
-            query = query.filter(accounts::Column::AccountId.eq(account));
-        }
-        if let Some(key) = pinned_key.as_deref() {
-            query = query.filter(accounts::Column::PluginKey.eq(key));
-        }
-        for row in query.all(store.db()).await.map_err(LibraryError::Orm)? {
+        for (plugin_key, account_id) in touched {
             requests.push(SemaphoreRequest::new(
-                account_semaphore(&row.plugin_key, &row.account_id),
+                account_semaphore(&plugin_key, &account_id),
                 ACCOUNT_SEMAPHORE_LIMIT,
             ));
         }
     }
     Ok(requests)
+}
+
+/// The plugin key of the instance `job` is pinned to, when it names one
+/// that exists.
+///
+/// # Errors
+///
+/// Returns an error when the instance read fails.
+pub(super) async fn pinned_plugin_key(
+    store: &LibraryStore,
+    job: &JobRecord,
+) -> Result<Option<String>> {
+    match job
+        .payload
+        .plugin_instance_id
+        .as_deref()
+        .and_then(|id| PluginInstanceId::parse(id).ok())
+    {
+        Some(id) => Ok(load_plugin_instance(store, &id)
+            .await?
+            .map(|instance| instance.plugin_key)),
+        None => Ok(None),
+    }
+}
+
+/// The holder prefix of the semaphore permits a routed claim of `job_id`
+/// by `owner` takes when the claim runs at lease `generation`:
+/// `<owner>/<job_id>/g<generation>/`.
+///
+/// Every permit of that claim's holder starts with it (a random suffix
+/// follows), and the trailing `/` keeps one generation's prefix from
+/// matching another's (`g1/` is not a prefix of `g10/`). A worker that has
+/// to find the claim's permits again by name, such as a Host renewing
+/// through another owner node, matches on this prefix, so a still-live
+/// permit left over from an earlier claim of the same job is never taken
+/// for the current one.
+pub fn job_permit_holder_prefix(owner: &str, job_id: &str, generation: i64) -> String {
+    format!("{owner}/{job_id}/g{generation}/")
 }
 
 /// Claims the best ready job this node can run, under the cluster semaphores.
@@ -344,9 +387,12 @@ pub async fn job_semaphores(
 /// takes the permits of the first one left and claims it with
 /// [`LibraryStore::claim_job_by_id`] at the lease generation of the record
 /// it evaluated, so a job whose requirements were rewritten after this node
-/// checked them is not claimed on the stale check. A lost claim gives the
-/// permits back and moves on. It stops at the first claim, when the rows
-/// run out, or when the class semaphore itself is full (no further
+/// checked them is not claimed on the stale check. The permit holder is
+/// [`job_permit_holder_prefix`] for the generation the claim runs at plus a
+/// random suffix, so permits left over from an earlier claim of the same
+/// job by the same owner never pass for this claim's. A lost claim gives
+/// the permits back and moves on. It stops at the first claim, when the
+/// rows run out, or when the class semaphore itself is full (no further
 /// candidate could run).
 ///
 /// # Returns
@@ -411,7 +457,13 @@ pub async fn claim_routed_job(
                 continue;
             }
             let semaphores = job_semaphores(store, &job, request.limits).await?;
-            let holder = format!("{}/{}/{}", request.owner, job.id, Uuid::new_v4().simple());
+            // The claim below succeeds only at the generation read here, so it
+            // runs at the next one: bind the permits to that generation.
+            let holder = format!(
+                "{}{}",
+                job_permit_holder_prefix(request.owner, &job.id, job.lease_generation + 1),
+                Uuid::new_v4().simple()
+            );
             let resumed = job.payload.resume_pending;
             let permits = match acquire_permits(store, &semaphores, &holder, ttl).await? {
                 PermitAcquire::Granted(permits) => permits,

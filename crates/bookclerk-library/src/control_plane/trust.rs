@@ -297,7 +297,7 @@ fn claim_owns_job(
 /// (`SourceRegistry::account_needle_matches`): the account id or the label,
 /// ignoring ASCII case. A narrower match here would let a Host approve a
 /// job that the executor then runs against another user's account.
-async fn accounts_named(
+pub(super) async fn accounts_named(
     store: &LibraryStore,
     needle: &str,
     plugin_key: Option<&str>,

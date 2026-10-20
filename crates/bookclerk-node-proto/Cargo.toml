@@ -1,6 +1,6 @@
 [package]
 name = "bookclerk-node-proto"
-description = "Host-node protocol: node API frames, handshake signatures, and key checks"
+description = "Host-node protocol: node API frames, handshake signatures, key checks, and sealed boxes"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,13 +10,19 @@ authors.workspace = true
 
 [dependencies]
 base64.workspace = true
+# Sealed boxes to a node's box key (XChaCha20-Poly1305 over HKDF-SHA256).
+chacha20poly1305.workspace = true
 # Point validation for enrolled keys; already in the tree via ed25519-dalek.
 curve25519-dalek = { version = "4.1", default-features = false }
 ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "zeroize"] }
+# Already in the tree; this line matches the workspace sha2 (digest 0.11).
+hkdf = "0.13"
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 url.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 rand.workspace = true
