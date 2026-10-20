@@ -1,8 +1,9 @@
 //! Operator API for host consent (H-4 design, step 8):
 //!
-//! - `GET /api/config/cluster-consents`: what each owner cluster asks to
-//!   run here (version, grant, and the archive URL and digest this host
-//!   would fetch) and how this host stands on it;
+//! - `GET /api/config/cluster-consents`: the owner clusters this install
+//!   is enrolled in (no key material: links carry ids, origin and state
+//!   only), what each asks to run here (version, grant, and the archive URL
+//!   and digest this host would fetch), and how this host stands on it;
 //! - `POST /api/config/cluster-consents/approve`: approve one request by
 //!   the `request_digest` the listing shows (refused with `409` when the
 //!   recorded request is no longer that one, `404` when none is recorded,
@@ -24,7 +25,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bookclerk_library::control_plane::{
-    list_remote_plugin_consents, revoke_remote_plugin, RemoteApprover, RemotePluginConsent,
+    list_cluster_links, list_remote_plugin_consents, revoke_remote_plugin, ClusterLink,
+    RemoteApprover, RemotePluginConsent,
 };
 use bookclerk_plugin_host::{
     approve_remote_request, remote_consent_view, RemoteApprovalError, RemoteNarrowing,
@@ -45,15 +47,29 @@ pub(crate) fn consent_json(row: &RemotePluginConsent) -> serde_json::Value {
     remote_consent_view(row)
 }
 
+/// JSON for one cluster link: ids, origin and state, never key material.
+pub(crate) fn link_json(link: &ClusterLink) -> serde_json::Value {
+    json!({
+        "cluster_id": link.owner_cluster_id,
+        "owner_origin": link.owner_origin,
+        "node_id": link.remote_node_id,
+        "pinned": link.spki_pin.is_some(),
+        "state": link.state,
+        "enrolled_at": link.enrolled_at,
+    })
+}
+
 /// `GET /api/config/cluster-consents`.
 pub async fn get_cluster_consents(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, Response> {
     let library = state.library_snapshot().await;
+    let links = list_cluster_links(&library).await.map_err(events_error)?;
     let rows = list_remote_plugin_consents(&library, None)
         .await
         .map_err(events_error)?;
     Ok(Json(json!({
+        "clusters": links.iter().map(link_json).collect::<Vec<_>>(),
         "consents": rows.iter().map(consent_json).collect::<Vec<_>>(),
     })))
 }
@@ -167,34 +183,5 @@ pub async fn post_cluster_consent_revoke(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Only a changed request is a conflict; a missing request, a bad
-    /// narrowing and a store fault each answer their own status.
-    #[test]
-    fn approval_refusals_answer_by_cause() {
-        let cases = [
-            (
-                RemoteApprovalError::NotRequested("x".into()),
-                StatusCode::NOT_FOUND,
-            ),
-            (
-                RemoteApprovalError::Invalid("x".into()),
-                StatusCode::BAD_REQUEST,
-            ),
-            (
-                RemoteApprovalError::Conflict("x".into()),
-                StatusCode::CONFLICT,
-            ),
-            (
-                RemoteApprovalError::Store("x".into()),
-                StatusCode::SERVICE_UNAVAILABLE,
-            ),
-        ];
-        for (err, status) in cases {
-            assert_eq!(approval_status(&err).0, status, "{err:?}");
-            assert_eq!(approval_error_response(&err).status(), status);
-        }
-    }
-}
+#[path = "api_tests.rs"]
+mod tests;

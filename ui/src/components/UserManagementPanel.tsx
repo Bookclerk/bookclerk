@@ -41,6 +41,7 @@ import {
   type AuthSession,
   type ListedUser,
 } from "@/lib/api";
+import { useLiveRefresh } from "@/lib/live";
 import { cn } from "@/lib/utils";
 import { isOptionalEmailValid } from "@/lib/email";
 import { WaveformThrobber } from "@/components/WaveformThrobber";
@@ -455,16 +456,19 @@ export function UserManagementPanel({
     return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [selectedId]);
 
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      void listUsers()
-        .then(setUsers)
-        .catch(() => {
-          /* Keep the last successful snapshot if a poll fails. */
-        });
-    }, PRESENCE_POLL_MS);
-    return () => window.clearInterval(id);
+  const reloadUsers = useCallback(() => {
+    void listUsers()
+      .then(setUsers)
+      .catch(() => {
+        /* Keep the last successful snapshot if a poll fails. */
+      });
   }, [setUsers]);
+  // A user change re-reads at once; presence ages with time alone, so the
+  // timer keeps running while the socket is up.
+  useLiveRefresh(["users"], reloadUsers, {
+    pollMs: PRESENCE_POLL_MS,
+    openPollMs: PRESENCE_POLL_MS,
+  });
 
   useEffect(() => {
     setInviteCopied(false);

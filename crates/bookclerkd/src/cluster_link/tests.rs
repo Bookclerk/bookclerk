@@ -42,7 +42,7 @@ use tokio::sync::watch;
 
 use super::consent::{notify_consent_changed, LinkSupervisor};
 use super::remote_bindings::RemoteCatalog;
-use super::TransportRunner;
+use super::{AbortOnDrop, TransportRunner};
 use crate::job_handler::{JobCommand, JobExecCtx, JobTransport};
 
 /// Plugin key of the owner's store account.
@@ -3710,4 +3710,188 @@ async fn a_database_swap_restarts_cluster_links_on_the_new_store() {
     assert!(!crate::node_api::ws::node_session_live(
         &first.remote_node_id
     ));
+}
+
+/// `bookclerk clusters leave` against a running daemon: the watcher stops
+/// the link's client once the link is no longer active, and on the store's
+/// shutdown (a database swap) stops the client too and returns.
+#[tokio::test]
+async fn leaving_stops_the_running_client() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    // The owner's test state configures the process DEK the link seals with.
+    let owner_files = tempfile::tempdir().unwrap();
+    let _owner = crate::node_api::tests::test_state(&owner_files).await;
+    let host_files = tempfile::tempdir().unwrap();
+    let host = host_store(host_files.path()).await;
+    bookclerk_library::control_plane::record_cluster_link(
+        &host,
+        &bookclerk_library::control_plane::NewClusterLink {
+            owner_cluster_id: "cluster-leave".into(),
+            owner_origin: "https://owner.example".into(),
+            remote_node_id: "node-leave".into(),
+            spki_pin: None,
+        },
+        &bookclerk_library::control_plane::ClusterLinkKeys::generate(),
+    )
+    .await
+    .unwrap();
+
+    // Shutdown first: the watcher forwards it to the client and returns.
+    let (stop, mut stopped) = watch::channel(false);
+    let stop = Arc::new(stop);
+    let (shut, shutdown) = watch::channel(false);
+    let watcher = tokio::spawn(super::stop_when_inactive(
+        host.clone(),
+        "cluster-leave".into(),
+        "node-leave".into(),
+        Arc::clone(&stop),
+        shutdown,
+    ));
+    shut.send(true).unwrap();
+    let why = tokio::time::timeout(Duration::from_secs(5), watcher)
+        .await
+        .expect("the watcher returns on shutdown")
+        .unwrap();
+    assert_eq!(why, super::LinkStop::Shutdown);
+    assert!(*stopped.borrow_and_update(), "shutdown stops the client");
+
+    // While active, nothing stops; after leaving, the client is stopped.
+    let (stop, mut stopped) = watch::channel(false);
+    let stop = Arc::new(stop);
+    let (_shut, shutdown) = watch::channel(false);
+    let watcher = tokio::spawn(super::stop_when_inactive(
+        host.clone(),
+        "cluster-leave".into(),
+        "node-leave".into(),
+        Arc::clone(&stop),
+        shutdown,
+    ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), stopped.changed())
+            .await
+            .is_err(),
+        "an active link keeps its client"
+    );
+    bookclerk_library::control_plane::leave_cluster_link(&host, "cluster-leave")
+        .await
+        .unwrap()
+        .expect("the link");
+    tokio::time::timeout(super::consent::CONSENT_POLL * 3, stopped.changed())
+        .await
+        .expect("the client is stopped after leaving")
+        .unwrap();
+    assert!(*stopped.borrow());
+    assert_eq!(watcher.await.unwrap(), super::LinkStop::Inactive);
+}
+
+/// A link re-enrolled as another node (`bookclerk clusters join` again)
+/// stops the client running as the previous node, and says so.
+#[tokio::test]
+async fn a_rejoin_as_another_node_stops_the_previous_client() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let _owner = crate::node_api::tests::test_state(&owner_files).await;
+    let host_files = tempfile::tempdir().unwrap();
+    let host = host_store(host_files.path()).await;
+    let enroll = |node: &str| bookclerk_library::control_plane::NewClusterLink {
+        owner_cluster_id: "cluster-rejoin".into(),
+        owner_origin: "https://owner.example".into(),
+        remote_node_id: node.into(),
+        spki_pin: None,
+    };
+    let keys = bookclerk_library::control_plane::ClusterLinkKeys::generate;
+    bookclerk_library::control_plane::record_cluster_link(&host, &enroll("node-old"), &keys())
+        .await
+        .unwrap();
+
+    let (stop, mut stopped) = watch::channel(false);
+    let (_shut, shutdown) = watch::channel(false);
+    let watcher = tokio::spawn(super::stop_when_inactive(
+        host.clone(),
+        "cluster-rejoin".into(),
+        "node-old".into(),
+        Arc::new(stop),
+        shutdown,
+    ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), stopped.changed())
+            .await
+            .is_err(),
+        "the link as enrolled keeps its client"
+    );
+    bookclerk_library::control_plane::record_cluster_link(&host, &enroll("node-new"), &keys())
+        .await
+        .unwrap();
+    tokio::time::timeout(super::consent::CONSENT_POLL * 3, stopped.changed())
+        .await
+        .expect("the previous node's client is stopped")
+        .unwrap();
+    assert!(*stopped.borrow());
+    assert_eq!(watcher.await.unwrap(), super::LinkStop::Replaced);
+}
+
+/// Through the running supervisor: after the host joins the same cluster
+/// again, the client of the previous node disconnects and one for the new
+/// node connects, without a restart or a database swap.
+#[tokio::test]
+async fn a_rejoined_link_is_dialed_as_the_new_node() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let host_files = tempfile::tempdir().unwrap();
+    let (state, owner) = crate::node_api::tests::test_state(&owner_files).await;
+    let addr = serve(crate::api::router(Arc::clone(&state), None)).await;
+    let origin = public_origin(&state, &format!("http://127.0.0.1:{}", addr.port())).await;
+    let (member, _token) = owner_account(&owner, b"riley-token-v1").await;
+
+    let (host_state, host) = crate::node_api::tests::test_state(&host_files).await;
+    let first = join(&owner, &host, member, &origin, None).await.unwrap();
+    super::spawn_cluster_links(Arc::clone(&host_state));
+    eventually("the first node to connect", || async {
+        crate::node_api::ws::node_session_live(&first.remote_node_id)
+    })
+    .await;
+
+    let second = join(&owner, &host, member, &origin, None).await.unwrap();
+    assert_eq!(second.owner_cluster_id, first.owner_cluster_id);
+    assert_ne!(second.remote_node_id, first.remote_node_id);
+    eventually("the new node to connect", || async {
+        crate::node_api::ws::node_session_live(&second.remote_node_id)
+    })
+    .await;
+    eventually("the previous node to disconnect", || async {
+        !crate::node_api::ws::node_session_live(&first.remote_node_id)
+    })
+    .await;
+}
+
+/// A link's supervisor and watcher are aborted with their client's task:
+/// dropping the guard (as aborting the task that holds it does) aborts the
+/// guarded task, and so does dropping a [`super::join_or_abort`] wait.
+#[tokio::test]
+async fn a_guarded_task_is_aborted_with_its_guard() {
+    /// Waits until `task` finished.
+    async fn finished(task: &tokio::task::AbortHandle) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the guarded task is aborted");
+    }
+    let guard = AbortOnDrop(Some(tokio::spawn(std::future::pending::<()>())));
+    let aborted = guard
+        .0
+        .as_ref()
+        .map(tokio::task::JoinHandle::abort_handle)
+        .unwrap();
+    drop(guard);
+    finished(&aborted).await;
+    let pending = tokio::spawn(std::future::pending::<()>());
+    let waited = pending.abort_handle();
+    let wait = tokio::spawn(super::join_or_abort(pending));
+    tokio::task::yield_now().await;
+    assert!(!waited.is_finished());
+    wait.abort();
+    finished(&waited).await;
 }

@@ -4,11 +4,11 @@ use std::path::PathBuf;
 
 use bookclerk_config::{Config, PluginRegistryEntry};
 use bookclerk_library::control_plane::{
-    create_plugin_instance, default_instance_for_key, delete_plugin_instance,
-    ensure_plugin_deployment, import_instance_config_if_absent, list_all_plugin_instances,
-    list_deployments_for_instance, list_node_ids, list_plugin_schemas, load_deployment_for_node,
-    load_instance_config, load_observation, load_plugin_instance, parse_setting_text,
-    replace_instance_config, replace_plugin_deployment, require_plugin_schema,
+    create_node_local_instance, create_plugin_instance, default_instance_for_key,
+    delete_plugin_instance, ensure_plugin_deployment, import_instance_config_if_absent,
+    list_all_plugin_instances, list_deployments_for_instance, list_node_ids, list_plugin_schemas,
+    load_deployment_for_node, load_instance_config, load_observation, load_plugin_instance,
+    parse_setting_text, replace_instance_config, replace_plugin_deployment, require_plugin_schema,
     seal_instance_secret, set_secret_ref, set_setting, ConfigActor, DeploymentReplace,
     InstanceConfigReplace, PluginInstance, PluginInstanceConfigV1, PluginInstanceId, SettingValue,
 };
@@ -233,6 +233,11 @@ pub enum InstancesCommand {
         /// Operator-facing name.
         #[arg(long)]
         name: Option<String>,
+        /// Make the instance local to this node (a node's own `local`
+        /// output, for example): it deploys only there and is never
+        /// placed by the scheduler.
+        #[arg(long, value_name = "NODE_ID")]
+        node: Option<String>,
     },
     /// Delete an instance that has no deployment on any node.
     Delete {
@@ -2111,16 +2116,16 @@ async fn run_instances(
                 },
             )
         }
-        InstancesCommand::Create { plugin, name } => {
+        InstancesCommand::Create { plugin, name, node } => {
             let key = resolve_plugin_key(store, &plugin).await?;
             let pinned = require_plugin_schema(store, &key).await?;
-            let instance = create_plugin_instance(
-                store,
-                &cli_actor(),
-                &key,
-                name.as_deref().unwrap_or("").trim(),
-            )
-            .await?;
+            let name = name.as_deref().unwrap_or("").trim();
+            let instance = match node.as_deref().map(str::trim) {
+                Some(node) => {
+                    create_node_local_instance(store, &cli_actor(), &key, node, name).await?
+                }
+                None => create_plugin_instance(store, &cli_actor(), &key, name).await?,
+            };
             import_instance_config_if_absent(
                 store,
                 &cli_actor(),
@@ -2134,6 +2139,7 @@ async fn run_instances(
                 "plugin_instance_id": instance.id.to_string(),
                 "plugin_key": instance.plugin_key,
                 "display_name": instance.display_name,
+                "owner_node_id": instance.owner_node_id,
             });
             emit(format, &payload, || {
                 println!(
@@ -2347,16 +2353,10 @@ fn setting_value_json(value: &SettingValue) -> serde_json::Value {
     }
 }
 
-/// Reads one secret from stdin (first line, trailing newline removed).
+/// Reads one secret from stdin (first line, trailing newline removed); on
+/// a terminal, prompts with echo off.
 fn read_secret_from_stdin() -> anyhow::Result<String> {
-    use std::io::{IsTerminal, Read};
-    let mut text = String::new();
-    if std::io::stdin().is_terminal() {
-        eprint!("secret value: ");
-        std::io::stdin().read_line(&mut text)?;
-    } else {
-        std::io::stdin().read_to_string(&mut text)?;
-    }
+    let text = crate::secret_input::read_secret_stdin("secret value: ")?;
     let value = text
         .split_once('\n')
         .map_or(text.as_str(), |(first, _)| first)

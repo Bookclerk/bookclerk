@@ -4,6 +4,7 @@ import { AccountSettingsPanel } from "@/components/AccountSettingsPanel";
 import type { AppNavProps } from "@/components/AppNav";
 import { AppTopBar } from "@/components/AppTopBar";
 import { ErrorStatePage } from "@/components/ErrorStatePage";
+import { ClusterConsentsPanel } from "@/components/ClusterConsentsPanel";
 import { NodesPanel } from "@/components/NodesPanel";
 import { OidcSettingsPanel } from "@/components/OidcSettingsPanel";
 import { OutputSettingsPanel } from "@/components/OutputSettingsPanel";
@@ -62,7 +63,15 @@ const DEFAULT_DAEMON_PORT = "8787";
 
 type ListenExposure = "localhost" | "all" | "custom";
 type ListenRow = { host: string; port: string };
-type SettingsTab = "account" | "users" | "signin" | "server" | "plugins" | "output" | "nodes";
+type SettingsTab =
+  | "account"
+  | "users"
+  | "signin"
+  | "server"
+  | "plugins"
+  | "output"
+  | "nodes"
+  | "clusters";
 
 const ISOLATION_OPTIONS = [
   ["required", "Required"],
@@ -522,7 +531,10 @@ export function SettingsPage({
     }
     if (
       !showOperatorChrome &&
-      (activeTab === "server" || activeTab === "plugins" || activeTab === "output")
+      (activeTab === "server" ||
+        activeTab === "plugins" ||
+        activeTab === "output" ||
+        activeTab === "clusters")
     ) {
       setActiveTab("account");
     }
@@ -1374,6 +1386,22 @@ export function SettingsPage({
                 Nodes
               </button>
             ) : null}
+            {showOperatorChrome ? (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "clusters"}
+                className={cn(
+                  "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                  activeTab === "clusters"
+                    ? "bg-ink text-paper shadow-sm"
+                    : "text-ink/60 hover:text-ink",
+                )}
+                onClick={() => setActiveTab("clusters")}
+              >
+                Clusters
+              </button>
+            ) : null}
           </div>
         </div>
 
@@ -1442,6 +1470,10 @@ export function SettingsPage({
 
         {activeTab === "output" && showOperatorChrome ? (
           <OutputSettingsPanel onSessionExpired={onSessionExpired} />
+        ) : null}
+
+        {activeTab === "clusters" && showOperatorChrome ? (
+          <ClusterConsentsPanel onSessionExpired={onSessionExpired} />
         ) : null}
 
         {(activeTab === "server" || activeTab === "plugins") && showOperatorChrome ? (

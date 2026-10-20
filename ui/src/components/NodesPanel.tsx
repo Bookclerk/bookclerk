@@ -14,11 +14,18 @@ import {
   type NodeCapabilities,
   type NodeStatusView,
 } from "@/lib/api";
+import { useLiveRefresh } from "@/lib/live";
 import { age, cores, ownerName, size } from "@/lib/nodeFormat";
 import { cn } from "@/lib/utils";
 
-/** How often the panel re-reads heartbeats (nodes report every 15 s). */
+/**
+ * How often the panel re-reads heartbeats while the live socket is down
+ * (nodes report every 15 s).
+ */
 const REFRESH_MS = 15_000;
+
+/** Re-read while the socket is up too, so a node that went quiet ages out. */
+const OPEN_REFRESH_MS = 60_000;
 
 /** Splits `nas, zone=eu` into trimmed, non-empty labels. */
 function parseLabels(text: string): string[] {
@@ -393,9 +400,8 @@ export function NodesPanel({ onSessionExpired }: NodesPanelProps) {
 
   useEffect(() => {
     void refresh();
-    const timer = window.setInterval(() => void refresh(), REFRESH_MS);
-    return () => window.clearInterval(timer);
   }, [refresh]);
+  useLiveRefresh(["nodes"], refresh, { pollMs: REFRESH_MS, openPollMs: OPEN_REFRESH_MS });
 
   // Only an operator assigns owners. Any active user may own a node (trust
   // still follows the user's role); the API refuses a disabled user.

@@ -407,6 +407,57 @@ pub async fn set_cluster_link_state(
     Ok(updated.rows_affected == 1)
 }
 
+/// Leaves an owner cluster on this side: marks the link
+/// [`CLUSTER_LINK_LEFT`] and deletes its sealed node keys, so this install
+/// can never sign as that node again. Answers the link as it now stands,
+/// or `None` when there is no such link.
+///
+/// The owner is not told; its operator revokes the node there (`bookclerk
+/// nodes revoke`). A running daemon stops the link's client when it next
+/// re-reads the link. Joining again needs a new enrollment link.
+///
+/// Only the enrollment read here is left: one a concurrent join replaced
+/// (another node id) is refused, so the new enrollment is never marked
+/// left with its keys still stored.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] when the link was re-enrolled while
+/// leaving, and the read or write error.
+pub async fn leave_cluster_link(
+    store: &LibraryStore,
+    owner_cluster_id: &str,
+) -> Result<Option<ClusterLink>> {
+    let Some(mut link) = load_cluster_link(store, owner_cluster_id).await? else {
+        return Ok(None);
+    };
+    // State first: a link that is not active is never dialed, even if the
+    // key delete below fails.
+    if !set_cluster_link_state(
+        store,
+        owner_cluster_id,
+        CLUSTER_LINK_LEFT,
+        Some(&link.remote_node_id),
+    )
+    .await?
+    {
+        return Err(LibraryError::Invalid(
+            "the cluster was joined again while leaving it; nothing was left".into(),
+        ));
+    }
+    delete_secret(
+        store.db(),
+        secret_kind::CLUSTER_LINK,
+        Some(&link.owner_cluster_id),
+        secret_account_type::OPERATOR,
+        Some(&link.remote_node_id),
+        CLUSTER_LINK_KEYS_NAME,
+    )
+    .await?;
+    link.state = CLUSTER_LINK_LEFT.to_string();
+    Ok(Some(link))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,6 +479,38 @@ mod tests {
             remote_node_id: "node-1".into(),
             spki_pin: pin.map(str::to_string),
         }
+    }
+
+    /// Leaving marks the link left and deletes its keys; an unknown
+    /// cluster answers `None`.
+    #[tokio::test]
+    async fn leaving_deletes_the_keys_for_good() {
+        let _lock = master_key_test_lock_async().await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in(dir.path()).await;
+        let keys = ClusterLinkKeys::from_bytes(&[3; 32], &[4; 32]);
+        record_cluster_link(&store, &new_link(None), &keys)
+            .await
+            .unwrap();
+        assert!(leave_cluster_link(&store, "nope").await.unwrap().is_none());
+        let left = leave_cluster_link(&store, "cluster-1")
+            .await
+            .unwrap()
+            .expect("the link");
+        assert_eq!(left.state, CLUSTER_LINK_LEFT);
+        assert!(!left.is_active());
+        assert!(get_secret(
+            store.db(),
+            secret_kind::CLUSTER_LINK,
+            Some("cluster-1"),
+            secret_account_type::OPERATOR,
+            Some("node-1"),
+            CLUSTER_LINK_KEYS_NAME,
+        )
+        .await
+        .unwrap()
+        .is_none());
+        assert!(load_cluster_link_keys(&store, &left).await.is_err());
     }
 
     #[tokio::test]
