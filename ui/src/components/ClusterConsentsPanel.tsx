@@ -72,17 +72,41 @@ function GrantFacts({ grant }: { grant: RemoteGrantView }) {
     facts.push(`TCP: ${grant.tcp.map((t) => `${t.host}:${t.ports.join(",")}`).join(", ")}`);
   }
   if (grant.addressCidrs?.length) facts.push(`Addresses: ${grant.addressCidrs.join(", ")}`);
+  if (grant.allowUndeclaredPublicRedirects) {
+    facts.push("Redirects: may follow redirects to public hosts it did not declare");
+  }
   if (grant.jobs?.length) facts.push(`Jobs: ${grant.jobs.join(", ")}`);
+  if (grant.entrypoints?.length) facts.push(`Entrypoints: ${grant.entrypoints.join(", ")}`);
+  if (grant.producers?.length) facts.push(`Sends to queues: ${grant.producers.join(", ")}`);
+  if (grant.consumers?.length) {
+    facts.push(`Consumes: ${grant.consumers.map((c) => JSON.stringify(c)).join(", ")}`);
+  }
+  if (grant.compatibilityFlags?.length) {
+    facts.push(`Compatibility flags: ${grant.compatibilityFlags.join(", ")}`);
+  }
   if (grant.memoryMib) facts.push(`Memory: ${grant.memoryMib} MiB`);
   if (grant.cpuRatePercent) facts.push(`CPU: ${grant.cpuRatePercent}%`);
+  if (grant.cpuMs) facts.push(`CPU time: ${grant.cpuMs} ms per call`);
+  if (grant.subrequests) facts.push(`Subrequests: ${grant.subrequests} per call`);
+  if (grant.extraProcesses) facts.push(`Extra processes: ${grant.extraProcesses}`);
   if (grant.diskMib) facts.push(`Disk: ${grant.diskMib} MiB`);
-  if (facts.length === 0) return null;
   return (
-    <ul className="space-y-0.5 text-xs text-ink/55">
-      {facts.map((fact) => (
-        <li key={fact}>{fact}</li>
-      ))}
-    </ul>
+    <div className="space-y-1 text-xs text-ink/55">
+      {facts.length > 0 ? (
+        <ul className="space-y-0.5">
+          {facts.map((fact) => (
+            <li key={fact}>{fact}</li>
+          ))}
+        </ul>
+      ) : null}
+      {/* Everything Approve grants, so nothing it widens goes unseen. */}
+      <details>
+        <summary className="cursor-pointer">Full request</summary>
+        <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px]">
+          {JSON.stringify(grant, null, 2)}
+        </pre>
+      </details>
+    </div>
   );
 }
 
@@ -314,7 +338,13 @@ export function ClusterConsentsPanel({ onSessionExpired }: ClusterConsentsPanelP
     void refresh();
   }, [refresh]);
   // Consents, and the links themselves (a join, leave or revoke).
-  useLiveRefresh(["consents", "clusters"], refresh, { pollMs: REFRESH_MS });
+  // A slow poll while the socket is up too: a change stamped by an owner
+  // node whose clock runs behind does not move the revision the socket
+  // compares.
+  useLiveRefresh(["consents", "clusters"], refresh, {
+    pollMs: REFRESH_MS,
+    openPollMs: 60_000,
+  });
   // With the socket open nothing polls, so a failed load would sit on its
   // error until the next consent or cluster change: retry it with backoff.
   useEffect(() => {

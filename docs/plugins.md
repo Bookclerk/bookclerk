@@ -1540,9 +1540,14 @@ the host. The owner's
 grant is the request; the host's approval may only remove from it, a later
 version that asks for more waits for approval again, and a revoke cancels
 the plugin's jobs there and hands them back. The guest runs in the host's
-jail through `bookclerk-workerd`, as the host's own plugins do. Platform
-plugins whose bundled payload matches the owner's are approved
-automatically.
+jail through `bookclerk-workerd`, as the host's own plugins do. A platform
+plugin is approved automatically only when all of these hold: its key is a
+Bookclerk platform key; the host's own provenance check finds its install of
+that key platform-bundled; that bundled payload's digest equals the owner's
+artifact digest; the request stays inside the platform envelope (no network,
+only `config` and `work_fs`); and the host's operator has neither revoked it
+nor approved it by hand (an operator's approval, which may narrow the
+request, is never replaced automatically).
 
 ## ABI (api_version = 3, object-capability Workers RPC)
 

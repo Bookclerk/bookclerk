@@ -124,12 +124,15 @@ Physical table `configuration_documents`, one row per
 | `updated_at` / `updated_by` | Audit time and actor |
 | `write_operation_id` | Idempotency token of the commit that produced this revision |
 
-The public API is typed: `EventsSettingsV1` and `NodeRuntimeSettingsV1`.
-Callers do not get a general settings key/value service.
+The public API is typed: `EventsSettingsV1`, `OutputSettingsV1`, and
+`NodeRuntimeSettingsV1`. Callers do not get a general settings key/value
+service.
 
 Namespaces in this spike:
 
 - `core.events` — cluster scope. The migrated `[events]` domain.
+- `core.output` — cluster scope. The migrated shared `[output]` table (see
+  *`core.output`* below).
 - `node.runtime` — host scope, one `label` field. Effective runtime for a
   process is that host's row only. Another host's label is readable by
   address and is not applied locally.
@@ -184,6 +187,27 @@ the event runtime starts and is not resized until the process restarts.
 Retention and the in-flight cap follow the in-memory document after reconcile.
 That split is deliberate for this spike.
 
+### `core.output`
+
+The second cluster domain (2026-10-15) is the shared `[output]` table:
+format, Widevine and CDM provider, naming profile and templates, sidecars,
+cover and chapter options, LAME knobs, timestamps, path sanitization and
+replacement rules, filename length, and the multi-destination policy, as
+`OutputSettingsV1` (schema 1, unknown fields rejected). It uses the same
+import-once, compare-and-swap, audit, change-notice, and wakeup path as
+`core.events`; a host overlays a newer revision of its cluster onto
+`Config.output`, and each acquire or convert reads the overlaid value when it
+starts. Writes are operator-only and validated before SQL (bounded sizes,
+template length and control characters, replacement rules that cannot inject
+a path separator).
+
+`in_progress` is not in the document. It is the acquire scratch directory: a
+path on one host, needed before the database opens (the heartbeat sizes it
+and plugin jails mount it), so it stays host-local bootstrap in
+`config.toml`. A relative `widevine_cdm` resolves under each host's files
+directory. Per-destination roots, prefixes, and naming overrides stay
+`local` / `s3` instance settings.
+
 ### Propagation
 
 `configuration_changes` is inserted in the same transaction as a successful
@@ -200,7 +224,7 @@ Every process:
   reading the current row, not by replaying notices);
 - re-reads when its host queue wakes it, and on a 60 second backstop pass,
   and overlays a newer revision of the **same cluster id** onto
-  `Config.events`. A stale read cannot replace a newer body. Revisions from
+  `Config.events` (and, for `core.output`, `Config.output`). A stale read cannot replace a newer body. Revisions from
   a different cluster are not compared. Switching databases is an explicit
   swap and installs that cluster's document even when its revision number
   is lower;
@@ -260,11 +284,12 @@ not understand is not applied and is not rewritten.
 
 Cluster and host configuration writes in this spike require an operator
 principal (the local CLI or the daemon operator token on
-`PUT /api/config/domains/core.events` and `PATCH /api/settings` for
-`events.*`). Administrators and members are rejected before SQL, including
-before a receipt replay. `PATCH /api/settings` rejects a body that mixes
-`events.*` with file-backed keys before either authority is written. The
-response includes `revision` on success and `current_revision` on conflict.
+`PUT /api/config/domains/core.events`, `PUT /api/config/domains/core.output`,
+and `PATCH /api/settings` for `events.*` / `output.*`). Administrators and
+members are rejected before SQL, including before a receipt replay.
+`PATCH /api/settings` rejects a body that mixes `events.*`, `output.*`, and
+file-backed keys before any authority is written. The response includes
+`revision` on success and `current_revision` on conflict.
 
 ## Phase 2: plugin instances, declared schemas, PluginKey-keyed accounts
 
@@ -418,8 +443,9 @@ secret stored when the account is connected.
 Bootstrap stays in TOML and env: `[database]`, `master.key`,
 `node-identity.json`, `daemon.listen`. Database-adapter plugins are not
 instances in this phase. The shared `[output]` table (format, Widevine,
-naming profile, sidecars, multi-destination policy) also stays in TOML for
-now; moving it to a `core.output` cluster document is deferred.
+naming profile, sidecars, multi-destination policy) has since moved to the
+`core.output` cluster document; only its host-local `in_progress` scratch
+directory stays in TOML (see *`core.output`* under *Decision*).
 
 KV and Queues are unchanged. Named SQL bindings do not replace them.
 
@@ -886,9 +912,6 @@ Decided then, built since in H-4 steps 3 and 8-10 (sections below):
   through a secure upload endpoint on an owner node, which writes the
   cluster's outputs with credentials the Host never holds. Both nodes end
   up with a local copy.
-- A Host approves each owner plugin's capabilities before it runs on the
-  Host's machine, as it would for its own plugins. Platform plugins are
-  approved automatically.
 - Host nodes and the SPA use WebSockets rather than polling.
 - Owner nodes serve the node API over Let's Encrypt TLS, behind a detected
   TLS-terminating proxy, or only within loopback and private address space.
@@ -1139,7 +1162,12 @@ Built 2026-10-17 (H-4 step 6), over the node socket and the claim above.
   job row, then an update of the existing secret row guarded on the
   fence, the handoff row and the credential, so a reclaim, a claim by
   another node, or a revocation that lands after the checks leaves the
-  token untouched.
+  token untouched. The trust predicate itself (the owner's role and
+  status, and the account links) is checked just before the batch, not
+  inside it, so a demotion, a disabled owner or an unlinked account that
+  lands between the check and the batch can still let one update of a
+  secret already handed under that fence through. Moving the whole trust
+  predicate into the batch guard is follow-up work (issue #306).
   Rejected: plaintext values inside TLS. tungstenite traces every
   received message at TRACE, and the daemon bridges `log` into tracing
   with the diagnostics ring at TRACE, so a plaintext value would land in
@@ -1236,7 +1264,8 @@ join`) and `bookclerkd/src/cluster_link.rs`.
   live library. When a config reload swaps the database, every client is
   stopped (and awaited, so a node never dials twice) and the new store's
   active links are started; a link enrolled while the daemon runs is
-  picked up at the next start or swap.
+  picked up at the next start or swap, and re-enrolling a running link
+  restarts its client.
 - **Jobs.** A claim loop runs while job slots are free. Each job runs on
   its own task, outliving the connection: its secrets are opened with the
   enrolled box key (a bundle that does not open is failed as
@@ -1257,10 +1286,11 @@ join`) and `bookclerkd/src/cluster_link.rs`.
   seals the value to the live connection's owner box key with a fresh
   ephemeral key, and needs the fence still held. The daemon runs jobs
   through its own `JobTransport` (`TransportRunner`), with the handoff on
-  `JobExecCtx::host`; an acquire is failed as `upload_unavailable` before
-  it runs, since `complete` waits for its upload (step 9).
+  `JobExecCtx::host`. (Until step 9 an acquire was failed as
+  `upload_unavailable` before it ran; see *Host results and uploads*
+  below.)
 - **Claims are narrowed in the daemon** to the job kinds a Host can run
-  (`HOST_RUNNABLE_KINDS`, still empty: see "Still nothing runs" below)
+  (`HOST_RUNNABLE_KINDS`: `scan` and `acquire` since step 9)
   and to the plugins its operator consented to
   (host consent, step 8, below). Every job a Host is trusted with runs an
   owner plugin, and a Host runs one only after its own operator approves
@@ -1746,12 +1776,10 @@ Built 2026-10-18. Library work no longer runs where it is asked for.
 
 Not in this phase, and not claimed as production HA:
 
-- `core.output`: the shared `[output]` table (format, Widevine, naming
-  profile, sidecars, multi-destination policy) is still TOML. Moving it to a
-  cluster document like `core.events` is the next configuration domain.
 - Moving the rest of `config.toml` (library, jobs, media, plugins,
   diagnostics, discovery, OIDC). `daemon.listen` moving off bootstrap is part
-  of that.
+  of that. (`core.output` is done; its host-local `in_progress` scratch path
+  stays TOML until a node-scoped document carries host paths.)
 - Job routing beyond plugin instances. Jobs now carry the instances they
   need and take cluster semaphores (*Job routing and cluster semaphores*
   above), and the requirements sweep re-resolves pending jobs when
@@ -1787,8 +1815,9 @@ Not in this phase, and not claimed as production HA:
   binding frames over the node socket, per-item trust for deliveries and
   instance ownership (`plugin_instances.owner_user_id`; instance
   `SECRETS` reach only a node trusted with every job). A link joined
-  while the daemon runs is dialed only after a restart, and a leave does
-  not tell the owner. Uploaded objects carry content type, length and
+  while the daemon runs is dialed only at the next start or database swap
+  (re-enrolling a running link restarts its client), and a leave does not
+  tell the owner. Uploaded objects carry content type, length and
   digest but not the title metadata (ASIN, title, timestamps) a local
   acquire records with its files. Settings has no enrollment switch, and
   by design no invite or join screen (CLI and HTTP only). Everything else

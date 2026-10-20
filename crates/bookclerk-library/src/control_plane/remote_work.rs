@@ -267,6 +267,14 @@ pub async fn claim_remote_job(
             return Err(err);
         }
     };
+    let canonical = match canonical_account(store, &job, source_plugin_key.as_deref()).await {
+        Ok(canonical) => canonical,
+        Err(err) => {
+            // Nothing went out; give the claim back unspent.
+            give_back_claim(store, &fence, &permits, resumed).await;
+            return Err(err);
+        }
+    };
     match unseal_job_secrets(store, &job).await {
         Ok(secrets) => {
             // Trust can change while the secrets are read: check it once
@@ -279,7 +287,7 @@ pub async fn claim_remote_job(
             }
             match record_handoff(store, node_id, &fence, &secrets).await {
                 Ok(true) => Ok(Some(RemoteJobClaim {
-                    job,
+                    job: with_account(job, canonical),
                     secrets,
                     plugin_keys,
                     source_plugin_key,
@@ -558,15 +566,59 @@ async fn was_handed(
     handed_on(store.db(), fence, secret_ref).await
 }
 
-/// The job `fence` owns right now, if it still owns one.
+/// The one account id the job's account selector names (by id or label,
+/// ignoring case, [`accounts_named`]) under its source plugin, when it
+/// names exactly one and differs from it; `None` otherwise (no selector,
+/// already canonical, or ambiguous).
+///
+/// # Errors
+///
+/// Returns an error when the read fails.
+async fn canonical_account(
+    store: &LibraryStore,
+    job: &JobRecord,
+    source_plugin_key: Option<&str>,
+) -> Result<Option<String>> {
+    let Some(selector) = job.payload.account.as_deref().filter(|a| !a.is_empty()) else {
+        return Ok(None);
+    };
+    let named = accounts_named(store, selector, source_plugin_key).await?;
+    let mut named = named.into_iter();
+    Ok(match (named.next(), named.next()) {
+        (Some((_, account_id)), None) if account_id != selector => Some(account_id),
+        _ => None,
+    })
+}
+
+/// `job` as handed to a remote node: its account selector replaced by the
+/// `canonical` account id it resolved to ([`canonical_account`]), so the
+/// node's credential lookup and its scan rows name the account by the id
+/// the handed secrets and the owner's checks use. Only the handed copy
+/// changes; the job row keeps the selector it was enqueued with.
+fn with_account(mut job: JobRecord, canonical: Option<String>) -> JobRecord {
+    if let Some(account_id) = canonical {
+        job.payload.account = Some(account_id);
+    }
+    job
+}
+
+/// The job `fence` owns right now, if it still owns one: the job is
+/// running under that owner and generation and its lease has not run out.
+/// An expired lease no longer owns the job even before the reclaim runs
+/// (it may be claimed again at any moment), so a node past its lease can
+/// neither renew it nor write scan rows, open or commit uploads, or finish
+/// the job, as the job-secret handoff gate (`record_handoff`) already
+/// requires.
 pub(super) async fn fenced_job(
     store: &LibraryStore,
     fence: &JobFence,
 ) -> Result<Option<JobRecord>> {
+    let now = Utc::now();
     Ok(store.get_job(&fence.job_id).await?.filter(|job| {
         job.state == JobState::Running
             && job.lease_owner.as_deref() == Some(fence.owner.as_str())
             && job.lease_generation == fence.generation
+            && job.lease_expires_at.is_some_and(|expires| expires > now)
     }))
 }
 

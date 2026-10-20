@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use bookclerk_config::EventsConfig;
+use bookclerk_config::Config;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter};
 use tempfile::TempDir;
@@ -45,7 +45,7 @@ async fn bootstrap(store: &LibraryStore, dir: &TempDir) -> ControlPlaneSession {
         dir.path(),
         &dir.path().join("cache"),
         None,
-        &EventsConfig::default(),
+        &Config::default(),
     )
     .await
     .expect("bootstrap")
@@ -660,4 +660,20 @@ async fn redeem_refuses_keys_that_are_not_prime_order_points() {
         .await
         .unwrap());
     assert!(!record_node_connected(&store, "no-such-node").await.unwrap());
+}
+
+/// Parsing a link registers its secret for redaction, so a joining host
+/// that never minted it still scrubs it from logs and diagnostics.
+#[test]
+fn parsing_a_link_registers_its_secret_for_redaction() {
+    let _registry = bookclerk_config::secrets_registry_test_lock();
+    let secret = "parsed-only-enrollment-secret_0123456789abcdefABCDEF";
+    let link = format!(
+        "https://owner.example/enroll#bcn1.{}.{secret}",
+        "a".repeat(32)
+    );
+    assert!(!bookclerk_config::contains_registered_secret(&link));
+    parse_enrollment_token(&link).unwrap();
+    assert!(bookclerk_config::contains_registered_secret(&link));
+    assert!(!bookclerk_config::redact_str(&link).contains(secret));
 }

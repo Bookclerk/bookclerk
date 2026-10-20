@@ -25,7 +25,7 @@ pub const RECONCILE_BACKSTOP: Duration = Duration::from_secs(60);
 
 /// Wakes the deployment reconciler.
 static DEPLOYMENT_WAKEUP: LazyLock<Notify> = LazyLock::new(Notify::new);
-/// Wakes the configuration (`core.events`) reconciler.
+/// Wakes the configuration (`core.events`, `core.output`) reconciler.
 static CONFIG_WAKEUP: LazyLock<Notify> = LazyLock::new(Notify::new);
 /// Wakes the placement scheduler (it acts only while holding the lease).
 static PLACEMENT_WAKEUP: LazyLock<Notify> = LazyLock::new(Notify::new);

@@ -28,7 +28,10 @@
 //!    owner never hands this host a job of a plugin its operator did not
 //!    approve. A job whose plugins are not all consented when it arrives,
 //!    or whose consent is revoked while it runs, is cancelled and given
-//!    back with `release` (unspent) instead of being reported.
+//!    back with `release` (unspent) instead of being reported. That
+//!    includes a job that finished but whose report was still waiting
+//!    for a connection: the owner runs it again, so its side effects
+//!    (uploads, local writes) may happen twice.
 //!    Each job runs on its own task through the [`HostJobRunner`],
 //!    with its secrets opened by this node's box key; a renewer extends
 //!    the lease every third of it; the result is reported with `complete`
@@ -63,10 +66,10 @@ use bookclerk_library::control_plane::{
 use bookclerk_node_proto::{
     decode_nonce, open_instance_secrets, open_secrets, open_upload_token, seal_secret_update,
     sign_artifact_request, sign_auth, validate_box_public_key, AcquireTarget, ArtifactRequest,
-    AuthContext, Body, ClaimFilter, Frame, HeldFence, PlanDestination, SealError, SecretRef,
-    SecretValue, SigningKey, UploadAnswer, UploadCommitRequest, UploadFile, ARTIFACTS_PATH,
-    CLOSE_PROTOCOL, CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, ITEM_JOB,
-    PING_INTERVAL_SECS, SEND_QUEUE_FRAMES, UPLOADS_PATH, UPLOAD_AUTH_SCHEME,
+    AuthContext, Body, ClaimFilter, Frame, HeldFence, PlanDestination, SealError, SecretEntry,
+    SecretRef, SecretValue, SigningKey, UploadAnswer, UploadCommitRequest, UploadFile,
+    ARTIFACTS_PATH, CLOSE_PROTOCOL, CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS,
+    ITEM_JOB, PING_INTERVAL_SECS, SEND_QUEUE_FRAMES, UPLOADS_PATH, UPLOAD_AUTH_SCHEME,
 };
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt as _, StreamExt as _};
@@ -174,6 +177,11 @@ pub struct HostClientConfig {
     pub max_jobs: usize,
     /// Job kinds this host runs (`scan`, ...). Empty claims nothing.
     pub claim_kinds: Vec<String>,
+    /// When set, a connection claims nothing until
+    /// [`HostClientHandle::deployments_refreshed`] names it, so the caller
+    /// can re-read what the owner deployed (which may have changed while
+    /// this host was away) before work runs against it.
+    pub claims_after_refresh: bool,
     /// Timers.
     pub timing: ClientTiming,
 }
@@ -312,6 +320,11 @@ pub(crate) struct Shared {
     conn: watch::Sender<Option<Conn>>,
     /// Welcomed connections so far.
     connections: watch::Sender<u64>,
+    /// Whether claims wait for [`Self::refreshed`] to reach the connection.
+    claims_after_refresh: bool,
+    /// The newest connection (by its [`Self::connections`] count) whose
+    /// deployments the caller re-read.
+    refreshed: watch::Sender<u64>,
     /// Wakes for local handlers.
     wakes: broadcast::Sender<serde_json::Value>,
     /// One permit per job slot.
@@ -321,6 +334,70 @@ pub(crate) struct Shared {
     /// Set (under the `held` lock) once every job was abandoned; a job
     /// starting after that is abandoned at once.
     abandoned: AtomicBool,
+}
+
+/// Makes each handed secret known to the log and diagnostics scrubber
+/// before the runner sees it, so this host redacts store tokens it never
+/// held at rest. A value that is not UTF-8 cannot appear in text output
+/// verbatim and is skipped.
+fn register_for_redaction(entries: &[SecretEntry]) {
+    for entry in entries {
+        register_value_for_redaction(entry.value.expose());
+    }
+}
+
+/// Opens the upload token an `upload.granted` answer sealed to this
+/// node's box key, and registers it with the log and diagnostics scrubber
+/// before anything can quote it: the bearer token is a credential like a
+/// handed secret.
+fn open_granted_upload(
+    box_secret: &[u8; bookclerk_node_proto::PUBLIC_KEY_LEN],
+    node_id: &str,
+    job_id: &str,
+    fence: i64,
+    upload_id: String,
+    sealed_token: &str,
+) -> Result<HostUpload, OwnerCallError> {
+    let token = open_upload_token(box_secret, node_id, job_id, fence, &upload_id, sealed_token)
+        .map_err(|_| {
+            tracing::warn!(job_id, fence, %upload_id, "the upload token does not open with this node's box key");
+            OwnerCallError::Unavailable
+        })?;
+    register_value_for_redaction(token.expose());
+    Ok(HostUpload::new(upload_id, token))
+}
+
+/// Registers one secret value with the scrubber when it is UTF-8 text.
+/// A JSON credential (a token bundle) also registers each string inside
+/// it, since a log quotes the token field, not the whole document.
+fn register_value_for_redaction(value: &[u8]) {
+    let Ok(text) = std::str::from_utf8(value) else {
+        return;
+    };
+    bookclerk_config::register_secret(text);
+    if let Ok(document) = serde_json::from_str::<serde_json::Value>(text) {
+        register_json_strings(&document);
+    }
+}
+
+/// Registers every string in `value`, at any depth.
+fn register_json_strings(value: &serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => bookclerk_config::register_secret(text),
+        serde_json::Value::Array(items) => items.iter().for_each(register_json_strings),
+        serde_json::Value::Object(fields) => fields.values().for_each(register_json_strings),
+        _ => {}
+    }
+}
+
+/// Cancels every job `0` holds when dropped: [`HostClient::run`] keeps one
+/// so its jobs are abandoned however it ends, an abort included.
+struct AbandonOnDrop<'a>(&'a Shared);
+
+impl Drop for AbandonOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.abandon_all();
+    }
 }
 
 impl Shared {
@@ -468,6 +545,9 @@ impl Shared {
         secret_ref: &SecretRef,
         value: &[u8],
     ) -> Result<(), WriteBackError> {
+        // A refreshed token is new to this process too: scrub it from
+        // anything the job prints after this, whether or not it is sent.
+        register_value_for_redaction(value);
         if !self.holds(job_id, fence) {
             return Err(WriteBackError::Lost);
         }
@@ -623,19 +703,14 @@ impl Shared {
         else {
             return Err(OwnerCallError::Unavailable);
         };
-        let token = open_upload_token(
+        open_granted_upload(
             &self.box_secret,
             &self.node_id,
             job_id,
             fence,
-            &upload_id,
+            upload_id,
             &sealed_token,
         )
-        .map_err(|_| {
-            tracing::warn!(job_id, fence, %upload_id, "the upload token does not open with this node's box key");
-            OwnerCallError::Unavailable
-        })?;
-        Ok(HostUpload::new(upload_id, token))
     }
 
     /// The `Authorization` value of `upload`'s requests.
@@ -749,6 +824,21 @@ impl HostClientHandle {
         self.shared.connections.subscribe()
     }
 
+    /// Records that the deployments were re-read on the connection counted
+    /// `connection` (a [`Self::connections`] value read before the
+    /// request), which opens its claims under
+    /// [`HostClientConfig::claims_after_refresh`]. A read made on an
+    /// earlier connection opens nothing on a later one.
+    pub fn deployments_refreshed(&self, connection: u64) {
+        self.shared.refreshed.send_if_modified(|through| {
+            let newer = connection > *through;
+            if newer {
+                *through = connection;
+            }
+            newer
+        });
+    }
+
     /// True while a welcomed connection is live.
     #[must_use]
     pub fn is_connected(&self) -> bool {
@@ -807,7 +897,8 @@ impl HostClientHandle {
     }
 
     /// Opens an instance's `SECRETS` sealed to this node's box key
-    /// (`instance_config.sealed_secrets`).
+    /// (`instance_config.sealed_secrets`), registering the values with the
+    /// log and diagnostics scrubber.
     ///
     /// # Errors
     ///
@@ -819,13 +910,15 @@ impl HostClientHandle {
         revision: i64,
         sealed: &str,
     ) -> Result<SecretValue, SealError> {
-        open_instance_secrets(
+        let opened = open_instance_secrets(
             &self.shared.box_secret,
             &self.shared.node_id,
             instance_id,
             revision,
             sealed,
-        )
+        )?;
+        register_value_for_redaction(opened.expose());
+        Ok(opened)
     }
 
     /// Downloads one archive the owner stores (`blob:sha256:<hex>`) from its
@@ -918,6 +1011,7 @@ impl<R: HostJobRunner> HostClient<R> {
             OwnerEndpoint::new(&config.link.owner_origin, config.link.spki_pin.as_deref())?;
         let (conn, _) = watch::channel(None);
         let (connections, _) = watch::channel(0);
+        let (refreshed, _) = watch::channel(0);
         let (consented, _) = watch::channel(BTreeSet::new());
         let (wakes, _) = broadcast::channel(WAKE_BUFFER);
         let shared = Arc::new(Shared {
@@ -935,6 +1029,8 @@ impl<R: HostJobRunner> HostClient<R> {
             held: Mutex::new(HashMap::new()),
             conn,
             connections,
+            claims_after_refresh: config.claims_after_refresh,
+            refreshed,
             wakes,
             job_slots: Arc::new(Semaphore::new(config.max_jobs)),
             next_serial: AtomicU64::new(1),
@@ -956,12 +1052,12 @@ impl<R: HostJobRunner> HostClient<R> {
     /// Connects, serves, and reconnects until `shutdown` turns true (or its
     /// sender is dropped) or the owner revokes this node.
     ///
-    /// Every held job is cancelled as lost before this returns, whatever
-    /// the reason, so no job task keeps running for a client that is gone.
+    /// Every held job is cancelled as lost when this returns, whatever the
+    /// reason, and also when the future is dropped or its task aborted
+    /// first, so no job task keeps running for a client that is gone.
     pub async fn run(self, shutdown: watch::Receiver<bool>) -> ClientExit {
-        let exit = self.serve_until_exit(shutdown).await;
-        self.shared.abandon_all();
-        exit
+        let _abandon = AbandonOnDrop(&self.shared);
+        self.serve_until_exit(shutdown).await
     }
 
     /// The reconnect loop behind [`Self::run`].
@@ -1146,9 +1242,13 @@ impl<R: HostJobRunner> HostClient<R> {
             Arc::clone(&self.sampler),
         )));
         if shared.max_jobs > 0 {
+            // The count this connection gets once welcomed below; only this
+            // task serves a connection, so nothing else bumps it first.
+            let number = *shared.connections.borrow() + 1;
             tasks.push(tokio::spawn(claim_loop(
                 Arc::clone(shared),
                 conn.clone(),
+                number,
                 Arc::clone(&self.runner),
             )));
         }
@@ -1422,25 +1522,47 @@ async fn heartbeat_loop(
 }
 
 /// Pulls jobs while job slots are free and the host would claim anything
-/// (some kind runs here and some plugin is consented). A claim the owner
-/// does not answer is retried with backoff; the loop ends only with its
-/// connection.
-async fn claim_loop<R: HostJobRunner>(shared: Arc<Shared>, conn: Conn, runner: Arc<R>) {
+/// (some kind runs here and some plugin is consented). Under
+/// [`HostClientConfig::claims_after_refresh`] it first waits for the
+/// caller to re-read the deployments on connection `number`. A claim the
+/// owner does not answer is retried with backoff; the loop ends only with
+/// its connection.
+async fn claim_loop<R: HostJobRunner>(
+    shared: Arc<Shared>,
+    conn: Conn,
+    number: u64,
+    runner: Arc<R>,
+) {
+    if shared.claims_after_refresh {
+        // Consent and deployments still describe the last connection until
+        // the caller re-reads them on this one.
+        let mut refreshed = shared.refreshed.subscribe();
+        if refreshed
+            .wait_for(|through| *through >= number)
+            .await
+            .is_err()
+        {
+            return;
+        }
+    }
     let mut consented = shared.consented.subscribe();
     let mut retry = shared.timing.backoff_min;
     loop {
-        let filter = match shared.claim_filter() {
-            Some(filter) => filter,
-            None => {
-                // Nothing to claim until the operator consents to something.
-                if consented.changed().await.is_err() {
-                    return;
-                }
-                continue;
+        if shared.claim_filter().is_none() {
+            // Nothing to claim until the operator consents to something.
+            if consented.changed().await.is_err() {
+                return;
             }
-        };
+            continue;
+        }
         let Ok(slot) = Arc::clone(&shared.job_slots).acquire_owned().await else {
             return;
+        };
+        // The wait for a slot can outlast a revoke: claim under the consent
+        // that holds now.
+        let Some(filter) = shared.claim_filter() else {
+            drop(slot);
+            continue;
         };
         // The owner starts the lease after this; counting from here never
         // overstates it.
@@ -1597,6 +1719,9 @@ async fn run_job<R: HostJobRunner>(
         None => Ok(Vec::new()),
         Some(sealed) => open_secrets(&shared.box_secret, &shared.node_id, &job_id, fence, sealed),
     };
+    if let Ok(entries) = &opened {
+        register_for_redaction(entries);
+    }
     // Renewals keep running through `report`, which can take up to
     // [`REPORT_DEADLINE`]: a slow report must not let the fence lapse and
     // throw away finished work, nor a fail for secrets that do not open.
@@ -1618,6 +1743,17 @@ async fn run_job<R: HostJobRunner>(
             "cancelled",
             "the client stopped before the job started",
         )),
+        // The grant ran out before the job could start (a late `work`, a
+        // starved runtime): the owner may already have handed the fence to
+        // another host, so never start it and drop the result.
+        _ if tokio::time::Instant::now() >= claimed_at + grant => {
+            tracing::warn!(%job_id, fence, "the job's lease ran out before it started; dropping it");
+            lost.store(true, Ordering::SeqCst);
+            Err(HostJobError::new(
+                "cancelled",
+                "the job's lease ran out before it started",
+            ))
+        }
         Err(_) => {
             tracing::warn!(%job_id, fence, "job secrets do not open with this node's box key");
             Err(HostJobError::new(
@@ -1656,7 +1792,11 @@ async fn run_job<R: HostJobRunner>(
         // The owner completed the job with its last upload's commit.
         tracing::info!(%job_id, fence, "the job completed with its last upload");
     } else {
-        report(&shared, &job_id, fence, result, &lost).await;
+        let give_back_on = GiveBackOn {
+            release: &release,
+            resumed: claim_resumed,
+        };
+        report(&shared, &job_id, fence, result, &lost, give_back_on).await;
     }
     drop(renewer);
     shared.release(&job_id, fence);
@@ -1679,7 +1819,16 @@ async fn give_back(
         reason: reason.into(),
         resumed,
     };
-    send_final(shared, job_id, fence, body, false, lost).await;
+    send_final(shared, job_id, fence, body, false, lost, None).await;
+}
+
+/// Where a report finds a give-back marked while it waits to be sent.
+#[derive(Clone, Copy)]
+struct GiveBackOn<'a> {
+    /// The job's release marker.
+    release: &'a Mutex<Option<&'static str>>,
+    /// The claim's [`HostJob::resumed`].
+    resumed: bool,
 }
 
 /// Extends a job's lease every third of it. A `lost` answer cancels the
@@ -1786,40 +1935,57 @@ async fn renew_loop(
 
 /// Reports a finished job under its fence, waiting for a connection when
 /// there is none, until the owner answers or [`REPORT_DEADLINE`] passes.
+///
+/// The detail or error text is scrubbed of registered secrets first, so a
+/// runner error that quotes a handed token never reaches the owner. A
+/// give-back marked on `give_back_on` while the report waits (consent
+/// revoked during a reconnect) sends `release` instead.
 async fn report(
     shared: &Arc<Shared>,
     job_id: &str,
     fence: i64,
     result: Result<String, HostJobError>,
     lost: &AtomicBool,
+    give_back_on: GiveBackOn<'_>,
 ) {
     let failed = result.is_err();
     let body = match result {
         Ok(detail) => Body::Complete {
             job_id: job_id.to_string(),
             fence,
-            detail: Some(bounded(detail)),
+            detail: Some(bounded(bookclerk_config::redact_str(&detail))),
         },
         Err(err) => Body::Fail {
             job_id: job_id.to_string(),
             fence,
             error_kind: bounded(err.kind),
-            message: bounded(err.message),
+            message: bounded(bookclerk_config::redact_str(&err.message)),
         },
     };
-    send_final(shared, job_id, fence, body, failed, lost).await;
+    send_final(
+        shared,
+        job_id,
+        fence,
+        body,
+        failed,
+        lost,
+        Some(give_back_on),
+    )
+    .await;
 }
 
 /// Sends a job's final frame (`complete`, `fail` or `release`), waiting for
 /// a connection when there is none, until the owner answers or
-/// [`REPORT_DEADLINE`] passes.
+/// [`REPORT_DEADLINE`] passes. With `give_back_on`, each attempt first
+/// checks the release marker and sends `release` once it is set.
 async fn send_final(
     shared: &Arc<Shared>,
     job_id: &str,
     fence: i64,
-    body: Body,
+    mut body: Body,
     failed: bool,
     lost: &AtomicBool,
+    give_back_on: Option<GiveBackOn<'_>>,
 ) {
     let deadline = Instant::now() + REPORT_DEADLINE;
     loop {
@@ -1835,6 +2001,23 @@ async fn send_final(
             );
             return;
         };
+        if let Some(on) = give_back_on {
+            let marked = *lock(on.release);
+            if let Some(reason) = marked.filter(|_| !matches!(body, Body::Release { .. })) {
+                tracing::warn!(
+                    job_id,
+                    fence,
+                    reason,
+                    "the job was given back before its report went out"
+                );
+                body = Body::Release {
+                    job_id: job_id.to_string(),
+                    fence,
+                    reason: reason.into(),
+                    resumed: on.resumed,
+                };
+            }
+        }
         match conn.request(body.clone()).await.map(|frame| frame.body) {
             Ok(Body::Accepted {}) => {
                 tracing::info!(job_id, fence, failed, "reported the job to the owner");

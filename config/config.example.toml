@@ -120,7 +120,15 @@ isolation = "required"
 # Normally unset: the launcher is found beside the running executable.
 # jail_bin = "/usr/local/bin/bookclerk-jail"
 
+# Shared packaging. This table seeds the `core.output` cluster document in the
+# library database the first time a host enrolls against a database without
+# one; after that the database is authoritative and edits to this table (or to
+# BOOKCLERK_OUTPUT_* variables) are ignored. Change it with
+# `bookclerk config set output.<key> <value>` or Settings → Output.
+# `in_progress` (acquire scratch directory) is the exception: it is host-local
+# and always read from this file.
 [output]
+# in_progress = "/var/tmp/bookclerk"
 # Packaging format: enriched_m4b | single_mp3 | split_mp3_by_chapter | split_mp3_by_size | opus | none
 format = "enriched_m4b"
 # split_mp3_max_mb = 200

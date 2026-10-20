@@ -1730,6 +1730,14 @@ export interface SettingsResponse {
   host_cpu_cores_max?: number;
   /** Optional global per-jail CPU ceiling in cores. */
   jail_cpu_cores?: number | null;
+  /**
+   * `core.output` document revision the `output.*` values were read from; send it
+   * as `expected_output_revision`. `effective["output.revision"]` is the revision
+   * this host has applied, which can lag the document. Absent when the server
+   * could not read `core.output`; the `output.*` values are then missing too and
+   * must not be edited.
+   */
+  output_revision?: number;
 }
 
 /**
@@ -2009,7 +2017,9 @@ export async function fetchSettings(): Promise<SettingsResponse> {
  * Applies a batch of operator setting key/value updates from the Settings form.
  *
  * The batch is one authority. File-backed keys (listen, auth, plugins) are not
- * combined with `events.*`, which the daemon stores in the library database.
+ * combined with `events.*` or `output.*`, which the daemon stores as the
+ * `core.events` and `core.output` documents in the library database; a mixed
+ * batch is rejected with 400 and a lost compare-and-swap with 409.
  *
  * @param body - List of `{ key, value }` updates (plugin knobs use dotted keys).
  * @returns Refreshed settings payload after the patch.
@@ -2305,7 +2315,9 @@ export async function putNodeLabels(nodeId: string, labels: string[]): Promise<u
 
 /** An owner cluster this install is enrolled in as a host (no key material). */
 export interface ClusterLinkView {
+  /** Id of the owner cluster; one link per cluster. */
   cluster_id: string;
+  /** Canonical origin (`https://host[:port]`) this host dials the owner at. */
   owner_origin: string;
   /** Node id the owner minted for this install. */
   node_id: string;
@@ -2313,23 +2325,53 @@ export interface ClusterLinkView {
   pinned: boolean;
   /** `active`, `revoked` (by the owner), or `left` (by this host). */
   state: string;
+  /** RFC 3339 time of the latest enrollment (a re-enrollment resets it). */
   enrolled_at: string;
 }
 
-/** The parts of a plugin grant the consent screen shows. */
+/**
+ * The parts of a plugin grant the consent screen shows. Every field is
+ * optional because the screen renders whatever the host sent; a missing set
+ * means the grant asks for none of it, and a missing or `null` limit leaves
+ * that limit to the version's manifest.
+ */
 export interface RemoteGrantView {
+  /** Display alias from `plugin.toml` (not security authoritative). */
   pluginId?: string;
-  /** `deny`, `outbound`, … */
+  /** `deny` (no egress) or `outbound`; anything else is treated as `deny`. */
   networkMode?: string;
+  /** Outbound domain patterns the guest may dial first (redirect hops aside). */
   domains?: string[];
+  /** Raw TCP destinations: a host and the ports allowed on it. */
   tcp?: { host: string; ports: number[] }[];
+  /** CIDR ranges beyond the public Internet (private or local addresses). */
   addressCidrs?: string[];
   /** Host bindings (`config`, `secrets`, `kv`, …). */
   bindings?: string[];
+  /** `[triggers].jobs` types it may handle. */
   jobs?: string[];
+  /** Named entrypoints it exports (`storefront`, `storage`, `cli`, …). */
+  entrypoints?: string[];
+  /** Event types it may publish and queue bindings it may send to. */
+  producers?: string[];
+  /** Events and queues it consumes (shape owned by the host). */
+  consumers?: unknown[];
+  /** Follow a redirect to a public host it did not declare. */
+  allowUndeclaredPublicRedirects?: boolean;
+  /** workerd compatibility flags the isolate runs with. */
+  compatibilityFlags?: string[];
+  /** Memory ceiling in MiB. */
   memoryMib?: number | null;
+  /** CPU rate as a percent of one logical CPU (above 100 asks for more than one core). */
   cpuRatePercent?: number | null;
+  /** Disk budget in MiB for each of its `data/` and `tmp/` directories. */
   diskMib?: number | null;
+  /** workerd CPU budget per request, in milliseconds. */
+  cpuMs?: number | null;
+  /** workerd outbound fetch (subrequest) budget per request. */
+  subrequests?: number | null;
+  /** Processes or threads allowed beyond the launcher's own (native guests). */
+  extraProcesses?: number | null;
 }
 
 /** Where an owner plugin's request to run here stands. */
@@ -2341,16 +2383,21 @@ export type RemoteConsentState =
 
 /** One owner plugin's request to run on this host, and this host's answer. */
 export interface RemoteConsentView {
+  /** Owner cluster that asks; matches a {@link ClusterLinkView.cluster_id}. */
   cluster_id: string;
+  /** Canonical plugin key the request is for. */
   plugin_key: string;
   /** Version the owner now asks to run. */
   requested_version: string;
-  /** What that version asks for. */
+  /** What that version asks for; `null` when the stored request does not parse. */
   requested_grant: RemoteGrantView | null;
-  /** The archive this host would fetch for that version. */
+  /** The archive this host would fetch for that version (hex SHA-256 digests). */
   requested_artifact?: {
+    /** `blob:` (served by the owner) or `https:` archive URL. */
     url: string;
+    /** Digest of the archive file. */
     archive_sha256: string;
+    /** Digest of the unpacked payload tree. */
     payload_root_sha256: string;
   };
   /** Digest of the whole request (version, grant, archive); approve by it. */
@@ -2359,26 +2406,42 @@ export interface RemoteConsentView {
   approved_version: string | null;
   /** What this host granted (the request, narrowed), if approved. */
   grant: RemoteGrantView | null;
+  /** RFC 3339 time of the approval, if approved. */
   approved_at: string | null;
+  /** Who approved: the operator's audit identity, or `platform` for an automatic approval. */
   approved_by: string | null;
+  /** RFC 3339 time this host's operator revoked it; a revoke holds until approved again. */
+  revoked_at?: string | null;
+  /** RFC 3339 time the row last changed. */
   updated_at?: string;
+  /** Whether the guest may run here now, or what it waits on. */
   state: RemoteConsentState;
 }
 
 /** `GET /api/config/cluster-consents`. */
 export interface ClusterConsentsResponse {
+  /** Every owner cluster link this install holds, in any state. */
   clusters: ClusterLinkView[];
+  /** Every recorded owner plugin request, approved or not. */
   consents: RemoteConsentView[];
 }
 
-/** Narrowing an approval: what of the request to leave out. */
+/**
+ * Body of an approval: the reviewed request and what of it to leave out.
+ * An approval can only narrow the request, never widen it.
+ */
 export interface RemoteApprovalBody {
+  /** Owner cluster of the request. */
   cluster_id: string;
+  /** Plugin key of the request. */
   plugin_key: string;
   /** The `request_digest` reviewed; refused when the recorded request is another one. */
   request_digest: string;
+  /** Outbound domain patterns to remove from the grant. */
   deny_domains?: string[];
+  /** Host bindings to remove (`secrets`, `oauth`, `kv`, …). */
   deny_bindings?: string[];
+  /** True turns outbound network off altogether (no domains, TCP or CIDRs). */
   deny_network?: boolean;
 }
 
@@ -2462,7 +2525,11 @@ export async function revokeClusterConsent(
  * @param body - Settings updates to apply.
  * @returns The settings view after the write.
  */
-export async function patchSettings(body: { settings: SettingsUpdate[] }): Promise<SettingsResponse> {
+export async function patchSettings(body: {
+  settings: SettingsUpdate[];
+  /** `core.output` revision the caller read; a stale value is rejected with 409. */
+  expected_output_revision?: number;
+}): Promise<SettingsResponse> {
   const res = await fetch("/api/settings", {
     method: "PATCH",
     credentials: "include",

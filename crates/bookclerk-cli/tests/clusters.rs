@@ -342,6 +342,14 @@ async fn join_takes_the_link_only_from_stdin_and_refuses_a_non_link() {
         &[],
     );
     assert!(!argv.status.success(), "{}", stdout(&argv));
+    assert!(
+        stderr(&argv).contains("takes no arguments"),
+        "{}",
+        stderr(&argv)
+    );
+    for out in [stdout(&argv), stderr(&argv)] {
+        assert!(!out.contains("bcn1x"), "the link is not echoed: {out}");
+    }
 
     let empty = join_with_stdin(files, "");
     assert!(!empty.status.success());

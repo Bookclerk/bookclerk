@@ -359,6 +359,7 @@ async fn start_host_client<T: JobTransport + 'static>(
             incarnation: uuid::Uuid::new_v4().to_string(),
             max_jobs: 1,
             claim_kinds: kinds.iter().map(|kind| (*kind).to_string()).collect(),
+            claims_after_refresh: true,
             timing: timing(backoff_min),
         },
         TransportRunner::new(transport, Arc::clone(&catalog)),
@@ -1404,6 +1405,7 @@ mod results_and_uploads {
         vec![UploadDestination {
             id: "local".into(),
             title_folders: vec![folder.into()],
+            title_names: None,
         }]
     }
 
@@ -2127,6 +2129,7 @@ mod results_and_uploads {
                 destinations: &[UploadDestination {
                     id: "local".into(),
                     title_folders: vec!["Author/Title t2".into()],
+                    title_names: None,
                 }],
             },
         )
@@ -2256,10 +2259,12 @@ mod results_and_uploads {
                     UploadDestination {
                         id: "local".into(),
                         title_folders: vec!["Author/Title t2".into()],
+                        title_names: None,
                     },
                     UploadDestination {
                         id: "s3".into(),
                         title_folders: vec!["library/t2".into()],
+                        title_names: None,
                     },
                 ],
             },
@@ -2492,6 +2497,225 @@ mod results_and_uploads {
         String::from_utf8_lossy(&answer).into_owned()
     }
 
+    /// Grants an upload of one local file `key` of `bytes` for `book_uuid`
+    /// in `job_id` under `fence`, in the scope of the key's folder; answers
+    /// its id and token.
+    async fn grant_one(
+        world: &Linked,
+        job_id: &str,
+        fence: i64,
+        book_uuid: &str,
+        key: &str,
+        bytes: &[u8],
+    ) -> (String, String) {
+        let folder = key.rsplit_once('/').map_or("", |(folder, _)| folder);
+        let UploadGrant::Granted {
+            upload_id, token, ..
+        } = grant_upload(
+            &world.owner,
+            &world.link.remote_node_id,
+            job_id,
+            fence,
+            &owner_node_id(world),
+            &UploadGrantRequest {
+                book_uuid,
+                primary_key: key,
+                pdf_key: None,
+                files: &[local_file(key, bytes)],
+                destinations: &local_scope(folder),
+            },
+        )
+        .await
+        .unwrap()
+        else {
+            panic!("granted");
+        };
+        (upload_id, token.to_string())
+    }
+
+    /// Opens a PUT of file 0 of `upload_id` declaring `len` bytes and sends
+    /// `first` of them; the rest follows on the returned stream.
+    async fn put_start(
+        addr: SocketAddr,
+        upload_id: &str,
+        token: &str,
+        len: usize,
+        first: &[u8],
+    ) -> tokio::net::TcpStream {
+        let mut tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let head = format!(
+            "PUT /api/node/v1/uploads/{upload_id}/files/0 HTTP/1.1\r\n\
+             Host: localhost:{}\r\nAuthorization: Bookclerk-Upload {token}\r\n\
+             Content-Length: {len}\r\nConnection: close\r\n\r\n",
+            addr.port(),
+        );
+        tcp.write_all(head.as_bytes()).await.unwrap();
+        tcp.write_all(first).await.unwrap();
+        tcp.flush().await.unwrap();
+        tcp
+    }
+
+    /// Sends `rest` of a started PUT and answers the raw response.
+    async fn put_finish(mut tcp: tokio::net::TcpStream, rest: &[u8]) -> String {
+        tcp.write_all(rest).await.unwrap();
+        let mut answer = Vec::new();
+        tokio::time::timeout(Duration::from_secs(20), tcp.read_to_end(&mut answer))
+            .await
+            .unwrap()
+            .unwrap();
+        String::from_utf8_lossy(&answer).into_owned()
+    }
+
+    /// A key taken by another title while an upload's file streams (its
+    /// acquire recorded the key, then wrote it) stops the upload short of
+    /// the end of its stream: it is refused `key_taken` and the other
+    /// title's file is left as that acquire wrote it.
+    #[tokio::test]
+    async fn an_upload_stops_short_of_a_key_taken_while_it_streamed() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let local_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), local_out.path());
+        let title = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t2"))
+            .await
+            .unwrap();
+        let other = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t3"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 30).await;
+        const KEY: &str = "Author/Title t2/Title t2.m4b";
+        let (upload_id, token) = grant_one(&world, &job_id, fence, &title.uuid, KEY, b"abc").await;
+        let tcp = put_start(world.addr, &upload_id, &token, 3, b"ab").await;
+        eventually("the destination to start writing", || async {
+            !files_under(local_out.path()).is_empty()
+        })
+        .await;
+        world
+            .owner
+            .record_title_file("local", KEY, &other.uuid)
+            .await
+            .unwrap();
+        std::fs::write(local_out.path().join(KEY), b"xyz").unwrap();
+        let answer = put_finish(tcp, b"c").await;
+        assert!(answer.starts_with("HTTP/1.1 422"), "{answer}");
+        assert!(answer.contains("key_taken"), "{answer}");
+        assert_eq!(std::fs::read(local_out.path().join(KEY)).unwrap(), b"xyz");
+        eventually("the aborted write's temp file to go", || async {
+            files_under(local_out.path()).len() == 1
+        })
+        .await;
+    }
+
+    /// A PUT handler dropped after the whole body arrived, while it waits
+    /// to finish the file (here: for the locks on its keys), commits
+    /// nothing: the destinations see the stream fail, not end, and the
+    /// partial write is discarded.
+    #[tokio::test]
+    async fn a_dropped_upload_put_commits_nothing() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let local_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), local_out.path());
+        let title = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t2"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 30).await;
+        const KEY: &str = "Author/Title t2/Title t2.m4b";
+        let (upload_id, _) = grant_one(&world, &job_id, fence, &title.uuid, KEY, b"abc").await;
+        let session = bookclerk_library::control_plane::load_upload(&world.owner, &upload_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let destinations = crate::node_api::uploads::owner_destinations(&world.state)
+            .await
+            .unwrap();
+        crate::node_api::uploads::drop_tee_waiting_for_its_locks(
+            world.owner.clone(),
+            session,
+            0,
+            axum::body::Body::from("abc"),
+            destinations,
+        )
+        .await;
+        eventually("the dropped write to be discarded", || async {
+            files_under(local_out.path()).is_empty()
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !local_out.path().join(KEY).exists(),
+            "a dropped PUT never commits its file"
+        );
+        assert!(load_upload_received(&world.owner, &upload_id)
+            .await
+            .is_empty());
+    }
+
+    /// The files `upload_id` recorded as received.
+    async fn load_upload_received(store: &LibraryStore, upload_id: &str) -> Vec<usize> {
+        bookclerk_library::control_plane::load_upload(store, upload_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .received
+            .into_iter()
+            .collect()
+    }
+
+    /// A retried PUT of a file whose first attempt is still streaming
+    /// waits for that attempt, then is answered from what it recorded: the
+    /// two never write (or clean up) the same key at once.
+    #[tokio::test]
+    async fn a_retried_upload_put_waits_for_the_first_attempt() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let local_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), local_out.path());
+        let title = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t2"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 30).await;
+        const KEY: &str = "Author/Title t2/Title t2.m4b";
+        let (upload_id, token) = grant_one(&world, &job_id, fence, &title.uuid, KEY, b"abc").await;
+        let first = put_start(world.addr, &upload_id, &token, 3, b"ab").await;
+        eventually("the first attempt to start writing", || async {
+            !files_under(local_out.path()).is_empty()
+        })
+        .await;
+        let retry = tokio::spawn({
+            let upload_id = upload_id.clone();
+            let token = token.clone();
+            let addr = world.addr;
+            async move { put_raw(addr, &upload_id, &token, 0, b"abc").await }
+        });
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            !retry.is_finished(),
+            "the retry waits while the first attempt streams"
+        );
+        let answer = put_finish(first, b"c").await;
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        let answer = retry.await.unwrap();
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        assert!(answer.contains("\"received\""), "{answer}");
+        assert_eq!(std::fs::read(local_out.path().join(KEY)).unwrap(), b"abc");
+    }
+
     /// One declared file of `bytes` on the owner's local destination.
     fn local_file(key: &str, bytes: &[u8]) -> UploadFile {
         UploadFile {
@@ -2698,8 +2922,8 @@ mod results_and_uploads {
         let job_id = enqueue_acquire(&world.owner).await;
         let fence = claim_acquire(&world, 60).await;
         let files = vec![
-            local_file("Author/Title t1/t1.m4b", b"audio"),
-            local_file("Author/Title t1/cover.jpg", b"jpeg"),
+            local_file("Author/Title t1/Title t1 [t1].m4b", b"audio"),
+            local_file("Author/Title t1/Title t1 [t1].jpg", b"jpeg"),
         ];
         let UploadGrant::Granted {
             upload_id, token, ..
@@ -2711,7 +2935,7 @@ mod results_and_uploads {
             &owner_node_id(&world),
             &UploadGrantRequest {
                 book_uuid: &book.uuid,
-                primary_key: "Author/Title t1/t1.m4b",
+                primary_key: "Author/Title t1/Title t1 [t1].m4b",
                 pdf_key: None,
                 files: &files,
                 destinations: &local_scope("Author/Title t1"),
@@ -2724,7 +2948,10 @@ mod results_and_uploads {
         };
         let first = put_raw(world.addr, &upload_id, &token, 1, b"jpeg").await;
         assert!(first.starts_with("HTTP/1.1 200"), "{first}");
-        assert!(owner_out.path().join("Author/Title t1/cover.jpg").is_file());
+        assert!(owner_out
+            .path()
+            .join("Author/Title t1/Title t1 [t1].jpg")
+            .is_file());
 
         // The host (connected now; the job is already running) re-sends
         // the title over its socket.
@@ -2734,7 +2961,7 @@ mod results_and_uploads {
                 job_id: job_id.clone(),
                 fence,
                 book_uuid: book.uuid.clone(),
-                primary_key: "Author/Title t1/t1.m4b".into(),
+                primary_key: "Author/Title t1/Title t1 [t1].m4b".into(),
                 pdf_key: None,
                 files: vec![files[0].clone()],
             })
@@ -2898,25 +3125,35 @@ mod results_and_uploads {
                 &other.product_id,
                 "riley-acct",
                 bookclerk_library::AcquireStatus::Acquired,
-                Some("Author/Title t1/Title t2.m4b"),
+                Some("Author/Title t2/Title t2 [t2].m4b"),
                 None,
             )
             .await
             .unwrap();
-        for key in [
-            "Author/Title t1/Title t2.m4b",
-            "Author/Title t1/Title t2.jpg",
+        world
+            .owner
+            .record_title_file("local", "Author/Title t1/Title t1 [t1].cue", &other.uuid)
+            .await
+            .unwrap();
+        // The folder template (`<title short>`) is shared, so only the
+        // title's planned names are in scope there: another title's names
+        // are refused by name, and a planned name another title holds by
+        // its claim.
+        for (key, reason) in [
+            ("Author/Title t1/Title t2.m4b", "key_out_of_scope"),
+            ("Author/Title t1/Title t2.jpg", "key_out_of_scope"),
+            ("Author/Title t1/Title t1 [t1].cue", "key_of_another_book"),
         ] {
             let body = grant(vec![
-                local_file("Author/Title t1/Title t1.m4b", b"audio"),
+                local_file("Author/Title t1/Title t1 [t1].m4b", b"audio"),
                 local_file(key, b"other"),
             ])
             .await;
-            assert_eq!(refusal(&body), "key_of_another_book", "{key}");
+            assert_eq!(refusal(&body), reason, "{key}");
         }
         let body = grant(vec![
-            local_file("Author/Title t1/Title t1.m4b", b"audio"),
-            local_file("Author/Title t1/Title t1.jpg", b"jpeg"),
+            local_file("Author/Title t1/Title t1 [t1].m4b", b"audio"),
+            local_file("Author/Title t1/Title t1 [t1].jpg", b"jpeg"),
         ])
         .await;
         assert!(matches!(body, Body::UploadGranted { .. }), "{body:?}");
@@ -3408,6 +3645,24 @@ mod results_and_uploads {
         assert!(copy.is_file(), "a lost fence leaves the copy");
         remove_local_copies("t1", &copies, false).await;
         assert!(!copy.exists(), "a held fence removes it");
+
+        // A key already on the destination (another writer's file, or an
+        // earlier acquire of the title) is not this run's to roll back.
+        tokio::fs::create_dir_all(copy.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&copy, b"earlier").await.unwrap();
+        let copied = Mutex::new(Vec::new());
+        copy_to_local_destinations(&guests, "t1", &outbox, &acquired, &copied)
+            .await
+            .unwrap();
+        let copies = copied.into_inner().unwrap();
+        assert!(copies.is_empty(), "a key that was there is not recorded");
+        remove_local_copies("t1", &copies, false).await;
+        assert!(
+            copy.is_file(),
+            "the rollback leaves a key it did not create"
+        );
     }
 }
 

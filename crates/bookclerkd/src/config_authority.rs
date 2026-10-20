@@ -1,10 +1,13 @@
-//! Runtime application of database-backed `[events]` configuration.
+//! Runtime application of database-backed `[events]` and `[output]`
+//! configuration.
 //!
 //! The dispatcher and pruner read [`bookclerk_config::Config::events`] on each
-//! tick. This module publishes committed revisions into that struct. Local
-//! delivery-task count is chosen when the event runtime starts and stays at
-//! that count until process restart; retention and the in-flight cap follow
-//! the latest applied revision.
+//! tick, and every acquire, convert, and packaging pass reads
+//! [`bookclerk_config::Config::output`] when it starts. This module publishes
+//! committed `core.events` and `core.output` revisions into those structs.
+//! Local delivery-task count is chosen when the event runtime starts and stays
+//! at that count until process restart; retention, the in-flight cap, and
+//! every output setting follow the latest applied revision.
 
 use std::sync::Arc;
 
@@ -14,8 +17,9 @@ use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use axum::Json;
 use bookclerk_library::control_plane::{
-    load_cluster_row, load_events, overlay_events, replace_events, ConfigActor, EventsReplace,
-    EventsSettingsV1,
+    load_cluster_row, load_events, load_output, overlay_events, overlay_output, replace_events,
+    replace_output, ConfigActor, ConfigurationDocument, EventsReplace, EventsSettingsV1,
+    OutputReplace, OutputSettingsV1,
 };
 use bookclerk_library::LibraryStore;
 use serde::{Deserialize, Serialize};
@@ -31,8 +35,9 @@ fn operator_actor() -> ConfigActor {
     }
 }
 
-/// Re-reads `core.events` on each `configuration.changed` delivery on this
-/// node's queue, plus a slow backstop pass, until the process stops.
+/// Re-reads `core.events` and `core.output` on each `configuration.changed`
+/// delivery on this node's queue, plus a slow backstop pass, until the
+/// process stops.
 pub fn spawn_config_reconciler(state: Arc<AppState>) {
     crate::node_queue::spawn_woken_loop(
         state,
@@ -40,6 +45,9 @@ pub fn spawn_config_reconciler(state: Arc<AppState>) {
         |state| async move {
             if let Err(err) = reconcile_events(&state).await {
                 tracing::warn!(error = %err, "configuration reconcile failed");
+            }
+            if let Err(err) = reconcile_output(&state).await {
+                tracing::warn!(error = %err, "core.output reconcile failed");
             }
         },
     );
@@ -355,6 +363,253 @@ fn events_json(
         "retention_days": doc.body.retention_days,
         "dead_letter_retention_days": doc.body.dead_letter_retention_days,
         "concurrency": doc.body.concurrency,
+    })
+}
+
+/// One `core.output` read tied to the cluster that stored it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LoadedOutput {
+    /// `cluster_identity.cluster_id` read with the document.
+    pub cluster_id: String,
+    /// Typed document and revision.
+    pub document: ConfigurationDocument<OutputSettingsV1>,
+}
+
+/// Reads `core.output` and the cluster id that owns it.
+///
+/// # Errors
+///
+/// Returns an error when the cluster row or the document cannot be read. The
+/// in-memory config is left unchanged.
+pub(crate) async fn load_output_publication(
+    library: &LibraryStore,
+) -> anyhow::Result<LoadedOutput> {
+    let row = load_cluster_row(library)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("cluster identity is not initialized"))?;
+    let document = load_output(library).await?;
+    Ok(LoadedOutput {
+        cluster_id: row.cluster_id,
+        document,
+    })
+}
+
+/// Applies `loaded` onto `config` when `mode` allows it, under the same
+/// monotonic, per-cluster rule as [`install_events`].
+pub(crate) fn install_output(
+    config: &mut bookclerk_config::Config,
+    loaded: &LoadedOutput,
+    mode: EventsPublish,
+) -> bool {
+    if mode == EventsPublish::Monotonic {
+        if let Some(current) = config.output_authority.as_deref() {
+            if current != loaded.cluster_id {
+                return false;
+            }
+            if config
+                .output_revision
+                .is_some_and(|revision| loaded.document.revision <= revision)
+            {
+                return false;
+            }
+        }
+    }
+    overlay_output(config, &loaded.document, &loaded.cluster_id);
+    true
+}
+
+/// Merges a freshly read output document into `candidate` without
+/// regressing `live` (see [`finish_reload_events`]).
+///
+/// `candidate.output.in_progress` is host-local bootstrap from the reloaded
+/// `config.toml` and is kept.
+pub(crate) fn finish_reload_output(
+    live: &bookclerk_config::Config,
+    candidate: &mut bookclerk_config::Config,
+    fresh: &LoadedOutput,
+    database_swap: bool,
+) {
+    let in_progress = candidate.output.in_progress.clone();
+    candidate.output = live.output.clone();
+    candidate.output.in_progress = in_progress;
+    candidate.output_revision = live.output_revision;
+    candidate.output_authority = live.output_authority.clone();
+    let mode = if database_swap
+        || live
+            .output_authority
+            .as_deref()
+            .is_some_and(|id| id != fresh.cluster_id)
+    {
+        EventsPublish::DatabaseSwap
+    } else {
+        EventsPublish::Monotonic
+    };
+    install_output(candidate, fresh, mode);
+}
+
+/// Publishes `loaded` under the config write lock.
+pub(crate) async fn publish_loaded_output(
+    state: &AppState,
+    loaded: &LoadedOutput,
+    mode: EventsPublish,
+) -> bool {
+    let mut config = state.config.write().await;
+    let applied = install_output(&mut config, loaded, mode);
+    if applied {
+        tracing::info!(
+            revision = loaded.document.revision,
+            cluster_id = %loaded.cluster_id,
+            "applied core.output from the database"
+        );
+    }
+    applied
+}
+
+/// Applies a newer cluster output document onto the live config.
+///
+/// # Errors
+///
+/// Returns an error when the document cannot be read. The in-memory config is
+/// left unchanged.
+pub async fn reconcile_output(state: &AppState) -> anyhow::Result<()> {
+    let library = state.library_snapshot().await;
+    let loaded = load_output_publication(&library).await?;
+    publish_loaded_output(state, &loaded, EventsPublish::Monotonic).await;
+    Ok(())
+}
+
+/// JSON body for `PUT /api/config/domains/core.output`.
+#[derive(Debug, Deserialize)]
+pub struct PutOutputDomainRequest {
+    /// Revision the caller read. A mismatch is a conflict.
+    pub expected_revision: i64,
+    /// Complete replacement document (schema version 1).
+    pub document: OutputSettingsV1,
+}
+
+/// `GET /api/config/domains/core.output`.
+pub async fn get_output_domain(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let library = state.library_snapshot().await;
+    let doc = load_output(&library).await.map_err(events_error)?;
+    Ok(Json(output_json(&doc)))
+}
+
+/// `PUT /api/config/domains/core.output`.
+pub async fn put_output_domain(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<PutOutputDomainRequest>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let library = state.library_snapshot().await;
+    let outcome = replace_output(
+        &library,
+        &operator_actor(),
+        body.expected_revision,
+        &body.document,
+        &uuid::Uuid::new_v4().to_string(),
+    )
+    .await
+    .map_err(events_error)?;
+    match outcome {
+        OutputReplace::Applied(doc) => {
+            let cluster_id = cluster_id_of(&library).await?;
+            publish_output(state.as_ref(), &doc, &cluster_id).await;
+            Ok(Json(output_json(&doc)))
+        }
+        OutputReplace::Replayed { revision } => Ok(Json(json!({
+            "namespace": bookclerk_library::control_plane::OUTPUT_NAMESPACE,
+            "replayed": true,
+            "revision": revision,
+        }))),
+        OutputReplace::Conflict { current_revision } => Err(conflict(current_revision)),
+    }
+}
+
+/// Applies `output.*` settings keys to `core.output` through compare-and-swap.
+///
+/// Every key is applied to one copy of the current document, which is then
+/// validated and written as a single revision.
+///
+/// `expected_revision` is the revision the caller read. When it is given and
+/// the stored document has moved on, nothing is written and the call is a
+/// conflict, so a stale editor cannot overwrite a concurrent change.
+///
+/// # Errors
+///
+/// Returns 400 for unknown keys or invalid values and 409 when
+/// `expected_revision` is stale or the revision lost to a concurrent write.
+pub async fn commit_output_settings(
+    state: &AppState,
+    updates: &[(String, String)],
+    expected_revision: Option<i64>,
+) -> Result<(), Response> {
+    if updates.is_empty() {
+        return Ok(());
+    }
+    let library = state.library_snapshot().await;
+    let current = load_output(&library).await.map_err(events_error)?;
+    if expected_revision.is_some_and(|expected| expected != current.revision) {
+        return Err(conflict(current.revision));
+    }
+    let mut body = current.body.clone();
+    for (key, value) in updates {
+        body.set(key, value).map_err(|err| {
+            tracing::warn!(%key, error = %err, "rejected output settings update");
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": err.to_string() })),
+            )
+                .into_response()
+        })?;
+    }
+    if body == current.body {
+        return Ok(());
+    }
+    let outcome = replace_output(
+        &library,
+        &operator_actor(),
+        current.revision,
+        &body,
+        &uuid::Uuid::new_v4().to_string(),
+    )
+    .await
+    .map_err(events_error)?;
+    match outcome {
+        OutputReplace::Applied(doc) => {
+            let cluster_id = cluster_id_of(&library).await?;
+            publish_output(state, &doc, &cluster_id).await;
+            Ok(())
+        }
+        OutputReplace::Replayed { .. } => Ok(()),
+        OutputReplace::Conflict { current_revision } => Err(conflict(current_revision)),
+    }
+}
+
+/// Copies a committed output document into the live daemon config.
+async fn publish_output(
+    state: &AppState,
+    doc: &ConfigurationDocument<OutputSettingsV1>,
+    cluster_id: &str,
+) {
+    let loaded = LoadedOutput {
+        cluster_id: cluster_id.to_string(),
+        document: doc.clone(),
+    };
+    publish_loaded_output(state, &loaded, EventsPublish::Monotonic).await;
+}
+
+/// JSON body for the output domain API.
+fn output_json(doc: &ConfigurationDocument<OutputSettingsV1>) -> serde_json::Value {
+    json!({
+        "namespace": doc.namespace,
+        "scope_type": doc.scope_type,
+        "scope_id": doc.scope_id,
+        "schema_version": doc.schema_version,
+        "revision": doc.revision,
+        "updated_at": doc.updated_at,
+        "updated_by": doc.updated_by,
+        "document": doc.body,
     })
 }
 
@@ -1545,7 +1800,7 @@ mod tests {
         let files = tempfile::tempdir().expect("files");
         let mut config = Config::default();
         let scratch = files.path().join("cache");
-        let session = bootstrap_control_plane(&store, files.path(), &scratch, None, &config.events)
+        let session = bootstrap_control_plane(&store, files.path(), &scratch, None, &config)
             .await
             .expect("bootstrap");
         overlay_events(&mut config, &session.events, &session.cluster_id);
@@ -1705,6 +1960,77 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn output_publication_is_monotonic_and_reload_keeps_host_scratch() {
+        use super::{
+            finish_reload_output, load_output_publication, publish_loaded_output, reconcile_output,
+            LoadedOutput,
+        };
+        use bookclerk_library::control_plane::{replace_output, OutputReplace};
+
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let (store, session, mut config, _files) = enrolled().await;
+        bookclerk_library::control_plane::overlay_core_documents(&mut config, &session);
+        let state = control_plane_test_state(store.clone(), config);
+        let stale = load_output_publication(&store).await.unwrap();
+        assert_eq!(stale.document.revision, 1);
+
+        let mut body = stale.document.body.clone();
+        body.set("output.naming_profile", "classic").unwrap();
+        let applied = replace_output(&store, &operator(), 1, &body, "output-pub-2")
+            .await
+            .unwrap();
+        let OutputReplace::Applied(doc) = applied else {
+            panic!("{applied:?}");
+        };
+        // Another host's write reaches this daemon through the reconciler.
+        reconcile_output(&state).await.unwrap();
+        assert!(
+            !publish_loaded_output(&state, &stale, EventsPublish::Monotonic).await,
+            "an older read must not publish"
+        );
+        let live = state.config.read().await.clone();
+        assert_eq!(
+            live.output.naming_profile,
+            bookclerk_config::NamingProfile::Classic
+        );
+        assert_eq!(live.output_revision, Some(doc.revision));
+
+        // Reload: the candidate's TOML values lose to the live revision, but
+        // its host-local scratch directory is kept.
+        let mut candidate = Config::default();
+        candidate.output.in_progress = Some("/reloaded/scratch".into());
+        candidate.output.naming_profile = bookclerk_config::NamingProfile::Audiobookshelf;
+        finish_reload_output(&live, &mut candidate, &stale, false);
+        assert_eq!(
+            candidate.output.naming_profile,
+            bookclerk_config::NamingProfile::Classic
+        );
+        assert_eq!(candidate.output_revision, live.output_revision);
+        assert_eq!(
+            candidate.output.in_progress.as_deref(),
+            Some(std::path::Path::new("/reloaded/scratch"))
+        );
+
+        // A database swap installs the other cluster's document even at a
+        // lower revision.
+        let swapped = LoadedOutput {
+            cluster_id: "swapped-cluster".into(),
+            document: stale.document.clone(),
+        };
+        let from = candidate.clone();
+        finish_reload_output(&from, &mut candidate, &swapped, true);
+        assert_eq!(
+            candidate.output.naming_profile,
+            bookclerk_config::NamingProfile::Audiobookshelf
+        );
+        assert_eq!(candidate.output_revision, Some(1));
+        assert_eq!(
+            candidate.output_authority.as_deref(),
+            Some("swapped-cluster")
+        );
+    }
+
     /// `[[settings]]` schema of the GraphicAudio manifest at `toml`.
     fn ga_schema(toml: &std::path::Path) -> bookclerk_plugin_abi::SettingsSchema {
         bookclerk_plugin_host::PluginManifest::parse(&std::fs::read_to_string(toml).unwrap())
@@ -1819,7 +2145,7 @@ mod tests {
         use std::collections::BTreeMap;
         use std::path::PathBuf;
 
-        use bookclerk_config::{EventsConfig, Isolation};
+        use bookclerk_config::Isolation;
         use bookclerk_library::control_plane::{
             bootstrap_control_plane, create_plugin_instance, ensure_plugin_deployment,
             import_instance_config_if_absent, load_deployment, load_observation, ConfigActor,
@@ -1842,10 +2168,15 @@ mod tests {
             .expect("schema");
         let store = bookclerk_library::LibraryStore::from_connection(db);
         let scratch = files_path.join("cache");
-        let session =
-            bootstrap_control_plane(&store, files_path, &scratch, None, &EventsConfig::default())
-                .await
-                .expect("bootstrap");
+        let session = bootstrap_control_plane(
+            &store,
+            files_path,
+            &scratch,
+            None,
+            &bookclerk_config::Config::default(),
+        )
+        .await
+        .expect("bootstrap");
         let actor = ConfigActor::Bootstrap;
         let instance = create_plugin_instance(&store, &actor, &plugin_key, "")
             .await
@@ -1991,7 +2322,7 @@ mod tests {
         use std::collections::BTreeMap;
         use std::path::PathBuf;
 
-        use bookclerk_config::{EventsConfig, Isolation};
+        use bookclerk_config::Isolation;
         use bookclerk_library::control_plane::{
             bootstrap_control_plane, create_plugin_instance, ensure_plugin_deployment,
             import_instance_config_if_absent, load_observation, ConfigActor, DeploymentStatus,
@@ -2013,10 +2344,15 @@ mod tests {
             .expect("schema");
         let store = bookclerk_library::LibraryStore::from_connection(db);
         let scratch = files_path.join("cache");
-        let session =
-            bootstrap_control_plane(&store, files_path, &scratch, None, &EventsConfig::default())
-                .await
-                .expect("bootstrap");
+        let session = bootstrap_control_plane(
+            &store,
+            files_path,
+            &scratch,
+            None,
+            &bookclerk_config::Config::default(),
+        )
+        .await
+        .expect("bootstrap");
         let actor = ConfigActor::Bootstrap;
         let first = create_plugin_instance(&store, &actor, &plugin_key, "")
             .await
@@ -2162,7 +2498,7 @@ mod tests {
             files_path,
             &scratch,
             None,
-            &bookclerk_config::EventsConfig::default(),
+            &bookclerk_config::Config::default(),
         )
         .await
         .expect("bootstrap");

@@ -21,8 +21,8 @@
 //! and upload, so it is never frame text.
 
 use bookclerk_library::control_plane::{
-    accept_scan_results, grant_upload, job_titles, live_remote_job, ScanAccept, UploadDestination,
-    UploadGrant, UploadGrantRequest,
+    accept_scan_results, grant_upload, job_titles, live_remote_job, ScanAccept, TitleNames,
+    UploadDestination, UploadGrant, UploadGrantRequest,
 };
 use bookclerk_library::{JobKind, LibraryStore};
 use bookclerk_node_proto::{
@@ -199,9 +199,11 @@ pub(super) async fn acquire_plan(
 
 /// This node's destinations with the key scope of the title `book_uuid`
 /// on each: the folders a local acquire of the title would write under,
-/// named with that destination's own options from this node's library row
-/// ([`bookclerk_acquire::planned_title_folders`]). A title this node does
-/// not have gets an empty scope, so nothing of it is granted.
+/// named with that destination's own options from this node's library row,
+/// and, where that folder is shared with other titles or is the root, the
+/// title's own planned names there
+/// ([`bookclerk_acquire::planned_title_names`]). A title this node does not
+/// have gets an empty scope, so nothing of it is granted.
 ///
 /// # Errors
 ///
@@ -216,20 +218,26 @@ async fn title_destinations(
     let cfg = host.state.config.read().await.clone();
     let mut out = Vec::with_capacity(destinations.len());
     for destination in destinations {
-        let title_folders = match &book {
+        let (title_folders, title_names) = match &book {
             Some(book) => {
                 let request = crate::cluster_link::host_jobs::acquire_request(
                     &cfg,
                     book,
                     &destination.options,
                 );
-                bookclerk_acquire::planned_title_folders(library, &request).await
+                let planned = bookclerk_acquire::planned_title_names(library, &request).await;
+                let names = (!planned.own_folder).then_some(TitleNames {
+                    audio_stems: planned.audio_stems,
+                    part_patterns: planned.part_patterns,
+                });
+                (planned.folders, names)
             }
-            None => Vec::new(),
+            None => (Vec::new(), None),
         };
         out.push(UploadDestination {
             id: destination.id.clone(),
             title_folders,
+            title_names,
         });
     }
     Ok(out)
