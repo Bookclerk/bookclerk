@@ -27,8 +27,15 @@
 //!   `instance.config` and `observation`), and fetches a stored archive
 //!   with [`HostClientHandle::fetch_artifact`], signed with the node key.
 //!
-//! The consent decisions themselves (which plugins, which grant) are the
-//! daemon's; streamed uploads (step 9) are not here.
+//! - a scan's rows returned in fenced batches
+//!   ([`HostJobCtx::send_scan_results`]); an acquire's titles asked for
+//!   ([`HostJobCtx::acquire_plan`]) and its files streamed to the owner
+//!   under a sealed upload token ([`HostJobCtx::grant_upload`],
+//!   [`HostJobCtx::upload_file`], [`HostJobCtx::commit_upload`]); the job
+//!   completes with its closing upload's commit.
+//!
+//! The consent decisions themselves (which plugins, which grant) and how a
+//! job runs its guest are the daemon's.
 
 mod client;
 mod endpoint;
@@ -41,4 +48,7 @@ pub use client::{
 };
 pub use endpoint::{DialError, OwnerEndpoint, OwnerIo, OwnerSocket, CONNECT_PATH, ENROLL_PATH};
 pub use enroll::{join_cluster, JoinError};
-pub use jobs::{HandedSecrets, HostJob, HostJobCtx, HostJobError, HostJobRunner, WriteBackError};
+pub use jobs::{
+    HandedSecrets, HostJob, HostJobCtx, HostJobError, HostJobRunner, HostUpload, OwnerCallError,
+    WriteBackError,
+};

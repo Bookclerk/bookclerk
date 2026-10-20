@@ -1,5 +1,6 @@
 //! Reaching the owner: the transport policy, TLS with the SPKI pin, the
-//! socket upgrade, and the one HTTP request enrollment makes.
+//! socket upgrade, and the HTTP requests a host makes (enrollment,
+//! artifacts, and streamed uploads).
 //!
 //! Decision 1 of the H-4 design: TLS everywhere except loopback.
 //!
@@ -56,6 +57,44 @@ const MAX_HTTP_RESPONSE_BYTES: usize = 64 * 1024;
 
 /// Seconds allowed for an artifact download.
 const ARTIFACT_TIMEOUT_SECS: u64 = 120;
+
+/// Seconds an upload's answer may take after its last byte (the owner's
+/// destinations finish their writes first).
+pub const UPLOAD_ANSWER_TIMEOUT_SECS: u64 = 300;
+
+/// Seconds one read of an upload's body, or one write of it to the owner,
+/// may stall before the upload is abandoned (a stalled source or an owner
+/// that stopped reading); also how long an answer is awaited after a
+/// failed write.
+#[cfg(not(test))]
+const UPLOAD_IDLE_TIMEOUT_SECS: u64 = HTTP_TIMEOUT_SECS;
+
+/// Seconds one upload read or write may stall (short under test).
+#[cfg(test)]
+const UPLOAD_IDLE_TIMEOUT_SECS: u64 = 1;
+
+/// Bytes moved per read / write of a streamed upload.
+const UPLOAD_COPY_CHUNK: usize = 64 * 1024;
+
+/// Runs one I/O step of a streamed upload, failing it with
+/// [`std::io::ErrorKind::TimedOut`] once it stalls past
+/// [`UPLOAD_IDLE_TIMEOUT_SECS`].
+///
+/// # Errors
+///
+/// Returns the step's error, or `TimedOut`.
+async fn idle_step<T>(
+    step: impl std::future::Future<Output = std::io::Result<T>>,
+) -> std::io::Result<T> {
+    tokio::time::timeout(Duration::from_secs(UPLOAD_IDLE_TIMEOUT_SECS), step)
+        .await
+        .unwrap_or_else(|_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the upload stalled",
+            ))
+        })
+}
 
 /// A byte stream to the owner, plain (loopback) or TLS.
 pub trait OwnerIo: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -347,6 +386,119 @@ impl OwnerEndpoint {
             return Err(DialError::Http);
         }
         Ok((status, body))
+    }
+}
+
+impl OwnerEndpoint {
+    /// `PUT path` streaming exactly `length` bytes from `body`, with an
+    /// `Authorization` header; answers the status and the (small) body.
+    /// The header and the bytes are written straight to the stream and
+    /// never logged. Nothing is buffered beyond one copy chunk.
+    ///
+    /// An owner may answer before it has read the whole body (a lost
+    /// fence); the answer is still read after a failed write, for at most
+    /// the idle timeout. Every read of `body` and every write to the owner
+    /// must make progress within `UPLOAD_IDLE_TIMEOUT_SECS`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DialError`] when the request cannot be made, `body` ends
+    /// early, a read or write stalls ([`DialError::Timeout`]), or the
+    /// answer is malformed or does not come within
+    /// `UPLOAD_ANSWER_TIMEOUT_SECS` of the last byte.
+    pub async fn put_stream<R: AsyncRead + Unpin + Send>(
+        &self,
+        path: &str,
+        authorization: &str,
+        length: u64,
+        body: R,
+    ) -> Result<(u16, Vec<u8>), DialError> {
+        if authorization.contains(['\r', '\n']) || path.contains(['\r', '\n', ' ']) {
+            return Err(DialError::Http);
+        }
+        let mut io = self.connect().await?;
+        let head = format!(
+            "PUT {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: {authorization}\r\n\
+             Content-Type: application/octet-stream\r\nAccept: application/json\r\n\
+             Content-Length: {length}\r\nConnection: close\r\n\r\n",
+            self.authority(),
+        );
+        let sent = async {
+            idle_step(io.write_all(head.as_bytes())).await?;
+            let mut body = body.take(length);
+            let mut chunk = vec![0u8; UPLOAD_COPY_CHUNK];
+            let mut copied = 0u64;
+            loop {
+                let n = idle_step(body.read(&mut chunk)).await?;
+                if n == 0 {
+                    break;
+                }
+                idle_step(io.write_all(&chunk[..n])).await?;
+                copied += n as u64;
+            }
+            if copied != length {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "the upload body ended early",
+                ));
+            }
+            idle_step(io.flush()).await
+        }
+        .await;
+        // After a failed write only an answer the owner already sent (or
+        // sends promptly) is worth waiting for.
+        let answer_secs = if sent.is_ok() {
+            UPLOAD_ANSWER_TIMEOUT_SECS
+        } else {
+            UPLOAD_IDLE_TIMEOUT_SECS
+        };
+        let answer = tokio::time::timeout(
+            Duration::from_secs(answer_secs),
+            read_http_response(&mut io, MAX_HTTP_RESPONSE_BYTES),
+        )
+        .await;
+        match (sent, answer) {
+            (_, Ok(Ok(answer))) => Ok(answer),
+            (Err(err), _) if err.kind() == std::io::ErrorKind::TimedOut => Err(DialError::Timeout),
+            (Err(err), _) => Err(DialError::Io(err)),
+            (Ok(()), Ok(Err(err))) => Err(err),
+            (Ok(()), Err(_)) => Err(DialError::Timeout),
+        }
+    }
+
+    /// `POST path` with a JSON body and an `Authorization` header; answers
+    /// the status and body. Neither is logged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DialError`] when the request cannot be made or the answer
+    /// is malformed.
+    pub async fn post_json_authorized(
+        &self,
+        path: &str,
+        authorization: &str,
+        body: &[u8],
+    ) -> Result<(u16, Vec<u8>), DialError> {
+        if authorization.contains(['\r', '\n']) || path.contains(['\r', '\n', ' ']) {
+            return Err(DialError::Http);
+        }
+        let exchange = async {
+            let mut io = self.connect().await?;
+            let head = format!(
+                "POST {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: {authorization}\r\n\
+                 Content-Type: application/json\r\nAccept: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n",
+                self.authority(),
+                body.len()
+            );
+            io.write_all(head.as_bytes()).await?;
+            io.write_all(body).await?;
+            io.flush().await?;
+            read_http_response(&mut io, MAX_HTTP_RESPONSE_BYTES).await
+        };
+        tokio::time::timeout(Duration::from_secs(HTTP_TIMEOUT_SECS), exchange)
+            .await
+            .map_err(|_| DialError::Timeout)?
     }
 }
 
@@ -668,6 +820,82 @@ mod tests {
         let endpoint = OwnerEndpoint::new("HTTPS://Owner.Example:443/enroll", None).unwrap();
         assert_eq!(endpoint.origin(), "https://owner.example");
         assert_eq!(endpoint.authority(), "owner.example");
+    }
+
+    /// A source that never yields a byte.
+    struct Stalled;
+
+    impl AsyncRead for Stalled {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    /// An owner that accepts one connection and then neither reads nor
+    /// answers; the connection is held until the test ends.
+    async fn silent_owner() -> (OwnerEndpoint, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let held = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let endpoint = OwnerEndpoint::new(&format!("http://127.0.0.1:{port}"), None).unwrap();
+        (endpoint, held)
+    }
+
+    /// A body source that stalls fails the upload at the idle timeout
+    /// instead of holding it open forever.
+    #[tokio::test]
+    async fn an_upload_whose_body_stalls_times_out() {
+        let (endpoint, held) = silent_owner().await;
+        let out = tokio::time::timeout(
+            Duration::from_secs(20),
+            endpoint.put_stream("/upload", "Bookclerk-Upload t", 10, Stalled),
+        )
+        .await
+        .expect("the stalled read is abandoned");
+        assert!(matches!(out, Err(DialError::Timeout)), "{out:?}");
+        held.abort();
+    }
+
+    /// An owner that stops reading fails the upload at the idle timeout
+    /// once the socket buffers are full.
+    #[tokio::test]
+    async fn an_upload_the_owner_stops_reading_times_out() {
+        let (endpoint, held) = silent_owner().await;
+        let length = 256u64 << 20;
+        let out = tokio::time::timeout(
+            Duration::from_secs(60),
+            endpoint.put_stream(
+                "/upload",
+                "Bookclerk-Upload t",
+                length,
+                tokio::io::repeat(7).take(length),
+            ),
+        )
+        .await
+        .expect("the stalled write is abandoned");
+        assert!(matches!(out, Err(DialError::Timeout)), "{out:?}");
+        held.abort();
+    }
+
+    /// A body shorter than its declared length is refused after the copy.
+    #[tokio::test]
+    async fn an_upload_body_that_ends_early_is_refused() {
+        let (endpoint, held) = silent_owner().await;
+        let out = endpoint
+            .put_stream("/upload", "Bookclerk-Upload t", 10, &b"abc"[..])
+            .await;
+        assert!(
+            matches!(&out, Err(DialError::Io(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof),
+            "{out:?}"
+        );
+        held.abort();
     }
 
     #[test]

@@ -1269,6 +1269,12 @@ pub(crate) async fn api_timeout_middleware(req: Request, next: Next) -> Response
     if path == "/health" || !path.starts_with("/api/") {
         return next.run(req).await;
     }
+    // A host's streamed upload runs as long as its file takes; the handler
+    // watches the job's fence instead. Only those PUTs: the commit is an
+    // ordinary bounded request and keeps the normal deadline.
+    if is_streamed_upload(req.method(), &path) {
+        return next.run(req).await;
+    }
     // Multi-store purchase / Audnexus detail work is intentionally slower than
     // the default control-plane budget; shelf cards batch these in the viewport.
     let budget = api_timeout_for_path(&path);
@@ -1286,6 +1292,17 @@ pub(crate) async fn api_timeout_middleware(req: Request, next: Next) -> Response
             (StatusCode::GATEWAY_TIMEOUT, "request timed out").into_response()
         }
     }
+}
+
+/// True for a host's streamed file upload, `PUT
+/// /api/node/v1/uploads/{upload_id}/files/{index}`, the one request that
+/// runs without the API deadline ([`api_timeout_middleware`]).
+fn is_streamed_upload(method: &axum::http::Method, path: &str) -> bool {
+    *method == axum::http::Method::PUT
+        && path
+            .strip_prefix(bookclerk_node_proto::UPLOADS_PATH)
+            .and_then(|rest| rest.split_once('/'))
+            .is_some_and(|(_, rest)| rest.starts_with("files/"))
 }
 
 /// Selects the request deadline in seconds for a control-plane path (8s default; longer for discover).
@@ -5453,6 +5470,31 @@ mod tests {
         InviteLinkError, PluginGrantOverride,
     };
     use bookclerk_config::{Config, ListenAddrs};
+
+    /// Only a streamed file PUT runs without the API deadline; the
+    /// commit and every other upload request keep it.
+    #[test]
+    fn only_streamed_upload_puts_skip_the_api_deadline() {
+        use super::is_streamed_upload;
+        use axum::http::Method;
+        assert!(is_streamed_upload(
+            &Method::PUT,
+            "/api/node/v1/uploads/u-1/files/0"
+        ));
+        assert!(!is_streamed_upload(
+            &Method::POST,
+            "/api/node/v1/uploads/u-1/commit"
+        ));
+        assert!(!is_streamed_upload(
+            &Method::PUT,
+            "/api/node/v1/uploads/u-1/commit"
+        ));
+        assert!(!is_streamed_upload(
+            &Method::POST,
+            "/api/node/v1/uploads/u-1/files/0"
+        ));
+        assert!(!is_streamed_upload(&Method::PUT, "/api/library/upload"));
+    }
 
     /// An acquire whose `local` outputs share no node is a 409 `unroutable`
     /// refusal, not a 500; other admission failures keep their codes.

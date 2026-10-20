@@ -410,6 +410,7 @@ impl LinkSupervisor {
             default_instance: item.default_instance,
             consent: RemoteConsentState::Pending,
             root: None,
+            version: None,
             config: None,
             problem: None,
         };
@@ -461,7 +462,18 @@ impl LinkSupervisor {
             return (entry, false);
         };
         match self.materialize(&version, grant, &row).await {
-            Ok(root) => entry.root = Some(root),
+            Ok(root) => {
+                let mut local = version.clone();
+                match serde_json::to_string(&**grant) {
+                    Ok(grant_json) => local.grant_json = grant_json,
+                    Err(err) => {
+                        entry.problem = Some(format!("the consented grant does not encode: {err}"));
+                        return (entry, false);
+                    }
+                }
+                entry.root = Some(root);
+                entry.version = Some(local);
+            }
             Err(problem) => {
                 entry.problem = Some(problem);
                 return (entry, false);
@@ -674,6 +686,7 @@ pub(crate) fn reconcile_consent(
         if now != entry.consent {
             entry.consent = now;
             entry.root = None;
+            entry.version = None;
             entry.config = None;
             changed = true;
         }
@@ -895,6 +908,13 @@ mod tests {
             default_instance: true,
             consent: RemoteConsentState::Consented(Box::new(grant.clone())),
             root: Some(PathBuf::from("/versions/store")),
+            version: Some(
+                plugin_version(
+                    plugin_key,
+                    &remote_version(&"ab".repeat(32), &"cd".repeat(32)),
+                )
+                .unwrap(),
+            ),
             config: Some(RemoteInstanceConfig {
                 revision: 1,
                 config: serde_json::json!({}),

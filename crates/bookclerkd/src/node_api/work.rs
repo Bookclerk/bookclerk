@@ -16,6 +16,7 @@
 //! | `deployments.list` | `deployments {items}` |
 //! | `instance.config` | `instance_config {config, sealed_secrets}`, or `error {code: "not_found"}` |
 //! | `observation` | `ok`, or `error {code: "refused"}` |
+//! | `scan.results` / `acquire.plan` / `upload.grant` | see [`super::host_results`] |
 //!
 //! A claim's `filter` is the host's own narrowing (the kinds it runs and
 //! the plugins its operator consented to); the owner applies it before
@@ -47,8 +48,8 @@ use bookclerk_library::control_plane::{
 use bookclerk_library::{JobResourceClass, LibraryStore};
 use bookclerk_node_proto::{
     open_secret_update, seal_instance_secrets, seal_secrets, Body, ClaimFilter, Frame, HeldFence,
-    RemoteArtifact, RemoteDeployment, RemoteVersion, SecretEntry, SecretRef, SecretValue, WorkJob,
-    ITEM_JOB, MAX_FRAME_BYTES,
+    RemoteArtifact, RemoteDeployment, RemoteVersion, ScanImport, SecretEntry, SecretRef,
+    SecretValue, WorkJob, ITEM_JOB, MAX_FRAME_BYTES,
 };
 use rand::RngCore as _;
 use zeroize::{Zeroize as _, Zeroizing};
@@ -81,10 +82,15 @@ pub(crate) struct HostContext {
     pub owner_box_secret: Zeroizing<[u8; 32]>,
     /// Lease and semaphore settings of this owner node.
     pub settings: RemoteClaimSettings,
+    /// This owner node's id: uploads granted on this connection are
+    /// received here.
+    pub owner_node_id: String,
+    /// The daemon, for this node's output destinations and settings.
+    pub state: std::sync::Arc<crate::api::AppState>,
 }
 
 /// An `error` answer.
-fn error(id: String, code: &str, message: &str) -> Frame {
+pub(super) fn error(id: String, code: &str, message: &str) -> Frame {
     Frame::new(
         id,
         Body::Error {
@@ -95,7 +101,7 @@ fn error(id: String, code: &str, message: &str) -> Frame {
 }
 
 /// A `lost` answer for a job fence.
-fn lost(id: String, job_id: String, fence: i64) -> Frame {
+pub(super) fn lost(id: String, job_id: String, fence: i64) -> Frame {
     Frame::new(
         id,
         Body::Lost {
@@ -244,7 +250,19 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                         cancel,
                     },
                 )),
-                Ok(RemoteRenew::Lost) => Ok(lost(id.clone(), job_id, fence)),
+                Ok(RemoteRenew::Lost) => {
+                    // No upload under a lost fence can commit; drop what
+                    // they received.
+                    super::uploads::discard_job_uploads(
+                        &host.state,
+                        library,
+                        &host.node_id,
+                        &job_id,
+                        fence,
+                    )
+                    .await;
+                    Ok(lost(id.clone(), job_id, fence))
+                }
                 Err(err) => Err(err),
             }
         }
@@ -330,6 +348,54 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                 Err(err) => Err(err),
             }
         }
+        Body::ScanResults {
+            job_id,
+            fence,
+            plugin_key,
+            batch,
+            books,
+        } => {
+            super::host_results::scan_results(
+                library,
+                host,
+                id.clone(),
+                job_id,
+                fence,
+                super::host_results::ScanBatch {
+                    plugin_key: &plugin_key,
+                    batch,
+                    rows: books,
+                },
+            )
+            .await
+        }
+        Body::AcquirePlan { job_id, fence } => {
+            super::host_results::acquire_plan(library, host, id.clone(), job_id, fence).await
+        }
+        Body::UploadGrant {
+            job_id,
+            fence,
+            book_uuid,
+            primary_key,
+            pdf_key,
+            files,
+        } => {
+            super::host_results::upload_grant(
+                library,
+                host,
+                id.clone(),
+                job_id,
+                fence,
+                bookclerk_library::control_plane::UploadGrantRequest {
+                    book_uuid: &book_uuid,
+                    primary_key: &primary_key,
+                    pdf_key: pdf_key.as_deref(),
+                    files: &files,
+                    destinations: &[],
+                },
+            )
+            .await
+        }
         _ => {
             return error(
                 id,
@@ -360,6 +426,19 @@ fn claim_filter(filter: ClaimFilter) -> Result<JobClaimFilter, ()> {
     })
 }
 
+/// For a scan job, this owner's library import settings: the host scans
+/// with them, since the owner writes every row it returns.
+async fn scan_import(host: &HostContext, kind: bookclerk_library::JobKind) -> Option<ScanImport> {
+    if kind != bookclerk_library::JobKind::Scan {
+        return None;
+    }
+    let cfg = host.state.config.read().await;
+    Some(ScanImport {
+        import_episodes: cfg.library.import_episodes,
+        import_plus_titles: cfg.library.import_plus_titles,
+    })
+}
+
 /// `claim`: the next trusted job, its fence, and its sealed secrets.
 async fn claim(
     library: &LibraryStore,
@@ -380,6 +459,7 @@ async fn claim(
         job,
         secrets,
         plugin_keys,
+        source_plugin_key,
         resumed,
     }) = claim_remote_job(library, &host.node_id, class, host.settings, filter).await?
     else {
@@ -415,6 +495,7 @@ async fn claim(
         sealed.map(Some)
     };
     drop(secrets);
+    let scan_import = scan_import(host, job.kind).await;
     let work = sealed.ok().map(|sealed_secrets| {
         Frame::new(
             id.clone(),
@@ -425,11 +506,13 @@ async fn claim(
                     kind: job.kind.as_str().into(),
                     payload: serde_json::to_value(&job.payload).unwrap_or_default(),
                     attempt: job.attempt_count,
+                    scan_import,
                 },
                 fence,
                 lease_secs: host.settings.lease_secs,
                 sealed_secrets,
                 plugin_keys: plugin_keys.clone(),
+                source_plugin_key: source_plugin_key.clone(),
                 resumed,
             },
         )
@@ -481,26 +564,56 @@ async fn finish(
     fence: i64,
     outcome: RemoteOutcome<'_>,
 ) -> bookclerk_library::Result<Frame> {
-    Ok(
-        match finish_remote_job(
-            library,
-            &host.node_id,
-            &job_id,
-            fence,
-            host.settings.limits,
-            outcome,
-        )
-        .await?
-        {
-            RemoteFinish::Done => Frame::new(id, Body::Accepted {}),
-            RemoteFinish::Lost => lost(id, job_id, fence),
-            RemoteFinish::Refused(reason) => error(id, "refused", reason),
-        },
+    // A failed run commits none of its open uploads, so they are aborted
+    // and what they received is deleted before the job ends: until then
+    // its permits are held, so no other acquire of the account can be
+    // writing the same titles while the files go.
+    let discarded = matches!(outcome, RemoteOutcome::Fail { .. });
+    if discarded {
+        super::uploads::discard_job_uploads(&host.state, library, &host.node_id, &job_id, fence)
+            .await;
+    }
+    let finished = finish_remote_job(
+        library,
+        &host.node_id,
+        &job_id,
+        fence,
+        host.settings.limits,
+        outcome,
     )
+    .await?;
+    Ok(match finished {
+        RemoteFinish::Done | RemoteFinish::Lost => {
+            // The job ended (or the fence is gone) without these
+            // uploads committing; what they received is deleted.
+            if !discarded {
+                super::uploads::discard_job_uploads(
+                    &host.state,
+                    library,
+                    &host.node_id,
+                    &job_id,
+                    fence,
+                )
+                .await;
+            }
+            if finished == RemoteFinish::Done {
+                Frame::new(id, Body::Accepted {})
+            } else {
+                lost(id, job_id, fence)
+            }
+        }
+        RemoteFinish::Refused(reason) => error(id, "refused", reason),
+    })
 }
 
 /// `release`: the job goes back to pending unspent; a resumed claim
 /// (`resumed`, as its `work` frame said) is resumable again.
+///
+/// A released run (a consent revoke, a host shutting down) commits none of
+/// its open uploads, so they are aborted and what they had received is
+/// deleted, as for `fail`: before the job goes back and its permits are
+/// given back, so a replacement run cannot be writing the same titles
+/// while the files go.
 async fn finish_release(
     library: &LibraryStore,
     host: &HostContext,
@@ -509,22 +622,21 @@ async fn finish_release(
     fence: i64,
     resumed: bool,
 ) -> bookclerk_library::Result<Frame> {
-    Ok(
-        match release_remote_job(
-            library,
-            &host.node_id,
-            &job_id,
-            fence,
-            resumed,
-            host.settings.limits,
-        )
-        .await?
-        {
-            RemoteFinish::Done => Frame::new(id, Body::Accepted {}),
-            RemoteFinish::Lost => lost(id, job_id, fence),
-            RemoteFinish::Refused(reason) => error(id, "refused", reason),
-        },
+    super::uploads::discard_job_uploads(&host.state, library, &host.node_id, &job_id, fence).await;
+    let released = release_remote_job(
+        library,
+        &host.node_id,
+        &job_id,
+        fence,
+        resumed,
+        host.settings.limits,
     )
+    .await?;
+    Ok(match released {
+        RemoteFinish::Done => Frame::new(id, Body::Accepted {}),
+        RemoteFinish::Lost => lost(id, job_id, fence),
+        RemoteFinish::Refused(reason) => error(id, "refused", reason),
+    })
 }
 
 /// A version as a host receives it.

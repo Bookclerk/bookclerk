@@ -8,8 +8,8 @@
 //!   cluster semaphores), then [`handoff_routed_job`] re-checks trust just
 //!   before the job's secrets are unsealed for the node.
 //! - [`renew_remote_job`]: the fenced job heartbeat plus the renewal of the
-//!   job's semaphore permits. Trust and the node credential are re-read on
-//!   every renewal.
+//!   job's semaphore permits and of the tokens of the job's open uploads.
+//!   Trust and the node credential are re-read on every renewal.
 //! - [`finish_remote_job`]: the fenced complete or fail, then the permits
 //!   are given back.
 //! - [`release_remote_job`]: the Host gives a job back unrun (its operator
@@ -39,8 +39,9 @@ use zeroize::Zeroizing;
 
 use super::batch::{self, int, text};
 use super::job_routing::{
-    claim_routed_job, job_permit_holder_prefix, job_plugin_keys, job_semaphores, pinned_plugin_key,
-    JobClaimFilter, JobClaimLimits, JobClaimRequest, RoutedJobClaim,
+    claim_routed_job, job_permit_holder_prefix, job_plugin_keys, job_semaphores,
+    job_source_plugin_key, pinned_plugin_key, JobClaimFilter, JobClaimLimits, JobClaimRequest,
+    RoutedJobClaim,
 };
 use super::semaphore::{
     permits_with_holder_prefix, release_permits, renew_permits, SemaphorePermit,
@@ -138,6 +139,9 @@ pub struct RemoteJobClaim {
     /// The plugin keys the job runs ([`job_plugin_keys`]); empty when the
     /// job alone does not say (only possible without a claim filter).
     pub plugin_keys: Vec<String>,
+    /// The one plugin whose source guest runs the job
+    /// ([`job_source_plugin_key`]); always set under a claim filter.
+    pub source_plugin_key: Option<String>,
     /// The claim resumed a suspended job ([`RoutedJobClaim::resumed`]).
     /// Pass it back to [`release_remote_job`] if the claim is given back.
     pub resumed: bool,
@@ -203,7 +207,8 @@ pub enum WriteBack {
 /// `None` is returned.
 ///
 /// `filter` is the Host's own narrowing ([`JobClaimFilter`]): only jobs of
-/// its kinds whose every plugin it consented to are claimed.
+/// its kinds whose every plugin it consented to, and whose one source
+/// plugin can be told, are claimed.
 ///
 /// # Errors
 ///
@@ -254,6 +259,22 @@ pub async fn claim_remote_job(
             return Err(err);
         }
     };
+    let source_plugin_key = match job_source_plugin_key(store, &job).await {
+        Ok(key) => key,
+        Err(err) => {
+            // Nothing went out; give the claim back unspent.
+            give_back_claim(store, &fence, &permits, resumed).await;
+            return Err(err);
+        }
+    };
+    let canonical = match canonical_account(store, &job, source_plugin_key.as_deref()).await {
+        Ok(canonical) => canonical,
+        Err(err) => {
+            // Nothing went out; give the claim back unspent.
+            give_back_claim(store, &fence, &permits, resumed).await;
+            return Err(err);
+        }
+    };
     match unseal_job_secrets(store, &job).await {
         Ok(secrets) => {
             // Trust can change while the secrets are read: check it once
@@ -266,9 +287,10 @@ pub async fn claim_remote_job(
             }
             match record_handoff(store, node_id, &fence, &secrets).await {
                 Ok(true) => Ok(Some(RemoteJobClaim {
-                    job,
+                    job: with_account(job, canonical),
                     secrets,
                     plugin_keys,
+                    source_plugin_key,
                     resumed,
                 })),
                 Ok(false) => {
@@ -544,12 +566,59 @@ async fn was_handed(
     handed_on(store.db(), fence, secret_ref).await
 }
 
-/// The job `fence` owns right now, if it still owns one.
-async fn fenced_job(store: &LibraryStore, fence: &JobFence) -> Result<Option<JobRecord>> {
+/// The one account id the job's account selector names (by id or label,
+/// ignoring case, [`accounts_named`]) under its source plugin, when it
+/// names exactly one and differs from it; `None` otherwise (no selector,
+/// already canonical, or ambiguous).
+///
+/// # Errors
+///
+/// Returns an error when the read fails.
+async fn canonical_account(
+    store: &LibraryStore,
+    job: &JobRecord,
+    source_plugin_key: Option<&str>,
+) -> Result<Option<String>> {
+    let Some(selector) = job.payload.account.as_deref().filter(|a| !a.is_empty()) else {
+        return Ok(None);
+    };
+    let named = accounts_named(store, selector, source_plugin_key).await?;
+    let mut named = named.into_iter();
+    Ok(match (named.next(), named.next()) {
+        (Some((_, account_id)), None) if account_id != selector => Some(account_id),
+        _ => None,
+    })
+}
+
+/// `job` as handed to a remote node: its account selector replaced by the
+/// `canonical` account id it resolved to ([`canonical_account`]), so the
+/// node's credential lookup and its scan rows name the account by the id
+/// the handed secrets and the owner's checks use. Only the handed copy
+/// changes; the job row keeps the selector it was enqueued with.
+fn with_account(mut job: JobRecord, canonical: Option<String>) -> JobRecord {
+    if let Some(account_id) = canonical {
+        job.payload.account = Some(account_id);
+    }
+    job
+}
+
+/// The job `fence` owns right now, if it still owns one: the job is
+/// running under that owner and generation and its lease has not run out.
+/// An expired lease no longer owns the job even before the reclaim runs
+/// (it may be claimed again at any moment), so a node past its lease can
+/// neither renew it nor write scan rows, open or commit uploads, or finish
+/// the job, as the job-secret handoff gate (`record_handoff`) already
+/// requires.
+pub(super) async fn fenced_job(
+    store: &LibraryStore,
+    fence: &JobFence,
+) -> Result<Option<JobRecord>> {
+    let now = Utc::now();
     Ok(store.get_job(&fence.job_id).await?.filter(|job| {
         job.state == JobState::Running
             && job.lease_owner.as_deref() == Some(fence.owner.as_str())
             && job.lease_generation == fence.generation
+            && job.lease_expires_at.is_some_and(|expires| expires > now)
     }))
 }
 
@@ -564,7 +633,7 @@ async fn fenced_job(store: &LibraryStore, fence: &JobFence) -> Result<Option<Job
 /// now: an account relabelled while the job runs keeps the permit the claim
 /// took renewed. A semaphore the job counts against now but the claim does
 /// not hold makes the set incomplete.
-async fn held_job_permits(
+pub(super) async fn held_job_permits(
     store: &LibraryStore,
     node_id: &str,
     job: &JobRecord,
@@ -627,6 +696,10 @@ pub async fn renew_remote_job(
         store.heartbeat_job(&fence, 0, None).await?;
         return Ok(RemoteRenew::Lost);
     }
+    // The renewed fence keeps the job's open uploads' tokens alive, so a
+    // slow title is not cut off mid-way; nothing extends them once the
+    // fence is lost.
+    super::uploads::extend_job_uploads(store, node_id, job_id, generation).await?;
     Ok(RemoteRenew::Renewed {
         cancel: job.cancel_requested,
     })
@@ -663,7 +736,15 @@ pub async fn finish_remote_job(
             if !node_may_claim_job(store, node_id, Claimant::Remote, &job).await? {
                 return Ok(RemoteFinish::Lost);
             }
-            store.complete_job(&fence, detail).await?
+            if job.cancel_requested {
+                // A cancelled job never succeeds, whatever the Host
+                // reports; it ends cancelled.
+                store
+                    .fail_job(&fence, "cancelled", "cancelled by operator")
+                    .await?
+            } else {
+                store.complete_job(&fence, detail).await?
+            }
         }
         RemoteOutcome::Fail { kind, message } => store.fail_job(&fence, kind, message).await?,
     };
@@ -788,6 +869,29 @@ pub async fn write_back_job_secret(
         return Ok(WriteBack::Refused("fence_not_live"));
     }
     Ok(WriteBack::Written)
+}
+
+/// The job `node_id` holds at `generation`, while that fence is the job's
+/// live lease and the node is still trusted with the job; `None` when it
+/// is lost.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub async fn live_remote_job(
+    store: &LibraryStore,
+    node_id: &str,
+    job_id: &str,
+    generation: i64,
+) -> Result<Option<JobRecord>> {
+    let fence = remote_job_fence(node_id, job_id, generation);
+    let Some(job) = fenced_job(store, &fence).await? else {
+        return Ok(None);
+    };
+    if !node_may_claim_job(store, node_id, Claimant::Remote, &job).await? {
+        return Ok(None);
+    }
+    Ok(Some(job))
 }
 
 /// Overwrites the sealed value of `secret_ref` with `record` in one host

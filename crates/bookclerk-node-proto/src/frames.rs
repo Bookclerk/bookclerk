@@ -148,6 +148,11 @@ pub enum Body {
         /// consents to every one.
         #[serde(default)]
         plugin_keys: Vec<String>,
+        /// The one plugin of `plugin_keys` whose source guest runs the
+        /// job (the others are destinations it writes); the owner hands a
+        /// host only jobs that name one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_plugin_key: Option<String>,
         /// The claim resumed a suspended job: no attempt was spent, and the
         /// job's checkpoint applies.
         #[serde(default)]
@@ -299,6 +304,91 @@ pub enum Body {
         /// (`crate::seal_secret_update`).
         sealed_value: String,
     },
+    /// Host → owner: one batch of a scan's book rows (decision 6). The
+    /// owner checks the fence, the node's trust with the job, and every
+    /// row's account before it writes any row to its library, on every
+    /// batch. Answered with [`Body::ScanAccepted`], [`Body::Lost`], or
+    /// `error {code: "refused"}`.
+    #[serde(rename = "scan.results")]
+    ScanResults {
+        /// Job the rows belong to.
+        job_id: String,
+        /// Lease generation the host holds.
+        fence: i64,
+        /// Plugin key whose guest produced the rows (one of the job's).
+        plugin_key: String,
+        /// Batch number, from 1, for the logs.
+        batch: u64,
+        /// Book rows as the guest's `ScanBook` (camelCase JSON objects);
+        /// at most [`MAX_SCAN_BATCH_ROWS`].
+        books: Vec<serde_json::Value>,
+    },
+    /// Owner → host: a results batch was written.
+    #[serde(rename = "scan.accepted")]
+    ScanAccepted {
+        /// The batch number.
+        batch: u64,
+        /// Rows written.
+        upserted: u64,
+    },
+    /// Host → owner: what an acquire job should fetch here. Answered with
+    /// [`Body::AcquireTargets`], [`Body::Lost`], or `error`.
+    #[serde(rename = "acquire.plan")]
+    AcquirePlan {
+        /// The acquire job.
+        job_id: String,
+        /// Lease generation the host holds.
+        fence: i64,
+    },
+    /// Owner → host: the titles to acquire and how to package them.
+    #[serde(rename = "acquire.targets")]
+    AcquireTargets {
+        /// Titles still to acquire, each one of the job's accounts.
+        targets: Vec<AcquireTarget>,
+        /// Every output destination deployed on the answering owner node,
+        /// the primary first, each with its own packaging and naming
+        /// options, so the host names each destination's files as a local
+        /// acquire would.
+        destinations: Vec<PlanDestination>,
+    },
+    /// Host → owner: ask to upload one title's files. Answered with
+    /// [`Body::UploadGranted`], [`Body::Lost`], or `error`.
+    #[serde(rename = "upload.grant")]
+    UploadGrant {
+        /// The acquire job.
+        job_id: String,
+        /// Lease generation the host holds.
+        fence: i64,
+        /// Library id of the title the files are for (one of the job's
+        /// targets).
+        book_uuid: String,
+        /// Storage key of the title's primary audio file on the primary
+        /// destination (one of `files`' copies there).
+        primary_key: String,
+        /// Storage key of the title's companion PDF on the primary
+        /// destination (one of `files`' copies there), when one is
+        /// uploaded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pdf_key: Option<String>,
+        /// Every file, in upload order. Empty, with an empty `book_uuid`,
+        /// for the job's closing upload, whose commit only completes the
+        /// job.
+        files: Vec<UploadFile>,
+    },
+    /// Owner → host: the upload is open.
+    #[serde(rename = "upload.granted")]
+    UploadGranted {
+        /// Upload id; the files go to `UPLOADS_PATH<upload_id>/files/<n>`.
+        upload_id: String,
+        /// The bearer token for the upload endpoint, sealed to the node's
+        /// box key and bound to the node, job, fence and upload
+        /// (`crate::seal_upload_token`).
+        sealed_token: String,
+        /// Seconds the token stays valid unless extended: the owner
+        /// extends it while the job's fence is live (each renewal and each
+        /// accepted file).
+        expires_in_secs: u64,
+    },
     /// Owner → host: a message from the host's `node.<id>` queue. The host
     /// answers [`Body::Ack`] with the same frame id once it has acted.
     Wake {
@@ -404,6 +494,206 @@ pub struct WorkJob {
     pub payload: serde_json::Value,
     /// Claims of this job so far, this one included.
     pub attempt: i64,
+    /// For a scan: which titles the owner's library imports. The owner
+    /// writes every row a host returns, so the host scans with the
+    /// owner's settings, never its own. Absent for other kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan_import: Option<ScanImport>,
+}
+
+/// The owner's library import settings a host scan runs with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanImport {
+    /// Import podcast episodes.
+    pub import_episodes: bool,
+    /// Import subscription (Plus) titles.
+    pub import_plus_titles: bool,
+}
+
+/// Most rows one [`Body::ScanResults`] batch may carry.
+pub const MAX_SCAN_BATCH_ROWS: usize = 200;
+
+/// Largest serialized row in a [`Body::ScanResults`] batch.
+pub const MAX_SCAN_ROW_BYTES: usize = 32 * 1024;
+
+/// Most files one upload may declare.
+pub const MAX_UPLOAD_FILES: usize = 512;
+
+/// Largest file one upload may declare (8 GiB).
+pub const MAX_UPLOAD_FILE_BYTES: u64 = 8 << 30;
+
+/// Longest storage key an upload may declare.
+pub const MAX_UPLOAD_KEY_BYTES: usize = 1024;
+
+/// Most destinations one uploaded file may be written to.
+pub const MAX_UPLOAD_COPIES: usize = 16;
+
+/// Longest destination id.
+pub const MAX_DESTINATION_ID_BYTES: usize = 64;
+
+/// One title an acquire job should fetch on a host
+/// ([`Body::AcquireTargets`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcquireTarget {
+    /// Library id of the title.
+    pub book_uuid: String,
+    /// Plugin key of the store that sells it.
+    pub plugin_key: String,
+    /// Store account that owns it.
+    pub account_id: String,
+    /// The owner's library row (JSON), for naming and metadata.
+    pub book: serde_json::Value,
+    /// The owner's row for the title's podcast parent (JSON), when the
+    /// title is an episode whose parent is in the owner's library: a
+    /// destination that saves episodes to the parent's folder names them
+    /// from it, as an acquire on the owner would.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<serde_json::Value>,
+}
+
+/// One output destination of the owner node that answered an acquire plan
+/// ([`Body::AcquireTargets`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanDestination {
+    /// Destination id on that owner node (its output kind, such as `local`
+    /// or `s3`; one destination per kind).
+    pub id: String,
+    /// That destination's `DownloadOptions` (JSON): its naming templates,
+    /// replacement characters and path limits.
+    pub options: serde_json::Value,
+}
+
+/// True when `id` is a destination id: a short lowercase token.
+#[must_use]
+pub fn is_destination_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_DESTINATION_ID_BYTES
+        && id
+            .bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
+}
+
+/// True when `key` is a relative storage key: no empty, `.` or `..`
+/// segment, no backslash or control character, not absolute, at most
+/// [`MAX_UPLOAD_KEY_BYTES`], and never a Windows path that leaves the
+/// destination's root (`colon_is_safe`).
+#[must_use]
+pub fn is_storage_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= MAX_UPLOAD_KEY_BYTES
+        && !key.starts_with('/')
+        && !key.contains('\\')
+        && !key.chars().any(char::is_control)
+        && colon_is_safe(key)
+        && key
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+}
+
+/// True unless `key` starts with a Windows drive prefix (`C:x`, `C:`):
+/// joined onto a local destination's root on Windows, that names a path on
+/// another drive. It is the only form a relative key can take that leaves
+/// the root there; a `:` anywhere else is an ordinary character of a title
+/// (`Star Wars: X/...`) under the POSIX and S3 naming rules, which keep it.
+/// A Windows local destination refuses `:` itself (NTFS alternate data
+/// streams), whoever planned the key.
+fn colon_is_safe(key: &str) -> bool {
+    let mut bytes = key.bytes();
+    !matches!(
+        (bytes.next(), bytes.next()),
+        (Some(drive), Some(b':')) if drive.is_ascii_alphabetic()
+    )
+}
+
+/// Where one uploaded file is written: a destination and its key there.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileCopy {
+    /// A [`PlanDestination::id`].
+    pub destination: String,
+    /// Storage key on that destination.
+    pub key: String,
+}
+
+/// One file of an upload ([`Body::UploadGrant`]). Its content crosses the
+/// network once and is written to every copy, each destination under the
+/// key that destination's own naming options give it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UploadFile {
+    /// Where the file is written; at most one copy per destination.
+    pub copies: Vec<FileCopy>,
+    /// Exact size in bytes.
+    pub size: u64,
+    /// Lowercase hex SHA-256 of the content.
+    pub sha256: String,
+    /// MIME type to store with it.
+    #[serde(default)]
+    pub content_type: Option<String>,
+}
+
+impl UploadFile {
+    /// True when the file has between one and [`MAX_UPLOAD_COPIES`]
+    /// copies, each naming a different destination id
+    /// ([`is_destination_id`]) and a storage key ([`is_storage_key`]); the
+    /// size is within [`MAX_UPLOAD_FILE_BYTES`]; and the digest is
+    /// lowercase hex SHA-256.
+    #[must_use]
+    pub fn is_well_formed(&self) -> bool {
+        let mut destinations = std::collections::BTreeSet::new();
+        let copies_ok = !self.copies.is_empty()
+            && self.copies.len() <= MAX_UPLOAD_COPIES
+            && self.copies.iter().all(|copy| {
+                is_destination_id(&copy.destination)
+                    && is_storage_key(&copy.key)
+                    && destinations.insert(copy.destination.as_str())
+            });
+        let digest_ok = self.sha256.len() == 64
+            && self
+                .sha256
+                .bytes()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+        let type_ok = self
+            .content_type
+            .as_deref()
+            .is_none_or(|t| t.len() <= 128 && !t.chars().any(char::is_control));
+        copies_ok && digest_ok && type_ok && self.size <= MAX_UPLOAD_FILE_BYTES
+    }
+
+    /// This file's key on `destination`, if it is written there.
+    #[must_use]
+    pub fn key_on(&self, destination: &str) -> Option<&str> {
+        self.copies
+            .iter()
+            .find(|copy| copy.destination == destination)
+            .map(|copy| copy.key.as_str())
+    }
+}
+
+/// Body of `POST <UPLOADS_PATH><upload_id>/commit`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UploadCommitRequest {
+    /// Complete the job with this commit (the job's closing upload).
+    #[serde(default)]
+    pub finish: bool,
+    /// Outcome text recorded as the job's progress when `finish` is set.
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+/// Answer of the upload endpoint (every status carries one).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UploadAnswer {
+    /// Stable outcome: `received`, `committed`, `lost`, `refused`,
+    /// `misdirected`, `unauthorized`, `unavailable`.
+    pub status: String,
+    /// Why, for `refused`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// For `committed`: the job is finished.
+    #[serde(default)]
+    pub job_completed: bool,
 }
 
 /// One frame: the envelope and its body.
@@ -471,6 +761,63 @@ impl Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upload_files_must_be_relative_keys_with_hex_digests() {
+        let copy = |destination: &str, key: &str| FileCopy {
+            destination: destination.into(),
+            key: key.into(),
+        };
+        let file = |key: &str| UploadFile {
+            copies: vec![copy("local", key)],
+            size: 1,
+            sha256: "0f".repeat(32),
+            content_type: Some("audio/mp4".into()),
+        };
+        assert!(file("Author/Title/Title.m4b").is_well_formed());
+        for bad in ["", "/abs.m4b", "a/../b.m4b", "a//b", "./a", "a\\b", "a\nb"] {
+            assert!(!file(bad).is_well_formed(), "{bad:?}");
+        }
+        // A drive prefix would leave a Windows root.
+        for bad in ["C:x", "C:", "c:x/a.m4b", "Z:/a.m4b"] {
+            assert!(!file(bad).is_well_formed(), "{bad:?}");
+        }
+        // Any other colon is part of a title name.
+        for good in [
+            "Star Wars: X/Book.m4b",
+            "Author/Book: Subtitle/Book.m4b",
+            "AB:c/d.m4b",
+            "1:x.m4b",
+        ] {
+            assert!(file(good).is_well_formed(), "{good:?}");
+        }
+        let mut upper = file("a.m4b");
+        upper.sha256 = "0F".repeat(32);
+        assert!(!upper.is_well_formed());
+        let mut huge = file("a.m4b");
+        huge.size = MAX_UPLOAD_FILE_BYTES + 1;
+        assert!(!huge.is_well_formed());
+
+        let mut two = file("Author/Title/Title.m4b");
+        two.copies.push(copy("s3", "Title/Title.m4b"));
+        assert!(two.is_well_formed(), "each destination has its own key");
+        assert_eq!(two.key_on("s3"), Some("Title/Title.m4b"));
+        assert_eq!(two.key_on("local"), Some("Author/Title/Title.m4b"));
+        assert_eq!(two.key_on("other"), None);
+        let mut twice = file("a.m4b");
+        twice.copies.push(copy("local", "b.m4b"));
+        assert!(!twice.is_well_formed(), "one copy per destination");
+        let mut none = file("a.m4b");
+        none.copies.clear();
+        assert!(!none.is_well_formed(), "a file goes somewhere");
+        for bad in ["", "Local", "s3/x", "a b"] {
+            assert!(!UploadFile {
+                copies: vec![copy(bad, "a.m4b")],
+                ..file("a.m4b")
+            }
+            .is_well_formed());
+        }
+    }
 
     #[test]
     fn frames_round_trip_and_unknown_types_parse() {
@@ -554,11 +901,16 @@ mod tests {
                         kind: "scan".into(),
                         payload: serde_json::json!({"account": "a"}),
                         attempt: 1,
+                        scan_import: Some(ScanImport {
+                            import_episodes: false,
+                            import_plus_titles: true,
+                        }),
                     },
                     fence: 2,
                     lease_secs: 60,
                     sealed_secrets: Some("x".into()),
                     plugin_keys: vec!["store".into()],
+                    source_plugin_key: Some("store".into()),
                     resumed: false,
                 },
                 "work",
@@ -638,6 +990,79 @@ mod tests {
             ),
         ] {
             let text = Frame::new("3", body.clone()).to_text();
+            assert!(text.contains(&format!(r#""type":"{tag}""#)), "{text}");
+            assert_eq!(Frame::parse(&text).unwrap().body, body);
+        }
+        for (body, tag) in [
+            (
+                Body::ScanResults {
+                    job_id: job_id(),
+                    fence: 2,
+                    plugin_key: "store".into(),
+                    batch: 1,
+                    books: vec![serde_json::json!({"productId": "p"})],
+                },
+                "scan.results",
+            ),
+            (
+                Body::ScanAccepted {
+                    batch: 1,
+                    upserted: 1,
+                },
+                "scan.accepted",
+            ),
+            (
+                Body::AcquirePlan {
+                    job_id: job_id(),
+                    fence: 2,
+                },
+                "acquire.plan",
+            ),
+            (
+                Body::AcquireTargets {
+                    targets: vec![AcquireTarget {
+                        book_uuid: "b".into(),
+                        plugin_key: "store".into(),
+                        account_id: "a".into(),
+                        book: serde_json::json!({}),
+                        parent: None,
+                    }],
+                    destinations: vec![PlanDestination {
+                        id: "local".into(),
+                        options: serde_json::json!({}),
+                    }],
+                },
+                "acquire.targets",
+            ),
+            (
+                Body::UploadGrant {
+                    job_id: job_id(),
+                    fence: 2,
+                    book_uuid: "b".into(),
+                    primary_key: "A/B.m4b".into(),
+                    pdf_key: None,
+                    files: vec![UploadFile {
+                        copies: vec![FileCopy {
+                            destination: "local".into(),
+                            key: "A/B.m4b".into(),
+                        }],
+                        size: 3,
+                        sha256: "ab".repeat(32),
+                        content_type: None,
+                    }],
+                },
+                "upload.grant",
+            ),
+            (
+                Body::UploadGranted {
+                    upload_id: "u".into(),
+                    sealed_token: "x".into(),
+                    expires_in_secs: 3600,
+                },
+                "upload.granted",
+            ),
+        ] {
+            let text = Frame::new("4", body.clone()).to_text();
             assert!(text.contains(&format!(r#""type":"{tag}""#)), "{text}");
             assert_eq!(Frame::parse(&text).unwrap().body, body);
         }

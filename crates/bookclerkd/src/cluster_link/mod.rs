@@ -24,10 +24,11 @@
 //! the owner's handed secrets and token write-back on [`JobExecCtx::host`]
 //! and the guest's `CONFIG`, `SECRETS` and store credentials on
 //! [`JobExecCtx::host_bindings`] ([`remote_bindings::host_job_bindings`]).
-//! No job kind runs on a host yet ([`HOST_RUNNABLE_KINDS`] is empty): scan
-//! results have no way back to the owner and acquire waits for streamed
-//! uploads (step 9), so a host claims nothing even when consented. The
-//! in-process transport refuses host jobs outright, since it would run
+//! The transport is [`host_jobs::HostJobTransport`]: it spawns the owner's
+//! plugin jailed under the consented grant and returns a scan's rows in
+//! fenced results batches, or streams an acquire's files to the owner
+//! (step 9). Scans and acquires run on a host ([`HOST_RUNNABLE_KINDS`]).
+//! The in-process transport refuses host jobs outright, since it would run
 //! them against this install's own library.
 //!
 //! A close with 4403 (this node revoked) marks the link `revoked`, cancels
@@ -35,6 +36,7 @@
 
 pub mod api;
 pub mod consent;
+pub mod host_jobs;
 pub mod remote_bindings;
 
 use std::collections::BTreeSet;
@@ -53,21 +55,16 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::api::AppState;
-use crate::job_handler::{InProcessJobTransport, JobCommand, JobExecCtx, JobTransport};
+use crate::job_handler::{JobCommand, JobExecCtx, JobTransport};
 
 use self::remote_bindings::{host_job_bindings, RemoteCatalog};
 
 /// Jobs a host client holds at once.
 pub const HOST_MAX_JOBS: usize = 2;
 
-/// Job kinds a host claims. Empty until a host's results have a way back
-/// to the owner: a scan's titles (pending a decision on returning them)
-/// and an acquire's files (streamed uploads, step 9).
-pub const HOST_RUNNABLE_KINDS: &[&str] = &[];
-
-/// Error kind for an acquire handed to a host before streamed uploads
-/// (step 9) give its result a way back to the owner.
-pub const UPLOAD_UNAVAILABLE: &str = "upload_unavailable";
+/// Job kinds a host claims: a scan returns its rows in fenced results
+/// batches, an acquire streams its files to the owner.
+pub const HOST_RUNNABLE_KINDS: &[&str] = &["scan", "acquire"];
 
 /// Error kind for a handed job this daemon cannot decode.
 pub const INVALID_HANDED_JOB: &str = "invalid_job";
@@ -92,13 +89,6 @@ impl<T: JobTransport + 'static> HostJobRunner for TransportRunner<T> {
     async fn run(&self, ctx: HostJobCtx) -> Result<String, HostJobError> {
         let invalid = |detail: &str| HostJobError::new(INVALID_HANDED_JOB, detail);
         let kind = JobKind::parse(&ctx.job.job.kind).ok_or_else(|| invalid("unknown job kind"))?;
-        if kind == JobKind::Acquire {
-            // `complete` is refused for an acquire until its upload commits.
-            return Err(HostJobError::new(
-                UPLOAD_UNAVAILABLE,
-                "a host cannot return acquired files to the owner yet",
-            ));
-        }
         let payload: JobPayload = serde_json::from_value(ctx.job.job.payload.clone())
             .map_err(|_| invalid("malformed job payload"))?;
         let command =
@@ -273,7 +263,10 @@ async fn start_clients(
         };
         let catalog = Arc::new(RemoteCatalog::default());
         let runner = TransportRunner::new(
-            InProcessJobTransport::new(Arc::clone(state)),
+            host_jobs::HostJobTransport::new(host_jobs::GuestHost::new(
+                Arc::clone(state),
+                files_dir.clone(),
+            )),
             Arc::clone(&catalog),
         );
         let (client, handle) = match HostClient::new(
