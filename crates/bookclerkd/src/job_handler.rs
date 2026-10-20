@@ -33,6 +33,18 @@ pub struct JobExecCtx {
     pub checkpoint: Option<JobCheckpoint>,
     /// Resume ordinal from the durable payload; distinct from [`Self::attempt_count`].
     pub invocation_sequence: u32,
+    /// Set when this daemon runs the job as a host node for an owner
+    /// cluster: the secrets the owner handed with it (opened with this
+    /// node's box key, never written to disk) and token write-back under
+    /// the owner's fence. `None` for the daemon's own jobs.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read by the guest SECRETS backend once host consent (step 8) lets owner plugins run"
+        )
+    )]
+    pub host: Option<Arc<bookclerk_node_client::HostJobCtx>>,
 }
 
 impl JobExecCtx {
@@ -65,19 +77,29 @@ impl JobCommand {
     ///
     /// Returns an error when the envelope version or kind cannot be executed.
     pub fn from_record(job: &JobRecord) -> anyhow::Result<Self> {
-        if job.kind == JobKind::Invalid {
+        Self::from_parts(job.kind, job.payload.clone())
+    }
+
+    /// Builds a command from a kind and payload (a job handed by an owner
+    /// cluster), rejecting unknown/invalid kinds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the envelope version or kind cannot be executed.
+    pub fn from_parts(kind: JobKind, payload: JobPayload) -> anyhow::Result<Self> {
+        if kind == JobKind::Invalid {
             anyhow::bail!("invalid_job");
         }
-        if job.payload.v != JOB_COMMAND_VERSION {
+        if payload.v != JOB_COMMAND_VERSION {
             anyhow::bail!(
                 "unsupported job command version {} (expected {JOB_COMMAND_VERSION})",
-                job.payload.v
+                payload.v
             );
         }
         Ok(Self {
-            version: job.payload.v,
-            kind: job.kind,
-            payload: job.payload.clone(),
+            version: payload.v,
+            kind,
+            payload,
         })
     }
 }

@@ -76,6 +76,12 @@ pub enum Body {
         /// work and renews them as usual, and that `renew` decides.
         #[serde(default)]
         unchecked: Vec<HeldFence>,
+        /// The lease, in seconds, the `renewed` fences now run for, counted
+        /// from the host's `hello`. The owner's lease length may have
+        /// changed while the host was away, so the host counts this rather
+        /// than its original grant; absent when nothing was renewed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lease_secs: Option<u64>,
     },
     /// Either side: a request was not served. The connection stays open.
     Error {
@@ -411,6 +417,7 @@ mod tests {
                         fence: 1,
                     }],
                     unchecked: Vec::new(),
+                    lease_secs: None,
                 },
                 "resumed",
             ),

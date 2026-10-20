@@ -209,6 +209,12 @@ pub fn close_node_sessions(node_id: &str, code: u16) {
     }
 }
 
+/// True while this owner node holds a live connection of `node_id`.
+#[cfg(test)]
+pub(crate) fn node_session_live(node_id: &str) -> bool {
+    sessions().live.contains_key(node_id)
+}
+
 /// Registers a connection that is still in the handshake. It does not
 /// replace the node's live connection; see [`promote`].
 pub(super) fn register_pending(node_id: &str) -> (u64, watch::Receiver<Option<u16>>) {

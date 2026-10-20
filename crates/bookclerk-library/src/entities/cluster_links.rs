@@ -1,6 +1,5 @@
 //! SeaORM entity for `cluster_links`: on a host node, the owner clusters it
-//! enrolled into. The host-side client that writes these rows is not built
-//! yet.
+//! enrolled into (written by `control_plane::record_cluster_link`).
 
 use sea_orm::entity::prelude::*;
 

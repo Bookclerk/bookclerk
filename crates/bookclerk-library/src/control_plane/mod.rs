@@ -8,6 +8,7 @@
 //! See `docs/adr/control-plane.md`.
 
 mod batch;
+mod cluster_links;
 mod deployments;
 mod documents;
 mod enrollment;
@@ -34,6 +35,11 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+pub use cluster_links::{
+    decode_spki_pin, list_cluster_links, load_cluster_link, load_cluster_link_keys,
+    record_cluster_link, set_cluster_link_state, ClusterLink, ClusterLinkKeys, NewClusterLink,
+    CLUSTER_LINK_ACTIVE, CLUSTER_LINK_KEYS_NAME, CLUSTER_LINK_LEFT, CLUSTER_LINK_REVOKED,
+};
 pub use deployments::{
     bounded_observation_detail, delete_plugin_deployment, ensure_plugin_deployment,
     instance_has_deployment, list_all_deployments, list_deployments_for_instance,
