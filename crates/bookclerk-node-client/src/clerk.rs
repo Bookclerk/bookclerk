@@ -335,8 +335,9 @@ fn roll_back(replaced: &[Staged]) -> Vec<String> {
     failed
 }
 
-/// Syncs the directories holding `staged`, so the replaces are durable
-/// (best effort: not every platform can open a directory).
+/// Syncs the directories holding `staged`, so the files created, replaced
+/// or removed there are durable (best effort: not every platform can open
+/// a directory).
 fn sync_dirs(staged: &[Staged]) {
     for file in staged {
         if let Some(dir) = file.target.parent().filter(|d| !d.as_os_str().is_empty()) {
@@ -396,6 +397,10 @@ fn replace_files(files: &[NewFile<'_>]) -> Result<(), JoinError> {
         }
         staged[index].backup = Some(backup);
     }
+    // The staged files and backups must be on disk before any target is
+    // replaced: a power loss after an early replace then still finds every
+    // backup a recovery needs.
+    sync_dirs(&staged);
     // 3. Replace the targets in order; on a failure, put back the ones
     //    already replaced.
     for (index, file) in staged.iter().enumerate() {
@@ -422,6 +427,7 @@ fn replace_files(files: &[NewFile<'_>]) -> Result<(), JoinError> {
             let _ = std::fs::remove_file(backup);
         }
     }
+    sync_dirs(&staged);
     Ok(())
 }
 
