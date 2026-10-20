@@ -303,9 +303,25 @@ fn register_for_redaction(entries: &[SecretEntry]) {
 }
 
 /// Registers one secret value with the scrubber when it is UTF-8 text.
+/// A JSON credential (a token bundle) also registers each string inside
+/// it, since a log quotes the token field, not the whole document.
 fn register_value_for_redaction(value: &[u8]) {
-    if let Ok(text) = std::str::from_utf8(value) {
-        bookclerk_config::register_secret(text);
+    let Ok(text) = std::str::from_utf8(value) else {
+        return;
+    };
+    bookclerk_config::register_secret(text);
+    if let Ok(document) = serde_json::from_str::<serde_json::Value>(text) {
+        register_json_strings(&document);
+    }
+}
+
+/// Registers every string in `value`, at any depth.
+fn register_json_strings(value: &serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => bookclerk_config::register_secret(text),
+        serde_json::Value::Array(items) => items.iter().for_each(register_json_strings),
+        serde_json::Value::Object(fields) => fields.values().for_each(register_json_strings),
+        _ => {}
     }
 }
 
@@ -1229,6 +1245,17 @@ async fn run_job<R: HostJobRunner>(
             "cancelled",
             "the client stopped before the job started",
         )),
+        // The grant ran out before the job could start (a late `work`, a
+        // starved runtime): the owner may already have handed the fence to
+        // another host, so never start it and drop the result.
+        _ if tokio::time::Instant::now() >= claimed_at + grant => {
+            tracing::warn!(%job_id, fence, "the job's lease ran out before it started; dropping it");
+            lost.store(true, Ordering::SeqCst);
+            Err(HostJobError::new(
+                "cancelled",
+                "the job's lease ran out before it started",
+            ))
+        }
         Err(_) => {
             tracing::warn!(%job_id, fence, "job secrets do not open with this node's box key");
             Err(HostJobError::new(
