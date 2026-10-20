@@ -1290,19 +1290,20 @@ join`) and `bookclerkd/src/cluster_link.rs`.
   seals the value to the live connection's owner box key with a fresh
   ephemeral key, and needs the fence still held. The daemon runs jobs
   through its own `JobTransport` (`TransportRunner`), with the handoff on
-  `JobExecCtx::host`; an acquire is failed as `upload_unavailable` before
-  it runs, since `complete` waits for its upload (step 9).
+  `JobExecCtx::host`. (Until step 9 an acquire was failed as
+  `upload_unavailable` before it ran; see [Host scans and streamed
+  uploads](#host-scans-and-streamed-uploads).)
 - **Claims are narrowed in the daemon** to the job kinds a Host can run
-  (`HOST_RUNNABLE_KINDS`, still empty: see "Still nothing runs" below)
+  (`HOST_RUNNABLE_KINDS`: `scan` and `acquire` since step 9)
   and to the plugins its operator consented to
   (host consent, step 8, below). Every job a Host is trusted with runs an
   owner plugin, and a Host runs one only after its own operator approves
   it. Rejected: claiming and
   failing what cannot run, which would spend owner attempts and starve
   owner nodes.
-- **Not decided.** How a Host's scan returns its results (book rows) to
-  the owner. The design has no frame or binding for it, and library SQL
-  for owner plugins on a Host is a non-goal.
+- **Scan results** (decided in step 9): a Host's scan returns its book
+  rows to the owner in fenced `scan.results` batches; library SQL for
+  owner plugins on a Host stays a non-goal.
 - **Tests** (`cluster_link/tests.rs`, owner and Host in one process): a
   member's Host enrolls over loopback, heartbeats into `node_status`,
   claims its owner's scan, runs it through the daemon's job transport
@@ -1429,11 +1430,12 @@ operator approves it, and only with what was approved.
   `SECRETS` only under a consented `secrets` binding, and the store
   credentials of the job's accounts. They live in memory only, redact
   their `Debug`, and are zeroized on drop.
-- **Still nothing runs.** No job kind runs on a Host yet
-  (`HOST_RUNNABLE_KINDS` is empty): a scan's results have no way back
-  (not decided), and an acquire waits for streamed uploads (step 9). The
-  in-process job transport refuses a handed job outright, since it would
-  run against the Host's own library.
+- **Nothing ran yet (historical).** When step 8 landed no job kind ran on
+  a Host (`HOST_RUNNABLE_KINDS` was empty): a scan's results had no way
+  back and an acquire waited for streamed uploads. Step 9 ([Host scans and
+  streamed uploads](#host-scans-and-streamed-uploads)) enables `scan` and
+  `acquire`. The in-process job transport still refuses a handed job
+  outright, since it would run against the Host's own library.
 - **Tests** (`cluster_link/tests.rs`): an Administrator's Host records the
   request, reports `awaiting_host_consent`, fetches nothing and never
   claims the queued scan; unsigned, malformed and forged artifact requests
@@ -1446,6 +1448,107 @@ operator approves it, and only with what was approved.
   unspent, and nothing is claimed again. Library tests cover the claim
   filter, release, and read scoping; plugin-host tests cover narrowing,
   re-approval and the platform rule.
+
+### Host scans and streamed uploads
+
+H-4 step 9. A Host scan returns its rows in fenced `scan.results`
+batches; a Host acquire streams each title's files to an owner node,
+which writes them straight to its output destinations (decision 4, no
+staging on the owner).
+
+- **Whose import settings a scan uses.** The owner writes every row a
+  Host scan returns, so a scan's `work` job carries the owner's
+  `library.import_episodes` / `import_plus_titles` (`scan_import`) and the
+  Host scans with those, never its own; a scan handed without them is
+  refused.
+
+- **Which jobs a Host claims.** A Host runs one source guest per job, so
+  its claim filter admits a scan or acquire only when the job names one
+  source plugin: the pinned instance's, or else the one plugin holding
+  the job's account. An unpinned job whose account id exists under several
+  plugins is never handed to a Host and stays with nodes that hold the
+  database; claiming and failing it would spend owner attempts. The `work`
+  frame names that `source_plugin_key`, and the Host selects the guest by
+  it, never by the destination plugins an acquire also lists.
+- **Cancellation.** A Host job's cancel flag (fence lost, operator cancel,
+  consent revoked) drops the running guest call within 50 ms. Dropping the
+  guest session shuts the guest down and fences its host-side authority,
+  so it stops using the handed credentials; an in-flight title upload is
+  dropped too. A cancelled run never reports success: a guest that stops
+  cooperatively and returns what it had is answered `cancelled`, and the
+  client turns a result that comes back after the cancel into a failure
+  (only the owner's own completion, by the closing commit, stands).
+- **Scan rows.** A batch is accepted only for the job's source plugin,
+  never for a destination plugin the job also requires. The fence and the
+  node's trust (with its owner's accounts) are confirmed again before each
+  row is written, so a lease lost or trust withdrawn mid-batch stops the
+  rows not yet written.
+- **Key scope.** A grant names only a title `acquire.plan` would hand
+  out now: one whose audio is already acquired (or that the plan leaves
+  out otherwise) is refused (`book_not_planned`), so a host cannot
+  re-upload over a title the owner already has. The owner binds every key
+  of an upload to the granted title. For each destination it computes the title's folder from its own
+  row and that destination's naming options, the way a local acquire
+  would (with podcast episodes saved to the parent's folder, the
+  episode's own folder is also accepted). Each copy must lie below that
+  folder; a template with no folder admits only top-level keys. A key
+  another title already has (its recorded audio or PDF key, or a sidecar
+  of that audio) is refused too (`key_out_of_scope`,
+  `key_of_another_book`). The Host's keys never decide where a title goes.
+  Every file a title writes is recorded per destination in `title_files`:
+  an acquire on a node records each key (audio, chapter or part files,
+  sidecars, PDF) just before writing it, and a grant claims every key of
+  its manifest for the title. A key recorded for another library title on
+  that destination is refused (`key_of_another_book`), so a folder several
+  titles share (a template without the title, podcast episodes in the
+  parent's folder, a flat layout) never lets one title overwrite another's
+  files. The claim is one conditional write per key, so of two uploads of
+  different titles racing for one key only one is granted.
+- **Host paths.** The Host uses the owner's job and title ids as work
+  directory names only when each is one plain segment (ASCII letters,
+  digits, `-`, `_`). Any other id fails the job before anything is
+  created or removed.
+- **The Host's own destinations.** A title is uploaded only after every
+  output destination deployed on the Host (H-2) took its copy. A failed
+  copy fails the title (copies already written for it are removed), so
+  the job fails rather than succeeding with a destination short a title.
+  A title whose upload then fails (the grant, a file, the commit, or a
+  cancel) has its copies removed from the Host's destinations too.
+- **Owner-decided success.** A title's commit marks it acquired and never
+  completes the job. Only the closing upload (no title, no files) may ask
+  to finish, and the owner completes the job only when no title in the
+  job's scope is left with unacquired audio (`titles_remaining`
+  otherwise). The Host's `finish` flag is a request, not proof.
+  `acquire.plan` hands out exactly those titles: one whose audio is
+  acquired but whose companion PDF is missing is left to an acquire on a
+  node holding the library, since a Host would fetch and upload the audio
+  again and a missing PDF is a soft failure that never keeps a job open.
+  The commit's gate also carries the node's trust (an owner node, or an
+  active owning user who is privileged or still linked to the title's
+  account), so a user disabled or an account unlinked after the preflight
+  commits nothing.
+- **Abort deletes.** Files go straight to the destinations, so an abort
+  rolls back by deleting. An upload aborted after some files arrived (its
+  fence lost before a later file or the commit, the destinations changed,
+  the title re-sent, or the job finished, was released, or lost its fence
+  without it)
+  has every received copy deleted by the receiving owner node, and so has
+  an upload left open when the closing commit completes the job. A failed
+  or released run's uploads are deleted before the job ends and its
+  permits are given back. A copy is deleted only while `title_files` still
+  names that upload as the key's latest writer, so a cleanup that runs
+  late (after a lost fence) leaves alone a file a later upload or acquire
+  wrote. A file that finished streaming just as its upload was aborted is
+  deleted at once. An upload received by another owner node is left to
+  that node and logged.
+- **Token lifetime.** The upload token is accepted for an hour past its
+  latest extension. The grant, each accepted file, and each renewal of the
+  job's lease extend it. Nothing extends it after the fence is lost, and a
+  lost fence refuses every file and the commit regardless.
+- **Not done.** If a Host vanishes mid-title, so that no further file,
+  commit, renewal or finish arrives, its open upload is not swept: the
+  files it had received stay until a later attempt of the job re-sends
+  that title through the same owner node.
 
 ## Consequences
 

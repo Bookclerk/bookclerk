@@ -67,6 +67,9 @@ pub struct PluginInstance {
     pub created_at: String,
     /// Audit identity of the creator.
     pub created_by: String,
+    /// The node that owns this instance (a node-local output, H-2); it may
+    /// be deployed only there. `None` for cluster instances.
+    pub owner_node_id: Option<String>,
 }
 
 /// Inserts a new instance for `plugin_key`.
@@ -86,7 +89,49 @@ pub async fn create_plugin_instance(
     validate_plugin_key(plugin_key)?;
     validate_display_name(display_name)?;
     let id = PluginInstanceId::mint();
-    insert_instance(store.db(), actor, &id, plugin_key, display_name).await?;
+    insert_instance(store.db(), actor, &id, plugin_key, display_name, None).await?;
+    load_plugin_instance(store, &id)
+        .await?
+        .ok_or_else(|| LibraryError::NotFound(format!("plugin instance {id}")))
+}
+
+/// Inserts a node-local instance of `plugin_key` owned by `node_id` (H-2):
+/// it adds to the cluster's outputs on that node only, and a deployment of
+/// it to any other node, or a placement, is refused.
+///
+/// # Errors
+///
+/// Returns an error when the actor may not create an instance, the node id
+/// is malformed or has no `nodes` row, or the insert fails.
+pub async fn create_node_local_instance(
+    store: &LibraryStore,
+    actor: &ConfigActor,
+    plugin_key: &str,
+    node_id: &str,
+    display_name: &str,
+) -> Result<PluginInstance> {
+    authorize_create(actor)?;
+    validate_plugin_key(plugin_key)?;
+    validate_display_name(display_name)?;
+    super::deployments::validate_node_id(node_id)?;
+    if crate::entities::nodes::Entity::find_by_id(node_id.to_string())
+        .one(store.db())
+        .await
+        .map_err(LibraryError::Orm)?
+        .is_none()
+    {
+        return Err(LibraryError::NotFound(format!("node {node_id}")));
+    }
+    let id = PluginInstanceId::mint();
+    insert_instance(
+        store.db(),
+        actor,
+        &id,
+        plugin_key,
+        display_name,
+        Some(node_id),
+    )
+    .await?;
     load_plugin_instance(store, &id)
         .await?
         .ok_or_else(|| LibraryError::NotFound(format!("plugin instance {id}")))
@@ -318,6 +363,7 @@ async fn insert_instance(
     id: &PluginInstanceId,
     plugin_key: &str,
     display_name: &str,
+    owner_node_id: Option<&str>,
 ) -> Result<()> {
     let now = Utc::now().to_rfc3339();
     let created_by = actor.audit_id().to_string();
@@ -327,6 +373,7 @@ async fn insert_instance(
         display_name: Set(display_name.trim().to_string()),
         created_at: Set(now),
         created_by: Set(created_by),
+        owner_node_id: Set(owner_node_id.map(str::to_string)),
     };
     plugin_instances::Entity::insert(model)
         .exec(conn)
@@ -451,6 +498,7 @@ fn instance_from_model(row: plugin_instances::Model) -> PluginInstance {
         display_name: row.display_name,
         created_at: row.created_at,
         created_by: row.created_by,
+        owner_node_id: row.owner_node_id,
     }
 }
 

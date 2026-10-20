@@ -11,6 +11,13 @@
 //! - upserts scan book DTOs via [`SourceScope`] with `source` forced to the plugin alias
 //!
 //! External guests share the same [`SourceScope`] boundary.
+//!
+//! On a host node running an owner cluster's job, the store credentials are
+//! the ones the owner handed with the job
+//! ([`ExternalSource::with_handed_credentials`]): the guest gets only those,
+//! the host's own library is never read for credentials, and a scan
+//! returns its rows ([`ExternalSource::scan_handed`]) for the owner to
+//! validate and write instead of upserting them anywhere.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -65,6 +72,19 @@ pub struct ExternalSource {
     source_config: Value,
     /// Deployment instance id. Unset for transitional, non-deployed spawns.
     plugin_instance_id: Option<String>,
+    /// Store credentials an owner cluster handed with a job, by account
+    /// id. When set they are the only credentials this source uses.
+    handed: Option<Arc<HandedCredentials>>,
+}
+
+/// Credentials handed with a host job, zeroized on drop and never shown by
+/// `Debug`.
+struct HandedCredentials(std::collections::BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>);
+
+impl std::fmt::Debug for HandedCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.0.keys()).finish()
+    }
 }
 
 impl ExternalSource {
@@ -141,7 +161,73 @@ impl ExternalSource {
             plugin_data_dir,
             source_config,
             plugin_instance_id: None,
+            handed: None,
         })
+    }
+
+    /// Uses only `credentials` (an owner cluster handed them with a job)
+    /// for every guest call: no library is read for credentials, and
+    /// [`ContentSource::scan`] is refused in favour of
+    /// [`Self::scan_handed`].
+    #[must_use]
+    pub fn with_handed_credentials(
+        mut self,
+        credentials: Vec<bookclerk_plugin_sdk::AccountCredential>,
+    ) -> Self {
+        let map = credentials
+            .into_iter()
+            .map(|credential| {
+                (
+                    credential.account_id,
+                    zeroize::Zeroizing::new(credential.credentials),
+                )
+            })
+            .collect();
+        self.handed = Some(Arc::new(HandedCredentials(map)));
+        self
+    }
+
+    /// Scans with the handed credentials and answers the guest's rows
+    /// unwritten (the owner validates and writes them).
+    ///
+    /// `opts.accounts` narrows the scan to those account ids; empty means
+    /// every handed account.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this source has no handed credentials, the
+    /// grant lacks the `secrets` binding, or the guest fails.
+    pub async fn scan_handed(
+        &self,
+        opts: ScanOptions,
+    ) -> bookclerk_source::Result<Vec<bookclerk_plugin_sdk::ScanBook>> {
+        let Some(handed) = self.handed.as_ref() else {
+            return Err(bookclerk_source::SourceError::Auth(
+                "no credentials were handed with this job".into(),
+            ));
+        };
+        let credentials = account_credentials(
+            handed
+                .0
+                .iter()
+                .filter(|(account, _)| opts.accounts.is_empty() || opts.accounts.contains(account))
+                .map(|(account, value)| (account.clone(), value.to_vec())),
+        );
+        if !credentials.is_empty() {
+            self.session.require_binding("secrets")?;
+        }
+        let params = ScanParams {
+            plugin_data_dir: self.plugin_data_dir.display().to_string(),
+            accounts: opts.accounts,
+            page_size: opts.page_size,
+            import_episodes: opts.import_episodes,
+            import_plus_titles: opts.import_plus_titles,
+            credentials,
+        };
+        let summary = self
+            .cs_call(move |src| async move { src.scan(params).await })
+            .await?;
+        Ok(summary.books)
     }
 
     /// Records the plugin instance id used as this source's registry address.
@@ -374,6 +460,13 @@ impl ContentSource for ExternalSource {
         scope: &SourceScope,
         opts: ScanOptions,
     ) -> bookclerk_source::Result<ScanSummary> {
+        if self.handed.is_some() {
+            // A host job's rows go back to the owner; they are never
+            // upserted into a library here.
+            return Err(bookclerk_source::SourceError::api(
+                "a source opened for a host job scans with scan_handed",
+            ));
+        }
         let credentials = scan_credentials_for(scope, &opts.accounts).await?;
         if !credentials.is_empty() {
             self.session.require_binding("secrets")?;
@@ -407,14 +500,19 @@ impl ContentSource for ExternalSource {
         title_id: &str,
         opts: &FetchOptions,
     ) -> bookclerk_source::Result<SourceFetch> {
-        let credentials = scope
-            .load_credentials_json(account_id)
-            .await
-            .map_err(|e| bookclerk_source::SourceError::Auth(e.to_string()))?;
+        let credentials = match self.handed.as_ref() {
+            Some(handed) => handed.0.get(account_id).map(|value| value.to_vec()),
+            None => scope
+                .load_credentials_json(account_id)
+                .await
+                .map_err(|e| bookclerk_source::SourceError::Auth(e.to_string()))?
+                .as_ref()
+                .map(credentials_to_bytes)
+                .transpose()?,
+        };
         if credentials.is_some() {
             self.session.require_binding("secrets")?;
         }
-        let credentials = credentials.as_ref().map(credentials_to_bytes).transpose()?;
         // Jail-granted scratch (already TMPDIR), not the host download cache.
         let cache_dir = {
             let dir = self.session.scratch_dir().join("fetch");

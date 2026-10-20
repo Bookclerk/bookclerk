@@ -28,7 +28,10 @@
 //! A Host also narrows its own claims with a [`JobClaimFilter`]: the job
 //! kinds it can run and the plugin keys its operator consented to. A job
 //! whose plugins cannot be told from the job itself (a scan of every
-//! account, a listen-sync) never passes a filter.
+//! account, a listen-sync) never passes a filter, and neither does one
+//! whose source plugin cannot ([`job_source_plugin_key`]): a Host runs one
+//! source guest per job, so an unpinned job whose account id exists under
+//! several plugins stays with nodes that hold the database.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -124,8 +127,12 @@ impl JobClaimFilter {
         self.kinds.is_empty() || self.plugin_keys.is_empty()
     }
 
-    /// True when `job` is of an admitted kind and every plugin it runs
-    /// ([`job_plugin_keys`]) is admitted.
+    /// True when `job` is of an admitted kind, names the account it runs
+    /// for, every plugin it runs ([`job_plugin_keys`]) is admitted, and its
+    /// one source plugin can be told ([`job_source_plugin_key`]), so the
+    /// Host can select the guest it runs. The account is required even
+    /// when the job is pinned to an instance: a Host is handed only that
+    /// account's secrets, and a job of every account has none to hand.
     ///
     /// # Errors
     ///
@@ -134,10 +141,54 @@ impl JobClaimFilter {
         if !self.kinds.contains(job.kind.as_str()) {
             return Ok(false);
         }
-        Ok(job_plugin_keys(store, job)
+        if job.payload.account.as_deref().is_none_or(str::is_empty) {
+            return Ok(false);
+        }
+        let admitted = job_plugin_keys(store, job)
             .await?
-            .is_some_and(|keys| keys.is_subset(&self.plugin_keys)))
+            .is_some_and(|keys| keys.is_subset(&self.plugin_keys));
+        Ok(admitted && job_source_plugin_key(store, job).await?.is_some())
     }
+}
+
+/// The one plugin whose source guest runs `job`, or `None` when the job
+/// alone does not name exactly one.
+///
+/// Only a scan or acquire has one: the plugin of the instance it is pinned
+/// to, or else the one plugin holding an `accounts` row the account it
+/// names resolves to (by id or label, ignoring ASCII case). Required
+/// instances ([`crate::JobPayload::requires`], the destinations an acquire
+/// writes) never count. An unpinned job of every account, or one whose
+/// account name matches rows under several plugins, answers
+/// `None`, as do other kinds and unknown instances or accounts.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub async fn job_source_plugin_key(
+    store: &LibraryStore,
+    job: &JobRecord,
+) -> Result<Option<String>> {
+    if !matches!(job.kind, JobKind::Scan | JobKind::Acquire) {
+        return Ok(None);
+    }
+    if let Some(raw) = job.payload.plugin_instance_id.as_deref() {
+        return instance_plugin_key(store, raw).await;
+    }
+    let Some(account) = job.payload.account.as_deref().filter(|a| !a.is_empty()) else {
+        return Ok(None);
+    };
+    // Resolved like the claim filter and the secret handoff (id or label).
+    let keys: BTreeSet<String> = accounts_named(store, account, None)
+        .await?
+        .into_iter()
+        .map(|(plugin_key, _)| plugin_key)
+        .collect();
+    let mut keys = keys.into_iter();
+    Ok(match (keys.next(), keys.next()) {
+        (Some(key), None) => Some(key),
+        _ => None,
+    })
 }
 
 /// The plugin keys `job` runs, or `None` when the job alone does not say.
@@ -221,9 +272,12 @@ pub struct RoutedJobClaim {
 /// is a valid instance id with at least one deployment that should run, so a
 /// job pinned to an undeployed instance is claimed anywhere and fails there
 /// as before rather than waiting forever. For [`JobKind::Acquire`], every
-/// instance of a plugin key in `node_bound_plugin_keys` that is deployed to
-/// run somewhere is added: the acquire writes to that output, so it must run
-/// where the output's disk is.
+/// cluster instance of a plugin key in `node_bound_plugin_keys` that is
+/// deployed to run somewhere is added: the acquire writes to that output, so
+/// it must run where the output's disk is. A node-local instance (H-2,
+/// `owner_node_id` set) is not: it adds to the outputs of its own node only,
+/// which copies what it acquires to it, and requiring it would leave every
+/// acquire claimable on that one node alone, or nowhere.
 ///
 /// The required instances must share at least one node where all of them
 /// are deployed to run; otherwise no node could ever claim the job, so it
@@ -270,7 +324,8 @@ pub(super) async fn desired_requirements(
     }
     if kind == JobKind::Acquire && !node_bound_plugin_keys.is_empty() {
         for instance in list_all_plugin_instances(store).await? {
-            if node_bound_plugin_keys.contains(&instance.plugin_key)
+            if instance.owner_node_id.is_none()
+                && node_bound_plugin_keys.contains(&instance.plugin_key)
                 && deployed_somewhere(store, &instance.id).await?
             {
                 requires.insert(instance.id.as_str().to_string());

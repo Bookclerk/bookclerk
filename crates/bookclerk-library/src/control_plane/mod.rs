@@ -24,6 +24,7 @@ mod ownership;
 mod placement;
 mod remote_catalog;
 mod remote_consents;
+mod remote_results;
 mod remote_work;
 mod requirements_sweep;
 mod routing;
@@ -31,6 +32,7 @@ mod schemas;
 mod secret;
 mod semaphore;
 mod trust;
+mod uploads;
 mod versions;
 
 use std::path::Path;
@@ -80,15 +82,17 @@ pub use instance_config::{
     MAX_INSTANCE_SETTINGS, MAX_INSTANCE_SETTING_BYTES, PLUGIN_INSTANCE_CONFIG_SCHEMA_VERSION,
 };
 pub use instances::{
-    create_plugin_instance, default_instance_for_key, delete_plugin_instance,
-    ensure_plugin_instance, find_plugin_instance_by_key, list_all_plugin_instances,
-    list_plugin_instances_for_key, load_plugin_instance, PluginInstance, PluginInstanceId,
+    create_node_local_instance, create_plugin_instance, default_instance_for_key,
+    delete_plugin_instance, ensure_plugin_instance, find_plugin_instance_by_key,
+    list_all_plugin_instances, list_plugin_instances_for_key, load_plugin_instance, PluginInstance,
+    PluginInstanceId,
 };
 pub use job_routing::{
     account_semaphore, claim_routed_job, class_semaphore, common_deployment_nodes,
     instance_semaphore, job_permit_holder_prefix, job_plugin_keys, job_semaphores,
-    node_can_run_job, resolve_job_requirements, JobClaimFilter, JobClaimLimits, JobClaimRequest,
-    RoutedJobClaim, ACCOUNT_SEMAPHORE_LIMIT, ROUTED_CLAIM_CANDIDATES,
+    job_source_plugin_key, node_can_run_job, resolve_job_requirements, JobClaimFilter,
+    JobClaimLimits, JobClaimRequest, RoutedJobClaim, ACCOUNT_SEMAPHORE_LIMIT,
+    ROUTED_CLAIM_CANDIDATES,
 };
 pub use leases::{
     acquire_lease, acquire_lease_on, list_leases, load_lease, load_lease_on, release_lease,
@@ -133,11 +137,12 @@ pub use remote_consents::{
     revoke_remote_plugin, RemoteApproval, RemoteApprover, RemoteArtifactRef, RemotePluginConsent,
     REMOTE_CONSENT_PLATFORM,
 };
+pub use remote_results::{accept_scan_results, ScanAccept, MAX_SCAN_RESULT_ROWS};
 pub use remote_work::{
-    claim_remote_job, finish_remote_job, job_secret_refs, release_remote_job, remote_job_fence,
-    remote_lease_owner, renew_remote_job, write_back_job_secret, JobSecret, JobSecretRef,
-    RemoteClaimSettings, RemoteFinish, RemoteJobClaim, RemoteOutcome, RemoteRenew, WriteBack,
-    MAX_WRITE_BACK_BYTES, REMOTE_LEASE_OWNER_PREFIX, SECRETS_UNAVAILABLE,
+    claim_remote_job, finish_remote_job, job_secret_refs, live_remote_job, release_remote_job,
+    remote_job_fence, remote_lease_owner, renew_remote_job, write_back_job_secret, JobSecret,
+    JobSecretRef, RemoteClaimSettings, RemoteFinish, RemoteJobClaim, RemoteOutcome, RemoteRenew,
+    WriteBack, MAX_WRITE_BACK_BYTES, REMOTE_LEASE_OWNER_PREFIX, SECRETS_UNAVAILABLE,
 };
 pub use requirements_sweep::{
     sweep_job_requirements, RequirementsSweepReport, REQUIREMENTS_GRACE, REQUIREMENTS_SWEEP_LEASE,
@@ -158,6 +163,13 @@ pub use semaphore::{
 pub use trust::{
     accounts_owned_by, handoff_routed_job, job_trusted, node_may_claim_job, node_trust, plan_scan,
     Claimant, NodeTrust, ScanRequester,
+};
+pub use uploads::{
+    abort_job_uploads, abort_upload, authorize_upload, commit_upload, extend_job_uploads,
+    grant_upload, job_titles, load_upload, names_book, record_upload_file, upload_fence_live,
+    upload_owns_key, TitleNames, UploadCommit, UploadDestination, UploadFinish, UploadGrant,
+    UploadGrantRequest, UploadSession, UPLOAD_NAME_WILDCARD, UPLOAD_NUMBER_WILDCARD,
+    UPLOAD_TOKEN_TTL_SECS,
 };
 pub use versions::{
     activate_version, add_plugin_version, approve_version_grant, clear_install, list_installs,

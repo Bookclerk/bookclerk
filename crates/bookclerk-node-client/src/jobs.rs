@@ -5,7 +5,11 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use bookclerk_node_proto::{SecretEntry, SecretRef, SecretValue, WorkJob};
+use std::sync::atomic::AtomicU64;
+
+use bookclerk_node_proto::{
+    AcquireTarget, PlanDestination, SecretEntry, SecretRef, SecretValue, UploadFile, WorkJob,
+};
 
 use crate::client::Shared;
 
@@ -23,6 +27,9 @@ pub struct HostJob {
     pub lease_secs: u64,
     /// Plugin keys the job runs (each consented when it was claimed).
     pub plugin_keys: Vec<String>,
+    /// The one plugin of `plugin_keys` whose source guest runs the job,
+    /// when the owner named it.
+    pub source_plugin_key: Option<String>,
     /// When the granted lease runs out, counted as the client counts it:
     /// from before the claim was sent, capped at [`crate::MAX_LEASE`]. Work
     /// handed a deadline should stop by then, since the fence may be lost
@@ -98,6 +105,63 @@ pub enum WriteBackError {
     Unavailable,
 }
 
+/// Why a call the job makes to the owner (results, plan, upload) failed.
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
+pub enum OwnerCallError {
+    /// The fence is lost; the job must stop (it is already cancelled).
+    #[error("the job's fence is lost")]
+    Lost,
+    /// The owner refused it; the reason is stable.
+    #[error("owner refused: {0}")]
+    Refused(String),
+    /// No connection to the owner, or no usable answer.
+    #[error("owner unavailable")]
+    Unavailable,
+}
+
+/// An open upload of one title: its id and bearer token. The token is
+/// zeroized on drop and never shown by `Debug`.
+pub struct HostUpload {
+    /// Upload id.
+    pub upload_id: String,
+    /// The bearer token, opened with this node's box key.
+    token: SecretValue,
+}
+
+impl HostUpload {
+    /// Wraps an opened grant.
+    pub(crate) fn new(upload_id: String, token: SecretValue) -> Self {
+        Self { upload_id, token }
+    }
+
+    /// The bearer token.
+    pub(crate) fn token(&self) -> &SecretValue {
+        &self.token
+    }
+}
+
+impl Drop for HostUpload {
+    /// The token leaves the redaction registry (it was registered when
+    /// opened, `open_granted_upload`) and its local copy is zeroized with
+    /// the handle. Dropping the handle does not revoke the token: the
+    /// owner still accepts it while the upload stays open and unexpired,
+    /// but this host no longer holds it to log.
+    fn drop(&mut self) {
+        if let Ok(token) = std::str::from_utf8(self.token.expose()) {
+            bookclerk_config::unregister_secret(token);
+        }
+    }
+}
+
+impl std::fmt::Debug for HostUpload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostUpload")
+            .field("upload_id", &self.upload_id)
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+
 /// How a job failed: a stable kind and an operator-facing message. Neither
 /// may contain a secret.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +191,14 @@ pub struct HostJobCtx {
     pub secrets: Arc<HandedSecrets>,
     /// Set when the fence is lost or the operator asked to cancel.
     cancel: Arc<AtomicBool>,
+    /// Set when the fence is lost (the owner said so, or the lease ran out
+    /// unconfirmed): the owner may have handed the job elsewhere.
+    lost: Arc<AtomicBool>,
+    /// Set when an upload's commit completed the job on the owner, so no
+    /// `complete` follows.
+    finished: Arc<AtomicBool>,
+    /// Results batches sent so far.
+    batches: AtomicU64,
     /// The client, for write-back.
     shared: Arc<Shared>,
 }
@@ -147,12 +219,17 @@ impl HostJobCtx {
         job: HostJob,
         secrets: HandedSecrets,
         cancel: Arc<AtomicBool>,
+        lost: Arc<AtomicBool>,
+        finished: Arc<AtomicBool>,
         shared: Arc<Shared>,
     ) -> Self {
         Self {
             job,
             secrets: Arc::new(secrets),
             cancel,
+            lost,
+            finished,
+            batches: AtomicU64::new(0),
             shared,
         }
     }
@@ -162,6 +239,15 @@ impl HostJobCtx {
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::SeqCst)
+    }
+
+    /// True once the job's fence is lost: the owner reported it, or the
+    /// lease ran out without a confirmed renewal. The owner may already
+    /// have handed the job to another run, which then owns the job's
+    /// titles, so this run must not undo anything it wrote under them.
+    #[must_use]
+    pub fn is_lost(&self) -> bool {
+        self.lost.load(Ordering::SeqCst)
     }
 
     /// The cancel flag, for runners that poll it elsewhere.
@@ -196,6 +282,117 @@ impl HostJobCtx {
         self.shared
             .write_back(&self.job.job.id, self.job.fence, secret_ref, value)
             .await
+    }
+}
+
+impl HostJobCtx {
+    /// Sends one batch of a scan's rows (the guest's `ScanBook` objects) to
+    /// the owner, which validates and writes them (decision 6); answers the
+    /// rows written. At most
+    /// [`bookclerk_node_proto::MAX_SCAN_BATCH_ROWS`] rows, each at most
+    /// [`bookclerk_node_proto::MAX_SCAN_ROW_BYTES`] serialized.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError`]; `Lost` also cancels the job.
+    pub async fn send_scan_results(
+        &self,
+        plugin_key: &str,
+        books: Vec<serde_json::Value>,
+    ) -> Result<u64, OwnerCallError> {
+        let batch = self.batches.fetch_add(1, Ordering::SeqCst) + 1;
+        self.shared
+            .scan_results(&self.job.job.id, self.job.fence, plugin_key, batch, books)
+            .await
+    }
+
+    /// Asks the owner which titles this acquire should fetch, and with
+    /// which destinations (the owner node's, the primary first, each with
+    /// its own `DownloadOptions`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError`]; `Lost` also cancels the job.
+    pub async fn acquire_plan(
+        &self,
+    ) -> Result<(Vec<AcquireTarget>, Vec<PlanDestination>), OwnerCallError> {
+        self.shared
+            .acquire_plan(&self.job.job.id, self.job.fence)
+            .await
+    }
+
+    /// Opens an upload of one title's `files` (an empty `book_uuid` and no
+    /// files for the job's closing upload).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError`]; `Lost` also cancels the job.
+    pub async fn grant_upload(
+        &self,
+        book_uuid: &str,
+        primary_key: &str,
+        pdf_key: Option<&str>,
+        files: Vec<UploadFile>,
+    ) -> Result<HostUpload, OwnerCallError> {
+        self.shared
+            .upload_grant(
+                &self.job.job.id,
+                self.job.fence,
+                book_uuid,
+                primary_key,
+                pdf_key,
+                files,
+            )
+            .await
+    }
+
+    /// Streams declared file `index` of `upload` (`length` bytes of
+    /// `body`) to the owner, which writes it to its destinations as it
+    /// arrives.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError`]; `Lost` (the owner aborted the upload)
+    /// also cancels the job.
+    pub async fn upload_file<R: tokio::io::AsyncRead + Unpin + Send>(
+        &self,
+        upload: &HostUpload,
+        index: usize,
+        length: u64,
+        body: R,
+    ) -> Result<(), OwnerCallError> {
+        self.shared
+            .upload_file(
+                &self.job.job.id,
+                self.job.fence,
+                upload,
+                index,
+                length,
+                body,
+            )
+            .await
+    }
+
+    /// Commits `upload`. With `finish`, the owner also completes the job
+    /// (recording the text as its progress) and the client sends no
+    /// `complete` afterwards. Answers whether the job is finished.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError`]; `Lost` also cancels the job.
+    pub async fn commit_upload(
+        &self,
+        upload: &HostUpload,
+        finish: Option<&str>,
+    ) -> Result<bool, OwnerCallError> {
+        let completed = self
+            .shared
+            .commit_upload(&self.job.job.id, self.job.fence, upload, finish)
+            .await?;
+        if completed {
+            self.finished.store(true, Ordering::SeqCst);
+        }
+        Ok(completed)
     }
 }
 

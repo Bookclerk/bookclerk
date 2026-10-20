@@ -466,12 +466,20 @@ async fn run(
         mut wakes,
     } = authed.registered;
     tracing::info!(node_id = %authed.node_id, ?peer, "host node connected");
+    // Uploads are received by this node; its own identity file names it
+    // (the queue's process-wide id is the consumer's, not necessarily it).
+    let receiving_node_id =
+        bookclerk_library::control_plane::load_or_create_node_identity(&files_dir)
+            .map(|identity| identity.node_id)
+            .unwrap_or_default();
     let host = HostContext {
         node_id: authed.node_id.clone(),
         incarnation: authed.incarnation,
         box_public_key: authed.box_public_key,
         owner_box_secret: authed.owner_box_secret,
         settings,
+        owner_node_id: receiving_node_id,
+        state: Arc::clone(&state),
     };
     session(&library, socket, &host, authed.resume, &mut wakes, close).await;
     end_session(&library, &authed.node_id, serial, wakes).await;

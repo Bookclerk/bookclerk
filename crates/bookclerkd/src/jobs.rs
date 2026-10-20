@@ -974,7 +974,7 @@ pub async fn run_listen_sync(state: &AppState, ctx: Option<&JobExecCtx>) -> anyh
 /// Already-acquired audio is still included when companion PDF download is
 /// enabled and the PDF is not stored, so a later job can resume the sidecar
 /// through [`bookclerk_acquire::acquire_book_indexed`].
-fn acquire_job_includes_book(
+pub(crate) fn acquire_job_includes_book(
     book: &BookRecord,
     download_pdf: bool,
     download_episodes: bool,

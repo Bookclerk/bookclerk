@@ -945,6 +945,8 @@ async fn host_context(
                 plugin_instance: cfg.jobs.concurrency.plugin_instance.max(1),
             },
         },
+        owner_node_id: "owner-node".into(),
+        state: Arc::clone(state),
     }
 }
 
