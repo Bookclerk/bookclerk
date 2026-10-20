@@ -141,9 +141,11 @@ impl HostUpload {
 }
 
 impl Drop for HostUpload {
-    /// The token is unique to this upload and unusable once it is dropped,
-    /// so it leaves the redaction registry (it was registered when opened,
-    /// `open_granted_upload`).
+    /// The token leaves the redaction registry (it was registered when
+    /// opened, `open_granted_upload`) and its local copy is zeroized with
+    /// the handle. Dropping the handle does not revoke the token: the
+    /// owner still accepts it while the upload stays open and unexpired,
+    /// but this host no longer holds it to log.
     fn drop(&mut self) {
         if let Ok(token) = std::str::from_utf8(self.token.expose()) {
             bookclerk_config::unregister_secret(token);

@@ -101,24 +101,29 @@ impl LibraryStore {
         expected: Option<&TitleFile>,
     ) -> Result<bool> {
         let now = now_str();
-        title_files::Entity::insert(title_files::ActiveModel {
-            destination: Set(destination.to_string()),
-            storage_key: Set(key.to_string()),
-            book_uuid: Set(book_uuid.to_string()),
-            writer: Set(writer.to_string()),
-            written_at: Set(now.clone()),
-        })
-        .on_conflict(
-            OnConflict::columns([
-                title_files::Column::Destination,
-                title_files::Column::StorageKey,
-            ])
-            .do_nothing()
-            .to_owned(),
-        )
-        .exec_without_returning(self.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+        // Only a key read as unrecorded is inserted: a claim expecting a
+        // record that has since gone must change nothing, so its retry
+        // reads the key afresh.
+        if expected.is_none() {
+            title_files::Entity::insert(title_files::ActiveModel {
+                destination: Set(destination.to_string()),
+                storage_key: Set(key.to_string()),
+                book_uuid: Set(book_uuid.to_string()),
+                writer: Set(writer.to_string()),
+                written_at: Set(now.clone()),
+            })
+            .on_conflict(
+                OnConflict::columns([
+                    title_files::Column::Destination,
+                    title_files::Column::StorageKey,
+                ])
+                .do_nothing()
+                .to_owned(),
+            )
+            .exec_without_returning(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        }
         let library_titles = Query::select()
             .column(books::Column::Uuid)
             .from(books::Entity)

@@ -1290,19 +1290,20 @@ join`) and `bookclerkd/src/cluster_link.rs`.
   seals the value to the live connection's owner box key with a fresh
   ephemeral key, and needs the fence still held. The daemon runs jobs
   through its own `JobTransport` (`TransportRunner`), with the handoff on
-  `JobExecCtx::host`; an acquire is failed as `upload_unavailable` before
-  it runs, since `complete` waits for its upload (step 9).
+  `JobExecCtx::host`. (Until step 9 an acquire was failed as
+  `upload_unavailable` before it ran; see [Host scans and streamed
+  uploads](#host-scans-and-streamed-uploads).)
 - **Claims are narrowed in the daemon** to the job kinds a Host can run
-  (`HOST_RUNNABLE_KINDS`, still empty: see "Still nothing runs" below)
+  (`HOST_RUNNABLE_KINDS`: `scan` and `acquire` since step 9)
   and to the plugins its operator consented to
   (host consent, step 8, below). Every job a Host is trusted with runs an
   owner plugin, and a Host runs one only after its own operator approves
   it. Rejected: claiming and
   failing what cannot run, which would spend owner attempts and starve
   owner nodes.
-- **Not decided.** How a Host's scan returns its results (book rows) to
-  the owner. The design has no frame or binding for it, and library SQL
-  for owner plugins on a Host is a non-goal.
+- **Scan results** (decided in step 9): a Host's scan returns its book
+  rows to the owner in fenced `scan.results` batches; library SQL for
+  owner plugins on a Host stays a non-goal.
 - **Tests** (`cluster_link/tests.rs`, owner and Host in one process): a
   member's Host enrolls over loopback, heartbeats into `node_status`,
   claims its owner's scan, runs it through the daemon's job transport
