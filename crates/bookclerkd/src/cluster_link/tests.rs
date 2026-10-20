@@ -1405,6 +1405,7 @@ mod results_and_uploads {
         vec![UploadDestination {
             id: "local".into(),
             title_folders: vec![folder.into()],
+            title_names: None,
         }]
     }
 
@@ -2128,6 +2129,7 @@ mod results_and_uploads {
                 destinations: &[UploadDestination {
                     id: "local".into(),
                     title_folders: vec!["Author/Title t2".into()],
+                    title_names: None,
                 }],
             },
         )
@@ -2257,10 +2259,12 @@ mod results_and_uploads {
                     UploadDestination {
                         id: "local".into(),
                         title_folders: vec!["Author/Title t2".into()],
+                        title_names: None,
                     },
                     UploadDestination {
                         id: "s3".into(),
                         title_folders: vec!["library/t2".into()],
+                        title_names: None,
                     },
                 ],
             },

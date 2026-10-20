@@ -1384,6 +1384,7 @@ fn local(folder: &str) -> Vec<UploadDestination> {
     vec![UploadDestination {
         id: "local".into(),
         title_folders: vec![folder.into()],
+        title_names: None,
     }]
 }
 
@@ -1727,6 +1728,7 @@ async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
     let s3 = UploadDestination {
         id: "s3".into(),
         title_folders: vec!["Title".into()],
+        title_names: None,
     };
     let two = vec![destinations[0].clone(), s3.clone()];
     let unwritten = UploadGrantRequest {
@@ -2306,6 +2308,7 @@ async fn an_upload_is_bound_to_its_titles_key_scope() {
     let unscoped = vec![UploadDestination {
         id: "local".into(),
         title_folders: Vec::new(),
+        title_names: None,
     }];
     assert!(matches!(
         grant_upload(
@@ -2375,6 +2378,7 @@ fn a_destination_scope_admits_only_keys_below_its_folders() {
     let folder = UploadDestination {
         id: "local".into(),
         title_folders: vec!["A/T".into()],
+        title_names: None,
     };
     assert!(folder.admits("A/T/T.m4b"));
     assert!(folder.admits("A/T/sub/c1.mp3"));
@@ -2384,14 +2388,203 @@ fn a_destination_scope_admits_only_keys_below_its_folders() {
     let root = UploadDestination {
         id: "local".into(),
         title_folders: vec![String::new()],
+        title_names: None,
     };
     assert!(root.admits("T.m4b"));
     assert!(!root.admits("A/T.m4b"));
     let none = UploadDestination {
         id: "local".into(),
         title_folders: Vec::new(),
+        title_names: None,
     };
     assert!(!none.admits("T.m4b"));
+}
+
+/// The planned names of title `One [B00ONE]` by `Ann Author` in `folder`
+/// (empty for the root), as the owner renders them for a template whose
+/// folder other titles share: its audio stem, its plain parts and its
+/// split chapters (`<title> - <ch#> - <chapter title>`).
+fn shared_scope(folder: &str) -> UploadDestination {
+    let at = |name: String| {
+        if folder.is_empty() {
+            name
+        } else {
+            format!("{folder}/{name}")
+        }
+    };
+    UploadDestination {
+        id: "local".into(),
+        title_folders: vec![folder.into()],
+        title_names: Some(TitleNames {
+            audio_stems: vec![at("One [B00ONE]".into())],
+            part_patterns: vec![
+                at(format!(
+                    "One — {UPLOAD_NAME_WILDCARD} [B00ONE-p{UPLOAD_NUMBER_WILDCARD}]"
+                )),
+                at(format!(
+                    "One - {UPLOAD_NUMBER_WILDCARD} - {UPLOAD_NAME_WILDCARD}"
+                )),
+            ],
+        }),
+    }
+}
+
+/// In a folder several titles share (`<first author>`) and at the root, an
+/// upload's scope is the title's planned names, not the folder: its audio
+/// with any extension, its sidecars, its parts and its chapters are
+/// admitted; another title's planned name and an arbitrary name are not,
+/// and only audio names (not a sidecar's) may be the primary key.
+#[test]
+fn an_upload_into_a_shared_folder_admits_only_the_titles_planned_names() {
+    for folder in ["Ann Author", ""] {
+        let scope = shared_scope(folder);
+        let at = |name: &str| {
+            if folder.is_empty() {
+                name.to_string()
+            } else {
+                format!("{folder}/{name}")
+            }
+        };
+        for name in [
+            "One [B00ONE].m4b",
+            "One [B00ONE].mp3",
+            "One [B00ONE].jpg",
+            "One [B00ONE].pdf",
+            "One [B00ONE].cue",
+            "One [B00ONE].chapters.flat.json",
+            "One [B00ONE].chapters.tree.json",
+            "One [B00ONE].m4b.bookclerk-meta.json",
+            "One — Part 1 [B00ONE-p001].mp3",
+            "One — Part 1 [B00ONE-p001].jpg",
+            "One - 3 - The Storm.mp3",
+            "One - 12 - A. B. Sea.m4a",
+        ] {
+            assert!(scope.admits(&at(name)), "{folder:?}: {name}");
+        }
+        for name in [
+            "One [B00ONE].m4b",
+            "One [B00ONE].flac",
+            "One — Part 1 [B00ONE-p001].mp3",
+            "One - 3 - The Storm.mp3",
+        ] {
+            assert!(scope.admits_primary(&at(name)), "{folder:?}: {name}");
+        }
+        for name in [
+            // Another title's planned audio and sidecar, and its parts.
+            "Two [B00TWO].m4b",
+            "Two [B00TWO].jpg",
+            "Two — Part 1 [B00TWO-p001].mp3",
+            // Arbitrary names, and near misses of this title's.
+            "cover.jpg",
+            "anything.m4b",
+            "One [B00ONE]",
+            "One [B00ONE]x.m4b",
+            "One.m4b",
+            "One — Part 1 [B00ONE-pX].mp3",
+            "One - x - The Storm.mp3",
+            "One - 3 - .mp3",
+            "One [B00ONE]/inside.m4b",
+        ] {
+            assert!(!scope.admits(&at(name)), "{folder:?}: {name}");
+        }
+        assert!(
+            !scope.admits_primary(&at("One [B00ONE].m4b.bookclerk-meta.json")),
+            "{folder:?}: a sidecar is not the audio"
+        );
+    }
+    assert!(
+        !shared_scope("Ann Author").admits("Ann Author Two/One [B00ONE].m4b"),
+        "still bound to the folder"
+    );
+}
+
+/// A Host trusted with one title cannot claim another title's not yet
+/// acquired name in a folder they share: the grant is refused
+/// (`key_out_of_scope`) for another title's planned name, an arbitrary
+/// name or a primary that is not the title's audio, and granted for the
+/// title's own audio and sidecars.
+#[tokio::test]
+async fn an_upload_grant_into_a_shared_folder_is_bound_to_the_titles_names() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, mut files) = riley_title(&w.store).await;
+    files[0].copies[0].key = "Ann Author/One [B00ONE].m4b".into();
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let destinations = vec![shared_scope("Ann Author")];
+    let with_extra = |key: &str| {
+        let mut out = files.clone();
+        out.push(bookclerk_node_proto::UploadFile {
+            copies: vec![bookclerk_node_proto::FileCopy {
+                destination: "local".into(),
+                key: key.into(),
+            }],
+            sha256: "cd".repeat(32),
+            ..files[0].clone()
+        });
+        out
+    };
+    let grant = |files: Vec<bookclerk_node_proto::UploadFile>, primary: &'static str| {
+        let store = w.store.clone();
+        let job_id = job_id.clone();
+        let book_uuid = book_uuid.clone();
+        let destinations = destinations.clone();
+        async move {
+            grant_upload(
+                &store,
+                HOST,
+                &job_id,
+                fence,
+                "owner",
+                &UploadGrantRequest {
+                    book_uuid: &book_uuid,
+                    primary_key: primary,
+                    pdf_key: None,
+                    files: &files,
+                    destinations: &destinations,
+                },
+            )
+            .await
+            .unwrap()
+        }
+    };
+    for key in ["Ann Author/Two [B00TWO].m4b", "Ann Author/anything.m4b"] {
+        assert!(
+            matches!(
+                grant(with_extra(key), "Ann Author/One [B00ONE].m4b").await,
+                UploadGrant::Refused("key_out_of_scope")
+            ),
+            "{key}"
+        );
+    }
+    let sidecar_primary = with_extra("Ann Author/One [B00ONE].m4b.bookclerk-meta.json");
+    assert!(
+        matches!(
+            grant(
+                sidecar_primary,
+                "Ann Author/One [B00ONE].m4b.bookclerk-meta.json"
+            )
+            .await,
+            UploadGrant::Refused("key_out_of_scope")
+        ),
+        "the primary must be the title's audio"
+    );
+    assert!(
+        node_upload_sessions::Entity::find()
+            .all(w.store.db())
+            .await
+            .unwrap()
+            .is_empty(),
+        "nothing was granted"
+    );
+    assert!(matches!(
+        grant(
+            with_extra("Ann Author/One [B00ONE].jpg"),
+            "Ann Author/One [B00ONE].m4b"
+        )
+        .await,
+        UploadGrant::Granted { .. }
+    ));
 }
 
 /// A job whose cancel was requested never succeeds on a Host's word: a

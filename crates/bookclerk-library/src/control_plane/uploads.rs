@@ -83,13 +83,25 @@ struct Manifest {
     pdf_key: Option<String>,
 }
 
+/// In a [`TitleNames::part_patterns`] pattern: one or more characters of a
+/// file name (no `/`), where a part or chapter title goes. Storage keys
+/// hold no control character, so the marker never clashes with one.
+pub const UPLOAD_NAME_WILDCARD: char = '\u{1}';
+
+/// In a [`TitleNames::part_patterns`] pattern: one or more ASCII digits,
+/// where a part or chapter number goes.
+pub const UPLOAD_NUMBER_WILDCARD: char = '\u{2}';
+
 /// One output destination of the receiving owner node an upload is
 /// granted for, with where the title may be written there.
 ///
-/// The owner computes `title_folders` itself, from its own library row of
-/// the granted title and that destination's naming options, exactly as a
-/// local acquire would name the title; the Host's keys are never trusted to
-/// say where a title belongs.
+/// The owner computes the scope itself, from its own library row of the
+/// granted title and that destination's naming options, exactly as a local
+/// acquire would name the title; the Host's keys are never trusted to say
+/// where a title belongs. A folder only this title's files use admits any
+/// key below it; a folder several titles share (or the destination's
+/// root) admits only the title's own planned names ([`TitleNames`]), so a
+/// Host trusted with one title cannot claim another title's file there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UploadDestination {
     /// The destination's id (`local`, `s3`).
@@ -99,13 +111,17 @@ pub struct UploadDestination {
     /// the destination's root and admits only top-level keys. Empty means
     /// nothing may be written there.
     pub title_folders: Vec<String>,
+    /// The title's planned names, when its folder is shared with other
+    /// titles (or is the root): every key must then also be one of them.
+    /// `None` when the folder is the title's own.
+    pub title_names: Option<TitleNames>,
 }
 
 impl UploadDestination {
     /// True when `key` lies in this destination's scope for the title.
     #[must_use]
     pub fn admits(&self, key: &str) -> bool {
-        self.title_folders.iter().any(|folder| {
+        let in_folder = self.title_folders.iter().any(|folder| {
             if folder.is_empty() {
                 !key.contains('/')
             } else {
@@ -113,7 +129,90 @@ impl UploadDestination {
                     .and_then(|rest| rest.strip_prefix('/'))
                     .is_some_and(|rest| !rest.is_empty())
             }
-        })
+        });
+        in_folder
+            && self
+                .title_names
+                .as_ref()
+                .is_none_or(|names| names.admits(key))
+    }
+
+    /// True when `key` may be the title's primary audio key here: in scope
+    /// ([`Self::admits`]) and, in a shared folder, one of the title's
+    /// planned audio keys with any extension ([`TitleNames::admits_audio`]).
+    #[must_use]
+    pub fn admits_primary(&self, key: &str) -> bool {
+        self.admits(key)
+            && self
+                .title_names
+                .as_ref()
+                .is_none_or(|names| names.admits_audio(key))
+    }
+}
+
+/// The names a title's acquire writes on one destination, as the owner
+/// plans them, all without their extension.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TitleNames {
+    /// The planned audio key of a single-file acquire (one per folder
+    /// variant).
+    pub audio_stems: Vec<String>,
+    /// Part and chapter keys, with [`UPLOAD_NAME_WILDCARD`] and
+    /// [`UPLOAD_NUMBER_WILDCARD`] where the source's part or chapter title
+    /// and number go: those are not known before the acquire runs.
+    pub part_patterns: Vec<String>,
+}
+
+impl TitleNames {
+    /// True when `stem` is one of the title's audio keys without its
+    /// extension: its single-file stem, or a part or chapter.
+    fn names_audio_stem(&self, stem: &str) -> bool {
+        let text: Vec<char> = stem.chars().collect();
+        self.audio_stems.iter().any(|planned| planned == stem)
+            || self.part_patterns.iter().any(|pattern| {
+                let pattern: Vec<char> = pattern.chars().collect();
+                pattern_matches(&pattern, &text)
+            })
+    }
+
+    /// True when `key` is one of the title's audio keys with any extension
+    /// (a replacement of higher quality may change it) or a sidecar of one:
+    /// the audio stem, a `.` and any suffix (`.cue`, `.jpg`, `.pdf`,
+    /// `.chapters.flat.json`, `.m4b.bookclerk-meta.json`).
+    #[must_use]
+    pub fn admits(&self, key: &str) -> bool {
+        sidecar_stems(key).any(|stem| self.names_audio_stem(stem))
+    }
+
+    /// True when `key` is one of the title's audio keys with any extension.
+    #[must_use]
+    pub fn admits_audio(&self, key: &str) -> bool {
+        file_stem_key(key).is_some_and(|stem| self.names_audio_stem(stem))
+    }
+}
+
+/// True when `text` matches `pattern`, whose [`UPLOAD_NAME_WILDCARD`]
+/// stands for one or more characters other than `/` and whose
+/// [`UPLOAD_NUMBER_WILDCARD`] for one or more ASCII digits; every other
+/// character matches itself. A pattern holds a wildcard or two, and keys
+/// are short, so plain backtracking is enough.
+fn pattern_matches(pattern: &[char], text: &[char]) -> bool {
+    match pattern.split_first() {
+        None => text.is_empty(),
+        Some((&wildcard, rest))
+            if wildcard == UPLOAD_NAME_WILDCARD || wildcard == UPLOAD_NUMBER_WILDCARD =>
+        {
+            let fits = |c: &char| {
+                if wildcard == UPLOAD_NAME_WILDCARD {
+                    *c != '/'
+                } else {
+                    c.is_ascii_digit()
+                }
+            };
+            let run = text.iter().take_while(|c| fits(c)).count();
+            (1..=run).any(|taken| pattern_matches(rest, &text[taken..]))
+        }
+        Some((literal, rest)) => text.first() == Some(literal) && pattern_matches(rest, &text[1..]),
     }
 }
 
@@ -402,6 +501,11 @@ fn manifest_problem(req: &UploadGrantRequest<'_>) -> Option<&'static str> {
     let on_primary = |key: &str| keys.contains(&(primary.id.as_str(), key));
     if !on_primary(req.primary_key) || req.pdf_key.is_some_and(|key| !on_primary(key)) {
         return Some("invalid_manifest");
+    }
+    // The primary is the title's own audio, not merely a name in scope (a
+    // sidecar's); in a shared folder, one of its planned audio keys.
+    if !primary.admits_primary(req.primary_key) {
+        return Some("key_out_of_scope");
     }
     None
 }

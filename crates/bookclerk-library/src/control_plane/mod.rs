@@ -167,8 +167,9 @@ pub use trust::{
 pub use uploads::{
     abort_job_uploads, abort_upload, authorize_upload, commit_upload, extend_job_uploads,
     grant_upload, job_titles, load_upload, names_book, record_upload_file, upload_fence_live,
-    upload_owns_key, UploadCommit, UploadDestination, UploadFinish, UploadGrant,
-    UploadGrantRequest, UploadSession, UPLOAD_TOKEN_TTL_SECS,
+    upload_owns_key, TitleNames, UploadCommit, UploadDestination, UploadFinish, UploadGrant,
+    UploadGrantRequest, UploadSession, UPLOAD_NAME_WILDCARD, UPLOAD_NUMBER_WILDCARD,
+    UPLOAD_TOKEN_TTL_SECS,
 };
 pub use versions::{
     activate_version, add_plugin_version, approve_version_grant, clear_install, list_installs,

@@ -2376,6 +2376,164 @@ pub async fn planned_title_folders(library: &LibraryStore, req: &AcquireRequest)
     folders
 }
 
+/// In a [`PlannedTitleNames`] pattern: one or more characters of a file
+/// name (no `/`), where the source's part or chapter title goes; the
+/// marker the owner's upload scope matches
+/// ([`bookclerk_library::control_plane::TitleNames`]).
+pub const NAME_WILDCARD: char = bookclerk_library::control_plane::UPLOAD_NAME_WILDCARD;
+
+/// In a [`PlannedTitleNames`] pattern: one or more ASCII digits, where a
+/// part or chapter number goes (the owner's upload scope matches it too).
+pub const NUMBER_WILDCARD: char = bookclerk_library::control_plane::UPLOAD_NUMBER_WILDCARD;
+
+/// Stands in for a part or chapter title when a pattern is rendered: plain
+/// letters, which every replacement rule keeps.
+const TITLE_SENTINEL: &str = "Qzxvpartqzxv";
+
+/// Stands in for a part or chapter number when a pattern is rendered: too
+/// long for any zero padding to change it.
+const NUMBER_SENTINEL: u32 = 987_654_321;
+
+/// The names an acquire of one title writes on one destination, as the
+/// owner plans them, to bound a host's upload of that title.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedTitleNames {
+    /// The folders the title's files go under ([`planned_title_folders`]).
+    pub folders: Vec<String>,
+    /// True when the folder template has a component of the title's own
+    /// (its id, title or subtitle), so no other title's files go there and
+    /// any name under it is the title's. False for a folder several titles
+    /// share (`<author>`), the destination's root, or a podcast parent's
+    /// folder: there only the names below are the title's.
+    pub own_folder: bool,
+    /// The planned audio key of a single-file acquire, without its
+    /// extension (one per folder variant): the title's audio is this stem
+    /// with any audio extension, and its sidecars this stem, a `.` and a
+    /// suffix.
+    pub audio_stems: Vec<String>,
+    /// Part and chapter keys without their extension, with
+    /// [`NAME_WILDCARD`] and [`NUMBER_WILDCARD`] where the source's part or
+    /// chapter title and number go. Those titles are not known before the
+    /// acquire runs, so they are matched rather than listed; a template
+    /// with no part or chapter field yields a literal name.
+    pub part_patterns: Vec<String>,
+}
+
+/// The title's planned names on the destination `req.options` describe:
+/// [`PlannedTitleNames`].
+pub async fn planned_title_names(
+    library: &LibraryStore,
+    req: &AcquireRequest,
+) -> PlannedTitleNames {
+    /// The folder part of a storage key.
+    fn folder_of(key: &str) -> &str {
+        key.rsplit_once('/').map_or("", |(folder, _)| folder)
+    }
+    /// `key` without its last extension.
+    fn stem_of(key: &str) -> String {
+        let name_at = key.rfind('/').map_or(0, |at| at + 1);
+        match key[name_at..].rfind('.') {
+            Some(dot) if dot > 0 => key[..name_at + dot].to_string(),
+            _ => key.to_string(),
+        }
+    }
+    /// A rendered key's stem with its sentinels turned into wildcards.
+    fn pattern_of(key: &str) -> String {
+        stem_of(key)
+            .replace(TITLE_SENTINEL, &NAME_WILDCARD.to_string())
+            .replace(&NUMBER_SENTINEL.to_string(), &NUMBER_WILDCARD.to_string())
+    }
+    let ext = fallback_audio_ext(&req.options);
+    let mut variants = vec![req.clone()];
+    if req.options.save_podcasts_to_parent_folder {
+        let mut own = req.clone();
+        own.options.save_podcasts_to_parent_folder = false;
+        variants.push(own);
+    }
+    let templates = req.options.naming_templates();
+    let rules = &req.options.replacement_characters;
+    let mut names = PlannedTitleNames {
+        folders: planned_title_folders(library, req).await,
+        own_folder: false,
+        audio_stems: Vec::new(),
+        part_patterns: Vec::new(),
+    };
+    let mut own_folder = true;
+    for variant in &variants {
+        let folder_ctx = folder_naming_ctx(library, variant).await;
+        let file_ctx = naming_ctx(library, variant).await;
+        let key = storage_key_with_contexts(
+            &folder_ctx,
+            &file_ctx,
+            Some(templates.folder.as_str()),
+            Some(templates.file.as_str()),
+            ext,
+            rules,
+            variant.options.path_limits,
+        );
+        // The folder is the title's own only when another title (other
+        // id, title and subtitle) would be filed elsewhere.
+        let mut other = folder_ctx.clone();
+        other.asin = TITLE_SENTINEL.into();
+        other.title = TITLE_SENTINEL.into();
+        other.subtitle = Some(TITLE_SENTINEL.into());
+        let other_key = storage_key_with_contexts(
+            &other,
+            &file_ctx,
+            Some(templates.folder.as_str()),
+            Some(templates.file.as_str()),
+            ext,
+            rules,
+            variant.options.path_limits,
+        );
+        // A podcast parent's folder holds all its episodes: never one
+        // title's own, however its template reads.
+        let parents_folder = folder_ctx.asin != file_ctx.asin;
+        own_folder &= !parents_folder
+            && !folder_of(&key).is_empty()
+            && folder_of(&key) != folder_of(&other_key);
+        let stem = stem_of(&key);
+        if !names.audio_stems.contains(&stem) {
+            names.audio_stems.push(stem);
+        }
+        // Plain parts: the file template with the part's title and a
+        // `-pNNN` id (as `planned_plain_part_storage_key` names them).
+        let mut part_ctx = file_ctx.clone();
+        part_ctx.title = format!("{} — {TITLE_SENTINEL}", variant.title);
+        part_ctx.asin = format!("{}-p{NUMBER_SENTINEL}", variant.asin);
+        part_ctx.chapter_number = Some(NUMBER_SENTINEL);
+        part_ctx.chapter_title = Some(TITLE_SENTINEL.into());
+        let part = storage_key_with_contexts(
+            &folder_ctx,
+            &part_ctx,
+            Some(templates.folder.as_str()),
+            Some(templates.file.as_str()),
+            ext,
+            rules,
+            variant.options.path_limits,
+        );
+        // Split chapters: the chapter-file template.
+        let chapter = chapter_storage_key_with_folder(
+            &folder_ctx,
+            &file_ctx,
+            Some(templates.folder.as_str()),
+            Some(templates.chapter_file.as_str()),
+            rules,
+            NUMBER_SENTINEL as usize,
+            TITLE_SENTINEL,
+            ext,
+            variant.options.path_limits,
+        );
+        for pattern in [pattern_of(&part), pattern_of(&chapter)] {
+            if !names.part_patterns.contains(&pattern) {
+                names.part_patterns.push(pattern);
+            }
+        }
+    }
+    names.own_folder = own_folder;
+    names
+}
+
 /// Download and store companion PDF only (classic `acquire --pdf`).
 ///
 /// Fetches via [`ContentSource::fetch_title`]; requires `PlainFetch.pdf_url`, then HTTP GETs that URL.
@@ -3231,5 +3389,59 @@ mod tests {
             "failed PDF job must unregister acquire-pdf scratch"
         );
         assert!(!cache.join("acquire-pdf").join("B00TEST").exists());
+    }
+
+    /// A request for `title` by "Ann Author" whose destination names
+    /// files with `folder`, `<title> [<asin>]` and a chapter template
+    /// carrying the title, number and chapter title.
+    fn upload_naming_req(cache: &Path, asin: &str, title: &str, folder: &str) -> AcquireRequest {
+        let mut req = dummy_req(cache, None, None);
+        req.asin = asin.into();
+        req.title = title.into();
+        req.authors = Some("Ann Author".into());
+        req.options.folder_template = Some(folder.into());
+        req.options.file_template = Some("<title> [<asin>]".into());
+        req.options.chapter_file_template = Some("<title> - <ch#> - <chapter title>".into());
+        req
+    }
+
+    /// The upload scope's planned names: a folder several titles share
+    /// (`<first author>`) and the root are not the title's own, and name
+    /// its audio stem plus part and chapter patterns; a folder with the
+    /// title in it is the title's own.
+    #[tokio::test]
+    async fn upload_planned_title_names_follow_the_folder_template() {
+        let store = test_store().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let shared = upload_naming_req(tmp.path(), "B00ONE", "One", "<first author>");
+        let names = planned_title_names(&store, &shared).await;
+        assert_eq!(
+            names,
+            PlannedTitleNames {
+                folders: vec!["Ann Author".into()],
+                own_folder: false,
+                audio_stems: vec!["Ann Author/One [B00ONE]".into()],
+                part_patterns: vec![
+                    format!("Ann Author/One — {NAME_WILDCARD} [B00ONE-p{NUMBER_WILDCARD}]"),
+                    format!("Ann Author/One - {NUMBER_WILDCARD} - {NAME_WILDCARD}"),
+                ],
+            }
+        );
+        let root = upload_naming_req(tmp.path(), "B00ONE", "One", "");
+        let names = planned_title_names(&store, &root).await;
+        assert_eq!(names.folders, vec![String::new()]);
+        assert!(!names.own_folder, "the root is shared by every title");
+        assert_eq!(names.audio_stems, vec!["One [B00ONE]".to_string()]);
+        assert_eq!(
+            names.part_patterns,
+            vec![
+                format!("One — {NAME_WILDCARD} [B00ONE-p{NUMBER_WILDCARD}]"),
+                format!("One - {NUMBER_WILDCARD} - {NAME_WILDCARD}"),
+            ]
+        );
+        let own = upload_naming_req(tmp.path(), "B00ONE", "One", "<first author>/<title>");
+        let names = planned_title_names(&store, &own).await;
+        assert_eq!(names.folders, vec!["Ann Author/One".to_string()]);
+        assert!(names.own_folder, "a folder named for the title is its own");
     }
 }
