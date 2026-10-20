@@ -329,6 +329,8 @@ impl LinkSupervisor {
         // `Consented` never replaces the revoke `reevaluate` already
         // published. A revoke after this read bumps the consent generation
         // and is applied by the loop as soon as this refresh returns.
+        // Taken before the rows are read: a change after it is seen below.
+        let generation = *CONSENT_GENERATION.borrow();
         if self.reconcile(&mut entries).await {
             outcome = Refreshed::Unfinished;
         }
@@ -337,6 +339,12 @@ impl LinkSupervisor {
         // The catalog and consent now describe this connection.
         self.handle.deployments_refreshed(connection);
         for item in &items {
+            if *CONSENT_GENERATION.borrow() != generation {
+                // A consent changed: return so the loop applies it now
+                // rather than after every observation (each may wait out
+                // a request timeout); the rest are sent on the retry.
+                return Refreshed::Unfinished;
+            }
             let Some(entry) = entries.get(&item.instance_id) else {
                 continue;
             };
