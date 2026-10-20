@@ -14,7 +14,7 @@
 //! when it is opened.
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
-use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, TransactionTrait as _};
 use zeroize::Zeroizing;
 
 use super::cluster_links::{decode_spki_pin, ClusterLinkKeys};
@@ -22,7 +22,7 @@ use crate::entities::pending_joins;
 use crate::error::{LibraryError, Result};
 use crate::secrets::{
     build_sealed_record, delete_secret, get_secret, secret_account_type, secret_kind,
-    unseal_secret, upsert_secret,
+    unseal_secret, upsert_secret_on,
 };
 use crate::store::LibraryStore;
 use crate::token_hash::hash_token;
@@ -172,10 +172,13 @@ pub async fn create_pending_join(
         &state_hash,
         PENDING_JOIN_SECRET_NAME,
     )?;
-    upsert_secret(store.db(), &record).await?;
     let now = Utc::now();
     let ttl = Duration::from_std(PENDING_JOIN_TTL)
         .map_err(|_| LibraryError::Invalid("pending join ttl out of range".into()))?;
+    // The secret and its row land together: a secret without a row would
+    // never be purged. Dropping the transaction on an error rolls it back.
+    let txn = store.db().begin().await.map_err(LibraryError::Orm)?;
+    upsert_secret_on(&txn, &record).await?;
     let row = pending_joins::ActiveModel {
         state_hash: Set(state_hash),
         owner_origin: Set(origin),
@@ -188,9 +191,10 @@ pub async fn create_pending_join(
         expires_at: Set(stamp(now + ttl)),
     };
     pending_joins::Entity::insert(row)
-        .exec(store.db())
+        .exec(&txn)
         .await
         .map_err(LibraryError::Orm)?;
+    txn.commit().await.map_err(LibraryError::Orm)?;
     pending_joins::Entity::find_by_id(hash_token(state))
         .one(store.db())
         .await

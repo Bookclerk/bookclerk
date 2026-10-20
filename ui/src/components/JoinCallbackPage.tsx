@@ -48,7 +48,9 @@ export function JoinCallbackPage({ onOpenLibrary }: JoinCallbackPageProps) {
         setPhase({
           kind: "failed",
           message: joinErrorMessage(err, "Could not join the library."),
-          retry: isApiError(err) && err.code === "join_retry",
+          // A request that never got an answer may be tried again: the
+          // pending join stays until the library's answer is recorded.
+          retry: !isApiError(err) || err.code === "join_retry",
         }),
       );
   }, []);

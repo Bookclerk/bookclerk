@@ -78,8 +78,10 @@ export function AddBranchDialog({ open, onClose, userId, userLabel }: AddBranchD
 
   useEffect(() => {
     lifetime.current += 1;
-    // A request of the earlier lifetime no longer clears this.
+    // A request of the earlier lifetime no longer clears this, and the
+    // last user's invites are not shown (or revocable) under the next one.
     setBusy(false);
+    setInvites([]);
     if (!open) {
       // Drop the shown invite as soon as the dialog closes.
       setMinted(null);
