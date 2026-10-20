@@ -464,6 +464,37 @@ pub(super) async fn accounts_named(
         .collect())
 }
 
+/// The account id `needle` (an id or a label) names, limited to
+/// `plugin_key` when given: `needle` itself when it is an id exactly or
+/// names no account, else the one id its label names.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] when a label names several account
+/// ids, and the read error when a read fails.
+async fn resolve_named_account(
+    store: &LibraryStore,
+    needle: &str,
+    plugin_key: Option<&str>,
+) -> Result<String> {
+    let ids: BTreeSet<String> = accounts_named(store, needle, plugin_key)
+        .await?
+        .into_iter()
+        .map(|(_, id)| id)
+        .collect();
+    if ids.contains(needle) {
+        return Ok(needle.to_string());
+    }
+    let mut ids = ids.into_iter();
+    match (ids.next(), ids.next()) {
+        (None, _) => Ok(needle.to_string()),
+        (Some(id), None) => Ok(id),
+        (Some(first), Some(second)) => Err(LibraryError::Invalid(format!(
+            "account name `{needle}` matches several accounts ({first}, {second}, ...); use the account id"
+        ))),
+    }
+}
+
 /// Store accounts linked to `user_id` through any of the user's identities.
 ///
 /// # Errors
@@ -654,7 +685,11 @@ pub async fn plan_acquire(
         }
     };
     let Some(user_id) = owner else {
-        return Ok(per_title(account));
+        let resolved = match account {
+            Some(needle) => Some(resolve_named_account(store, needle, None).await?),
+            None => None,
+        };
+        return Ok(per_title(resolved.as_deref()));
     };
     let plugin_key = match pinned.as_deref() {
         Some(raw) => {
@@ -676,6 +711,13 @@ pub async fn plan_acquire(
             return Err(not_your_account());
         }
     }
+    // The library rows and the jobs name the account by id, so a label is
+    // resolved here, as the CLI does before it plans.
+    let resolved = match account {
+        Some(needle) => Some(resolve_named_account(store, needle, plugin_key.as_deref()).await?),
+        None => None,
+    };
+    let account = resolved.as_deref();
     if !titles.is_empty() {
         let books = store.list_books(account).await?;
         let not_yours = || {

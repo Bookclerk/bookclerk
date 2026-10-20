@@ -997,6 +997,50 @@ async fn acquires_are_trusted_and_planned_per_item(owner_db: LibraryStore, host_
     .await
     .unwrap();
     assert_eq!(shape(plan), vec![(s("a1"), s("B0BOTH"))]);
+    // A label names the account as its id does, and the jobs carry the id
+    // (the library rows and the executor match by id).
+    accounts::Entity::update_many()
+        .col_expr(accounts::Column::Label, Expr::value("My Audible"))
+        .filter(accounts::Column::AccountId.eq("a1"))
+        .exec(host_db.db())
+        .await
+        .unwrap();
+    for requester in [ScanRequester::User(riley), ScanRequester::Operator] {
+        let plan = plan_acquire(
+            &host_db,
+            requester,
+            Some("my audible"),
+            &titles(&["B0RILEY"]),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(shape(plan), vec![(s("a1"), s("B0RILEY"))], "{requester:?}");
+    }
+    accounts::Entity::update_many()
+        .col_expr(accounts::Column::Label, Expr::value("My Audible"))
+        .filter(accounts::Column::AccountId.eq("a2"))
+        .exec(host_db.db())
+        .await
+        .unwrap();
+    let err = plan_acquire(
+        &host_db,
+        ScanRequester::Operator,
+        Some("My Audible"),
+        &[],
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, LibraryError::Invalid(_)), "{err}");
+    for id in ["a1", "a2"] {
+        accounts::Entity::update_many()
+            .col_expr(accounts::Column::Label, Expr::value(None::<String>))
+            .filter(accounts::Column::AccountId.eq(id))
+            .exec(host_db.db())
+            .await
+            .unwrap();
+    }
     let plan = plan_acquire(&host_db, ScanRequester::User(riley), None, &[], None)
         .await
         .unwrap();
