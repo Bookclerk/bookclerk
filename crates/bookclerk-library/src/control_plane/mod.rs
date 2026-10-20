@@ -133,10 +133,6 @@ pub use trust::{
     accounts_owned_by, handoff_routed_job, job_trusted, node_may_claim_job, node_trust, plan_scan,
     Claimant, NodeTrust, ScanRequester,
 };
-pub use trust::{
-    accounts_owned_by, handoff_routed_job, job_trusted, node_may_claim_job, node_trust, plan_scan,
-    Claimant, NodeTrust, ScanRequester,
-};
 pub use versions::{
     activate_version, add_plugin_version, approve_version_grant, clear_install, list_installs,
     list_versions, load_active_version, load_artifact_blob, load_install, load_version,
