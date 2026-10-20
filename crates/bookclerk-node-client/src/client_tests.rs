@@ -65,6 +65,21 @@ impl HostJobRunner for UntilCancelled {
     }
 }
 
+/// A token the [`QuotesToken`] runner leaks into its error.
+const QUOTED_TOKEN: &str = "quoted-store-token_0123456789abcdefABCDEF";
+
+/// A runner whose error quotes a registered secret.
+struct QuotesToken;
+
+impl HostJobRunner for QuotesToken {
+    async fn run(&self, _ctx: HostJobCtx) -> Result<String, HostJobError> {
+        Err(HostJobError::new(
+            "refresh",
+            format!("token {QUOTED_TOKEN} was rejected"),
+        ))
+    }
+}
+
 /// Fixed heartbeat measurements.
 struct FixedSampler;
 
@@ -765,4 +780,46 @@ fn handed_secrets_are_registered_for_redaction() {
     assert!(!bookclerk_config::contains_registered_secret(&line));
     register_for_redaction(&[entry]);
     assert!(!bookclerk_config::redact_str(&line).contains(token));
+}
+
+/// A runner error that quotes a registered secret reaches the owner
+/// scrubbed.
+#[tokio::test]
+async fn a_failed_report_is_scrubbed_of_secrets() {
+    bookclerk_config::register_secret(QUOTED_TOKEN);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (_handle, _stop, _exit) = start_with(listener.local_addr().unwrap().port(), 1, QuotesToken);
+    let mut socket = accept(&listener).await;
+    let mut granted = false;
+    let frames = read_for(
+        &mut socket,
+        Duration::from_millis(1500),
+        |frame| match &frame.body {
+            Body::Heartbeat { .. } | Body::Fail { .. } => Some(Body::Accepted {}),
+            Body::Claim { .. } if !std::mem::replace(&mut granted, true) => {
+                Some(work("job-1", 3, 30))
+            }
+            Body::Claim { .. } => Some(Body::NoWork {
+                retry_after_secs: 300,
+            }),
+            Body::Renew { .. } => Some(Body::Renewed {
+                lease_secs: 30,
+                cancel: false,
+            }),
+            _ => None,
+        },
+    )
+    .await;
+    let message = frames
+        .iter()
+        .find_map(|frame| match &frame.body {
+            Body::Fail { message, .. } => Some(message.clone()),
+            _ => None,
+        })
+        .expect("the job was reported");
+    assert!(message.contains("was rejected"), "{message}");
+    assert!(
+        !message.contains(QUOTED_TOKEN),
+        "the report carried the token"
+    );
 }

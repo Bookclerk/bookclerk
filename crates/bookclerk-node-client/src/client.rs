@@ -298,9 +298,14 @@ pub(crate) struct Shared {
 /// verbatim and is skipped.
 fn register_for_redaction(entries: &[SecretEntry]) {
     for entry in entries {
-        if let Ok(text) = std::str::from_utf8(entry.value.expose()) {
-            bookclerk_config::register_secret(text);
-        }
+        register_value_for_redaction(entry.value.expose());
+    }
+}
+
+/// Registers one secret value with the scrubber when it is UTF-8 text.
+fn register_value_for_redaction(value: &[u8]) {
+    if let Ok(text) = std::str::from_utf8(value) {
+        bookclerk_config::register_secret(text);
     }
 }
 
@@ -424,6 +429,9 @@ impl Shared {
         secret_ref: &SecretRef,
         value: &[u8],
     ) -> Result<(), WriteBackError> {
+        // A refreshed token is new to this process too: scrub it from
+        // anything the job prints after this, whether or not it is sent.
+        register_value_for_redaction(value);
         if !self.holds(job_id, fence) {
             return Err(WriteBackError::Lost);
         }
@@ -1352,6 +1360,9 @@ async fn renew_loop(
 
 /// Reports a finished job under its fence, waiting for a connection when
 /// there is none, until the owner answers or [`REPORT_DEADLINE`] passes.
+///
+/// The detail or error text is scrubbed of registered secrets first, so a
+/// runner error that quotes a handed token never reaches the owner.
 async fn report(
     shared: &Arc<Shared>,
     job_id: &str,
@@ -1364,13 +1375,13 @@ async fn report(
         Ok(detail) => Body::Complete {
             job_id: job_id.to_string(),
             fence,
-            detail: Some(bounded(detail)),
+            detail: Some(bounded(bookclerk_config::redact_str(&detail))),
         },
         Err(err) => Body::Fail {
             job_id: job_id.to_string(),
             fence,
             error_kind: bounded(err.kind),
-            message: bounded(err.message),
+            message: bounded(bookclerk_config::redact_str(&err.message)),
         },
     };
     let deadline = Instant::now() + REPORT_DEADLINE;
