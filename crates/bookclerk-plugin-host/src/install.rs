@@ -23,10 +23,10 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_plugin_catalog::{
-    extract_archive, fetch_artifact, host_bookclerk_target, is_platform_plugin_key,
-    payload_root_sha256, require_mutable_child, safe_join, select_target, sha256_file,
-    ArchiveFormat, ArtifactTarget, BookclerkPackageManifest, Installer, PackageCoordinate,
-    PluginKey, PluginMutationLock, RegistrySource,
+    extract_archive, fetch_artifact, fetch_owner_artifact, host_bookclerk_target,
+    is_platform_plugin_key, payload_root_sha256, require_mutable_child, safe_join, select_target,
+    sha256_file, ArchiveFormat, ArtifactTarget, BookclerkPackageManifest, Installer,
+    PackageCoordinate, PluginKey, PluginMutationLock, RegistrySource,
 };
 
 use crate::consent::PluginGrant;
@@ -45,10 +45,31 @@ pub fn version_cache_root(files_dir: &Path) -> PathBuf {
     files_dir.join("plugins").join(VERSION_CACHE_DIR)
 }
 
-/// Cached tree of one payload-root digest.
+/// True for a canonical SHA-256 digest: exactly 64 lowercase hex digits.
+///
+/// Every digest that names a path (the version cache) or is compared
+/// against a computed digest is held to this form, so an owner- or
+/// registry-supplied value such as `..`, an absolute path, or one with a
+/// separator can never select a directory outside the cache.
 #[must_use]
-pub fn version_cache_path(files_dir: &Path, payload_root_sha256: &str) -> PathBuf {
-    version_cache_root(files_dir).join(payload_root_sha256)
+pub fn is_sha256_hex(raw: &str) -> bool {
+    raw.len() == 64 && raw.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Cached tree of one payload-root digest.
+///
+/// # Errors
+///
+/// Returns an error when `payload_root_sha256` is not a canonical SHA-256
+/// ([`is_sha256_hex`]): it is joined onto the cache root, so anything else
+/// could name a directory outside it.
+pub fn version_cache_path(files_dir: &Path, payload_root_sha256: &str) -> Result<PathBuf> {
+    if !is_sha256_hex(payload_root_sha256) {
+        return Err(PluginError::message(
+            "a version payload digest is not 64 lowercase hex digits",
+        ));
+    }
+    Ok(version_cache_root(files_dir).join(payload_root_sha256))
 }
 
 /// When installing moves the active pointer.
@@ -401,15 +422,74 @@ pub fn host_artifact(version: &PluginVersion) -> Result<&PluginArtifact> {
 ///
 /// # Errors
 ///
-/// Returns an error when the version has no artifact for this host, the
-/// artifact cannot be fetched, or a digest does not match.
+/// Returns an error when the version has no artifact for this host, a
+/// digest is not 64 lowercase hex digits ([`is_sha256_hex`]; checked before
+/// any path is formed or a cached tree reused), the artifact cannot be
+/// fetched, or a digest does not match.
 pub async fn materialize_version(
     store: &LibraryStore,
     files_dir: &Path,
     version: &PluginVersion,
 ) -> Result<PathBuf> {
+    materialize_from(store, files_dir, version, ArtifactOrigin::Local).await
+}
+
+/// [`materialize_version`] for a version an owner cluster deploys to this
+/// host: a `blob:` archive is read from the library as usual (the caller
+/// fetched it over the owner link and checked its digest), and any other
+/// URL is fetched only as an owner `https:` URL
+/// ([`bookclerk_plugin_catalog::fetch_owner_artifact`]: no `file:`, no
+/// local or private hosts, every redirect hop checked the same way).
+///
+/// A tree already cached under the artifact's payload digest is reused
+/// without a fetch or an archive check, so the caller must have checked
+/// the whole artifact (URL, archive digest and payload digest) against the
+/// host operator's approval first
+/// (`RemotePluginConsent::approved_artifact_matches`).
+///
+/// # Arguments
+///
+/// * `store` - This host's library.
+/// * `files_dir` - This host's files dir.
+/// * `version` - The owner's version, with the grant this host runs it with.
+///
+/// # Errors
+///
+/// As [`materialize_version`], and when the owner's URL is refused.
+pub async fn materialize_owner_version(
+    store: &LibraryStore,
+    files_dir: &Path,
+    version: &PluginVersion,
+) -> Result<PathBuf> {
+    materialize_from(store, files_dir, version, ArtifactOrigin::Owner).await
+}
+
+/// Who chose a version's artifact URL, which decides how it is fetched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArtifactOrigin {
+    /// This node's operator or registry ([`fetch_artifact`]).
+    Local,
+    /// An owner cluster, on a host node ([`fetch_owner_artifact`]).
+    Owner,
+}
+
+/// [`materialize_version`] with the fetch policy of `origin`.
+async fn materialize_from(
+    store: &LibraryStore,
+    files_dir: &Path,
+    version: &PluginVersion,
+    origin: ArtifactOrigin,
+) -> Result<PathBuf> {
     let artifact = host_artifact(version)?.clone();
-    let cache = version_cache_path(files_dir, &artifact.payload_root_sha256);
+    // Both digests are checked before either names a path or the cached
+    // tree is reused: a reused tree is trusted by its digest alone.
+    if !is_sha256_hex(&artifact.archive_sha256) {
+        return Err(PluginError::message(format!(
+            "version {} {} archive digest is not 64 lowercase hex digits",
+            version.plugin_key, version.version
+        )));
+    }
+    let cache = version_cache_path(files_dir, &artifact.payload_root_sha256)?;
     if cache.join("plugin.toml").is_file() {
         return Ok(cache);
     }
@@ -429,7 +509,7 @@ pub async fn materialize_version(
     };
     let files = files_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        materialize_blocking(&files, &artifact, blob.as_deref(), &cache)
+        materialize_blocking(&files, &artifact, blob.as_deref(), &cache, origin)
     })
     .await
     .map_err(|err| PluginError::message(format!("materialize task: {err}")))?
@@ -448,6 +528,7 @@ fn materialize_blocking(
     artifact: &PluginArtifact,
     blob: Option<&[u8]>,
     cache: &Path,
+    origin: ArtifactOrigin,
 ) -> Result<PathBuf> {
     if cache.join("plugin.toml").is_file() {
         return Ok(cache.to_path_buf());
@@ -469,7 +550,11 @@ fn materialize_blocking(
         let archive = staging.join("archive");
         match blob {
             Some(bytes) => std::fs::write(&archive, bytes).map_err(io)?,
-            None => fetch_artifact(&artifact.url, &archive, false).map_err(cat)?,
+            None => match origin {
+                ArtifactOrigin::Local => fetch_artifact(&artifact.url, &archive, false),
+                ArtifactOrigin::Owner => fetch_owner_artifact(&artifact.url, &archive),
+            }
+            .map_err(cat)?,
         }
         let actual = sha256_file(&archive).map_err(cat)?;
         if actual != artifact.archive_sha256 {

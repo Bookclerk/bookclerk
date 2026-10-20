@@ -19,6 +19,9 @@ const CLUSTER: &str = "cluster-1";
 /// This host's node id there.
 const NODE: &str = "3f2b8c1e-7a4d-4e5f-9b0a-1c2d3e4f5a6b";
 
+/// The plugin every scripted job runs, consented on every test client.
+const PLUGIN: &str = "path:file:///plugins/store#store";
+
 /// A runner for claims the scripted owner never grants.
 struct NoJobs;
 
@@ -129,6 +132,21 @@ fn start_with<R: HostJobRunner>(
     watch::Sender<bool>,
     JoinHandle<ClientExit>,
 ) {
+    start_configured(port, max_jobs, false, runner)
+}
+
+/// [`start_with`], with claims waiting for a deployments refresh when
+/// `claims_after_refresh` is set.
+fn start_configured<R: HostJobRunner>(
+    port: u16,
+    max_jobs: usize,
+    claims_after_refresh: bool,
+    runner: R,
+) -> (
+    HostClientHandle,
+    watch::Sender<bool>,
+    JoinHandle<ClientExit>,
+) {
     let link = ClusterLink {
         owner_cluster_id: CLUSTER.into(),
         owner_origin: format!("http://127.0.0.1:{port}"),
@@ -144,12 +162,15 @@ fn start_with<R: HostJobRunner>(
             software_version: "1.0.0".into(),
             incarnation: "inc".into(),
             max_jobs,
+            claim_kinds: vec!["scan".into()],
+            claims_after_refresh,
             timing: timing(),
         },
         runner,
         Box::new(FixedSampler),
     )
     .unwrap();
+    handle.set_consented_plugins(BTreeSet::from([PLUGIN.to_string()]));
     let (stop, shutdown) = watch::channel(false);
     let exit = tokio::spawn(client.run(shutdown));
     (handle, stop, exit)
@@ -168,6 +189,7 @@ fn work(job_id: &str, fence: i64, lease_secs: u64) -> Body {
         fence,
         lease_secs,
         sealed_secrets: None,
+        plugin_keys: vec![PLUGIN.into()],
         resumed: false,
     }
 }
@@ -656,6 +678,7 @@ async fn renewals_continue_while_an_unopenable_fail_waits() {
                     fence,
                     lease_secs,
                     resumed,
+                    plugin_keys,
                     ..
                 } = work("job-1", 3, 1)
                 else {
@@ -668,6 +691,7 @@ async fn renewals_continue_while_an_unopenable_fail_waits() {
                     lease_secs,
                     sealed_secrets: Some("not-a-sealed-box".into()),
                     resumed,
+                    plugin_keys,
                 })
             }
             Body::Claim { .. } => Some(Body::NoWork {
@@ -861,5 +885,90 @@ async fn a_failed_report_is_scrubbed_of_secrets() {
     assert!(
         !message.contains(QUOTED_TOKEN),
         "the report carried the token"
+    );
+}
+
+/// Under `claims_after_refresh` a connection claims nothing until the
+/// deployments were re-read on it; a read on an older connection does not
+/// count.
+#[tokio::test]
+async fn claims_wait_for_the_connections_deployments_refresh() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (handle, _stop, _exit) =
+        start_configured(listener.local_addr().unwrap().port(), 1, true, NoJobs);
+    let mut socket = accept(&listener).await;
+    let answer = |frame: &Frame| match &frame.body {
+        Body::Heartbeat { .. } => Some(Body::Accepted {}),
+        Body::Claim { .. } => Some(Body::NoWork {
+            retry_after_secs: 300,
+        }),
+        _ => None,
+    };
+    handle.deployments_refreshed(0);
+    let before = read_for(&mut socket, Duration::from_millis(500), answer).await;
+    assert!(
+        !before
+            .iter()
+            .any(|frame| matches!(frame.body, Body::Claim { .. })),
+        "claimed before the deployments were re-read"
+    );
+    handle.deployments_refreshed(*handle.connections().borrow());
+    let after = read_for(&mut socket, Duration::from_millis(500), answer).await;
+    assert!(
+        after
+            .iter()
+            .any(|frame| matches!(frame.body, Body::Claim { .. })),
+        "no claim after the refresh"
+    );
+}
+
+/// A consent revoke while a finished job's report waits sends `release`
+/// on the next attempt instead of the report, so the job goes back
+/// unspent.
+#[tokio::test]
+async fn a_revoke_while_the_report_waits_gives_the_job_back() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let runner = RecordsDeadline::default();
+    let (handle, _stop, _exit) =
+        start_with(listener.local_addr().unwrap().port(), 1, runner.clone());
+    let mut socket = accept(&listener).await;
+    let mut granted = false;
+    let mut revoked = false;
+    let frames = read_for(
+        &mut socket,
+        Duration::from_millis(1500),
+        |frame| match &frame.body {
+            Body::Heartbeat { .. } | Body::Release { .. } => Some(Body::Accepted {}),
+            Body::Claim { .. } if !std::mem::replace(&mut granted, true) => {
+                Some(work("job-1", 3, 30))
+            }
+            Body::Claim { .. } => Some(Body::NoWork {
+                retry_after_secs: 300,
+            }),
+            Body::Renew { .. } => Some(Body::Renewed {
+                lease_secs: 30,
+                cancel: false,
+            }),
+            // Leave the report unanswered and revoke while it waits.
+            Body::Fail { .. } => {
+                if !std::mem::replace(&mut revoked, true) {
+                    handle.set_consented_plugins(BTreeSet::new());
+                }
+                None
+            }
+            _ => None,
+        },
+    )
+    .await;
+    let failed = frames
+        .iter()
+        .position(|frame| matches!(frame.body, Body::Fail { .. }))
+        .expect("the job was reported");
+    assert!(
+        frames[failed..].iter().any(|frame| matches!(
+            &frame.body,
+            Body::Release { reason, .. } if reason == AWAITING_HOST_CONSENT
+        )),
+        "the job was not given back after the revoke"
     );
 }

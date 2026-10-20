@@ -2414,6 +2414,14 @@ pub fn grant_revision(grant: &PluginGrant) -> String {
     crate::authority::grant_revision(grant)
 }
 
+/// True when `grant` stays inside the platform installer envelope (deny
+/// network, only `config` / `work_fs` bindings): the request a Bookclerk
+/// platform plugin may receive without the operator being asked.
+#[must_use]
+pub fn is_platform_envelope(grant: &PluginGrant) -> bool {
+    is_safe_platform_request(grant)
+}
+
 /// True when a platform grant is deny-network with only `config` / `work_fs` bindings.
 fn is_safe_platform_request(grant: &PluginGrant) -> bool {
     grant.network_mode == "deny"

@@ -22,7 +22,17 @@
 //!    [`ClientTiming::backoff_min`] to [`ClientTiming::backoff_max`]; those
 //!    loops end only with their connection.
 //! 5. With [`HostClientConfig::max_jobs`] above zero, a claim loop pulls
-//!    jobs. Each job runs on its own task through the [`HostJobRunner`],
+//!    jobs, but only while [`HostClientConfig::claim_kinds`] and the
+//!    consented plugin set ([`HostClientHandle::set_consented_plugins`])
+//!    are both non-empty; each claim carries both as its filter, so the
+//!    owner never hands this host a job of a plugin its operator did not
+//!    approve. A job whose plugins are not all consented when it arrives,
+//!    or whose consent is revoked while it runs, is cancelled and given
+//!    back with `release` (unspent) instead of being reported. That
+//!    includes a job that finished but whose report was still waiting
+//!    for a connection: the owner runs it again, so its side effects
+//!    (uploads, local writes) may happen twice.
+//!    Each job runs on its own task through the [`HostJobRunner`],
 //!    with its secrets opened by this node's box key; a renewer extends
 //!    the lease every third of it; the result is reported with `complete`
 //!    or `fail` under the fence. Job tasks outlive a connection: renewals
@@ -44,7 +54,7 @@
 //! node's box key and write-backs leave sealed to the owner's per-connection
 //! key. Log lines name jobs, fences and close codes only.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -54,10 +64,11 @@ use bookclerk_library::control_plane::{
     ClusterLink, ClusterLinkKeys, NodeHeartbeat, NodeSampler, NODE_HEARTBEAT_INTERVAL,
 };
 use bookclerk_node_proto::{
-    decode_nonce, open_secrets, seal_secret_update, sign_auth, validate_box_public_key,
-    AuthContext, Body, Frame, HeldFence, SecretEntry, SecretRef, SigningKey, CLOSE_PROTOCOL,
-    CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS,
-    SEND_QUEUE_FRAMES,
+    decode_nonce, open_instance_secrets, open_secrets, seal_secret_update, sign_artifact_request,
+    sign_auth, validate_box_public_key, ArtifactRequest, AuthContext, Body, ClaimFilter, Frame,
+    HeldFence, SealError, SecretEntry, SecretRef, SecretValue, SigningKey, ARTIFACTS_PATH,
+    CLOSE_PROTOCOL, CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, ITEM_JOB,
+    PING_INTERVAL_SECS, SEND_QUEUE_FRAMES,
 };
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt as _, StreamExt as _};
@@ -77,6 +88,16 @@ use crate::jobs::{
 /// Error kind reported when a job's secrets do not open with this node's
 /// box key.
 pub const SECRETS_UNOPENABLE: &str = "secrets_unopenable";
+
+/// Release reason for a job whose plugins this host's operator has not
+/// (or no longer) approved.
+pub const AWAITING_HOST_CONSENT: &str = "awaiting_host_consent";
+
+/// Release reason for a job of a kind this host does not run.
+pub const KIND_NOT_RUN_HERE: &str = "kind_not_run_here";
+
+/// Largest artifact fetched from the owner (the library blob cap).
+pub const MAX_ARTIFACT_BYTES: usize = bookclerk_library::control_plane::MAX_ARTIFACT_BLOB_BYTES;
 
 /// Error kind of the `fail` a host sends for a job the owner granted to a
 /// claim that had already timed out here: nothing runs it, so the lease is
@@ -152,6 +173,13 @@ pub struct HostClientConfig {
     pub incarnation: String,
     /// Jobs run at once. Zero claims nothing.
     pub max_jobs: usize,
+    /// Job kinds this host runs (`scan`, ...). Empty claims nothing.
+    pub claim_kinds: Vec<String>,
+    /// When set, a connection claims nothing until
+    /// [`HostClientHandle::deployments_refreshed`] names it, so the caller
+    /// can re-read what the owner deployed (which may have changed while
+    /// this host was away) before work runs against it.
+    pub claims_after_refresh: bool,
     /// Timers.
     pub timing: ClientTiming,
 }
@@ -170,10 +198,15 @@ pub enum ClientExit {
 struct HeldJob {
     /// Lease generation.
     fence: i64,
+    /// Plugin keys the job runs.
+    plugin_keys: Vec<String>,
     /// Asks the runner to stop.
     cancel: Arc<AtomicBool>,
     /// Set when the owner says the fence is lost; the result is discarded.
     lost: Arc<AtomicBool>,
+    /// Set when the job must be given back unrun (consent revoked); the
+    /// result is discarded and `release` is sent instead.
+    release: Arc<Mutex<Option<&'static str>>>,
     /// The lease length the claim granted (capped at [`MAX_LEASE`]).
     grant: Duration,
     /// Where a `resumed` answer hands the job's renew loop its renewal.
@@ -275,12 +308,21 @@ pub(crate) struct Shared {
     timing: ClientTiming,
     /// Jobs at once.
     max_jobs: usize,
+    /// Job kinds this host runs.
+    claim_kinds: BTreeSet<String>,
+    /// Plugin keys this host's operator consents to now.
+    consented: watch::Sender<BTreeSet<String>>,
     /// Fences held, by job id.
     held: Mutex<HashMap<String, HeldJob>>,
     /// The live connection, if any.
     conn: watch::Sender<Option<Conn>>,
     /// Welcomed connections so far.
     connections: watch::Sender<u64>,
+    /// Whether claims wait for [`Self::refreshed`] to reach the connection.
+    claims_after_refresh: bool,
+    /// The newest connection (by its [`Self::connections`] count) whose
+    /// deployments the caller re-read.
+    refreshed: watch::Sender<u64>,
     /// Wakes for local handlers.
     wakes: broadcast::Sender<serde_json::Value>,
     /// One permit per job slot.
@@ -365,6 +407,41 @@ impl Shared {
                 job.cancel.store(true, Ordering::SeqCst);
             }
         }
+    }
+
+    /// Cancels and marks for release every held job that runs a plugin
+    /// outside `consented`.
+    fn release_unconsented(&self, consented: &BTreeSet<String>) {
+        for (job_id, job) in lock(&self.held).iter() {
+            if job.plugin_keys.iter().all(|key| consented.contains(key)) {
+                continue;
+            }
+            let mut release = lock(&job.release);
+            if release.is_none() {
+                tracing::warn!(%job_id, fence = job.fence, "host consent for the job's plugin was revoked; cancelling and giving it back");
+                *release = Some(AWAITING_HOST_CONSENT);
+            }
+            job.cancel.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// True when every plugin in `keys` is consented now (and there is at
+    /// least one).
+    fn consents_to(&self, keys: &[String]) -> bool {
+        let consented = self.consented.borrow();
+        !keys.is_empty() && keys.iter().all(|key| consented.contains(key))
+    }
+
+    /// The claim filter, when this host would claim anything now.
+    fn claim_filter(&self) -> Option<ClaimFilter> {
+        let consented = self.consented.borrow();
+        if self.claim_kinds.is_empty() || consented.is_empty() {
+            return None;
+        }
+        Some(ClaimFilter {
+            kinds: self.claim_kinds.iter().cloned().collect(),
+            plugins: consented.iter().cloned().collect(),
+        })
     }
 
     /// Records the job fences the owner renewed while answering a `hello`
@@ -522,6 +599,21 @@ impl HostClientHandle {
         self.shared.connections.subscribe()
     }
 
+    /// Records that the deployments were re-read on the connection counted
+    /// `connection` (a [`Self::connections`] value read before the
+    /// request), which opens its claims under
+    /// [`HostClientConfig::claims_after_refresh`]. A read made on an
+    /// earlier connection opens nothing on a later one.
+    pub fn deployments_refreshed(&self, connection: u64) {
+        self.shared.refreshed.send_if_modified(|through| {
+            let newer = connection > *through;
+            if newer {
+                *through = connection;
+            }
+            newer
+        });
+    }
+
     /// True while a welcomed connection is live.
     #[must_use]
     pub fn is_connected(&self) -> bool {
@@ -538,6 +630,112 @@ impl HostClientHandle {
     #[must_use]
     pub fn node_id(&self) -> &str {
         &self.shared.node_id
+    }
+
+    /// The owner cluster id.
+    #[must_use]
+    pub fn cluster_id(&self) -> &str {
+        &self.shared.cluster_id
+    }
+
+    /// Sets the plugin keys this host's operator consents to. Claims carry
+    /// them as their filter from the next claim on; a held job that runs a
+    /// plugin outside them is cancelled and given back unrun.
+    ///
+    /// The new set is published before the held jobs are scanned: a job
+    /// that is being started concurrently is either already held (and
+    /// caught by the scan) or checks consent after it is held and so reads
+    /// the new set. Scanning first would leave a gap where a job inserted
+    /// after the scan still read the old set and ran.
+    pub fn set_consented_plugins(&self, plugins: BTreeSet<String>) {
+        self.shared.consented.send_if_modified(|current| {
+            let changed = *current != plugins;
+            current.clone_from(&plugins);
+            changed
+        });
+        self.shared.release_unconsented(&plugins);
+    }
+
+    /// The plugin keys consented to now.
+    #[must_use]
+    pub fn consented_plugins(&self) -> BTreeSet<String> {
+        self.shared.consented.borrow().clone()
+    }
+
+    /// Sends `body` on the live connection (waiting up to the request
+    /// timeout for one) and answers the owner's frame, or `None` when no
+    /// connection answered.
+    pub async fn request(&self, body: Body) -> Option<Frame> {
+        let timeout = self.shared.timing.request_timeout;
+        let conn = self.shared.wait_conn(Instant::now() + timeout).await?;
+        conn.request(body).await.ok()
+    }
+
+    /// Opens an instance's `SECRETS` sealed to this node's box key
+    /// (`instance_config.sealed_secrets`), registering the values with the
+    /// log and diagnostics scrubber.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SealError`] when it was not sealed to this node for this
+    /// instance and revision.
+    pub fn open_instance_secrets(
+        &self,
+        instance_id: &str,
+        revision: i64,
+        sealed: &str,
+    ) -> Result<SecretValue, SealError> {
+        let opened = open_instance_secrets(
+            &self.shared.box_secret,
+            &self.shared.node_id,
+            instance_id,
+            revision,
+            sealed,
+        )?;
+        register_value_for_redaction(opened.expose());
+        Ok(opened)
+    }
+
+    /// Downloads one archive the owner stores (`blob:sha256:<hex>`) from its
+    /// artifact endpoint, signing the request with this node's key. The
+    /// caller checks the digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DialError`] when the request fails or the owner does not
+    /// answer 200 with at most [`MAX_ARTIFACT_BYTES`].
+    pub async fn fetch_artifact(&self, archive_sha256: &str) -> Result<Vec<u8>, DialError> {
+        if archive_sha256.len() != 64 || !archive_sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(DialError::Http);
+        }
+        let shared = &self.shared;
+        let issued_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX))
+            .unwrap_or(0);
+        let authorization = sign_artifact_request(
+            &shared.sign_key,
+            &ArtifactRequest {
+                cluster_id: &shared.cluster_id,
+                node_id: &shared.node_id,
+                owner_origin: shared.endpoint.origin(),
+                archive_sha256,
+                issued_at,
+            },
+        );
+        let (status, body) = shared
+            .endpoint
+            .get_authorized(
+                &format!("{ARTIFACTS_PATH}{archive_sha256}"),
+                &authorization,
+                MAX_ARTIFACT_BYTES,
+            )
+            .await?;
+        if status != 200 {
+            tracing::warn!(status, archive_sha256, "owner refused the artifact request");
+            return Err(DialError::Http);
+        }
+        Ok(body)
     }
 }
 
@@ -588,6 +786,8 @@ impl<R: HostJobRunner> HostClient<R> {
             OwnerEndpoint::new(&config.link.owner_origin, config.link.spki_pin.as_deref())?;
         let (conn, _) = watch::channel(None);
         let (connections, _) = watch::channel(0);
+        let (refreshed, _) = watch::channel(0);
+        let (consented, _) = watch::channel(BTreeSet::new());
         let (wakes, _) = broadcast::channel(WAKE_BUFFER);
         let shared = Arc::new(Shared {
             endpoint,
@@ -599,9 +799,13 @@ impl<R: HostJobRunner> HostClient<R> {
             box_secret: Zeroizing::new(*config.keys.box_secret()),
             timing: config.timing,
             max_jobs: config.max_jobs,
+            claim_kinds: config.claim_kinds.into_iter().collect(),
+            consented,
             held: Mutex::new(HashMap::new()),
             conn,
             connections,
+            claims_after_refresh: config.claims_after_refresh,
+            refreshed,
             wakes,
             job_slots: Arc::new(Semaphore::new(config.max_jobs)),
             next_serial: AtomicU64::new(1),
@@ -813,9 +1017,13 @@ impl<R: HostJobRunner> HostClient<R> {
             Arc::clone(&self.sampler),
         )));
         if shared.max_jobs > 0 {
+            // The count this connection gets once welcomed below; only this
+            // task serves a connection, so nothing else bumps it first.
+            let number = *shared.connections.borrow() + 1;
             tasks.push(tokio::spawn(claim_loop(
                 Arc::clone(shared),
                 conn.clone(),
+                number,
                 Arc::clone(&self.runner),
             )));
         }
@@ -1088,13 +1296,48 @@ async fn heartbeat_loop(
     }
 }
 
-/// Pulls jobs while job slots are free. A claim the owner does not answer
-/// is retried with backoff; the loop ends only with its connection.
-async fn claim_loop<R: HostJobRunner>(shared: Arc<Shared>, conn: Conn, runner: Arc<R>) {
+/// Pulls jobs while job slots are free and the host would claim anything
+/// (some kind runs here and some plugin is consented). Under
+/// [`HostClientConfig::claims_after_refresh`] it first waits for the
+/// caller to re-read the deployments on connection `number`. A claim the
+/// owner does not answer is retried with backoff; the loop ends only with
+/// its connection.
+async fn claim_loop<R: HostJobRunner>(
+    shared: Arc<Shared>,
+    conn: Conn,
+    number: u64,
+    runner: Arc<R>,
+) {
+    if shared.claims_after_refresh {
+        // Consent and deployments still describe the last connection until
+        // the caller re-reads them on this one.
+        let mut refreshed = shared.refreshed.subscribe();
+        if refreshed
+            .wait_for(|through| *through >= number)
+            .await
+            .is_err()
+        {
+            return;
+        }
+    }
+    let mut consented = shared.consented.subscribe();
     let mut retry = shared.timing.backoff_min;
     loop {
+        if shared.claim_filter().is_none() {
+            // Nothing to claim until the operator consents to something.
+            if consented.changed().await.is_err() {
+                return;
+            }
+            continue;
+        }
         let Ok(slot) = Arc::clone(&shared.job_slots).acquire_owned().await else {
             return;
+        };
+        // The wait for a slot can outlast a revoke: claim under the consent
+        // that holds now.
+        let Some(filter) = shared.claim_filter() else {
+            drop(slot);
+            continue;
         };
         // The owner starts the lease after this; counting from here never
         // overstates it.
@@ -1104,6 +1347,7 @@ async fn claim_loop<R: HostJobRunner>(shared: Arc<Shared>, conn: Conn, runner: A
             .request(Body::Claim {
                 item: ITEM_JOB.into(),
                 class: None,
+                filter: Some(filter),
             })
             .await;
         if answer.is_ok() {
@@ -1118,6 +1362,7 @@ async fn claim_loop<R: HostJobRunner>(shared: Arc<Shared>, conn: Conn, runner: A
                         fence,
                         lease_secs,
                         sealed_secrets,
+                        plugin_keys,
                         resumed,
                     },
                 ..
@@ -1128,6 +1373,7 @@ async fn claim_loop<R: HostJobRunner>(shared: Arc<Shared>, conn: Conn, runner: A
                     job,
                     fence,
                     lease_secs,
+                    plugin_keys,
                     lease_deadline: claimed_wall + Duration::from_secs(lease_secs).min(MAX_LEASE),
                     resumed,
                 };
@@ -1145,7 +1391,12 @@ async fn claim_loop<R: HostJobRunner>(shared: Arc<Shared>, conn: Conn, runner: A
                 ..
             }) => {
                 drop(slot);
-                tokio::time::sleep(Duration::from_secs(retry_after_secs.clamp(1, 300))).await;
+                // A new consent is worth a claim right away.
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(retry_after_secs.clamp(1, 300)),
+                    consented.changed(),
+                )
+                .await;
             }
             Ok(other) => {
                 drop(slot);
@@ -1194,8 +1445,10 @@ async fn run_job<R: HostJobRunner>(
     let job_id = host_job.job.id.clone();
     let fence = host_job.fence;
     let lease_secs = host_job.lease_secs;
+    let claim_resumed = host_job.resumed;
     let cancel = Arc::new(AtomicBool::new(false));
     let lost = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(Mutex::new(None));
     let grant = Duration::from_secs(lease_secs).min(MAX_LEASE);
     let resumed = Arc::new(ResumeSlot::default());
     {
@@ -1210,12 +1463,29 @@ async fn run_job<R: HostJobRunner>(
             job_id.clone(),
             HeldJob {
                 fence,
+                plugin_keys: host_job.plugin_keys.clone(),
                 cancel: Arc::clone(&cancel),
                 lost: Arc::clone(&lost),
+                release: Arc::clone(&release),
                 grant,
                 resumed: Arc::clone(&resumed),
             },
         );
+    }
+    // Checked after the job is held, so a revocation racing the claim is
+    // seen either here or by `release_unconsented`.
+    if !shared.claim_kinds.contains(&host_job.job.kind) {
+        *lock(&release) = Some(KIND_NOT_RUN_HERE);
+    } else if !shared.consents_to(&host_job.plugin_keys) {
+        *lock(&release) = Some(AWAITING_HOST_CONSENT);
+    }
+    let refused = *lock(&release);
+    if let Some(reason) = refused {
+        tracing::warn!(%job_id, fence, reason, "giving back a job this host will not run");
+        give_back(&shared, &job_id, fence, claim_resumed, reason, &lost).await;
+        shared.release(&job_id, fence);
+        drop(slot);
+        return;
     }
     let opened = match sealed_secrets.as_deref() {
         None => Ok(Vec::new()),
@@ -1273,14 +1543,50 @@ async fn run_job<R: HostJobRunner>(
             runner.run(ctx).await
         }
     };
+    let given_back = *lock(&release);
     if lost.load(Ordering::SeqCst) {
         tracing::warn!(%job_id, fence, "discarding the result of a job whose fence was lost");
+    } else if let Some(reason) = given_back {
+        tracing::warn!(%job_id, fence, reason, "discarding the result of a job given back");
+        give_back(&shared, &job_id, fence, claim_resumed, reason, &lost).await;
     } else {
-        report(&shared, &job_id, fence, result, &lost).await;
+        let give_back_on = GiveBackOn {
+            release: &release,
+            resumed: claim_resumed,
+        };
+        report(&shared, &job_id, fence, result, &lost, give_back_on).await;
     }
     drop(renewer);
     shared.release(&job_id, fence);
     drop(slot);
+}
+
+/// Gives a job back unrun with `release` under its fence. `resumed` is
+/// the claim's [`HostJob::resumed`].
+async fn give_back(
+    shared: &Arc<Shared>,
+    job_id: &str,
+    fence: i64,
+    resumed: bool,
+    reason: &'static str,
+    lost: &AtomicBool,
+) {
+    let body = Body::Release {
+        job_id: job_id.to_string(),
+        fence,
+        reason: reason.into(),
+        resumed,
+    };
+    send_final(shared, job_id, fence, body, false, lost, None).await;
+}
+
+/// Where a report finds a give-back marked while it waits to be sent.
+#[derive(Clone, Copy)]
+struct GiveBackOn<'a> {
+    /// The job's release marker.
+    release: &'a Mutex<Option<&'static str>>,
+    /// The claim's [`HostJob::resumed`].
+    resumed: bool,
 }
 
 /// Extends a job's lease every third of it. A `lost` answer cancels the
@@ -1389,13 +1695,16 @@ async fn renew_loop(
 /// there is none, until the owner answers or [`REPORT_DEADLINE`] passes.
 ///
 /// The detail or error text is scrubbed of registered secrets first, so a
-/// runner error that quotes a handed token never reaches the owner.
+/// runner error that quotes a handed token never reaches the owner. A
+/// give-back marked on `give_back_on` while the report waits (consent
+/// revoked during a reconnect) sends `release` instead.
 async fn report(
     shared: &Arc<Shared>,
     job_id: &str,
     fence: i64,
     result: Result<String, HostJobError>,
     lost: &AtomicBool,
+    give_back_on: GiveBackOn<'_>,
 ) {
     let failed = result.is_err();
     let body = match result {
@@ -1411,6 +1720,31 @@ async fn report(
             message: bounded(bookclerk_config::redact_str(&err.message)),
         },
     };
+    send_final(
+        shared,
+        job_id,
+        fence,
+        body,
+        failed,
+        lost,
+        Some(give_back_on),
+    )
+    .await;
+}
+
+/// Sends a job's final frame (`complete`, `fail` or `release`), waiting for
+/// a connection when there is none, until the owner answers or
+/// [`REPORT_DEADLINE`] passes. With `give_back_on`, each attempt first
+/// checks the release marker and sends `release` once it is set.
+async fn send_final(
+    shared: &Arc<Shared>,
+    job_id: &str,
+    fence: i64,
+    mut body: Body,
+    failed: bool,
+    lost: &AtomicBool,
+    give_back_on: Option<GiveBackOn<'_>>,
+) {
     let deadline = Instant::now() + REPORT_DEADLINE;
     loop {
         if lost.load(Ordering::SeqCst) {
@@ -1425,6 +1759,23 @@ async fn report(
             );
             return;
         };
+        if let Some(on) = give_back_on {
+            let marked = *lock(on.release);
+            if let Some(reason) = marked.filter(|_| !matches!(body, Body::Release { .. })) {
+                tracing::warn!(
+                    job_id,
+                    fence,
+                    reason,
+                    "the job was given back before its report went out"
+                );
+                body = Body::Release {
+                    job_id: job_id.to_string(),
+                    fence,
+                    reason: reason.into(),
+                    resumed: on.resumed,
+                };
+            }
+        }
         match conn.request(body.clone()).await.map(|frame| frame.body) {
             Ok(Body::Accepted {}) => {
                 tracing::info!(job_id, fence, failed, "reported the job to the owner");

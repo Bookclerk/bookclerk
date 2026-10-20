@@ -8,10 +8,22 @@
 //! | Frame | Answer |
 //! |---|---|
 //! | `heartbeat` | `ok`, after `record_node_heartbeat` |
-//! | `claim {item: job}` | `work {job, fence, sealed_secrets}` or `none` |
+//! | `claim {item: job, filter}` | `work {job, fence, sealed_secrets, plugin_keys}` or `none` |
 //! | `renew` | `renewed {cancel}` or `lost` |
 //! | `complete` / `fail` | `ok` or `lost` |
+//! | `release` | `ok` or `lost` (the job returns to pending unspent) |
 //! | `secret.update` | `ok`, or `error {code: "refused"}` |
+//! | `deployments.list` | `deployments {items}` |
+//! | `instance.config` | `instance_config {config, sealed_secrets}`, or `error {code: "not_found"}` |
+//! | `observation` | `ok`, or `error {code: "refused"}` |
+//!
+//! A claim's `filter` is the host's own narrowing (the kinds it runs and
+//! the plugins its operator consented to); the owner applies it before
+//! permits and the CAS, so a job the host would refuse is never claimed.
+//! The reads a host makes after a wake are scoped to the deployments that
+//! target it; an instance's secrets go only to a node trusted with every
+//! job (instance secrets are the cluster operator's), sealed to its box
+//! key and bound to the instance and document revision.
 //!
 //! A job's secrets are unsealed only after the handoff trust re-check and
 //! are sealed at once to the node's enrolled X25519 key, bound to the node,
@@ -26,14 +38,17 @@
 use std::time::Duration;
 
 use bookclerk_library::control_plane::{
-    claim_remote_job, finish_remote_job, record_node_heartbeat, release_remote_job,
-    renew_remote_job, write_back_job_secret, JobSecretRef, NodeHeartbeat, RemoteClaimSettings,
-    RemoteFinish, RemoteJobClaim, RemoteOutcome, RemoteRenew, WriteBack, SECRETS_UNAVAILABLE,
+    claim_remote_job, finish_remote_job, record_node_heartbeat, record_remote_observation,
+    release_remote_job, remote_deployments_for_node, remote_instance_for_node, renew_remote_job,
+    resolve_instance_bindings, write_back_job_secret, DeploymentStatus, JobClaimFilter,
+    JobSecretRef, NodeHeartbeat, NodeTrust, PluginVersion, RemoteClaimSettings, RemoteFinish,
+    RemoteJobClaim, RemoteObservation, RemoteOutcome, RemoteRenew, WriteBack, SECRETS_UNAVAILABLE,
 };
 use bookclerk_library::{JobResourceClass, LibraryStore};
 use bookclerk_node_proto::{
-    open_secret_update, seal_secrets, Body, Frame, HeldFence, SecretEntry, SecretRef, SecretValue,
-    WorkJob, ITEM_JOB, MAX_FRAME_BYTES,
+    open_secret_update, seal_instance_secrets, seal_secrets, Body, ClaimFilter, Frame, HeldFence,
+    RemoteArtifact, RemoteDeployment, RemoteVersion, SecretEntry, SecretRef, SecretValue, WorkJob,
+    ITEM_JOB, MAX_FRAME_BYTES,
 };
 use rand::RngCore as _;
 use zeroize::{Zeroize as _, Zeroizing};
@@ -49,6 +64,9 @@ const MAX_RESUME_FENCES: usize = 256;
 
 /// Longest progress, detail, or error text recorded from a host.
 const MAX_TEXT_BYTES: usize = 4 * 1024;
+
+/// Most job kinds and plugin keys one claim filter may name.
+const MAX_FILTER_ENTRIES: usize = 256;
 
 /// One authenticated host connection's fixed facts.
 pub(crate) struct HostContext {
@@ -131,7 +149,11 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                 .await
                 .map(|_| Frame::new(id.clone(), Body::Accepted {}))
         }
-        Body::Claim { item, class } => {
+        Body::Claim {
+            item,
+            class,
+            filter,
+        } => {
             if item != ITEM_JOB {
                 return error(id, "unsupported", "only job claims are served");
             }
@@ -142,7 +164,58 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                     None => return error(id, "invalid", "unknown resource class"),
                 },
             };
-            claim(library, host, id.clone(), class).await
+            let filter = match filter.map(claim_filter).transpose() {
+                Ok(filter) => filter,
+                Err(()) => return error(id, "invalid", "claim filter is too large"),
+            };
+            claim(library, host, id.clone(), class, filter.as_ref()).await
+        }
+        Body::Release {
+            job_id,
+            fence,
+            reason,
+            resumed,
+        } => {
+            tracing::info!(
+                node_id = %host.node_id,
+                job_id = %job_id,
+                fence,
+                reason = bounded(&reason),
+                "host node gives a job back"
+            );
+            finish_release(library, host, id.clone(), job_id, fence, resumed).await
+        }
+        Body::DeploymentsList {} => deployments(library, host, id.clone()).await,
+        Body::InstanceConfigGet { instance_id } => {
+            instance_config(library, host, id.clone(), &instance_id).await
+        }
+        Body::Observation {
+            deployment_id,
+            status,
+            detail,
+            applied_config_revision,
+        } => {
+            let status = match DeploymentStatus::parse(&status) {
+                Ok(status) => status,
+                Err(_) => return error(id, "invalid", "unknown observation status"),
+            };
+            match record_remote_observation(
+                library,
+                &host.node_id,
+                &host.incarnation,
+                &RemoteObservation {
+                    deployment_id: &deployment_id,
+                    status,
+                    detail: bounded(&detail),
+                    applied_config_revision,
+                },
+            )
+            .await
+            {
+                Ok(true) => Ok(Frame::new(id.clone(), Body::Accepted {})),
+                Ok(false) => Ok(error(id.clone(), "refused", "not_your_deployment")),
+                Err(err) => Err(err),
+            }
         }
         Body::Renew {
             item,
@@ -275,12 +348,25 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
     })
 }
 
+/// The library filter for a host's `claim.filter`, or `Err` when it names
+/// too many entries.
+fn claim_filter(filter: ClaimFilter) -> Result<JobClaimFilter, ()> {
+    if filter.kinds.len() > MAX_FILTER_ENTRIES || filter.plugins.len() > MAX_FILTER_ENTRIES {
+        return Err(());
+    }
+    Ok(JobClaimFilter {
+        kinds: filter.kinds.into_iter().collect(),
+        plugin_keys: filter.plugins.into_iter().collect(),
+    })
+}
+
 /// `claim`: the next trusted job, its fence, and its sealed secrets.
 async fn claim(
     library: &LibraryStore,
     host: &HostContext,
     id: String,
     class: JobResourceClass,
+    filter: Option<&JobClaimFilter>,
 ) -> bookclerk_library::Result<Frame> {
     let none = || {
         Frame::new(
@@ -293,8 +379,9 @@ async fn claim(
     let Some(RemoteJobClaim {
         job,
         secrets,
+        plugin_keys,
         resumed,
-    }) = claim_remote_job(library, &host.node_id, class, host.settings).await?
+    }) = claim_remote_job(library, &host.node_id, class, host.settings, filter).await?
     else {
         return Ok(none());
     };
@@ -342,6 +429,7 @@ async fn claim(
                 fence,
                 lease_secs: host.settings.lease_secs,
                 sealed_secrets,
+                plugin_keys: plugin_keys.clone(),
                 resumed,
             },
         )
@@ -411,6 +499,232 @@ async fn finish(
     )
 }
 
+/// `release`: the job goes back to pending unspent; a resumed claim
+/// (`resumed`, as its `work` frame said) is resumable again.
+async fn finish_release(
+    library: &LibraryStore,
+    host: &HostContext,
+    id: String,
+    job_id: String,
+    fence: i64,
+    resumed: bool,
+) -> bookclerk_library::Result<Frame> {
+    Ok(
+        match release_remote_job(
+            library,
+            &host.node_id,
+            &job_id,
+            fence,
+            resumed,
+            host.settings.limits,
+        )
+        .await?
+        {
+            RemoteFinish::Done => Frame::new(id, Body::Accepted {}),
+            RemoteFinish::Lost => lost(id, job_id, fence),
+            RemoteFinish::Refused(reason) => error(id, "refused", reason),
+        },
+    )
+}
+
+/// A version as a host receives it.
+fn remote_version(version: &PluginVersion) -> RemoteVersion {
+    RemoteVersion {
+        version: version.version.clone(),
+        manifest_id: version.manifest_id.clone(),
+        manifest_toml: version.manifest_toml.clone(),
+        settings: serde_json::to_value(&version.settings).unwrap_or_default(),
+        artifacts: version
+            .artifacts
+            .iter()
+            .map(|artifact| RemoteArtifact {
+                target: artifact.target.clone(),
+                url: artifact.url.clone(),
+                format: artifact.format.clone(),
+                archive_root: artifact.archive_root.clone(),
+                archive_sha256: artifact.archive_sha256.clone(),
+                payload_root_sha256: artifact.payload_root_sha256.clone(),
+                executable: artifact.executable.clone(),
+            })
+            .collect(),
+        grant_json: version.grant_json.clone(),
+        publisher_verified: version.publisher_verified,
+    }
+}
+
+/// `deployments.list`: the deployments that target this host.
+async fn deployments(
+    library: &LibraryStore,
+    host: &HostContext,
+    id: String,
+) -> bookclerk_library::Result<Frame> {
+    let items = remote_deployments_for_node(library, &host.node_id)
+        .await?
+        .into_iter()
+        .map(|entry| RemoteDeployment {
+            deployment_id: entry.deployment.deployment_id,
+            instance_id: entry.deployment.plugin_instance_id.as_str().to_string(),
+            plugin_key: entry.plugin_key,
+            desired: entry.deployment.desired.as_str().to_string(),
+            revision: entry.deployment.revision,
+            default_instance: entry.default_instance,
+            version: entry.version.as_ref().map(remote_version),
+        })
+        .collect();
+    let frame = Frame::new(id.clone(), Body::Deployments { items });
+    if frame.to_text().len() > MAX_FRAME_BYTES {
+        tracing::warn!(node_id = %host.node_id, "host deployment list does not fit a frame");
+        return Ok(error(
+            id,
+            "too_large",
+            "the deployment list does not fit a frame",
+        ));
+    }
+    Ok(frame)
+}
+
+/// True when `now` is the same version, under the same grant, as `then`.
+fn same_version(now: Option<&PluginVersion>, then: Option<&PluginVersion>) -> bool {
+    match (now, then) {
+        (Some(now), Some(then)) => now.version == then.version && now.grant_json == then.grant_json,
+        _ => false,
+    }
+}
+
+/// `instance.config`: `CONFIG` and, for a node trusted with every job,
+/// `SECRETS` sealed to its box key.
+async fn instance_config(
+    library: &LibraryStore,
+    host: &HostContext,
+    id: String,
+    instance_id: &str,
+) -> bookclerk_library::Result<Frame> {
+    let not_found = || error(id.clone(), "not_found", "no such instance is deployed here");
+    let Some(instance) = remote_instance_for_node(library, &host.node_id, instance_id).await?
+    else {
+        return Ok(not_found());
+    };
+    let Some(version) = instance.version.as_ref() else {
+        return Ok(error(
+            id,
+            "not_installed",
+            "the instance's plugin has no active version",
+        ));
+    };
+    let Ok(grant) = bookclerk_plugin_host::version_grant(version) else {
+        return Ok(error(
+            id,
+            "not_approved",
+            "the instance's version is not approved",
+        ));
+    };
+    let flags = bookclerk_plugin_host::binding_grant_flags(&grant);
+    let resolved = match resolve_instance_bindings(
+        library,
+        &instance.deployment.plugin_instance_id,
+        &flags,
+        &version.settings,
+    )
+    .await
+    {
+        Ok(resolved) => resolved,
+        Err(err) => {
+            tracing::warn!(
+                node_id = %host.node_id,
+                instance_id,
+                error = %err,
+                "instance bindings could not be resolved for a host"
+            );
+            return Ok(error(
+                id,
+                "unresolved",
+                "the instance's settings cannot be resolved",
+            ));
+        }
+    };
+    let revision = resolved.config_revision;
+    let config = resolved.config.json_value().unwrap_or_default();
+    let mut secrets = resolved.secrets;
+    let has_secrets = !secrets.payload.is_empty()
+        && secrets
+            .json_value()
+            .ok()
+            .and_then(|value| value.as_object().map(|object| !object.is_empty()))
+            .unwrap_or(true);
+    // The node's trust, the deployment or its active version (and so the
+    // grant the bindings were resolved under) may have changed while the
+    // bindings were read: re-read them right before sealing, as the job
+    // secret handoff does, so a node revoked meanwhile, or a grant that no
+    // longer allows secrets, gets none.
+    let current = match remote_instance_for_node(library, &host.node_id, instance_id).await {
+        Ok(current) => current,
+        Err(err) => {
+            secrets.payload.zeroize();
+            return Err(err);
+        }
+    };
+    let Some(current) = current.filter(|current| {
+        current.deployment.deployment_id == instance.deployment.deployment_id
+            && same_version(current.version.as_ref(), Some(version))
+    }) else {
+        secrets.payload.zeroize();
+        return Ok(not_found());
+    };
+    let trusted = instance.trust == NodeTrust::All && current.trust == NodeTrust::All;
+    let sealed = if has_secrets && trusted {
+        let mut ephemeral = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut ephemeral);
+        let sealed = seal_instance_secrets(
+            &host.box_public_key,
+            &ephemeral,
+            &host.node_id,
+            instance_id,
+            revision,
+            &secrets.payload,
+        );
+        ephemeral.zeroize();
+        match sealed {
+            Ok(sealed) => Some(sealed),
+            Err(_) => {
+                secrets.payload.zeroize();
+                return Ok(error(
+                    id,
+                    "unavailable",
+                    "secrets could not be sealed for this node",
+                ));
+            }
+        }
+    } else {
+        None
+    };
+    secrets.payload.zeroize();
+    let frame = Frame::new(
+        id.clone(),
+        Body::InstanceConfig {
+            instance_id: instance_id.to_string(),
+            revision,
+            config,
+            sealed_secrets: sealed,
+            secrets_withheld: has_secrets && !trusted,
+        },
+    );
+    if frame.to_text().len() > MAX_FRAME_BYTES {
+        return Ok(error(
+            id,
+            "too_large",
+            "the instance config does not fit a frame",
+        ));
+    }
+    tracing::info!(
+        node_id = %host.node_id,
+        instance_id,
+        revision,
+        secrets = has_secrets && trusted,
+        "instance config handed to host node"
+    );
+    Ok(frame)
+}
+
 /// Gives back a job claimed for a `work` answer that will not reach the
 /// host (its connection was superseded or is closing), so the job is
 /// claimable again at once instead of after its lease expires. Does
@@ -435,11 +749,11 @@ pub(crate) async fn release_unsent(library: &LibraryStore, host: &HostContext, a
     )
     .await
     {
-        Ok(released) => tracing::info!(
+        Ok(finish) => tracing::info!(
             node_id = %host.node_id,
             job_id = %job.id,
             fence,
-            released,
+            released = matches!(finish, RemoteFinish::Done),
             "job claimed on a closing host connection was given back"
         ),
         Err(err) => tracing::warn!(

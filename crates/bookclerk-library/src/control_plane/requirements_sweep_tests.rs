@@ -206,6 +206,7 @@ async fn placement_move_inside_grace_keeps_the_job(store_a: LibraryStore, store_
                 class: 4,
                 plugin_instance: 4,
             },
+            filter: None,
         },
     )
     .await
@@ -340,6 +341,7 @@ fn claim_request(node_id: &str) -> JobClaimRequest<'_> {
             class: 4,
             plugin_instance: 4,
         },
+        filter: None,
     }
 }
 
