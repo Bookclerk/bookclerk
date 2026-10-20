@@ -280,7 +280,7 @@ static JOINED: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::channel(0)
 /// How long [`start_link_now`] waits for the supervisor to start a client:
 /// longer than [`consent::CONSENT_POLL`], within which a replaced
 /// enrollment's client is stopped.
-pub(super) const START_NOW_TIMEOUT: Duration = Duration::from_secs(15);
+pub(super) const START_NOW_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// Starts a client for `cluster_id` now (a join through this daemon), with
 /// no restart: the supervisor started by [`spawn_cluster_links`] is woken

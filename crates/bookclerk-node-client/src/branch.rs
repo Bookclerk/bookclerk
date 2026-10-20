@@ -257,9 +257,10 @@ fn http_error(status: u16, body: &[u8]) -> JoinError {
 /// Returns [`JoinError`] when the library is unreachable or refuses; once
 /// the library has enrolled a node, a malformed answer or one for another
 /// cluster gives [`JoinError::Unsaved`], which names that node so it can be
-/// revoked there, and a failed local write gives [`JoinError::SaveFailed`]
-/// (redeeming the same code again with the same verifier and keys gets the
-/// same node, so that one can be retried).
+/// revoked there, as does a link this install refuses to record. A failed
+/// database or disk write gives [`JoinError::SaveFailed`] (redeeming the
+/// same code again with the same verifier and keys gets the same node, so
+/// that one can be retried).
 pub async fn redeem_branch_code(
     store: &LibraryStore,
     redeem: &BranchRedeem<'_>,
@@ -314,9 +315,21 @@ pub async fn redeem_branch_code(
         keys,
     )
     .await
-    .map_err(|err| JoinError::SaveFailed {
-        node_id,
-        reason: err.to_string(),
+    .map_err(|err| match err {
+        // A database or disk hiccup: the library answers a repeat of this
+        // exchange with the same node, so a retry can finish the join.
+        bookclerk_library::LibraryError::Orm(_) | bookclerk_library::LibraryError::Io(_) => {
+            JoinError::SaveFailed {
+                node_id,
+                reason: err.to_string(),
+            }
+        }
+        // Anything else (an answer this install refuses to record, no
+        // master key) fails the same way every time.
+        _ => JoinError::Unsaved {
+            node_id: Some(node_id),
+            reason: err.to_string(),
+        },
     })?;
     tracing::info!(
         cluster_id = %recorded.owner_cluster_id,

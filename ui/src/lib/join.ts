@@ -20,7 +20,7 @@ import { ApiError } from "@/lib/api";
 export interface LibraryInfoView {
   /** The library's owner cluster id: stable, and what a branch link is keyed by. */
   cluster_id: string;
-  /** The name the library's operator gave it (at most 253 bytes, no control characters). */
+  /** The library's public host name, from its origin (at most 253 bytes). */
   library_name: string;
   /** The library's canonical origin (`https://library.example`). */
   origin: string;

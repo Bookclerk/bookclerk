@@ -325,14 +325,16 @@ fn is_retryable(err: &JoinError) -> bool {
     }
 }
 
-/// How long a join waits on the library to redeem. With [`CALLBACK_WAIT`]
+/// How long a join waits on the library to redeem: longer than one connect
+/// attempt (`bookclerk_node_client` dials each address for up to 10 s) plus
+/// TLS, so one dead address does not fail every redeem. With [`CALLBACK_WAIT`]
 /// and [`super::START_NOW_TIMEOUT`] it stays under the API deadline for
 /// joins (`api::api_timeout_for_path`), so a slow library is answered as a
 /// retry rather than cut off.
-const REDEEM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const REDEEM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// How long a sign-in callback waits for another one to finish its redeem.
-const CALLBACK_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+const CALLBACK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// `POST /api/config/join/callback`: redeems the library's code with the
 /// sign-in's sealed verifier and keys. The pending sign-in is kept when the
@@ -449,25 +451,47 @@ pub struct InviteBody {
 }
 
 /// `POST /api/config/join/invite`: join with a pasted branch invite. The
-/// link is redeemed once and dropped; it is never logged or echoed.
+/// link is redeemed once and dropped; it is never logged or echoed. A
+/// library slower than [`REDEEM_TIMEOUT`] is answered 504 `join_pending`
+/// while the join carries on and starts its client when it lands.
 pub async fn post_join_invite(
     State(state): State<Arc<AppState>>,
     Json(body): Json<InviteBody>,
 ) -> Response {
     let link_text = Zeroizing::new(body.link);
     let store = state.library_snapshot().await;
-    let joined = tokio::time::timeout(
-        REDEEM_TIMEOUT,
-        join_cluster(&store, &link_text, env!("CARGO_PKG_VERSION")),
-    )
-    .await;
-    drop(link_text);
-    let Ok(joined) = joined else {
-        return join_error(
-            StatusCode::GATEWAY_TIMEOUT,
-            "join_timeout",
-            "the library did not answer in time; check whether this branch joined before using the invite again",
-        );
+    // The invite is spent once the library has it, and the node keys exist
+    // only in this exchange, so the join runs on its own task: a slow
+    // library, or a request cut short, does not drop it half way.
+    let mut joining = tokio::spawn(async move {
+        let joined = join_cluster(&store, &link_text, env!("CARGO_PKG_VERSION")).await;
+        drop(link_text);
+        joined
+    });
+    let joined = match tokio::time::timeout(REDEEM_TIMEOUT, &mut joining).await {
+        Ok(Ok(joined)) => joined,
+        Ok(Err(_)) => {
+            return join_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "join_failed",
+                "the join stopped unexpectedly",
+            )
+        }
+        Err(_) => {
+            // Start the link's client once the join lands.
+            let state = Arc::clone(&state);
+            tokio::spawn(async move {
+                if let Ok(Ok(link)) = joining.await {
+                    super::start_link_now(&state, &link.owner_cluster_id).await;
+                }
+            });
+            return join_error(
+                // Not a success: the page shows the detail, not a link.
+                StatusCode::GATEWAY_TIMEOUT,
+                "join_pending",
+                "the library is slow to answer; this branch keeps joining and appears under Libraries once it has",
+            );
+        }
     };
     let link = match joined {
         Ok(link) => link,

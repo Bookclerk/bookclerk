@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use bookclerk_node_client::{
     authorize_branch, inspect_library, redeem_branch_code, BranchRedeem, InspectedLibrary,
+    JoinError,
 };
 use bookclerk_node_proto::JOIN_CALLBACK_PATH;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -276,28 +277,44 @@ pub async fn join_with_sign_in(
     if callback.code.is_empty() {
         anyhow::bail!("the sign-in came back without a code");
     }
-    redeem_branch_code(
-        store,
-        &BranchRedeem {
-            origin: &library.origin,
-            spki_pin: library.spki_pin.as_deref(),
-            cluster_id: &library.info.cluster_id,
-            code: &callback.code,
-            verifier: &authorization.verifier,
-            redirect_uri: &authorization.redirect_uri,
-            branch_name: &branch_name,
-            software_version: env!("CARGO_PKG_VERSION"),
-        },
-        &authorization.keys,
-    )
-    .await
-    .map_err(|err| {
+    let redeem = BranchRedeem {
+        origin: &library.origin,
+        spki_pin: library.spki_pin.as_deref(),
+        cluster_id: &library.info.cluster_id,
+        code: &callback.code,
+        verifier: &authorization.verifier,
+        redirect_uri: &authorization.redirect_uri,
+        branch_name: &branch_name,
+        software_version: env!("CARGO_PKG_VERSION"),
+    };
+    // The verifier and keys live only in this process, so a failed local
+    // write is retried here: the library answers a repeat of the same
+    // exchange with the same node.
+    let mut attempt = 1;
+    let joined = loop {
+        match redeem_branch_code(store, &redeem, &authorization.keys).await {
+            Err(JoinError::SaveFailed { .. }) if attempt < SAVE_ATTEMPTS => {
+                attempt += 1;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            other => break other,
+        }
+    };
+    joined.map_err(|err| {
+        let hint = if matches!(err, JoinError::SaveFailed { .. }) {
+            "; ask the library's owner to remove that node, then join again"
+        } else {
+            ""
+        };
         anyhow::anyhow!(
-            "could not join the library: {}",
+            "could not join the library: {}{hint}",
             super::clusters::printable(&err.to_string())
         )
     })
 }
+
+/// How many times a join tries to save a link the library already enrolled.
+const SAVE_ATTEMPTS: u32 = 3;
 
 /// This machine's name, as a default branch name.
 fn default_branch_name() -> String {
