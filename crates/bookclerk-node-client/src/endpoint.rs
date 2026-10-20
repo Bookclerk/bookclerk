@@ -389,10 +389,14 @@ async fn read_http_response(
         }
     }
     let body_start = header_end + 4;
+    // Where the next chunk's size line starts in the body: each read only
+    // scans what arrived since, so a large chunked body is not rescanned
+    // (and re-copied) after every read.
+    let mut next_chunk = 0usize;
     loop {
         let body = &buf[body_start..];
         let done = if chunked {
-            decode_chunked(body, max_bytes)?.is_some()
+            chunked_body_complete(body, &mut next_chunk, max_bytes)?
         } else if let Some(length) = length {
             body.len() >= length
         } else {
@@ -487,6 +491,44 @@ fn decode_chunked(mut body: &[u8], max_bytes: usize) -> Result<Option<Vec<u8>>, 
         };
         consumed += rest_start;
         body = rest;
+    }
+}
+
+/// True once `body` holds a whole chunked body, scanning chunk headers from
+/// `*next_chunk` (the offset of the first size line not yet passed, which
+/// it advances) without copying chunk data. Fails as [`decode_chunked`]
+/// does on a malformed size line or a chunk past `max_bytes`.
+///
+/// # Errors
+///
+/// [`DialError::Http`] on a malformed size line or a chunk that cannot fit
+/// in `max_bytes`.
+fn chunked_body_complete(
+    body: &[u8],
+    next_chunk: &mut usize,
+    max_bytes: usize,
+) -> Result<bool, DialError> {
+    loop {
+        let rest = body.get(*next_chunk..).ok_or(DialError::Http)?;
+        let Some(line_end) = find(rest, b"\r\n") else {
+            return Ok(false);
+        };
+        let size_text = std::str::from_utf8(&rest[..line_end]).map_err(|_| DialError::Http)?;
+        let size_text = size_text.split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(size_text, 16).map_err(|_| DialError::Http)?;
+        if size == 0 {
+            return Ok(true);
+        }
+        let data_end = (*next_chunk)
+            .checked_add(line_end + 2)
+            .and_then(|start| start.checked_add(size))
+            .filter(|end| *end <= max_bytes)
+            .ok_or(DialError::Http)?;
+        let after = data_end.checked_add(2).ok_or(DialError::Http)?;
+        if after > body.len() {
+            return Ok(false);
+        }
+        *next_chunk = after;
     }
 }
 
@@ -643,6 +685,16 @@ mod tests {
             None
         );
         assert!(decode_chunked(b"zz\r\n", MAX_HTTP_RESPONSE_BYTES).is_err());
+        // Scanned in pieces, the cursor only moves past whole chunks.
+        let whole = b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n";
+        let mut next = 0;
+        assert!(!chunked_body_complete(&whole[..6], &mut next, MAX_HTTP_RESPONSE_BYTES).unwrap());
+        assert_eq!(next, 0);
+        assert!(!chunked_body_complete(&whole[..12], &mut next, MAX_HTTP_RESPONSE_BYTES).unwrap());
+        assert_eq!(next, 9);
+        assert!(chunked_body_complete(whole, &mut next, MAX_HTTP_RESPONSE_BYTES).unwrap());
+        assert!(chunked_body_complete(b"zz\r\n", &mut 0, MAX_HTTP_RESPONSE_BYTES).is_err());
+        assert!(chunked_body_complete(b"ffffffffffffffff\r\nab", &mut 0, usize::MAX).is_err());
         // An owner-chosen size that overflows, or that no accepted
         // response could hold, is refused instead of waited for.
         assert!(matches!(

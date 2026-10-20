@@ -211,9 +211,9 @@ pub async fn run(
             emit(format, &json!({ "consent": consent_json(&row) }), || {
                 println!(
                     "approved {} {} for cluster {} ({})",
-                    row.plugin_key,
-                    row.requested_version,
-                    row.owner_cluster_id,
+                    printable(&row.plugin_key),
+                    printable(&row.requested_version),
+                    printable(&row.owner_cluster_id),
                     state(&row)
                 );
             })
@@ -226,7 +226,8 @@ pub async fn run(
             emit(format, &json!({ "consent": consent_json(&row) }), || {
                 println!(
                     "revoked {} for cluster {}",
-                    row.plugin_key, row.owner_cluster_id
+                    printable(&row.plugin_key),
+                    printable(&row.owner_cluster_id)
                 );
             })
         }
