@@ -23,7 +23,7 @@ is granted write access only to its `root` (plus its private
 | --- | --- | --- |
 | `root` | `Audiobooks` | Relative paths resolve under `BOOKCLERK_FILES_DIR` |
 | `prefix` | `""` | Key prefix inside the root |
-| `naming_profile`, `folder_template`, `file_template`, `chapter_file_template` | inherit `[output]` | Per-destination naming overrides |
+| `naming_profile`, `folder_template`, `file_template`, `chapter_file_template` | inherit `core.output` | Per-destination naming overrides |
 
 ```bash
 bookclerk plugins config set local root /data/Audiobooks
@@ -39,7 +39,7 @@ bookclerk plugins config get local
 | `endpoint` | — | MinIO or other S3-compatible host; a bare hostname gets `https://` |
 | `force_path_style` | `false` | |
 | `prefix` | `library/` | |
-| `naming_profile`, `folder_template`, `file_template`, `chapter_file_template` | inherit `[output]` | |
+| `naming_profile`, `folder_template`, `file_template`, `chapter_file_template` | inherit `core.output` | |
 | `access_key_id`, `secret_access_key`, `session_token` | — | `secret`; sealed in the database |
 
 ```bash
@@ -123,8 +123,12 @@ cover_size = "500"        # 500 | 1215 | native
 chapter_layout = "tree"   # tree | flat
 ```
 
-The shared `[output]` table above is still `config.toml`; moving it to a
-cluster document is tracked in [ADR: Control plane](adr/control-plane.md).
+The shared `[output]` settings above are the `core.output` cluster document
+in the library database. The TOML table only seeds it on first enrollment;
+afterwards change them with `bookclerk config set output.<key> <value>`,
+**Settings → Output**, or `PATCH /api/settings` (see
+[configuration.md](configuration.md#output-shared)). Every host applies a
+committed revision on its next configuration wakeup.
 
 Artifact (sidecar) failures are logged and do not fail the audio acquire.
 

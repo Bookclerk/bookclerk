@@ -15,7 +15,7 @@ use crate::master_key::{master_key_fingerprint, master_key_path, master_key_test
 use crate::require_master_key;
 use crate::store::LibraryStore;
 
-async fn memory_store() -> LibraryStore {
+pub(super) async fn memory_store() -> LibraryStore {
     LibraryStore::from_connection(
         bookclerk_plugin_database_sqlite::open_memory()
             .await
@@ -23,7 +23,7 @@ async fn memory_store() -> LibraryStore {
     )
 }
 
-async fn file_store(path: &Path) -> LibraryStore {
+pub(super) async fn file_store(path: &Path) -> LibraryStore {
     let db = bookclerk_plugin_database_sqlite::open(path)
         .await
         .expect("open sqlite file");
@@ -31,7 +31,7 @@ async fn file_store(path: &Path) -> LibraryStore {
     LibraryStore::from_connection(db)
 }
 
-fn operator() -> ConfigActor {
+pub(super) fn operator() -> ConfigActor {
     ConfigActor::Operator {
         id: "operator".into(),
     }
@@ -45,11 +45,17 @@ fn events(retention: u64) -> EventsSettingsV1 {
     }
 }
 
-async fn bootstrap_pair(store: &LibraryStore, files: &Path) -> ControlPlaneSession {
+pub(super) async fn bootstrap_pair(store: &LibraryStore, files: &Path) -> ControlPlaneSession {
     let scratch = files.join("cache");
-    bootstrap_control_plane(store, files, &scratch, None, &EventsConfig::default())
-        .await
-        .expect("bootstrap")
+    bootstrap_control_plane(
+        store,
+        files,
+        &scratch,
+        None,
+        &bookclerk_config::Config::default(),
+    )
+    .await
+    .expect("bootstrap")
 }
 
 #[tokio::test]
@@ -122,7 +128,7 @@ async fn copied_identity_rejects_a_different_cluster() {
         dir_b.path(),
         &scratch_b,
         None,
-        &EventsConfig::default(),
+        &bookclerk_config::Config::default(),
     )
     .await
     .expect_err("copied identity must not join a different cluster");
@@ -492,10 +498,13 @@ async fn existing_events_ignore_an_invalid_seed() {
     let session = bootstrap_pair(&store, files.path()).await;
     let audits = audit_count(&store, EVENTS_NAMESPACE).await.unwrap();
     let changes = change_count(&store, EVENTS_NAMESPACE).await.unwrap();
-    let bad = EventsConfig {
-        retention_days: 0,
-        dead_letter_retention_days: 0,
-        concurrency: 33,
+    let bad = bookclerk_config::Config {
+        events: EventsConfig {
+            retention_days: 0,
+            dead_letter_retention_days: 0,
+            concurrency: 33,
+        },
+        ..bookclerk_config::Config::default()
     };
     let scratch = files.path().join("cache");
     let again = bootstrap_control_plane(&store, files.path(), &scratch, None, &bad)
@@ -521,10 +530,13 @@ async fn first_import_rejects_an_invalid_seed() {
         files.path(),
         &scratch,
         None,
-        &EventsConfig {
-            retention_days: 0,
-            dead_letter_retention_days: 30,
-            concurrency: 1,
+        &bookclerk_config::Config {
+            events: EventsConfig {
+                retention_days: 0,
+                dead_letter_retention_days: 30,
+                concurrency: 1,
+            },
+            ..bookclerk_config::Config::default()
         },
     )
     .await

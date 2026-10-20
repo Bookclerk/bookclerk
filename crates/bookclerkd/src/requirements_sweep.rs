@@ -114,7 +114,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use bookclerk_config::{Config, EventsConfig};
+    use bookclerk_config::Config;
     use bookclerk_library::control_plane::{
         acquire_lease, bootstrap_control_plane, create_plugin_instance, ensure_plugin_deployment,
         load_deployment_for_node, release_lease, replace_plugin_deployment, ConfigActor,
@@ -140,7 +140,7 @@ mod tests {
             files_path,
             &files_path.join("cache"),
             None,
-            &EventsConfig::default(),
+            &Config::default(),
         )
         .await
         .unwrap();
@@ -249,7 +249,7 @@ mod tests {
             files_path,
             &files_path.join("cache"),
             None,
-            &EventsConfig::default(),
+            &Config::default(),
         )
         .await
         .unwrap();

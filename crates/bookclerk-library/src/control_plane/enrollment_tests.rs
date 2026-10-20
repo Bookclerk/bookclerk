@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use bookclerk_config::EventsConfig;
+use bookclerk_config::Config;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter};
 use tempfile::TempDir;
@@ -45,7 +45,7 @@ async fn bootstrap(store: &LibraryStore, dir: &TempDir) -> ControlPlaneSession {
         dir.path(),
         &dir.path().join("cache"),
         None,
-        &EventsConfig::default(),
+        &Config::default(),
     )
     .await
     .expect("bootstrap")

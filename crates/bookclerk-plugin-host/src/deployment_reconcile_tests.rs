@@ -23,7 +23,7 @@ use crate::{
     LocalPackage, SpawnHealth, AUTHORIZED_PACKAGE_DIR,
 };
 use async_trait::async_trait;
-use bookclerk_config::{Config, EventsConfig, Isolation};
+use bookclerk_config::{Config, Isolation};
 use bookclerk_library::control_plane::{
     activate_version, load_active_version, ARTIFACT_BLOB_SCHEME,
 };
@@ -295,7 +295,7 @@ async fn open_world(secrets: bool) -> World {
         &files,
         &scratch,
         None,
-        &EventsConfig::default(),
+        &bookclerk_config::Config::default(),
     )
     .await
     .expect("bootstrap");
@@ -656,7 +656,7 @@ async fn a_version_installed_on_one_node_is_materialized_and_spawned_on_another(
         &files_b,
         &files_b.join("cache"),
         None,
-        &EventsConfig::default(),
+        &bookclerk_config::Config::default(),
     )
     .await
     .expect("bootstrap b");
@@ -1164,7 +1164,7 @@ async fn prepare_open_for_instance_resolves_each_document() {
         files,
         &scratch,
         None,
-        &EventsConfig::default(),
+        &bookclerk_config::Config::default(),
     )
     .await
     .unwrap();
@@ -1357,7 +1357,7 @@ async fn live_two_instances_same_key_route_to_the_default() {
         files,
         &scratch,
         None,
-        &EventsConfig::default(),
+        &bookclerk_config::Config::default(),
     )
     .await
     .unwrap();
@@ -1503,7 +1503,7 @@ async fn terminating_a_healthy_guest_is_replaced_on_the_next_tick() {
         files,
         &scratch,
         None,
-        &EventsConfig::default(),
+        &bookclerk_config::Config::default(),
     )
     .await
     .unwrap();
@@ -1807,7 +1807,7 @@ async fn a_verified_platform_guest_without_a_grant_file_persists_its_grant_and_s
         &files,
         &files.join("cache"),
         None,
-        &EventsConfig::default(),
+        &bookclerk_config::Config::default(),
     )
     .await
     .expect("bootstrap");
