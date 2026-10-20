@@ -2609,6 +2609,66 @@ mod results_and_uploads {
         .await;
     }
 
+    /// A PUT handler dropped after the whole body arrived, while it waits
+    /// to finish the file (here: for the locks on its keys), commits
+    /// nothing: the destinations see the stream fail, not end, and the
+    /// partial write is discarded.
+    #[tokio::test]
+    async fn a_dropped_upload_put_commits_nothing() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let local_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), local_out.path());
+        let title = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t2"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 30).await;
+        const KEY: &str = "Author/Title t2/Title t2.m4b";
+        let (upload_id, _) = grant_one(&world, &job_id, fence, &title.uuid, KEY, b"abc").await;
+        let session = bookclerk_library::control_plane::load_upload(&world.owner, &upload_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let destinations = crate::node_api::uploads::owner_destinations(&world.state)
+            .await
+            .unwrap();
+        crate::node_api::uploads::drop_tee_waiting_for_its_locks(
+            world.owner.clone(),
+            session,
+            0,
+            axum::body::Body::from("abc"),
+            destinations,
+        )
+        .await;
+        eventually("the dropped write to be discarded", || async {
+            files_under(local_out.path()).is_empty()
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !local_out.path().join(KEY).exists(),
+            "a dropped PUT never commits its file"
+        );
+        assert!(load_upload_received(&world.owner, &upload_id)
+            .await
+            .is_empty());
+    }
+
+    /// The files `upload_id` recorded as received.
+    async fn load_upload_received(store: &LibraryStore, upload_id: &str) -> Vec<usize> {
+        bookclerk_library::control_plane::load_upload(store, upload_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .received
+            .into_iter()
+            .collect()
+    }
+
     /// A retried PUT of a file whose first attempt is still streaming
     /// waits for that attempt, then is answered from what it recorded: the
     /// two never write (or clean up) the same key at once.

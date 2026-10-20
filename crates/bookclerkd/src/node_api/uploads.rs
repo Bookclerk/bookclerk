@@ -64,7 +64,7 @@
 
 use std::io;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -96,6 +96,10 @@ const CHANNEL_CHUNKS: usize = 8;
 
 /// How often the job's fence is re-checked while a file streams.
 const FENCE_CHECK_EVERY: Duration = Duration::from_secs(1);
+
+/// Longest a PUT waits for another attempt at the same file to finish
+/// before answering 503 ([`lock_file`]).
+const FILE_LOCK_WAIT: Duration = Duration::from_secs(30);
 
 /// Longest a failed file's teardown waits for each destination to
 /// discard its write ([`finish_write`]).
@@ -438,6 +442,16 @@ async fn authorized(
     Ok(session)
 }
 
+/// [`ChannelReader::state`]: the tee is still sending; a closed channel
+/// now means the tee went away (it was dropped), and fails the write.
+const STREAM_OPEN: u8 = 0;
+/// [`ChannelReader::state`]: every final check passed; end of stream may
+/// be handed over and the destination may commit the file.
+const STREAM_FINISHED: u8 = 1;
+/// [`ChannelReader::state`]: the write must fail at once, whatever is
+/// still buffered.
+const STREAM_ABORTED: u8 = 2;
+
 /// A destination's view of the body: the chunks the tee sends, then end
 /// of stream, or the error that aborts the write.
 struct ChannelReader {
@@ -445,10 +459,13 @@ struct ChannelReader {
     rx: mpsc::Receiver<io::Result<Bytes>>,
     /// The unread rest of the current chunk.
     pending: Bytes,
-    /// Set (before the senders are dropped) when the write must fail:
-    /// checked before any byte or the end of stream is handed over, so an
-    /// abort never waits for room in a full channel.
-    aborted: Arc<AtomicBool>,
+    /// Shared with the tee: [`STREAM_OPEN`], [`STREAM_FINISHED`] or
+    /// [`STREAM_ABORTED`], set before the senders are dropped. Aborted is
+    /// checked before any byte is handed over, so an abort never waits for
+    /// room in a full channel; end of stream is handed over only once the
+    /// tee marked the file finished, so a tee dropped mid-request (its
+    /// handler cancelled) never lets a destination commit the file.
+    state: Arc<AtomicU8>,
 }
 
 impl AsyncRead for ChannelReader {
@@ -458,7 +475,7 @@ impl AsyncRead for ChannelReader {
         out: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         loop {
-            if self.aborted.load(Ordering::Acquire) {
+            if self.state.load(Ordering::Acquire) == STREAM_ABORTED {
                 return Poll::Ready(Err(io::Error::other("the upload was aborted")));
             }
             if !self.pending.is_empty() {
@@ -471,16 +488,81 @@ impl AsyncRead for ChannelReader {
                 Poll::Ready(Some(Ok(chunk))) => self.pending = chunk,
                 Poll::Ready(Some(Err(err))) => return Poll::Ready(Err(err)),
                 Poll::Ready(None) => {
-                    // The flag is set before the senders go, so a closed
-                    // channel is end of stream only when it is still clear.
-                    if self.aborted.load(Ordering::Acquire) {
-                        continue;
-                    }
-                    return Poll::Ready(Ok(()));
+                    return Poll::Ready(if self.state.load(Ordering::Acquire) == STREAM_FINISHED {
+                        Ok(())
+                    } else {
+                        Err(io::Error::other("the upload stopped before its end"))
+                    });
                 }
                 Poll::Pending => return Poll::Pending,
             }
         }
+    }
+}
+
+/// The copies of one file a PUT has written, or is still writing, that are
+/// not yet recorded as received. Unless [`Unrecorded::keep`] is called
+/// (the file was recorded, or its copies were handled), dropping it, as
+/// when the PUT's handler is cancelled mid-request, fails every write still
+/// open and deletes every copy that reached its destination (each only
+/// while the upload still owns its key, [`discard_copy`]), in a task of its
+/// own: an unrecorded copy is invisible to every later cleanup.
+struct Unrecorded {
+    /// The library, for the ownership checks of the cleanup.
+    library: LibraryStore,
+    /// The upload the file belongs to.
+    session: UploadSession,
+    /// The writes' shared [`ChannelReader::state`].
+    state: Arc<AtomicU8>,
+    /// Writes not yet awaited; `None` once awaited.
+    pending: Vec<Option<DestinationWrite>>,
+    /// Copies that reached their destination.
+    written: Vec<(OwnerDestination, String)>,
+    /// Set by [`Unrecorded::keep`]: nothing is rolled back.
+    kept: bool,
+}
+
+impl Unrecorded {
+    /// Gives up the rollback: the copies were recorded, or handled.
+    fn keep(mut self) {
+        self.kept = true;
+    }
+}
+
+impl Drop for Unrecorded {
+    fn drop(&mut self) {
+        if self.kept {
+            return;
+        }
+        // A write not yet told to finish fails instead.
+        let _ = self.state.compare_exchange(
+            STREAM_OPEN,
+            STREAM_ABORTED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        let pending: Vec<DestinationWrite> = self.pending.drain(..).flatten().collect();
+        let mut copies = std::mem::take(&mut self.written);
+        if pending.is_empty() && copies.is_empty() {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(upload_id = %self.session.upload_id, "an unrecorded upload's files could not be cleaned up outside a runtime");
+            return;
+        };
+        let library = self.library.clone();
+        let session = self.session.clone();
+        runtime.spawn(async move {
+            for write in pending {
+                if let Ok((destination, key, Ok(_))) = write.await {
+                    copies.push((destination, key));
+                }
+            }
+            tracing::warn!(upload_id = %session.upload_id, files = copies.len(), "an upload request ended before its file was recorded; deleting its copies");
+            for (destination, key) in copies {
+                discard_copy(&library, &session, &destination, &key).await;
+            }
+        });
     }
 }
 
@@ -548,12 +630,14 @@ type DestinationWrite = tokio::task::JoinHandle<(
     bookclerk_storage::Result<bookclerk_storage::PutStreamResult>,
 )>;
 
-/// Waits for one destination write. A failed file's teardown waits at
-/// most [`TEARDOWN_WAIT`] (a destination that never reads again cannot
-/// hold the request open forever) and then aborts the task, dropping its
-/// write; `None` when the task ended without an outcome.
+/// Waits for one destination write, awaited in place so a cancelled
+/// caller leaves the handle to [`Unrecorded`]'s cleanup. A failed file's
+/// teardown waits at most [`TEARDOWN_WAIT`] (a destination that never
+/// reads again cannot hold the request open forever) and then aborts the
+/// task, dropping its write; `None` when the task ended without an
+/// outcome.
 async fn finish_write(
-    write: DestinationWrite,
+    write: &mut DestinationWrite,
     teardown: bool,
 ) -> Option<(
     OwnerDestination,
@@ -563,11 +647,10 @@ async fn finish_write(
     if !teardown {
         return write.await.ok();
     }
-    let abort = write.abort_handle();
-    match tokio::time::timeout(TEARDOWN_WAIT, write).await {
+    match tokio::time::timeout(TEARDOWN_WAIT, &mut *write).await {
         Ok(done) => done.ok(),
         Err(_) => {
-            abort.abort();
+            write.abort();
             None
         }
     }
@@ -575,14 +658,16 @@ async fn finish_write(
 
 /// Streams `body` into each destination the file is written to, under
 /// that destination's key; answers once every one has the whole, verified
-/// file, or every one discarded it.
+/// file (with the copies, to keep once recorded), or every one discarded
+/// it. Dropped part way, it fails every open write and deletes what
+/// already landed ([`Unrecorded`]).
 async fn tee(
     library: &LibraryStore,
     session: &UploadSession,
     index: usize,
     body: Body,
     destinations: Vec<OwnerDestination>,
-) -> Result<(), StreamFailure> {
+) -> Result<Unrecorded, StreamFailure> {
     let file = &session.files[index];
     let mut by_id: std::collections::HashMap<String, OwnerDestination> = destinations
         .into_iter()
@@ -601,9 +686,16 @@ async fn tee(
     // another writer (a local acquire records before it writes) is not
     // overwritten. Checked again before the end of the stream.
     still_writable(library, session, index).await?;
-    let aborted = Arc::new(AtomicBool::new(false));
+    let state = Arc::new(AtomicU8::new(STREAM_OPEN));
+    let mut unrecorded = Unrecorded {
+        library: library.clone(),
+        session: session.clone(),
+        state: Arc::clone(&state),
+        pending: Vec::with_capacity(file.copies.len()),
+        written: Vec::new(),
+        kept: false,
+    };
     let mut senders = Vec::with_capacity(file.copies.len());
-    let mut writes: Vec<DestinationWrite> = Vec::with_capacity(file.copies.len());
     for copy in &file.copies {
         let Some(destination) = by_id.remove(&copy.destination) else {
             continue;
@@ -617,19 +709,19 @@ async fn tee(
             sha256_hex: Some(file.sha256.clone()),
             ..ObjectMeta::default()
         };
-        let aborted = Arc::clone(&aborted);
-        writes.push(tokio::spawn(async move {
+        let state = Arc::clone(&state);
+        unrecorded.pending.push(Some(tokio::spawn(async move {
             let reader = ChannelReader {
                 rx,
                 pending: Bytes::new(),
-                aborted,
+                state,
             };
             let result = destination
                 .backend
                 .put_stream(&key, Box::pin(reader), meta)
                 .await;
             (destination, key, result)
-        }));
+        })));
     }
     let (lost_tx, mut lost_rx) = watch::channel(false);
     let watcher = tokio::spawn(watch_fence(library.clone(), session.clone(), lost_tx));
@@ -687,14 +779,23 @@ async fn tee(
             failure = still_writable(library, session, index).await.err();
         }
     }
-    if failure.is_some() {
-        aborted.store(true, Ordering::Release);
-    }
+    state.store(
+        if failure.is_some() {
+            STREAM_ABORTED
+        } else {
+            STREAM_FINISHED
+        },
+        Ordering::Release,
+    );
     drop(senders);
-    let mut written = Vec::new();
-    for write in writes {
-        match finish_write(write, failure.is_some()).await {
-            Some((destination, key, Ok(_))) => written.push((destination, key)),
+    for slot in 0..unrecorded.pending.len() {
+        let Some(write) = unrecorded.pending[slot].as_mut() else {
+            continue;
+        };
+        let done = finish_write(write, failure.is_some()).await;
+        unrecorded.pending[slot] = None;
+        match done {
+            Some((destination, key, Ok(_))) => unrecorded.written.push((destination, key)),
             Some((_, _, Err(err))) => {
                 if failure.is_none() {
                     tracing::warn!(upload_id = %session.upload_id, index, error = %err, "a destination refused an uploaded file");
@@ -711,16 +812,53 @@ async fn tee(
     }
     drop(copy_locks);
     match failure {
-        None => Ok(()),
+        None => Ok(unrecorded),
         Some(failure) => {
             // A destination that already finished keeps no partial title,
             // unless the key was claimed again meanwhile.
+            let written = std::mem::take(&mut unrecorded.written);
+            unrecorded.keep();
             for (destination, key) in written {
                 discard_copy(library, session, &destination, &key).await;
             }
             Err(failure)
         }
     }
+}
+
+/// Runs [`tee`] for file `index` of `session` while the locks on the
+/// file's keys are held here, drops it once it waits for them (its body
+/// read in full, its destinations waiting for the end of stream), and then
+/// gives the locks back: a PUT handler cancelled mid-request, for tests.
+#[cfg(test)]
+pub(crate) async fn drop_tee_waiting_for_its_locks(
+    library: LibraryStore,
+    session: UploadSession,
+    index: usize,
+    body: Body,
+    destinations: Vec<OwnerDestination>,
+) {
+    let copies = session.files[index].copies.clone();
+    let held = lock_copies(&copies).await;
+    let first = copy_lock_name(&copies[0].destination, &copies[0].key);
+    let references = || {
+        NAMED_LOCKS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&first)
+            .map_or(0, Arc::strong_count)
+    };
+    let alone = references();
+    let task = tokio::spawn(async move {
+        let _ = tee(&library, &session, index, body, destinations).await;
+    });
+    // A waiter adds its own references to the lock's entry.
+    while references() <= alone {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    task.abort();
+    let _ = task.await;
+    drop(held);
 }
 
 /// Re-checks, just before every destination sees the end of file `index`,
@@ -863,6 +1001,77 @@ async fn lock_copies(copies: &[bookclerk_node_proto::FileCopy]) -> Vec<NamedLock
     held
 }
 
+/// Records file `index` of `session`, written to every one of the `count`
+/// destinations `ids`, as received, and answers the PUT. An upload no
+/// longer open, or a failed record, deletes the copies again: unrecorded,
+/// they are invisible to every later cleanup.
+async fn record_written(
+    state: &AppState,
+    library: &LibraryStore,
+    session: &UploadSession,
+    index: usize,
+    count: usize,
+    ids: &[String],
+) -> Response {
+    match record_upload_file(library, &session.upload_id, index).await {
+        Ok(true) => {
+            tracing::info!(
+                upload_id = %session.upload_id,
+                job_id = %session.job_id,
+                index,
+                destinations = count,
+                "a host's uploaded file reached every destination"
+            );
+            answer(StatusCode::OK, "received", None, false)
+        }
+        Ok(false) => {
+            // Not open any more. A committed upload already counts
+            // this file as received (the commit needs every file), so
+            // its copies are the title's and are never deleted; the
+            // per-file lock makes this unreachable, but cleanup must
+            // not depend on it.
+            match load_upload(library, &session.upload_id).await {
+                Ok(Some(current)) if current.state == "committed" => {
+                    return answer(StatusCode::OK, "received", None, false);
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    // Unknown state: keep the copies rather than risk a
+                    // committed title's files.
+                    tracing::warn!(upload_id = %session.upload_id, index, error = %err, "could not re-read an upload that stopped being open; its file is left in place");
+                    return unavailable();
+                }
+            }
+            // Aborted while this file streamed: its copies go too.
+            tracing::warn!(upload_id = %session.upload_id, index, "the upload was aborted while a file streamed; deleting it");
+            match owner_destinations(state).await {
+                Ok(destinations) if destination_ids(&destinations) == ids => {
+                    discard_file(library, &destinations, session, index).await;
+                }
+                _ => {
+                    tracing::warn!(upload_id = %session.upload_id, index, "could not reopen this node's destinations to delete an aborted file")
+                }
+            }
+            lost()
+        }
+        Err(err) => {
+            // Unrecorded, the copies are invisible to every later
+            // cleanup (it deletes only received files), so they go now;
+            // a key owned by another writer meanwhile is left alone.
+            tracing::warn!(upload_id = %session.upload_id, index, error = %err, "could not record an uploaded file; deleting it");
+            match owner_destinations(state).await {
+                Ok(destinations) if destination_ids(&destinations) == ids => {
+                    discard_file(library, &destinations, session, index).await;
+                }
+                _ => {
+                    tracing::warn!(upload_id = %session.upload_id, index, "could not reopen this node's destinations to delete an unrecorded file")
+                }
+            }
+            unavailable()
+        }
+    }
+}
+
 /// `PUT /api/node/v1/uploads/{upload_id}/files/{index}`.
 pub async fn put_file(
     State(state): State<Arc<AppState>>,
@@ -882,7 +1091,19 @@ pub async fn put_file(
     else {
         return refused("unknown_file");
     };
-    let _file_lock = lock_file(&session.upload_id, index).await;
+    // A retry waits for an attempt still streaming, but not forever: one
+    // stalled on a dead connection holds the lock until its body read
+    // fails. Past [`FILE_LOCK_WAIT`] the retry answers 503, which the host
+    // retries with backoff. The owner cannot tell a slow attempt from a
+    // dead one, so a newer attempt never takes the file over: cancelling a
+    // live, nearly finished stream for a retry would only cost the host
+    // the whole file again.
+    let Ok(_file_lock) =
+        tokio::time::timeout(FILE_LOCK_WAIT, lock_file(&session.upload_id, index)).await
+    else {
+        tracing::warn!(upload_id = %session.upload_id, index, "another attempt at an uploaded file is still streaming; asked to retry");
+        return unavailable();
+    };
     // Another attempt of this file may have finished (or the upload ended)
     // while this one waited: answer from the upload as it stands now.
     let session = match load_upload(&library, &session.upload_id).await {
@@ -932,63 +1153,19 @@ pub async fn put_file(
     let count = destinations.len();
     let ids = destination_ids(&destinations);
     match tee(&library, &session, index, body, destinations).await {
-        Ok(()) => match record_upload_file(&library, &session.upload_id, index).await {
-            Ok(true) => {
-                tracing::info!(
-                    upload_id = %session.upload_id,
-                    job_id = %session.job_id,
-                    index,
-                    destinations = count,
-                    "a host's uploaded file reached every destination"
-                );
-                answer(StatusCode::OK, "received", None, false)
-            }
-            Ok(false) => {
-                // Not open any more. A committed upload already counts
-                // this file as received (the commit needs every file), so
-                // its copies are the title's and are never deleted; the
-                // per-file lock makes this unreachable, but cleanup must
-                // not depend on it.
-                match load_upload(&library, &session.upload_id).await {
-                    Ok(Some(current)) if current.state == "committed" => {
-                        return answer(StatusCode::OK, "received", None, false);
-                    }
-                    Ok(_) => {}
-                    Err(err) => {
-                        // Unknown state: keep the copies rather than risk a
-                        // committed title's files.
-                        tracing::warn!(upload_id = %session.upload_id, index, error = %err, "could not re-read an upload that stopped being open; its file is left in place");
-                        return unavailable();
-                    }
-                }
-                // Aborted while this file streamed: its copies go too.
-                tracing::warn!(upload_id = %session.upload_id, index, "the upload was aborted while a file streamed; deleting it");
-                match owner_destinations(&state).await {
-                    Ok(destinations) if destination_ids(&destinations) == ids => {
-                        discard_file(&library, &destinations, &session, index).await;
-                    }
-                    _ => {
-                        tracing::warn!(upload_id = %session.upload_id, index, "could not reopen this node's destinations to delete an aborted file")
-                    }
-                }
-                lost()
-            }
-            Err(err) => {
-                // Unrecorded, the copies are invisible to every later
-                // cleanup (it deletes only received files), so they go now;
-                // a key owned by another writer meanwhile is left alone.
-                tracing::warn!(upload_id = %session.upload_id, index, error = %err, "could not record an uploaded file; deleting it");
-                match owner_destinations(&state).await {
-                    Ok(destinations) if destination_ids(&destinations) == ids => {
-                        discard_file(&library, &destinations, &session, index).await;
-                    }
-                    _ => {
-                        tracing::warn!(upload_id = %session.upload_id, index, "could not reopen this node's destinations to delete an unrecorded file")
-                    }
-                }
-                unavailable()
-            }
-        },
+        // From here the record runs in a task of its own, so a handler
+        // dropped meanwhile cannot stop it half way: it records the file,
+        // or deletes the copies itself. (Rolling back instead could delete
+        // the copies of a file whose record already landed.)
+        Ok(unrecorded) => {
+            unrecorded.keep();
+            let state = Arc::clone(&state);
+            let session = session.clone();
+            let task = tokio::spawn(async move {
+                record_written(&state, &library, &session, index, count, &ids).await
+            });
+            task.await.unwrap_or_else(|_| unavailable())
+        }
         Err(StreamFailure::Lost) => {
             tracing::warn!(upload_id = %session.upload_id, job_id = %session.job_id, index, "the job's fence was lost mid-upload; aborted");
             abort_and_discard(&state, &library, &session.upload_id).await;

@@ -590,24 +590,19 @@ pub fn is_storage_key(key: &str) -> bool {
             .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
 }
 
-/// True unless a `:` in `key` would make it something other than a file
-/// below the root of a local destination on Windows.
-///
-/// The first segment never holds one: `C:x` or `C:` is a drive-relative
-/// path there, which joined onto the destination's root names a file on
-/// another drive. A Windows build refuses `:` anywhere, since `name:x`
-/// writes an NTFS alternate data stream of another file (possibly another
-/// title's), and its own naming rules replace `:` in every title, so no
-/// key it plans carries one. Elsewhere a later segment keeps its `:`: the
-/// POSIX and S3 naming rules keep it, so `Author/Book: Subtitle/...` is an
-/// ordinary key a Linux or S3 destination is named with.
+/// True unless `key` starts with a Windows drive prefix (`C:x`, `C:`):
+/// joined onto a local destination's root on Windows, that names a path on
+/// another drive. It is the only form a relative key can take that leaves
+/// the root there; a `:` anywhere else is an ordinary character of a title
+/// (`Star Wars: X/...`) under the POSIX and S3 naming rules, which keep it.
+/// A Windows local destination refuses `:` itself (NTFS alternate data
+/// streams), whoever planned the key.
 fn colon_is_safe(key: &str) -> bool {
-    if cfg!(windows) {
-        return !key.contains(':');
-    }
-    key.split('/')
-        .next()
-        .is_none_or(|first| !first.contains(':'))
+    let mut bytes = key.bytes();
+    !matches!(
+        (bytes.next(), bytes.next()),
+        (Some(drive), Some(b':')) if drive.is_ascii_alphabetic()
+    )
 }
 
 /// Where one uploaded file is written: a destination and its key there.
@@ -783,20 +778,19 @@ mod tests {
         for bad in ["", "/abs.m4b", "a/../b.m4b", "a//b", "./a", "a\\b", "a\nb"] {
             assert!(!file(bad).is_well_formed(), "{bad:?}");
         }
-        // A drive-relative first segment would leave a Windows root.
-        for bad in ["C:x", "C:", "C:x/a.m4b", "a:b/c.m4b"] {
+        // A drive prefix would leave a Windows root.
+        for bad in ["C:x", "C:", "c:x/a.m4b", "Z:/a.m4b"] {
             assert!(!file(bad).is_well_formed(), "{bad:?}");
         }
-        // A colon in a later segment is a POSIX/S3 title name, but an
-        // alternate data stream on Windows.
-        assert_eq!(
-            file("Author/Book: Subtitle/Book.m4b").is_well_formed(),
-            !cfg!(windows)
-        );
-        assert_eq!(
-            file("Author/Title/Other.m4b:x").is_well_formed(),
-            !cfg!(windows)
-        );
+        // Any other colon is part of a title name.
+        for good in [
+            "Star Wars: X/Book.m4b",
+            "Author/Book: Subtitle/Book.m4b",
+            "AB:c/d.m4b",
+            "1:x.m4b",
+        ] {
+            assert!(file(good).is_well_formed(), "{good:?}");
+        }
         let mut upper = file("a.m4b");
         upper.sha256 = "0F".repeat(32);
         assert!(!upper.is_well_formed());

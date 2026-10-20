@@ -838,6 +838,9 @@ fn an_opened_upload_token_is_registered_for_redaction() {
         open_granted_upload(&secret, "node-1", "job-1", 3, "upload-1".into(), &sealed).unwrap();
     assert_eq!(upload.token().expose(), token.as_bytes());
     assert!(!bookclerk_config::redact_str(&line).contains(token));
+    // Dropped, the upload's token leaves the registry again.
+    drop(upload);
+    assert!(!bookclerk_config::contains_registered_secret(&line));
 }
 
 /// A job whose grant already ran out when it would start is never run

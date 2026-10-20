@@ -665,7 +665,9 @@ fn sidecar_stems(key: &str) -> impl Iterator<Item = &str> {
 /// title's recorded audio, PDF or audio sidecar (`claims_another_books_key`)
 /// nor any key recorded for another title on that destination
 /// (`claim_upload_keys`, which then claims every key for this upload). An
-/// earlier open upload of the same title by the same job is aborted. A
+/// earlier open upload of the same title by the same job is aborted: the
+/// newest grant wins, and one overtaken by a newer grant of the title
+/// while it was being made is refused (`superseded`) instead. A
 /// grant refused or failed once claiming began claims nothing in the end:
 /// the session row is inserted first and aborted again, and every key
 /// claimed goes back to its prior holder (`undo_grant`).
@@ -766,8 +768,8 @@ pub async fn grant_upload(
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
+    let mut claimed = Vec::new();
     if !req.book_uuid.is_empty() {
-        let mut claimed = Vec::new();
         match claim_upload_keys(store, req.book_uuid, &upload_id, req.files, &mut claimed).await {
             Ok(true) => {}
             Ok(false) => {
@@ -780,12 +782,53 @@ pub async fn grant_upload(
             }
         }
     }
-    // Superseded only once this grant holds the title's keys, so their
-    // cleanup leaves the files this upload is about to write.
-    let superseded = abort_matching(store, job_id, |row| {
-        row.book_uuid == req.book_uuid && row.upload_id != upload_id
+    // The newest grant of a title wins. This one supersedes only the
+    // title's uploads granted before it (by creation stamp, then id), once
+    // it holds the title's keys, so their cleanup leaves the files it is
+    // about to write; a grant of the title made after this one supersedes
+    // this one instead (`newer_grant_open`), so two overlapping grants
+    // never abort each other.
+    let created = stamp(now);
+    let ours = (created.as_str(), upload_id.as_str());
+    let superseded = match abort_matching(store, job_id, |row| {
+        row.book_uuid == req.book_uuid && (row.created_at.as_str(), row.upload_id.as_str()) < ours
     })
-    .await?;
+    .await
+    {
+        Ok(superseded) => superseded,
+        Err(err) => {
+            undo_grant(store, &upload_id, &claimed).await;
+            return Err(err);
+        }
+    };
+    match newer_grant_open(store, job_id, req.book_uuid, ours).await {
+        Ok(false) => {}
+        Ok(true) => {
+            undo_grant(store, &upload_id, &claimed).await;
+            return Ok(UploadGrant::Refused("superseded"));
+        }
+        Err(err) => {
+            undo_grant(store, &upload_id, &claimed).await;
+            return Err(err);
+        }
+    }
+    // An older grant still claiming when this one claimed may have taken
+    // a key back since (the same title's claims succeed for either); with
+    // it aborted now, this grant claims its keys once more.
+    if !req.book_uuid.is_empty() && !superseded.is_empty() {
+        match claim_upload_keys(store, req.book_uuid, &upload_id, req.files, &mut claimed).await {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!(upload_id = %upload_id, superseded = superseded.len(), "a key was taken by another title while an upload was granted; the superseded uploads' files stay");
+                undo_grant(store, &upload_id, &claimed).await;
+                return Ok(UploadGrant::Refused("key_of_another_book"));
+            }
+            Err(err) => {
+                undo_grant(store, &upload_id, &claimed).await;
+                return Err(err);
+            }
+        }
+    }
     tracing::info!(
         node_id,
         job_id,
@@ -801,6 +844,30 @@ pub async fn grant_upload(
         expires_at,
         superseded,
     })
+}
+
+/// True when an open upload of `book_uuid` in `job_id` was granted after
+/// the one created at `ours` (`(created_at, upload_id)`, compared as
+/// [`grant_upload`] orders grants): that newer grant supersedes it.
+///
+/// # Errors
+///
+/// Returns an error when the read fails.
+async fn newer_grant_open(
+    store: &LibraryStore,
+    job_id: &str,
+    book_uuid: &str,
+    ours: (&str, &str),
+) -> Result<bool> {
+    Ok(node_upload_sessions::Entity::find()
+        .filter(node_upload_sessions::Column::JobId.eq(job_id))
+        .filter(node_upload_sessions::Column::BookUuid.eq(book_uuid))
+        .filter(node_upload_sessions::Column::State.eq(STATE_OPEN))
+        .all(store.db())
+        .await
+        .map_err(LibraryError::Orm)?
+        .iter()
+        .any(|row| (row.created_at.as_str(), row.upload_id.as_str()) > ours))
 }
 
 /// Maps a stored row onto the session.
@@ -1173,17 +1240,19 @@ pub async fn commit_upload(
     if !session.complete() {
         return Ok(UploadCommit::Refused("files_missing"));
     }
-    // A key another title (or an acquire) took since the grant is not
-    // recorded for this one; the batch re-checks this in its gate.
-    if !upload_holds_its_keys(store, &session).await? {
-        return Ok(UploadCommit::Refused("key_taken"));
-    }
     let fence = remote_job_fence(&session.node_id, &session.job_id, session.generation);
     let Some(job) = fenced_job(store, &fence).await? else {
         return Ok(UploadCommit::Lost);
     };
     if !node_may_claim_job(store, &session.node_id, Claimant::Remote, &job).await? {
         return Ok(UploadCommit::Lost);
+    }
+    // A key another title (or an acquire) took since the grant is not
+    // recorded for this one; the batch re-checks this in its gate. Checked
+    // only once the fence is known live, so a lost fence answers `Lost`
+    // (and the receiving node discards the upload) whatever its keys.
+    if !upload_holds_its_keys(store, &session).await? {
+        return Ok(UploadCommit::Refused("key_taken"));
     }
     // The owner decides the job's success itself.
     match (session.book_uuid.is_empty(), finish) {
@@ -1359,7 +1428,11 @@ pub async fn commit_upload(
             Some(row) if row.state == STATE_COMMITTED => {
                 already_committed(store, &row.node_id, &row.job_id, limits).await
             }
-            Some(row) if !upload_holds_its_keys(store, &row).await? => {
+            // The fence first, as before the batch: a lost fence is `Lost`.
+            Some(row)
+                if upload_fence_live(store, &row).await?
+                    && !upload_holds_its_keys(store, &row).await? =>
+            {
                 Ok(UploadCommit::Refused("key_taken"))
             }
             _ => Ok(UploadCommit::Lost),

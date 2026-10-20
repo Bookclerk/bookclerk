@@ -3416,3 +3416,148 @@ async fn an_expired_lease_neither_grants_nor_commits_an_upload() {
     let book = w.store.get_book_by_uuid(&book_uuid).await.unwrap().unwrap();
     assert_ne!(book.acquire_status, crate::models::AcquireStatus::Acquired);
 }
+
+/// A scan job naming its account by label, or by its id in another case,
+/// is handed with the account's canonical id (the host's credential lookup
+/// and its rows use it), and the rows it returns for that id validate.
+#[tokio::test]
+async fn a_label_named_scans_results_validate_under_the_canonical_id() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    label_riley(&w.store).await;
+    for (selector, product) in [("riley books", "p-label"), ("RILEY-ACCT", "p-case")] {
+        let job_id = enqueue(&w.store, JobKind::Scan, selector).await;
+        let claimed = claim(&w.store).await.expect("claimed");
+        assert_eq!(claimed.job.id, job_id);
+        assert_eq!(
+            claimed.job.payload.account.as_deref(),
+            Some("riley-acct"),
+            "{selector}: handed with the canonical id"
+        );
+        let stored = w.store.get_job(&job_id).await.unwrap().unwrap();
+        assert_eq!(stored.payload.account.as_deref(), Some(selector));
+        assert_eq!(
+            accept_scan_results(
+                &w.store,
+                HOST,
+                &job_id,
+                claimed.job.lease_generation,
+                PLUGIN,
+                vec![scanned("riley-acct", product)]
+            )
+            .await
+            .unwrap(),
+            ScanAccept::Accepted { upserted: 1 },
+            "{selector}"
+        );
+        assert_eq!(
+            accept_scan_results(
+                &w.store,
+                HOST,
+                &job_id,
+                claimed.job.lease_generation,
+                PLUGIN,
+                vec![scanned("sam-acct", product)]
+            )
+            .await
+            .unwrap(),
+            ScanAccept::Refused("account_not_in_job"),
+            "{selector}: another account's row is still refused"
+        );
+        assert_eq!(
+            finish_remote_job(
+                &w.store,
+                HOST,
+                &job_id,
+                claimed.job.lease_generation,
+                SETTINGS.limits,
+                RemoteOutcome::Complete(None)
+            )
+            .await
+            .unwrap(),
+            RemoteFinish::Done
+        );
+    }
+}
+
+/// Of two grants of one title, the newest wins: an older grant never
+/// aborts a newer one. A grant that finds a newer open upload of the title
+/// is refused `superseded`, gives back what it claimed, and leaves the
+/// newer upload open and holding its keys.
+#[tokio::test]
+async fn an_older_upload_grant_never_aborts_a_newer_one() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let UploadGrant::Granted {
+        upload_id: newer, ..
+    } = grant_title(&w.store, &job_id, fence, &book_uuid, &files).await
+    else {
+        panic!("granted");
+    };
+    // Stamp it as created after any grant this test makes next, as if
+    // that grant had started first and was still claiming.
+    node_upload_sessions::Entity::update_many()
+        .col_expr(
+            node_upload_sessions::Column::CreatedAt,
+            Expr::value("9999-01-01T00:00:00.000000000Z"),
+        )
+        .filter(node_upload_sessions::Column::UploadId.eq(&newer))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    assert!(matches!(
+        grant_title(&w.store, &job_id, fence, &book_uuid, &files).await,
+        UploadGrant::Refused("superseded")
+    ));
+    assert_eq!(
+        load_upload(&w.store, &newer).await.unwrap().unwrap().state,
+        "open"
+    );
+    assert_eq!(
+        w.store
+            .title_file("local", "Author/Title/Title.m4b")
+            .await
+            .unwrap()
+            .unwrap()
+            .writer,
+        newer,
+        "the newer upload holds its key again"
+    );
+}
+
+/// A commit whose fence is lost answers `Lost` (so the receiving node
+/// discards the upload), even when one of its keys was also taken.
+#[tokio::test]
+async fn a_lost_fence_upload_commit_answers_lost_before_key_taken() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let UploadGrant::Granted { upload_id, .. } =
+        grant_title(&w.store, &job_id, fence, &book_uuid, &files).await
+    else {
+        panic!("granted");
+    };
+    assert!(record_upload_file(&w.store, &upload_id, 0).await.unwrap());
+    w.store
+        .record_title_file("local", "Author/Title/Title.m4b", &book_uuid)
+        .await
+        .unwrap();
+    let past = (chrono::Utc::now() - chrono::Duration::seconds(5)).to_rfc3339();
+    jobs::Entity::update_many()
+        .col_expr(jobs::Column::LeaseExpiresAt, Expr::value(Some(past)))
+        .filter(jobs::Column::Id.eq(&job_id))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    assert_eq!(
+        commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
+            .await
+            .unwrap(),
+        UploadCommit::Lost
+    );
+}

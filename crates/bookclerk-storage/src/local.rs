@@ -226,6 +226,15 @@ fn validate_key(key: &str) -> Result<()> {
     if key.is_empty() || key.starts_with('/') {
         return Err(StorageError::InvalidKey(key.into()));
     }
+    // On Windows a `:` is never part of a file name: `C:x` is a path on
+    // another drive and `name:x` an NTFS alternate data stream of `name`
+    // (possibly another title's file). The Windows naming rules replace
+    // `:` in every title, so only a key planned elsewhere (a host naming
+    // with POSIX rules) can carry one, and it is refused here rather than
+    // written somewhere else.
+    if cfg!(windows) && key.contains(':') {
+        return Err(StorageError::InvalidKey(key.into()));
+    }
     if Path::new(key).components().any(|c| {
         matches!(
             c,
@@ -721,6 +730,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(backend.get("A/B.m4b").await.unwrap().as_ref(), b"from-file");
+    }
+
+    /// A `:` in a key is a title character on POSIX, but a drive or an
+    /// alternate data stream on Windows, where it is refused.
+    #[tokio::test]
+    async fn a_colon_in_a_key_is_refused_only_on_windows() {
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        for key in ["Star Wars: X/Book.m4b", "A/Book.m4b:stream"] {
+            let put = backend
+                .put(key, Bytes::from_static(b"x"), ObjectMeta::default())
+                .await;
+            if cfg!(windows) {
+                assert!(matches!(put, Err(StorageError::InvalidKey(_))), "{key}");
+            } else {
+                put.unwrap();
+                assert_eq!(backend.get(key).await.unwrap().as_ref(), b"x");
+            }
+        }
     }
 
     #[tokio::test]

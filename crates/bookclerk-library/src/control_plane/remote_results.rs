@@ -26,7 +26,9 @@ use std::collections::BTreeSet;
 
 use super::job_routing::job_source_plugin_key;
 use super::remote_work::{fenced_job, remote_job_fence};
-use super::trust::{accounts_owned_by, node_may_claim_job, node_trust, Claimant, NodeTrust};
+use super::trust::{
+    accounts_named, accounts_owned_by, node_may_claim_job, node_trust, Claimant, NodeTrust,
+};
 use crate::error::Result;
 use crate::models::JobKind;
 use crate::store::{LibraryStore, NewBook};
@@ -91,7 +93,12 @@ pub async fn accept_scan_results(
         NodeTrust::OwnedBy(user_id) => Some(accounts_owned_by(store, user_id).await?),
         NodeTrust::Nothing => return Ok(ScanAccept::Lost),
     };
-    let job_account = job.payload.account.as_deref().filter(|a| !a.is_empty());
+    // The job's selector resolved as the claim resolved it (id or label,
+    // ignoring case), so the canonical id a host was handed validates.
+    let job_accounts = match job.payload.account.as_deref().filter(|a| !a.is_empty()) {
+        Some(selector) => Some(accounts_named(store, selector, Some(plugin_key)).await?),
+        None => None,
+    };
     // Every row is checked before any is written.
     let mut sources = std::collections::BTreeMap::new();
     let mut seen_accounts = BTreeSet::new();
@@ -99,7 +106,9 @@ pub async fn accept_scan_results(
         if book.product_id.trim().is_empty() || book.account_id.trim().is_empty() {
             return Ok(ScanAccept::Refused("invalid_row"));
         }
-        if job_account.is_some_and(|account| account != book.account_id) {
+        if job_accounts.as_ref().is_some_and(|accounts| {
+            !accounts.contains(&(plugin_key.to_string(), book.account_id.clone()))
+        }) {
             return Ok(ScanAccept::Refused("account_not_in_job"));
         }
         if let Some(owned) = &owned {
