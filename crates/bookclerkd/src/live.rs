@@ -227,7 +227,11 @@ fn frame(kind: &str, topics: &BTreeSet<LiveTopic>) -> Message {
 /// under [`POLL_INTERVAL`], so each socket's tick still sees a read newer
 /// than its last, while the tables are read at most twice per interval
 /// however many sockets are open.
-const SHARED_READ_FRESH: Duration = Duration::from_millis(POLL_INTERVAL.as_millis() as u64 / 2);
+const SHARED_READ_FRESH: Duration = match POLL_INTERVAL.checked_div(2) {
+    Some(half) => half,
+    // Unreachable: the divisor is not zero.
+    None => POLL_INTERVAL,
+};
 
 /// The last revision read over one library handle, shared by its sockets.
 #[derive(Default)]
