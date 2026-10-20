@@ -61,8 +61,9 @@ pub enum Body {
         box_key: String,
     },
     /// Owner → host, right after [`Body::Welcome`] when the hello listed
-    /// fences: which leases the owner renewed and which are lost. The host
-    /// aborts lost work; every later frame under a lost fence is refused.
+    /// fences: which leases the owner renewed, which are lost, and which it
+    /// could not check now. The host aborts lost work; every later frame
+    /// under a lost fence is refused.
     Resumed {
         /// Leases renewed for this connection.
         #[serde(default)]
@@ -70,6 +71,17 @@ pub enum Body {
         /// Leases that expired, were taken over, or are no longer trusted.
         #[serde(default)]
         lost: Vec<HeldFence>,
+        /// Leases the owner could not check (a transient read or write
+        /// failure). They are neither renewed nor lost: the host keeps the
+        /// work and renews them as usual, and that `renew` decides.
+        #[serde(default)]
+        unchecked: Vec<HeldFence>,
+        /// The lease, in seconds, the `renewed` fences now run for, counted
+        /// from the host's `hello`. The owner's lease length may have
+        /// changed while the host was away, so the host counts this rather
+        /// than its original grant; absent when nothing was renewed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lease_secs: Option<u64>,
     },
     /// Either side: a request was not served. The connection stays open.
     Error {
@@ -136,6 +148,15 @@ pub enum Body {
         /// consents to every one.
         #[serde(default)]
         plugin_keys: Vec<String>,
+        /// The one plugin of `plugin_keys` whose source guest runs the
+        /// job (the others are destinations it writes); the owner hands a
+        /// host only jobs that name one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_plugin_key: Option<String>,
+        /// The claim resumed a suspended job: no attempt was spent, and the
+        /// job's checkpoint applies.
+        #[serde(default)]
+        resumed: bool,
     },
     /// Owner → host: nothing to claim now.
     #[serde(rename = "none")]
@@ -210,6 +231,10 @@ pub enum Body {
         /// Stable reason (`awaiting_host_consent`, ...), for the log.
         #[serde(default)]
         reason: String,
+        /// The `resumed` flag of the job's `work` frame, so a resumed
+        /// claim is given back resumable.
+        #[serde(default)]
+        resumed: bool,
     },
     /// Host → owner: the deployments that target this host and should run.
     /// Answered with [`Body::Deployments`].
@@ -359,8 +384,50 @@ pub enum Body {
         /// box key and bound to the node, job, fence and upload
         /// (`crate::seal_upload_token`).
         sealed_token: String,
-        /// Seconds the grant stays valid.
+        /// Seconds the token stays valid unless extended: the owner
+        /// extends it while the job's fence is live (each renewal and each
+        /// accepted file).
         expires_in_secs: u64,
+    },
+    /// Host → owner: queue a library scan on the owner cluster for the
+    /// node's owner (H-5). The owner's scan planner runs as that user: an
+    /// Owner or Administrator scanning every account gets one job per
+    /// scan-enabled account, routed across the cluster's nodes and hosts;
+    /// anyone else scans only the accounts they own. Answered with
+    /// [`Body::ScanPlanned`] or `error {code: "forbidden" | "invalid" |
+    /// "unavailable"}`.
+    #[serde(rename = "scan.request")]
+    ScanRequest {
+        /// Scan only this store account (even when not scan-enabled).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        /// Pin every planned job to this plugin instance.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plugin_instance_id: Option<String>,
+    },
+    /// Owner → host: what a [`Body::ScanRequest`] queued.
+    #[serde(rename = "scan.planned")]
+    ScanPlanned {
+        /// New jobs.
+        created: Vec<String>,
+        /// Jobs that were already pending or running.
+        duplicates: Vec<String>,
+        /// Planned jobs the queue had no room for.
+        queue_full: u64,
+    },
+    /// Host → owner: the state of jobs this node may see (H-5). A job the
+    /// node's owner could not have queued, or an unknown id, is left out.
+    /// Answered with [`Body::JobStatuses`].
+    #[serde(rename = "job.status")]
+    JobStatus {
+        /// Job ids, at most [`MAX_STATUS_JOBS`].
+        job_ids: Vec<String>,
+    },
+    /// Owner → host: the jobs of a [`Body::JobStatus`].
+    #[serde(rename = "job.statuses")]
+    JobStatuses {
+        /// One entry per visible job, in request order.
+        jobs: Vec<JobStatusEntry>,
     },
     /// Owner → host: a message from the host's `node.<id>` queue. The host
     /// answers [`Body::Ack`] with the same frame id once it has acted.
@@ -468,6 +535,29 @@ pub enum Body {
     Unknown,
 }
 
+/// Most job ids one [`Body::JobStatus`] may ask about.
+pub const MAX_STATUS_JOBS: usize = 64;
+
+/// One job's state in [`Body::JobStatuses`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobStatusEntry {
+    /// Job id.
+    pub id: String,
+    /// Job kind (`scan`, `acquire`, ...).
+    pub kind: String,
+    /// `pending`, `running`, `succeeded`, `failed`, or `cancelled`.
+    pub state: String,
+    /// Progress or result text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<String>,
+    /// Structured error kind when it failed or was cancelled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
+    /// Error text when it failed or was cancelled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+}
+
 /// Work item kind for jobs.
 pub const ITEM_JOB: &str = "job";
 
@@ -557,6 +647,20 @@ pub struct WorkJob {
     pub payload: serde_json::Value,
     /// Claims of this job so far, this one included.
     pub attempt: i64,
+    /// For a scan: which titles the owner's library imports. The owner
+    /// writes every row a host returns, so the host scans with the
+    /// owner's settings, never its own. Absent for other kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan_import: Option<ScanImport>,
+}
+
+/// The owner's library import settings a host scan runs with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanImport {
+    /// Import podcast episodes.
+    pub import_episodes: bool,
+    /// Import subscription (Plus) titles.
+    pub import_plus_titles: bool,
 }
 
 /// Most rows one [`Body::ScanResults`] batch may carry.
@@ -592,6 +696,12 @@ pub struct AcquireTarget {
     pub account_id: String,
     /// The owner's library row (JSON), for naming and metadata.
     pub book: serde_json::Value,
+    /// The owner's row for the title's podcast parent (JSON), when the
+    /// title is an episode whose parent is in the owner's library: a
+    /// destination that saves episodes to the parent's folder names them
+    /// from it, as an acquire on the owner would.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<serde_json::Value>,
 }
 
 /// One output destination of the owner node that answered an acquire plan
@@ -618,7 +728,8 @@ pub fn is_destination_id(id: &str) -> bool {
 
 /// True when `key` is a relative storage key: no empty, `.` or `..`
 /// segment, no backslash or control character, not absolute, at most
-/// [`MAX_UPLOAD_KEY_BYTES`].
+/// [`MAX_UPLOAD_KEY_BYTES`], and never a Windows path that leaves the
+/// destination's root (`colon_is_safe`).
 #[must_use]
 pub fn is_storage_key(key: &str) -> bool {
     !key.is_empty()
@@ -626,9 +737,25 @@ pub fn is_storage_key(key: &str) -> bool {
         && !key.starts_with('/')
         && !key.contains('\\')
         && !key.chars().any(char::is_control)
+        && colon_is_safe(key)
         && key
             .split('/')
             .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+}
+
+/// True unless `key` starts with a Windows drive prefix (`C:x`, `C:`):
+/// joined onto a local destination's root on Windows, that names a path on
+/// another drive. It is the only form a relative key can take that leaves
+/// the root there; a `:` anywhere else is an ordinary character of a title
+/// (`Star Wars: X/...`) under the POSIX and S3 naming rules, which keep it.
+/// A Windows local destination refuses `:` itself (NTFS alternate data
+/// streams), whoever planned the key.
+fn colon_is_safe(key: &str) -> bool {
+    let mut bytes = key.bytes();
+    !matches!(
+        (bytes.next(), bytes.next()),
+        (Some(drive), Some(b':')) if drive.is_ascii_alphabetic()
+    )
 }
 
 /// Where one uploaded file is written: a destination and its key there.
@@ -804,6 +931,19 @@ mod tests {
         for bad in ["", "/abs.m4b", "a/../b.m4b", "a//b", "./a", "a\\b", "a\nb"] {
             assert!(!file(bad).is_well_formed(), "{bad:?}");
         }
+        // A drive prefix would leave a Windows root.
+        for bad in ["C:x", "C:", "c:x/a.m4b", "Z:/a.m4b"] {
+            assert!(!file(bad).is_well_formed(), "{bad:?}");
+        }
+        // Any other colon is part of a title name.
+        for good in [
+            "Star Wars: X/Book.m4b",
+            "Author/Book: Subtitle/Book.m4b",
+            "AB:c/d.m4b",
+            "1:x.m4b",
+        ] {
+            assert!(file(good).is_well_formed(), "{good:?}");
+        }
         let mut upper = file("a.m4b");
         upper.sha256 = "0F".repeat(32);
         assert!(!upper.is_well_formed());
@@ -830,6 +970,60 @@ mod tests {
             }
             .is_well_formed());
         }
+    }
+
+    #[test]
+    fn scan_requests_and_job_status_round_trip() {
+        let all = Frame::new(
+            "9",
+            Body::ScanRequest {
+                account: None,
+                plugin_instance_id: None,
+            },
+        );
+        let text = all.to_text();
+        assert!(text.contains(r#""type":"scan.request""#), "{text}");
+        assert!(!text.contains("account"), "{text}");
+        assert_eq!(Frame::parse(&text).unwrap(), all);
+        let one = Frame::parse(r#"{"v":1,"id":"9","type":"scan.request","account":"a1"}"#).unwrap();
+        assert_eq!(
+            one.body,
+            Body::ScanRequest {
+                account: Some("a1".into()),
+                plugin_instance_id: None,
+            }
+        );
+        let planned = Frame::new(
+            "9",
+            Body::ScanPlanned {
+                created: vec!["scan-1".into()],
+                duplicates: vec!["scan-2".into()],
+                queue_full: 1,
+            },
+        );
+        assert_eq!(Frame::parse(&planned.to_text()).unwrap(), planned);
+        let status = Frame::new(
+            "10",
+            Body::JobStatus {
+                job_ids: vec!["scan-1".into()],
+            },
+        );
+        assert!(status.to_text().contains(r#""type":"job.status""#));
+        assert_eq!(Frame::parse(&status.to_text()).unwrap(), status);
+        let statuses = Frame::new(
+            "10",
+            Body::JobStatuses {
+                jobs: vec![JobStatusEntry {
+                    id: "scan-1".into(),
+                    kind: "scan".into(),
+                    state: "failed".into(),
+                    progress: None,
+                    error_kind: Some("handler".into()),
+                    error_message: Some("boom".into()),
+                }],
+            },
+        );
+        assert_eq!(Frame::parse(&statuses.to_text()).unwrap(), statuses);
     }
 
     #[test]
@@ -915,11 +1109,17 @@ mod tests {
                         kind: "scan".into(),
                         payload: serde_json::json!({"account": "a"}),
                         attempt: 1,
+                        scan_import: Some(ScanImport {
+                            import_episodes: false,
+                            import_plus_titles: true,
+                        }),
                     },
                     fence: 2,
                     lease_secs: 60,
                     sealed_secrets: Some("x".into()),
                     plugin_keys: vec!["store".into()],
+                    source_plugin_key: Some("store".into()),
+                    resumed: false,
                 },
                 "work",
             ),
@@ -939,6 +1139,7 @@ mod tests {
                     job_id: job_id(),
                     fence: 2,
                     reason: "awaiting_host_consent".into(),
+                    resumed: false,
                 },
                 "release",
             ),
@@ -990,6 +1191,8 @@ mod tests {
                         id: job_id(),
                         fence: 1,
                     }],
+                    unchecked: Vec::new(),
+                    lease_secs: None,
                 },
                 "resumed",
             ),
@@ -1030,6 +1233,7 @@ mod tests {
                         plugin_key: "store".into(),
                         account_id: "a".into(),
                         book: serde_json::json!({}),
+                        parent: None,
                     }],
                     destinations: vec![PlanDestination {
                         id: "local".into(),

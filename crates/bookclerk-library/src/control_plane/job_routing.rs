@@ -28,9 +28,12 @@
 //! A Host also narrows its own claims with a [`JobClaimFilter`]: the job
 //! kinds it can run and the plugin keys its operator consented to. A job
 //! whose plugins cannot be told from the job itself (a scan of every
-//! account, a listen-sync) never passes a filter.
+//! account, a listen-sync) never passes a filter, and neither does one
+//! whose source plugin cannot ([`job_source_plugin_key`]): a Host runs one
+//! source guest per job, so an unpinned job whose account id exists under
+//! several plugins stays with nodes that hold the database.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
@@ -43,16 +46,20 @@ use super::instances::{list_all_plugin_instances, load_plugin_instance, PluginIn
 use super::semaphore::{
     acquire_permits, release_permits, PermitAcquire, SemaphorePermit, SemaphoreRequest,
 };
-use super::trust::{job_trusted, node_trust, Claimant, NodeTrust};
+use super::trust::{
+    account_owned, accounts_named, claimant_may_run, job_trusted, node_trust, owned_job_account,
+    Claimant, NodeTrust,
+};
 use crate::entities::accounts;
 use crate::error::{LibraryError, Result};
-use crate::models::{JobKind, JobPayload, JobRecord, JobResourceClass};
+use crate::models::{JobClaimCursor, JobKind, JobPayload, JobRecord, JobResourceClass};
 use crate::store::LibraryStore;
 
 /// Permits an account semaphore grants: one job per store account at a time.
 pub const ACCOUNT_SEMAPHORE_LIMIT: u32 = 1;
 
-/// Pending candidates read per routed claim attempt.
+/// Pending candidates read per page of a routed claim attempt (the claim
+/// pages on until it claims a job or the ready rows run out).
 pub const ROUTED_CLAIM_CANDIDATES: u64 = 16;
 
 /// Name of the cluster semaphore for one resource class.
@@ -121,8 +128,12 @@ impl JobClaimFilter {
         self.kinds.is_empty() || self.plugin_keys.is_empty()
     }
 
-    /// True when `job` is of an admitted kind and every plugin it runs
-    /// ([`job_plugin_keys`]) is admitted.
+    /// True when `job` is of an admitted kind, names the account it runs
+    /// for, every plugin it runs ([`job_plugin_keys`]) is admitted, and its
+    /// one source plugin can be told ([`job_source_plugin_key`]), so the
+    /// Host can select the guest it runs. The account is required even
+    /// when the job is pinned to an instance: a Host is handed only that
+    /// account's secrets, and a job of every account has none to hand.
     ///
     /// # Errors
     ///
@@ -131,10 +142,54 @@ impl JobClaimFilter {
         if !self.kinds.contains(job.kind.as_str()) {
             return Ok(false);
         }
-        Ok(job_plugin_keys(store, job)
+        if job.payload.account.as_deref().is_none_or(str::is_empty) {
+            return Ok(false);
+        }
+        let admitted = job_plugin_keys(store, job)
             .await?
-            .is_some_and(|keys| keys.is_subset(&self.plugin_keys)))
+            .is_some_and(|keys| keys.is_subset(&self.plugin_keys));
+        Ok(admitted && job_source_plugin_key(store, job).await?.is_some())
     }
+}
+
+/// The one plugin whose source guest runs `job`, or `None` when the job
+/// alone does not name exactly one.
+///
+/// Only a scan or acquire has one: the plugin of the instance it is pinned
+/// to, or else the one plugin holding an `accounts` row the account it
+/// names resolves to (by id or label, ignoring ASCII case). Required
+/// instances ([`crate::JobPayload::requires`], the destinations an acquire
+/// writes) never count. An unpinned job of every account, or one whose
+/// account name matches rows under several plugins, answers
+/// `None`, as do other kinds and unknown instances or accounts.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub async fn job_source_plugin_key(
+    store: &LibraryStore,
+    job: &JobRecord,
+) -> Result<Option<String>> {
+    if !matches!(job.kind, JobKind::Scan | JobKind::Acquire) {
+        return Ok(None);
+    }
+    if let Some(raw) = job.payload.plugin_instance_id.as_deref() {
+        return instance_plugin_key(store, raw).await;
+    }
+    let Some(account) = job.payload.account.as_deref().filter(|a| !a.is_empty()) else {
+        return Ok(None);
+    };
+    // Resolved like the claim filter and the secret handoff (id or label).
+    let keys: BTreeSet<String> = accounts_named(store, account, None)
+        .await?
+        .into_iter()
+        .map(|(plugin_key, _)| plugin_key)
+        .collect();
+    let mut keys = keys.into_iter();
+    Ok(match (keys.next(), keys.next()) {
+        (Some(key), None) => Some(key),
+        _ => None,
+    })
 }
 
 /// The plugin keys `job` runs, or `None` when the job alone does not say.
@@ -142,8 +197,10 @@ impl JobClaimFilter {
 /// Only a scan or acquire says: the plugin of the instance it is pinned to
 /// and of each instance it requires, plus every plugin holding an
 /// `accounts` row with the account it names (within the pinned plugin when
-/// pinned). A scan or acquire of every account, any other kind, and a job
-/// naming an unknown instance or account answer `None`.
+/// pinned). An unpinned acquire that names no account runs the plugins of
+/// the library rows it matches. An unpinned scan of every account, an
+/// acquire matching no row, any other kind, and a job naming an unknown
+/// instance or account answer `None`.
 ///
 /// # Errors
 ///
@@ -173,22 +230,30 @@ pub async fn job_plugin_keys(
         keys.insert(key);
     }
     match job.payload.account.as_deref().filter(|a| !a.is_empty()) {
+        // Resolved like the executor and the trust checks do (id or
+        // label, ignoring case), so the set covers every store it touches.
         Some(account) => {
-            let mut query =
-                accounts::Entity::find().filter(accounts::Column::AccountId.eq(account));
-            if let Some(key) = pinned.as_deref() {
-                query = query.filter(accounts::Column::PluginKey.eq(key));
-            }
-            let rows = query.all(store.db()).await.map_err(LibraryError::Orm)?;
-            if rows.is_empty() {
+            let named = accounts_named(store, account, pinned.as_deref()).await?;
+            if named.is_empty() {
                 return Ok(None);
             }
-            keys.extend(rows.into_iter().map(|row| row.plugin_key));
+            keys.extend(named.into_iter().map(|(plugin_key, _)| plugin_key));
         }
-        // Every account of the pinned plugin stays within that plugin;
-        // every account of every plugin cannot be told.
-        None if pinned.is_none() => return Ok(None),
-        None => {}
+        // Every account of the pinned plugin stays within that plugin.
+        None if pinned.is_some() => {}
+        // An unpinned acquire runs the plugins of the library rows it
+        // matches (its items); every account of every plugin to scan
+        // cannot be told.
+        None if job.kind == JobKind::Acquire => {
+            let items = super::trust::job_item_accounts(store, job)
+                .await?
+                .unwrap_or_default();
+            if items.is_empty() {
+                return Ok(None);
+            }
+            keys.extend(items.into_iter().map(|(plugin_key, _)| plugin_key));
+        }
+        None => return Ok(None),
     }
     Ok(Some(keys))
 }
@@ -221,14 +286,41 @@ pub struct RoutedJobClaim {
 /// is a valid instance id with at least one deployment that should run, so a
 /// job pinned to an undeployed instance is claimed anywhere and fails there
 /// as before rather than waiting forever. For [`JobKind::Acquire`], every
-/// instance of a plugin key in `node_bound_plugin_keys` that is deployed to
-/// run somewhere is added: the acquire writes to that output, so it must run
-/// where the output's disk is.
+/// cluster instance of a plugin key in `node_bound_plugin_keys` that is
+/// deployed to run somewhere is added: the acquire writes to that output, so
+/// it must run where the output's disk is. A node-local instance (H-2,
+/// `owner_node_id` set) is not: it adds to the outputs of its own node only,
+/// which copies what it acquires to it, and requiring it would leave every
+/// acquire claimable on that one node alone, or nowhere.
+///
+/// The required instances must share at least one node where all of them
+/// are deployed to run; otherwise no node could ever claim the job, so it
+/// is refused here instead of being left pending. Required instances are
+/// never dropped to make a node fit: an acquire must write to every
+/// deployed node-bound output.
 ///
 /// # Errors
 ///
-/// Returns an error when a read fails.
+/// Returns [`LibraryError::Conflict`] when the required instances have no
+/// common deployment node, or an error when a read fails.
 pub async fn resolve_job_requirements(
+    store: &LibraryStore,
+    kind: JobKind,
+    payload: &JobPayload,
+    node_bound_plugin_keys: &BTreeSet<String>,
+) -> Result<Vec<String>> {
+    let requires = desired_requirements(store, kind, payload, node_bound_plugin_keys).await?;
+    if !requirements_routable(store, &requires).await? {
+        return Err(LibraryError::Conflict(no_common_node_message(
+            kind, &requires,
+        )));
+    }
+    Ok(requires)
+}
+
+/// The requirement set [`resolve_job_requirements`] would record now,
+/// without the common-node check.
+pub(super) async fn desired_requirements(
     store: &LibraryStore,
     kind: JobKind,
     payload: &JobPayload,
@@ -246,7 +338,8 @@ pub async fn resolve_job_requirements(
     }
     if kind == JobKind::Acquire && !node_bound_plugin_keys.is_empty() {
         for instance in list_all_plugin_instances(store).await? {
-            if node_bound_plugin_keys.contains(&instance.plugin_key)
+            if instance.owner_node_id.is_none()
+                && node_bound_plugin_keys.contains(&instance.plugin_key)
                 && deployed_somewhere(store, &instance.id).await?
             {
                 requires.insert(instance.id.as_str().to_string());
@@ -254,6 +347,58 @@ pub async fn resolve_job_requirements(
         }
     }
     Ok(requires.into_iter().collect())
+}
+
+/// True when some node is deployed to run every instance in `requires`
+/// (always true for zero or one instance: [`desired_requirements`] keeps
+/// only deployed instances).
+pub(super) async fn requirements_routable(
+    store: &LibraryStore,
+    requires: &[String],
+) -> Result<bool> {
+    Ok(requires.len() <= 1 || !common_deployment_nodes(store, requires).await?.is_empty())
+}
+
+/// Operator-facing reason for requirements no node can meet.
+pub(super) fn no_common_node_message(kind: JobKind, requires: &[String]) -> String {
+    format!(
+        "no node runs all of the plugin instances this {} job requires ({}); \
+         deploy them to a common node",
+        kind.as_str(),
+        requires.join(", ")
+    )
+}
+
+/// Nodes where every instance in `requires` has a deployment that should run.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub async fn common_deployment_nodes(
+    store: &LibraryStore,
+    requires: &[String],
+) -> Result<BTreeSet<String>> {
+    let mut common: Option<BTreeSet<String>> = None;
+    for raw in requires {
+        let Ok(instance) = PluginInstanceId::parse(raw) else {
+            return Ok(BTreeSet::new());
+        };
+        let nodes: BTreeSet<String> = list_deployments_for_instance(store, &instance)
+            .await?
+            .into_iter()
+            .filter(|deployment| deployment.desired.runs())
+            .map(|deployment| deployment.node_id)
+            .collect();
+        let next = match common {
+            Some(prev) => prev.intersection(&nodes).cloned().collect(),
+            None => nodes,
+        };
+        if next.is_empty() {
+            return Ok(next);
+        }
+        common = Some(next);
+    }
+    Ok(common.unwrap_or_default())
 }
 
 /// True when some node has a deployment of `instance` that should run.
@@ -335,27 +480,32 @@ pub async fn job_semaphores(
         ));
     }
     if matches!(job.kind, JobKind::Scan | JobKind::Acquire) {
-        let pinned_key = match job
-            .payload
-            .plugin_instance_id
-            .as_deref()
-            .and_then(|id| PluginInstanceId::parse(id).ok())
-        {
-            Some(id) => load_plugin_instance(store, &id)
+        let pinned_key = pinned_plugin_key(store, job).await?;
+        // The accounts the job touches, by id or label as trust and the
+        // secret handoff resolve them, so two jobs naming one account
+        // differently still share its permit.
+        let touched: Vec<(String, String)> = match job.payload.account.as_deref() {
+            Some(account) => super::trust::accounts_named(store, account, pinned_key.as_deref())
                 .await?
-                .map(|instance| instance.plugin_key),
-            None => None,
+                .into_iter()
+                .collect(),
+            None => {
+                let mut query = accounts::Entity::find();
+                if let Some(key) = pinned_key.as_deref() {
+                    query = query.filter(accounts::Column::PluginKey.eq(key));
+                }
+                query
+                    .all(store.db())
+                    .await
+                    .map_err(LibraryError::Orm)?
+                    .into_iter()
+                    .map(|row| (row.plugin_key, row.account_id))
+                    .collect()
+            }
         };
-        let mut query = accounts::Entity::find();
-        if let Some(account) = job.payload.account.as_deref() {
-            query = query.filter(accounts::Column::AccountId.eq(account));
-        }
-        if let Some(key) = pinned_key.as_deref() {
-            query = query.filter(accounts::Column::PluginKey.eq(key));
-        }
-        for row in query.all(store.db()).await.map_err(LibraryError::Orm)? {
+        for (plugin_key, account_id) in touched {
             requests.push(SemaphoreRequest::new(
-                account_semaphore(&row.plugin_key, &row.account_id),
+                account_semaphore(&plugin_key, &account_id),
                 ACCOUNT_SEMAPHORE_LIMIT,
             ));
         }
@@ -363,14 +513,60 @@ pub async fn job_semaphores(
     Ok(requests)
 }
 
+/// The plugin key of the instance `job` is pinned to, when it names one
+/// that exists.
+///
+/// # Errors
+///
+/// Returns an error when the instance read fails.
+pub(super) async fn pinned_plugin_key(
+    store: &LibraryStore,
+    job: &JobRecord,
+) -> Result<Option<String>> {
+    match job
+        .payload
+        .plugin_instance_id
+        .as_deref()
+        .and_then(|id| PluginInstanceId::parse(id).ok())
+    {
+        Some(id) => Ok(load_plugin_instance(store, &id)
+            .await?
+            .map(|instance| instance.plugin_key)),
+        None => Ok(None),
+    }
+}
+
+/// The holder prefix of the semaphore permits a routed claim of `job_id`
+/// by `owner` takes when the claim runs at lease `generation`:
+/// `<owner>/<job_id>/g<generation>/`.
+///
+/// Every permit of that claim's holder starts with it (a random suffix
+/// follows), and the trailing `/` keeps one generation's prefix from
+/// matching another's (`g1/` is not a prefix of `g10/`). A worker that has
+/// to find the claim's permits again by name, such as a Host renewing
+/// through another owner node, matches on this prefix, so a still-live
+/// permit left over from an earlier claim of the same job is never taken
+/// for the current one.
+pub fn job_permit_holder_prefix(owner: &str, job_id: &str, generation: i64) -> String {
+    format!("{owner}/{job_id}/g{generation}/")
+}
+
 /// Claims the best ready job this node can run, under the cluster semaphores.
 ///
-/// Reads the ready pending jobs of the class, best first; skips those the
-/// node is not trusted with ([`super::node_trust`]) or whose requirements
-/// it does not meet; takes the permits of the first one
-/// left and claims it with [`LibraryStore::claim_job_by_id`]. A lost claim
-/// gives the permits back and moves on. When the class semaphore itself is
-/// full, no further candidate is tried.
+/// Pages through the ready pending jobs of the class, best first
+/// ([`ROUTED_CLAIM_CANDIDATES`] per page); skips those the node is not
+/// trusted with ([`super::node_trust`]), those whose requirements this node
+/// does not meet, and those whose account or instance semaphore is full;
+/// takes the permits of the first one left and claims it with
+/// [`LibraryStore::claim_job_by_id`] at the lease generation of the record
+/// it evaluated, so a job whose requirements were rewritten after this node
+/// checked them is not claimed on the stale check. The permit holder is
+/// [`job_permit_holder_prefix`] for the generation the claim runs at plus a
+/// random suffix, so permits left over from an earlier claim of the same
+/// job by the same owner never pass for this claim's. A lost claim gives
+/// the permits back and moves on. It stops at the first claim, when the
+/// rows run out, or when the class semaphore itself is full (no further
+/// candidate could run).
 ///
 /// # Returns
 ///
@@ -384,52 +580,103 @@ pub async fn claim_routed_job(
     store: &LibraryStore,
     request: &JobClaimRequest<'_>,
 ) -> Result<Option<RoutedJobClaim>> {
-    let candidates = store
-        .list_job_claim_candidates(request.resource_class, ROUTED_CLAIM_CANDIDATES)
-        .await?;
     let class = class_semaphore(request.resource_class);
     let ttl = Duration::from_secs(request.lease_secs);
     let trust = node_trust(store, request.node_id, request.claimant).await?;
     if trust == NodeTrust::Nothing {
         return Ok(None);
     }
-    for job in candidates {
-        if !job_trusted(store, &trust, &job).await? {
-            continue;
-        }
-        if let Some(filter) = request.filter {
-            if !filter.admits(store, &job).await? {
+    // Many queued jobs share one requirement set (every acquire bound to the
+    // same outputs), so each set is checked against this node once per call.
+    let mut runnable: BTreeMap<Vec<String>, bool> = BTreeMap::new();
+    // A user's Host is checked against each named account once per call
+    // too, rather than reading the accounts and links per candidate.
+    let mut owned_accounts: BTreeMap<String, bool> = BTreeMap::new();
+    let mut after: Option<JobClaimCursor> = None;
+    loop {
+        let page = store
+            .list_job_claim_candidates(
+                request.resource_class,
+                after.as_ref(),
+                ROUTED_CLAIM_CANDIDATES,
+            )
+            .await?;
+        for job in page.jobs {
+            if !claimant_may_run(request.claimant, &job) {
                 continue;
             }
-        }
-        if !node_can_run_job(store, request.node_id, &job.payload.requires).await? {
-            continue;
-        }
-        let semaphores = job_semaphores(store, &job, request.limits).await?;
-        let holder = format!("{}/{}/{}", request.owner, job.id, Uuid::new_v4().simple());
-        let resumed = job.payload.resume_pending;
-        let permits = match acquire_permits(store, &semaphores, &holder, ttl).await? {
-            PermitAcquire::Granted(permits) => permits,
-            PermitAcquire::Blocked(name) if name == class => return Ok(None),
-            PermitAcquire::Blocked(_) => continue,
-        };
-        match store
-            .claim_job_by_id(&job.id, request.owner, request.lease_secs)
-            .await
-        {
-            Ok(Some(job)) => {
-                return Ok(Some(RoutedJobClaim {
-                    job,
-                    permits,
-                    resumed,
-                }))
+            let trusted = match (&trust, owned_job_account(&job)) {
+                (NodeTrust::OwnedBy(_), None) => false,
+                (NodeTrust::OwnedBy(user_id), Some(account)) => match owned_accounts.get(account) {
+                    Some(known) => *known,
+                    None => {
+                        let known = account_owned(store, *user_id, account).await?;
+                        owned_accounts.insert(account.to_owned(), known);
+                        known
+                    }
+                },
+                _ => job_trusted(store, &trust, &job).await?,
+            };
+            if !trusted {
+                continue;
             }
-            Ok(None) => release_permits(store, &permits).await?,
-            Err(err) => {
-                let _ = release_permits(store, &permits).await;
-                return Err(err);
+            if let Some(filter) = request.filter {
+                if !filter.admits(store, &job).await? {
+                    continue;
+                }
             }
+            let can_run = match runnable.get(&job.payload.requires) {
+                Some(known) => *known,
+                None => {
+                    let known =
+                        node_can_run_job(store, request.node_id, &job.payload.requires).await?;
+                    runnable.insert(job.payload.requires.clone(), known);
+                    known
+                }
+            };
+            if !can_run {
+                continue;
+            }
+            let semaphores = job_semaphores(store, &job, request.limits).await?;
+            // The claim below succeeds only at the generation read here, so it
+            // runs at the next one: bind the permits to that generation.
+            let holder = format!(
+                "{}{}",
+                job_permit_holder_prefix(request.owner, &job.id, job.lease_generation + 1),
+                Uuid::new_v4().simple()
+            );
+            let resumed = job.payload.resume_pending;
+            let permits = match acquire_permits(store, &semaphores, &holder, ttl).await? {
+                PermitAcquire::Granted(permits) => permits,
+                PermitAcquire::Blocked(name) if name == class => return Ok(None),
+                PermitAcquire::Blocked(_) => continue,
+            };
+            match store
+                .claim_job_by_id(
+                    &job.id,
+                    job.lease_generation,
+                    request.owner,
+                    request.lease_secs,
+                )
+                .await
+            {
+                Ok(Some(job)) => {
+                    return Ok(Some(RoutedJobClaim {
+                        job,
+                        permits,
+                        resumed,
+                    }))
+                }
+                Ok(None) => release_permits(store, &permits).await?,
+                Err(err) => {
+                    let _ = release_permits(store, &permits).await;
+                    return Err(err);
+                }
+            }
+        }
+        match page.next {
+            Some(next) => after = Some(next),
+            None => return Ok(None),
         }
     }
-    Ok(None)
 }

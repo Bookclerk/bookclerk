@@ -182,7 +182,14 @@ pub(super) async fn upload(
             upload_id,
             token,
             expires_at,
+            superseded,
         } => {
+            // A re-sent title replaces its earlier upload, as for a job's
+            // upload: what that one had received is deleted first, except
+            // the keys the new one claimed.
+            for session in &superseded {
+                super::uploads::discard_received(&host.state, library, session).await;
+            }
             let mut ephemeral = [0u8; 32];
             rand::rngs::OsRng.fill_bytes(&mut ephemeral);
             let sealed = seal_upload_token(

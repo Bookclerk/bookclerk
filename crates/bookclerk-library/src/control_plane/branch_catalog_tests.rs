@@ -684,7 +684,7 @@ async fn ancestry_lists_this_library_then_every_parent_and_refuses_cycles() {
     let link = load_cluster_link(&store, "parent").await.unwrap().unwrap();
     assert!(!link.share_books && link.include_branches);
     // A left link no longer counts.
-    leave_cluster_link(&store, "parent").await.unwrap();
+    leave_cluster_link(&store, "parent", None).await.unwrap();
     assert_eq!(library_ancestry(&store).await.unwrap(), vec![own]);
 }
 

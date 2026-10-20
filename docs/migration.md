@@ -22,7 +22,9 @@ bookclerk import libation --from ~/LibationFiles --force
 Imports typically include:
 
 - Settings → `config.toml` (Widevine, lossy decrypt, folder/file templates,
-  cover/cue/fix-up flags, …)
+  cover/cue/fix-up flags, …); the packaging part seeds the `core.output`
+  database document when the destination database has none yet (otherwise
+  the existing document is kept and migrate warns)
 - `AccountsSettings.json` → account metadata in `library.db` (no credentials)
 - `LibationContext.db` → Bookclerk `library.db`
 - Naming templates and user metadata where present

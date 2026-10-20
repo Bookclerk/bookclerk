@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, Copy, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -53,29 +53,41 @@ export function AddBranchDialog({ open, onClose, userId, userLabel }: AddBranchD
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const now = useNow(open);
+  // Bumped each time the dialog opens, closes or changes user: an answer
+  // that arrives after that belongs to an earlier lifetime and is dropped,
+  // so one user's invite is never shown under another's name.
+  const lifetime = useRef(0);
 
   const reload = useCallback(async () => {
+    const mine = lifetime.current;
     try {
-      const body = await listBranchInvites();
+      // Without a user, the signed-in user's own invites: an Owner may see
+      // everyone's, but this dialog is about their own branches.
+      const body = await listBranchInvites(userId == null);
+      if (lifetime.current !== mine) return;
       setInvites(
         body.links.filter(
           (link) => (userId == null || link.for_user_id === userId) && link.state === "pending",
         ),
       );
     } catch (err) {
+      if (lifetime.current !== mine) return;
       setError(joinErrorMessage(err, "Could not load invites."));
     }
   }, [userId]);
 
   useEffect(() => {
-    if (!open) {
-      // Drop the shown invite as soon as the dialog closes.
-      setMinted(null);
-      setCopied(false);
-      setLabel("");
-      setError(null);
-      return;
-    }
+    lifetime.current += 1;
+    // A request of the earlier lifetime no longer clears this, and nothing
+    // of the last user (their invites, or one just made) shows under the
+    // next one; a closed dialog drops the shown invite at once.
+    setBusy(false);
+    setInvites([]);
+    setMinted(null);
+    setCopied(false);
+    setLabel("");
+    setError(null);
+    if (!open) return;
     void reload();
   }, [open, reload]);
 
@@ -89,6 +101,7 @@ export function AddBranchDialog({ open, onClose, userId, userLabel }: AddBranchD
   }, [open, onClose]);
 
   async function onMint() {
+    const mine = lifetime.current;
     setBusy(true);
     setError(null);
     setCopied(false);
@@ -97,12 +110,16 @@ export function AddBranchDialog({ open, onClose, userId, userLabel }: AddBranchD
         user_id: userId,
         label: label.trim() || undefined,
       });
+      // Closed (or reopened for someone else) while minting: the invite
+      // stays outstanding in that user's list, but is not shown here.
+      if (lifetime.current !== mine) return;
       setMinted({ url: body.url, expiresAt: body.link.expires_at });
       await reload();
     } catch (err) {
+      if (lifetime.current !== mine) return;
       setError(joinErrorMessage(err, "Could not make an invite."));
     } finally {
-      setBusy(false);
+      if (lifetime.current === mine) setBusy(false);
     }
   }
 
@@ -117,15 +134,18 @@ export function AddBranchDialog({ open, onClose, userId, userLabel }: AddBranchD
   }
 
   async function onRevoke(linkId: string) {
+    const mine = lifetime.current;
     setBusy(true);
     setError(null);
     try {
       await revokeBranchInvite(linkId);
+      if (lifetime.current !== mine) return;
       await reload();
     } catch (err) {
+      if (lifetime.current !== mine) return;
       setError(joinErrorMessage(err, "Could not revoke the invite."));
     } finally {
-      setBusy(false);
+      if (lifetime.current === mine) setBusy(false);
     }
   }
 

@@ -23,7 +23,7 @@ A fresh install (no Owner or Administrator yet, and no library joined)
 opens, for its operator, a welcome screen with two choices:
 
 - **Start a new library**: today's first run. Settings → User management
-  sets up the first administrator, and you carry on as before.
+  sets up the first Owner, and you carry on as before.
 - **Join a library**: the wizard below. The install keeps its own operator,
   its own database and its own consent screen, and does not need local
   users first.
@@ -179,13 +179,14 @@ resuming any job it still holds.
 The library deploys plugin instances to the branch like to any node, but
 the branch's daemon spawns none of them until its operator approves. Each
 deployed plugin shows up as a **request**: the version the owner wants to
-run and what that version asks for (network mode and domains, TCP targets,
+run, what that version asks for (network mode and domains, TCP targets,
 address ranges, host bindings such as `config`, `secrets` or `kv`, and
-memory/CPU/disk budgets).
+memory/CPU/disk budgets), the archive URL and digest this host would fetch,
+and a `request_digest` covering all of it.
 
 ```bash
 bookclerk clusters consents [--cluster <id>]
-bookclerk clusters approve <plugin_key> --version 1.2.0 \
+bookclerk clusters approve <plugin_key> --request <request_digest> \
     [--deny-domain cdn.store.example]... [--deny-binding secrets]... [--deny-network]
 bookclerk clusters revoke <plugin_key>
 ```
@@ -199,7 +200,7 @@ operator-only:
 | Route | Body |
 | --- | --- |
 | `GET /api/config/cluster-consents` | → `{clusters, consents}` (links carry ids, origin, state and whether they are pinned; never keys) |
-| `POST /api/config/cluster-consents/approve` | `{cluster_id, plugin_key, version, deny_domains?, deny_bindings?, deny_network?}` |
+| `POST /api/config/cluster-consents/approve` | `{cluster_id, plugin_key, request_digest, deny_domains?, deny_bindings?, deny_network?}` |
 | `POST /api/config/cluster-consents/revoke` | `{cluster_id, plugin_key}` |
 
 Rules:
@@ -207,9 +208,10 @@ Rules:
 - **Only what is asked for can be approved.** Denying a domain or binding
   the request does not ask for is refused (`409 approval_refused`, with the
   reason in `detail`).
-- **The version you reviewed.** `--version` (the UI always sends it) makes
-  the approval a compare-and-swap: if the owner has since moved to another
-  version, the approval is refused rather than applied unseen.
+- **The request you reviewed.** `--request` (the UI always sends it) makes
+  the approval a compare-and-swap: if the owner has since changed the
+  request (another version, grant or archive), the approval is refused
+  rather than applied unseen.
 - **Asking for more waits again.** A later version that asks for anything
   outside what was approved (a domain, TCP target, address range, binding,
   compatibility flag, entrypoint, a larger budget, or network at all) is
@@ -251,6 +253,22 @@ owner destination, so each destination's file names come out exactly as a
 local acquire on the owner would name them. It then **uploads** the title
 (below). The host also keeps a best-effort copy of each title in its own
 deployed destinations.
+
+## Asking the owner for a scan
+
+```bash
+bookclerk clusters scan [--cluster <id>] [--account <id>] [--instance <id>] [--no-wait]
+```
+
+The host's operator asks the owner cluster, through this install's running
+daemon and its link (`POST /api/config/clusters/{cluster_id}/scan`, a
+`scan.request` frame), to queue a scan. It runs as the user who owns this
+node: an Owner or Administrator scanning every account gets one job per
+scan-enabled account, spread over every owner node and host trusted with
+each; anyone else scans only their own accounts, and a named account that
+is not theirs is refused (403). A node trusted with nothing (no owner, a
+disabled owner, revoked) is refused. The command then polls the jobs
+(`job.status`), which shows only jobs this node would be trusted to claim.
 
 ## Uploads
 
@@ -410,6 +428,8 @@ request is answered by a frame with the same `id`. Both sides ping every
 | `catalog.sync {fence, batch, cursor, done, titles}` | `catalog.accepted {batch, upserted, skipped, wanted}`, or `lost` |
 | `catalog.upload {fence, store, product_id, files}` | `upload.granted` (then the upload routes above, job id `catalog`) |
 | `node.leaving` | `accepted`, then close 4403 (the node is revoked) |
+| `scan.request {account, plugin_instance_id}` | `scan.planned {created, duplicates, queue_full}`, or `error` `forbidden` / `invalid` |
+| `job.status {job_ids}` (at most 64) | `job.statuses {jobs}`: only jobs this node may claim |
 
 The owner also sends `wake` frames (deployment, install, placement,
 configuration and revocation changes), which the host acks. Secrets are
@@ -423,7 +443,7 @@ The web UI holds one WebSocket to `GET /api/live` (subprotocol
 `bookclerk-live.v1`) and re-reads a panel's ordinary routes when the daemon
 says its topic changed, instead of polling on timers. The socket carries
 topic names only (`library`, `jobs`, `deliveries`, `nodes`, `config`,
-`consents`, `users`), never rows, ids or secrets:
+`consents`, `clusters`, `users`), never rows, ids or secrets:
 
 ```json
 {"v":1,"type":"hello","topics":["jobs","nodes"]}
@@ -441,8 +461,10 @@ topic names only (`library`, `jobs`, `deliveries`, `nodes`, `config`,
   session is re-checked every 30 s, and a signed-out user's socket closes
   with 4401.
 - Changes are found by reading revisions from the shared database every
-  2 s (so a change made on any owner node is seen) and by in-process
-  notices for immediate updates. The client sends nothing; a binary frame
+  2 s (so a change made on any owner node, or by `bookclerk clusters
+  join|leave`, is seen) and by in-process notices for immediate updates.
+  The first read is taken before `hello`, so nothing written after the
+  client hears `hello` is missed. The client sends nothing; a binary frame
   closes the socket.
 - While the socket is down, the UI polls as it used to and reconnects with
   backoff (1 s up to 30 s, jittered). Behind a reverse proxy, forward the

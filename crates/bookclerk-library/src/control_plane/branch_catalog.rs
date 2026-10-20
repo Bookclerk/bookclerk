@@ -44,7 +44,9 @@ use serde::Serialize;
 use super::batch::{self, exec, request, text, text_opt};
 use super::enrollment::load_node_credential;
 use super::trust::accounts_owned_by;
-use super::uploads::{open_upload_session, UploadGrant, UploadGrantRequest, UploadSession};
+use super::uploads::{
+    open_upload_session, UploadDestination, UploadGrant, UploadGrantRequest, UploadSession,
+};
 use crate::entities::{books, branch_titles, nodes, users};
 use crate::error::{LibraryError, Result};
 use crate::models::UserStatus;
@@ -651,12 +653,29 @@ pub async fn grant_catalog_upload(
     if keys_in_use(store, &row.uuid, &row.primary_key, &keys).await? {
         return Ok(UploadGrant::Refused("key_in_use"));
     }
+    // The branch's own keys are the title's scope on every destination:
+    // the folders they lie in, each key checked against the recorded
+    // manifest above (and claimed for this upload when it opens).
+    let title_folders: Vec<String> = declared
+        .keys()
+        .map(|key| key.rsplit_once('/').map_or("", |(dir, _)| dir).to_string())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let scoped: Vec<UploadDestination> = destinations
+        .iter()
+        .map(|id| UploadDestination {
+            id: id.clone(),
+            title_folders: title_folders.clone(),
+            title_names: None,
+        })
+        .collect();
     let request = UploadGrantRequest {
         book_uuid: &row.uuid,
         primary_key: &row.primary_key,
         pdf_key: row.pdf_key.as_deref(),
         files,
-        destinations,
+        destinations: &scoped,
     };
     open_upload_session(
         store,

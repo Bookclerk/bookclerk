@@ -9,6 +9,7 @@ import { canChangeBranchSharing } from "@/lib/join";
 import { ClusterConsentsPanel } from "@/components/ClusterConsentsPanel";
 import { NodesPanel } from "@/components/NodesPanel";
 import { OidcSettingsPanel } from "@/components/OidcSettingsPanel";
+import { OutputSettingsPanel } from "@/components/OutputSettingsPanel";
 import { PlacementBadge, PlacementPanel } from "@/components/PlacementPanel";
 import { UserManagementPanel } from "@/components/UserManagementPanel";
 import {
@@ -71,6 +72,7 @@ export type SettingsTab =
   | "signin"
   | "server"
   | "plugins"
+  | "output"
   | "nodes"
   | "branches"
   | "clusters";
@@ -536,7 +538,10 @@ export function SettingsPage({
     if (!showSignInSettings && (activeTab === "signin" || activeTab === "branches")) {
       setActiveTab("account");
     }
-    if (!showOperatorChrome && (activeTab === "server" || activeTab === "plugins")) {
+    if (
+      !showOperatorChrome &&
+      (activeTab === "server" || activeTab === "plugins" || activeTab === "output")
+    ) {
       setActiveTab("account");
     }
     if (!showLibrary && activeTab === "clusters") {
@@ -1268,7 +1273,7 @@ export function SettingsPage({
             <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">Settings</h1>
             <p className="text-sm text-ink/60">
               {showOperatorChrome
-                ? "Account, users, sign-in providers, daemon, and plugin knobs for this server."
+                ? "Account, users, sign-in providers, daemon, output packaging, and plugin knobs for this server."
                 : showSignInSettings
                   ? "Account security, user management, and sign-in providers."
                   : showUserAdmin
@@ -1357,6 +1362,20 @@ export function SettingsPage({
                   onClick={() => setActiveTab("plugins")}
                 >
                   Plugins
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === "output"}
+                  className={cn(
+                    "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                    activeTab === "output"
+                      ? "bg-ink text-paper shadow-sm"
+                      : "text-ink/60 hover:text-ink",
+                  )}
+                  onClick={() => setActiveTab("output")}
+                >
+                  Output
                 </button>
               </>
             ) : null}
@@ -1472,6 +1491,10 @@ export function SettingsPage({
 
         {activeTab === "nodes" && showNodes ? (
           <NodesPanel onSessionExpired={onSessionExpired} />
+        ) : null}
+
+        {activeTab === "output" && showOperatorChrome ? (
+          <OutputSettingsPanel onSessionExpired={onSessionExpired} />
         ) : null}
 
         {activeTab === "clusters" && showLibrary ? (

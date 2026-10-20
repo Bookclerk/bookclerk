@@ -64,7 +64,7 @@ export function WelcomeScreen({ defaultBranchName, onStartNew, onJoined }: Welco
         >
           <span className="block font-semibold text-ink">Start a new library</span>
           <span className="block text-sm text-ink/60">
-            Set up the first administrator, then add your store accounts.
+            Set up the first Owner, then add your store accounts.
           </span>
         </button>
         <button

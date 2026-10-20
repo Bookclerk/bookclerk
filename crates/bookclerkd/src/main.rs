@@ -15,6 +15,7 @@ mod job_handler;
 mod job_worker;
 mod jobs;
 mod live;
+mod maintenance;
 mod node_api;
 mod node_queue;
 mod oidc;
@@ -27,11 +28,11 @@ mod plugin_installs;
 mod profile;
 /// Builds the daemon source / integration registry for [`AppState`].
 mod registry;
+mod requirements_sweep;
 mod scheduler;
 mod totp;
 mod tray_companion;
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -133,9 +134,10 @@ async fn main() -> anyhow::Result<()> {
         node_id = %control_plane.node.node_id,
         cluster_id = %control_plane.cluster_id,
         events_revision = control_plane.events.revision,
+        output_revision = control_plane.output.revision,
         enrolled = enrolled.len(),
         present = present.len(),
-        "enrolled control plane; core.events and plugin deployments are database-authoritative"
+        "enrolled control plane; core.events, core.output, and plugin deployments are database-authoritative"
     );
     // Guests are the deployment reconciler's: the registries start empty and
     // the first reconcile pass below brings every present deployment up
@@ -172,6 +174,8 @@ async fn main() -> anyhow::Result<()> {
         tray: RwLock::new(None),
         tray_handoff: Mutex::new(None),
         deployment_runtime: std::sync::OnceLock::new(),
+        node_api_tls_bound: std::sync::OnceLock::new(),
+        library_swaps: tokio::sync::watch::Sender::new(0),
     });
 
     bookclerk_plugin_host::spawn_grant_watcher(paths.files_dir.clone());
@@ -190,6 +194,8 @@ async fn main() -> anyhow::Result<()> {
     // This install as a host node of the owner clusters it enrolled into.
     cluster_link::spawn_cluster_links(state.clone());
     placement::spawn_placement_scheduler(state.clone());
+    maintenance::spawn_maintenance(state.clone());
+    requirements_sweep::spawn_requirements_sweep(state.clone());
     spawn_scheduler(state.clone());
     spawn_config_reload_signals(state.clone());
 
@@ -264,21 +270,17 @@ async fn main() -> anyhow::Result<()> {
 
         let mut set = tokio::task::JoinSet::new();
         for listener in listeners {
-            // The node API's transport policy needs both ends of a connection.
+            // The node API's transport policy needs both ends of each
+            // connection: the accepted socket's local address, which stays
+            // loopback for a same-machine client on a wildcard bind.
             let app = app.clone().layer(axum::Extension(node_api_gate.clone()));
-            let app = match listener.local_addr() {
-                Ok(local) => app.layer(axum::Extension(node_api::transport::LocalAddr(local))),
-                Err(_) => app,
-            };
+            let app = node_api::transport::ConnAddrsMakeService::new(app);
             let reload = listen_reload.clone();
             let shutdown_flag = process_shutdown.clone();
             set.spawn(async move {
-                axum::serve(
-                    listener,
-                    app.into_make_service_with_connect_info::<SocketAddr>(),
-                )
-                .with_graceful_shutdown(serve_shutdown(reload, shutdown_flag))
-                .await
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(serve_shutdown(reload, shutdown_flag))
+                    .await
             });
         }
 

@@ -133,6 +133,8 @@ async fn a_sign_in_joins_starts_the_client_and_leave_tells_the_owner() {
     let (owner_state, owner_store, origin, member) = owner(&owner_files).await;
     let host_files = tempfile::tempdir().unwrap();
     let (host_state, host_store) = crate::node_api::tests::test_state(&host_files).await;
+    // The supervisor a join wakes, as the daemon runs it.
+    super::super::spawn_cluster_links(Arc::clone(&host_state));
     let host = host_routes(&host_state);
 
     let (status, _, fresh) = call(&host, "GET", "/api/config/join", None).await;
@@ -362,6 +364,8 @@ async fn an_invite_joins_and_starts_at_once_and_a_closed_library_refuses() {
     let (owner_state, owner_store, origin, member) = owner(&owner_files).await;
     let host_files = tempfile::tempdir().unwrap();
     let (host_state, _host_store) = crate::node_api::tests::test_state(&host_files).await;
+    // The supervisor a join wakes, as the daemon runs it.
+    super::super::spawn_cluster_links(Arc::clone(&host_state));
     let host = host_routes(&host_state);
 
     let (status, _, refused) = call(

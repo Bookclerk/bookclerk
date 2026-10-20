@@ -44,7 +44,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use axum::Json;
 use bookclerk_library::control_plane::{
-    create_pending_join, list_cluster_links, take_pending_join, NewPendingJoin,
+    create_pending_join, finish_pending_join, list_cluster_links, open_pending_join, NewPendingJoin,
 };
 use bookclerk_node_client::{
     authorize_branch, inspect_library, join_cluster, redeem_branch_code, refuse_cycle,
@@ -60,6 +60,29 @@ use crate::api::AppState;
 use crate::auth::UserCaller;
 use crate::node_api::branch::no_store;
 use crate::node_api::branch::require_branch_admin;
+
+/// Where the library sends the browser back after consent: the browser's
+/// own origin when it is a loopback one (`http://127.0.0.1:8787` stays as
+/// typed, so the operator's host-only session cookie is sent on return),
+/// else this daemon's public origin. The shared origin helper rewrites a
+/// loopback IP to `localhost`, a different site for cookies.
+fn callback_origin(cfg: &bookclerk_config::Config, headers: &HeaderMap) -> String {
+    let loopback_browser = crate::origin::request_origin(headers).filter(|origin| {
+        url::Url::parse(origin).is_ok_and(|url| {
+            url.scheme() == "http"
+                && match url.host() {
+                    Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+                    Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+                    Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
+                    None => false,
+                }
+                && url.path() == "/"
+                && url.query().is_none()
+        })
+    });
+    loopback_browser
+        .unwrap_or_else(|| crate::origin::effective_origin_from_config(cfg, Some(headers)))
+}
 
 /// A JSON error answer.
 fn join_error(status: StatusCode, error: &str, detail: &str) -> Response {
@@ -103,6 +126,16 @@ fn join_failed(err: &JoinError) -> Response {
             "join_cycle",
             "that library is this library or one of its own branches; joining it would make a loop",
         ),
+        // Enrolled on the library but not saved here: the invite is spent,
+        // and the message says what the owner has to revoke.
+        JoinError::Unsaved { .. } => {
+            join_error(StatusCode::BAD_GATEWAY, "join_unsaved", &err.to_string())
+        }
+        // Only a sign-in's redeem gives this, and it is retried
+        // (`JoinError::is_retryable`) before it gets here.
+        JoinError::SaveFailed { .. } => {
+            join_error(StatusCode::BAD_GATEWAY, "join_failed", &err.to_string())
+        }
     }
 }
 
@@ -149,7 +182,10 @@ pub async fn get_join_status(State(state): State<Arc<AppState>>) -> Response {
             .iter()
             .map(|link| {
                 let mut value = link_json(link);
-                value["running"] = json!(super::is_link_running(&link.owner_cluster_id));
+                value["running"] = json!(super::is_node_running(
+                    &link.owner_cluster_id,
+                    &link.remote_node_id
+                ));
                 value
             })
             .collect::<Vec<_>>(),
@@ -237,7 +273,7 @@ pub async fn post_join_start(
         let cfg = state.config.read().await;
         format!(
             "{}{JOIN_CALLBACK_PATH}",
-            crate::origin::effective_origin_from_config(&cfg, Some(&headers)).trim_end_matches('/')
+            callback_origin(&cfg, &headers).trim_end_matches('/')
         )
     };
     let authorization = match authorize_branch(&library, &redirect_uri, &branch_name) {
@@ -296,14 +332,43 @@ pub struct CallbackBody {
     error: Option<String>,
 }
 
-/// `POST /api/config/join/callback`.
+/// Serializes sign-in callbacks, so two attempts for one sign-in (a retry
+/// racing the first, or a page loaded twice) never redeem at once.
+static CALLBACKS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// How long a join waits on the library to redeem: longer than one connect
+/// attempt (`bookclerk_node_client` dials each address for up to 10 s) plus
+/// TLS, so one dead address does not fail every redeem. With [`CALLBACK_WAIT`]
+/// and [`super::START_NOW_TIMEOUT`] it stays under the API deadline for
+/// joins (`api::api_timeout_for_path`), so a slow library is answered as a
+/// retry rather than cut off.
+const REDEEM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// How long a sign-in callback waits for another one to finish its redeem.
+const CALLBACK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// `POST /api/config/join/callback`: redeems the library's code with the
+/// sign-in's sealed verifier and keys. The pending sign-in is kept when the
+/// redeem fails for a reason a retry can fix (answered as 502
+/// `join_retry`; the page offers Try again with the same code), and ended
+/// on success, refusal, or anything else.
 pub async fn post_join_callback(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CallbackBody>,
 ) -> Response {
     let code = Zeroizing::new(body.code);
+    let sign_in = body.state.trim();
     let store = state.library_snapshot().await;
-    let Some(taken) = (match take_pending_join(&store, body.state.trim()).await {
+    // A callback waiting on another sign-in's redeem answers as a retry
+    // rather than run past the API deadline.
+    let Ok(one_at_a_time) = tokio::time::timeout(CALLBACK_WAIT, CALLBACKS.lock()).await else {
+        return join_error(
+            StatusCode::BAD_GATEWAY,
+            "join_retry",
+            "another sign-in is finishing; try again",
+        );
+    };
+    let Some(taken) = (match open_pending_join(&store, sign_in).await {
         Ok(taken) => taken,
         Err(err) => return crate::config_authority::events_error(err),
     }) else {
@@ -313,7 +378,13 @@ pub async fn post_join_callback(
             "this sign-in is unknown, already used, or took longer than 10 minutes; start again",
         );
     };
+    let finish = || async {
+        if let Err(err) = finish_pending_join(&store, sign_in).await {
+            tracing::warn!(error = %err, "could not delete a finished sign-in; it expires on its own");
+        }
+    };
     if let Some(error) = body.error.as_deref() {
+        finish().await;
         let detail = if error == "access_denied" {
             "the library's user did not let this branch join"
         } else {
@@ -324,26 +395,55 @@ pub async fn post_join_callback(
     if code.trim().is_empty() {
         return join_error(StatusCode::BAD_REQUEST, "invalid_request", "no code");
     }
-    let joined = redeem_branch_code(
-        &store,
-        &BranchRedeem {
-            origin: &taken.join.owner_origin,
-            spki_pin: taken.join.spki_pin.as_deref(),
-            cluster_id: &taken.join.owner_cluster_id,
-            code: code.trim(),
-            verifier: &taken.verifier,
-            redirect_uri: &taken.join.redirect_uri,
-            branch_name: &taken.join.branch_name,
-            software_version: env!("CARGO_PKG_VERSION"),
-        },
-        &taken.keys,
+    let joined = tokio::time::timeout(
+        REDEEM_TIMEOUT,
+        redeem_branch_code(
+            &store,
+            &BranchRedeem {
+                origin: &taken.join.owner_origin,
+                spki_pin: taken.join.spki_pin.as_deref(),
+                cluster_id: &taken.join.owner_cluster_id,
+                code: code.trim(),
+                verifier: &taken.verifier,
+                redirect_uri: &taken.join.redirect_uri,
+                branch_name: &taken.join.branch_name,
+                software_version: env!("CARGO_PKG_VERSION"),
+            },
+            &taken.keys,
+        ),
     )
     .await;
+    // The redeem registered both for redaction; this daemon outlives many
+    // joins, and nothing logs them past this point (the answer echoes the
+    // error to the browser that sent the code).
+    bookclerk_config::unregister_secret(code.trim());
+    bookclerk_config::unregister_secret(taken.verifier.as_str());
     drop(taken.verifier);
+    let Ok(joined) = joined else {
+        // Answer before the API deadline does, so the page can offer Try
+        // again with the sign-in still pending.
+        return join_error(
+            StatusCode::BAD_GATEWAY,
+            "join_retry",
+            "the library did not answer in time; try again",
+        );
+    };
     let link = match joined {
         Ok(link) => link,
-        Err(err) => return join_failed(&err),
+        Err(err) if err.is_retryable() => {
+            return join_error(
+                StatusCode::BAD_GATEWAY,
+                "join_retry",
+                &format!("{err}; try again"),
+            )
+        }
+        Err(err) => {
+            finish().await;
+            return join_failed(&err);
+        }
     };
+    finish().await;
+    drop(one_at_a_time);
     let running = super::start_link_now(&state, &link.owner_cluster_id).await;
     Json(json!({
         "cluster": link_json(&link),
@@ -362,15 +462,56 @@ pub struct InviteBody {
 }
 
 /// `POST /api/config/join/invite`: join with a pasted branch invite. The
-/// link is redeemed once and dropped; it is never logged or echoed.
+/// link is redeemed once and dropped; it is never logged or echoed. A
+/// library slower than [`REDEEM_TIMEOUT`] is answered 504 `join_pending`
+/// while the join carries on and starts its client when it lands.
 pub async fn post_join_invite(
     State(state): State<Arc<AppState>>,
     Json(body): Json<InviteBody>,
 ) -> Response {
     let link_text = Zeroizing::new(body.link);
     let store = state.library_snapshot().await;
-    let joined = join_cluster(&store, &link_text, env!("CARGO_PKG_VERSION")).await;
-    drop(link_text);
+    // The invite is spent once the library has it, and the node keys exist
+    // only in this exchange, so the join runs on its own task: a slow
+    // library, or a request cut short, does not drop it half way.
+    let mut joining = tokio::spawn(async move {
+        let joined = join_cluster(&store, &link_text, env!("CARGO_PKG_VERSION")).await;
+        drop(link_text);
+        joined
+    });
+    let joined = match tokio::time::timeout(REDEEM_TIMEOUT, &mut joining).await {
+        Ok(Ok(joined)) => joined,
+        Ok(Err(_)) => {
+            return join_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "join_failed",
+                "the join stopped unexpectedly",
+            )
+        }
+        Err(_) => {
+            // Start the link's client once the join lands.
+            let state = Arc::clone(&state);
+            // The page has already answered, so a join that fails after
+            // all is reported in this daemon's log.
+            tokio::spawn(async move {
+                match joining.await {
+                    Ok(Ok(link)) => {
+                        super::start_link_now(&state, &link.owner_cluster_id).await;
+                    }
+                    Ok(Err(err)) => {
+                        tracing::warn!(error = %err, "a slow invite join failed");
+                    }
+                    Err(err) => tracing::warn!(error = %err, "a slow invite join stopped"),
+                }
+            });
+            return join_error(
+                // Not a success: the page shows the detail, not a link.
+                StatusCode::GATEWAY_TIMEOUT,
+                "join_pending",
+                "the library is slow to answer; this branch keeps joining and appears under Libraries once it has (if it never does, this install's log says why)",
+            );
+        }
+    };
     let link = match joined {
         Ok(link) => link,
         Err(JoinError::Link(_)) => {
@@ -394,12 +535,23 @@ pub struct LeaveBody {
     cluster_id: String,
 }
 
-/// `POST /api/config/join/leave`: Leave library.
+/// `POST /api/config/join/leave`: Leave library. The leave runs on its own
+/// task, so a request cut short (the client gone, or the API deadline)
+/// still records it once the library has been told.
 pub async fn post_join_leave(
     State(state): State<Arc<AppState>>,
     Json(body): Json<LeaveBody>,
 ) -> Response {
-    match super::leave_link(&state, body.cluster_id.trim()).await {
+    let cluster_id = body.cluster_id.trim().to_string();
+    let leaving = tokio::spawn(async move { super::leave_link(&state, &cluster_id).await });
+    let Ok(left) = leaving.await else {
+        return join_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "leave_failed",
+            "the leave stopped before it finished; check the library list",
+        );
+    };
+    match left {
         Ok(Some((link, notified))) => {
             tracing::info!(
                 cluster_id = %link.owner_cluster_id,

@@ -25,8 +25,8 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_node_proto::{
-    canonical_origin, is_branch_name, is_branch_redirect_uri, pkce_challenge, Body,
-    OAuthEnrollRequest, OwnerInfo, AUTHORIZE_PATH, BRANCH_CLIENT_ID, BRANCH_SCOPE,
+    canonical_origin, is_branch_name, is_branch_redirect_uri, is_library_name, pkce_challenge,
+    Body, OAuthEnrollRequest, OwnerInfo, AUTHORIZE_PATH, BRANCH_CLIENT_ID, BRANCH_SCOPE,
     ENROLL_OAUTH_PATH, INFO_PATH,
 };
 use rand::RngCore as _;
@@ -119,7 +119,9 @@ pub async fn inspect_library(address: &str) -> Result<InspectedLibrary, JoinErro
     if named != origin {
         return Err(JoinError::OriginMismatch { origin: named });
     }
-    if !is_branch_name(&info.library_name) || info.cluster_id.trim().is_empty() {
+    // The library is named by its public host: a DNS name, longer than a
+    // branch name may be.
+    if !is_library_name(&info.library_name) || info.cluster_id.trim().is_empty() {
         return Err(JoinError::Record("malformed library info".into()));
     }
     Ok(InspectedLibrary {
@@ -252,14 +254,23 @@ fn http_error(status: u16, body: &[u8]) -> JoinError {
 ///
 /// # Errors
 ///
-/// Returns [`JoinError`] when the library is unreachable or refuses, it
-/// answers for another cluster, or the local write fails.
+/// Returns [`JoinError`] when the library is unreachable or refuses; once
+/// the library has enrolled a node, a malformed answer or one for another
+/// cluster gives [`JoinError::Unsaved`], which names that node so it can be
+/// revoked there, as does a link this install refuses to record. A failed
+/// database or disk write gives [`JoinError::SaveFailed`] (redeeming the
+/// same code again with the same verifier and keys gets the same node, so
+/// that one can be retried).
 pub async fn redeem_branch_code(
     store: &LibraryStore,
     redeem: &BranchRedeem<'_>,
     keys: &ClusterLinkKeys,
 ) -> Result<ClusterLink, JoinError> {
     let endpoint = OwnerEndpoint::new(redeem.origin, redeem.spki_pin)?;
+    // An answer (or an error string from the library) that echoes either
+    // value is redacted wherever it is logged.
+    bookclerk_config::register_secret(redeem.code);
+    bookclerk_config::register_secret(redeem.verifier);
     // Checked again before the code is spent: the library's ancestry may
     // have changed since the operator started.
     let ancestry = crate::enroll::check_join_ancestry(store, &endpoint).await?;
@@ -281,13 +292,21 @@ pub async fn redeem_branch_code(
     if status != 200 {
         return Err(http_error(status, &answer));
     }
-    let enrolled: Enrolled = serde_json::from_slice(&answer)
-        .map_err(|_| JoinError::Record("malformed enroll answer".into()))?;
+    // From here the library has enrolled a node: a failure names it, so the
+    // operator knows which node to have revoked there.
+    let enrolled: Enrolled = serde_json::from_slice(&answer).map_err(|_| JoinError::Unsaved {
+        node_id: serde_json::from_slice::<serde_json::Value>(&answer)
+            .ok()
+            .and_then(|value| value.get("node_id")?.as_str().map(str::to_string)),
+        reason: "malformed enroll answer".into(),
+    })?;
     if enrolled.cluster_id != redeem.cluster_id {
-        return Err(JoinError::Record(
-            "the library answered for another cluster".into(),
-        ));
+        return Err(JoinError::Unsaved {
+            node_id: Some(enrolled.node_id),
+            reason: "the library answered for another cluster".into(),
+        });
     }
+    let node_id = enrolled.node_id.clone();
     let mut recorded = record_cluster_link(
         store,
         &NewClusterLink {
@@ -299,7 +318,22 @@ pub async fn redeem_branch_code(
         keys,
     )
     .await
-    .map_err(|err| JoinError::Record(err.to_string()))?;
+    .map_err(|err| match err {
+        // A database or disk hiccup: the library answers a repeat of this
+        // exchange with the same node, so a retry can finish the join.
+        bookclerk_library::LibraryError::Orm(_) | bookclerk_library::LibraryError::Io(_) => {
+            JoinError::SaveFailed {
+                node_id,
+                reason: err.to_string(),
+            }
+        }
+        // Anything else (an answer this install refuses to record, no
+        // master key) fails the same way every time.
+        _ => JoinError::Unsaved {
+            node_id: Some(node_id),
+            reason: err.to_string(),
+        },
+    })?;
     crate::enroll::record_ancestry(store, &mut recorded, &ancestry).await;
     tracing::info!(
         cluster_id = %recorded.owner_cluster_id,
@@ -343,6 +377,8 @@ pub async fn announce_leaving(
         incarnation: uuid_like(),
         max_jobs: 0,
         claim_kinds: Vec::new(),
+        // It claims nothing, so nothing waits for a deployments re-read.
+        claims_after_refresh: false,
         timing: ClientTiming {
             request_timeout: timeout,
             ..ClientTiming::default()

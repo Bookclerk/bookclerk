@@ -14,6 +14,7 @@ mod kind;
 mod ledger;
 mod manifest;
 mod mutation_lock;
+mod owner_fetch;
 mod payload;
 mod receipt;
 mod target;
@@ -54,6 +55,7 @@ pub use manifest::{
     MANIFEST_SCHEMA_VERSION, PROTOCOL_WORKERS_RPC,
 };
 pub use mutation_lock::{acquire_plugins_lock, PluginMutationLock, PLUGIN_MUTATION_LOCK_FILE};
+pub use owner_fetch::{check_owner_artifact_url, fetch_owner_artifact};
 pub use payload::{manifest_sha256, payload_root_sha256, PAYLOAD_SKIP_NAMES};
 pub use receipt::{InstallReceipt, RECEIPT_FILE};
 pub use target::{

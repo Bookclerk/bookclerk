@@ -38,13 +38,63 @@ pub enum JoinError {
         /// The answer's `error` code.
         error: String,
     },
-    /// The owner's answer or the local write failed.
+    /// The enroll request could not be built, or the library's `info`
+    /// (its ancestry) could not be read.
     #[error("enrollment could not be recorded: {0}")]
     Record(String),
     /// The library is this one, or one of its own branches (its ancestry
     /// names this library): joining it would make a cycle.
     #[error("that library is this library or one of its branches; joining it would make a loop")]
     Cycle,
+    /// The library accepted the join (an invite link or a sign-in code),
+    /// but its answer did not parse or the local write failed. The one-use
+    /// credential is spent and the node keys are gone, so this install
+    /// cannot use the node the library minted: its owner removes that node
+    /// (named when the answer said which) and this install joins again.
+    #[error(
+        "the library enrolled this host{} but it could not be saved here ({reason}); \
+         ask the library's owner to remove that node, then join again",
+        node_id.as_deref().map(|id| format!(" as node {id}")).unwrap_or_default()
+    )]
+    Unsaved {
+        /// The node id the owner minted, when its answer named one.
+        node_id: Option<String>,
+        /// What failed.
+        reason: String,
+    },
+    /// A sign-in's code was redeemed and the library enrolled this host,
+    /// but the local write failed. The library answers a repeat of the
+    /// same exchange (code, verifier, keys) with the same node, so a retry
+    /// with the sign-in still pending can finish the join.
+    #[error(
+        "the library enrolled this host as node {node_id} but it could not be saved here ({reason})"
+    )]
+    SaveFailed {
+        /// The node id the library minted.
+        node_id: String,
+        /// What failed.
+        reason: String,
+    },
+}
+
+impl JoinError {
+    /// True for a sign-in redeem failure that a repeat of the same exchange
+    /// (code, verifier, keys) can fix: the library unreachable (its answer
+    /// may have been lost after it enrolled the node, which a repeat gets
+    /// again), busy, or the local write failed.
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            // A bad address, an insecure transport, or a certificate that
+            // does not match fails the same way on every try.
+            Self::Dial(DialError::Insecure(_) | DialError::Invalid(_) | DialError::Tls(_)) => false,
+            Self::Dial(DialError::Refused(status)) | Self::Http { status, .. } => {
+                *status >= 500 || *status == 429
+            }
+            Self::Dial(_) | Self::SaveFailed { .. } => true,
+            _ => false,
+        }
+    }
 }
 
 /// Largest `info` answer read.
@@ -176,8 +226,13 @@ pub async fn join_cluster(
         }
         return Err(JoinError::Http { status, error });
     }
-    let enrolled: Enrolled = serde_json::from_slice(&answer)
-        .map_err(|_| JoinError::Record("malformed enroll answer".into()))?;
+    let enrolled: Enrolled = serde_json::from_slice(&answer).map_err(|_| JoinError::Unsaved {
+        node_id: serde_json::from_slice::<serde_json::Value>(&answer)
+            .ok()
+            .and_then(|value| value.get("node_id")?.as_str().map(str::to_string)),
+        reason: "malformed enroll answer".into(),
+    })?;
+    let node_id = enrolled.node_id.clone();
     let mut recorded = record_cluster_link(
         store,
         &NewClusterLink {
@@ -189,7 +244,10 @@ pub async fn join_cluster(
         &keys,
     )
     .await
-    .map_err(|err| JoinError::Record(err.to_string()))?;
+    .map_err(|err| JoinError::Unsaved {
+        node_id: Some(node_id),
+        reason: err.to_string(),
+    })?;
     record_ancestry(store, &mut recorded, &ancestry).await;
     tracing::info!(
         cluster_id = %recorded.owner_cluster_id,

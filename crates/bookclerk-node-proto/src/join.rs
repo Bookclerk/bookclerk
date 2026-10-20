@@ -45,6 +45,10 @@ pub const BRANCH_CODE_TTL_SECS: i64 = 60;
 /// Longest branch name sent.
 pub const MAX_BRANCH_NAME_BYTES: usize = 64;
 
+/// Longest library name accepted: a library is named by its public host,
+/// and a DNS name runs to 253 bytes.
+pub const MAX_LIBRARY_NAME_BYTES: usize = 253;
+
 /// `GET /api/node/v1/info` answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnerInfo {
@@ -137,6 +141,15 @@ pub fn is_branch_redirect_uri(raw: &str) -> bool {
         },
         _ => false,
     }
+}
+
+/// True for a library name: 1 to [`MAX_LIBRARY_NAME_BYTES`] bytes, no
+/// control characters.
+#[must_use]
+pub fn is_library_name(name: &str) -> bool {
+    !name.trim().is_empty()
+        && name.len() <= MAX_LIBRARY_NAME_BYTES
+        && !name.chars().any(char::is_control)
 }
 
 /// True for a branch name: 1 to [`MAX_BRANCH_NAME_BYTES`] bytes, no control

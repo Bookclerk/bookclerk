@@ -18,11 +18,26 @@ pub struct Model {
     pub requested_version: String,
     /// The owner's approved grant (JSON) for that version.
     pub requested_grant_json: String,
+    /// URL of the archive the owner deploys to this host (the artifact for
+    /// this host's target).
+    pub requested_artifact_url: String,
+    /// SHA-256 of that archive, as the owner states it.
+    pub requested_artifact_sha256: String,
+    /// Payload-root digest of the tree that archive unpacks to, as the
+    /// owner states it (the `plugins/.versions/<digest>` cache key).
+    pub requested_artifact_payload_sha256: String,
     /// Version this install's operator approved; `None` until approved.
     pub version: Option<String>,
     /// The owner's grant as it stood when the operator approved; a later
     /// request outside it needs approval again.
     pub approved_request_json: Option<String>,
+    /// The archive URL as it stood when the operator approved; another URL
+    /// needs approval again.
+    pub approved_artifact_url: Option<String>,
+    /// The archive SHA-256 as it stood when the operator approved.
+    pub approved_artifact_sha256: Option<String>,
+    /// The payload-root digest as it stood when the operator approved.
+    pub approved_artifact_payload_sha256: Option<String>,
     /// The grant this install's operator consented to (JSON), never wider
     /// than `approved_request_json`.
     pub grant_json: Option<String>,
@@ -31,6 +46,10 @@ pub struct Model {
     /// Audit identity of the approver (`platform` for an automatic
     /// approval of a bundled platform plugin).
     pub approved_by: Option<String>,
+    /// RFC 3339 time this install's operator revoked the approval; while
+    /// set, no automatic approval is given (only an operator approval
+    /// clears it).
+    pub revoked_at: Option<String>,
     /// RFC 3339 time of the last write.
     pub updated_at: String,
 }

@@ -1223,10 +1223,22 @@ fn ensure_host_journal_dir(paths: &HostJournalPaths) -> std::io::Result<()> {
 /// The next session plan retries every `acl-journals/session-*.json`. A live
 /// session has that file too, so the sweep skips one while this lock is held.
 /// The lock file is in that same host-only directory. Process exit releases it.
+///
+/// Drop unlocks explicitly before closing. Closing alone does not release a
+/// `flock`: the lock belongs to the open file description, and a sibling
+/// `Command::spawn` that forked while this file was open shares that
+/// description until its `exec` closes the `O_CLOEXEC` copy. Until then the
+/// session would still look live to the sweep.
 struct JournalOwnerLock {
     // Held open so the exclusive lock survives until this session drops.
     _file: std::fs::File,
     lock_path: PathBuf,
+}
+
+impl Drop for JournalOwnerLock {
+    fn drop(&mut self) {
+        let _ = fs4::FileExt::unlock(&self._file);
+    }
 }
 
 impl JournalOwnerLock {
@@ -1283,8 +1295,17 @@ impl JournalOwnerLock {
 /// lock. Do not acquire this twice in one process: a nested `flock` can
 /// deadlock or drop the outer lock on unlock. The session lock stays a
 /// non-blocking `try_lock`.
+///
+/// Drop unlocks explicitly for the same reason as [`JournalOwnerLock`]: a
+/// concurrent fork can still share the file description after close.
 struct JournalSweepLock {
     _file: std::fs::File,
+}
+
+impl Drop for JournalSweepLock {
+    fn drop(&mut self) {
+        let _ = fs4::FileExt::unlock(&self._file);
+    }
 }
 
 impl JournalSweepLock {

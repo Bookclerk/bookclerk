@@ -14,11 +14,12 @@ mod match_storage;
 mod naming;
 mod pipeline;
 mod reconcile;
+mod record;
 mod split;
 
 pub use convert::{convert_book, ConvertRequest, ConvertSummary};
 mod storage_scan;
-pub use destinations::{AcquireDestination, AcquireDestinations};
+pub use destinations::{destination_id, AcquireDestination, AcquireDestinations};
 pub use error::{AcquireError, Result};
 pub use match_storage::{
     match_storage_to_library, match_storage_using_index, MatchStorageOptions, MatchStorageSummary,
@@ -30,7 +31,9 @@ pub use naming::{
 };
 pub use pipeline::{
     acquire_book, acquire_book_indexed, acquire_pdf_only, planned_storage_key,
-    planned_storage_key_for, planned_storage_key_with_rules, AcquireRequest, AcquireResult,
+    planned_storage_key_for, planned_storage_key_with_rules, planned_title_folders,
+    planned_title_names, AcquireRequest, AcquireResult, PlannedTitleNames, NAME_WILDCARD,
+    NUMBER_WILDCARD,
 };
 pub use reconcile::{
     extract_asins_from_key, find_existing_for_book, find_existing_for_request, reconcile_library,

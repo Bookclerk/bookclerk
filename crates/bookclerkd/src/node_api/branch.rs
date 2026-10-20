@@ -117,9 +117,6 @@ pub async fn get_info(State(state): State<Arc<AppState>>, request: Request) -> R
 /// Largest `enroll/oauth` body.
 const MAX_OAUTH_ENROLL_BODY_BYTES: usize = 16 * 1024;
 
-/// Default node label when the branch sent no name.
-const DEFAULT_BRANCH_LABEL: &str = "branch";
-
 /// `POST /api/node/v1/enroll/oauth`: redeem an approved branch sign-in.
 /// Answers `{cluster_id, node_id}`; 403 `transport_insecure` for a refused
 /// connection, 403 `enrollment_refused` for a code that does not redeem
@@ -151,26 +148,29 @@ pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Requ
     if code.is_empty() || verifier.is_empty() {
         return enroll_error(StatusCode::FORBIDDEN, "enrollment_refused");
     }
-    let label = body.branch_name.trim();
-    let label = if is_branch_name(label) {
-        label
-    } else {
-        DEFAULT_BRANCH_LABEL
-    };
     let (link_id, secret) = authorized_enrollment_link(code, verifier);
     let library = state.library_snapshot().await;
-    match library.consume_oidc_auth_code(&hash_token(code)).await {
+    let code_hash = hash_token(code);
+    // The code is read, checked and its link recorded before the code is
+    // consumed: a failed write leaves the code for a retry of the same
+    // exchange, and a retry after the code is spent redeems the link the
+    // first attempt recorded.
+    match library.peek_oidc_auth_code(&code_hash).await {
         Ok(Some((client_id, user_id, redirect_uri, challenge, method, scope))) => {
+            let consented = consented_branch_name(&scope);
             let matches = client_id == BRANCH_CLIENT_ID
                 && redirect_uri == body.redirect_uri
                 && method == "S256"
-                && scope == BRANCH_SCOPE
+                && consented.is_some()
                 && constant_time_eq(pkce_challenge(verifier).as_bytes(), challenge.as_bytes());
-            if !matches {
+            let Some(label) = consented.filter(|_| matches) else {
                 tracing::warn!(
                     user_id,
                     "branch enrollment refused: the code does not match its exchange"
                 );
+                // A mismatched exchange spends the code, as a failed
+                // OAuth exchange does.
+                let _ = library.consume_oidc_auth_code(&code_hash).await;
                 let _ = library
                     .insert_security_audit_event(
                         &format!("user:{user_id}"),
@@ -179,8 +179,10 @@ pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Requ
                     )
                     .await;
                 return enroll_error(StatusCode::FORBIDDEN, "enrollment_refused");
-            }
-            match record_authorized_enrollment_link(&library, &link_id, &secret, user_id, label)
+            };
+            // The node is labelled with the name the user consented to,
+            // whatever the redeem body says.
+            match record_authorized_enrollment_link(&library, &link_id, &secret, user_id, &label)
                 .await
             {
                 Ok(()) => {}
@@ -194,6 +196,13 @@ pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Requ
                     tracing::warn!(error = %err, "branch enrollment could not record its link");
                     return enroll_error(StatusCode::SERVICE_UNAVAILABLE, "enrollment_unavailable");
                 }
+            }
+            // Consumed here or by a concurrent attempt of the same exchange
+            // (the only one whose verifier matches): either way the link is
+            // recorded and the redeem below is single-use.
+            if let Err(err) = library.consume_oidc_auth_code(&code_hash).await {
+                tracing::warn!(error = %err, "branch enrollment could not spend the code");
+                return enroll_error(StatusCode::SERVICE_UNAVAILABLE, "enrollment_unavailable");
             }
         }
         // Already consumed (or unknown): only a retry of the same exchange
@@ -212,6 +221,35 @@ pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Requ
         software_version: body.software_version,
     };
     redeem_answer(redeem_enrollment_link(&library, &request).await)
+}
+
+/// Marks the branch name kept in a branch code's stored scope.
+const CONSENTED_NAME_MARK: &str = " name:";
+
+/// The scope stored with a branch's authorization code: [`BRANCH_SCOPE`]
+/// and the branch name the user consented to (base64url), so the redeem
+/// enrolls the node under that name and not one the redeem body picks.
+fn consented_scope(branch_name: &str) -> String {
+    use base64::Engine as _;
+    format!(
+        "{BRANCH_SCOPE}{CONSENTED_NAME_MARK}{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(branch_name.as_bytes())
+    )
+}
+
+/// The consented branch name in a stored scope written by
+/// [`consented_scope`]; `None` for any other scope or a name that is not a
+/// valid branch name.
+fn consented_branch_name(scope: &str) -> Option<String> {
+    use base64::Engine as _;
+    let encoded = scope
+        .strip_prefix(BRANCH_SCOPE)?
+        .strip_prefix(CONSENTED_NAME_MARK)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded)
+        .ok()?;
+    let name = String::from_utf8(bytes).ok()?;
+    is_branch_name(&name).then_some(name)
 }
 
 /// The authorization request a consent is for (the query `/oidc/authorize`
@@ -469,7 +507,7 @@ pub async fn post_branch_consent(
             &params.redirect_uri,
             &params.code_challenge,
             "S256",
-            BRANCH_SCOPE,
+            &consented_scope(params.branch_name.as_deref().unwrap_or("").trim()),
             expires,
         )
         .await

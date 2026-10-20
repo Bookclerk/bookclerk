@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies]
 base64.workspace = true
+bookclerk-config.workspace = true
 bookclerk-library.workspace = true
 bookclerk-node-proto.workspace = true
 futures.workspace = true

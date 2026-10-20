@@ -626,6 +626,20 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE INDEX IF NOT EXISTS idx_job_temp_paths_job ON job_temp_paths(job_id)",
     ),
     MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS job_secret_handoffs (
+        job_id TEXT NOT NULL,
+        lease_generation INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        node_id TEXT NOT NULL,
+        handed_at TEXT NOT NULL,
+        PRIMARY KEY (job_id, lease_generation, kind, provider, account_id, name),
+        FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
+    )",
+    ),
+    MigrationOp::Schema(
         r"CREATE UNIQUE INDEX IF NOT EXISTS idx_job_temp_paths_job_path
         ON job_temp_paths(job_id, path)",
     ),
@@ -1035,15 +1049,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         online_since_ms INTEGER NOT NULL
     )",
     ),
-    MigrationOp::Schema(
-        r"CREATE TABLE IF NOT EXISTS cluster_leases (
-        name TEXT PRIMARY KEY NOT NULL,
-        holder TEXT NOT NULL,
-        token INTEGER NOT NULL,
-        expires_at_ms INTEGER NOT NULL,
-        renewed_at TEXT NOT NULL
-    )",
-    ),
+    MigrationOp::Schema(super::CLUSTER_LEASES_DDL),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS plugin_artifacts (
         sha256 TEXT PRIMARY KEY NOT NULL,
@@ -1099,11 +1105,18 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         plugin_key TEXT NOT NULL,
         requested_version TEXT NOT NULL,
         requested_grant_json TEXT NOT NULL,
+        requested_artifact_url TEXT NOT NULL,
+        requested_artifact_sha256 TEXT NOT NULL,
+        requested_artifact_payload_sha256 TEXT NOT NULL,
         version TEXT,
         approved_request_json TEXT,
+        approved_artifact_url TEXT,
+        approved_artifact_sha256 TEXT,
+        approved_artifact_payload_sha256 TEXT,
         grant_json TEXT,
         approved_at TEXT,
         approved_by TEXT,
+        revoked_at TEXT,
         updated_at TEXT NOT NULL,
         PRIMARY KEY (owner_cluster_id, plugin_key)
     )",
@@ -1131,6 +1144,31 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_node_upload_sessions_job ON node_upload_sessions(job_id)",
     ),
+    // Every file key a title's acquire or host upload wrote, per output
+    // destination, so an upload is never granted another title's file in a
+    // folder titles share. `writer` is the host upload id that claimed the
+    // key last, or `acquire` for an acquire run on the node itself.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS title_files (
+        destination TEXT NOT NULL,
+        storage_key TEXT NOT NULL,
+        book_uuid TEXT NOT NULL,
+        writer TEXT NOT NULL,
+        written_at TEXT NOT NULL,
+        PRIMARY KEY (destination, storage_key)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_title_files_book ON title_files(book_uuid)",
+    ),
+    // The live socket's revision reads take each table's newest change
+    // stamp every couple of seconds; an index makes that a lookup.
+    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_updated ON books(updated_at)"),
+    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_jobs_updated ON jobs(updated_at)"),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_event_deliveries_updated ON event_deliveries(updated_at)",
+    ),
+    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_users_updated ON users(updated_at)"),
     // Join a library: on a joining host, one sign-in in progress. The PKCE
     // verifier and node keys are sealed in `encrypted_secrets` (`kind =
     // cluster_join`); only the hash of `state` is stored here. Rows live

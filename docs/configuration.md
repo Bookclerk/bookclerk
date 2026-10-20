@@ -13,8 +13,9 @@ bookclerk config paths
 ```
 
 Classic Libation setting names are accepted as aliases where documented in
-[libation-parity.md](libation-parity.md). Runtime overrides on acquire:
-`-o key=value` (repeatable).
+[libation-parity.md](libation-parity.md). There are no per-run overrides:
+`library acquire -o key=value` was removed, so change settings with
+`bookclerk config set` (or the plugin's settings) before acquiring.
 
 ## Top-level tables
 
@@ -25,7 +26,7 @@ Classic Libation setting names are accepted as aliases where documented in
 | `[auth]` | Optional `[auth].password` wrapping `master.key` (prefer `BOOKCLERK_AUTH_PASSWORD`); optional `[auth.oidc]` identity broker |
 | `[media]` | Codec worker pool: concurrency and confinement (see [media.md](media.md)) |
 | `[plugins]` | How external plugin guests are jailed (see [plugins.md](plugins.md)) |
-| `[output]` | Format, Widevine, naming, sidecars, multi-destination policy (shared; per-destination settings are plugin settings) |
+| `[output]` | First-run seed for the `core.output` database document (format, Widevine, naming, sidecars, multi-destination policy), plus the host-local `in_progress` scratch directory |
 | `[daemon]` | Listen address, JSON logs, trusted proxies, `[daemon.node_api]` transport |
 | `[integrations]` | Portal: `public_origin`, claim-ticket and portal session TTLs |
 | `[discovery]` | Recommendations, embeddings, Open Library, listening sync |
@@ -75,7 +76,9 @@ is a plugin instance in the database: its settings come from the plugin's
 There are no environment overrides for plugin settings or enablement
 (formerly `BOOKCLERK_SOURCE_<ID>_ENABLED`, `BOOKCLERK_OUTPUT_*`,
 `BOOKCLERK_S3_*`, `BOOKCLERK_AWS_*`, `BOOKCLERK_GA_*`, `BOOKCLERK_ABS_*`,
-`BOOKCLERK_*_PASSWORD`). Those values live in the database.
+`BOOKCLERK_*_PASSWORD`). Those values live in the database. The remaining
+`BOOKCLERK_OUTPUT_*` packaging variables (format, Widevine, naming, sidecars)
+only seed `core.output` on first enrollment; see [Output](#output-shared).
 
 ## Library
 
@@ -149,8 +152,9 @@ connection itself changed, every guest is retired and the reconciler brings
 this host's present deployments back. A newer revision of the same cluster is
 not replaced by the older snapshot.
 Retention and the in-flight cap apply on the next dispatcher tick. The number
-of local delivery tasks is chosen at process start. Other `[events]` neighbors
-in this file (`[library]`, `[jobs]`, the shared `[output]`, media, plugins,
+of local delivery tasks is chosen at process start. The shared `[output]`
+table follows the same model as `core.output` (see [Output](#output-shared)).
+Other neighbors in this file (`[library]`, `[jobs]`, media, plugins,
 diagnostics) are still TOML and environment configuration.
 
 Acked/rejected deliveries use `retention_days`. Parent events with no remaining
@@ -167,7 +171,7 @@ Allowed writes: retention fields `1..=3650`, concurrency `1..=32`.
 ### Bootstrap files
 
 These stay outside the database because the process needs them before
-`core.events` can be read:
+`core.events` and `core.output` can be read:
 
 | File / setting | Role |
 | --- | --- |
@@ -195,7 +199,10 @@ owner's configuration; joining, consent, uploads and the protocol are in
 [ADR: Control plane](adr/control-plane.md#host-node-enrollment-and-transport).
 
 Enrollment is a cluster document, `core.host_enrollment`, on by default.
-Only the operator or an Owner turns it off:
+Only the operator or an Owner turns it off: the operator with the CLI, an
+Owner (or the operator) over HTTP with `PUT /api/config/host-enrollment`
+and `{"enabled": false}`. Any signed-in user may read it with
+`GET /api/config/host-enrollment`.
 
 ```bash
 bookclerk config get host_enrollment.enabled
@@ -214,6 +221,10 @@ bookclerk nodes invites list
 bookclerk nodes invites revoke <link_id>
 bookclerk nodes revoke <node_id>                # revoke an enrolled host
 ```
+
+Any signed-in user may also revoke a host they own with
+`DELETE /api/config/node-credentials/<node_id>`; the operator or an Owner
+may revoke any host.
 
 The link is `<public_origin>/enroll#bcn1.<link_id>.<secret>[.<spki_pin>]`
 (the pin only in `self_signed` mode, below). The secret is in
@@ -245,10 +256,10 @@ mode = "loopback"                # loopback | proxy | acme | self_signed
 
 | Mode | Allowed |
 | --- | --- |
-| `loopback` (default) | Only connections where both ends are loopback and no forwarding header is present. Loopback is allowed in every mode. |
-| `proxy` | Plain HTTP from a `daemon.trusted_proxies` peer that sends exactly one `X-Forwarded-Proto: https`. Requires an https `integrations.public_origin` and at least one trusted proxy. |
+| `loopback` (default) | Only connections where both ends are loopback and no forwarding header is present. Loopback is allowed in every mode, including on a wildcard `daemon.listen` (`0.0.0.0` / `[::]`): the check reads each connection's own local address, not the bind address. |
+| `proxy` | Plain HTTP from a `daemon.trusted_proxies` peer that sends exactly one `X-Forwarded-Proto: https`. Requires an https `integrations.public_origin` and at least one trusted proxy. Every connection from a trusted proxy is checked this way, even one with no forwarding headers, so with a same-host proxy (`127.0.0.1` trusted) loopback enrollment goes through the proxy too. |
 | `acme` | The built-in TLS listener on `tls_listen` with a certificate for `integrations.public_origin`'s DNS name, issued over TLS-ALPN-01 (forward port 443 of that name to `tls_listen`). Account and certificate are cached under `$BOOKCLERK_FILES_DIR/acme/` (mode 0700) and renewed automatically. Requires `acme_contact` and an https `public_origin` with a DNS name. |
-| `self_signed` | The built-in TLS listener on `tls_listen` with a P-256 certificate generated once under `$BOOKCLERK_FILES_DIR/node-api/self-signed/` (mode 0700). Its SPKI pin (`spki-pin` there) is appended to every enrollment link, and the host trusts exactly that key. For a private network without ACME or a proxy. |
+| `self_signed` | The built-in TLS listener on `tls_listen` with a P-256 certificate generated once under `$BOOKCLERK_FILES_DIR/node-api/self-signed/` (mode 0700), and re-issued under the same key when the public origin's host changes, so the pin stays valid. Its SPKI pin (`spki-pin` there) is appended to every enrollment link, and the host trusts exactly that key; until the daemon has written it, minting an invite fails rather than produce an unpinned link. Needs an https `integrations.public_origin` naming the TLS listener, since enrollment links carry that origin. For a private network without ACME or a proxy. |
 
 Everything else gets `403 {"error": "transport_insecure"}`: plain HTTP from a
 LAN address is refused, and forwarding headers from a peer that is not a
@@ -364,8 +375,61 @@ fixup_metadata = true
 multi_destination = "sync_missing"
 ```
 
-This shared table is still `config.toml`; moving it to a `core.output`
-cluster document is tracked in [ADR: Control plane](adr/control-plane.md).
+The shared output table is the second database-backed configuration domain,
+`core.output`: one cluster document every host applies (format, Widevine and
+CDM provider, naming profile and templates, sidecars, cover and chapter
+options, LAME knobs, timestamps, path sanitization and replacement rules,
+filename length, and the multi-destination policy). It follows the
+`core.events` rules above:
+
+- The effective `[output]` table and `BOOKCLERK_OUTPUT_*` packaging variables
+  (`BOOKCLERK_OUTPUT_FORMAT`, `BOOKCLERK_OUTPUT_WIDEVINE`, …) are imported
+  once, when a host enrolls against a database with no `core.output`
+  document. A seed value outside the document's bounds (for example
+  `split_mp3_max_mb = 0`) is replaced by its default, with a warning naming
+  the `output.*` key; the other values are imported as set.
+- After that the document is the authority. Startup, reload, and later TOML
+  or environment values do not change it; edit it with a compare-and-swap
+  write. `bookclerk config show` prints `output.authority = database`,
+  `output.revision`, and every `output.*` value. When the stored document
+  cannot be read (unsupported version, corrupt body, unreachable database)
+  it prints `output.authority = unavailable` and `output.error` instead of
+  the TOML/environment seed, which would not be imported over the stored row.
+- Writes are validated before SQL (for example `cover_size` is `native` or
+  1..=10000, `chapter_layout` is `tree` / `flat` / `both`,
+  `split_mp3_max_mb` 1..=10240, templates at most 1 KiB without control
+  characters, at most 128 replacement rules) and require an operator. A lost
+  revision is a conflict and leaves the stored document unchanged.
+- Running hosts apply a committed revision when the `configuration.changed`
+  wakeup reaches their node queue (60-second backstop). An acquire or convert
+  already running keeps the settings it started with.
+
+```bash
+bookclerk config get output.naming_profile
+bookclerk config set output.format single_mp3
+bookclerk config set output.replacement_characters '[{"find":":","replace":"-"}]'
+```
+
+The daemon operator API is `GET` / `PUT /api/config/domains/core.output`
+(`{"expected_revision": n, "document": {…}}` with every field of the
+schema-1 document). `PATCH /api/settings` accepts `output.*` keys through
+the same compare-and-swap path, one revision per request. `GET
+/api/settings` lists the `output.*` values and the document revision they
+were read from as top-level `output_revision`; send that back as
+`expected_output_revision`. A stale value returns 409 and writes nothing
+(the web UI always sends it). `output.revision` in `effective` is the
+revision this host has applied, which can lag the document until the host's
+next wakeup. A request that mixes `output.*` with `events.*` or file-backed
+keys is rejected before anything is written. The web UI edits it under
+**Settings → Output**.
+
+`in_progress` (the acquire scratch directory) is not part of the document.
+It names a path on one host, is needed before the database opens, and stays
+host-local bootstrap in `config.toml`. A relative `widevine_cdm` in the
+document resolves under each host's `BOOKCLERK_FILES_DIR`. When the first
+host seeds the document, a `config.toml` CDM path inside its files directory
+is stored relative, so other hosts rebase it under their own.
+
 Per-destination roots, prefixes, naming overrides, and credentials are the
 `local` / `s3` plugin settings.
 

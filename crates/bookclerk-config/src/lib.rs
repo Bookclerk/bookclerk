@@ -96,7 +96,8 @@ pub use plugins::{
 pub use redact::{
     contains_registered_secret, is_sensitive_field, is_upload_identifying_field,
     redact_field_value, redact_str, register_secret, register_secrets, register_secrets_from_env,
-    sanitize_for_remote_upload, secrets_registry_test_lock, truncate_upload_message, REDACTED,
+    sanitize_for_remote_upload, secrets_registry_test_lock, truncate_upload_message,
+    unregister_secret, REDACTED,
 };
 pub use settings::{
     read_node_api_spki_pin, AudioQuality, AuthConfig, Config, DaemonAuthConfig, DaemonConfig,

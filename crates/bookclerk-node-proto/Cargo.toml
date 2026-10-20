@@ -24,5 +24,8 @@ thiserror.workspace = true
 url.workspace = true
 zeroize.workspace = true
 
+[dev-dependencies]
+rand.workspace = true
+
 [lints]
 workspace = true

@@ -69,6 +69,7 @@ async fn start(host: &LibraryStore, link: &ClusterLink) -> (HostClientHandle, wa
             incarnation: uuid::Uuid::new_v4().to_string(),
             max_jobs: 1,
             claim_kinds: Vec::new(),
+            claims_after_refresh: false,
             timing: timing(Duration::from_millis(200)),
         },
         TransportRunner::new(NoJobs, Arc::new(RemoteCatalog::default())),
