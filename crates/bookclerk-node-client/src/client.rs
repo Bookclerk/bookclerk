@@ -63,9 +63,9 @@ use bookclerk_library::control_plane::{
 use bookclerk_node_proto::{
     decode_nonce, open_instance_secrets, open_secrets, seal_secret_update, sign_artifact_request,
     sign_auth, validate_box_public_key, ArtifactRequest, AuthContext, Body, ClaimFilter, Frame,
-    HeldFence, SealError, SecretEntry, SecretRef, SecretValue, SigningKey, ARTIFACTS_PATH, CLOSE_PROTOCOL,
-    CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS,
-    SEND_QUEUE_FRAMES,
+    HeldFence, SealError, SecretEntry, SecretRef, SecretValue, SigningKey, ARTIFACTS_PATH,
+    CLOSE_PROTOCOL, CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, ITEM_JOB,
+    PING_INTERVAL_SECS, SEND_QUEUE_FRAMES,
 };
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt as _, StreamExt as _};
@@ -644,7 +644,8 @@ impl HostClientHandle {
     }
 
     /// Opens an instance's `SECRETS` sealed to this node's box key
-    /// (`instance_config.sealed_secrets`).
+    /// (`instance_config.sealed_secrets`), registering the values with the
+    /// log and diagnostics scrubber.
     ///
     /// # Errors
     ///
@@ -656,13 +657,15 @@ impl HostClientHandle {
         revision: i64,
         sealed: &str,
     ) -> Result<SecretValue, SealError> {
-        open_instance_secrets(
+        let opened = open_instance_secrets(
             &self.shared.box_secret,
             &self.shared.node_id,
             instance_id,
             revision,
             sealed,
-        )
+        )?;
+        register_value_for_redaction(opened.expose());
+        Ok(opened)
     }
 
     /// Downloads one archive the owner stores (`blob:sha256:<hex>`) from its
