@@ -18,10 +18,17 @@
 //! - wakes acked after local subscribers have them;
 //! - reconnect with backoff, resuming the fences still held.
 //!
-//! Host consent for owner plugins (step 8) and streamed uploads (step 9)
-//! are not here: until they exist, nothing on a host may run an owner
-//! plugin, so a daemon starts its clients with
-//! [`HostClientConfig::max_jobs`] at zero.
+//! - claims narrowed to the job kinds this host runs and the plugins its
+//!   operator consented to ([`HostClientHandle::set_consented_plugins`]);
+//!   a job whose consent is revoked is cancelled and given back unspent;
+//! - after a wake, the host requests its deployment list and instance
+//!   configuration from the owner and sends its observations back
+//!   ([`HostClientHandle::request`] for `deployments.list`,
+//!   `instance.config` and `observation`), and fetches a stored archive
+//!   with [`HostClientHandle::fetch_artifact`], signed with the node key.
+//!
+//! The consent decisions themselves (which plugins, which grant) are the
+//! daemon's; streamed uploads (step 9) are not here.
 
 mod client;
 mod endpoint;
@@ -30,7 +37,7 @@ mod jobs;
 
 pub use client::{
     ClientExit, ClientTiming, HeartbeatSource, HostClient, HostClientConfig, HostClientHandle,
-    MAX_LEASE, SECRETS_UNOPENABLE,
+    AWAITING_HOST_CONSENT, KIND_NOT_RUN_HERE, MAX_ARTIFACT_BYTES, MAX_LEASE, SECRETS_UNOPENABLE,
 };
 pub use endpoint::{DialError, OwnerEndpoint, OwnerIo, OwnerSocket, CONNECT_PATH, ENROLL_PATH};
 pub use enroll::{join_cluster, JoinError};

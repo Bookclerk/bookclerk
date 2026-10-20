@@ -37,14 +37,11 @@ pub struct JobExecCtx {
     /// cluster: the secrets the owner handed with it (opened with this
     /// node's box key, never written to disk) and token write-back under
     /// the owner's fence. `None` for the daemon's own jobs.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read by the guest SECRETS backend once host consent (step 8) lets owner plugins run"
-        )
-    )]
     pub host: Option<Arc<bookclerk_node_client::HostJobCtx>>,
+    /// Set with [`Self::host`]: what the owner plugin's guest is opened
+    /// with on this host (`CONFIG`, `SECRETS` under the consented grant,
+    /// and the job's store credentials).
+    pub host_bindings: Option<Arc<crate::cluster_link::remote_bindings::HostJobBindings>>,
 }
 
 impl JobExecCtx {
@@ -132,6 +129,11 @@ impl JobTransport for InProcessJobTransport {
     async fn execute(&self, cmd: JobCommand, ctx: JobExecCtx) -> anyhow::Result<String> {
         if ctx.is_cancelled() {
             anyhow::bail!("cancelled");
+        }
+        // A job an owner cluster handed this host would run here against
+        // this install's own library and plugins; refuse it.
+        if ctx.host.is_some() || ctx.host_bindings.is_some() {
+            anyhow::bail!("a job handed by an owner cluster does not run in process");
         }
         tracing::trace!(
             version = cmd.version,

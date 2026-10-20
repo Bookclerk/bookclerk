@@ -12,8 +12,11 @@
 //!   every renewal.
 //! - [`finish_remote_job`]: the fenced complete or fail, then the permits
 //!   are given back.
-//! - [`release_remote_job`]: gives a claim back unspent when its `work`
-//!   answer cannot reach the Host.
+//! - [`release_remote_job`]: the Host gives a job back unrun (its operator
+//!   no longer consents to the job's plugin), or a claim is given back when
+//!   its `work` answer cannot reach the Host; the job returns to `pending`
+//!   without spending the attempt, and the permits and handoff rows are
+//!   given back.
 //! - [`write_back_job_secret`]: a refreshed store token, accepted only for
 //!   a secret handed with the job under the presented fence, and only while
 //!   that fence is live.
@@ -36,8 +39,8 @@ use zeroize::Zeroizing;
 
 use super::batch::{self, int, text};
 use super::job_routing::{
-    claim_routed_job, job_permit_holder_prefix, job_semaphores, pinned_plugin_key, JobClaimLimits,
-    JobClaimRequest, RoutedJobClaim,
+    claim_routed_job, job_permit_holder_prefix, job_plugin_keys, job_semaphores, pinned_plugin_key,
+    JobClaimFilter, JobClaimLimits, JobClaimRequest, RoutedJobClaim,
 };
 use super::semaphore::{
     permits_with_holder_prefix, release_permits, renew_permits, SemaphorePermit,
@@ -132,6 +135,9 @@ pub struct RemoteJobClaim {
     pub job: JobRecord,
     /// The account secrets the job needs, unsealed.
     pub secrets: Vec<JobSecret>,
+    /// The plugin keys the job runs ([`job_plugin_keys`]); empty when the
+    /// job alone does not say (only possible without a claim filter).
+    pub plugin_keys: Vec<String>,
     /// The claim resumed a suspended job ([`RoutedJobClaim::resumed`]).
     /// Pass it back to [`release_remote_job`] if the claim is given back.
     pub resumed: bool,
@@ -196,16 +202,21 @@ pub enum WriteBack {
 /// retries with backoff and any node holding the database may take it) and
 /// `None` is returned.
 ///
+/// `filter` is the Host's own narrowing ([`JobClaimFilter`]): only jobs of
+/// its kinds whose every plugin it consented to are claimed.
+///
 /// # Errors
 ///
 /// Returns an error when a read or write fails. Permits taken for a failed
-/// attempt are released, and a claim whose handoff could not be recorded
-/// is given back unspent, on a best-effort basis.
+/// attempt are released, and a claim whose plugin keys could not be read
+/// or whose handoff could not be recorded is given back unspent (permits
+/// included), on a best-effort basis.
 pub async fn claim_remote_job(
     store: &LibraryStore,
     node_id: &str,
     resource_class: JobResourceClass,
     settings: RemoteClaimSettings,
+    filter: Option<&JobClaimFilter>,
 ) -> Result<Option<RemoteJobClaim>> {
     let owner = remote_lease_owner(node_id);
     let request = JobClaimRequest {
@@ -215,6 +226,7 @@ pub async fn claim_remote_job(
         owner: &owner,
         lease_secs: settings.lease_secs,
         limits: settings.limits,
+        filter,
     };
     let Some(claim) = claim_routed_job(store, &request).await? else {
         return Ok(None);
@@ -232,6 +244,16 @@ pub async fn claim_remote_job(
         let _ = release_permits(store, &permits).await;
         return Ok(None);
     };
+    let plugin_keys = match job_plugin_keys(store, &job).await {
+        Ok(keys) => keys
+            .map(|keys| keys.into_iter().collect())
+            .unwrap_or_default(),
+        Err(err) => {
+            // Nothing went out; give the claim back unspent.
+            give_back_claim(store, &fence, &permits, resumed).await;
+            return Err(err);
+        }
+    };
     match unseal_job_secrets(store, &job).await {
         Ok(secrets) => {
             // Trust can change while the secrets are read: check it once
@@ -239,14 +261,14 @@ pub async fn claim_remote_job(
             // later frame under the fence checks it again.
             let still_trusted = node_may_claim_job(store, node_id, Claimant::Remote, &job).await;
             if !matches!(still_trusted, Ok(true)) {
-                let _ = store.release_job_claim(&fence, resumed).await;
-                let _ = release_permits(store, &permits).await;
+                give_back_claim(store, &fence, &permits, resumed).await;
                 return still_trusted.map(|_| None);
             }
             match record_handoff(store, node_id, &fence, &secrets).await {
                 Ok(true) => Ok(Some(RemoteJobClaim {
                     job,
                     secrets,
+                    plugin_keys,
                     resumed,
                 })),
                 Ok(false) => {
@@ -254,14 +276,12 @@ pub async fn claim_remote_job(
                     // read, and nothing went out. A fence that still holds
                     // the row gives it back unspent; the release is fenced,
                     // so a job already claimed again is left alone.
-                    let _ = store.release_job_claim(&fence, resumed).await;
-                    let _ = release_permits(store, &permits).await;
+                    give_back_claim(store, &fence, &permits, resumed).await;
                     Ok(None)
                 }
                 Err(err) => {
                     // Nothing went out; give the claim back unspent.
-                    let _ = store.release_job_claim(&fence, resumed).await;
-                    let _ = release_permits(store, &permits).await;
+                    give_back_claim(store, &fence, &permits, resumed).await;
                     Err(err)
                 }
             }
@@ -284,6 +304,37 @@ pub async fn claim_remote_job(
             failed?;
             Ok(None)
         }
+    }
+}
+
+/// Gives a claim back unspent after a failure before anything was handed
+/// to the Host: the job returns to `pending` without spending an attempt
+/// (a resumed claim is resumable again, as
+/// [`LibraryStore::release_job_claim`] does for `resumed`), and its
+/// semaphore permits are released.
+///
+/// Best effort: the caller is already returning an error, so a failure
+/// here is only logged; the lease and the permits then expire on their
+/// own, after which the job is redelivered.
+async fn give_back_claim(
+    store: &LibraryStore,
+    fence: &JobFence,
+    permits: &[SemaphorePermit],
+    resumed: bool,
+) {
+    if let Err(err) = store.release_job_claim(fence, resumed).await {
+        tracing::warn!(
+            job_id = %fence.job_id,
+            error = %err,
+            "a remote claim could not be given back; its lease will expire"
+        );
+    }
+    if let Err(err) = release_permits(store, permits).await {
+        tracing::warn!(
+            job_id = %fence.job_id,
+            error = %err,
+            "a remote claim's permits could not be released; they will expire"
+        );
     }
 }
 
@@ -625,19 +676,28 @@ pub async fn finish_remote_job(
     Ok(RemoteFinish::Done)
 }
 
-/// Gives back the claim `node_id` holds on `job_id` at `generation` without
-/// spending an attempt, with its semaphore permits and handoff rows.
+/// Gives back the job `node_id` holds at `generation` without running it:
+/// the job returns to `pending`, and its semaphore permits and handoff rows
+/// are released.
 ///
-/// For a `work` answer that cannot reach the Host (its connection was
+/// For a Host whose operator no longer consents to the job's plugin, and
+/// for a `work` answer that cannot reach the Host (its connection was
 /// superseded or is closing), so the job is claimable again at once instead
 /// of only after its lease expires. `resumed` is the claim's
 /// [`RemoteJobClaim::resumed`]: a resumed claim gets its resume flag back,
 /// any other its attempt.
 ///
+/// The attempt is not spent, unless the job carries a checkpoint (it may
+/// have resumed, which spent none, or saved progress under this claim), in
+/// which case it is kept as spent and the job resumes from the checkpoint.
+/// Nothing is refunded twice: a release never lowers the count below what
+/// the claim raised it by. The release is accepted from a node that is no
+/// longer trusted, since it only gives work back.
+///
 /// # Returns
 ///
-/// `true` when the claim was given back; `false` when the fence no longer
-/// owns the job.
+/// [`RemoteFinish::Done`] when the claim was given back;
+/// [`RemoteFinish::Lost`] when the fence no longer owns the job.
 ///
 /// # Errors
 ///
@@ -649,18 +709,24 @@ pub async fn release_remote_job(
     generation: i64,
     resumed: bool,
     limits: JobClaimLimits,
-) -> Result<bool> {
+) -> Result<RemoteFinish> {
     let fence = remote_job_fence(node_id, job_id, generation);
     let Some(job) = fenced_job(store, &fence).await? else {
-        return Ok(false);
+        return Ok(RemoteFinish::Lost);
     };
+    let keep_spent = job.payload.checkpoint.is_some();
     let (permits, _) = held_job_permits(store, node_id, &job, limits).await?;
-    if !store.release_job_claim(&fence, resumed).await? {
-        return Ok(false);
+    // A checkpointed job keeps its attempt spent and resumes from the
+    // checkpoint, as a resumed claim does.
+    if !store
+        .release_job_claim(&fence, resumed || keep_spent)
+        .await?
+    {
+        return Ok(RemoteFinish::Lost);
     }
     release_permits(store, &permits).await?;
     forget_handoffs(store, job_id, generation).await?;
-    Ok(true)
+    Ok(RemoteFinish::Done)
 }
 
 /// Stores a refreshed store token a Host writes back.

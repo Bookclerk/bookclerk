@@ -24,6 +24,14 @@
 //! [`Body::SecretUpdate`]. The owner forwards the host's `node.<id>` queue
 //! as [`Body::Wake`] frames, each answered with [`Body::Ack`].
 //!
+//! A claim may carry a [`ClaimFilter`] (the kinds the host runs and the
+//! plugins its operator consented to); a job handed back unrun goes with
+//! [`Body::Release`]. To act on wakes the host reads
+//! [`Body::DeploymentsList`] and [`Body::InstanceConfigGet`] (`SECRETS`
+//! sealed with [`seal_instance_secrets`]), reports
+//! [`Body::Observation`]s, and fetches stored archives over HTTP at
+//! [`ARTIFACTS_PATH`] with a request signed by [`sign_artifact_request`].
+//!
 //! This crate is pure: no I/O, no clock, no randomness. The daemon (owner)
 //! and the host client share it so both sides sign and check the same
 //! bytes.
@@ -34,20 +42,32 @@ mod sealed;
 mod signature;
 
 pub use ed25519_dalek::SigningKey;
-pub use frames::{Body, Frame, FrameError, HeldFence, WorkJob, ITEM_JOB};
+pub use frames::{
+    Body, ClaimFilter, Frame, FrameError, HeldFence, RemoteArtifact, RemoteDeployment,
+    RemoteVersion, WorkJob, ITEM_JOB,
+};
 pub use keys::{
     box_public_key, sign_public_key, validate_box_public_key, validate_sign_public_key, KeyError,
     PUBLIC_KEY_LEN,
 };
 pub use sealed::{
-    open, open_secret_update, open_secrets, seal, seal_secret_update, seal_secrets,
-    secret_update_aad, secrets_aad, SealError, SecretEntry, SecretRef, SecretValue,
-    SEALED_BOX_INFO, SEALED_BOX_OVERHEAD, SECRETS_AAD_DOMAIN, SECRET_UPDATE_AAD_DOMAIN,
+    instance_secrets_aad, open, open_instance_secrets, open_secret_update, open_secrets, seal,
+    seal_instance_secrets, seal_secret_update, seal_secrets, secret_update_aad, secrets_aad,
+    SealError, SecretEntry, SecretRef, SecretValue, INSTANCE_SECRETS_AAD_DOMAIN, SEALED_BOX_INFO,
+    SEALED_BOX_OVERHEAD, SECRETS_AAD_DOMAIN, SECRET_UPDATE_AAD_DOMAIN,
 };
 pub use signature::{
-    auth_transcript, canonical_origin, decode_nonce, encode_nonce, sign_auth, verify_auth,
-    AuthContext, AuthError, AUTH_DOMAIN, NONCE_LEN,
+    artifact_transcript, auth_transcript, canonical_origin, decode_nonce, encode_nonce,
+    parse_artifact_authorization, sign_artifact_request, sign_auth, verify_artifact_request,
+    verify_auth, ArtifactRequest, AuthContext, AuthError, ARTIFACT_AUTH_SCHEME, ARTIFACT_DOMAIN,
+    ARTIFACT_REQUEST_MAX_SKEW_SECS, AUTH_DOMAIN, NONCE_LEN,
 };
+
+/// Path prefix of the owner's artifact endpoint: `GET
+/// /api/node/v1/artifacts/<archive_sha256>` with a signed `Authorization`
+/// ([`sign_artifact_request`]) streams one stored archive to a host that
+/// runs it.
+pub const ARTIFACTS_PATH: &str = "/api/node/v1/artifacts/";
 
 /// WebSocket subprotocol a host must offer.
 pub const SUBPROTOCOL: &str = "bookclerk-node.v1";

@@ -448,7 +448,7 @@ async fn an_operator_package_becomes_the_active_version_and_reaches_healthy() {
         "a small archive is stored in the library: {}",
         artifact.url
     );
-    let cache = crate::version_cache_path(&world.files, &artifact.payload_root_sha256);
+    let cache = crate::version_cache_path(&world.files, &artifact.payload_root_sha256).unwrap();
     assert!(
         cache.join("plugin.toml").is_file(),
         "materialized by digest"
@@ -498,7 +498,11 @@ async fn an_operator_package_becomes_the_active_version_and_reaches_healthy() {
         .unwrap()
         .expect("still active");
     let artifact = crate::host_artifact(&release).unwrap();
-    assert!(crate::version_cache_path(&failed.files, &artifact.payload_root_sha256).is_dir());
+    assert!(
+        crate::version_cache_path(&failed.files, &artifact.payload_root_sha256)
+            .unwrap()
+            .is_dir()
+    );
     assert_eq!(
         load_deployment(&failed.store, &failed.deployment_id)
             .await
@@ -680,7 +684,7 @@ async fn a_version_installed_on_one_node_is_materialized_and_spawned_on_another(
     )
     .await
     .expect("host b");
-    let cache_b = crate::version_cache_path(&files_b, &digest);
+    let cache_b = crate::version_cache_path(&files_b, &digest).unwrap();
     assert!(
         cache_b.join("plugin.toml").is_file(),
         "host b materialized the digest"
@@ -1900,4 +1904,70 @@ async fn a_verified_platform_guest_without_a_grant_file_persists_its_grant_and_s
     assert_eq!(running, 1);
     assert_eq!(reserved.memory_bytes, 512 * 1024 * 1024);
     assert_eq!(reserved.cpu_millicores, 800);
+}
+
+/// A version whose digests are not canonical SHA-256 never names a cache
+/// path: a `..` or absolute payload digest pointing at an unrelated tree
+/// that holds a `plugin.toml` is refused rather than reported as
+/// materialized, and so is a malformed archive digest.
+#[tokio::test]
+async fn a_non_canonical_digest_never_names_a_cache_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = dir.path().join("files");
+    let store = file_store(&dir.path().join("library.db")).await;
+    // Unrelated trees an owner might point the cache at.
+    let sibling = files.join("plugins").join("unrelated");
+    let absolute = dir.path().join("elsewhere");
+    for tree in [&sibling, &absolute] {
+        std::fs::create_dir_all(tree).unwrap();
+        std::fs::write(tree.join("plugin.toml"), "id = \"unrelated\"\n").unwrap();
+    }
+    let version = |archive_sha256: &str, payload_root_sha256: &str| {
+        bookclerk_library::control_plane::PluginVersion {
+            plugin_key: "path:file:///tmp/store#store".into(),
+            version: "1.0.0".into(),
+            manifest_id: "store".into(),
+            manifest_toml: String::new(),
+            settings: Default::default(),
+            artifacts: vec![bookclerk_library::control_plane::PluginArtifact {
+                target: crate::host_bookclerk_target().to_string(),
+                url: "https://registry.example/store.tar.gz".into(),
+                format: "tar.gz".into(),
+                archive_root: ".".into(),
+                archive_sha256: archive_sha256.into(),
+                payload_root_sha256: payload_root_sha256.into(),
+                executable: "guest".into(),
+            }],
+            publisher_verified: false,
+            grant_json: String::new(),
+            coordinate: String::new(),
+            installed_at: String::new(),
+            installed_by: String::new(),
+        }
+    };
+    let good = "ab".repeat(32);
+    let absolute_digest = absolute.to_string_lossy().into_owned();
+    for (archive, payload) in [
+        (good.as_str(), "../unrelated"),
+        (good.as_str(), absolute_digest.as_str()),
+        (good.as_str(), &"AB".repeat(32)),
+        (good.as_str(), ""),
+        ("../unrelated", good.as_str()),
+    ] {
+        let err = crate::materialize_owner_version(&store, &files, &version(archive, payload))
+            .await
+            .expect_err("a non-canonical digest is refused");
+        assert!(err.to_string().contains("64 lowercase hex"), "{err}");
+        assert!(
+            crate::materialize_version(&store, &files, &version(archive, payload))
+                .await
+                .is_err()
+        );
+    }
+    for bad in ["..", "../unrelated", absolute_digest.as_str(), "ab/cd"] {
+        assert!(crate::version_cache_path(&files, bad).is_err(), "{bad}");
+    }
+    assert!(crate::version_cache_path(&files, &good)
+        .unwrap()
+        .starts_with(crate::version_cache_root(&files)));
 }

@@ -22,6 +22,8 @@ mod node_status;
 mod output;
 mod ownership;
 mod placement;
+mod remote_catalog;
+mod remote_consents;
 mod remote_work;
 mod requirements_sweep;
 mod routing;
@@ -84,9 +86,9 @@ pub use instances::{
 };
 pub use job_routing::{
     account_semaphore, claim_routed_job, class_semaphore, common_deployment_nodes,
-    instance_semaphore, job_permit_holder_prefix, job_semaphores, node_can_run_job,
-    resolve_job_requirements, JobClaimLimits, JobClaimRequest, RoutedJobClaim,
-    ACCOUNT_SEMAPHORE_LIMIT, ROUTED_CLAIM_CANDIDATES,
+    instance_semaphore, job_permit_holder_prefix, job_plugin_keys, job_semaphores,
+    node_can_run_job, resolve_job_requirements, JobClaimFilter, JobClaimLimits, JobClaimRequest,
+    RoutedJobClaim, ACCOUNT_SEMAPHORE_LIMIT, ROUTED_CLAIM_CANDIDATES,
 };
 pub use leases::{
     acquire_lease, acquire_lease_on, list_leases, load_lease, load_lease_on, release_lease,
@@ -120,6 +122,16 @@ pub use placement::{
     PlacementWrite, PluginPlacement, Replicas, ScheduleReport, MAX_NODE_LABELS,
     MAX_PLACEMENT_CONSTRAINTS, MAX_REPLICAS, NODE_LABEL, SCHEDULER_LEASE, SCHEDULER_LEASE_TTL,
     TARGET_LABEL,
+};
+pub use remote_catalog::{
+    artifact_served_to_node, record_remote_observation, remote_deployments_for_node,
+    remote_instance_for_node, RemoteDeploymentEntry, RemoteInstance, RemoteObservation,
+};
+pub use remote_consents::{
+    approve_remote_plugin, approved_remote_payload_digests, list_remote_plugin_consents,
+    load_remote_plugin_consent, record_remote_plugin_request, remote_request_digest,
+    revoke_remote_plugin, RemoteApproval, RemoteApprover, RemoteArtifactRef, RemotePluginConsent,
+    REMOTE_CONSENT_PLATFORM,
 };
 pub use remote_work::{
     claim_remote_job, finish_remote_job, job_secret_refs, release_remote_job, remote_job_fence,

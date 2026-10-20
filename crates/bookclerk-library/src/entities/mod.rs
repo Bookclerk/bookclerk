@@ -50,6 +50,7 @@ pub mod plugin_schemas;
 pub mod plugin_versions;
 pub mod portal_identities;
 pub mod portal_sessions;
+pub mod remote_plugin_consents;
 pub mod saved_filters;
 pub mod security_audit_events;
 pub mod storage_scan_generations;

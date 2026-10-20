@@ -20,8 +20,10 @@
 //!
 //! `GET /api/node/v1/connect` is the host-node WebSocket ([`ws`]); it also
 //! sits outside those layers and authenticates with the node's enrolled
-//! Ed25519 key.
+//! Ed25519 key. `GET /api/node/v1/artifacts/{sha256}` ([`artifacts`])
+//! serves owner plugin archives to nodes on a node-signed request.
 
+mod artifacts;
 pub mod tls;
 pub mod transport;
 mod wakes;
@@ -231,6 +233,11 @@ where
         .route("/api/node/v1/enroll", axum::routing::post(post_enroll))
         // Host-node socket: the node's Ed25519 key is the credential.
         .route("/api/node/v1/connect", axum::routing::get(ws::get_connect))
+        // Owner plugin archives: a node-signed request is the credential.
+        .route(
+            "/api/node/v1/artifacts/{sha256}",
+            axum::routing::get(artifacts::get_artifact),
+        )
         // The API deadline travels with the routes, so the TLS-only listener
         // (which has no other layers) also drops a client that stalls its
         // request body. An upgraded socket outlives it: only the upgrade

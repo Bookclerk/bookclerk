@@ -54,6 +54,9 @@ const HTTP_TIMEOUT_SECS: u64 = 30;
 /// Largest HTTP answer read (enrollment answers are tiny).
 const MAX_HTTP_RESPONSE_BYTES: usize = 64 * 1024;
 
+/// Seconds allowed for an artifact download.
+const ARTIFACT_TIMEOUT_SECS: u64 = 120;
+
 /// A byte stream to the owner, plain (loopback) or TLS.
 pub trait OwnerIo: AsyncRead + AsyncWrite + Unpin + Send {}
 
@@ -301,17 +304,58 @@ impl OwnerEndpoint {
             io.write_all(head.as_bytes()).await?;
             io.write_all(body).await?;
             io.flush().await?;
-            read_http_response(&mut io).await
+            read_http_response(&mut io, MAX_HTTP_RESPONSE_BYTES).await
         };
         tokio::time::timeout(Duration::from_secs(HTTP_TIMEOUT_SECS), exchange)
             .await
             .map_err(|_| DialError::Timeout)?
     }
+
+    /// `GET path` with an `Authorization` header; answers the status and a
+    /// body of at most `max_body` bytes. The header is written straight to
+    /// the stream and never logged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DialError`] when the request cannot be made, the answer is
+    /// malformed, or it is larger than `max_body`.
+    pub async fn get_authorized(
+        &self,
+        path: &str,
+        authorization: &str,
+        max_body: usize,
+    ) -> Result<(u16, Vec<u8>), DialError> {
+        if authorization.contains(['\r', '\n']) || path.contains(['\r', '\n', ' ']) {
+            return Err(DialError::Http);
+        }
+        let exchange = async {
+            let mut io = self.connect().await?;
+            let head = format!(
+                "GET {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: {authorization}\r\n\
+                 Accept: application/octet-stream\r\nConnection: close\r\n\r\n",
+                self.authority(),
+            );
+            io.write_all(head.as_bytes()).await?;
+            io.flush().await?;
+            read_http_response(&mut io, max_body.saturating_add(MAX_HTTP_RESPONSE_BYTES)).await
+        };
+        let (status, body) =
+            tokio::time::timeout(Duration::from_secs(ARTIFACT_TIMEOUT_SECS), exchange)
+                .await
+                .map_err(|_| DialError::Timeout)??;
+        if body.len() > max_body {
+            return Err(DialError::Http);
+        }
+        Ok((status, body))
+    }
 }
 
-/// Reads one HTTP/1.1 answer: the status and the body (by
-/// `Content-Length`, chunked, or until close).
-async fn read_http_response(io: &mut Box<dyn OwnerIo>) -> Result<(u16, Vec<u8>), DialError> {
+/// Reads one HTTP/1.1 answer of at most `max_bytes` (head and body): the
+/// status and the body (by `Content-Length`, chunked, or until close).
+async fn read_http_response(
+    io: &mut Box<dyn OwnerIo>,
+    max_bytes: usize,
+) -> Result<(u16, Vec<u8>), DialError> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     let mut eof = false;
@@ -319,7 +363,7 @@ async fn read_http_response(io: &mut Box<dyn OwnerIo>) -> Result<(u16, Vec<u8>),
         if let Some(at) = find(&buf, b"\r\n\r\n") {
             break at;
         }
-        if eof || buf.len() > MAX_HTTP_RESPONSE_BYTES {
+        if eof || buf.len() > max_bytes {
             return Err(DialError::Http);
         }
         eof = read_some(io, &mut buf, &mut chunk).await?;
@@ -345,10 +389,14 @@ async fn read_http_response(io: &mut Box<dyn OwnerIo>) -> Result<(u16, Vec<u8>),
         }
     }
     let body_start = header_end + 4;
+    // Where the next chunk's size line starts in the body: each read only
+    // scans what arrived since, so a large chunked body is not rescanned
+    // (and re-copied) after every read.
+    let mut next_chunk = 0usize;
     loop {
         let body = &buf[body_start..];
         let done = if chunked {
-            decode_chunked(body)?.is_some()
+            chunked_body_complete(body, &mut next_chunk, max_bytes)?
         } else if let Some(length) = length {
             body.len() >= length
         } else {
@@ -357,14 +405,14 @@ async fn read_http_response(io: &mut Box<dyn OwnerIo>) -> Result<(u16, Vec<u8>),
         if done || eof {
             break;
         }
-        if buf.len() > MAX_HTTP_RESPONSE_BYTES {
+        if buf.len() > max_bytes {
             return Err(DialError::Http);
         }
         eof = read_some(io, &mut buf, &mut chunk).await?;
     }
     let body = &buf[body_start..];
     let body = if chunked {
-        decode_chunked(body)?.ok_or(DialError::Http)?
+        decode_chunked(body, max_bytes)?.ok_or(DialError::Http)?
     } else if let Some(length) = length {
         body.get(..length).ok_or(DialError::Http)?.to_vec()
     } else {
@@ -399,7 +447,16 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 /// Decodes a complete chunked body; `None` while incomplete.
-fn decode_chunked(mut body: &[u8]) -> Result<Option<Vec<u8>>, DialError> {
+///
+/// `max_bytes` is the cap the caller read the response under (for an
+/// artifact, the archive limit plus head room), so a chunked answer is held
+/// to the same limit as one with a `Content-Length`.
+///
+/// # Errors
+///
+/// Returns [`DialError::Http`] for a malformed chunk size, or one whose
+/// chunk would end past `max_bytes` of body.
+fn decode_chunked(mut body: &[u8], max_bytes: usize) -> Result<Option<Vec<u8>>, DialError> {
     let mut out = Vec::new();
     // Bytes of the whole body already behind `body`.
     let mut consumed = 0usize;
@@ -421,7 +478,7 @@ fn decode_chunked(mut body: &[u8]) -> Result<Option<Vec<u8>>, DialError> {
             .filter(|end| {
                 consumed
                     .checked_add(*end)
-                    .is_some_and(|end| end <= MAX_HTTP_RESPONSE_BYTES)
+                    .is_some_and(|end| end <= max_bytes)
             })
             .ok_or(DialError::Http)?;
         let rest_start = data_end.checked_add(2).ok_or(DialError::Http)?;
@@ -434,6 +491,44 @@ fn decode_chunked(mut body: &[u8]) -> Result<Option<Vec<u8>>, DialError> {
         };
         consumed += rest_start;
         body = rest;
+    }
+}
+
+/// True once `body` holds a whole chunked body, scanning chunk headers from
+/// `*next_chunk` (the offset of the first size line not yet passed, which
+/// it advances) without copying chunk data. Fails as [`decode_chunked`]
+/// does on a malformed size line or a chunk past `max_bytes`.
+///
+/// # Errors
+///
+/// [`DialError::Http`] on a malformed size line or a chunk that cannot fit
+/// in `max_bytes`.
+fn chunked_body_complete(
+    body: &[u8],
+    next_chunk: &mut usize,
+    max_bytes: usize,
+) -> Result<bool, DialError> {
+    loop {
+        let rest = body.get(*next_chunk..).ok_or(DialError::Http)?;
+        let Some(line_end) = find(rest, b"\r\n") else {
+            return Ok(false);
+        };
+        let size_text = std::str::from_utf8(&rest[..line_end]).map_err(|_| DialError::Http)?;
+        let size_text = size_text.split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(size_text, 16).map_err(|_| DialError::Http)?;
+        if size == 0 {
+            return Ok(true);
+        }
+        let data_end = (*next_chunk)
+            .checked_add(line_end + 2)
+            .and_then(|start| start.checked_add(size))
+            .filter(|end| *end <= max_bytes)
+            .ok_or(DialError::Http)?;
+        let after = data_end.checked_add(2).ok_or(DialError::Http)?;
+        if after > body.len() {
+            return Ok(false);
+        }
+        *next_chunk = after;
     }
 }
 
@@ -578,20 +673,54 @@ mod tests {
     #[test]
     fn chunked_bodies_decode() {
         assert_eq!(
-            decode_chunked(b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n").unwrap(),
+            decode_chunked(
+                b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n",
+                MAX_HTTP_RESPONSE_BYTES
+            )
+            .unwrap(),
             Some(b"Wikipedia".to_vec())
         );
-        assert_eq!(decode_chunked(b"4\r\nWi").unwrap(), None);
-        assert!(decode_chunked(b"zz\r\n").is_err());
+        assert_eq!(
+            decode_chunked(b"4\r\nWi", MAX_HTTP_RESPONSE_BYTES).unwrap(),
+            None
+        );
+        assert!(decode_chunked(b"zz\r\n", MAX_HTTP_RESPONSE_BYTES).is_err());
+        // Scanned in pieces, the cursor only moves past whole chunks.
+        let whole = b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n";
+        let mut next = 0;
+        assert!(!chunked_body_complete(&whole[..6], &mut next, MAX_HTTP_RESPONSE_BYTES).unwrap());
+        assert_eq!(next, 0);
+        assert!(!chunked_body_complete(&whole[..12], &mut next, MAX_HTTP_RESPONSE_BYTES).unwrap());
+        assert_eq!(next, 9);
+        assert!(chunked_body_complete(whole, &mut next, MAX_HTTP_RESPONSE_BYTES).unwrap());
+        assert!(chunked_body_complete(b"zz\r\n", &mut 0, MAX_HTTP_RESPONSE_BYTES).is_err());
+        assert!(chunked_body_complete(b"ffffffffffffffff\r\nab", &mut 0, usize::MAX).is_err());
         // An owner-chosen size that overflows, or that no accepted
         // response could hold, is refused instead of waited for.
         assert!(matches!(
-            decode_chunked(b"ffffffffffffffff\r\nab"),
+            decode_chunked(b"ffffffffffffffff\r\nab", usize::MAX),
             Err(DialError::Http)
         ));
         let too_big = format!("{:x}\r\nab", MAX_HTTP_RESPONSE_BYTES);
         assert!(matches!(
-            decode_chunked(too_big.as_bytes()),
+            decode_chunked(too_big.as_bytes(), MAX_HTTP_RESPONSE_BYTES),
+            Err(DialError::Http)
+        ));
+    }
+
+    /// A chunked artifact larger than the fixed frame cap decodes under the
+    /// caller's larger cap (a proxy may re-encode a `Content-Length` body
+    /// as chunked), and is still refused past that cap.
+    #[test]
+    fn a_chunked_body_is_held_to_the_callers_cap() {
+        let payload = vec![b'x'; MAX_HTTP_RESPONSE_BYTES * 2];
+        let mut body = format!("{:x}\r\n", payload.len()).into_bytes();
+        body.extend_from_slice(&payload);
+        body.extend_from_slice(b"\r\n0\r\n\r\n");
+        let cap = payload.len() + MAX_HTTP_RESPONSE_BYTES;
+        assert_eq!(decode_chunked(&body, cap).unwrap(), Some(payload.clone()));
+        assert!(matches!(
+            decode_chunked(&body, MAX_HTTP_RESPONSE_BYTES),
             Err(DialError::Http)
         ));
     }

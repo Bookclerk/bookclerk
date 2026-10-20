@@ -117,6 +117,12 @@ enum Commands {
         /// Nested `events` verb (list, dead-letters, retry, ack, cancel, resume).
         command: commands::events::EventsCommand,
     },
+    /// Owner clusters this install hosts for, and consent to their plugins.
+    Clusters {
+        #[command(subcommand)]
+        /// Nested `clusters` verb (list, consents, approve, revoke).
+        command: commands::clusters::ClustersCommand,
+    },
     /// Cluster nodes: liveness, capacity, budgets, and placement labels.
     Nodes {
         #[command(subcommand)]
@@ -374,6 +380,7 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
         Commands::Daemon { command } => commands::daemon_cmd::run(command, &config, format).await,
         Commands::Events { command } => commands::events::run(command, &config, format).await,
         Commands::Nodes { command } => commands::nodes::run(command, &config, format).await,
+        Commands::Clusters { command } => commands::clusters::run(command, &config, format).await,
         Commands::Queues { command } => commands::queues::run(command, &config, format).await,
         Commands::Login => commands::daemon_cmd::run_login(&config, format).await,
         Commands::Diagnostics { command } => {

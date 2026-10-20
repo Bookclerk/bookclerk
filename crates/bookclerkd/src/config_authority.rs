@@ -2244,6 +2244,7 @@ mod tests {
             files_path,
             &artifact.payload_root_sha256
         )
+        .unwrap()
         .join("plugin.toml")
         .is_file());
         for entry in std::fs::read_dir(files_path.join("plugins")).unwrap() {

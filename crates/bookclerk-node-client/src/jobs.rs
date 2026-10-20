@@ -21,6 +21,8 @@ pub struct HostJob {
     pub fence: i64,
     /// Lease length the owner granted.
     pub lease_secs: u64,
+    /// Plugin keys the job runs (each consented when it was claimed).
+    pub plugin_keys: Vec<String>,
     /// When the granted lease runs out, counted as the client counts it:
     /// from before the claim was sent, capped at [`crate::MAX_LEASE`]. Work
     /// handed a deadline should stop by then, since the fence may be lost
