@@ -873,29 +873,35 @@ pub(crate) struct CreatePluginInstance {
     /// Operator-facing name.
     #[serde(default)]
     display_name: String,
+    /// Make the instance local to this node (H-2): it deploys only there
+    /// and is never placed by the scheduler.
+    #[serde(default)]
+    node_id: Option<String>,
 }
 
 /// `POST /api/config/plugin-instances`: a second (non-default) instance of
-/// a plugin, with an empty document so schema defaults apply.
+/// a plugin, with an empty document so schema defaults apply. With
+/// `node_id`, the instance is local to that node.
 pub async fn post_plugin_instance(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreatePluginInstance>,
 ) -> Result<Json<serde_json::Value>, Response> {
     use bookclerk_library::control_plane::{
-        create_plugin_instance, import_instance_config_if_absent, require_plugin_schema,
-        PluginInstanceConfigV1,
+        create_node_local_instance, create_plugin_instance, import_instance_config_if_absent,
+        require_plugin_schema, PluginInstanceConfigV1,
     };
     let library = state.library_snapshot().await;
     let pinned = require_plugin_schema(&library, body.plugin_key.trim())
         .await
         .map_err(events_error)?;
-    let instance = create_plugin_instance(
-        &library,
-        &operator_actor(),
-        &pinned.plugin_key,
-        body.display_name.trim(),
-    )
-    .await
+    let name = body.display_name.trim();
+    let instance = match body.node_id.as_deref().map(str::trim) {
+        Some(node) => {
+            create_node_local_instance(&library, &operator_actor(), &pinned.plugin_key, node, name)
+                .await
+        }
+        None => create_plugin_instance(&library, &operator_actor(), &pinned.plugin_key, name).await,
+    }
     .map_err(events_error)?;
     import_instance_config_if_absent(
         &library,
@@ -911,6 +917,7 @@ pub async fn post_plugin_instance(
         "plugin_instance_id": instance.id.to_string(),
         "plugin_key": instance.plugin_key,
         "display_name": instance.display_name,
+        "owner_node_id": instance.owner_node_id,
     })))
 }
 

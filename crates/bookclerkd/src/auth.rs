@@ -1342,44 +1342,67 @@ pub async fn require_operator_or_user_auth(
     mut req: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    match resolve_user_caller(&state, req.headers(), req.uri().path()).await {
+        Ok(caller) => {
+            req.extensions_mut().insert(caller);
+            Ok(next.run(req).await)
+        }
+        Err(UserCallerRefusal::Status(status)) => Err(status),
+        Err(UserCallerRefusal::Response(denied)) => Ok(denied),
+    }
+}
+
+/// Why [`resolve_user_caller`] admitted nobody.
+pub enum UserCallerRefusal {
+    /// Answer with this status (401 signed out, 403 no user account).
+    Status(StatusCode),
+    /// Answer with this response (a pending second-factor enrollment).
+    Response(Response),
+}
+
+/// The [`UserCaller`] `headers` authenticate for `path`, exactly as
+/// [`require_operator_or_user_auth`] admits it. Long-lived connections
+/// (the SPA's `/api/live` socket) call it again while they stay open, so
+/// a signed-out or revoked session loses the socket.
+///
+/// # Errors
+///
+/// Returns the refusal the middleware would answer with.
+pub async fn resolve_user_caller(
+    state: &AppState,
+    headers: &HeaderMap,
+    path: &str,
+) -> Result<UserCaller, UserCallerRefusal> {
     let auth = state.auth_snapshot().await;
     if !auth.enabled {
-        req.extensions_mut().insert(UserCaller::Operator);
-        return Ok(next.run(req).await);
+        return Ok(UserCaller::Operator);
     }
-    if let Some(op) = resolve_operator_session(&state, &auth, req.headers()).await {
+    if let Some(op) = resolve_operator_session(state, &auth, headers).await {
         if let Some(target_id) = op.impersonating_user_id {
             let library = state.library_snapshot().await;
             if let Some(denied) =
-                reject_if_enrollment_required(&state, &library, target_id, req.uri().path()).await
+                reject_if_enrollment_required(state, &library, target_id, path).await
             {
-                return Ok(denied);
+                return Err(UserCallerRefusal::Response(denied));
             }
-            req.extensions_mut()
-                .insert(UserCaller::User { user_id: target_id });
-            return Ok(next.run(req).await);
+            return Ok(UserCaller::User { user_id: target_id });
         }
-        req.extensions_mut().insert(UserCaller::Operator);
-        return Ok(next.run(req).await);
+        return Ok(UserCaller::Operator);
     }
-    if authorize_operator_bearer_only(&auth, req.headers()) {
-        req.extensions_mut().insert(UserCaller::Operator);
-        return Ok(next.run(req).await);
+    if authorize_operator_bearer_only(&auth, headers) {
+        return Ok(UserCaller::Operator);
     }
     let library = state.library_snapshot().await;
-    if let Some(identity) = timed_portal_identity_from_headers(&library, req.headers()).await {
+    if let Some(identity) = timed_portal_identity_from_headers(&library, headers).await {
         let Some(user_id) = identity.user_id else {
-            return Err(StatusCode::FORBIDDEN);
+            return Err(UserCallerRefusal::Status(StatusCode::FORBIDDEN));
         };
-        if let Some(denied) =
-            reject_if_enrollment_required(&state, &library, user_id, req.uri().path()).await
-        {
-            return Ok(denied);
+        if let Some(denied) = reject_if_enrollment_required(state, &library, user_id, path).await {
+            return Err(UserCallerRefusal::Response(denied));
         }
-        req.extensions_mut().insert(UserCaller::User { user_id });
-        return Ok(next.run(req).await);
+        return Ok(UserCaller::User { user_id });
     }
-    Err(StatusCode::UNAUTHORIZED)
+    Err(UserCallerRefusal::Status(StatusCode::UNAUTHORIZED))
 }
 
 /// Operator token/session **or** an active Administrator user portal session.

@@ -2313,6 +2313,210 @@ export async function putNodeLabels(nodeId: string, labels: string[]): Promise<u
   return parseJson(res);
 }
 
+/** An owner cluster this install is enrolled in as a host (no key material). */
+export interface ClusterLinkView {
+  /** Id of the owner cluster; one link per cluster. */
+  cluster_id: string;
+  /** Canonical origin (`https://host[:port]`) this host dials the owner at. */
+  owner_origin: string;
+  /** Node id the owner minted for this install. */
+  node_id: string;
+  /** True when the link pins the owner's self-signed certificate. */
+  pinned: boolean;
+  /** `active`, `revoked` (by the owner), or `left` (by this host). */
+  state: string;
+  /** RFC 3339 time of the latest enrollment (a re-enrollment resets it). */
+  enrolled_at: string;
+}
+
+/**
+ * The parts of a plugin grant the consent screen shows. Every field is
+ * optional because the screen renders whatever the host sent; a missing set
+ * means the grant asks for none of it, and a missing or `null` limit leaves
+ * that limit to the version's manifest.
+ */
+export interface RemoteGrantView {
+  /** Display alias from `plugin.toml` (not security authoritative). */
+  pluginId?: string;
+  /** `deny` (no egress) or `outbound`; anything else is treated as `deny`. */
+  networkMode?: string;
+  /** Outbound domain patterns the guest may dial first (redirect hops aside). */
+  domains?: string[];
+  /** Raw TCP destinations: a host and the ports allowed on it. */
+  tcp?: { host: string; ports: number[] }[];
+  /** CIDR ranges beyond the public Internet (private or local addresses). */
+  addressCidrs?: string[];
+  /** Host bindings (`config`, `secrets`, `kv`, …). */
+  bindings?: string[];
+  /** `[triggers].jobs` types it may handle. */
+  jobs?: string[];
+  /** Named entrypoints it exports (`storefront`, `storage`, `cli`, …). */
+  entrypoints?: string[];
+  /** Event types it may publish and queue bindings it may send to. */
+  producers?: string[];
+  /** Events and queues it consumes (shape owned by the host). */
+  consumers?: unknown[];
+  /** Follow a redirect to a public host it did not declare. */
+  allowUndeclaredPublicRedirects?: boolean;
+  /** workerd compatibility flags the isolate runs with. */
+  compatibilityFlags?: string[];
+  /** Memory ceiling in MiB. */
+  memoryMib?: number | null;
+  /** CPU rate as a percent of one logical CPU (above 100 asks for more than one core). */
+  cpuRatePercent?: number | null;
+  /** Disk budget in MiB for each of its `data/` and `tmp/` directories. */
+  diskMib?: number | null;
+  /** workerd CPU budget per request, in milliseconds. */
+  cpuMs?: number | null;
+  /** workerd outbound fetch (subrequest) budget per request. */
+  subrequests?: number | null;
+  /** Processes or threads allowed beyond the launcher's own (native guests). */
+  extraProcesses?: number | null;
+}
+
+/** Where an owner plugin's request to run here stands. */
+export type RemoteConsentState =
+  | "consented"
+  | "awaiting_host_consent"
+  | "awaiting_host_reapproval"
+  | "invalid_grant";
+
+/** One owner plugin's request to run on this host, and this host's answer. */
+export interface RemoteConsentView {
+  /** Owner cluster that asks; matches a {@link ClusterLinkView.cluster_id}. */
+  cluster_id: string;
+  /** Canonical plugin key the request is for. */
+  plugin_key: string;
+  /** Version the owner now asks to run. */
+  requested_version: string;
+  /** What that version asks for; `null` when the stored request does not parse. */
+  requested_grant: RemoteGrantView | null;
+  /** The archive this host would fetch for that version (hex SHA-256 digests). */
+  requested_artifact?: {
+    /** `blob:` (served by the owner) or `https:` archive URL. */
+    url: string;
+    /** Digest of the archive file. */
+    archive_sha256: string;
+    /** Digest of the unpacked payload tree. */
+    payload_root_sha256: string;
+  };
+  /** Digest of the whole request (version, grant, archive); approve by it. */
+  request_digest: string;
+  /** Version this host approved, if any. */
+  approved_version: string | null;
+  /** What this host granted (the request, narrowed), if approved. */
+  grant: RemoteGrantView | null;
+  /** RFC 3339 time of the approval, if approved. */
+  approved_at: string | null;
+  /** Who approved: the operator's audit identity, or `platform` for an automatic approval. */
+  approved_by: string | null;
+  /** RFC 3339 time this host's operator revoked it; a revoke holds until approved again. */
+  revoked_at?: string | null;
+  /** RFC 3339 time the row last changed. */
+  updated_at?: string;
+  /** Whether the guest may run here now, or what it waits on. */
+  state: RemoteConsentState;
+}
+
+/** `GET /api/config/cluster-consents`. */
+export interface ClusterConsentsResponse {
+  /** Every owner cluster link this install holds, in any state. */
+  clusters: ClusterLinkView[];
+  /** Every recorded owner plugin request, approved or not. */
+  consents: RemoteConsentView[];
+}
+
+/**
+ * Body of an approval: the reviewed request and what of it to leave out.
+ * An approval can only narrow the request, never widen it.
+ */
+export interface RemoteApprovalBody {
+  /** Owner cluster of the request. */
+  cluster_id: string;
+  /** Plugin key of the request. */
+  plugin_key: string;
+  /** The `request_digest` reviewed; refused when the recorded request is another one. */
+  request_digest: string;
+  /** Outbound domain patterns to remove from the grant. */
+  deny_domains?: string[];
+  /** Host bindings to remove (`secrets`, `oauth`, `kv`, …). */
+  deny_bindings?: string[];
+  /** True turns outbound network off altogether (no domains, TCP or CIDRs). */
+  deny_network?: boolean;
+}
+
+/**
+ * Like `parseJson`, but a refusal's `detail` becomes the error message.
+ *
+ * @param res - Response from a consent route.
+ * @returns The parsed body.
+ */
+async function parseConsentJson<T>(res: Response): Promise<T> {
+  if (res.ok) return res.json() as Promise<T>;
+  const text = await res.text().catch(() => "");
+  let message = text || `${res.status} ${res.statusText}`;
+  let code: string | undefined;
+  try {
+    const body = JSON.parse(text) as { error?: string; detail?: string; message?: string };
+    code = typeof body.error === "string" ? body.error : undefined;
+    message = body.detail?.trim() || body.message?.trim() || body.error?.trim() || message;
+  } catch {
+    // keep raw text
+  }
+  throw new ApiError(res.status, message, { code });
+}
+
+/**
+ * Lists the owner clusters this host is enrolled in and what each asks to
+ * run here. Operator only.
+ *
+ * @returns Links and consent rows.
+ */
+export async function listClusterConsents(): Promise<ClusterConsentsResponse> {
+  const res = await fetch("/api/config/cluster-consents", { credentials: "include" });
+  return parseConsentJson(res);
+}
+
+/**
+ * Approves an owner plugin's request, optionally narrowed. Only what the
+ * request asks for can be approved.
+ *
+ * @param body - The request reviewed and what to leave out.
+ * @returns The consent row after approval.
+ */
+export async function approveClusterConsent(
+  body: RemoteApprovalBody,
+): Promise<{ consent: RemoteConsentView }> {
+  const res = await fetch("/api/config/cluster-consents/approve", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseConsentJson(res);
+}
+
+/**
+ * Withdraws an approval: held jobs of the plugin are cancelled and given
+ * back, and nothing of it is claimed until approved again.
+ *
+ * @param clusterId - Owner cluster.
+ * @param pluginKey - Canonical plugin key.
+ * @returns The consent row after revoking.
+ */
+export async function revokeClusterConsent(
+  clusterId: string,
+  pluginKey: string,
+): Promise<{ consent: RemoteConsentView }> {
+  const res = await fetch("/api/config/cluster-consents/revoke", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cluster_id: clusterId, plugin_key: pluginKey }),
+  });
+  return parseConsentJson(res);
+}
+
 /**
  * Writes bootstrap settings (`daemon`, `jail`, `[database]` keys) through
  * `PATCH /api/settings`. Plugin settings are not accepted here: they are

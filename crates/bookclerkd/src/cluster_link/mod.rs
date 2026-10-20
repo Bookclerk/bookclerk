@@ -9,7 +9,12 @@
 //! every client and starts one per active link of the new store, so no
 //! client keeps dialing with the previous store's links and keys. A link
 //! enrolled while the daemon runs is picked up at the next start or
-//! database swap.
+//! database swap. A link that stops being active while its client runs
+//! (`bookclerk clusters leave`, which also deletes its keys) stops the
+//! client within [`consent::CONSENT_POLL`]. A link re-enrolled as another
+//! node (`bookclerk clusters join` again) stops the client of the previous
+//! node the same way, and once it and its consent supervisor have exited
+//! a client is started for the new node.
 //!
 //! Each link also runs a [`consent::LinkSupervisor`]: it reads what the
 //! owner deployed here, records each plugin's request in
@@ -44,14 +49,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bookclerk_library::control_plane::{
-    current_process_incarnation, list_cluster_links, load_cluster_link_keys, remote_job_fence,
-    set_cluster_link_state, NodeSampler, CLUSTER_LINK_REVOKED,
+    current_process_incarnation, list_cluster_links, load_cluster_link, load_cluster_link_keys,
+    remote_job_fence, set_cluster_link_state, NodeSampler, CLUSTER_LINK_REVOKED,
 };
 use bookclerk_library::{JobKind, JobPayload, LibraryStore};
 use bookclerk_node_client::{
     ClientExit, ClientTiming, HostClient, HostClientConfig, HostJobCtx, HostJobError, HostJobRunner,
 };
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use crate::api::AppState;
@@ -126,9 +131,94 @@ impl<T: JobTransport + 'static> HostJobRunner for TransportRunner<T> {
     }
 }
 
+/// Why [`stop_when_inactive`] stopped a link's client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LinkStop {
+    /// The store's shutdown fired (a database swap or daemon exit).
+    Shutdown,
+    /// The link's row is gone or no longer active.
+    Inactive,
+    /// The link is active but enrolled as another node, so the client runs
+    /// with an identity and keys the link no longer names.
+    Replaced,
+}
+
+/// Stops a link's client (through `stop`) once its row is gone, no longer
+/// active, or enrolled as another node than `node_id` (the one the client
+/// runs as), or when `shutdown` (the store's) turns true.
+///
+/// # Returns
+///
+/// Why the client was stopped; on [`LinkStop::Replaced`] the caller starts
+/// a client for the new node.
+async fn stop_when_inactive(
+    library: LibraryStore,
+    cluster_id: String,
+    node_id: String,
+    stop: Arc<watch::Sender<bool>>,
+    mut shutdown: watch::Receiver<bool>,
+) -> LinkStop {
+    let mut poll = tokio::time::interval(consent::CONSENT_POLL);
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    let _ = stop.send(true);
+                    return LinkStop::Shutdown;
+                }
+            }
+            _ = poll.tick() => match load_cluster_link(&library, &cluster_id).await {
+                Ok(Some(link)) if link.is_active() && link.remote_node_id == node_id => {}
+                Ok(Some(link)) if link.is_active() => {
+                    tracing::info!(
+                        %cluster_id,
+                        previous_node_id = %node_id,
+                        node_id = %link.remote_node_id,
+                        "the cluster link was re-enrolled as another node; restarting its client"
+                    );
+                    let _ = stop.send(true);
+                    return LinkStop::Replaced;
+                }
+                Ok(_) => {
+                    tracing::info!(%cluster_id, "the cluster link is no longer active; stopping its client");
+                    let _ = stop.send(true);
+                    return LinkStop::Inactive;
+                }
+                // A failed read is not a departure; the next poll retries.
+                Err(err) => tracing::warn!(%cluster_id, error = %err, "could not re-read the cluster link"),
+            },
+        }
+    }
+}
+
 /// How long a stopped host client may take to exit after a database swap
 /// before its task is aborted.
 const CLIENT_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Waits up to [`CLIENT_STOP_TIMEOUT`] for a stopped `task` to exit, then
+/// aborts it.
+async fn join_or_abort(task: JoinHandle<()>) {
+    // The guard aborts a task that did not stop in time, and also one
+    // whose wait is itself dropped (an aborted caller).
+    let mut guard = AbortOnDrop(Some(task));
+    if let Some(task) = guard.0.as_mut() {
+        let _ = tokio::time::timeout(CLIENT_STOP_TIMEOUT, task).await;
+    }
+}
+
+/// A task aborted when its guard drops (a no-op once it finished), so a
+/// task spawned for a link's client goes with that client's task when
+/// [`join_or_abort`] aborts it.
+struct AbortOnDrop<T>(Option<JoinHandle<T>>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
+    }
+}
 
 /// Starts the cluster-link supervisor: one host client per active link of
 /// the live library, restarted on the new store after every database swap
@@ -151,6 +241,8 @@ const LINK_RETRY_MAX: Duration = Duration::from_secs(300);
 /// with a growing delay ([`LINK_RETRY_MIN`] to [`LINK_RETRY_MAX`]) and only
 /// the links not yet running are started, so a transient database error at
 /// startup does not leave an enrolled node undialed until the next swap.
+/// A link whose client stopped because it was re-enrolled as another node
+/// is started again, as the new node, once that client has exited.
 async fn supervise_cluster_links(state: Arc<AppState>) {
     let mut swaps = state.library_swaps.subscribe();
     loop {
@@ -159,30 +251,34 @@ async fn supervise_cluster_links(state: Arc<AppState>) {
         swaps.borrow_and_update();
         let library = state.library_snapshot().await;
         let (stop, shutdown) = watch::channel(false);
+        // Clusters whose client exited because the link was re-enrolled.
+        let (relink, mut relinks) = mpsc::unbounded_channel();
         let mut running = BTreeSet::new();
         let mut clients = Vec::new();
         let mut retry = LINK_RETRY_MIN;
         let swapped = loop {
-            let complete =
-                start_clients(&state, &library, &shutdown, &mut running, &mut clients).await;
-            if complete {
-                break swaps.changed().await.is_ok();
-            }
+            let complete = start_clients(
+                &state,
+                &library,
+                &shutdown,
+                &relink,
+                &mut running,
+                &mut clients,
+            )
+            .await;
             tokio::select! {
                 changed = swaps.changed() => break changed.is_ok(),
-                () = tokio::time::sleep(retry) => {
+                Some(cluster_id) = relinks.recv() => {
+                    running.remove(&cluster_id);
+                }
+                () = tokio::time::sleep(retry), if !complete => {
                     retry = (retry * 2).min(LINK_RETRY_MAX);
                 }
             }
         };
         let _ = stop.send(true);
-        for mut client in clients {
-            if tokio::time::timeout(CLIENT_STOP_TIMEOUT, &mut client)
-                .await
-                .is_err()
-            {
-                client.abort();
-            }
+        for client in clients {
+            join_or_abort(client).await;
         }
         if !swapped {
             return;
@@ -193,7 +289,9 @@ async fn supervise_cluster_links(state: Arc<AppState>) {
 
 /// Starts one host client per active link in `library` that is not yet in
 /// `running`, each stopping when `shutdown` turns true, and adds it to
-/// `running` and `clients`.
+/// `running` and `clients`. A client stopped because its link was
+/// re-enrolled as another node sends its cluster id on `relink` once it
+/// and its consent supervisor have exited.
 ///
 /// # Returns
 ///
@@ -204,6 +302,7 @@ async fn start_clients(
     state: &Arc<AppState>,
     library: &LibraryStore,
     shutdown: &watch::Receiver<bool>,
+    relink: &mpsc::UnboundedSender<String>,
     running: &mut BTreeSet<String>,
     clients: &mut Vec<JoinHandle<()>>,
 ) -> bool {
@@ -282,9 +381,10 @@ async fn start_clients(
         };
         running.insert(cluster_id.clone());
         // The link's consent supervisor stops with its client: on a swap,
-        // when the client is revoked, or when its task is aborted.
+        // when the client is revoked, or when its task is aborted (the
+        // guard aborts it with the task).
         let (link_stop, link_shutdown) = watch::channel(false);
-        let supervisor = tokio::spawn(
+        let supervisor = AbortOnDrop(Some(tokio::spawn(
             consent::LinkSupervisor {
                 library: library.clone(),
                 files_dir: files_dir.clone(),
@@ -293,39 +393,67 @@ async fn start_clients(
                 platform_payloads: platform_payloads.clone(),
             }
             .run(link_shutdown),
-        );
+        )));
+        // The client stops on a swap (forwarded from `shutdown`), once its
+        // link is no longer active, or once it is enrolled as another node.
+        let (client_stop, client_shutdown) = watch::channel(false);
+        let watcher = AbortOnDrop(Some(tokio::spawn(stop_when_inactive(
+            library.clone(),
+            cluster_id.clone(),
+            node_id.clone(),
+            Arc::new(client_stop),
+            shutdown.clone(),
+        ))));
         let library = library.clone();
-        let shutdown = shutdown.clone();
+        let relink = relink.clone();
         clients.push(tokio::spawn(async move {
-            let exit = client.run(shutdown).await;
+            let exit = client.run(client_shutdown).await;
             let _ = link_stop.send(true);
-            if exit == ClientExit::Revoked {
-                // The link belongs to the store it was read from. Only the
-                // enrollment this client ran as is revoked: a re-enrollment
-                // recorded meanwhile keeps its new link.
-                for attempt in 0..5u32 {
-                    match set_cluster_link_state(
-                        &library,
-                        &cluster_id,
-                        CLUSTER_LINK_REVOKED,
-                        Some(&node_id),
-                    )
-                    .await
-                    {
-                        Ok(true) => break,
-                        Ok(false) => {
-                            tracing::info!(%cluster_id, %node_id, "revoked enrollment was already replaced; keeping the new link");
-                            break;
-                        }
-                        Err(err) => {
-                            tracing::warn!(%cluster_id, error = %err, "could not mark the cluster link revoked");
-                            tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
-                        }
+            // Both exit before a client for a new enrollment can start, so
+            // one cluster never has two consent supervisors.
+            let mut supervisor = supervisor;
+            if let Some(supervisor) = supervisor.0.take() {
+                join_or_abort(supervisor).await;
+            }
+            let mut watcher = watcher;
+            if exit != ClientExit::Revoked {
+                if let Some(stopped) = watcher.0.as_mut() {
+                    if let Ok(LinkStop::Replaced) = stopped.await {
+                        let _ = relink.send(cluster_id);
+                    }
+                }
+                return;
+            }
+            drop(watcher);
+            // The link belongs to the store it was read from. Only the
+            // enrollment this client ran as is revoked: a re-enrollment
+            // recorded meanwhile keeps its new link.
+            for attempt in 0..5u32 {
+                match set_cluster_link_state(
+                    &library,
+                    &cluster_id,
+                    CLUSTER_LINK_REVOKED,
+                    Some(&node_id),
+                )
+                .await
+                {
+                    Ok(true) => {
+                        crate::live::poke(bookclerk_library::control_plane::LiveTopic::Clusters);
+                        break;
+                    }
+                    Ok(false) => {
+                        tracing::info!(%cluster_id, %node_id, "revoked enrollment was already replaced; keeping the new link");
+                        // Dial the enrollment that replaced this one.
+                        let _ = relink.send(cluster_id.clone());
+                        break;
+                    }
+                    Err(err) => {
+                        tracing::warn!(%cluster_id, error = %err, "could not mark the cluster link revoked");
+                        tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
                     }
                 }
             }
         }));
-        clients.push(supervisor);
     }
     complete
 }

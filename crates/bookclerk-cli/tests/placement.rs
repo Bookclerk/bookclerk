@@ -224,3 +224,85 @@ fn deploy_places_an_instance_and_manual_hands_it_back() {
     ));
     assert_eq!(cleared["labels"], serde_json::json!(["zone=eu"]));
 }
+
+/// `plugins instances create --node` makes a node-local instance (H-2):
+/// owned by a registered node; an unknown node is refused.
+#[test]
+fn a_node_local_instance_names_its_node() {
+    let files_dir = tempfile::tempdir().unwrap();
+    let files = files_dir.path();
+    write_config(files);
+    stage_sqlite_plugin(files);
+    let approved = run_bookclerk(files, &["plugins", "approve", "sqlite", "--yes"], &[]);
+    assert!(approved.status.success(), "{}", stderr(&approved));
+    let work = tempfile::tempdir().unwrap();
+    let (archive, package) = fixture_package(work.path());
+    json(&run_bookclerk(
+        files,
+        &[
+            "--format",
+            "json",
+            "plugins",
+            "install",
+            "fxplace",
+            "--archive",
+            archive.to_str().unwrap(),
+            "--manifest",
+            package.to_str().unwrap(),
+            "--allow-unverified-publisher",
+            "--approve-capabilities",
+        ],
+        &[],
+    ));
+    let nodes = json(&run_bookclerk(
+        files,
+        &["--format", "json", "nodes", "list"],
+        &[],
+    ));
+    let node = nodes["nodes"][0]["node_id"].as_str().unwrap().to_string();
+
+    let unknown = run_bookclerk(
+        files,
+        &[
+            "plugins",
+            "instances",
+            "create",
+            "fxplace",
+            "--node",
+            "no-such-node",
+        ],
+        &[],
+    );
+    assert!(!unknown.status.success(), "{}", stdout(&unknown));
+
+    let local = json(&run_bookclerk(
+        files,
+        &[
+            "--format",
+            "json",
+            "plugins",
+            "instances",
+            "create",
+            "fxplace",
+            "--name",
+            "here",
+            "--node",
+            &node,
+        ],
+        &[],
+    ));
+    assert_eq!(local["owner_node_id"], node.as_str());
+    let shared = json(&run_bookclerk(
+        files,
+        &[
+            "--format",
+            "json",
+            "plugins",
+            "instances",
+            "create",
+            "fxplace",
+        ],
+        &[],
+    ));
+    assert!(shared["owner_node_id"].is_null());
+}

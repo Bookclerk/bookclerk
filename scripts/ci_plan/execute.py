@@ -508,6 +508,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "") -> 
             Command("npm ci (ui)", ["npm", "ci"], cwd=ui),
             Command("npm run lint (ui)", ["npm", "run", "lint"], cwd=ui),
             Command("npm run test:safe-html (ui)", ["npm", "run", "test:safe-html"], cwd=ui),
+            Command("npm test (ui)", ["npm", "test"], cwd=ui),
             Command("npm run build (ui)", ["npm", "run", "build"], cwd=ui),
         ]
     if check == "api_docs":

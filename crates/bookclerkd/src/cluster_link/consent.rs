@@ -88,6 +88,7 @@ static CONSENT_GENERATION: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch
 /// Tells every link supervisor in this process to re-read consent now.
 pub fn notify_consent_changed() {
     CONSENT_GENERATION.send_modify(|generation| *generation = generation.wrapping_add(1));
+    crate::live::poke(bookclerk_library::control_plane::LiveTopic::Consents);
 }
 
 /// A receiver of [`notify_consent_changed`], marked as having seen every

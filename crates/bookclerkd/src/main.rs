@@ -14,6 +14,7 @@ mod http_error;
 mod job_handler;
 mod job_worker;
 mod jobs;
+mod live;
 mod maintenance;
 mod node_api;
 mod node_queue;
