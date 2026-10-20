@@ -484,6 +484,42 @@ async fn shutdown_cancels_held_jobs() {
     assert!(handle.held_fences().is_empty());
 }
 
+/// Aborting the client's task (as a database swap does when a client does
+/// not stop in time) still cancels the jobs it holds.
+#[tokio::test]
+async fn aborting_the_client_cancels_held_jobs() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let runner = UntilCancelled::default();
+    let (handle, _stop, exit) =
+        start_with(listener.local_addr().unwrap().port(), 1, runner.clone());
+    let mut socket = accept(&listener).await;
+    let mut granted = false;
+    read_for(
+        &mut socket,
+        Duration::from_millis(500),
+        |frame| match &frame.body {
+            Body::Heartbeat { .. } => Some(Body::Accepted {}),
+            Body::Claim { .. } if !std::mem::replace(&mut granted, true) => {
+                Some(work("job-1", 3, 60))
+            }
+            Body::Claim { .. } => Some(Body::NoWork {
+                retry_after_secs: 300,
+            }),
+            _ => None,
+        },
+    )
+    .await;
+    assert!(wait_for(&runner.started, Duration::from_secs(1)).await);
+    assert_eq!(handle.held_fences().len(), 1);
+
+    exit.abort();
+    assert!(exit.await.unwrap_err().is_cancelled());
+    assert!(
+        wait_for(&runner.cancelled, Duration::from_secs(1)).await,
+        "the job outlived its aborted client"
+    );
+}
+
 /// A finished job whose report the owner leaves unanswered keeps renewing
 /// its lease, so a slow report does not let the fence lapse.
 #[tokio::test]

@@ -291,6 +291,16 @@ pub(crate) struct Shared {
     abandoned: AtomicBool,
 }
 
+/// Cancels every job `0` holds when dropped: [`HostClient::run`] keeps one
+/// so its jobs are abandoned however it ends, an abort included.
+struct AbandonOnDrop<'a>(&'a Shared);
+
+impl Drop for AbandonOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.abandon_all();
+    }
+}
+
 impl Shared {
     /// Every fence still held (not lost), for a hello.
     fn held_fences(&self) -> Vec<HeldFence> {
@@ -576,12 +586,12 @@ impl<R: HostJobRunner> HostClient<R> {
     /// Connects, serves, and reconnects until `shutdown` turns true (or its
     /// sender is dropped) or the owner revokes this node.
     ///
-    /// Every held job is cancelled as lost before this returns, whatever
-    /// the reason, so no job task keeps running for a client that is gone.
+    /// Every held job is cancelled as lost when this returns, whatever the
+    /// reason, and also when the future is dropped or its task aborted
+    /// first, so no job task keeps running for a client that is gone.
     pub async fn run(self, shutdown: watch::Receiver<bool>) -> ClientExit {
-        let exit = self.serve_until_exit(shutdown).await;
-        self.shared.abandon_all();
-        exit
+        let _abandon = AbandonOnDrop(&self.shared);
+        self.serve_until_exit(shutdown).await
     }
 
     /// The reconnect loop behind [`Self::run`].
