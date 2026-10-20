@@ -20,8 +20,8 @@ use std::time::Duration;
 
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
-    default_instance_for_key, list_all_plugin_instances, live_node_ids, plan_acquire, plan_scan,
-    PluginInstanceId, ScanRequester,
+    default_instance_for_key, list_all_plugin_instances, live_node_ids, load_plugin_instance,
+    plan_acquire, plan_scan, PluginInstanceId, ScanRequester,
 };
 use bookclerk_library::{
     EnqueueJobSpec, EnqueueOutcome, JobKind, JobPayload, JobRecord, JobState, JobTrigger,
@@ -68,6 +68,28 @@ pub(crate) fn node_bound_output_keys(config: &Config) -> anyhow::Result<BTreeSet
         .iter()
         .filter(|plugin| bookclerk_plugin_host::is_first_party_local_output(plugin))
         .map(|plugin| plugin.plugin_key().to_string())
+        .collect())
+}
+
+/// Plugin keys of every instance in the database that names the
+/// first-party `local` destination, whatever is installed here: as the
+/// daemon's admission does, so a `local` destination deployed only on
+/// another node still binds the acquire to a node that runs it.
+///
+/// # Errors
+///
+/// Returns an error when the instance list cannot be read.
+async fn local_output_keys_from_instances(
+    store: &LibraryStore,
+) -> anyhow::Result<BTreeSet<String>> {
+    Ok(list_all_plugin_instances(store)
+        .await?
+        .into_iter()
+        .filter(|instance| {
+            bookclerk_plugin_catalog::PluginKey::parse(&instance.plugin_key)
+                .is_ok_and(|key| bookclerk_plugin_host::is_first_party_local_output_key(&key))
+        })
+        .map(|instance| instance.plugin_key)
         .collect())
 }
 
@@ -206,15 +228,32 @@ pub(crate) async fn resolve_pin(
 }
 
 /// The account id an operator named: an exact `accounts.account_id`, or
-/// else the id of the one account whose label matches (any case). Anything
-/// else is passed on unchanged and matches nothing when the job runs.
+/// else the id of the one account whose label matches (any case). With
+/// `plugin_key`, only that plugin's accounts are considered, so a label
+/// two stores share still names one account once `--source` or
+/// `--instance` picked the store. Anything else is passed on unchanged
+/// and matches nothing when the job runs.
 ///
 /// # Errors
 ///
-/// Returns an error when the read fails or a label names several accounts.
-pub(crate) async fn resolve_account(store: &LibraryStore, needle: &str) -> anyhow::Result<String> {
+/// Returns an error when `needle` is blank (an unset variable must not
+/// widen one account into every account), the read fails, or a label
+/// names several accounts.
+pub(crate) async fn resolve_account(
+    store: &LibraryStore,
+    needle: &str,
+    plugin_key: Option<&str>,
+) -> anyhow::Result<String> {
     let needle = needle.trim();
-    let accounts = store.list_accounts().await?;
+    if needle.is_empty() {
+        anyhow::bail!("the account named is blank");
+    }
+    let accounts: Vec<_> = store
+        .list_accounts()
+        .await?
+        .into_iter()
+        .filter(|a| plugin_key.is_none_or(|key| a.plugin_key == key))
+        .collect();
     if accounts.iter().any(|a| a.account_id == needle) {
         return Ok(needle.to_string());
     }
@@ -235,6 +274,20 @@ pub(crate) async fn resolve_account(store: &LibraryStore, needle: &str) -> anyho
             ids.into_iter().collect::<Vec<_>>().join(", ")
         ),
     }
+}
+
+/// The plugin key of the instance `pin` names, when it names one.
+///
+/// # Errors
+///
+/// Returns an error when the read fails.
+async fn pin_plugin_key(store: &LibraryStore, pin: Option<&str>) -> anyhow::Result<Option<String>> {
+    let Some(id) = pin.and_then(|raw| PluginInstanceId::parse(raw).ok()) else {
+        return Ok(None);
+    };
+    Ok(load_plugin_instance(store, &id)
+        .await?
+        .map(|instance| instance.plugin_key))
 }
 
 /// `library scan` arguments.
@@ -285,12 +338,13 @@ pub(crate) async fn scan(
     if args.wait {
         require_live_node(store).await?;
     }
+    let pin_key = pin_plugin_key(store, pin.as_deref()).await?;
     let mut plan = Vec::new();
     if args.accounts.is_empty() {
         plan.extend(plan_scan(store, ScanRequester::Operator, None, pin.as_deref()).await?);
     } else {
         for needle in args.accounts {
-            let account = resolve_account(store, needle).await?;
+            let account = resolve_account(store, needle, pin_key.as_deref()).await?;
             plan.extend(
                 plan_scan(
                     store,
@@ -325,8 +379,9 @@ pub(crate) async fn acquire(
     if args.wait {
         require_live_node(store).await?;
     }
+    let pin_key = pin_plugin_key(store, pin.as_deref()).await?;
     let account = match args.account {
-        Some(needle) => Some(resolve_account(store, needle).await?),
+        Some(needle) => Some(resolve_account(store, needle, pin_key.as_deref()).await?),
         None => None,
     };
     let mut plan = plan_acquire(
@@ -341,7 +396,8 @@ pub(crate) async fn acquire(
         payload.force = args.force;
         payload.pdf_only = args.pdf_only;
     }
-    let node_bound = node_bound_output_keys(config)?;
+    let mut node_bound = node_bound_output_keys(config)?;
+    node_bound.extend(local_output_keys_from_instances(store).await?);
     let queued = admit(store, config, JobKind::Acquire, plan, &node_bound).await?;
     settle("acquire", store, queued, args.wait).await
 }
@@ -676,13 +732,26 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("has no plugin instance"), "{err}");
-        assert_eq!(resolve_account(&store, "a2").await.unwrap(), "a2");
-        assert_eq!(resolve_account(&store, "riley").await.unwrap(), "a1");
-        assert_eq!(resolve_account(&store, "nobody").await.unwrap(), "nobody");
+        assert_eq!(resolve_account(&store, "a2", None).await.unwrap(), "a2");
+        assert_eq!(resolve_account(&store, "riley", None).await.unwrap(), "a1");
+        assert_eq!(
+            resolve_account(&store, "nobody", None).await.unwrap(),
+            "nobody"
+        );
+        assert!(resolve_account(&store, "  ", None).await.is_err());
         store
-            .upsert_account("pk", "a4", "us", Some("Riley"), true, "teststore")
+            .upsert_account("pk2", "a4", "us", Some("Riley"), true, "teststore")
             .await
             .unwrap();
-        assert!(resolve_account(&store, "Riley").await.is_err());
+        assert!(resolve_account(&store, "Riley", None).await.is_err());
+        // Within one store, the label names one account again.
+        assert_eq!(
+            resolve_account(&store, "Riley", Some("pk")).await.unwrap(),
+            "a1"
+        );
+        assert_eq!(
+            resolve_account(&store, "Riley", Some("pk2")).await.unwrap(),
+            "a4"
+        );
     }
 }

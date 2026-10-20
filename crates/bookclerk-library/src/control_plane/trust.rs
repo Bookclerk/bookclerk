@@ -323,7 +323,8 @@ pub async fn remote_node_requester(
 ///
 /// A node trusted with everything reads every job. A node trusted only
 /// with its owner's work reads any scan or acquire that names an account
-/// of its owner's (`account_owned`), including a pinned one it could not
+/// and touches only its owner's accounts ([`job_item_accounts`], within a
+/// pinned job's plugin), including a pinned one it could not
 /// claim itself, since its owner may queue those through it
 /// ([`plan_scan`]). A node trusted with nothing reads none.
 ///
@@ -339,13 +340,23 @@ pub async fn remote_node_may_view_job(
         NodeTrust::All => Ok(true),
         NodeTrust::Nothing => Ok(false),
         NodeTrust::OwnedBy(user_id) => {
-            let account = job.payload.account.as_deref().filter(|a| !a.is_empty());
-            match account {
-                Some(account) if matches!(job.kind, JobKind::Scan | JobKind::Acquire) => {
-                    account_owned(store, user_id, account).await
-                }
-                _ => Ok(false),
+            let Some(account) = job.payload.account.as_deref().filter(|a| !a.is_empty()) else {
+                return Ok(false);
+            };
+            if !matches!(job.kind, JobKind::Scan | JobKind::Acquire) {
+                return Ok(false);
             }
+            // Within the job's pinned plugin, as the planner checked it; a
+            // pin this database does not know falls back to every store's
+            // accounts of that name, which is stricter.
+            let Some(items) = job_item_accounts(store, job).await? else {
+                return account_owned(store, user_id, account).await;
+            };
+            if items.is_empty() {
+                return Ok(false);
+            }
+            let owned = accounts_owned_by(store, user_id).await?;
+            Ok(items.iter().all(|key| owned.contains(key)))
         }
     }
 }
@@ -464,6 +475,19 @@ pub(super) async fn accounts_named(
         .collect())
 }
 
+/// The account a request names, trimmed: `None` when none was named.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] when one was named but is blank, so
+/// an unset variable never widens one account into every account.
+fn named_account(account: Option<&str>) -> Result<Option<&str>> {
+    match account.map(str::trim) {
+        Some("") => Err(LibraryError::Invalid("the account named is blank".into())),
+        other => Ok(other),
+    }
+}
+
 /// The account id `needle` (an id or a label) names, limited to
 /// `plugin_key` when given: `needle` itself when it is an id exactly or
 /// names no account, else the one id its label names.
@@ -554,7 +578,7 @@ pub async fn plan_scan(
     account: Option<&str>,
     plugin_instance_id: Option<&str>,
 ) -> Result<Vec<JobPayload>> {
-    let account = account.map(str::trim).filter(|a| !a.is_empty());
+    let account = named_account(account)?;
     let pinned = plugin_instance_id
         .map(str::trim)
         .filter(|id| !id.is_empty())
@@ -588,7 +612,9 @@ pub async fn plan_scan(
     };
     let Some(user_id) = owner else {
         if let Some(account) = account {
-            return Ok(vec![payload(Some(account))]);
+            // By id, so it dedups against a scan that named the id.
+            let id = resolve_named_account(store, account, plugin_key.as_deref()).await?;
+            return Ok(vec![payload(Some(&id))]);
         }
         if pinned.is_some() && plugin_key.is_none() {
             // An unknown pinned instance fails at run time, as before.
@@ -617,7 +643,8 @@ pub async fn plan_scan(
         if !wholly_owned(&touched) {
             return Err(not_your_account());
         }
-        return Ok(vec![payload(Some(account))]);
+        let id = resolve_named_account(store, account, plugin_key.as_deref()).await?;
+        return Ok(vec![payload(Some(&id))]);
     }
     let mut out = Vec::new();
     for target in scan_all_targets(store, plugin_key.as_deref(), wholly_owned).await? {
@@ -659,17 +686,25 @@ pub async fn plan_acquire(
     titles: &[String],
     plugin_instance_id: Option<&str>,
 ) -> Result<Vec<JobPayload>> {
-    let account = account.map(str::trim).filter(|a| !a.is_empty());
+    let account = named_account(account)?;
     let pinned = plugin_instance_id
         .map(str::trim)
         .filter(|id| !id.is_empty())
         .map(str::to_string);
+    let asked_for_titles = !titles.is_empty();
     let mut seen = BTreeSet::new();
     let titles: Vec<&str> = titles
         .iter()
         .map(|t| t.trim())
         .filter(|t| !t.is_empty() && seen.insert(t.to_ascii_lowercase()))
         .collect();
+    // Only an omitted list means every title: a list of blanks (an unset
+    // shell variable) must not widen one title into the whole library.
+    if asked_for_titles && titles.is_empty() {
+        return Err(LibraryError::Invalid(
+            "every title id given is blank".into(),
+        ));
+    }
     let owner = requester_scope(store, requester).await?;
     let payload = |account: Option<&str>, title: Option<&str>| JobPayload {
         account: account.map(str::to_string),

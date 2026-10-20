@@ -1016,6 +1016,27 @@ async fn acquires_are_trusted_and_planned_per_item(owner_db: LibraryStore, host_
         .await
         .unwrap();
         assert_eq!(shape(plan), vec![(s("a1"), s("B0RILEY"))], "{requester:?}");
+        let scans = plan_scan(&host_db, requester, Some("MY AUDIBLE"), None)
+            .await
+            .unwrap();
+        let accounts: Vec<_> = scans.into_iter().map(|p| p.account).collect();
+        assert_eq!(accounts, vec![s("a1")], "{requester:?}");
+    }
+    // A named account that is blank never widens to every account, and a
+    // list of blank titles never widens to every title.
+    for requester in [ScanRequester::User(riley), ScanRequester::Operator] {
+        let err = plan_scan(&host_db, requester, Some("  "), None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LibraryError::Invalid(_)), "{err}");
+        let err = plan_acquire(&host_db, requester, Some(""), &[], None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LibraryError::Invalid(_)), "{err}");
+        let err = plan_acquire(&host_db, requester, None, &titles(&["", " "]), None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LibraryError::Invalid(_)), "{err}");
     }
     accounts::Entity::update_many()
         .col_expr(accounts::Column::Label, Expr::value("My Audible"))
@@ -1118,6 +1139,35 @@ async fn shared_account_id_pins_a_members_title(owner_db: LibraryStore, host_db:
         .await
         .unwrap_err();
     assert!(matches!(err, LibraryError::Forbidden(_)), "{err}");
+
+    // Riley's Host may follow the scan pinned to Riley's store that the
+    // planner admitted, though Sam holds the same id on another store; an
+    // unpinned scan of that id touches Sam's account too, so it stays hidden.
+    add_node(&owner_db, HOST, "host", Some(riley)).await;
+    let instance_id = instance.id.to_string();
+    let pinned = plan_scan(
+        &host_db,
+        ScanRequester::User(riley),
+        Some("shared"),
+        Some(&instance_id),
+    )
+    .await
+    .unwrap();
+    assert_eq!(pinned.len(), 1);
+    let job = record(JobKind::Scan, pinned[0].clone());
+    assert!(remote_node_may_view_job(&host_db, HOST, &job)
+        .await
+        .unwrap());
+    let unpinned = record(
+        JobKind::Scan,
+        JobPayload {
+            account: Some("shared".into()),
+            ..Default::default()
+        },
+    );
+    assert!(!remote_node_may_view_job(&host_db, HOST, &unpinned)
+        .await
+        .unwrap());
 }
 
 /// Scan-all leaves a scan-disabled account alone even when another plugin

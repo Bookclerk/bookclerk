@@ -375,6 +375,8 @@ pub async fn run(
                 })?;
             } else {
                 wait_for_remote_jobs(&base, &cluster, token.as_deref(), &ids).await?;
+                // Progress went to stderr; a JSON caller still gets the plan.
+                emit(format, &planned, || {})?;
             }
             if ids.is_empty() && full == 0 {
                 anyhow::bail!("nothing to scan: no store account of this node's owner to scan");
