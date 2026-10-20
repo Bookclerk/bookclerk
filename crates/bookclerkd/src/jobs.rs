@@ -377,17 +377,17 @@ pub async fn enqueue_acquire(
     trigger: JobTrigger,
 ) -> anyhow::Result<Vec<AdmitJob>> {
     let (max_pending, max_attempts) = queue_limits(&state).await;
-    let plan = {
-        let library = state.library_snapshot().await;
-        bookclerk_library::control_plane::plan_acquire(
-            &library,
-            requester,
-            ask.account.as_deref(),
-            &ask.titles,
-            ask.plugin_instance_id.as_deref(),
-        )
-        .await?
-    };
+    // Plan and admit against one store under one permit, as scans do.
+    let _permit = admission_permit(&state).await?;
+    let library = state.library_snapshot().await;
+    let plan = bookclerk_library::control_plane::plan_acquire(
+        &library,
+        requester,
+        ask.account.as_deref(),
+        &ask.titles,
+        ask.plugin_instance_id.as_deref(),
+    )
+    .await?;
     let mut admitted = Vec::with_capacity(plan.len());
     for payload in plan {
         let mut spec = enqueue_spec(
@@ -401,7 +401,7 @@ pub async fn enqueue_acquire(
         );
         spec.payload.force = ask.force;
         spec.payload.pdf_only = ask.pdf_only;
-        admitted.push(admit(&state, spec).await?);
+        admitted.push(admit_into(&state, &library, spec).await?);
     }
     Ok(admitted)
 }

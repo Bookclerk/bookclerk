@@ -354,64 +354,81 @@ pub async fn run(
     }
 }
 
+/// Most job ids one status request may carry; matches the owner's
+/// `MAX_STATUS_JOBS` cap on the node protocol's job-status call.
+const STATUS_BATCH: usize = 64;
+
 /// Polls the owner (through this daemon) until every job in `ids` it lets
 /// this node see is finished, printing state changes; fails when any did
 /// not succeed or is not visible, since its outcome is then unknown.
+///
+/// Ids go out in batches of [`STATUS_BATCH`], and a finished or hidden
+/// job is dropped from later polls, so a scan of many accounts never
+/// exceeds the owner's per-request cap.
 async fn wait_for_remote_jobs(
     base: &str,
     cluster: &str,
     token: Option<&str>,
     ids: &[String],
 ) -> anyhow::Result<()> {
-    let ids: std::collections::BTreeSet<&str> = ids.iter().map(String::as_str).collect();
+    let mut pending: std::collections::BTreeSet<String> = ids.iter().cloned().collect();
     let mut seen: std::collections::BTreeMap<String, String> = Default::default();
-    loop {
-        let answer = crate::commands::daemon_cmd::post_json_async(
-            &format!("{base}/api/config/clusters/{cluster}/jobs"),
-            json!({ "job_ids": ids }),
-            token,
-        )
-        .await?;
-        let jobs = answer["jobs"].as_array().cloned().unwrap_or_default();
-        let mut finished = 0usize;
-        let mut failed = Vec::new();
-        for job in &jobs {
-            let id = job["id"].as_str().unwrap_or_default().to_string();
-            let state = job["state"].as_str().unwrap_or_default();
-            let progress = job["progress"].as_str().unwrap_or_default();
-            let line = format!("{state} {progress}");
-            if seen.get(&id) != Some(&line) {
-                eprintln!("{id}: {}", line.trim());
-                seen.insert(id.clone(), line);
-            }
-            match state {
-                "succeeded" => finished += 1,
-                "failed" | "cancelled" => {
-                    finished += 1;
-                    let detail = job["error_message"].as_str().unwrap_or(state);
-                    failed.push(format!("{id} ({detail})"));
+    let mut failed = Vec::new();
+    let mut hidden = Vec::new();
+    while !pending.is_empty() {
+        let batch: Vec<String> = pending.iter().cloned().collect();
+        for chunk in batch.chunks(STATUS_BATCH) {
+            let answer = crate::commands::daemon_cmd::post_json_async(
+                &format!("{base}/api/config/clusters/{cluster}/jobs"),
+                json!({ "job_ids": chunk }),
+                token,
+            )
+            .await?;
+            let jobs = answer["jobs"].as_array().cloned().unwrap_or_default();
+            let mut visible = std::collections::BTreeSet::new();
+            for job in &jobs {
+                let id = job["id"].as_str().unwrap_or_default().to_string();
+                let state = job["state"].as_str().unwrap_or_default();
+                let progress = job["progress"].as_str().unwrap_or_default();
+                let line = format!("{state} {progress}");
+                if seen.get(&id) != Some(&line) {
+                    eprintln!("{id}: {}", line.trim());
+                    seen.insert(id.clone(), line);
                 }
-                _ => {}
-            }
-        }
-        if finished == jobs.len() {
-            if !failed.is_empty() {
-                anyhow::bail!("scan did not succeed: {}", failed.join(", "));
+                match state {
+                    "succeeded" => {
+                        pending.remove(&id);
+                    }
+                    "failed" | "cancelled" => {
+                        let detail = job["error_message"].as_str().unwrap_or(state);
+                        failed.push(format!("{id} ({detail})"));
+                        pending.remove(&id);
+                    }
+                    _ => {}
+                }
+                visible.insert(id);
             }
             // A job the owner does not let this node see (gone, or no
             // longer an account of this node's owner) has no known outcome.
-            let visible: std::collections::BTreeSet<&str> =
-                jobs.iter().filter_map(|job| job["id"].as_str()).collect();
-            let hidden: Vec<&str> = ids.difference(&visible).copied().collect();
-            if !hidden.is_empty() {
-                anyhow::bail!(
-                    "the outcome of {} scan job(s) is unknown: not visible to this node: {}",
-                    hidden.len(),
-                    hidden.join(", ")
-                );
+            for id in chunk {
+                if !visible.contains(id) && pending.remove(id) {
+                    hidden.push(id.clone());
+                }
             }
-            return Ok(());
         }
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        if !pending.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
     }
+    if !failed.is_empty() {
+        anyhow::bail!("scan did not succeed: {}", failed.join(", "));
+    }
+    if !hidden.is_empty() {
+        anyhow::bail!(
+            "the outcome of {} scan job(s) is unknown: not visible to this node: {}",
+            hidden.len(),
+            hidden.join(", ")
+        );
+    }
+    Ok(())
 }

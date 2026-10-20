@@ -1036,6 +1036,46 @@ async fn acquires_are_trusted_and_planned_per_item(owner_db: LibraryStore, host_
     assert!(matches!(err, LibraryError::Invalid(_)), "{err}");
 }
 
+/// A Member's title acquire whose account id another user also holds on a
+/// different store is pinned to their store instead of refused, and a
+/// title whose only row is on the other user's store stays refused.
+async fn shared_account_id_pins_a_members_title(owner_db: LibraryStore, host_db: LibraryStore) {
+    let operator = ConfigActor::Operator {
+        id: "operator".into(),
+    };
+    let instance = super::instances::create_plugin_instance(&owner_db, &operator, PLUGIN, "")
+        .await
+        .unwrap();
+    let riley = user(&owner_db, UserRole::Member, "Riley").await;
+    let sam = user(&owner_db, UserRole::Member, "Sam").await;
+    add_account(&owner_db, PLUGIN, "shared", true).await;
+    add_account(&owner_db, OTHER_PLUGIN, "shared", true).await;
+    link(&owner_db, riley, PLUGIN, "shared").await;
+    link(&owner_db, sam, OTHER_PLUGIN, "shared").await;
+    add_book(&owner_db, "shared", "r1", "B0RILEY").await;
+
+    let titles = vec!["B0RILEY".to_string()];
+    let plan = plan_acquire(&host_db, ScanRequester::User(riley), None, &titles, None)
+        .await
+        .unwrap();
+    let shape: Vec<_> = plan
+        .into_iter()
+        .map(|p| (p.account, p.title, p.plugin_instance_id))
+        .collect();
+    assert_eq!(
+        shape,
+        vec![(
+            Some("shared".to_string()),
+            Some("B0RILEY".to_string()),
+            Some(instance.id.to_string())
+        )]
+    );
+    let err = plan_acquire(&host_db, ScanRequester::User(sam), None, &titles, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, LibraryError::Forbidden(_)), "{err}");
+}
+
 /// Scan-all leaves a scan-disabled account alone even when another plugin
 /// holds the same id with scanning on, and a pinned scan does not stand in
 /// for the unpinned one.
@@ -1291,4 +1331,20 @@ async fn postgres_untrusted_window_does_not_hide_trusted_jobs() {
     }
     let (a, b) = postgres_stores().await;
     untrusted_window_does_not_hide_trusted_jobs(a, b).await;
+}
+
+#[tokio::test]
+async fn sqlite_shared_account_id_pins_a_members_title() {
+    let (_dir, a, b) = sqlite_stores().await;
+    shared_account_id_pins_a_members_title(a, b).await;
+}
+
+#[tokio::test]
+#[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+async fn postgres_shared_account_id_pins_a_members_title() {
+    if !postgres_tests_enabled() {
+        return;
+    }
+    let (a, b) = postgres_stores().await;
+    shared_account_id_pins_a_members_title(a, b).await;
 }

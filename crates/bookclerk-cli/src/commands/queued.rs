@@ -369,6 +369,21 @@ async fn settle(
     } else {
         let jobs = wait_for_jobs(store, &ids).await?;
         finish(kind, &jobs)?;
+        // A job whose row vanished while waited on has no known outcome.
+        let finished: std::collections::BTreeSet<&str> =
+            jobs.iter().map(|job| job.id.as_str()).collect();
+        let vanished: std::collections::BTreeSet<&str> = ids
+            .iter()
+            .map(String::as_str)
+            .filter(|id| !finished.contains(id))
+            .collect();
+        if !vanished.is_empty() {
+            anyhow::bail!(
+                "the outcome of {} {kind} job(s) is unknown: they no longer exist: {}",
+                vanished.len(),
+                vanished.into_iter().collect::<Vec<_>>().join(", ")
+            );
+        }
     }
     if full > 0 {
         anyhow::bail!("{full} {kind} job(s) were not queued: the job queue is full");

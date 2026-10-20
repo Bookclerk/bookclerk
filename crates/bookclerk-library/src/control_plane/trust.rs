@@ -706,10 +706,31 @@ pub async fn plan_acquire(
             // planned once per account id it is in.
             let ids: BTreeSet<&str> = touched.iter().map(|(_, id)| id.as_str()).collect();
             for id in ids {
-                if !wholly_owned(&accounts_named(store, id, plugin_key.as_deref()).await?) {
+                if wholly_owned(&accounts_named(store, id, plugin_key.as_deref()).await?) {
+                    out.push(payload(Some(id), Some(title)));
+                    continue;
+                }
+                if plugin_key.is_some() {
                     return Err(not_yours());
                 }
-                out.push(payload(Some(id), Some(title)));
+                // The id is shared with an account on another store that is
+                // not theirs: pin one job per store of theirs that has it.
+                for key in touched
+                    .iter()
+                    .filter(|(_, other)| other == id)
+                    .map(|(key, _)| key.as_str())
+                {
+                    if !wholly_owned(&accounts_named(store, id, Some(key)).await?) {
+                        return Err(not_yours());
+                    }
+                    let Some(instance) = default_instance_for_key(store, key).await? else {
+                        return Err(not_yours());
+                    };
+                    out.push(JobPayload {
+                        plugin_instance_id: Some(instance.id.to_string()),
+                        ..payload(Some(id), Some(title))
+                    });
+                }
             }
         }
         return Ok(out);
