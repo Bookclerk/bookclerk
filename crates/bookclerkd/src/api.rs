@@ -1390,7 +1390,9 @@ fn api_timeout_for_path(path: &str) -> Duration {
         // A join redeems with the library (at most
         // `cluster_link::join::REDEEM_TIMEOUT`), then waits for the new
         // link's client (`cluster_link::start_link_now`).
-        "/api/config/join/callback" | "/api/config/join/invite" => Duration::from_secs(30),
+        // Their own bounded waits add up to 29 s; the rest is margin for the
+        // database round trips around them.
+        "/api/config/join/callback" | "/api/config/join/invite" => Duration::from_secs(45),
         // Reading a library dials it (connect and request timeouts in
         // `bookclerk_node_client::endpoint`), so an unreachable one is
         // answered as `unreachable` rather than cut off.

@@ -57,8 +57,9 @@ pub enum ClustersCommand {
         /// The name the owner sees for this branch (default: host name).
         #[arg(long, requires = "url")]
         name: Option<String>,
-        /// The owner's certificate fingerprint (`sha256:...`), confirming
-        /// a self-signed library without a prompt.
+        /// The library's certificate fingerprint as Settings → Branches
+        /// shows it (a `sha256:` prefix is accepted), confirming a
+        /// self-signed library without a prompt.
         #[arg(long, requires = "url")]
         fingerprint: Option<String>,
         /// Anything given after `join` that is not a flag. Taken only to be

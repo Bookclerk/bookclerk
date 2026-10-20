@@ -277,11 +277,8 @@ pub async fn finish_pending_join(store: &LibraryStore, state: &str) -> Result<bo
     else {
         return Ok(false);
     };
-    let deleted = pending_joins::Entity::delete_many()
-        .filter(pending_joins::Column::StateHash.eq(&state_hash))
-        .exec(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    // The sealed keys go first: a row left behind by a failed delete is
+    // refused when opened (its secret is gone) and purged after its TTL.
     delete_secret(
         store.db(),
         secret_kind::CLUSTER_JOIN,
@@ -291,6 +288,11 @@ pub async fn finish_pending_join(store: &LibraryStore, state: &str) -> Result<bo
         PENDING_JOIN_SECRET_NAME,
     )
     .await?;
+    let deleted = pending_joins::Entity::delete_many()
+        .filter(pending_joins::Column::StateHash.eq(&state_hash))
+        .exec(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
     Ok(deleted.rows_affected == 1)
 }
 

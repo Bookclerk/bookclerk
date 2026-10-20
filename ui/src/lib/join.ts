@@ -350,10 +350,13 @@ export function mintBranchInvite(body: {
 /**
  * Outstanding and past branch invites the caller may see (no secrets).
  *
+ * @param mine - Only the caller's own, even for an Owner who may see all.
  * @returns The invites.
  */
-export function listBranchInvites(): Promise<{ links: BranchInviteView[] }> {
-  return request("/api/config/node-invites");
+export function listBranchInvites(
+  mine = false,
+): Promise<{ links: BranchInviteView[] }> {
+  return request(mine ? "/api/config/node-invites?mine=true" : "/api/config/node-invites");
 }
 
 /**

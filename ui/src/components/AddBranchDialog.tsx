@@ -61,7 +61,9 @@ export function AddBranchDialog({ open, onClose, userId, userLabel }: AddBranchD
   const reload = useCallback(async () => {
     const mine = lifetime.current;
     try {
-      const body = await listBranchInvites();
+      // Without a user, the signed-in user's own invites: an Owner may see
+      // everyone's, but this dialog is about their own branches.
+      const body = await listBranchInvites(userId == null);
       if (lifetime.current !== mine) return;
       setInvites(
         body.links.filter(
@@ -132,15 +134,18 @@ export function AddBranchDialog({ open, onClose, userId, userLabel }: AddBranchD
   }
 
   async function onRevoke(linkId: string) {
+    const mine = lifetime.current;
     setBusy(true);
     setError(null);
     try {
       await revokeBranchInvite(linkId);
+      if (lifetime.current !== mine) return;
       await reload();
     } catch (err) {
+      if (lifetime.current !== mine) return;
       setError(joinErrorMessage(err, "Could not revoke the invite."));
     } finally {
-      setBusy(false);
+      if (lifetime.current === mine) setBusy(false);
     }
   }
 

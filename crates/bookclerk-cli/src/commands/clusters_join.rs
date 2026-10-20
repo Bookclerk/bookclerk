@@ -199,7 +199,9 @@ fn confirm_fingerprint(library: &InspectedLibrary, given: Option<&str>) -> anyho
         return Ok(());
     };
     if let Some(given) = given {
-        if same(given.trim(), pin) {
+        let given = given.trim();
+        let given = given.strip_prefix("sha256:").unwrap_or(given);
+        if same(given, pin) {
             return Ok(());
         }
         anyhow::bail!("the library's fingerprint is {pin}, not the one given; not joining");
@@ -290,14 +292,19 @@ pub async fn join_with_sign_in(
     // The verifier and keys live only in this process, so a failed local
     // write is retried here: the library answers a repeat of the same
     // exchange with the same node.
+    // A later attempt that fails differently still reports the first save
+    // failure: it names the node the library enrolled.
     let mut attempt = 1;
+    let mut save_failed = None;
     let joined = loop {
         match redeem_branch_code(store, &redeem, &authorization.keys).await {
-            Err(JoinError::SaveFailed { .. }) if attempt < SAVE_ATTEMPTS => {
+            Err(err @ JoinError::SaveFailed { .. }) if attempt < SAVE_ATTEMPTS => {
+                save_failed = Some(err);
                 attempt += 1;
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
-            other => break other,
+            Ok(link) => break Ok(link),
+            Err(err) => break Err(save_failed.unwrap_or(err)),
         }
     };
     joined.map_err(|err| {

@@ -46,7 +46,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::extract::connect_info::ConnectInfo;
-use axum::extract::{Path, Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -186,16 +186,35 @@ pub async fn post_node_invite(
     ))
 }
 
+/// `GET /api/config/node-invites` query.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeInvitesQuery {
+    /// Only the links for the calling user's own branches (an Owner's
+    /// "Add a branch" dialog), even when the caller may see everyone's.
+    #[serde(default)]
+    mine: bool,
+}
+
 /// `GET /api/config/node-invites`: every link for the operator or an
-/// Owner; the caller's own links for anyone else.
+/// Owner; the caller's own links for anyone else, and with `?mine=true`.
 pub async fn get_node_invites(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
+    Query(query): Query<NodeInvitesQuery>,
 ) -> Result<Json<serde_json::Value>, Response> {
     let library = state.library_snapshot().await;
-    let links = list_enrollment_links(&library, &actor(caller))
+    let mut links = list_enrollment_links(&library, &actor(caller))
         .await
         .map_err(events_error)?;
+    if query.mine {
+        // The operator has no branches of its own.
+        let own = match caller {
+            UserCaller::User { user_id } => Some(user_id),
+            UserCaller::Operator => None,
+        };
+        links.retain(|link| Some(link.for_user_id) == own);
+    }
     Ok(Json(json!({
         "links": links.iter().map(link_json).collect::<Vec<_>>(),
     })))
@@ -797,6 +816,23 @@ pub(crate) mod tests {
         assert!(!listed.to_string().contains(secret));
         let (_, all) = send(&operator, "GET", "/api/config/node-invites", Value::Null).await;
         assert_eq!(all["links"].as_array().unwrap().len(), 2);
+        // `?mine=true` narrows to the caller's own (none for the operator).
+        let (_, own) = send(
+            &as_member,
+            "GET",
+            "/api/config/node-invites?mine=true",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(own["links"].as_array().unwrap().len(), 1);
+        let (_, none) = send(
+            &operator,
+            "GET",
+            "/api/config/node-invites?mine=true",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(none["links"].as_array().unwrap().len(), 0);
 
         let other_id = for_other["link"]["link_id"].as_str().unwrap();
         let (status, _) = send(
