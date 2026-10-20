@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use bookclerk_config::{Config, EventsConfig};
+use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
     find_plugin_instance_by_key, list_plugin_schemas, load_deployment_for_node,
     load_instance_config, DesiredState,
@@ -69,7 +69,7 @@ async fn open_host(files: &Path) -> (Config, LibraryStore, String) {
         files,
         &files.join("cache"),
         None,
-        &EventsConfig::default(),
+        &bookclerk_config::Config::default(),
     )
     .await
     .unwrap();
@@ -139,7 +139,7 @@ async fn enrollment_is_idempotent_across_restarts() {
         other_files.path(),
         &other_files.path().join("cache"),
         None,
-        &EventsConfig::default(),
+        &bookclerk_config::Config::default(),
     )
     .await
     .unwrap();

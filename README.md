@@ -105,6 +105,10 @@ format = "enriched_m4b"
 naming_profile = "audiobookshelf"
 ```
 
+`[output]` only seeds the shared `core.output` document the first time a host
+enrolls against the database; after that change it with
+`bookclerk config set output.<key> <value>` or **Settings → Output**.
+
 Storefronts, destinations, and integrations are plugin instances in the
 database, not TOML. Each plugin declares its settings in `plugin.toml`
 `[[settings]]`; "enabled" is a deployment on a host:

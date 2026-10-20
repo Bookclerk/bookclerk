@@ -497,7 +497,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use axum::routing::{delete, get};
-    use bookclerk_config::{Config, EventsConfig};
+    use bookclerk_config::Config;
     use bookclerk_library::control_plane::bootstrap_control_plane;
     use http_body_util::BodyExt;
     use serde_json::{json, Value};
@@ -671,7 +671,7 @@ mod tests {
             files_path,
             &files_path.join("cache"),
             None,
-            &EventsConfig::default(),
+            &Config::default(),
         )
         .await
         .unwrap();
