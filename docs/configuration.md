@@ -220,7 +220,8 @@ Any signed-in user may also revoke a host they own with
 `DELETE /api/config/node-credentials/<node_id>`; the operator or an Owner
 may revoke any host.
 
-The link is `<public_origin>/enroll#bcn1.<link_id>.<secret>`. The secret is in
+The link is `<public_origin>/enroll#bcn1.<link_id>.<secret>[.<spki_pin>]`
+(the pin only in `self_signed` mode, below). The secret is in
 the URL fragment, so proxies and access logs never see it; the database keeps
 only its hash. Set `integrations.public_origin` so the link points somewhere a
 host can reach. Links live 24 hours by default (5 minutes to 7 days) and
@@ -228,7 +229,8 @@ redeem once.
 
 `[daemon.node_api]` is bootstrap configuration, like `daemon.listen`. It
 decides which connections may reach the node API (`POST /api/node/v1/enroll`
-today):
+and the host-node socket `GET /api/node/v1/connect`). Changing it needs a
+daemon restart.
 
 ```toml
 [daemon]
@@ -238,19 +240,37 @@ trusted_proxies = ["10.0.0.2"]   # peers allowed to set X-Forwarded-*
 mode = "loopback"                # loopback | proxy | acme | self_signed
 # acme_contact = "mailto:ops@example.com"  # required for acme
 # tls_listen = "0.0.0.0:8443"              # required for acme and self_signed
+# acme_directory = "https://acme-staging-v02.api.letsencrypt.org/directory"
+#                                          # default: Let's Encrypt production
+# acme_directory_ca = "/etc/bookclerk/acme-ca.pem"
+#                                          # extra roots for a private ACME CA
 ```
 
 | Mode | Allowed |
 | --- | --- |
 | `loopback` (default) | Only connections where both ends are loopback and no forwarding header is present. Loopback is allowed in every mode, including on a wildcard `daemon.listen` (`0.0.0.0` / `[::]`): the check reads each connection's own local address, not the bind address. |
 | `proxy` | Plain HTTP from a `daemon.trusted_proxies` peer that sends exactly one `X-Forwarded-Proto: https`. Requires an https `integrations.public_origin` and at least one trusted proxy. Every connection from a trusted proxy is checked this way, even one with no forwarding headers, so with a same-host proxy (`127.0.0.1` trusted) loopback enrollment goes through the proxy too. |
-| `acme` | The built-in TLS listener with a Let's Encrypt certificate. The listener is not built yet, so only loopback connections are allowed today. |
-| `self_signed` | The built-in TLS listener with a self-signed certificate pinned in the link. Not built yet; only loopback connections are allowed today. |
+| `acme` | The built-in TLS listener on `tls_listen` with a certificate for `integrations.public_origin`'s DNS name, issued over TLS-ALPN-01 (forward port 443 of that name to `tls_listen`). Account and certificate are cached under `$BOOKCLERK_FILES_DIR/acme/` (mode 0700) and renewed automatically. Requires `acme_contact` and an https `public_origin` with a DNS name. |
+| `self_signed` | The built-in TLS listener on `tls_listen` with a P-256 certificate generated once under `$BOOKCLERK_FILES_DIR/node-api/self-signed/` (mode 0700), and re-issued under the same key when the public origin's host changes, so the pin stays valid. Its SPKI pin (`spki-pin` there) is appended to every enrollment link, and the host trusts exactly that key; until the daemon has written it, minting an invite fails rather than produce an unpinned link. Needs an https `integrations.public_origin` naming the TLS listener, since enrollment links carry that origin. For a private network without ACME or a proxy. |
 
 Everything else gets `403 {"error": "transport_insecure"}`: plain HTTP from a
 LAN address is refused, and forwarding headers from a peer that is not a
 trusted proxy are ignored. A mode missing its required settings refuses
 every connection.
+
+The TLS listener serves only the node API routes. In `acme` and
+`self_signed` mode the node API stays unmounted on every listener, loopback
+included, until that listener has a certificate: while ACME has not issued
+one (or the listener could not bind), node API routes answer
+`404 {"error": "node_api_unmounted"}`. There is no plain-HTTP fallback;
+ACME keeps retrying in the background.
+
+To exercise ACME against a local [Pebble](https://github.com/letsencrypt/pebble)
+server (run with `PEBBLE_VA_ALWAYS_VALID=1`), set
+`BOOKCLERK_TEST_ACME_DIRECTORY=https://localhost:14000/dir` and
+`BOOKCLERK_TEST_ACME_CA=<path to pebble.minica.pem>` and run
+`cargo test -p bookclerkd acme_issues_from_pebble`; without them that test
+skips.
 
 ## Plugin instances
 

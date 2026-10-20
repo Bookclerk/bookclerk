@@ -56,6 +56,7 @@ fn request<'a>(
     JobClaimRequest {
         resource_class: JobResourceClass::Network,
         node_id,
+        claimant: Claimant::Local,
         owner,
         lease_secs,
         limits: limits(class),

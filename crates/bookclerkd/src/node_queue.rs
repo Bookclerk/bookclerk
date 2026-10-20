@@ -86,9 +86,9 @@ pub fn wake_for(message: &NodeMessage) {
             DEPLOYMENT_WAKEUP.notify_one();
         }
         NodeMessage::NodeRevoked { node_id } => {
-            // No host connections are served yet (the node API socket is a
-            // later step); the socket that holds this host closes on it.
+            // The owner node holding this host's socket closes it (4403).
             debug!(%node_id, "host node credential revoked");
+            crate::node_api::ws::close_node_sessions(node_id, bookclerk_node_proto::CLOSE_REVOKED);
         }
     }
 }

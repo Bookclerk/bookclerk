@@ -2014,7 +2014,13 @@ fn plan_enqueue_job(
 ) -> AtomicPlan {
     let run_after = run_after.unwrap_or(now);
     let dedup = match kind {
-        "scan" => format!("scan:account={}", json_account_from_payload(payload_json)),
+        "scan" => match json_instance_from_payload(payload_json) {
+            Some(instance) => format!(
+                "scan:account={}:instance={instance}",
+                json_account_from_payload(payload_json)
+            ),
+            None => format!("scan:account={}", json_account_from_payload(payload_json)),
+        },
         "acquire" => format!(
             "acquire:title={}:account={}",
             json_title_from_payload(payload_json),
@@ -2701,6 +2707,18 @@ fn json_account_from_payload(payload_json: &str) -> String {
         })
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "all".into())
+}
+
+/// Best-effort pinned plugin instance id from a job payload JSON string.
+fn json_instance_from_payload(payload_json: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(payload_json)
+        .ok()
+        .and_then(|v| {
+            v.get("plugin_instance_id")
+                .and_then(|a| a.as_str())
+                .map(str::to_string)
+        })
+        .filter(|s| !s.is_empty())
 }
 
 /// Best-effort title filter from a job payload JSON string.

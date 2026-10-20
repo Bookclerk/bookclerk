@@ -195,6 +195,13 @@ async fn main() -> anyhow::Result<()> {
 
     let ui_dist = resolve_ui_dist();
     let app = router(state.clone(), ui_dist);
+    // The node API's TLS listener (acme / self_signed). Until it serves a
+    // certificate the node API stays unmounted on every listener.
+    let node_api_gate = {
+        let cfg = config.read().await.clone();
+        let files_dir = cfg.paths().files_dir.clone();
+        node_api::tls::start(&state, &cfg, &files_dir).await.gate
+    };
 
     loop {
         if process_shutdown.load(Ordering::SeqCst) {
@@ -256,7 +263,8 @@ async fn main() -> anyhow::Result<()> {
             // The node API's transport policy needs both ends of each
             // connection: the accepted socket's local address, which stays
             // loopback for a same-machine client on a wildcard bind.
-            let app = node_api::transport::ConnAddrsMakeService::new(app.clone());
+            let app = app.clone().layer(axum::Extension(node_api_gate.clone()));
+            let app = node_api::transport::ConnAddrsMakeService::new(app);
             let reload = listen_reload.clone();
             let shutdown_flag = process_shutdown.clone();
             set.spawn(async move {

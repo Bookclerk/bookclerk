@@ -295,9 +295,77 @@ pub struct NodeApiConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acme_contact: Option<String>,
     /// Address of the built-in TLS listener (`0.0.0.0:8443`). Required for
-    /// `acme` and `self_signed`.
+    /// `acme` and `self_signed`. ACME's TLS-ALPN-01 challenge reaches it on
+    /// port 443 of the public origin's host, so forward 443 here.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tls_listen: Option<String>,
+    /// ACME directory URL. Defaults to Let's Encrypt production
+    /// ([`LETS_ENCRYPT_DIRECTORY`]); set it for staging or a private ACME CA.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acme_directory: Option<String>,
+    /// PEM file of extra root certificates trusted for the ACME directory's
+    /// own HTTPS (a private ACME CA). The webpki roots are always trusted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acme_directory_ca: Option<String>,
+}
+
+/// Let's Encrypt's production ACME directory.
+pub const LETS_ENCRYPT_DIRECTORY: &str = "https://acme-v02.api.letsencrypt.org/directory";
+
+/// True when `directory` is a Let's Encrypt directory (production or
+/// staging), which only certifies registrable, dotted DNS names.
+fn is_public_acme(directory: &str) -> bool {
+    let host = directory
+        .strip_prefix("https://")
+        .unwrap_or(directory)
+        .split(['/', ':'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    host == "letsencrypt.org" || host.ends_with(".letsencrypt.org")
+}
+
+/// Directory under `$BOOKCLERK_FILES_DIR` holding the ACME account and
+/// certificate cache (mode 0700 on Unix).
+pub const NODE_API_ACME_DIR: &str = "acme";
+
+/// Directory under `$BOOKCLERK_FILES_DIR` holding the self-signed node API
+/// certificate, its key, and its SPKI pin (mode 0700 on Unix).
+pub const NODE_API_SELF_SIGNED_DIR: &str = "node-api/self-signed";
+
+/// File in [`NODE_API_SELF_SIGNED_DIR`] holding the SPKI pin
+/// (base64url SHA-256 of the certificate's SubjectPublicKeyInfo).
+pub const NODE_API_SPKI_PIN_FILE: &str = "spki-pin";
+
+/// The SPKI pin of the daemon's self-signed node API certificate, once the
+/// daemon has generated it. Enrollment links carry it in
+/// `[daemon.node_api] mode = "self_signed"`.
+#[must_use]
+pub fn read_node_api_spki_pin(files_dir: &std::path::Path) -> Option<String> {
+    let path = files_dir
+        .join(NODE_API_SELF_SIGNED_DIR)
+        .join(NODE_API_SPKI_PIN_FILE);
+    let pin = std::fs::read_to_string(path).ok()?;
+    let pin = pin.trim();
+    // base64url of 32 bytes, no padding.
+    (pin.len() == 43
+        && pin
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
+    .then(|| pin.to_string())
+}
+
+/// Host of an `https://host[:port]` origin, without brackets or port.
+fn origin_host(origin: &str) -> Option<&str> {
+    let rest = origin.trim().strip_prefix("https://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    if let Some(v6) = authority.strip_prefix('[') {
+        return v6.split_once(']').map(|(host, _)| host);
+    }
+    Some(authority.split(':').next().unwrap_or(authority))
 }
 
 impl NodeApiConfig {
@@ -356,9 +424,42 @@ impl NodeApiConfig {
                          integrations.public_origin"
                         .into());
                 }
+                // ACME certifies a DNS name, not an address. The public
+                // directory also needs a registrable (dotted) name; a private
+                // directory may issue single-label internal names.
+                let host = public_origin.and_then(origin_host).unwrap_or("");
+                let private_directory = self
+                    .acme_directory
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|directory| !directory.is_empty() && !is_public_acme(directory));
+                if host.is_empty()
+                    || host.parse::<std::net::IpAddr>().is_ok()
+                    || (!private_directory && !host.contains('.'))
+                {
+                    return Err("daemon.node_api.mode = \"acme\" needs a DNS name \
+                         (not an IP address) in integrations.public_origin"
+                        .into());
+                }
+                if let Some(directory) = self.acme_directory.as_deref() {
+                    if !directory.trim().starts_with("https://") {
+                        return Err("daemon.node_api.acme_directory must be an https URL".into());
+                    }
+                }
                 tls_listen()
             }
-            NodeApiMode::SelfSigned => tls_listen(),
+            NodeApiMode::SelfSigned => {
+                // Enrollment links carry the public origin and hosts dial it
+                // over TLS. Without one, links fall back to the plain-HTTP
+                // loopback UI origin, which no remote host can reach.
+                let host = public_origin.and_then(origin_host).unwrap_or("");
+                if !https_origin || host.is_empty() {
+                    return Err("daemon.node_api.mode = \"self_signed\" needs an https \
+                         integrations.public_origin naming the TLS listener"
+                        .into());
+                }
+                tls_listen()
+            }
         }
     }
 }
@@ -1252,12 +1353,62 @@ mode = "proxy"
             .node_api
             .validate(&[], Some("https://owner.example"))
             .is_ok());
+        // ACME certifies a DNS name.
+        for origin in [
+            "https://203.0.113.7",
+            "https://[2001:db8::1]:8443",
+            "https://localhost",
+        ] {
+            assert!(
+                acme.daemon.node_api.validate(&[], Some(origin)).is_err(),
+                "{origin}"
+            );
+        }
+        let mut staging = acme.daemon.node_api.clone();
+        staging.acme_directory = Some("http://pebble:14000/dir".into());
+        assert!(staging
+            .validate(&[], Some("https://owner.example"))
+            .is_err());
+        staging.acme_directory = Some("https://pebble:14000/dir".into());
+        // A private directory may certify a single-label internal name; the
+        // public one may not.
+        assert!(staging.validate(&[], Some("https://bookclerk")).is_ok());
+        for public in [
+            LETS_ENCRYPT_DIRECTORY,
+            "https://acme-staging-v02.api.letsencrypt.org/directory",
+        ] {
+            staging.acme_directory = Some(public.into());
+            assert!(
+                staging.validate(&[], Some("https://bookclerk")).is_err(),
+                "{public}"
+            );
+        }
+        assert!(acme
+            .daemon
+            .node_api
+            .validate(&[], Some("https://bookclerk"))
+            .is_err());
+        assert!(staging
+            .validate(&[], Some("https://owner.example:8443/"))
+            .is_ok());
         let self_signed = NodeApiConfig {
             mode: NodeApiMode::SelfSigned,
-            acme_contact: None,
             tls_listen: Some("not an address".into()),
+            ..NodeApiConfig::default()
         };
         assert!(self_signed.validate(&[], None).is_err());
+        let self_signed = NodeApiConfig {
+            tls_listen: Some("0.0.0.0:8443".into()),
+            ..self_signed
+        };
+        assert!(self_signed.validate(&[], None).is_err());
+        assert!(self_signed
+            .validate(&[], Some("https://owner.example:8443"))
+            .is_ok());
+        assert!(self_signed
+            .validate(&[], Some("http://owner.example:8443"))
+            .is_err());
+        assert!(self_signed.validate(&[], Some("https://")).is_err());
         assert!(Config::from_toml_str("[daemon.node_api]\nmode = \"plain\"\n", "test").is_err());
     }
 

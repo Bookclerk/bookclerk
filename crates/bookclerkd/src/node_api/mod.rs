@@ -17,15 +17,24 @@
 //! operator auth layers (the link secret is the credential) and is never
 //! disabled by `auth.enabled = false`; [`transport::classify_transport`]
 //! runs before the body is read.
+//!
+//! `GET /api/node/v1/connect` is the host-node WebSocket ([`ws`]); it also
+//! sits outside those layers and authenticates with the node's enrolled
+//! Ed25519 key.
 
+pub mod tls;
 pub mod transport;
+pub mod ws;
+#[cfg(test)]
+mod ws_tests;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::extract::connect_info::ConnectInfo;
 use axum::extract::{Path, Request, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::request::Parts;
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use bookclerk_library::control_plane::{
@@ -92,10 +101,24 @@ pub(crate) struct PostNodeInvite {
 /// `POST /api/config/node-invites`: mint an enrollment link. Any user may
 /// mint one for themselves while host enrollment is on; the operator or an
 /// Owner may mint for any active user.
+///
+/// # Arguments
+///
+/// * `caller` - Who is asking; decides whose links they may mint.
+/// * `body` - Owner, lifetime, and label of the new link.
+///
+/// # Returns
+///
+/// `{link, url}`; the secret appears once, in `url`.
+///
+/// # Errors
+///
+/// Returns 503 `node_api_pin_unavailable` in `self_signed` mode while the
+/// certificate's SPKI pin cannot be read (nothing is minted), and an error
+/// response when the library refuses the mint.
 pub async fn post_node_invite(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
-    headers: HeaderMap,
     Json(body): Json<PostNodeInvite>,
 ) -> Result<Json<serde_json::Value>, Response> {
     let for_user_id = match (body.user_id, caller) {
@@ -105,6 +128,28 @@ pub async fn post_node_invite(
                 "user_id is required: the operator has no user account".into(),
             )))
         }
+    };
+    // A self-signed owner pins its certificate in the link; resolve the pin
+    // before minting so a link a host cannot verify is never created.
+    let (origin, spki_pin) = {
+        let cfg = state.config.read().await;
+        let pin = if cfg.daemon.node_api.mode == bookclerk_config::NodeApiMode::SelfSigned {
+            match bookclerk_config::read_node_api_spki_pin(&cfg.paths().files_dir) {
+                Some(pin) => Some(pin),
+                None => {
+                    return Err((
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(json!({ "error": "node_api_pin_unavailable" })),
+                    )
+                        .into_response())
+                }
+            }
+        } else {
+            None
+        };
+        // The same origin the socket handshake verifies against, so a link
+        // minted through any listener is signed for the origin it checks.
+        (crate::origin::effective_origin_from_config(&cfg, None), pin)
     };
     let library = state.library_snapshot().await;
     let minted = mint_enrollment_link(
@@ -116,11 +161,7 @@ pub async fn post_node_invite(
     )
     .await
     .map_err(events_error)?;
-    let origin = {
-        let cfg = state.config.read().await;
-        crate::origin::effective_origin_from_config(&cfg, Some(&headers))
-    };
-    let url = minted.url(&origin, None);
+    let url = minted.url(&origin, spki_pin.as_deref());
     Ok(Json(json!({
         "link": link_json(&minted.link),
         "url": url.as_str(),
@@ -153,6 +194,91 @@ pub async fn delete_node_invite(
         .await
         .map_err(events_error)?;
     Ok(Json(json!({ "link": link_json(&link) })))
+}
+
+/// What the server recorded about the connection a request arrived on.
+async fn connection_info(state: &Arc<AppState>, parts: &mut Parts) -> ConnInfo {
+    // The extractor (not a bare extension read) so a missing peer stays
+    // `None` and tests' `MockConnectInfo` is honored.
+    let peer = <ConnectInfo<SocketAddr> as axum::extract::FromRequestParts<Arc<AppState>>>::from_request_parts(parts, state)
+        .await
+        .ok()
+        .map(|ConnectInfo(addr)| addr);
+    ConnInfo {
+        peer,
+        local: parts
+            .extensions
+            .get::<LocalAddr>()
+            .map(|LocalAddr(addr)| *addr),
+        listener: parts
+            .extensions
+            .get::<ListenerKind>()
+            .copied()
+            .unwrap_or(ListenerKind::Plain),
+    }
+}
+
+/// The node API routes, as every listener mounts them: outside the cookie
+/// and operator auth layers.
+pub fn node_router<S>(state: Arc<AppState>) -> axum::Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    axum::Router::new()
+        // The link secret is the credential; the transport policy runs first.
+        .route("/api/node/v1/enroll", axum::routing::post(post_enroll))
+        // Host-node socket: the node's Ed25519 key is the credential.
+        .route("/api/node/v1/connect", axum::routing::get(ws::get_connect))
+        // The API deadline travels with the routes, so the TLS-only listener
+        // (which has no other layers) also drops a client that stalls its
+        // request body. An upgraded socket outlives it: only the upgrade
+        // response is timed.
+        .layer(axum::middleware::from_fn(
+            crate::api::api_timeout_middleware,
+        ))
+        .with_state(state)
+}
+
+/// Checks that the node API is mounted ([`tls::node_api_mounted`], and the
+/// owner origin is still the one the TLS listener started for), then
+/// runs [`classify_transport`]. Answers 404 `node_api_unmounted` while a
+/// TLS mode has no certificate, or 403 `transport_insecure` when the
+/// connection is refused.
+async fn check_transport(
+    state: &Arc<AppState>,
+    parts: &mut Parts,
+    what: &'static str,
+) -> Result<(), Response> {
+    let conn = connection_info(state, parts).await;
+    let decision = {
+        let cfg = state.config.read().await;
+        let gate = parts.extensions.get::<tls::NodeApiGate>();
+        let live_origin = bookclerk_node_proto::canonical_origin(
+            &crate::origin::effective_origin_from_config(&cfg, None),
+        );
+        if !tls::node_api_mounted(cfg.daemon.node_api.mode, gate)
+            || gate.is_some_and(|gate| !gate.origin_matches(live_origin.as_deref()))
+        {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "node_api_unmounted" })),
+            )
+                .into_response());
+        }
+        classify_transport(&conn, &parts.headers, &TransportConfig::from_config(&cfg))
+    };
+    match decision {
+        TransportDecision::Allowed(_) => Ok(()),
+        TransportDecision::Refused(reason) => {
+            tracing::warn!(
+                peer = ?conn.peer,
+                reason = reason.as_str(),
+                what,
+                "node API request refused: insecure transport"
+            );
+            Err(refused_response(reason))
+        }
+    }
 }
 
 /// JSON for one host credential; public keys only.
@@ -305,37 +431,10 @@ fn decode_key(raw: &str) -> Option<Vec<u8>> {
 /// does not redeem.
 pub async fn post_enroll(State(state): State<Arc<AppState>>, request: Request) -> Response {
     let (mut parts, body) = request.into_parts();
-    // The extractor (not a bare extension read) so a missing peer stays
-    // `None` and tests' `MockConnectInfo` is honored.
-    let peer = <ConnectInfo<SocketAddr> as axum::extract::FromRequestParts<Arc<AppState>>>::from_request_parts(&mut parts, &state)
-        .await
-        .ok()
-        .map(|ConnectInfo(addr)| addr);
-    let headers = std::mem::take(&mut parts.headers);
-    let conn = ConnInfo {
-        peer,
-        local: parts
-            .extensions
-            .get::<LocalAddr>()
-            .map(|LocalAddr(addr)| *addr),
-        listener: parts
-            .extensions
-            .get::<ListenerKind>()
-            .copied()
-            .unwrap_or(ListenerKind::Plain),
-    };
-    let decision = {
-        let cfg = state.config.read().await;
-        classify_transport(&conn, &headers, &TransportConfig::from_config(&cfg))
-    };
-    if let TransportDecision::Refused(reason) = decision {
-        tracing::warn!(
-            peer = ?conn.peer,
-            reason = reason.as_str(),
-            "node enroll refused: insecure transport"
-        );
-        return refused_response(reason);
+    if let Err(refused) = check_transport(&state, &mut parts, "enroll").await {
+        return refused;
     }
+    let headers = std::mem::take(&mut parts.headers);
     let json_body = headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
@@ -421,9 +520,18 @@ mod tests {
             .with_state(Arc::clone(state))
     }
 
+    /// A valid base64url Ed25519 public key from a seed byte.
     fn key(byte: u8) -> String {
         use base64::Engine as _;
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([byte; 32])
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(bookclerk_node_proto::sign_public_key(&[byte; 32]))
+    }
+
+    /// A valid base64url X25519 public key from a secret byte.
+    fn box_key(byte: u8) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(bookclerk_node_proto::box_public_key(&[byte; 32]))
     }
 
     #[tokio::test]
@@ -448,7 +556,7 @@ mod tests {
             "link_id": minted.link.link_id,
             "secret": minted.secret.expose(),
             "sign_pk": key(4),
-            "box_pk": key(5),
+            "box_pk": box_key(5),
             "software_version": "1.0.0",
         });
 
@@ -496,7 +604,12 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
-    async fn send(app: &axum::Router, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
+    pub(super) async fn send(
+        app: &axum::Router,
+        method: &str,
+        uri: &str,
+        body: Value,
+    ) -> (StatusCode, Value) {
         let request = Request::builder()
             .method(method)
             .uri(uri)
@@ -513,7 +626,10 @@ mod tests {
     }
 
     /// Invite routes for one caller, as the daemon mounts them.
-    fn invite_routes(state: &Arc<crate::api::AppState>, caller: UserCaller) -> axum::Router {
+    pub(super) fn invite_routes(
+        state: &Arc<crate::api::AppState>,
+        caller: UserCaller,
+    ) -> axum::Router {
         axum::Router::new()
             .route(
                 "/api/config/node-invites",
@@ -532,11 +648,19 @@ mod tests {
     }
 
     /// A bootstrapped single-node cluster and its daemon state.
-    async fn test_state(
+    pub(super) async fn test_state(
         files: &tempfile::TempDir,
     ) -> (Arc<crate::api::AppState>, bookclerk_library::LibraryStore) {
+        test_state_with(files, "").await
+    }
+
+    /// [`test_state`] with `config_toml` as the daemon's `config.toml`.
+    pub(super) async fn test_state_with(
+        files: &tempfile::TempDir,
+        config_toml: &str,
+    ) -> (Arc<crate::api::AppState>, bookclerk_library::LibraryStore) {
         let files_path = files.path();
-        std::fs::write(files_path.join("config.toml"), "").unwrap();
+        std::fs::write(files_path.join("config.toml"), config_toml).unwrap();
         let db = bookclerk_plugin_database_sqlite::open(&files_path.join("library.db"))
             .await
             .unwrap();
@@ -644,6 +768,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn self_signed_invites_refuse_to_mint_without_a_pin() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let files = tempfile::tempdir().unwrap();
+        let (state, store) = test_state_with(
+            &files,
+            "[integrations]\npublic_origin = \"https://owner.example:8443\"\n\n[daemon.node_api]\nmode = \"self_signed\"\ntls_listen = \"127.0.0.1:0\"\n",
+        )
+        .await;
+        let member = store
+            .create_user(bookclerk_library::UserRole::Member, Some("Riley"), None)
+            .await
+            .unwrap();
+        let operator = invite_routes(&state, UserCaller::Operator);
+
+        // No certificate yet: refused, and no unpinned link is left behind.
+        let (status, refused) = send(
+            &operator,
+            "POST",
+            "/api/config/node-invites",
+            json!({ "user_id": member.id }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{refused}");
+        assert_eq!(refused["error"], "node_api_pin_unavailable");
+        let (_, listed) = send(&operator, "GET", "/api/config/node-invites", Value::Null).await;
+        assert!(listed["links"].as_array().unwrap().is_empty(), "{listed}");
+
+        // Once the pin exists, every link carries it.
+        let dir = files
+            .path()
+            .join(bookclerk_config::NODE_API_SELF_SIGNED_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pin = "A".repeat(43);
+        std::fs::write(dir.join(bookclerk_config::NODE_API_SPKI_PIN_FILE), &pin).unwrap();
+        let (status, minted) = send(
+            &operator,
+            "POST",
+            "/api/config/node-invites",
+            json!({ "user_id": member.id }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{minted}");
+        assert!(
+            minted["url"]
+                .as_str()
+                .unwrap()
+                .ends_with(&format!(".{pin}")),
+            "{minted}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_user_revokes_only_the_hosts_they_own() {
         let _dek = crate::auth::tests::process_dek_lock().await;
         let files = tempfile::tempdir().unwrap();
@@ -674,7 +850,7 @@ mod tests {
                 "link_id": minted.link.link_id,
                 "secret": minted.secret.expose(),
                 "sign_pk": key(4),
-                "box_pk": key(5),
+                "box_pk": box_key(5),
             }),
         )
         .await;
