@@ -389,6 +389,46 @@ pub enum Body {
         /// accepted file).
         expires_in_secs: u64,
     },
+    /// Host → owner: queue a library scan on the owner cluster for the
+    /// node's owner (H-5). The owner's scan planner runs as that user: an
+    /// Owner or Administrator scanning every account gets one job per
+    /// scan-enabled account, routed across the cluster's nodes and hosts;
+    /// anyone else scans only the accounts they own. Answered with
+    /// [`Body::ScanPlanned`] or `error {code: "forbidden" | "invalid" |
+    /// "unavailable"}`.
+    #[serde(rename = "scan.request")]
+    ScanRequest {
+        /// Scan only this store account (even when not scan-enabled).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        /// Pin every planned job to this plugin instance.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plugin_instance_id: Option<String>,
+    },
+    /// Owner → host: what a [`Body::ScanRequest`] queued.
+    #[serde(rename = "scan.planned")]
+    ScanPlanned {
+        /// New jobs.
+        created: Vec<String>,
+        /// Jobs that were already pending or running.
+        duplicates: Vec<String>,
+        /// Planned jobs the queue had no room for.
+        queue_full: u64,
+    },
+    /// Host → owner: the state of jobs this node may see (H-5). A job the
+    /// node's owner could not have queued, or an unknown id, is left out.
+    /// Answered with [`Body::JobStatuses`].
+    #[serde(rename = "job.status")]
+    JobStatus {
+        /// Job ids, at most [`MAX_STATUS_JOBS`].
+        job_ids: Vec<String>,
+    },
+    /// Owner → host: the jobs of a [`Body::JobStatus`].
+    #[serde(rename = "job.statuses")]
+    JobStatuses {
+        /// One entry per visible job, in request order.
+        jobs: Vec<JobStatusEntry>,
+    },
     /// Owner → host: a message from the host's `node.<id>` queue. The host
     /// answers [`Body::Ack`] with the same frame id once it has acted.
     Wake {
@@ -403,6 +443,29 @@ pub enum Body {
     /// A frame type this side does not know.
     #[serde(other)]
     Unknown,
+}
+
+/// Most job ids one [`Body::JobStatus`] may ask about.
+pub const MAX_STATUS_JOBS: usize = 64;
+
+/// One job's state in [`Body::JobStatuses`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobStatusEntry {
+    /// Job id.
+    pub id: String,
+    /// Job kind (`scan`, `acquire`, ...).
+    pub kind: String,
+    /// `pending`, `running`, `succeeded`, `failed`, or `cancelled`.
+    pub state: String,
+    /// Progress or result text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<String>,
+    /// Structured error kind when it failed or was cancelled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
+    /// Error text when it failed or was cancelled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
 }
 
 /// Work item kind for jobs.
@@ -817,6 +880,60 @@ mod tests {
             }
             .is_well_formed());
         }
+    }
+
+    #[test]
+    fn scan_requests_and_job_status_round_trip() {
+        let all = Frame::new(
+            "9",
+            Body::ScanRequest {
+                account: None,
+                plugin_instance_id: None,
+            },
+        );
+        let text = all.to_text();
+        assert!(text.contains(r#""type":"scan.request""#), "{text}");
+        assert!(!text.contains("account"), "{text}");
+        assert_eq!(Frame::parse(&text).unwrap(), all);
+        let one = Frame::parse(r#"{"v":1,"id":"9","type":"scan.request","account":"a1"}"#).unwrap();
+        assert_eq!(
+            one.body,
+            Body::ScanRequest {
+                account: Some("a1".into()),
+                plugin_instance_id: None,
+            }
+        );
+        let planned = Frame::new(
+            "9",
+            Body::ScanPlanned {
+                created: vec!["scan-1".into()],
+                duplicates: vec!["scan-2".into()],
+                queue_full: 1,
+            },
+        );
+        assert_eq!(Frame::parse(&planned.to_text()).unwrap(), planned);
+        let status = Frame::new(
+            "10",
+            Body::JobStatus {
+                job_ids: vec!["scan-1".into()],
+            },
+        );
+        assert!(status.to_text().contains(r#""type":"job.status""#));
+        assert_eq!(Frame::parse(&status.to_text()).unwrap(), status);
+        let statuses = Frame::new(
+            "10",
+            Body::JobStatuses {
+                jobs: vec![JobStatusEntry {
+                    id: "scan-1".into(),
+                    kind: "scan".into(),
+                    state: "failed".into(),
+                    progress: None,
+                    error_kind: Some("handler".into()),
+                    error_message: Some("boom".into()),
+                }],
+            },
+        );
+        assert_eq!(Frame::parse(&statuses.to_text()).unwrap(), statuses);
     }
 
     #[test]

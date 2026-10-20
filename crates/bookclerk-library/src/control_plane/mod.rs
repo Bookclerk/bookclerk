@@ -164,8 +164,9 @@ pub use semaphore::{
     SemaphoreRequest, MAX_SEMAPHORE_LIMIT, SEMAPHORE_LEASE_PREFIX,
 };
 pub use trust::{
-    accounts_owned_by, handoff_routed_job, job_trusted, node_may_claim_job, node_trust, plan_scan,
-    Claimant, NodeTrust, ScanRequester,
+    accounts_owned_by, book_matches_title, claimant_may_run, handoff_routed_job, job_item_accounts,
+    job_trusted, node_may_claim_job, node_trust, plan_acquire, plan_scan, remote_node_may_view_job,
+    remote_node_requester, AccountKey, Claimant, NodeTrust, ScanRequester,
 };
 pub use uploads::{
     abort_job_uploads, abort_upload, authorize_upload, commit_upload, extend_job_uploads,

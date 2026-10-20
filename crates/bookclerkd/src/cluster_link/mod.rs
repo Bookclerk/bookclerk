@@ -54,7 +54,8 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_library::{JobKind, JobPayload, LibraryStore};
 use bookclerk_node_client::{
-    ClientExit, ClientTiming, HostClient, HostClientConfig, HostJobCtx, HostJobError, HostJobRunner,
+    ClientExit, ClientTiming, HostClient, HostClientConfig, HostClientHandle, HostJobCtx,
+    HostJobError, HostJobRunner,
 };
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -128,6 +129,35 @@ impl<T: JobTransport + 'static> HostJobRunner for TransportRunner<T> {
             };
             HostJobError::new(kind, err.to_string())
         })
+    }
+}
+
+/// The running client of each owner cluster link, by owner cluster id, so
+/// operator requests (`POST /api/config/clusters/{id}/scan`) can reach the
+/// owner over that link's socket.
+static LINK_HANDLES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::BTreeMap<String, HostClientHandle>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// The running client of the link to owner cluster `cluster_id`.
+pub(crate) fn link_handle(cluster_id: &str) -> Option<HostClientHandle> {
+    LINK_HANDLES
+        .lock()
+        .ok()
+        .and_then(|handles| handles.get(cluster_id).cloned())
+}
+
+/// Records (or, with `None`, forgets) the client of one link.
+pub(crate) fn set_link_handle(cluster_id: &str, handle: Option<HostClientHandle>) {
+    if let Ok(mut handles) = LINK_HANDLES.lock() {
+        match handle {
+            Some(handle) => {
+                handles.insert(cluster_id.to_string(), handle);
+            }
+            None => {
+                handles.remove(cluster_id);
+            }
+        }
     }
 }
 
@@ -379,6 +409,7 @@ async fn start_clients(
                 continue;
             }
         };
+        set_link_handle(&cluster_id, Some(handle.clone()));
         running.insert(cluster_id.clone());
         // The link's consent supervisor stops with its client: on a swap,
         // when the client is revoked, or when its task is aborted (the
@@ -408,6 +439,7 @@ async fn start_clients(
         let relink = relink.clone();
         clients.push(tokio::spawn(async move {
             let exit = client.run(client_shutdown).await;
+            set_link_handle(&cluster_id, None);
             let _ = link_stop.send(true);
             // Both exit before a client for a new enrollment can start, so
             // one cluster never has two consent supervisors.

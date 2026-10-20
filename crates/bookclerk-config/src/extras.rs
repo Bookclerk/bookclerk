@@ -303,7 +303,7 @@ pub fn apply_replacements(input: &str, rules: &[ReplacementRule]) -> String {
     out
 }
 
-/// Classic Settings.json key → dotted config path for `get-setting` / `-o` overrides.
+/// Classic Settings.json key → dotted config path for `config get` / `config set`.
 #[must_use]
 pub fn classic_key_aliases() -> HashMap<&'static str, &'static str> {
     HashMap::from([

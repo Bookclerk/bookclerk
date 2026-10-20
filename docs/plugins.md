@@ -1257,8 +1257,8 @@ authoritative rows. The CLI only produces them (`bookclerk plugins deploy
 node queue with its `node:<id>` consumer.
 
 A deployed guest is registered under its plugin instance id. `bookclerk
-library scan` and `bookclerk library acquire` route a plugin key to its
-default instance on this host; pass `--instance` to pin another. Accounts
+library scan` and `bookclerk library acquire` pin their queued jobs to a
+named plugin key's default instance; pass `--instance` to pin another. Accounts
 are keyed by plugin key, not instance: every instance of a plugin, on every
 host, serves the same connected accounts.
 

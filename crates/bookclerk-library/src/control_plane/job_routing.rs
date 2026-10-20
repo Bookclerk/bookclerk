@@ -47,7 +47,8 @@ use super::semaphore::{
     acquire_permits, release_permits, PermitAcquire, SemaphorePermit, SemaphoreRequest,
 };
 use super::trust::{
-    account_owned, accounts_named, job_trusted, node_trust, owned_job_account, Claimant, NodeTrust,
+    account_owned, accounts_named, claimant_may_run, job_trusted, node_trust, owned_job_account,
+    Claimant, NodeTrust,
 };
 use crate::entities::accounts;
 use crate::error::{LibraryError, Result};
@@ -196,8 +197,10 @@ pub async fn job_source_plugin_key(
 /// Only a scan or acquire says: the plugin of the instance it is pinned to
 /// and of each instance it requires, plus every plugin holding an
 /// `accounts` row with the account it names (within the pinned plugin when
-/// pinned). A scan or acquire of every account, any other kind, and a job
-/// naming an unknown instance or account answer `None`.
+/// pinned). An unpinned acquire that names no account runs the plugins of
+/// the library rows it matches. An unpinned scan of every account, an
+/// acquire matching no row, any other kind, and a job naming an unknown
+/// instance or account answer `None`.
 ///
 /// # Errors
 ///
@@ -236,10 +239,21 @@ pub async fn job_plugin_keys(
             }
             keys.extend(named.into_iter().map(|(plugin_key, _)| plugin_key));
         }
-        // Every account of the pinned plugin stays within that plugin;
-        // every account of every plugin cannot be told.
-        None if pinned.is_none() => return Ok(None),
-        None => {}
+        // Every account of the pinned plugin stays within that plugin.
+        None if pinned.is_some() => {}
+        // An unpinned acquire runs the plugins of the library rows it
+        // matches (its items); every account of every plugin to scan
+        // cannot be told.
+        None if job.kind == JobKind::Acquire => {
+            let items = super::trust::job_item_accounts(store, job)
+                .await?
+                .unwrap_or_default();
+            if items.is_empty() {
+                return Ok(None);
+            }
+            keys.extend(items.into_iter().map(|(plugin_key, _)| plugin_key));
+        }
+        None => return Ok(None),
     }
     Ok(Some(keys))
 }
@@ -588,6 +602,9 @@ pub async fn claim_routed_job(
             )
             .await?;
         for job in page.jobs {
+            if !claimant_may_run(request.claimant, &job) {
+                continue;
+            }
             let trusted = match (&trust, owned_job_account(&job)) {
                 (NodeTrust::OwnedBy(_), None) => false,
                 (NodeTrust::OwnedBy(user_id), Some(account)) => match owned_accounts.get(account) {
