@@ -88,7 +88,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use axum::routing::{get, put};
-    use bookclerk_config::{Config, EventsConfig};
+    use bookclerk_config::Config;
     use bookclerk_library::control_plane::{
         bootstrap_control_plane, create_plugin_instance, list_deployments_for_instance,
         ConfigActor, DesiredState,
@@ -129,7 +129,7 @@ mod tests {
             files_path,
             &files_path.join("cache"),
             None,
-            &EventsConfig::default(),
+            &bookclerk_config::Config::default(),
         )
         .await
         .unwrap();
@@ -298,7 +298,7 @@ mod tests {
             files_path,
             &files_path.join("cache"),
             None,
-            &EventsConfig::default(),
+            &bookclerk_config::Config::default(),
         )
         .await
         .unwrap()
@@ -316,7 +316,7 @@ mod tests {
             other.path(),
             &other.path().join("cache"),
             None,
-            &EventsConfig::default(),
+            &bookclerk_config::Config::default(),
         )
         .await
         .unwrap()

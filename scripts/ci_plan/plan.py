@@ -70,6 +70,20 @@ ABI_SYNC_PATHS = frozenset(
     }
 )
 DOCS_PREFIX = "docs/"
+# Prose outside `docs/` that no build, test or script reads.
+DOC_FILES = frozenset(
+    {
+        "AGENTS.md",
+        "CHANGELOG.md",
+        "CODE_OF_CONDUCT.md",
+        "CONTRIBUTING.md",
+        "README.md",
+        "SECURITY.md",
+        "config/config.example.toml",
+    }
+)
+# Tests and fixtures the plan job runs on every event, before any check.
+PLAN_JOB_TEST_PREFIX = "scripts/tests/"
 
 KNOWN_TOP_LEVEL = frozenset(
     {
@@ -128,9 +142,11 @@ JOB_CHECKS: dict[str, tuple[str, ...]] = {
         "api_docs",
         "doctest",
         "store_free",
-        "rust_test",
-        "e2e",
     ),
+    # Unit + integration tests and the staged installation suite each get a
+    # runner, so the slowest check no longer waits behind lints and docs.
+    "test": ("rust_test",),
+    "e2e": ("e2e",),
     "release": ("release",),
     "confinement": ("confinement",),
     "native-gateway": ("native_gateway",),
@@ -146,7 +162,7 @@ JOB_CHECKS: dict[str, tuple[str, ...]] = {
 CHECK_JOB = {check: job for job, checks in JOB_CHECKS.items() for check in checks}
 ALL_CHECKS = tuple(CHECK_JOB)
 
-# Checks in the ``check`` job that need no Cargo toolchain.
+# Checks in the ``check`` (lint and docs) job that need no Cargo toolchain.
 NON_CARGO_CHECKS = frozenset({"ui", "python_sdk"})
 
 PREREQ_ORDER = ("build", "ensure_workerd", "install_platform", "stage_plugins")
@@ -688,7 +704,7 @@ def build_plan(
         if path in ABI_SYNC_PATHS:
             surf.abi.append(path)
             classified = True
-        if path.startswith(DOCS_PREFIX):
+        if path.startswith(DOCS_PREFIX) or path in DOC_FILES or path.startswith(PLAN_JOB_TEST_PREFIX):
             classified = True
         if pkg is None and path.startswith("examples/plugins-"):
             guest_dir = "/".join(path.split("/")[:2])

@@ -1730,6 +1730,14 @@ export interface SettingsResponse {
   host_cpu_cores_max?: number;
   /** Optional global per-jail CPU ceiling in cores. */
   jail_cpu_cores?: number | null;
+  /**
+   * `core.output` document revision the `output.*` values were read from; send it
+   * as `expected_output_revision`. `effective["output.revision"]` is the revision
+   * this host has applied, which can lag the document. Absent when the server
+   * could not read `core.output`; the `output.*` values are then missing too and
+   * must not be edited.
+   */
+  output_revision?: number;
 }
 
 /**
@@ -2009,7 +2017,9 @@ export async function fetchSettings(): Promise<SettingsResponse> {
  * Applies a batch of operator setting key/value updates from the Settings form.
  *
  * The batch is one authority. File-backed keys (listen, auth, plugins) are not
- * combined with `events.*`, which the daemon stores in the library database.
+ * combined with `events.*` or `output.*`, which the daemon stores as the
+ * `core.events` and `core.output` documents in the library database; a mixed
+ * batch is rejected with 400 and a lost compare-and-swap with 409.
  *
  * @param body - List of `{ key, value }` updates (plugin knobs use dotted keys).
  * @returns Refreshed settings payload after the patch.
@@ -2311,7 +2321,11 @@ export async function putNodeLabels(nodeId: string, labels: string[]): Promise<u
  * @param body - Settings updates to apply.
  * @returns The settings view after the write.
  */
-export async function patchSettings(body: { settings: SettingsUpdate[] }): Promise<SettingsResponse> {
+export async function patchSettings(body: {
+  settings: SettingsUpdate[];
+  /** `core.output` revision the caller read; a stale value is rejected with 409. */
+  expected_output_revision?: number;
+}): Promise<SettingsResponse> {
   const res = await fetch("/api/settings", {
     method: "PATCH",
     credentials: "include",

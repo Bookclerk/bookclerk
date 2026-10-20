@@ -479,6 +479,9 @@ pub struct EnrollmentToken {
 
 /// Parses a token, or a whole link whose fragment is the token.
 ///
+/// The secret is registered for redaction, so logs and diagnostics scrub
+/// it in the process that parsed it.
+///
 /// # Errors
 ///
 /// Returns [`LibraryError::Invalid`] when the text is not a `bcn1` token.
@@ -506,6 +509,9 @@ pub fn parse_enrollment_token(raw: &str) -> Result<EnrollmentToken> {
     if parts.next().is_some() {
         return Err(invalid());
     }
+    // A joining host learns the secret only here, so make it known to the
+    // log and diagnostics scrubber before any caller can print it.
+    bookclerk_config::register_secret(secret);
     Ok(EnrollmentToken {
         link_id: link_id.to_string(),
         secret: EnrollmentSecret(Zeroizing::new(secret.to_string())),

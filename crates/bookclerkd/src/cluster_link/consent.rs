@@ -296,6 +296,9 @@ impl LinkSupervisor {
     /// Answers [`Refreshed::Unfinished`] when the owner did not answer or
     /// any entry hit a failure that may pass, so the caller retries.
     async fn refresh(&self) -> Refreshed {
+        // Read before the request, so a list answered on an older
+        // connection never opens claims on a newer one.
+        let connection = *self.handle.connections().borrow();
         let Some(frame) = self.handle.request(Body::DeploymentsList {}).await else {
             return Refreshed::Unfinished;
         };
@@ -331,6 +334,8 @@ impl LinkSupervisor {
         }
         self.catalog.replace(entries.clone());
         self.publish();
+        // The catalog and consent now describe this connection.
+        self.handle.deployments_refreshed(connection);
         for item in &items {
             let Some(entry) = entries.get(&item.instance_id) else {
                 continue;
@@ -466,7 +471,9 @@ impl LinkSupervisor {
                 return (entry, false);
             }
         }
-        match self.instance_config(&item.instance_id).await {
+        // Secrets the operator did not grant are never opened here.
+        let open_secrets = bookclerk_plugin_host::binding_grant_flags(grant).secrets;
+        match self.instance_config(&item.instance_id, open_secrets).await {
             Ok(config) => entry.config = Some(config),
             Err(problem) => entry.problem = Some(problem),
         }
@@ -561,8 +568,14 @@ impl LinkSupervisor {
             .map_err(|err| format!("the plugin could not be materialized: {err}"))
     }
 
-    /// Reads an instance's `CONFIG` and `SECRETS` from the owner.
-    async fn instance_config(&self, instance_id: &str) -> Result<RemoteInstanceConfig, String> {
+    /// Reads an instance's `CONFIG` and `SECRETS` from the owner. The
+    /// sealed secrets are opened only when `open_secrets` (the consented
+    /// grant has the `secrets` binding); otherwise they are dropped unread.
+    async fn instance_config(
+        &self,
+        instance_id: &str,
+        open_secrets: bool,
+    ) -> Result<RemoteInstanceConfig, String> {
         let frame = self
             .handle
             .request(Body::InstanceConfigGet {
@@ -578,7 +591,11 @@ impl LinkSupervisor {
                 sealed_secrets,
                 secrets_withheld,
             } if answered == instance_id => {
-                let secrets = match sealed_secrets {
+                // Secrets the grant does not allow are dropped unopened and
+                // reported as withheld.
+                let secrets_withheld =
+                    secrets_withheld || (!open_secrets && sealed_secrets.is_some());
+                let secrets = match sealed_secrets.filter(|_| open_secrets) {
                     Some(sealed) => Some(Arc::new(
                         self.handle
                             .open_instance_secrets(instance_id, revision, &sealed)
@@ -661,6 +678,7 @@ pub(crate) fn reconcile_consent(
         if now != entry.consent {
             entry.consent = now;
             entry.root = None;
+            entry.version = None;
             entry.config = None;
             changed = true;
         }

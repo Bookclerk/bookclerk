@@ -359,6 +359,7 @@ async fn start_host_client<T: JobTransport + 'static>(
             incarnation: uuid::Uuid::new_v4().to_string(),
             max_jobs: 1,
             claim_kinds: kinds.iter().map(|kind| (*kind).to_string()).collect(),
+            claims_after_refresh: true,
             timing: timing(backoff_min),
         },
         TransportRunner::new(transport, Arc::clone(&catalog)),
