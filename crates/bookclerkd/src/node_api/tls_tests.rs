@@ -478,6 +478,63 @@ acme_directory_ca = "{ca}"
     assert!(cached, "the certificate is cached for restarts");
 }
 
+/// The daemon serves its whole web app on the self-signed listener, so a
+/// branch's owner signs in at the public origin; `info` there reports the
+/// fingerprint a joining install confirms (and checks against the
+/// certificate it is shown).
+#[tokio::test]
+async fn self_signed_info_reports_the_pin_a_branch_confirms() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let (state, _store) = super::super::tests::test_state_with(
+        &files,
+        &format!(
+            "[integrations]\npublic_origin = \"https://localhost:{port}\"\n\n\
+             [daemon.node_api]\nmode = \"self_signed\"\ntls_listen = \"127.0.0.1:{port}\"\n"
+        ),
+    )
+    .await;
+    let cfg = state.config.read().await.clone();
+    let web = crate::api::router(Arc::clone(&state), None);
+    let started = super::start_with(&state, &cfg, files.path(), Some(web)).await;
+    assert_eq!(started.gate.status(), NodeApiStatus::Ready);
+    let pin = bookclerk_config::read_node_api_spki_pin(files.path()).expect("pin written");
+
+    let library = bookclerk_node_client::inspect_library(&format!("localhost:{port}"))
+        .await
+        .expect("the branch reads the library");
+    assert_eq!(library.origin, format!("https://localhost:{port}"));
+    assert_eq!(library.info.transport, "self_signed");
+    assert_eq!(library.info.spki_fingerprint.as_deref(), Some(pin.as_str()));
+    assert_eq!(library.spki_pin.as_deref(), Some(pin.as_str()));
+
+    // The web app is there too (the node-only listener answers 404).
+    let dir = files
+        .path()
+        .join(bookclerk_config::NODE_API_SELF_SIGNED_DIR);
+    let cert = CertificateDer::from(std::fs::read(dir.join("cert.der")).unwrap());
+    let mut roots = RootCertStore::empty();
+    roots.add(cert).unwrap();
+    let config = ClientConfig::builder_with_provider(super::provider())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let mut tls = tokio_rustls::TlsConnector::from(Arc::new(config))
+        .connect(ServerName::try_from("localhost").unwrap(), tcp)
+        .await
+        .unwrap();
+    assert_ne!(http_status(&mut tls, "/api/status").await, 404);
+}
+
 #[tokio::test]
 async fn the_node_router_times_out_a_stalled_enroll_body() {
     let _dek = crate::auth::tests::process_dek_lock().await;

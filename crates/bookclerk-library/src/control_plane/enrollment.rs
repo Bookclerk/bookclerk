@@ -23,7 +23,7 @@
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use rand::RngCore;
 use sea_orm::sea_query::Expr;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -776,6 +776,142 @@ pub async fn revoke_enrollment_link(
     }
     tracing::info!(link_id, "revoked host enrollment link");
     Ok(link)
+}
+
+/// Prefix of the `created_by` audit id of a link a sign-in created.
+pub const AUTHORIZED_LINK_CREATED_BY: &str = "oauth:";
+
+/// Lifetime of a link a sign-in created: it is redeemed in the same
+/// request, so it only has to outlive a retry.
+const AUTHORIZED_LINK_TTL: Duration = Duration::minutes(10);
+
+/// The link a branch sign-in redeems through: its id and secret are derived
+/// from the authorization code and the PKCE verifier, so a retry of the
+/// same exchange (same code, verifier and keys) finds the same link and
+/// answers from its receipt, and a wrong verifier can never redeem it.
+///
+/// The id is `hex(SHA-256("bookclerk-branch-link-v1\0" || code))[..32]`; the
+/// secret is base64url `SHA-256("bookclerk-branch-secret-v1\0" || code ||
+/// "\0" || verifier)`.
+#[must_use]
+pub fn authorized_enrollment_link(code: &str, verifier: &str) -> (String, EnrollmentSecret) {
+    let mut id = Sha256::new();
+    id.update(b"bookclerk-branch-link-v1\0");
+    id.update(code.as_bytes());
+    let link_id = hex::encode(id.finalize())[..32].to_string();
+    let mut secret = Sha256::new();
+    secret.update(b"bookclerk-branch-secret-v1\0");
+    secret.update(code.as_bytes());
+    secret.update([0]);
+    secret.update(verifier.as_bytes());
+    let secret = Zeroizing::new(secret.finalize().to_vec());
+    (
+        link_id,
+        EnrollmentSecret(Zeroizing::new(base64_url(secret.as_slice()))),
+    )
+}
+
+/// Records the link an approved branch sign-in redeems through
+/// ([`authorized_enrollment_link`]), for `for_user_id`, the user who signed
+/// in and consented. Called only after the authorization code's client,
+/// redirect and PKCE verifier were checked, before the code is consumed, so
+/// a failed write leaves the code usable; the redeem itself is
+/// [`redeem_enrollment_link`], the same canonical batch a minted link takes.
+///
+/// A second call for the same link id leaves the first row as it is.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Forbidden`] while host enrollment is off or the
+/// user is not active, [`LibraryError::Invalid`] for a malformed label, and
+/// the write error.
+pub async fn record_authorized_enrollment_link(
+    store: &LibraryStore,
+    link_id: &str,
+    secret: &EnrollmentSecret,
+    for_user_id: i64,
+    label: &str,
+) -> Result<()> {
+    if !is_link_id(link_id) {
+        return Err(LibraryError::Invalid("malformed link id".into()));
+    }
+    if !load_host_enrollment(store).await?.body.enabled {
+        return Err(enrollment_disabled());
+    }
+    active_user(store, for_user_id)
+        .await
+        .map_err(|_| redeem_refused())?;
+    let label = label.trim();
+    if label.len() > MAX_LINK_LABEL_BYTES || label.chars().any(char::is_control) {
+        return Err(LibraryError::Invalid(format!(
+            "branch name must be at most {MAX_LINK_LABEL_BYTES} bytes without control characters"
+        )));
+    }
+    let now = Utc::now();
+    let model = node_enrollment_links::ActiveModel {
+        link_id: Set(link_id.to_string()),
+        token_hash: Set(hash_token(secret.expose())),
+        for_user_id: Set(for_user_id),
+        label: Set(label.to_string()),
+        created_by: Set(format!("{AUTHORIZED_LINK_CREATED_BY}user:{for_user_id}")),
+        created_at: Set(stamp(now)),
+        expires_at: Set(stamp(now + AUTHORIZED_LINK_TTL)),
+        redeemed_at: Set(None),
+        redeemed_node_id: Set(None),
+        revoked_at: Set(None),
+    };
+    node_enrollment_links::Entity::insert(model)
+        .on_conflict(
+            sea_orm::sea_query::OnConflict::column(node_enrollment_links::Column::LinkId)
+                .do_nothing()
+                .to_owned(),
+        )
+        .exec_without_returning(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(())
+}
+
+/// A host announced it is leaving (`node.leaving`): revokes its credential
+/// at once and drops its live status, so it stops counting as a node
+/// without waiting for missed heartbeats, and tells every node so the
+/// connection is closed wherever it is held. Answers false when the node
+/// has no unrevoked credential.
+///
+/// # Errors
+///
+/// Returns the write error.
+pub async fn record_node_left(store: &LibraryStore, node_id: &str) -> Result<bool> {
+    let updated = node_credentials::Entity::update_many()
+        .col_expr(
+            node_credentials::Column::RevokedAt,
+            Expr::value(stamp(Utc::now())),
+        )
+        .filter(node_credentials::Column::NodeId.eq(node_id))
+        .filter(node_credentials::Column::RevokedAt.is_null())
+        .exec(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    if updated.rows_affected != 1 {
+        return Ok(false);
+    }
+    crate::entities::node_status::Entity::delete_many()
+        .filter(crate::entities::node_status::Column::NodeId.eq(node_id))
+        .exec(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    let _ = store
+        .insert_security_audit_event(&format!("node:{node_id}"), "node_left", None)
+        .await;
+    tracing::info!(node_id, "host node left the cluster");
+    notify_all_nodes(
+        store,
+        NodeMessage::NodeRevoked {
+            node_id: node_id.to_string(),
+        },
+    )
+    .await;
+    Ok(true)
 }
 
 /// What a host submits to redeem a link.

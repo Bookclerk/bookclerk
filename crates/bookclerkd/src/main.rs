@@ -174,6 +174,7 @@ async fn main() -> anyhow::Result<()> {
         tray: RwLock::new(None),
         tray_handoff: Mutex::new(None),
         deployment_runtime: std::sync::OnceLock::new(),
+        node_api_tls_bound: std::sync::OnceLock::new(),
         library_swaps: tokio::sync::watch::Sender::new(0),
     });
 
@@ -205,7 +206,11 @@ async fn main() -> anyhow::Result<()> {
     let node_api_gate = {
         let cfg = config.read().await.clone();
         let files_dir = cfg.paths().files_dir.clone();
-        node_api::tls::start(&state, &cfg, &files_dir).await.gate
+        // The listener serves the web app too: `public_origin` names it, and
+        // a branch's owner signs in there.
+        node_api::tls::start_with(&state, &cfg, &files_dir, Some(app.clone()))
+            .await
+            .gate
     };
 
     loop {

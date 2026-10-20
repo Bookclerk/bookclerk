@@ -22,6 +22,7 @@ mod node_queue;
 mod node_status;
 mod output;
 mod ownership;
+mod pending_joins;
 mod placement;
 mod remote_catalog;
 mod remote_consents;
@@ -42,8 +43,8 @@ use serde::{Deserialize, Serialize};
 
 pub use cluster_links::{
     decode_spki_pin, leave_cluster_link, list_cluster_links, load_cluster_link,
-    load_cluster_link_keys, record_cluster_link, set_cluster_link_state, ClusterLink,
-    ClusterLinkKeys, NewClusterLink, CLUSTER_LINK_ACTIVE, CLUSTER_LINK_KEYS_NAME,
+    load_cluster_link_keys, mark_cluster_link_revoked, record_cluster_link, set_cluster_link_state,
+    ClusterLink, ClusterLinkKeys, NewClusterLink, CLUSTER_LINK_ACTIVE, CLUSTER_LINK_KEYS_NAME,
     CLUSTER_LINK_LEFT, CLUSTER_LINK_REVOKED,
 };
 pub use deployments::{
@@ -61,14 +62,16 @@ pub use documents::{
     PLUGIN_INSTANCE_SCOPE_TYPE,
 };
 pub use enrollment::{
-    format_enrollment_token, list_enrollment_links, load_host_enrollment, load_node_credential,
-    mint_enrollment_link, parse_enrollment_token, record_node_connected, redeem_enrollment_link,
-    revoke_enrollment_link, revoke_node_credential, set_host_enrollment_enabled,
-    verify_cluster_owner, EnrolledNode, EnrollmentActor, EnrollmentLink, EnrollmentSecret,
-    EnrollmentToken, HostEnrollmentSettings, HostEnrollmentSettingsV1, MintedLink, NodeCredential,
-    RedeemRequest, DEFAULT_LINK_TTL, ENROLLMENT_TOKEN_PREFIX, HOST_ENROLLMENT_NAMESPACE,
-    HOST_ENROLLMENT_SCHEMA_VERSION, MAX_LINK_LABEL_BYTES, MAX_LINK_TTL, MIN_LINK_TTL,
-    NODE_PUBLIC_KEY_LEN,
+    authorized_enrollment_link, format_enrollment_token, list_enrollment_links,
+    load_host_enrollment, load_node_credential, mint_enrollment_link, parse_enrollment_token,
+    record_authorized_enrollment_link, record_node_connected, record_node_left,
+    redeem_enrollment_link, revoke_enrollment_link, revoke_node_credential,
+    set_host_enrollment_enabled, verify_cluster_owner, EnrolledNode, EnrollmentActor,
+    EnrollmentLink, EnrollmentSecret, EnrollmentToken, HostEnrollmentSettings,
+    HostEnrollmentSettingsV1, MintedLink, NodeCredential, RedeemRequest,
+    AUTHORIZED_LINK_CREATED_BY, DEFAULT_LINK_TTL, ENROLLMENT_TOKEN_PREFIX,
+    HOST_ENROLLMENT_NAMESPACE, HOST_ENROLLMENT_SCHEMA_VERSION, MAX_LINK_LABEL_BYTES, MAX_LINK_TTL,
+    MIN_LINK_TTL, NODE_PUBLIC_KEY_LEN,
 };
 pub use identity::{
     current_process_incarnation, list_node_ids, list_nodes, load_node,
@@ -120,6 +123,11 @@ pub use output::{
     OUTPUT_SCHEMA_VERSION, OUTPUT_SETTING_ALIASES, OUTPUT_SETTING_KEYS,
 };
 pub use ownership::{nodes_owned_by, set_node_owner, verify_node_owner};
+pub use pending_joins::{
+    create_pending_join, finish_pending_join, open_pending_join, purge_expired_pending_joins,
+    take_pending_join, NewPendingJoin, PendingJoin, TakenJoin, MAX_JOIN_NAME_BYTES,
+    PENDING_JOIN_TTL,
+};
 pub use placement::undeploy_instance;
 pub use placement::{
     delete_plugin_placement, effective_node_labels, ensure_hand_managed, labels_satisfy,

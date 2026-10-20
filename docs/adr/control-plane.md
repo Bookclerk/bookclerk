@@ -869,7 +869,7 @@ Decided 2026-10-14 with the owner. A cluster has two kinds of node:
   database credentials or DEK. Enrollment, the transport policy, the
   node socket, the work frames, the host client, host consent, and
   results and uploads are built (sections below; operator guide in
-  [Clusters and host nodes](../cluster-hosts.md)). A redeemed
+  [Libraries and branches](../cluster-hosts.md)). A redeemed
   enrollment link records the node with `nodes.kind = host`.
 
 Who may administer a node is separate from its kind. `nodes.owner_user_id`
@@ -1263,9 +1263,9 @@ join`) and `bookclerkd/src/cluster_link.rs`.
 - **Database swap.** The daemon runs one client per active link of the
   live library. When a config reload swaps the database, every client is
   stopped (and awaited, so a node never dials twice) and the new store's
-  active links are started; a link enrolled while the daemon runs is
-  picked up at the next start or swap, and re-enrolling a running link
-  restarts its client.
+  active links are started. A link joined through the daemon (Join a
+  library) is started at once, one the CLI recorded within the consent
+  poll (5 s), and re-enrolling a running link restarts its client.
 - **Jobs.** A claim loop runs while job slots are free. Each job runs on
   its own task, outliving the connection: its secrets are opened with the
   enrolled box key (a bundle that does not open is failed as
@@ -1644,18 +1644,20 @@ which topics changed; the SPA then re-reads its ordinary routes.
   heartbeating changes no row) and User Management every 30 s (presence
   ages with time). Reconnects back off from 1 s to 30 s with jitter, and
   a reconnect refreshes every subscribed topic once.
-- **Consent screen.** Settings → Clusters (operator only) lists the links
+- **Consent screen.** Settings → Library (operator only; first shipped as
+  Settings → Clusters) lists the links
   and each owner plugin's request with its state, a deny checkbox per
   requested domain and binding, a deny-network switch, Approve (sending
   the `request_digest` shown, so a changed request is refused rather than
   approved unseen) and Revoke, over the existing
   `/api/config/cluster-consents` routes; a 409 shows the daemon's reason.
-  There is deliberately no invite or join screen: an enrollment link is a
-  secret, and secrets do not pass through the SPA.
+  This step shipped no invite or join screen, so that an enrollment link
+  never passed through the SPA; [Join a library](#join-a-library-sign-in-and-branch-invites)
+  below adds both, at the owner's request.
 - **CLI.** `bookclerk clusters join` (link from stdin or a prompt with
   echo off, never argv) and `bookclerk clusters leave [--cluster]` (marks
   the link `left`, deletes its node keys; a running daemon stops the
-  link's client within 5 s). The owner is not told of a leave.
+  link's client within 5 s). Join a library adds `join --url` and tells the owner of a leave.
 - **Tests.** Daemon: Origin matching for both modes; a foreign origin or
   no session is refused before the upgrade; the operator hears job and
   consent changes, and a write made right after `hello`; a member hears
@@ -1672,7 +1674,80 @@ which topics changed; the SPA then re-reads its ordinary routes.
   after reconnect, the sign-out delay, and polling only while the socket
   is down.
 
-Step 11 is the operator guide, [Clusters and host nodes](../cluster-hosts.md).
+Step 11 is the operator guide, [Libraries and branches](../cluster-hosts.md).
+
+### Join a library (sign-in) and branch invites
+
+A later step (decided 2026-10-18) makes joining UI-first. The UI calls an
+owner cluster a **library** and a host node a **branch**; code, API and CLI
+names are unchanged.
+
+- **Sign-in instead of a link.** The owner's OAuth server (`oidc.rs`) gains
+  one built-in public client, `bookclerk-branch`, never stored in the
+  clients table (the id cannot be registered): redirect URIs loopback (RFC
+  8252) or `https://` only, scope `node:enroll`, S256 PKCE required.
+  `/oidc/authorize` validates a branch request and hands it to the SPA
+  consent page `/join/approve` ("Let <branch> join <library> as yours?").
+  Approving (`POST /api/auth/branch-consent`, a signed-in user, never the
+  operator alone) checks the user is active, `core.host_enrollment` is on
+  and `classify_transport` allows the connection, then stores a
+  single-use code (hashed, 60 s) in `oidc_auth_codes`.
+- **One redeem batch.** `POST /api/node/v1/enroll/oauth` consumes the code,
+  checks client, redirect URI, scope and verifier, and records an
+  enrollment link whose id and secret derive from the code and verifier
+  (`authorized_enrollment_link`, `created_by = "oauth:"`, rechecking
+  enrollment and the user). The redeem is then the canonical
+  `redeem_enrollment_link` batch: one node, `node_credentials`, a
+  receipt, replay for a retry of the same exchange, one node under
+  concurrency. `GET /api/node/v1/info` tells the joining daemon the
+  cluster id, a library name (the public origin's host), the canonical
+  origin, the transport mode, whether enrollment is on, and in
+  `self_signed` mode the SPKI fingerprint; the joining daemon requires that
+  fingerprint to equal the certificate it was shown, and the origin to
+  equal the address typed.
+- **The verifier stays on the host.** `POST /api/config/join/start`
+  (operator) makes the verifier, `state` and node keys and keeps them in a
+  `pending_joins` row (SQL-v1 and SeaORM; 10 minutes; the verifier and
+  private keys sealed in `encrypted_secrets` as `cluster_join`). The SPA
+  relays only `code` and `state` to `POST /api/config/join/callback`; the
+  daemon takes the pending row once, redeems, records the link and starts
+  its client at once. A running daemon also starts clients for links
+  joined on the CLI within 5 s. No restart is needed.
+- **Invites in the UI.** "Add a branch" (User management, and each user's
+  own menu) mints an enrollment link and shows it once (`Cache-Control:
+  no-store`, never in stored SPA state or logs), with outstanding invites
+  and Revoke; the join wizard's "I have an invite" tab POSTs a pasted link
+  to the daemon, which keeps nothing. This reverses "secrets do not pass
+  through the SPA" for links only; the fragment, hash-only storage,
+  single use, expiry and revocation all hold.
+- **Leave tells the owner.** A new JSON node frame, `node.leaving`
+  (`bookclerk-node-proto`; not part of the plugin ABI), makes the owner
+  revoke the node's credential, drop its `node_status` row and close with
+  4403. Settings → Library → Leave library and `clusters leave` send it
+  (over the running client, or a short-lived one, 10 s at most), then mark
+  the link `left` and delete the keys either way.
+- **First start.** A fresh install (no Owner or Administrator, no link)
+  shows its operator a welcome screen: Start a new library (today's
+  bootstrap) or Join a library. Settings → Branches (operator or Owner)
+  holds "Let new branches join" and the fingerprint.
+- **CLI.** `bookclerk clusters join --url <owner>` prints the authorize URL,
+  opens a browser when it can, and takes the answer on a loopback
+  listener; without `--url` the stdin path is unchanged.
+- **Not built here.** The peer ("clerk") connection type that shares the
+  library's database, and branches of branches.
+- **Tests.** Daemon: `info` under the transport policy and in
+  `self_signed` mode (the fingerprint a branch checks); consent and redeem
+  with an idempotent retry and one node under concurrency; refusals for
+  enrollment off, an inactive user, a wrong verifier, a reused or unknown
+  code, another redirect URI, a malformed request, the operator, and
+  plain HTTP from the LAN; the branch handed to the consent page and the
+  reserved client id; the invite's `no-store`; join end to end
+  (inspect, start, deny, approve, callback, client started at runtime,
+  leave revoking the node on the owner) and with an invite. Library: the
+  pending join is taken once and expires. CLI: the loopback callback
+  takes only its own `state` and reports a denial. UI (vitest): callback
+  parsing, the consent redirect check, invite shape, countdown, and
+  error copy.
 
 ### Routed library work (H-5)
 
@@ -1814,15 +1889,12 @@ Not in this phase, and not claimed as production HA:
 - Host nodes: Pebble in CI, delivery claims and the KV, queue and EVENTS
   binding frames over the node socket, per-item trust for deliveries and
   instance ownership (`plugin_instances.owner_user_id`; instance
-  `SECRETS` reach only a node trusted with every job). A link joined
-  while the daemon runs is dialed only at the next start or database swap
-  (re-enrolling a running link restarts its client), and a leave does not
-  tell the owner. Uploaded objects carry content type, length and
-  digest but not the title metadata (ASIN, title, timestamps) a local
-  acquire records with its files. Settings has no enrollment switch, and
-  by design no invite or join screen (CLI and HTTP only). Everything else
-  in H-4 steps 1-11 is built (see the sections above and
-  [Clusters and host nodes](../cluster-hosts.md)).
+  `SECRETS` reach only a node trusted with every job). Uploaded objects
+  carry content type, length and digest but not the title metadata (ASIN,
+  title, timestamps) a local acquire records with its files. The peer
+  ("clerk") connection type and branches of branches are not built.
+  Everything else in H-4 steps 1-11 and Join a library is built (see the
+  sections above and [Libraries and branches](../cluster-hosts.md)).
 - Rolling upgrades and a cluster dashboard beyond the Status page and
   Settings → Nodes (Phase 5). Drain exists (`nodes set --drain`), but there
   is no drain-then-migrate flow: the migration lease serializes migrators,

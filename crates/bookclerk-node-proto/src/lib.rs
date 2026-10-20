@@ -40,11 +40,17 @@
 //! owner streams them on to its output destinations without staging them,
 //! and the job completes when the last title's upload commits.
 //!
+//! A host that leaves sends [`Body::NodeLeaving`]; the owner revokes the
+//! node at once. Joining with a sign-in instead of a link is the OAuth
+//! code + PKCE flow of the built-in client [`BRANCH_CLIENT_ID`] ([`OwnerInfo`],
+//! [`OAuthEnrollRequest`]).
+//!
 //! This crate is pure: no I/O, no clock, no randomness. The daemon (owner)
 //! and the host client share it so both sides sign and check the same
 //! bytes.
 
 mod frames;
+mod join;
 mod keys;
 mod sealed;
 mod signature;
@@ -56,6 +62,12 @@ pub use frames::{
     RemoteVersion, ScanImport, UploadAnswer, UploadCommitRequest, UploadFile, WorkJob, ITEM_JOB,
     MAX_DESTINATION_ID_BYTES, MAX_SCAN_BATCH_ROWS, MAX_SCAN_ROW_BYTES, MAX_STATUS_JOBS,
     MAX_UPLOAD_COPIES, MAX_UPLOAD_FILES, MAX_UPLOAD_FILE_BYTES, MAX_UPLOAD_KEY_BYTES,
+};
+pub use join::{
+    is_branch_name, is_branch_redirect_uri, is_library_name, pkce_challenge, OAuthEnrollRequest,
+    OwnerInfo, AUTHORIZE_PATH, BRANCH_CLIENT_ID, BRANCH_CODE_TTL_SECS, BRANCH_SCOPE,
+    ENROLL_OAUTH_PATH, INFO_PATH, JOIN_CALLBACK_PATH, MAX_BRANCH_NAME_BYTES,
+    MAX_LIBRARY_NAME_BYTES,
 };
 pub use keys::{
     box_public_key, sign_public_key, validate_box_public_key, validate_sign_public_key, KeyError,

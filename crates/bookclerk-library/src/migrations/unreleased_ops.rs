@@ -1159,4 +1159,21 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE INDEX IF NOT EXISTS idx_event_deliveries_updated ON event_deliveries(updated_at)",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_users_updated ON users(updated_at)"),
+    // Join a library: on a joining host, one sign-in in progress. The PKCE
+    // verifier and node keys are sealed in `encrypted_secrets` (`kind =
+    // cluster_join`); only the hash of `state` is stored here. Rows live
+    // ten minutes.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS pending_joins (
+        state_hash TEXT PRIMARY KEY NOT NULL,
+        owner_origin TEXT NOT NULL,
+        spki_pin TEXT,
+        owner_cluster_id TEXT NOT NULL,
+        library_name TEXT NOT NULL,
+        branch_name TEXT NOT NULL,
+        redirect_uri TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+    )",
+    ),
 ];

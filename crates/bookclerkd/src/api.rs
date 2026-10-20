@@ -100,6 +100,10 @@ pub struct AppState {
     pub tray_handoff: Mutex<Option<TrayHandoffTicket>>,
     /// Guest sessions for deployed instances. One map for the process lifetime.
     pub deployment_runtime: OnceLock<Arc<bookclerk_plugin_host::LiveDeploymentRuntime>>,
+    /// Where the node API's TLS listener is bound, once it is. That listener
+    /// is bound at startup and outlives config reloads, so a reload that
+    /// turns auth off is checked against it as well as the new config.
+    pub node_api_tls_bound: OnceLock<std::net::SocketAddr>,
     /// Counts database swaps: bumped after [`Self::library`] is replaced so
     /// the cluster-link supervisor restarts its host clients on the new
     /// store.
@@ -970,6 +974,31 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             "/api/config/cluster-consents/revoke",
             post(crate::cluster_link::api::post_cluster_consent_revoke),
         )
+        // Join a library / Leave library (the welcome screen and wizard).
+        .route(
+            "/api/config/join",
+            get(crate::cluster_link::join::get_join_status),
+        )
+        .route(
+            "/api/config/join/inspect",
+            post(crate::cluster_link::join::post_join_inspect),
+        )
+        .route(
+            "/api/config/join/start",
+            post(crate::cluster_link::join::post_join_start),
+        )
+        .route(
+            "/api/config/join/callback",
+            post(crate::cluster_link::join::post_join_callback),
+        )
+        .route(
+            "/api/config/join/invite",
+            post(crate::cluster_link::join::post_join_invite),
+        )
+        .route(
+            "/api/config/join/leave",
+            post(crate::cluster_link::join::post_join_leave),
+        )
         .route("/api/settings", get(get_settings).patch(patch_settings))
         .route(
             "/api/plugins/{id}/consent",
@@ -1016,6 +1045,19 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         .route(
             "/api/config/node-invites/{id}",
             delete(crate::node_api::delete_node_invite),
+        )
+        // A branch's sign-in consent ("Let <branch> join <library> as
+        // yours?"): a signed-in user, never the operator alone.
+        .route(
+            "/api/auth/branch-consent",
+            get(crate::node_api::branch::get_branch_consent)
+                .post(crate::node_api::branch::post_branch_consent),
+        )
+        // Settings → Branches: the library's join settings (operator or
+        // Owner; the handler checks).
+        .route(
+            "/api/config/branches",
+            get(crate::node_api::branch::get_branches).put(crate::node_api::branch::put_branches),
         )
         // The library lets the operator or an Owner revoke any host and
         // anyone else only the hosts they own.
@@ -1169,6 +1211,10 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
                 // The Status page. `/status` stays the legacy JSON route.
                 "/cluster",
                 "/settings",
+                // Join a library: the owner's consent page and the
+                // joining install's callback.
+                "/join/approve",
+                "/join/callback",
             ];
             for path in SPA_DOC_PATHS {
                 app = app.route_service(path, ServeFile::new(index.clone()));
@@ -1325,7 +1371,8 @@ fn is_streamed_upload(method: &axum::http::Method, path: &str) -> bool {
             .is_some_and(|(_, rest)| rest.starts_with("files/"))
 }
 
-/// Selects the request deadline in seconds for a control-plane path (8s default; longer for discover).
+/// Selects the request deadline in seconds for a control-plane path (8s default; longer for discover
+/// and joining or leaving a library).
 fn api_timeout_for_path(path: &str) -> Duration {
     match path {
         "/api/discover/purchase-hints"
@@ -1336,6 +1383,20 @@ fn api_timeout_for_path(path: &str) -> Duration {
         "/api/discover/recommendations" => Duration::from_secs(20),
         // Parallel store searches (~7s each) + optional page enrich (~3.5s).
         "/api/discover/search" => Duration::from_secs(16),
+        // Leave library waits for the library to hear `node.leaving`
+        // (`cluster_link::LEAVE_NOTICE_TIMEOUT`, through a fresh connection
+        // when no client runs) before it records the leave.
+        "/api/config/join/leave" => Duration::from_secs(30),
+        // A join redeems with the library (at most
+        // `cluster_link::join::REDEEM_TIMEOUT`), then waits for the new
+        // link's client (`cluster_link::start_link_now`).
+        // Their own bounded waits add up to 29 s; the rest is margin for the
+        // database round trips around them.
+        "/api/config/join/callback" | "/api/config/join/invite" => Duration::from_secs(45),
+        // Reading a library dials it (connect and request timeouts in
+        // `bookclerk_node_client::endpoint`), so an unreachable one is
+        // answered as `unreachable` rather than cut off.
+        "/api/config/join/inspect" | "/api/config/join/start" => Duration::from_secs(45),
         _ => Duration::from_secs(8),
     }
 }
@@ -1555,6 +1616,17 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
     // Defense in depth: never publish a non-loopback listen with auth disabled
     // in the *runtime* object (validate_daemon_listen already checked config).
     validate_daemon_listen_against_auth(&new_cfg, candidate_auth.enabled)?;
+    // The node API's TLS listener stays bound from startup whatever the new
+    // config says, and it serves the web app too.
+    if !candidate_auth.enabled {
+        if let Some(bound) = state.node_api_tls_bound.get() {
+            if !bound.ip().is_loopback() {
+                anyhow::bail!(
+                    "daemon.auth.enabled=false is unsafe while the node API's TLS listener is bound beyond loopback ({bound}); restart the daemon to close it"
+                );
+            }
+        }
+    }
 
     let token_changed = candidate_auth.enabled != old_auth_enabled
         || (candidate_auth.enabled && candidate_auth.token != old_token);
@@ -1672,7 +1744,13 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
     Ok(detail)
 }
 
-/// Validate listen against the effective runtime auth flag (not only TOML).
+/// Validate listen, and the node API's TLS listener (which serves the web
+/// app too), against the effective runtime auth flag (not only TOML).
+///
+/// # Errors
+///
+/// Returns an error when `daemon.listen` does not parse or is empty, or when
+/// auth is off and either listener is reachable beyond loopback.
 pub fn validate_daemon_listen_against_auth(
     config: &Config,
     auth_enabled: bool,
@@ -1691,6 +1769,24 @@ pub fn validate_daemon_listen_against_auth(
                 anyhow::bail!(
                     "daemon.auth.enabled=false is unsafe when listen is not loopback ({})",
                     config.daemon.listen.join_comma()
+                );
+            }
+        }
+        // The node API's own TLS listener serves the whole web app too (a
+        // branch's owner signs in there), so it is held to the same rule.
+        let node_api = &config.daemon.node_api;
+        if matches!(
+            node_api.mode,
+            bookclerk_config::NodeApiMode::Acme | bookclerk_config::NodeApiMode::SelfSigned
+        ) {
+            if let Some(tls) = node_api
+                .tls_listen
+                .as_deref()
+                .and_then(|addr| addr.trim().parse::<std::net::SocketAddr>().ok())
+                .filter(|addr| !addr.ip().is_loopback())
+            {
+                anyhow::bail!(
+                    "daemon.auth.enabled=false is unsafe when daemon.node_api.tls_listen is not loopback ({tls}): that listener serves the web app too"
                 );
             }
         }
@@ -5892,6 +5988,25 @@ mod tests {
         assert!(validate_daemon_listen_against_auth(&cfg, false).is_ok());
     }
 
+    /// The node API's TLS listener serves the web app, so with auth off it
+    /// must be loopback too; with auth on any address is fine.
+    #[test]
+    fn listen_validation_covers_the_node_api_tls_listener() {
+        let mut cfg = Config::default();
+        cfg.daemon.listen = ListenAddrs::parse_list("127.0.0.1:8787").unwrap();
+        cfg.daemon.node_api.mode = bookclerk_config::NodeApiMode::SelfSigned;
+        cfg.daemon.node_api.tls_listen = Some("0.0.0.0:8443".into());
+        assert!(validate_daemon_listen_against_auth(&cfg, true).is_ok());
+        let err = validate_daemon_listen_against_auth(&cfg, false).unwrap_err();
+        assert!(err.to_string().contains("tls_listen"), "{err}");
+        cfg.daemon.node_api.tls_listen = Some("127.0.0.1:8443".into());
+        assert!(validate_daemon_listen_against_auth(&cfg, false).is_ok());
+        // Without a TLS listener of its own the address is not served.
+        cfg.daemon.node_api.mode = bookclerk_config::NodeApiMode::Proxy;
+        cfg.daemon.node_api.tls_listen = Some("0.0.0.0:8443".into());
+        assert!(validate_daemon_listen_against_auth(&cfg, false).is_ok());
+    }
+
     #[test]
     fn database_plugin_override_requires_grant() {
         assert_eq!(
@@ -6505,6 +6620,7 @@ mode = "deny"
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
+            node_api_tls_bound: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
         });
 
@@ -6605,6 +6721,7 @@ mode = "deny"
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
+            node_api_tls_bound: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
         });
 
@@ -6763,6 +6880,7 @@ mode = "deny"
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
+            node_api_tls_bound: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
         });
         let scan = || {
@@ -7385,6 +7503,7 @@ mode = "deny"
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
+            node_api_tls_bound: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
         });
 

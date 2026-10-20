@@ -10,10 +10,15 @@
 //!   (base64url SHA-256 of the SubjectPublicKeyInfo) is written beside it
 //!   and travels in enrollment links.
 //!
-//! The listener serves only the node API routes (HTTP/1.1, so WebSocket
-//! upgrades work) and tags each request [`ListenerKind::AcmeTls`] or
-//! [`ListenerKind::SelfSignedTls`] for
-//! [`super::transport::classify_transport`].
+//! The listener serves HTTP/1.1 (so WebSocket upgrades work) and tags each
+//! request [`ListenerKind::AcmeTls`] or [`ListenerKind::SelfSignedTls`] for
+//! [`super::transport::classify_transport`]. Given no router,
+//! [`start_with`] serves only the node API routes; the daemon passes its
+//! whole web app,
+//! because `integrations.public_origin` names this listener and a joining
+//! branch's owner signs in there (Join a library: `/oidc/authorize`, the
+//! consent page, sign-in), as user invites and SSO callbacks already
+//! assume. The web app keeps its own authentication on every route.
 //!
 //! [`NodeApiGate`] keeps the node API unmounted, on every listener, until
 //! the TLS listener is serving a certificate. If ACME fails, or the listener
@@ -90,7 +95,7 @@ pub enum NodeApiStatus {
 pub struct NodeApiGate {
     /// Status published by the TLS listener (or fixed at start).
     status: watch::Receiver<NodeApiStatus>,
-    /// The mode [`start`] ran for; a reloaded config naming another mode
+    /// The mode [`start_with`] ran for; a reloaded config naming another mode
     /// leaves the node API unmounted until the daemon restarts.
     mode: NodeApiMode,
     /// Canonical owner origin the TLS listener was started for (`acme` and
@@ -208,10 +213,22 @@ fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
-/// Starts the TLS listener the configured mode needs. Never fails: a mode
-/// that cannot start reports [`NodeApiStatus::Failed`] and the node API
-/// stays unmounted.
+/// [`start_with`] serving only the node API routes (tests).
+#[cfg(test)]
 pub async fn start(state: &Arc<AppState>, cfg: &Config, files_dir: &Path) -> NodeApiTls {
+    start_with(state, cfg, files_dir, None).await
+}
+
+/// Starts the TLS listener the configured mode needs, serving `web` (the
+/// daemon's whole router, which mounts the node API too) or, given none,
+/// only the node API routes. Never fails: a mode that cannot start reports
+/// [`NodeApiStatus::Failed`] and the node API stays unmounted.
+pub async fn start_with(
+    state: &Arc<AppState>,
+    cfg: &Config,
+    files_dir: &Path,
+    web: Option<axum::Router>,
+) -> NodeApiTls {
     let node_api = &cfg.daemon.node_api;
     let (status, receiver) = watch::channel(NodeApiStatus::Starting);
     let origin = match node_api.mode {
@@ -271,6 +288,9 @@ pub async fn start(state: &Arc<AppState>, cfg: &Config, files_dir: &Path) -> Nod
     let Ok(local) = tcp.local_addr() else {
         return failed(&status, &gate);
     };
+    // A reload that turns auth off is checked against this listener, which
+    // stays bound for the process lifetime.
+    let _ = state.node_api_tls_bound.set(local);
     let certs = match node_api.mode {
         NodeApiMode::Acme => start_acme(cfg, files_dir, status.clone()),
         _ => self_signed(cfg, files_dir, local),
@@ -282,7 +302,8 @@ pub async fn start(state: &Arc<AppState>, cfg: &Config, files_dir: &Path) -> Nod
             return failed(&status, &gate);
         }
     };
-    let app = super::node_router::<()>(Arc::clone(state))
+    let app = web
+        .unwrap_or_else(|| super::node_router::<()>(Arc::clone(state)))
         .layer(Extension(kind))
         .layer(Extension(LocalAddr(local)))
         .layer(Extension(gate.clone()));

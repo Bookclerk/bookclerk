@@ -407,30 +407,86 @@ pub async fn set_cluster_link_state(
     Ok(updated.rows_affected == 1)
 }
 
+/// Marks an **active** link still enrolled as `remote_node_id`
+/// [`CLUSTER_LINK_REVOKED`] (the owner closed with 4403 on that node's
+/// connection). A link this install already left stays `left`, and one a
+/// later join enrolled as another node keeps its new enrollment.
+///
+/// # Arguments
+///
+/// * `store` - Library store holding the link.
+/// * `owner_cluster_id` - Owner cluster the link joins.
+/// * `remote_node_id` - The node the revoked connection ran as.
+///
+/// # Returns
+///
+/// Whether a row changed: `false` when the link is gone, no longer active,
+/// or enrolled as another node.
+///
+/// # Errors
+///
+/// Returns the write error.
+pub async fn mark_cluster_link_revoked(
+    store: &LibraryStore,
+    owner_cluster_id: &str,
+    remote_node_id: &str,
+) -> Result<bool> {
+    let updated = cluster_links::Entity::update_many()
+        .col_expr(
+            cluster_links::Column::State,
+            Expr::value(CLUSTER_LINK_REVOKED),
+        )
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
+        .filter(cluster_links::Column::RemoteNodeId.eq(remote_node_id))
+        .filter(cluster_links::Column::State.eq(CLUSTER_LINK_ACTIVE))
+        .exec(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(updated.rows_affected == 1)
+}
+
 /// Leaves an owner cluster on this side: marks the link
 /// [`CLUSTER_LINK_LEFT`] and deletes its sealed node keys, so this install
 /// can never sign as that node again. Answers the link as it now stands,
 /// or `None` when there is no such link.
 ///
-/// The owner is not told; its operator revokes the node there (`bookclerk
-/// nodes revoke`). A running daemon stops the link's client when it next
-/// re-reads the link. Joining again needs a new enrollment link.
+/// This only records the departure. Telling the owner (`node.leaving`,
+/// which revokes the node there) is the caller's, before the keys go:
+/// `bookclerk_node_client::announce_leaving` or the running client. A
+/// running daemon stops the link's client when it next re-reads the link.
+/// Joining again needs a new sign-in or invite.
 ///
-/// Only the enrollment read here is left: one a concurrent join replaced
-/// (another node id) is refused, so the new enrollment is never marked
-/// left with its keys still stored.
+/// Only one enrollment is left: `expected_node_id` when given (the node the
+/// caller told the owner about), else the one read here. A link a join
+/// enrolled as another node, before this call or while it runs, is refused,
+/// so a new enrollment is never marked left with its keys still stored or
+/// left without the owner having been told.
+///
+/// # Arguments
+///
+/// * `store` - Library store holding the link.
+/// * `owner_cluster_id` - Owner cluster the link joins.
+/// * `expected_node_id` - The node the caller means to leave, when it read
+///   the link earlier (to send `node.leaving`); `None` leaves whatever node
+///   the link names now.
 ///
 /// # Errors
 ///
-/// Returns [`LibraryError::Invalid`] when the link was re-enrolled while
-/// leaving, and the read or write error.
+/// Returns [`LibraryError::Invalid`] when the link was re-enrolled as
+/// another node, and the read or write error.
 pub async fn leave_cluster_link(
     store: &LibraryStore,
     owner_cluster_id: &str,
+    expected_node_id: Option<&str>,
 ) -> Result<Option<ClusterLink>> {
     let Some(mut link) = load_cluster_link(store, owner_cluster_id).await? else {
         return Ok(None);
     };
+    if expected_node_id.is_some_and(|node| node != link.remote_node_id) {
+        return Err(LibraryError::Invalid(
+            "the cluster was joined again while leaving it; nothing was left".into(),
+        ));
+    }
     // State first: a link that is not active is never dialed, even if the
     // key delete below fails.
     if !set_cluster_link_state(
@@ -492,8 +548,11 @@ mod tests {
         record_cluster_link(&store, &new_link(None), &keys)
             .await
             .unwrap();
-        assert!(leave_cluster_link(&store, "nope").await.unwrap().is_none());
-        let left = leave_cluster_link(&store, "cluster-1")
+        assert!(leave_cluster_link(&store, "nope", None)
+            .await
+            .unwrap()
+            .is_none());
+        let left = leave_cluster_link(&store, "cluster-1", None)
             .await
             .unwrap()
             .expect("the link");

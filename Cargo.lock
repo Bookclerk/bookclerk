@@ -1464,6 +1464,7 @@ dependencies = [
  "bookclerk-migrate",
  "bookclerk-naming",
  "bookclerk-node-client",
+ "bookclerk-node-proto",
  "bookclerk-plugin-abi",
  "bookclerk-plugin-catalog",
  "bookclerk-plugin-database-sqlite",
@@ -1488,6 +1489,7 @@ dependencies = [
  "toml",
  "tracing",
  "ureq",
+ "url",
  "windows-sys 0.61.2",
  "zeroize",
 ]

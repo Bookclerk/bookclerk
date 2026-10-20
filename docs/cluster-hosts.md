@@ -1,82 +1,183 @@
-# Clusters and host nodes
+# Libraries and branches
 
-A Bookclerk **cluster** is one library database and the daemons that share
-it. Those daemons are **owner nodes**: they hold the database credentials
-and `master.key`. A **host node** is a separate Bookclerk install, with its
-own database and its own operator, that joins an owner cluster to do work
-for it: it runs the owner's scans and acquires on its own machine and sends
-the results back. A host never holds the owner's database credentials or
-DEK, and it runs an owner plugin only after its own operator approves it.
+A Bookclerk **library** is one library database and the daemons that share
+it. A **branch** is a separate Bookclerk install, with its own database and
+its own operator, that joins a library to do work for it: it runs the
+library's scans and acquires on its own machine and sends the results back.
+A branch never holds the library's database credentials or DEK, and it runs
+one of the library's plugins only after its own operator approves it.
+
+The web UI says *library* and *branch*. The code, the API and the CLI keep
+the older names: a library is an **owner cluster** (`clusters`), its own
+daemons are **owner nodes**, and a branch is a **host node** (`nodes`,
+`kind = host`). A branch invite is an **enrollment link**, and "Let new
+branches join" is `core.host_enrollment`.
 
 This page is the operator's guide to both sides. The design record is
 [ADR: Control plane](adr/control-plane.md#host-node-enrollment-and-transport)
 (H-4).
 
-## On the owner: let hosts in
+## First start
 
-1. **Pick a transport.** Hosts reach the node API over TLS, except on
-   loopback. Set `integrations.public_origin` to the address hosts will
-   dial and choose a `[daemon.node_api]` mode (`acme`, `proxy`,
-   `self_signed`, or `loopback`). The modes, their required settings, and
-   what each refuses are in
-   [Configuration → Host nodes](configuration.md#host-nodes). There is no
-   plain-HTTP fallback: a LAN address over plain HTTP gets
-   `403 transport_insecure`.
-2. **Leave enrollment on** (`core.host_enrollment`, on by default; the
-   operator or an Owner may turn it off with `bookclerk config set
-   host_enrollment.enabled false`).
-3. **Mint a link** for the user who will own the host:
+A fresh install (no Owner or Administrator yet, and no library joined)
+opens, for its operator, a welcome screen with two choices:
 
-   ```bash
-   bookclerk nodes invite --user riley --ttl 24h   # prints the link once
-   ```
+- **Start a new library**: today's first run. Settings → User management
+  sets up the first Owner, and you carry on as before.
+- **Join a library**: the wizard below. The install keeps its own operator,
+  its own database and its own consent screen, and does not need local
+  users first.
 
-   Any active user may also mint one for themselves with
-   `POST /api/config/node-invites`. The link is
-   `<public_origin>/enroll#bcn1.<link_id>.<secret>[.<spki_pin>]`. It is a
-   single-use secret: the secret sits in the URL fragment (proxies and
-   access logs never see it), the database keeps only its hash, and it is
-   printed once. Hand it to the host's operator over a private channel.
-   The Settings page has no invite screen on purpose, so the link never
-   passes through the browser.
+The welcome screen is operator-only, reached as Settings is (loopback, the
+tray, or the operator token). Choosing "Start a new library" closes it in
+that browser. Later, **Settings → Library → Join a library** opens the same
+wizard.
 
-The host's node appears in `bookclerk nodes list` (`kind = host`), owned
-by the link's user. **Trust follows that user's role**: a Member's or Host's
-node receives only jobs whose store accounts belong to that user; an
-Administrator's or Owner's node may receive any job. Revoke a host at any
-time with `bookclerk nodes revoke <node_id>`: its socket closes with 4403
-and it stops dialing.
+## On the library: let branches in
 
-## On the host: join
+1. **Pick a transport.** Branches reach the node API over TLS, except on
+   loopback. Set `integrations.public_origin` to the address branches will
+   use (the same one people open the library at) and choose a
+   `[daemon.node_api]` mode (`acme`, `proxy`, `self_signed`, or
+   `loopback`). The modes, their required settings, and what each refuses
+   are in [Configuration → Host nodes](configuration.md#host-nodes). There
+   is no plain-HTTP fallback: a LAN address over plain HTTP gets `403
+   transport_insecure`. In `acme` and `self_signed` mode the TLS listener
+   serves the whole web app, not only the node API, because a joining
+   branch's user signs in there.
+2. **Let new branches join.** **Settings → Branches** (operator or Owner)
+   has the switch, on by default, and shows the address to join. In
+   `self_signed` mode it also shows the certificate fingerprint that a
+   joining operator checks. The CLI equivalent is `bookclerk config set
+   host_enrollment.enabled false`. Turning it off stops new sign-ins and
+   invites; branches already joined keep working.
+
+A branch's node appears among the nodes (`bookclerk nodes list`, `kind =
+host`), owned by the user who signed in (or the invite's user). **Trust
+follows that user's role**: a Member's or Host's branch receives only jobs
+whose store accounts belong to that user; an Administrator's or Owner's
+branch may receive any job. Revoke a branch at any time from Settings →
+Nodes or with `bookclerk nodes revoke <node_id>`: its socket closes with
+4403 and it stops dialing.
+
+### Branch invites
+
+Joining with a sign-in needs no link. A branch invite is the other way in,
+for a branch whose operator cannot sign in to the library themselves:
+
+- **Settings → User management → a user's actions → Add a branch** mints an
+  invite for that user (the operator or an Owner may mint for anyone).
+  Every signed-in user also has **Add a branch** in their own menu, for a
+  branch of their own.
+- The dialog shows the invite **once**, with a Copy button and a countdown
+  to expiry (24 hours by default). It is answered `Cache-Control:
+  no-store`, never kept in any stored SPA state or logged, and dropped when
+  the dialog closes. Below it are the user's outstanding invites, each
+  with its expiry and **Revoke**; listings never carry a secret.
+- On the command line: `bookclerk nodes invite --user riley --ttl 24h`
+  prints one invite once.
+
+An invite is `<public_origin>/enroll#bcn1.<link_id>.<secret>[.<spki_pin>]`.
+It is a single-use secret: the secret sits in the URL fragment (proxies and
+access logs never see it), the database keeps only its hash, it expires,
+and it can be revoked. Hand it to the branch's operator over a private
+channel.
+
+## On the branch: Join a library
+
+**Settings → Library → Join a library** (or the welcome screen):
+
+1. **Address.** Enter the library's address (`https://library.example`, or
+   `host:port`, which means `https://`). This daemon, not the browser, reads
+   `GET <library>/api/node/v1/info` under the transport policy: the
+   library's name, its canonical origin, its transport mode, and whether it
+   lets new branches join. If you typed another spelling of the library's
+   address, the wizard offers the one it answers to. If the library isn't
+   accepting new branches, the wizard says so and stops.
+2. **Fingerprint** (self-signed libraries only). The wizard shows the
+   fingerprint of the certificate the library presented; check that it
+   matches the one on the library's Settings → Branches page and tick "It
+   matches". The fingerprint is pinned with the link (trust on first use).
+   Other modes need the certificate to chain to the public web roots.
+3. **Sign in.** Name the branch (the library's users see this name; it
+   defaults to this machine's name) and choose **Sign in to <library>**.
+   The browser goes to the library, which shows its normal sign-in
+   (password, SSO, passkey, MFA) and then asks: "Let **<branch>** join
+   **<library>** as yours?" The page says what joining means: the library
+   can send that branch work for your accounts, and the branch's operator
+   approves each plugin. **Allow** or **Deny**.
+4. **Connected.** The library sends the browser back to this install's
+   `/join/callback`, the daemon finishes the join and starts the branch's
+   connection at once (no restart), and the page shows "Connected to
+   <library>" with a link to the plugin requests (below).
+
+**I have an invite**, the wizard's second tab, takes a pasted branch invite
+instead. The SPA sends it straight to this daemon in a POST body and keeps
+nothing; a pinned invite trusts exactly the library's self-signed key.
+
+### How the sign-in works
+
+The library is already an OAuth authorization server
+(`/oidc/authorize`); joining uses it with one built-in public
+client, `bookclerk-branch`, which is never stored with the registered
+clients (that id cannot be registered). Its redirect URI must be a loopback
+URL (RFC 8252) or an `https://` URL, its only scope is `node:enroll`, and it
+needs an S256 code challenge.
+
+- **Start** (`POST /api/config/join/start`, operator only). The joining
+  daemon makes the PKCE verifier, the `state`, and the node's Ed25519 and
+  X25519 key pairs, and keeps them sealed in a **pending join** for 10
+  minutes. It answers only the authorize URL. The redirect URI is this
+  install's own `/join/callback`.
+- **Consent** (on the library). `/oidc/authorize` checks the request and
+  sends it to the consent page `/join/approve`; a malformed one is refused
+  there and never redirected. Allowing checks that the signed-in user is
+  active, new branches may join, and the connection passes the transport
+  policy, then issues a single-use code that lives 60 seconds.
+- **Callback** (`POST /api/config/join/callback`). The SPA relays `code`
+  and `state` to its own daemon, which takes the pending join for that
+  `state` (once) and redeems the code with the verifier only it holds. The
+  code alone is useless, so no enrollment secret passes through the SPA.
+- **Redeem** (`POST <library>/api/node/v1/enroll/oauth`). The library
+  consumes the code, checks its client, redirect URI, scope and verifier,
+  checks again that new branches may join and the user is active, and runs
+  the **same canonical redeem batch** as an invite: one `nodes` row (`kind
+  = host`, owned by the signed-in user), `node_credentials` and a receipt.
+  A retry of the same exchange (a lost answer) replays the same node; two
+  concurrent redeems still make one node; anything else (a used, expired
+  or unknown code, a wrong verifier or redirect URI) is `403
+  enrollment_refused`.
+- **Done.** The daemon checks that the answer names the library it read,
+  then seals both private keys into its `encrypted_secrets`, records the
+  link in `cluster_links`, and starts the link's client.
+
+### On the command line
 
 ```bash
-bookclerk clusters join            # prompts: enrollment link:
-# or
-bookclerk clusters join < link.txt # first line of stdin
+bookclerk clusters join --url https://library.example [--name "Den PC"] [--fingerprint <fingerprint>]
+bookclerk clusters join            # or: prompts for a branch invite
+bookclerk clusters join < invite.txt
+bookclerk clusters list            # library id, origin, node id, state
 ```
 
-`join` never takes the link on the command line, so it stays out of shell
-history and process listings. It generates the node's Ed25519 signing key
-and X25519 box key, redeems the link over the transport policy (a pinned
-link trusts exactly the owner's self-signed key; otherwise the certificate
-must chain to the public web roots), and only then seals both private keys
-into this install's `encrypted_secrets` and records the link in
-`cluster_links`. A link that is spent, expired, revoked, or simply not a
-link is refused, and nothing is recorded.
+`--url` is the same sign-in for an operator with a browser on the same
+machine: the command prints the authorize URL (and opens a browser when it
+can; set `BOOKCLERK_NO_BROWSER=1` to stop that), listens on a loopback port
+for the library's answer (10 minutes), and records the link. A self-signed
+library's fingerprint is confirmed with `--fingerprint` or by typing `yes`.
+Without `--url`, `join` reads a branch invite from stdin or a prompt; it
+never takes an invite on the command line, so it stays out of shell history
+and process listings. A running daemon picks up a link joined on the
+command line within 5 seconds.
 
-**Restart `bookclerkd` after joining**: a running daemon dials links it
-found at startup. From then on it connects to the owner, heartbeats every
-15 s, and reconnects with backoff (1 s up to 60 s) whenever the connection
-drops, resuming any job it still holds.
+From then on the daemon connects to the library, heartbeats every 15 s, and
+reconnects with backoff (1 s up to 60 s) whenever the connection drops,
+resuming any job it still holds.
 
-```bash
-bookclerk clusters list            # cluster id, owner origin, node id, state
-```
+## Consent: what the library may run here
 
-## Consent: what an owner may run here
-
-The owner deploys plugin instances to the host like to any node, but the
-host's daemon spawns none of them until its operator approves. Each
+The library deploys plugin instances to the branch like to any node, but
+the branch's daemon spawns none of them until its operator approves. Each
 deployed plugin shows up as a **request**: the version the owner wants to
 run, what that version asks for (network mode and domains, TCP targets,
 address ranges, host bindings such as `config`, `secrets` or `kv`, and
@@ -90,7 +191,7 @@ bookclerk clusters approve <plugin_key> --request <request_digest> \
 bookclerk clusters revoke <plugin_key>
 ```
 
-The same is in the web UI under **Settings → Clusters** (operator only):
+The same is in the web UI under **Settings → Library** (operator only):
 pending requests with their domains and bindings, a deny checkbox on each,
 a deny-network switch, and Approve / Revoke. The HTTP routes behind it are
 operator-only:
@@ -133,7 +234,7 @@ approved grant through `bookclerk-workerd`, exactly as it runs its own
 plugins ([Plugins → The guest jail](plugins.md#the-guest-jail)). There is no
 in-process fallback.
 
-## What a host runs
+## What a branch runs
 
 **Scans.** The guest's rows come back to the owner in fenced
 `scan.results` batches (at most 200 rows; a row over 32 KiB is skipped).
@@ -219,15 +320,16 @@ included.
 
 ## Leaving
 
-```bash
-bookclerk clusters leave [--cluster <id>]
-```
-
-Leaving marks the link `left` and deletes its node keys, so this install
-can never sign as that node again; a running daemon stops the link's
-client within 5 seconds. The owner is not told: its operator should revoke
-the node there (`bookclerk nodes revoke <node_id>`). Joining again needs a
-new link.
+**Settings → Library → Leave library** (or `bookclerk clusters leave
+[--cluster <id>]`) first tells the library: the branch sends a
+`node.leaving` frame, and the library revokes the node's credential, drops
+its live status, and closes the socket with 4403, instead of waiting for
+missed heartbeats. Then the link is marked `left` and its node keys are
+deleted, so this install can never sign as that node again, and the link's
+client stops. If the library cannot be reached within 10 seconds the branch
+leaves anyway and says the library was not told; revoke the node there
+(Settings → Nodes or `bookclerk nodes revoke <node_id>`). Joining again
+needs a new sign-in or invite.
 
 ## The node API
 
@@ -236,7 +338,9 @@ operator-auth layers, and every request first passes the transport policy.
 
 | Route | Purpose |
 | --- | --- |
-| `POST enroll` | Redeem a link: `{link_id, secret, sign_pk, box_pk, software_version}` → `{cluster_id, node_id}` |
+| `GET info` | The library: `{cluster_id, library_name, origin, transport, enrollment, spki_fingerprint?, software_version}` |
+| `POST enroll` | Redeem an invite: `{link_id, secret, sign_pk, box_pk, software_version}` → `{cluster_id, node_id}` |
+| `POST enroll/oauth` | Redeem an approved sign-in: `{code, code_verifier, redirect_uri, sign_pk, box_pk, branch_name, software_version}` → `{cluster_id, node_id}` |
 | `GET connect` | The node socket (WebSocket, subprotocol `bookclerk-node.v1`) |
 | `GET artifacts/{sha256}` | An owner plugin archive, for a request signed `Authorization: Bookclerk-Node <node_id> <issued_at> <sig>` |
 | `PUT uploads/{id}/files/{n}`, `POST uploads/{id}/commit` | Uploads (above) |
@@ -266,6 +370,7 @@ request is answered by a frame with the same `id`. Both sides ping every
 | `scan.results` | `scan.accepted {batch, upserted}` |
 | `acquire.plan` | `acquire.targets {targets, destinations}` |
 | `upload.grant` | `upload.granted {upload_id, sealed_token, expires_in_secs}` |
+| `node.leaving` | `accepted`, then close 4403 (the node is revoked) |
 | `scan.request {account, plugin_instance_id}` | `scan.planned {created, duplicates, queue_full}`, or `error` `forbidden` / `invalid` |
 | `job.status {job_ids}` (at most 64) | `job.statuses {jobs}`: only jobs this node may claim |
 
@@ -310,10 +415,10 @@ topic names only (`library`, `jobs`, `deliveries`, `nodes`, `config`,
 
 ## Not built yet
 
-- A link joined while the daemon runs is dialed only after a restart
-  (a first join, or a join after leaving). Re-enrolling a link the
-  daemon already runs, as another node, restarts its client on its own.
-- Leaving does not notify the owner; revoke the node there.
+- A branch is a branch only: the "clerk" (a peer sharing the library's
+  database) connection type and branches of branches are later work.
+- The library's name is the host of its public origin; there is no
+  separate name setting.
 - Uploaded objects carry content type, length and digest, but not the
   title metadata (ASIN, title, timestamps) a local acquire writes beside
   its files.
