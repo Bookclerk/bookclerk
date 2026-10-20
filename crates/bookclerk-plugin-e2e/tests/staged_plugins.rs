@@ -21,7 +21,7 @@ use bookclerk_plugin_sdk::{
 };
 
 /// Per-plugin spawn/describe budget. A hung Cap'n Proto handshake must fail
-/// the job rather than stall `fmt / clippy / test` until the runner timeout.
+/// the test rather than stall the e2e job until the runner timeout.
 const STAGED_SPAWN_TIMEOUT: Duration = Duration::from_secs(45);
 const STAGED_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 

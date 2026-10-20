@@ -57,7 +57,8 @@ Types:
   --format summary` shows the plan; `python3 scripts/ci-exec.py resolve
   --selective 1 --base <base> --head HEAD --run-id local` writes it, then
   `python3 scripts/ci-exec.py run <check> --run-id local` runs each planned
-  check. Run `cargo test --workspace` when the plan says full suite.
+  check (`rust_test` runs under cargo-nextest: `cargo install cargo-nextest
+  --locked`). Run `cargo test --workspace` when the plan says full suite.
 - Where available: the cross-platform CI emulation for platform-specific
   changes, a dependency vulnerability scan when a lockfile changed, and static
   analysis for security-surface changes. Where they are not available, CI runs
