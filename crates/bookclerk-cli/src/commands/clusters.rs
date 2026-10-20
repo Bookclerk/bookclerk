@@ -38,8 +38,9 @@ pub enum ClustersCommand {
     },
     /// Approve an owner plugin's request to run here, optionally narrowed.
     /// Name the request you reviewed by the digest `clusters consents`
-    /// shows (it covers the version, the grant and the archive URL and
-    /// digest); it is refused when the cluster has changed the request since.
+    /// shows (it covers the version, the grant, the archive URL, the
+    /// archive digest and the payload digest); it is refused when the
+    /// cluster has changed the request since.
     /// Only what the request asks for can be approved; a later version that
     /// asks for more needs approval again.
     Approve {
@@ -158,6 +159,9 @@ pub async fn run(
                             row.requested_artifact_sha256,
                             row.requested_artifact_payload_sha256
                         );
+                        // The capabilities the digest covers, so an approval
+                        // by digest names something the operator saw.
+                        println!("  grant: {}", row.requested_grant_json);
                     }
                 },
             )

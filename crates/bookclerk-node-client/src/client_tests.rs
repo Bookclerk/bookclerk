@@ -921,3 +921,54 @@ async fn claims_wait_for_the_connections_deployments_refresh() {
         "no claim after the refresh"
     );
 }
+
+/// A consent revoke while a finished job's report waits sends `release`
+/// on the next attempt instead of the report, so the job goes back
+/// unspent.
+#[tokio::test]
+async fn a_revoke_while_the_report_waits_gives_the_job_back() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let runner = RecordsDeadline::default();
+    let (handle, _stop, _exit) =
+        start_with(listener.local_addr().unwrap().port(), 1, runner.clone());
+    let mut socket = accept(&listener).await;
+    let mut granted = false;
+    let mut revoked = false;
+    let frames = read_for(
+        &mut socket,
+        Duration::from_millis(1500),
+        |frame| match &frame.body {
+            Body::Heartbeat { .. } | Body::Release { .. } => Some(Body::Accepted {}),
+            Body::Claim { .. } if !std::mem::replace(&mut granted, true) => {
+                Some(work("job-1", 3, 30))
+            }
+            Body::Claim { .. } => Some(Body::NoWork {
+                retry_after_secs: 300,
+            }),
+            Body::Renew { .. } => Some(Body::Renewed {
+                lease_secs: 30,
+                cancel: false,
+            }),
+            // Leave the report unanswered and revoke while it waits.
+            Body::Fail { .. } => {
+                if !std::mem::replace(&mut revoked, true) {
+                    handle.set_consented_plugins(BTreeSet::new());
+                }
+                None
+            }
+            _ => None,
+        },
+    )
+    .await;
+    let failed = frames
+        .iter()
+        .position(|frame| matches!(frame.body, Body::Fail { .. }))
+        .expect("the job was reported");
+    assert!(
+        frames[failed..].iter().any(|frame| matches!(
+            &frame.body,
+            Body::Release { reason, .. } if reason == AWAITING_HOST_CONSENT
+        )),
+        "the job was not given back after the revoke"
+    );
+}

@@ -122,8 +122,10 @@ impl RemoteCatalog {
     }
 
     /// Sets the consent of every entry of `plugin_key`; an entry that loses
-    /// consent drops its fetched bindings. Answers whether any entry
-    /// changed from or to consented.
+    /// consent, or whose consented grant changes, drops its fetched
+    /// bindings, so its plugin is withdrawn (and held jobs given back)
+    /// until they are fetched again under the new grant. Answers whether
+    /// any entry changed from or to consented, or changed its grant.
     pub fn set_consent(&self, plugin_key: &str, consent: &RemoteConsentState) -> bool {
         let mut changed = false;
         for entry in self
@@ -133,11 +135,12 @@ impl RemoteCatalog {
         {
             let was = matches!(entry.consent, RemoteConsentState::Consented(_));
             let now = matches!(consent, RemoteConsentState::Consented(_));
-            if was != now || (now && entry.consent != *consent) {
+            let regranted = now && entry.consent != *consent;
+            if was != now || regranted {
                 changed = true;
             }
             entry.consent = consent.clone();
-            if !now {
+            if !now || regranted {
                 entry.config = None;
             }
         }
@@ -308,4 +311,70 @@ pub fn host_job_bindings(
         open: prepared_open_from_resolved(config_payload, secrets_payload, config.revision),
         credentials,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A grant of plugin `store` approving job types `jobs`.
+    fn grant(jobs: &[&str]) -> serde_json::Value {
+        serde_json::json!({
+            "pluginId": "store",
+            "jobs": jobs,
+            "networkMode": "deny",
+            "domains": [],
+            "bindings": [],
+            "compatibilityFlags": [],
+            "approvedAt": "2026-10-20T00:00:00Z",
+        })
+    }
+
+    /// A consented state with the grant `json` describes.
+    fn consented(json: serde_json::Value) -> RemoteConsentState {
+        RemoteConsentState::Consented(Box::new(serde_json::from_value(json).unwrap()))
+    }
+
+    /// A ready entry of plugin `store` under `consent`.
+    fn ready(consent: RemoteConsentState) -> RemoteInstanceEntry {
+        RemoteInstanceEntry {
+            instance_id: "instance-1".into(),
+            plugin_key: "store".into(),
+            default_instance: true,
+            consent,
+            root: Some(PathBuf::from("/plugins/store")),
+            config: Some(RemoteInstanceConfig {
+                revision: 1,
+                config: serde_json::json!({}),
+                secrets: None,
+                secrets_withheld: false,
+            }),
+            problem: None,
+        }
+    }
+
+    /// Narrowing a consented grant drops the bindings fetched under the
+    /// wider one, so the plugin is withdrawn until they are fetched again;
+    /// the same grant again changes nothing.
+    #[test]
+    fn a_changed_grant_drops_the_fetched_bindings() {
+        let wide = grant(&["scan", "acquire"]);
+        let narrow = grant(&["scan"]);
+        let catalog = RemoteCatalog::default();
+        catalog.replace(BTreeMap::from([(
+            "instance-1".to_string(),
+            ready(consented(wide.clone())),
+        )]));
+        assert_eq!(
+            catalog.consented_keys(),
+            BTreeSet::from(["store".to_string()])
+        );
+
+        assert!(!catalog.set_consent("store", &consented(wide)));
+        assert!(catalog.get("instance-1").unwrap().config.is_some());
+
+        assert!(catalog.set_consent("store", &consented(narrow)));
+        assert!(catalog.get("instance-1").unwrap().config.is_none());
+        assert!(catalog.consented_keys().is_empty());
+    }
 }

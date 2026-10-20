@@ -459,7 +459,9 @@ impl LinkSupervisor {
                 return (entry, false);
             }
         }
-        match self.instance_config(&item.instance_id).await {
+        // Secrets the operator did not grant are never opened here.
+        let open_secrets = bookclerk_plugin_host::binding_grant_flags(grant).secrets;
+        match self.instance_config(&item.instance_id, open_secrets).await {
             Ok(config) => entry.config = Some(config),
             Err(problem) => entry.problem = Some(problem),
         }
@@ -554,8 +556,14 @@ impl LinkSupervisor {
             .map_err(|err| format!("the plugin could not be materialized: {err}"))
     }
 
-    /// Reads an instance's `CONFIG` and `SECRETS` from the owner.
-    async fn instance_config(&self, instance_id: &str) -> Result<RemoteInstanceConfig, String> {
+    /// Reads an instance's `CONFIG` and `SECRETS` from the owner. The
+    /// sealed secrets are opened only when `open_secrets` (the consented
+    /// grant has the `secrets` binding); otherwise they are dropped unread.
+    async fn instance_config(
+        &self,
+        instance_id: &str,
+        open_secrets: bool,
+    ) -> Result<RemoteInstanceConfig, String> {
         let frame = self
             .handle
             .request(Body::InstanceConfigGet {
@@ -571,7 +579,7 @@ impl LinkSupervisor {
                 sealed_secrets,
                 secrets_withheld,
             } if answered == instance_id => {
-                let secrets = match sealed_secrets {
+                let secrets = match sealed_secrets.filter(|_| open_secrets) {
                     Some(sealed) => Some(Arc::new(
                         self.handle
                             .open_instance_secrets(instance_id, revision, &sealed)

@@ -870,8 +870,9 @@ Decided 2026-10-14 with the owner. A cluster has two kinds of node:
   node socket handshake are built (see *Host-node enrollment and
   transport* below), and so is the owner side of the work frames (see
   *Work frames, sealed secrets, wakes and resume* below), and so is the
-  host client (see *Host client* below; claims stay off with
-  `HOST_MAX_JOBS = 0`). A redeemed
+  host client (see *Host client* below; a host claims only the job kinds
+  in `HOST_RUNNABLE_KINDS` whose plugins its operator approved, see *Host
+  consent* below). A redeemed
   enrollment link records the node with `nodes.kind = host`.
 
 Who may administer a node is separate from its kind. `nodes.owner_user_id`
@@ -903,7 +904,8 @@ administrator. Only an Owner or the operator assigns the Host role.
   step 5, *Per-item trust and the scan planner* below); deliveries and
   instance ownership are not yet.
 
-Decided, not yet built:
+Decided, not yet built (a Host's approval of owner plugins is built; see
+*Host consent* below):
 
 - A node may configure its own `local` output, an instance owned by that
   node and deployed only there. It adds to the cluster's outputs rather
@@ -914,9 +916,6 @@ Decided, not yet built:
   through a secure upload endpoint on an owner node, which writes the
   cluster's outputs with credentials the Host never holds. Both nodes end
   up with a local copy.
-- A Host approves each owner plugin's capabilities before it runs on the
-  Host's machine, as it would for its own plugins. Platform plugins are
-  approved automatically.
 - Host nodes and the SPA use WebSockets rather than polling.
 - Owner nodes serve the node API over Let's Encrypt TLS, behind a detected
   TLS-terminating proxy, or only within loopback and private address space.

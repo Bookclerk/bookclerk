@@ -225,6 +225,13 @@ async fn start_clients(
         }
     };
     let mut complete = true;
+    let pending: Vec<_> = links
+        .into_iter()
+        .filter(|link| link.is_active() && !running.contains(&link.owner_cluster_id))
+        .collect();
+    if pending.is_empty() {
+        return complete;
+    }
     let (files_dir, config) = {
         let cfg = state.config.read().await;
         (cfg.paths().files_dir.clone(), cfg.clone())
@@ -234,10 +241,6 @@ async fn start_clients(
         tokio::task::spawn_blocking(move || consent::platform_payloads(&config))
             .await
             .unwrap_or_default();
-    let pending: Vec<_> = links
-        .into_iter()
-        .filter(|link| link.is_active() && !running.contains(&link.owner_cluster_id))
-        .collect();
     for link in pending {
         let keys = match load_cluster_link_keys(library, &link).await {
             Ok(keys) => keys,

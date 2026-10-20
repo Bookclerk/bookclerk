@@ -1320,18 +1320,21 @@ async fn claim_loop<R: HostJobRunner>(
     let mut consented = shared.consented.subscribe();
     let mut retry = shared.timing.backoff_min;
     loop {
-        let filter = match shared.claim_filter() {
-            Some(filter) => filter,
-            None => {
-                // Nothing to claim until the operator consents to something.
-                if consented.changed().await.is_err() {
-                    return;
-                }
-                continue;
+        if shared.claim_filter().is_none() {
+            // Nothing to claim until the operator consents to something.
+            if consented.changed().await.is_err() {
+                return;
             }
-        };
+            continue;
+        }
         let Ok(slot) = Arc::clone(&shared.job_slots).acquire_owned().await else {
             return;
+        };
+        // The wait for a slot can outlast a revoke: claim under the consent
+        // that holds now.
+        let Some(filter) = shared.claim_filter() else {
+            drop(slot);
+            continue;
         };
         // The owner starts the lease after this; counting from here never
         // overstates it.
@@ -1544,7 +1547,11 @@ async fn run_job<R: HostJobRunner>(
         tracing::warn!(%job_id, fence, reason, "discarding the result of a job given back");
         give_back(&shared, &job_id, fence, claim_resumed, reason, &lost).await;
     } else {
-        report(&shared, &job_id, fence, result, &lost).await;
+        let give_back_on = GiveBackOn {
+            release: &release,
+            resumed: claim_resumed,
+        };
+        report(&shared, &job_id, fence, result, &lost, give_back_on).await;
     }
     drop(renewer);
     shared.release(&job_id, fence);
@@ -1567,7 +1574,16 @@ async fn give_back(
         reason: reason.into(),
         resumed,
     };
-    send_final(shared, job_id, fence, body, false, lost).await;
+    send_final(shared, job_id, fence, body, false, lost, None).await;
+}
+
+/// Where a report finds a give-back marked while it waits to be sent.
+#[derive(Clone, Copy)]
+struct GiveBackOn<'a> {
+    /// The job's release marker.
+    release: &'a Mutex<Option<&'static str>>,
+    /// The claim's [`HostJob::resumed`].
+    resumed: bool,
 }
 
 /// Extends a job's lease every third of it. A `lost` answer cancels the
@@ -1676,13 +1692,16 @@ async fn renew_loop(
 /// there is none, until the owner answers or [`REPORT_DEADLINE`] passes.
 ///
 /// The detail or error text is scrubbed of registered secrets first, so a
-/// runner error that quotes a handed token never reaches the owner.
+/// runner error that quotes a handed token never reaches the owner. A
+/// give-back marked on `give_back_on` while the report waits (consent
+/// revoked during a reconnect) sends `release` instead.
 async fn report(
     shared: &Arc<Shared>,
     job_id: &str,
     fence: i64,
     result: Result<String, HostJobError>,
     lost: &AtomicBool,
+    give_back_on: GiveBackOn<'_>,
 ) {
     let failed = result.is_err();
     let body = match result {
@@ -1698,19 +1717,30 @@ async fn report(
             message: bounded(bookclerk_config::redact_str(&err.message)),
         },
     };
-    send_final(shared, job_id, fence, body, failed, lost).await;
+    send_final(
+        shared,
+        job_id,
+        fence,
+        body,
+        failed,
+        lost,
+        Some(give_back_on),
+    )
+    .await;
 }
 
 /// Sends a job's final frame (`complete`, `fail` or `release`), waiting for
 /// a connection when there is none, until the owner answers or
-/// [`REPORT_DEADLINE`] passes.
+/// [`REPORT_DEADLINE`] passes. With `give_back_on`, each attempt first
+/// checks the release marker and sends `release` once it is set.
 async fn send_final(
     shared: &Arc<Shared>,
     job_id: &str,
     fence: i64,
-    body: Body,
+    mut body: Body,
     failed: bool,
     lost: &AtomicBool,
+    give_back_on: Option<GiveBackOn<'_>>,
 ) {
     let deadline = Instant::now() + REPORT_DEADLINE;
     loop {
@@ -1726,6 +1756,23 @@ async fn send_final(
             );
             return;
         };
+        if let Some(on) = give_back_on {
+            let marked = *lock(on.release);
+            if let Some(reason) = marked.filter(|_| !matches!(body, Body::Release { .. })) {
+                tracing::warn!(
+                    job_id,
+                    fence,
+                    reason,
+                    "the job was given back before its report went out"
+                );
+                body = Body::Release {
+                    job_id: job_id.to_string(),
+                    fence,
+                    reason: reason.into(),
+                    resumed: on.resumed,
+                };
+            }
+        }
         match conn.request(body.clone()).await.map(|frame| frame.body) {
             Ok(Body::Accepted {}) => {
                 tracing::info!(job_id, fence, failed, "reported the job to the owner");
