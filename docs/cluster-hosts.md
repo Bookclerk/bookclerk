@@ -292,7 +292,9 @@ topic names only (`library`, `jobs`, `deliveries`, `nodes`, `config`,
 
 ## Not built yet
 
-- A link joined while the daemon runs is dialed only after a restart.
+- A link joined while the daemon runs is dialed only after a restart
+  (a first join, or a join after leaving). Re-enrolling a link the
+  daemon already runs, as another node, restarts its client on its own.
 - Leaving does not notify the owner; revoke the node there.
 - Uploaded objects carry content type, length and digest, but not the
   title metadata (ASIN, title, timestamps) a local acquire writes beside

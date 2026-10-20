@@ -38,7 +38,13 @@ pub enum ClustersCommand {
     /// Enroll this install as a host of an owner cluster. Reads the
     /// enrollment link (`https://<owner>/enroll#bcn1...`) from stdin, or
     /// prompts for it; it is never taken from the command line.
-    Join,
+    Join {
+        /// Anything given after `join`. Taken only to be refused with a
+        /// fixed message: left to the parser, an unexpected argument (a
+        /// link pasted on the command line) is echoed in its error.
+        #[arg(hide = true, num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
+        argv: Vec<std::ffi::OsString>,
+    },
     /// Leave an owner cluster: the link stops being dialed and its node
     /// keys are deleted. The owner is not told; revoke the node there.
     Leave {
@@ -193,6 +199,11 @@ pub async fn run(
     config: &Config,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
+    if matches!(&command, ClustersCommand::Join { argv } if !argv.is_empty()) {
+        anyhow::bail!(
+            "`clusters join` takes no arguments: paste the enrollment link at the prompt or pipe it on stdin"
+        );
+    }
     let plane = crate::registry::open_host(config).await?;
     let store = &plane.store;
     match command {
@@ -211,7 +222,7 @@ pub async fn run(
                 }
             })
         }
-        ClustersCommand::Join => {
+        ClustersCommand::Join { .. } => {
             use secrecy::ExposeSecret as _;
             let link = read_link_from_stdin()?;
             let joined = bookclerk_node_client::join_cluster(
@@ -220,7 +231,14 @@ pub async fn run(
                 env!("CARGO_PKG_VERSION"),
             )
             .await
-            .map_err(|err| anyhow::anyhow!("could not join the cluster: {err}"))?;
+            // The error can carry the owner's own text (its error string, or
+            // a node id it answered with), so it is escaped like any other.
+            .map_err(|err| {
+                anyhow::anyhow!(
+                    "could not join the cluster: {}",
+                    printable(&err.to_string())
+                )
+            })?;
             drop(link);
             emit(format, &json!({ "cluster": link_json(&joined) }), || {
                 println!(

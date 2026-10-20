@@ -129,30 +129,45 @@ export function LibraryPage({
       const generation =
         kind === "append" ? generationRef.current : ++generationRef.current;
       const offset = kind === "append" ? loadedRef.current : 0;
-      const limit =
+      // A reload fetches again every page already shown (so the titles in
+      // view and the scroll stay), in requests of at most MAX_RELOAD rows.
+      const wanted =
         kind === "reload"
-          ? Math.min(
-              MAX_RELOAD,
-              Math.max(1, Math.ceil(loadedRef.current / PAGE_SIZE)) *
-                PAGE_SIZE,
-            )
+          ? Math.max(1, Math.ceil(loadedRef.current / PAGE_SIZE)) * PAGE_SIZE
           : PAGE_SIZE;
       if (kind === "append") setLoadingMore(true);
       let succeeded = false;
       try {
-        const booksRes = await fetchBooks({
+        const fetched: BookRecord[] = [];
+        let booksRes = await fetchBooks({
           q: debouncedQ || undefined,
           status: serverStatus,
-          limit,
+          limit: Math.min(MAX_RELOAD, wanted),
           offset,
         });
+        fetched.push(...booksRes.books);
+        while (
+          kind === "reload" &&
+          fetched.length < wanted &&
+          booksRes.books.length > 0 &&
+          fetched.length < booksRes.total
+        ) {
+          if (generation !== generationRef.current) return;
+          booksRes = await fetchBooks({
+            q: debouncedQ || undefined,
+            status: serverStatus,
+            limit: Math.min(MAX_RELOAD, wanted - fetched.length),
+            offset: fetched.length,
+          });
+          fetched.push(...booksRes.books);
+        }
         if (generation !== generationRef.current) return;
         if (kind === "append") {
-          loadedRef.current += booksRes.books.length;
-          setBooks((prev) => [...prev, ...booksRes.books]);
+          loadedRef.current += fetched.length;
+          setBooks((prev) => [...prev, ...fetched]);
         } else {
-          loadedRef.current = booksRes.books.length;
-          setBooks(booksRes.books);
+          loadedRef.current = fetched.length;
+          setBooks(fetched);
         }
         setTotal(booksRes.total);
         setError(null);
@@ -210,16 +225,22 @@ export function LibraryPage({
   }, [refresh]);
 
   // Job and delivery strips follow the live socket; while it is down they
-  // poll as before.
+  // poll as before. While it is up a slow poll still runs, so a refresh
+  // that failed once (it keeps the last snapshot) is retried even when no
+  // watched topic changes again.
   useLiveRefresh(["jobs", "deliveries", "library"], refreshMeta, {
     pollMs: 4000,
+    openPollMs: 30_000,
     enabled: canAcquire,
   });
   // Titles follow the `library` topic for everyone who can browse them (a
   // scan or acquire on any node), keeping the search, filter and scroll.
   // While the socket is down the list is not polled, as before; the
-  // reconnect refreshes it.
-  useLiveRefresh(["library"], reloadBooks, { pollMs: 0 });
+  // reconnect refreshes it. While it is up a slow reconciliation runs: a
+  // change stamped earlier than the newest one the socket compared (a
+  // write that committed late, or an owner node whose clock runs behind)
+  // does not move the revision.
+  useLiveRefresh(["library"], reloadBooks, { pollMs: 0, openPollMs: 120_000 });
 
   useEffect(() => {
     const el = sentinelRef.current;

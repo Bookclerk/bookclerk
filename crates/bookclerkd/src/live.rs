@@ -45,8 +45,8 @@
 //! 20 s (browsers answer with a pong); 60 s without a frame from the
 //! client closes it.
 
-use std::collections::BTreeSet;
-use std::sync::{Arc, LazyLock};
+use std::collections::{BTreeSet, HashMap};
+use std::sync::{Arc, LazyLock, Weak};
 use std::time::Duration;
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
@@ -55,10 +55,10 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bookclerk_library::control_plane::{changed_topics, live_revisions, LiveRevisions, LiveTopic};
-use bookclerk_library::UserRole;
+use bookclerk_library::{LibraryStore, UserRole};
 use futures::{SinkExt as _, StreamExt as _};
 use serde_json::json;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex, RwLock};
 
 use crate::api::AppState;
 use crate::auth::{resolve_user_caller, UserCaller, UserCallerRefusal};
@@ -77,6 +77,13 @@ pub const REAUTH_INTERVAL: Duration = if cfg!(test) {
     Duration::from_millis(500)
 } else {
     Duration::from_secs(30)
+};
+
+/// How long a re-check that was refused waits before it checks again.
+const REAUTH_RETRY_DELAY: Duration = if cfg!(test) {
+    Duration::from_millis(50)
+} else {
+    Duration::from_secs(1)
 };
 
 /// How often the server pings.
@@ -149,25 +156,27 @@ pub fn origin_allowed(headers: &HeaderMap, public_origin: Option<&str>) -> bool 
     loopback_host(host) && origin.eq_ignore_ascii_case(&format!("http://{host}"))
 }
 
-/// The topics `caller` may hear about.
-async fn topics_for(state: &AppState, caller: UserCaller) -> BTreeSet<LiveTopic> {
+/// The topics `caller` may hear about; `None` when the user's role could
+/// not be read (a re-check then keeps the topics it had, and a new socket
+/// takes [`member_topics`]).
+async fn topics_for(state: &AppState, caller: UserCaller) -> Option<BTreeSet<LiveTopic>> {
     match caller {
-        UserCaller::Operator => LiveTopic::ALL.into_iter().collect(),
+        UserCaller::Operator => Some(LiveTopic::ALL.into_iter().collect()),
         UserCaller::User { user_id } => {
             let library = state.library_snapshot().await;
-            let role = library
-                .get_user(user_id)
-                .await
-                .ok()
-                .flatten()
-                .map(|user| user.role);
-            let mut topics = BTreeSet::from([LiveTopic::Library, LiveTopic::Nodes]);
+            let role = library.get_user(user_id).await.ok()?.map(|user| user.role);
+            let mut topics = member_topics();
             if matches!(role, Some(UserRole::Owner | UserRole::Administrator)) {
                 topics.extend([LiveTopic::Jobs, LiveTopic::Deliveries, LiveTopic::Users]);
             }
-            topics
+            Some(topics)
         }
     }
+}
+
+/// The topics every signed-in user may hear about.
+fn member_topics() -> BTreeSet<LiveTopic> {
+    BTreeSet::from([LiveTopic::Library, LiveTopic::Nodes])
 }
 
 /// A refusal before the upgrade.
@@ -192,7 +201,9 @@ pub async fn get_live(State(state): State<Arc<AppState>>, request: Request) -> R
         Ok(upgrade) => upgrade,
         Err(rejection) => return rejection.into_response(),
     };
-    let topics = topics_for(&state, caller).await;
+    let topics = topics_for(&state, caller)
+        .await
+        .unwrap_or_else(member_topics);
     // The session headers stay in memory to re-check the caller.
     let headers = parts.headers.clone();
     upgrade
@@ -212,22 +223,72 @@ fn frame(kind: &str, topics: &BTreeSet<LiveTopic>) -> Message {
     )
 }
 
-/// Reads revisions, logging (once per failure streak) when it cannot.
-async fn read_revisions(state: &AppState, failing: &mut bool) -> Option<LiveRevisions> {
+/// How long one revision read serves every socket over the same library:
+/// under [`POLL_INTERVAL`], so each socket's tick still sees a read newer
+/// than its last, while the tables are read at most twice per interval
+/// however many sockets are open.
+const SHARED_READ_FRESH: Duration = Duration::from_millis(POLL_INTERVAL.as_millis() as u64 / 2);
+
+/// The last revision read over one library handle, shared by its sockets.
+#[derive(Default)]
+struct SharedRead {
+    /// When the last read finished and what it found (`None`: it failed).
+    last: Option<(tokio::time::Instant, Option<LiveRevisions>)>,
+    /// True while reads fail, so the failure is logged once per streak.
+    failing: bool,
+}
+
+/// Shared reads keyed by the address of the library handle they read. The
+/// weak handle keeps that address from being reused while the entry lives,
+/// and an entry whose handle is gone is dropped.
+type SharedReads = HashMap<usize, (Weak<RwLock<LibraryStore>>, Arc<Mutex<SharedRead>>)>;
+
+/// Every [`SharedRead`] in this process.
+static SHARED_READS: LazyLock<std::sync::Mutex<SharedReads>> = LazyLock::new(Default::default);
+
+/// The [`SharedRead`] for `state`'s library handle.
+fn shared_read(state: &AppState) -> Arc<Mutex<SharedRead>> {
+    let key = Arc::as_ptr(&state.library) as usize;
+    let mut reads = SHARED_READS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    reads.retain(|_, (library, _)| library.strong_count() > 0);
+    Arc::clone(
+        &reads
+            .entry(key)
+            .or_insert_with(|| (Arc::downgrade(&state.library), Arc::default()))
+            .1,
+    )
+}
+
+/// Reads revisions, or reuses a read another socket over the same library
+/// made within [`SHARED_READ_FRESH`]; logs once per failure streak when the
+/// read fails. A reused read is older than a fresh one would be, so it can
+/// only report a change again, never absorb one.
+async fn read_revisions(state: &AppState) -> Option<LiveRevisions> {
+    let shared = shared_read(state);
+    let mut read = shared.lock().await;
+    if let Some((at, revisions)) = &read.last {
+        if at.elapsed() < SHARED_READ_FRESH {
+            return revisions.clone();
+        }
+    }
     let library = state.library_snapshot().await;
-    match live_revisions(&library).await {
+    let revisions = match live_revisions(&library).await {
         Ok(revisions) => {
-            *failing = false;
+            read.failing = false;
             Some(revisions)
         }
         Err(err) => {
-            if !*failing {
+            if !read.failing {
                 tracing::warn!(error = %err, "live socket could not read revisions");
             }
-            *failing = true;
+            read.failing = true;
             None
         }
-    }
+    };
+    read.last = Some((tokio::time::Instant::now(), revisions.clone()));
+    revisions
 }
 
 /// Serves one socket until it closes.
@@ -242,8 +303,7 @@ async fn run(
     // client hears `hello` (and stops its fallback polling) is then always
     // reported, never absorbed into the baseline.
     let mut pokes = POKES.subscribe();
-    let mut failing = false;
-    let mut seen = read_revisions(&state, &mut failing).await;
+    let mut seen = read_revisions(&state).await;
     if tx.send(frame("hello", &topics)).await.is_err() {
         return;
     }
@@ -264,7 +324,7 @@ async fn run(
     loop {
         let changed: BTreeSet<LiveTopic> = tokio::select! {
             _ = poll.tick() => {
-                let Some(now) = read_revisions(&state, &mut failing).await else {
+                let Some(now) = read_revisions(&state).await else {
                     continue;
                 };
                 // Without a baseline (its read failed) nothing is known to
@@ -282,8 +342,20 @@ async fn run(
                 Err(broadcast::error::RecvError::Closed) => return,
             },
             _ = reauth.tick() => {
-                match resolve_user_caller(&state, &headers, LIVE_PATH).await {
-                    Ok(caller) => topics = topics_for(&state, caller).await,
+                // A refusal is checked once more before the socket closes:
+                // a session lookup that timed out reads as signed out, and
+                // a client told so waits out its longest backoff.
+                let mut caller = resolve_user_caller(&state, &headers, LIVE_PATH).await;
+                if caller.is_err() {
+                    tokio::time::sleep(REAUTH_RETRY_DELAY).await;
+                    caller = resolve_user_caller(&state, &headers, LIVE_PATH).await;
+                }
+                match caller {
+                    Ok(caller) => {
+                        if let Some(now) = topics_for(&state, caller).await {
+                            topics = now;
+                        }
+                    }
                     Err(_) => {
                         let _ = tx.send(close(CLOSE_UNAUTHORIZED, "signed out")).await;
                         return;

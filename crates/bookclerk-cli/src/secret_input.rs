@@ -183,10 +183,14 @@ mod platform {
             let mut quiet = *TERMIOS.ptr();
             quiet.c_lflag &= !(libc::ECHO | libc::ECHOE | libc::ECHOK | libc::ECHONL);
             QUIET.ptr().write(quiet);
+            // Both arrays are written whole before any reference to them is
+            // formed: a reference to storage not yet initialized is undefined
+            // behavior, however its elements are filled afterwards.
+            PREVIOUS.ptr().write(std::mem::zeroed());
+            INSTALLED.ptr().write([false; 5]);
             let previous = &mut *PREVIOUS.ptr();
             let installed = &mut *INSTALLED.ptr();
             for (i, signal) in SIGNALS.iter().enumerate() {
-                installed[i] = false;
                 if libc::sigaction(*signal, std::ptr::null(), &mut previous[i]) != 0 {
                     return Err(io::Error::last_os_error());
                 }

@@ -2337,9 +2337,20 @@ export interface RemoteGrantView {
   /** Host bindings (`config`, `secrets`, `kv`, …). */
   bindings?: string[];
   jobs?: string[];
+  entrypoints?: string[];
+  /** Queue bindings it may send to. */
+  producers?: string[];
+  /** Events and queues it consumes (shape owned by the host). */
+  consumers?: unknown[];
+  /** Follow a redirect to a public host it did not declare. */
+  allowUndeclaredPublicRedirects?: boolean;
+  compatibilityFlags?: string[];
   memoryMib?: number | null;
   cpuRatePercent?: number | null;
   diskMib?: number | null;
+  cpuMs?: number | null;
+  subrequests?: number | null;
+  extraProcesses?: number | null;
 }
 
 /** Where an owner plugin's request to run here stands. */

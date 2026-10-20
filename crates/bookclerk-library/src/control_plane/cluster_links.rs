@@ -416,19 +416,35 @@ pub async fn set_cluster_link_state(
 /// nodes revoke`). A running daemon stops the link's client when it next
 /// re-reads the link. Joining again needs a new enrollment link.
 ///
+/// Only the enrollment read here is left: one a concurrent join replaced
+/// (another node id) is refused, so the new enrollment is never marked
+/// left with its keys still stored.
+///
 /// # Errors
 ///
-/// Returns the read or write error.
+/// Returns [`LibraryError::Invalid`] when the link was re-enrolled while
+/// leaving, and the read or write error.
 pub async fn leave_cluster_link(
     store: &LibraryStore,
     owner_cluster_id: &str,
 ) -> Result<Option<ClusterLink>> {
-    let Some(link) = load_cluster_link(store, owner_cluster_id).await? else {
+    let Some(mut link) = load_cluster_link(store, owner_cluster_id).await? else {
         return Ok(None);
     };
     // State first: a link that is not active is never dialed, even if the
     // key delete below fails.
-    set_cluster_link_state(store, owner_cluster_id, CLUSTER_LINK_LEFT, None).await?;
+    if !set_cluster_link_state(
+        store,
+        owner_cluster_id,
+        CLUSTER_LINK_LEFT,
+        Some(&link.remote_node_id),
+    )
+    .await?
+    {
+        return Err(LibraryError::Invalid(
+            "the cluster was joined again while leaving it; nothing was left".into(),
+        ));
+    }
     delete_secret(
         store.db(),
         secret_kind::CLUSTER_LINK,
@@ -438,7 +454,8 @@ pub async fn leave_cluster_link(
         CLUSTER_LINK_KEYS_NAME,
     )
     .await?;
-    load_cluster_link(store, owner_cluster_id).await
+    link.state = CLUSTER_LINK_LEFT.to_string();
+    Ok(Some(link))
 }
 
 #[cfg(test)]

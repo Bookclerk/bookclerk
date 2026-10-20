@@ -189,7 +189,7 @@ On the host:
 
 ```bash
 bookclerk clusters join            # paste the link at the prompt, or pipe it on stdin
-sudo systemctl restart bookclerkd  # a running daemon dials new links only at start
+sudo systemctl restart bookclerkd  # a running daemon dials a new link only at start (a re-enrolled one restarts on its own)
 bookclerk clusters consents        # what the owner asks to run here
 bookclerk clusters approve <plugin_key> --request <digest> [--deny-domain …] [--deny-binding …]
 bookclerk clusters revoke <plugin_key>
