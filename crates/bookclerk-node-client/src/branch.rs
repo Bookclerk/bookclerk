@@ -339,6 +339,8 @@ pub async fn announce_leaving(
         incarnation: uuid_like(),
         max_jobs: 0,
         claim_kinds: Vec::new(),
+        // It claims nothing, so nothing waits for a deployments re-read.
+        claims_after_refresh: false,
         timing: ClientTiming {
             request_timeout: timeout,
             ..ClientTiming::default()

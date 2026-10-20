@@ -83,6 +83,11 @@ fn join_failed(err: &JoinError) -> Response {
         JoinError::Record(detail) => {
             join_error(StatusCode::BAD_GATEWAY, "join_failed", detail)
         }
+        // Enrolled on the library but not saved here: the invite is spent,
+        // and the message says what the owner has to revoke.
+        JoinError::Unsaved { .. } => {
+            join_error(StatusCode::BAD_GATEWAY, "join_unsaved", &err.to_string())
+        }
     }
 }
 

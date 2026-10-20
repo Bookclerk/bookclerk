@@ -54,8 +54,7 @@ use std::time::Duration;
 
 use bookclerk_library::control_plane::{
     current_process_incarnation, leave_cluster_link, list_cluster_links, load_cluster_link,
-    load_cluster_link_keys, remote_job_fence, set_cluster_link_state, ClusterLink, NodeSampler,
-    CLUSTER_LINK_REVOKED,
+    load_cluster_link_keys, mark_cluster_link_revoked, remote_job_fence, ClusterLink, NodeSampler,
 };
 use bookclerk_library::{JobKind, JobPayload, LibraryStore};
 use bookclerk_node_client::{
@@ -203,6 +202,9 @@ async fn stop_when_inactive(
 struct RunningLink {
     /// Distinguishes this run from a later one for the same link.
     serial: u64,
+    /// The node the client runs as, so a join can wait for its own
+    /// enrollment's client rather than the one it replaced.
+    node_id: String,
     /// Stops the client (and, through it, its consent supervisor).
     stop: Arc<watch::Sender<bool>>,
     /// The client, for `node.leaving`.
@@ -230,9 +232,18 @@ pub fn is_link_running(cluster_id: &str) -> bool {
     running().contains_key(cluster_id)
 }
 
+/// True while a client for `cluster_id` runs in this process as
+/// `node_id`.
+fn is_node_running(cluster_id: &str, node_id: &str) -> bool {
+    running()
+        .get(cluster_id)
+        .is_some_and(|run| run.node_id == node_id)
+}
+
 /// Links whose client the transport policy refused: the supervisor's poll
 /// does not retry them, so the failure is logged once. A join through this
-/// daemon clears the entry.
+/// daemon clears the entry, and any new enrollment (a new node id, the
+/// CLI's included) is tried afresh.
 static FAILED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 
 /// The failed set, recovering from a poisoned lock.
@@ -252,16 +263,21 @@ fn failure_key(link: &ClusterLink) -> String {
 /// links it has no client for at once, instead of at its next poll.
 static JOINED: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::channel(0).0);
 
-/// How long [`start_link_now`] waits for the supervisor to start a client.
-const START_NOW_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long [`start_link_now`] waits for the supervisor to start a client:
+/// longer than [`consent::CONSENT_POLL`], within which a replaced
+/// enrollment's client is stopped.
+const START_NOW_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Starts a client for `cluster_id` now (a join through this daemon), with
 /// no restart: the supervisor started by [`spawn_cluster_links`] is woken
-/// to start the link, and this waits up to [`START_NOW_TIMEOUT`] for it.
+/// to start the link, and this waits up to [`START_NOW_TIMEOUT`] for a
+/// client running as the link's current node. A client of an enrollment
+/// the join replaced is stopped first (within [`consent::CONSENT_POLL`]),
+/// so a join over a still-active link can take that long.
 ///
 /// # Returns
 ///
-/// Whether a client for the link runs.
+/// Whether a client for the link's current enrollment runs.
 pub async fn start_link_now(state: &Arc<AppState>, cluster_id: &str) -> bool {
     let library = state.library_snapshot().await;
     let Ok(Some(link)) = load_cluster_link(&library, cluster_id).await else {
@@ -273,7 +289,7 @@ pub async fn start_link_now(state: &Arc<AppState>, cluster_id: &str) -> bool {
     failed().remove(&failure_key(&link));
     JOINED.send_modify(|joined| *joined = joined.wrapping_add(1));
     let deadline = tokio::time::Instant::now() + START_NOW_TIMEOUT;
-    while !is_link_running(cluster_id) {
+    while !is_node_running(cluster_id, &link.remote_node_id) {
         if tokio::time::Instant::now() >= deadline {
             return false;
         }
@@ -449,8 +465,10 @@ async fn supervise_cluster_links(state: Arc<AppState>) {
 /// `running`, each stopping when `shutdown` turns true, and adds it to
 /// `running` and `clients`. A client stopped because its link was
 /// re-enrolled as another node sends its cluster id on `relink` once it
-/// and its consent supervisor have exited. A link the transport policy
-/// refused is skipped until it is joined again ([`start_link_now`]).
+/// and its consent supervisor have exited; one stopped because its link
+/// is no longer active, or revoked, sends it too, so a later join of the
+/// same library is started. A link the transport policy refused is skipped
+/// until it is enrolled again.
 ///
 /// # Returns
 ///
@@ -572,10 +590,17 @@ async fn start_clients(
             &cluster_id,
             RunningLink {
                 serial,
+                node_id: node_id.clone(),
                 stop: Arc::clone(&client_stop),
                 handle,
             },
         );
+        // Drops the entry however the task ends, an abort after a swap
+        // included.
+        let listed = RunningEntry {
+            cluster_id: cluster_id.clone(),
+            serial,
+        };
         let watcher = AbortOnDrop(Some(tokio::spawn(stop_when_inactive(
             library.clone(),
             cluster_id.clone(),
@@ -587,7 +612,7 @@ async fn start_clients(
         let relink = relink.clone();
         clients.push(tokio::spawn(async move {
             let exit = client.run(client_shutdown).await;
-            running_remove(&cluster_id, serial);
+            drop(listed);
             let _ = link_stop.send(true);
             // Both exit before a client for a new enrollment can start, so
             // one cluster never has two consent supervisors.
@@ -598,7 +623,9 @@ async fn start_clients(
             let mut watcher = watcher;
             if exit != ClientExit::Revoked {
                 if let Some(stopped) = watcher.0.as_mut() {
-                    if let Ok(LinkStop::Replaced) = stopped.await {
+                    // A stop for a swap ends with the store; any other lets
+                    // the supervisor start the cluster's next enrollment.
+                    if matches!(stopped.await, Ok(LinkStop::Replaced | LinkStop::Inactive)) {
                         let _ = relink.send(cluster_id);
                     }
                 }
@@ -606,24 +633,20 @@ async fn start_clients(
             }
             drop(watcher);
             // The link belongs to the store it was read from. Only the
-            // enrollment this client ran as is revoked: a re-enrollment
-            // recorded meanwhile keeps its new link.
+            // enrollment this client ran as, and only while active, is
+            // revoked: a re-enrollment recorded meanwhile keeps its new
+            // link, and a Leave library racing the close stays `left`.
             for attempt in 0..5u32 {
-                match set_cluster_link_state(
-                    &library,
-                    &cluster_id,
-                    CLUSTER_LINK_REVOKED,
-                    Some(&node_id),
-                )
-                .await
-                {
+                match mark_cluster_link_revoked(&library, &cluster_id, &node_id).await {
                     Ok(true) => {
                         crate::live::poke(bookclerk_library::control_plane::LiveTopic::Clusters);
+                        // A later join of this library is started.
+                        let _ = relink.send(cluster_id);
                         break;
                     }
                     Ok(false) => {
-                        tracing::info!(%cluster_id, %node_id, "revoked enrollment was already replaced; keeping the new link");
-                        // Dial the enrollment that replaced this one.
+                        tracing::info!(%cluster_id, %node_id, "revoked enrollment was already left or replaced; keeping the link as it is");
+                        // Dial the enrollment that replaced this one, if any.
                         let _ = relink.send(cluster_id.clone());
                         break;
                     }
@@ -645,15 +668,26 @@ fn running_insert(cluster_id: &str, run: RunningLink) {
     running().insert(cluster_id.to_owned(), run);
 }
 
-/// Drops the running entry of `cluster_id` if it is still the run
-/// `serial` (a later client for the link keeps its own).
-fn running_remove(cluster_id: &str, serial: u64) {
-    let mut table = running();
-    if table
-        .get(cluster_id)
-        .is_some_and(|run| run.serial == serial)
-    {
-        table.remove(cluster_id);
+/// A client's entry in the running table, dropped with the client's task
+/// (when it returns, or is aborted).
+struct RunningEntry {
+    /// The link the entry is for.
+    cluster_id: String,
+    /// The run that owns the entry.
+    serial: u64,
+}
+
+impl Drop for RunningEntry {
+    /// Drops the entry of `cluster_id` if it is still this run's (a later
+    /// client for the link keeps its own).
+    fn drop(&mut self) {
+        let mut table = running();
+        if table
+            .get(&self.cluster_id)
+            .is_some_and(|run| run.serial == self.serial)
+        {
+            table.remove(&self.cluster_id);
+        }
     }
 }
 

@@ -47,7 +47,7 @@ use std::sync::Arc;
 use axum::extract::connect_info::ConnectInfo;
 use axum::extract::{Path, Request, State};
 use axum::http::request::Parts;
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use bookclerk_library::control_plane::{

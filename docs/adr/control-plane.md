@@ -1263,9 +1263,9 @@ join`) and `bookclerkd/src/cluster_link.rs`.
 - **Database swap.** The daemon runs one client per active link of the
   live library. When a config reload swaps the database, every client is
   stopped (and awaited, so a node never dials twice) and the new store's
-  active links are started; a link enrolled while the daemon runs is
-  picked up at the next start or swap, and re-enrolling a running link
-  restarts its client.
+  active links are started. A link joined through the daemon (Join a
+  library) is started at once, one the CLI recorded within the consent
+  poll (5 s), and re-enrolling a running link restarts its client.
 - **Jobs.** A claim loop runs while job slots are free. Each job runs on
   its own task, outliving the connection: its secrets are opened with the
   enrolled box key (a bundle that does not open is failed as

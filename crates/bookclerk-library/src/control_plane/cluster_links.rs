@@ -407,9 +407,21 @@ pub async fn set_cluster_link_state(
     Ok(updated.rows_affected == 1)
 }
 
-/// Marks an **active** link [`CLUSTER_LINK_REVOKED`] (the owner closed with
-/// 4403). A link this install already left stays `left`. Answers whether a
-/// row changed.
+/// Marks an **active** link still enrolled as `remote_node_id`
+/// [`CLUSTER_LINK_REVOKED`] (the owner closed with 4403 on that node's
+/// connection). A link this install already left stays `left`, and one a
+/// later join enrolled as another node keeps its new enrollment.
+///
+/// # Arguments
+///
+/// * `store` - Library store holding the link.
+/// * `owner_cluster_id` - Owner cluster the link joins.
+/// * `remote_node_id` - The node the revoked connection ran as.
+///
+/// # Returns
+///
+/// Whether a row changed: `false` when the link is gone, no longer active,
+/// or enrolled as another node.
 ///
 /// # Errors
 ///
@@ -417,6 +429,7 @@ pub async fn set_cluster_link_state(
 pub async fn mark_cluster_link_revoked(
     store: &LibraryStore,
     owner_cluster_id: &str,
+    remote_node_id: &str,
 ) -> Result<bool> {
     let updated = cluster_links::Entity::update_many()
         .col_expr(
@@ -424,6 +437,7 @@ pub async fn mark_cluster_link_revoked(
             Expr::value(CLUSTER_LINK_REVOKED),
         )
         .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
+        .filter(cluster_links::Column::RemoteNodeId.eq(remote_node_id))
         .filter(cluster_links::Column::State.eq(CLUSTER_LINK_ACTIVE))
         .exec(store.db())
         .await
