@@ -195,7 +195,7 @@ rewriting either side.
 A host node is a separate Bookclerk install that enrolls into this cluster
 with a single-use link and runs its scans and acquires. This section is the
 owner's configuration; joining, consent, uploads and the protocol are in
-[Clusters and host nodes](cluster-hosts.md), and the design in
+[Libraries and branches](cluster-hosts.md), and the design in
 [ADR: Control plane](adr/control-plane.md#host-node-enrollment-and-transport).
 
 Enrollment is a cluster document, `core.host_enrollment`, on by default.
@@ -209,10 +209,11 @@ bookclerk config get host_enrollment.enabled
 bookclerk config set host_enrollment.enabled false
 ```
 
-While it is on, any active user may mint a link for themselves
-(`POST /api/config/node-invites`; Settings has no invite screen, so the
-link never passes through the browser), and the operator or an Owner may
-mint for any active user:
+In the web UI it is **Settings → Branches → Let new branches join**.
+While it is on, a branch joins with a sign-in (Join a library), and any
+active user may mint a branch invite for themselves (**Add a branch**, or
+`POST /api/config/node-invites`; shown once, never cached), and the
+operator or an Owner may mint for any active user:
 
 ```bash
 bookclerk nodes invite --user riley --ttl 24h   # prints the link once
@@ -230,8 +231,9 @@ The link is `<public_origin>/enroll#bcn1.<link_id>.<secret>[.<spki_pin>]`
 the URL fragment, so proxies and access logs never see it; the database keeps
 only its hash. Set `integrations.public_origin` so the link points somewhere a
 host can reach. Links live 24 hours by default (5 minutes to 7 days) and
-redeem once. The host's operator redeems it with `bookclerk clusters join`,
-which reads it from stdin or a prompt, never from the command line.
+redeem once. The host's operator redeems it in **Join a library → I have an
+invite**, or with `bookclerk clusters join`, which reads it from stdin or a
+prompt, never from the command line.
 
 `[daemon.node_api]` is bootstrap configuration, like `daemon.listen`. It
 decides which connections may reach the node API (`POST /api/node/v1/enroll`

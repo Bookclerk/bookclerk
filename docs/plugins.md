@@ -1531,11 +1531,11 @@ received them, node-local ones included.
 ### Running on host nodes
 
 A host node (a separate install that joined the cluster, see
-[Clusters and host nodes](cluster-hosts.md)) runs an owner's plugin only
+[Libraries and branches](cluster-hosts.md)) runs an owner's plugin only
 after **its own** operator approves it, with the same narrowing as above:
 `bookclerk clusters approve <plugin_key> --request <DIGEST> [--deny-domain
 …] [--deny-binding …] [--deny-network]` (the digest of the request being
-approved, from `bookclerk clusters consents`) or **Settings → Clusters** on
+approved, from `bookclerk clusters consents`) or **Settings → Library** on
 the host. The owner's
 grant is the request; the host's approval may only remove from it, a later
 version that asks for more waits for approval again, and a revoke cancels

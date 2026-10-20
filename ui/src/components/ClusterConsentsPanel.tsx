@@ -11,6 +11,8 @@ import {
   type RemoteConsentView,
   type RemoteGrantView,
 } from "@/lib/api";
+import { JoinWizard } from "@/components/JoinWizard";
+import { fetchJoinStatus, joinErrorMessage, leaveLibrary } from "@/lib/join";
 import { backoffDelay, useLiveRefresh } from "@/lib/live";
 import { cn } from "@/lib/utils";
 
@@ -41,7 +43,35 @@ function StateBadge({ state }: { state: RemoteConsentState }) {
   );
 }
 
-function LinkRow({ link }: { link: ClusterLinkView }) {
+function LinkRow({ link, onLeft }: { link: ClusterLinkView; onLeft: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  async function onLeave() {
+    if (
+      !window.confirm(
+        `Leave ${link.owner_origin}? This server stops running its work, its branch keys are deleted, and the library is told. Joining again needs a new sign-in or invite.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setNote(null);
+    try {
+      const left = await leaveLibrary(link.cluster_id);
+      setNote(
+        left.owner_notified
+          ? null
+          : "Left. The library could not be told; remove this branch there.",
+      );
+      onLeft();
+    } catch (err) {
+      setNote(joinErrorMessage(err, "Could not leave the library."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <li className="flex flex-wrap items-center gap-2 px-4 py-3 text-sm">
       <span className="font-semibold text-ink">{link.owner_origin}</span>
@@ -61,6 +91,22 @@ function LinkRow({ link }: { link: ClusterLinkView }) {
         node <span className="font-mono">{link.node_id}</span> · joined{" "}
         {new Date(link.enrolled_at).toLocaleString()}
       </span>
+      {link.state === "active" ? (
+        <Button
+          type="button"
+          variant="danger"
+          className="ml-auto h-8"
+          disabled={busy}
+          onClick={() => void onLeave()}
+        >
+          Leave library
+        </Button>
+      ) : null}
+      {note ? (
+        <p className="w-full text-xs font-medium text-brick" role="status">
+          {note}
+        </p>
+      ) : null}
     </li>
   );
 }
@@ -300,16 +346,29 @@ export interface ClusterConsentsPanelProps {
 }
 
 /**
- * This install as a host of owner clusters: the clusters it joined, and
- * each owner plugin's request to run here. The operator approves a
+ * Settings → Library: this install as a branch of libraries (owner
+ * clusters). It lists the libraries joined, with Leave library, offers
+ * Join a library (the sign-in wizard, or a pasted branch invite), and shows
+ * each library plugin's request to run here. The operator approves a
  * request (optionally without some domains, bindings, or the network) or
- * revokes it. Joining happens on the command line (`bookclerk clusters
- * join`), since the enrollment link is a secret.
+ * revokes it.
  */
 export function ClusterConsentsPanel({ onSessionExpired }: ClusterConsentsPanelProps) {
   const [clusters, setClusters] = useState<ClusterLinkView[] | null>(null);
   const [consents, setConsents] = useState<RemoteConsentView[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [joining, setJoining] = useState(false);
+  const [joinedTo, setJoinedTo] = useState<string | null>(null);
+  const [defaultBranchName, setDefaultBranchName] = useState<string | undefined>();
+
+  useEffect(() => {
+    if (!joining) return;
+    void fetchJoinStatus()
+      .then((status) => setDefaultBranchName(status.default_branch_name))
+      .catch(() => {
+        /* the wizard works without a suggested name */
+      });
+  }, [joining]);
   // Failed loads in a row; drives the retry below.
   const [failures, setFailures] = useState(0);
   const expired = useRef(onSessionExpired);
@@ -329,7 +388,7 @@ export function ClusterConsentsPanel({ onSessionExpired }: ClusterConsentsPanelP
         expired.current();
         return;
       }
-      setLoadError(err instanceof Error ? err.message : "Failed to load clusters");
+      setLoadError(err instanceof Error ? err.message : "Failed to load libraries");
       setFailures((n) => n + 1);
     }
   }, []);
@@ -359,31 +418,52 @@ export function ClusterConsentsPanel({ onSessionExpired }: ClusterConsentsPanelP
   return (
     <section className="space-y-6">
       <div className="space-y-1">
-        <h2 className="text-lg font-semibold text-ink">Clusters</h2>
+        <h2 className="text-lg font-semibold text-ink">Library</h2>
         <p className="text-sm text-ink/55">
-          Owner clusters this server contributes to as a host. An owner's plugin runs here only
-          after you approve what it asks for; you can leave out domains, bindings, or the network,
-          and a later version that asks for more waits for approval again. Revoking stops its jobs
-          here and hands them back to the owner. To join a cluster, run{" "}
-          <code className="font-mono text-[12px]">bookclerk clusters join</code> on this server and
-          paste the enrollment link when asked.
+          Libraries this server is a branch of. A library's plugin runs here only after you approve
+          what it asks for; you can leave out domains, bindings, or the network, and a later version
+          that asks for more waits for approval again. Revoking stops its jobs here and hands them
+          back to the library.
         </p>
       </div>
+      {joinedTo ? (
+        <p className="text-sm font-medium text-ink" role="status">
+          Connected to {joinedTo}. Its plugin requests appear below.
+        </p>
+      ) : null}
+      {joining ? (
+        <div className="space-y-3 rounded-md border border-ink/10 bg-card p-4">
+          <h3 className="text-sm font-semibold text-ink">Join a library</h3>
+          <JoinWizard
+            defaultBranchName={defaultBranchName}
+            onJoined={(origin) => {
+              setJoining(false);
+              setJoinedTo(origin);
+              void refresh();
+            }}
+            onCancel={() => setJoining(false)}
+          />
+        </div>
+      ) : (
+        <Button type="button" variant="secondary" onClick={() => setJoining(true)}>
+          Join a library
+        </Button>
+      )}
       {loadError ? (
         <p className="text-sm font-medium text-brick" role="alert">
           {loadError}
         </p>
       ) : null}
       {clusters == null ? (
-        <p className="text-sm text-ink/50">Loading clusters…</p>
+        <p className="text-sm text-ink/50">Loading…</p>
       ) : (
         <>
           {clusters.length === 0 ? (
-            <p className="text-sm text-ink/50">This server has not joined any cluster.</p>
+            <p className="text-sm text-ink/50">This server is not a branch of any library.</p>
           ) : (
             <ul className="divide-y divide-ink/10 bg-card">
               {clusters.map((link) => (
-                <LinkRow key={link.cluster_id} link={link} />
+                <LinkRow key={link.cluster_id} link={link} onLeft={() => void refresh()} />
               ))}
             </ul>
           )}

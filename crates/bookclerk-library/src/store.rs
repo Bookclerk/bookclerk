@@ -3629,6 +3629,37 @@ impl LibraryStore {
         Ok(())
     }
 
+    /// Reads an unconsumed, unexpired auth code without consuming it; returns
+    /// (client_id, user_id, redirect_uri, challenge, method, scope). For a
+    /// caller that records what the code grants before it consumes the code,
+    /// so a failed write leaves the code usable for a retry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    pub async fn peek_oidc_auth_code(
+        &self,
+        code_hash: &str,
+    ) -> Result<Option<(String, i64, String, String, String, String)>> {
+        let row = oidc_auth_codes::Entity::find()
+            .filter(oidc_auth_codes::Column::CodeHash.eq(code_hash))
+            .filter(oidc_auth_codes::Column::ConsumedAt.is_null())
+            .filter(oidc_auth_codes::Column::ExpiresAt.gt(now_str()))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(row.map(|row| {
+            (
+                row.client_id,
+                row.user_id,
+                row.redirect_uri,
+                row.code_challenge,
+                row.code_challenge_method,
+                row.scope,
+            )
+        }))
+    }
+
     /// Atomically consume an auth code; returns (client_id, user_id, redirect_uri, challenge, method, scope).
     ///
     /// # Errors

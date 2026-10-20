@@ -81,6 +81,11 @@ pub mod secret_kind {
     /// On a host node: the private node keys of one owner-cluster link
     /// (`provider` = owner cluster id, `account_id` = this node's id there).
     pub const CLUSTER_LINK: &str = "cluster_link";
+    /// On a host joining a library: the PKCE verifier and node keys of one
+    /// sign-in in progress (`provider` = owner cluster id, `account_id` =
+    /// the pending join's state hash). Deleted when the join completes or
+    /// expires.
+    pub const CLUSTER_JOIN: &str = "cluster_join";
 }
 
 /// Ownership namespace for `encrypted_secrets.account_type`.

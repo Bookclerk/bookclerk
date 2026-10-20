@@ -184,16 +184,18 @@ bookclerk daemon acquire [--asin <id>] [--account <id>]
 ### Host nodes
 
 A Bookclerk install can join another cluster as a host node and run its
-scans and acquires (full guide: [Clusters and host nodes](cluster-hosts.md)).
-On the host:
+scans and acquires (full guide: [Libraries and branches](cluster-hosts.md)).
+The web UI calls this a *branch*: on the host, **Settings → Library → Join
+a library** (or the first-start welcome screen) joins with a sign-in on the
+owner, and the connection starts without a restart. On the command line:
 
 ```bash
-bookclerk clusters join            # paste the link at the prompt, or pipe it on stdin
-sudo systemctl restart bookclerkd  # a running daemon dials a new link only at start (a re-enrolled one restarts on its own)
+bookclerk clusters join --url https://owner.example  # sign in in a browser (loopback callback)
+bookclerk clusters join            # or paste a branch invite at the prompt, or pipe it on stdin
 bookclerk clusters consents        # what the owner asks to run here
 bookclerk clusters approve <plugin_key> --request <digest> [--deny-domain …] [--deny-binding …]
 bookclerk clusters revoke <plugin_key>
-bookclerk clusters leave           # deletes the node keys; revoke the node on the owner too
+bookclerk clusters leave           # tells the owner (which revokes the node), deletes the node keys
 ```
 
 The host's daemon needs `bookclerk-workerd` and the pinned `workerd` beside

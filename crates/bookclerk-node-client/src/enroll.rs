@@ -19,9 +19,16 @@ pub enum JoinError {
     /// The owner could not be reached under the transport policy.
     #[error(transparent)]
     Dial(#[from] DialError),
-    /// The owner refused the link (spent, expired, revoked, or unknown).
-    #[error("the owner refused the enrollment link")]
+    /// The owner refused the link (spent, expired, revoked, or unknown), or
+    /// the sign-in's code.
+    #[error("the owner refused the enrollment")]
     Refused,
+    /// The library names another origin as its own; join at that one.
+    #[error("this library's address is {origin}; join with that address")]
+    OriginMismatch {
+        /// The origin the library names.
+        origin: String,
+    },
     /// The owner answered with another status.
     #[error("enrollment failed with HTTP {status}: {error}")]
     Http {
@@ -33,14 +40,14 @@ pub enum JoinError {
     /// The enroll request could not be built.
     #[error("enrollment could not be recorded: {0}")]
     Record(String),
-    /// The owner accepted the link, but its answer did not parse or the
-    /// local write failed. The one-use link is spent and the node keys are
-    /// gone, so this install cannot use the node the owner minted: the
-    /// owner revokes it (named when the answer said which) and issues a new
-    /// link.
+    /// The library accepted the join (an invite link or a sign-in code),
+    /// but its answer did not parse or the local write failed. The one-use
+    /// credential is spent and the node keys are gone, so this install
+    /// cannot use the node the library minted: its owner removes that node
+    /// (named when the answer said which) and this install joins again.
     #[error(
-        "the owner enrolled this host{} but it could not be saved here ({reason}); \
-         the link is spent, so ask the owner to revoke that node and send a new link",
+        "the library enrolled this host{} but it could not be saved here ({reason}); \
+         ask the library's owner to remove that node, then join again",
         node_id.as_deref().map(|id| format!(" as node {id}")).unwrap_or_default()
     )]
     Unsaved {
@@ -49,6 +56,39 @@ pub enum JoinError {
         /// What failed.
         reason: String,
     },
+    /// A sign-in's code was redeemed and the library enrolled this host,
+    /// but the local write failed. The library answers a repeat of the
+    /// same exchange (code, verifier, keys) with the same node, so a retry
+    /// with the sign-in still pending can finish the join.
+    #[error(
+        "the library enrolled this host as node {node_id} but it could not be saved here ({reason})"
+    )]
+    SaveFailed {
+        /// The node id the library minted.
+        node_id: String,
+        /// What failed.
+        reason: String,
+    },
+}
+
+impl JoinError {
+    /// True for a sign-in redeem failure that a repeat of the same exchange
+    /// (code, verifier, keys) can fix: the library unreachable (its answer
+    /// may have been lost after it enrolled the node, which a repeat gets
+    /// again), busy, or the local write failed.
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            // A bad address, an insecure transport, or a certificate that
+            // does not match fails the same way on every try.
+            Self::Dial(DialError::Insecure(_) | DialError::Invalid(_) | DialError::Tls(_)) => false,
+            Self::Dial(DialError::Refused(status)) | Self::Http { status, .. } => {
+                *status >= 500 || *status == 429
+            }
+            Self::Dial(_) | Self::SaveFailed { .. } => true,
+            _ => false,
+        }
+    }
 }
 
 /// `POST /api/node/v1/enroll` answer.

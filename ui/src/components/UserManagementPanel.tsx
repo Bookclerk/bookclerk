@@ -20,6 +20,7 @@ import {
   UserPlus,
   X,
 } from "lucide-react";
+import { AddBranchDialog } from "@/components/AddBranchDialog";
 import { AvatarPickerDialog } from "@/components/AvatarPickerDialog";
 import { UserAvatar, userDisplayLabel } from "@/components/UserAvatar";
 import { Badge } from "@/components/ui/badge";
@@ -432,6 +433,11 @@ export function UserManagementPanel({
   const [inviteCopied, setInviteCopied] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [avatarKey, setAvatarKey] = useState(0);
+  const [branchFor, setBranchFor] = useState<ListedUser | null>(null);
+  // An operator or Owner adds a branch for anyone; others for themselves.
+  const canAddBranchFor = (u: ListedUser) =>
+    u.status === "active" &&
+    (showOperatorChrome || session?.role === "owner" || u.id === currentUserId);
 
   useEffect(() => {
     if (selectedId == null) return;
@@ -1131,6 +1137,19 @@ export function UserManagementPanel({
                             >
                               Remint invite
                             </button>
+                            {canAddBranchFor(u) ? (
+                              <button
+                                type="button"
+                                role="menuitem"
+                                className={MENU_ITEM_CLASS}
+                                onClick={() => {
+                                  setMenuOpenId(null);
+                                  setBranchFor(u);
+                                }}
+                              >
+                                Add a branch
+                              </button>
+                            ) : null}
                             {showOperatorChrome ? (
                               <button
                                 type="button"
@@ -1469,6 +1488,12 @@ export function UserManagementPanel({
           onRemoveUpload={() => void onRemoveOwnAvatar()}
         />
       ) : null}
+      <AddBranchDialog
+        open={branchFor != null}
+        onClose={() => setBranchFor(null)}
+        userId={branchFor?.id}
+        userLabel={branchFor ? userDisplayLabel(branchFor) : undefined}
+      />
     </div>
   );
 }

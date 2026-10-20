@@ -437,6 +437,12 @@ pub enum Body {
     },
     /// Host → owner: the wake with this frame id was handled.
     Ack {},
+    /// Host → owner: this host is leaving the cluster (its operator chose
+    /// Leave library). The owner revokes the node's credential and stops
+    /// counting it as live at once, instead of waiting for missed
+    /// heartbeats, answers [`Body::Accepted`], and closes the connection.
+    #[serde(rename = "node.leaving")]
+    NodeLeaving {},
     /// Owner → host: the request with this frame id was applied.
     #[serde(rename = "ok")]
     Accepted {},
@@ -976,6 +982,7 @@ mod tests {
             ),
             (Body::Accepted {}, "ok"),
             (Body::Ack {}, "ack"),
+            (Body::NodeLeaving {}, "node.leaving"),
             (
                 Body::Renew {
                     item: ITEM_JOB.into(),

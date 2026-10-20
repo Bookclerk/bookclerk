@@ -5,6 +5,9 @@
 //! link's secret appears once, in the `url` fragment of the mint response;
 //! it is never logged.
 //!
+//! The invite list is the SPA's "Add a branch" dialog too; a mint answer is
+//! `Cache-Control: no-store`.
+//!
 //! `DELETE /api/config/node-credentials/{node_id}` revokes an enrolled
 //! host's credential: the operator or an Owner for any host, anyone else
 //! for the hosts they own.
@@ -27,6 +30,7 @@
 //! upload token and write them straight to this node's destinations.
 
 mod artifacts;
+pub mod branch;
 mod host_requests;
 mod host_results;
 pub mod tls;
@@ -42,9 +46,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::extract::connect_info::ConnectInfo;
-use axum::extract::{Path, Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::request::Parts;
-use axum::http::{header, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use bookclerk_library::control_plane::{
@@ -130,7 +134,7 @@ pub async fn post_node_invite(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
     Json(body): Json<PostNodeInvite>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Response, Response> {
     let for_user_id = match (body.user_id, caller) {
         (Some(user_id), _) | (None, UserCaller::User { user_id }) => user_id,
         (None, UserCaller::Operator) => {
@@ -172,22 +176,45 @@ pub async fn post_node_invite(
     .await
     .map_err(events_error)?;
     let url = minted.url(&origin, spki_pin.as_deref());
-    Ok(Json(json!({
-        "link": link_json(&minted.link),
-        "url": url.as_str(),
-    })))
+    // Shown once: no cache may keep it.
+    Ok(branch::no_store(
+        Json(json!({
+            "link": link_json(&minted.link),
+            "url": url.as_str(),
+        }))
+        .into_response(),
+    ))
+}
+
+/// `GET /api/config/node-invites` query.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeInvitesQuery {
+    /// Only the links for the calling user's own branches (an Owner's
+    /// "Add a branch" dialog), even when the caller may see everyone's.
+    #[serde(default)]
+    mine: bool,
 }
 
 /// `GET /api/config/node-invites`: every link for the operator or an
-/// Owner; the caller's own links for anyone else.
+/// Owner; the caller's own links for anyone else, and with `?mine=true`.
 pub async fn get_node_invites(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
+    Query(query): Query<NodeInvitesQuery>,
 ) -> Result<Json<serde_json::Value>, Response> {
     let library = state.library_snapshot().await;
-    let links = list_enrollment_links(&library, &actor(caller))
+    let mut links = list_enrollment_links(&library, &actor(caller))
         .await
         .map_err(events_error)?;
+    if query.mine {
+        // The operator has no branches of its own.
+        let own = match caller {
+            UserCaller::User { user_id } => Some(user_id),
+            UserCaller::Operator => None,
+        };
+        links.retain(|link| Some(link.for_user_id) == own);
+    }
     Ok(Json(json!({
         "links": links.iter().map(link_json).collect::<Vec<_>>(),
     })))
@@ -237,6 +264,13 @@ where
     axum::Router::new()
         // The link secret is the credential; the transport policy runs first.
         .route("/api/node/v1/enroll", axum::routing::post(post_enroll))
+        // Joining with a sign-in: what the library says about itself, and
+        // the redeem of an approved code (code + PKCE verifier).
+        .route("/api/node/v1/info", axum::routing::get(branch::get_info))
+        .route(
+            "/api/node/v1/enroll/oauth",
+            axum::routing::post(branch::post_enroll_oauth),
+        )
         // Host-node socket: the node's Ed25519 key is the credential.
         .route("/api/node/v1/connect", axum::routing::get(ws::get_connect))
         // Owner plugin archives: a node-signed request is the credential.
@@ -459,25 +493,9 @@ pub async fn post_enroll(State(state): State<Arc<AppState>>, request: Request) -
     if let Err(refused) = check_transport(&state, &mut parts, "enroll").await {
         return refused;
     }
-    let headers = std::mem::take(&mut parts.headers);
-    let json_body = headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value
-                .split(';')
-                .next()
-                .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
-        });
-    if !json_body {
-        return enroll_error(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "expected application/json",
-        );
-    }
-    // Enroll bodies are small; refuse anything larger without buffering it.
-    let Ok(body) = axum::body::to_bytes(body, MAX_ENROLL_BODY_BYTES).await else {
-        return enroll_error(StatusCode::PAYLOAD_TOO_LARGE, "enroll request too large");
+    let body = match read_json_body(&parts.headers, body, MAX_ENROLL_BODY_BYTES).await {
+        Ok(body) => body,
+        Err(refused) => return refused,
     };
     let Ok(body) = serde_json::from_slice::<EnrollBody>(&body) else {
         return enroll_error(StatusCode::BAD_REQUEST, "invalid enroll request");
@@ -498,7 +516,16 @@ pub async fn post_enroll(State(state): State<Arc<AppState>>, request: Request) -
         software_version: body.software_version,
     };
     let library = state.library_snapshot().await;
-    match redeem_enrollment_link(&library, &request).await {
+    redeem_answer(redeem_enrollment_link(&library, &request).await)
+}
+
+/// The answer to a redeem, for links and branch sign-ins alike: `{cluster_id,
+/// node_id}`, one generic 403 `enrollment_refused` for anything that does
+/// not redeem, 400 for malformed keys.
+fn redeem_answer(
+    result: bookclerk_library::Result<bookclerk_library::control_plane::EnrolledNode>,
+) -> Response {
+    match result {
         Ok(enrolled) => Json(json!({
             "cluster_id": enrolled.cluster_id,
             "node_id": enrolled.node_id,
@@ -513,6 +540,24 @@ pub async fn post_enroll(State(state): State<Arc<AppState>>, request: Request) -
             enroll_error(StatusCode::SERVICE_UNAVAILABLE, "enrollment_unavailable")
         }
     }
+}
+
+/// Reads a small JSON request body: 415 without `Content-Type:
+/// application/json`, 413 past `limit` (without buffering more).
+async fn read_json_body(
+    headers: &HeaderMap,
+    body: axum::body::Body,
+    limit: usize,
+) -> Result<axum::body::Bytes, Response> {
+    if !branch::is_json(headers) {
+        return Err(enroll_error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "expected application/json",
+        ));
+    }
+    axum::body::to_bytes(body, limit)
+        .await
+        .map_err(|_| enroll_error(StatusCode::PAYLOAD_TOO_LARGE, "request too large"))
 }
 
 #[cfg(test)]
@@ -771,6 +816,23 @@ pub(crate) mod tests {
         assert!(!listed.to_string().contains(secret));
         let (_, all) = send(&operator, "GET", "/api/config/node-invites", Value::Null).await;
         assert_eq!(all["links"].as_array().unwrap().len(), 2);
+        // `?mine=true` narrows to the caller's own (none for the operator).
+        let (_, own) = send(
+            &as_member,
+            "GET",
+            "/api/config/node-invites?mine=true",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(own["links"].as_array().unwrap().len(), 1);
+        let (_, none) = send(
+            &operator,
+            "GET",
+            "/api/config/node-invites?mine=true",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(none["links"].as_array().unwrap().len(), 0);
 
         let other_id = for_other["link"]["link_id"].as_str().unwrap();
         let (status, _) = send(

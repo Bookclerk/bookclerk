@@ -1,4 +1,5 @@
 pub mod clusters;
+mod clusters_join;
 pub mod config_cmd;
 pub mod copydb;
 pub mod daemon_cmd;

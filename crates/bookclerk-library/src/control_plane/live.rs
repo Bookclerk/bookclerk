@@ -304,7 +304,7 @@ mod tests {
             vec![LiveTopic::Clusters]
         );
 
-        leave_cluster_link(&store, "cluster-1")
+        leave_cluster_link(&store, "cluster-1", None)
             .await
             .unwrap()
             .expect("the link");
