@@ -8,7 +8,10 @@ use std::sync::Arc;
 use axum::http::{header, StatusCode};
 use axum::routing::{get, post};
 use base64::Engine as _;
-use bookclerk_library::control_plane::{load_node, load_node_credential, NodeKind};
+use bookclerk_library::control_plane::{
+    authorized_enrollment_link, load_node, load_node_credential, record_authorized_enrollment_link,
+    NodeKind,
+};
 use bookclerk_library::{LibraryStore, UserRole};
 use bookclerk_node_proto::{
     open_clerk_bootstrap, pkce_challenge, ClerkDatabase, BRANCH_CLIENT_ID, BRANCH_SCOPE,
@@ -355,6 +358,67 @@ async fn a_code_is_bound_to_the_connection_type_chosen_at_consent() {
         )
         .await,
     );
+}
+
+/// A first redeem that fails after the owner has recorded the branch link
+/// and spent the code never lets a retry redeem that link as a clerk: the
+/// link's secret binds the kind approved at consent.
+#[tokio::test]
+async fn a_spent_branch_code_never_redeems_as_a_clerk() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (state, store) = super::super::tests::test_state_with(&files, POSTGRES_CONFIG).await;
+    let (owner, _secret) = owner_with_totp(&store).await;
+    let app = routes(&state, UserCaller::User { user_id: owner }, LOOPBACK);
+    let v = verifier('d');
+    let (status, answer) = consent(&app, &v, true, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let code = callback(&answer)["code"].clone();
+
+    // A malformed redeem is refused before the code is spent.
+    let mut malformed = redeem(&code, &v, None);
+    malformed["sign_pk"] = json!("AAAA");
+    let (status, _, body) = call(&app, "POST", "/api/node/v1/enroll/oauth", Some(malformed)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(store
+        .peek_oidc_auth_code(&bookclerk_library::hash_token(&code))
+        .await
+        .unwrap()
+        .is_some());
+
+    // As if a first branch redeem failed after the owner recorded its link
+    // and spent the code.
+    let (link_id, secret) = authorized_enrollment_link(&code, &v, NodeKind::Host);
+    record_authorized_enrollment_link(&store, &link_id, &secret, owner, "Spare NAS")
+        .await
+        .unwrap();
+    store
+        .consume_oidc_auth_code(&bookclerk_library::hash_token(&code))
+        .await
+        .unwrap();
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        "/api/node/v1/enroll/oauth",
+        Some(redeem(&code, &v, Some("clerk"))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.get("bootstrap").is_none());
+
+    // The same exchange as a branch still redeems, as a host node.
+    let (status, _, enrolled) = call(
+        &app,
+        "POST",
+        "/api/node/v1/enroll/oauth",
+        Some(redeem(&code, &v, None)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{enrolled}");
+    let node = load_node(&store, enrolled["node_id"].as_str().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(node.kind, NodeKind::Host);
 }
 
 #[tokio::test]

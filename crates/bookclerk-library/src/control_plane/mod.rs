@@ -64,10 +64,10 @@ pub use documents::{
     PLUGIN_INSTANCE_SCOPE_TYPE,
 };
 pub use enrollment::{
-    authorized_enrollment_link, format_enrollment_token, list_enrollment_links,
-    load_host_enrollment, load_node_credential, mint_enrollment_link, parse_enrollment_token,
-    record_authorized_enrollment_link, record_node_connected, record_node_left,
-    redeem_enrollment_link, redeem_enrollment_link_as, revoke_enrollment_link,
+    authorized_enrollment_link, check_redeem_request, format_enrollment_token,
+    list_enrollment_links, load_host_enrollment, load_node_credential, mint_enrollment_link,
+    parse_enrollment_token, record_authorized_enrollment_link, record_node_connected,
+    record_node_left, redeem_enrollment_link, redeem_enrollment_link_as, revoke_enrollment_link,
     revoke_node_credential, set_host_enrollment_enabled, verify_cluster_owner, EnrolledNode,
     EnrollmentActor, EnrollmentLink, EnrollmentSecret, EnrollmentToken, HostEnrollmentSettings,
     HostEnrollmentSettingsV1, MintedLink, NodeCredential, RedeemRequest,

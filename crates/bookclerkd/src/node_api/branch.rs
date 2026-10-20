@@ -53,7 +53,7 @@ use axum::{Extension, Json};
 use bookclerk_config::DatabasePluginKind;
 use bookclerk_config::NodeApiMode;
 use bookclerk_library::control_plane::{
-    authorized_enrollment_link, load_cluster_row, load_host_enrollment,
+    authorized_enrollment_link, check_redeem_request, load_cluster_row, load_host_enrollment,
     record_authorized_enrollment_link, redeem_enrollment_link_as, set_host_enrollment_enabled,
     verify_cluster_owner, ConfigActor, EnrolledNode, NodeKind, RedeemRequest,
 };
@@ -188,7 +188,26 @@ pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Requ
         return enroll_error(StatusCode::FORBIDDEN, "enrollment_refused");
     }
     let connection = body.connection;
-    let (link_id, secret) = authorized_enrollment_link(code, verifier);
+    let kind = match connection {
+        ConnectionType::Branch => NodeKind::Host,
+        ConnectionType::Clerk => NodeKind::Owner,
+    };
+    // The link's secret binds the kind, so a link recorded for a branch
+    // never redeems as a clerk (or the other way round), even after a
+    // first redeem that failed.
+    let (link_id, secret) = authorized_enrollment_link(code, verifier, kind);
+    let request = RedeemRequest {
+        link_id,
+        secret,
+        sign_public_key,
+        box_public_key,
+        software_version: body.software_version,
+    };
+    // Refused before the code is spent, so a malformed request leaves it
+    // for a corrected retry.
+    if let Err(err) = check_redeem_request(&request) {
+        return redeem_answer(Err(err));
+    }
     let library = state.library_snapshot().await;
     let code_hash = hash_token(code);
     // The code is read, checked and its link recorded before the code is
@@ -237,8 +256,14 @@ pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Requ
             }
             // The node is labelled with the name the user consented to,
             // whatever the redeem body says.
-            match record_authorized_enrollment_link(&library, &link_id, &secret, user_id, &label)
-                .await
+            match record_authorized_enrollment_link(
+                &library,
+                &request.link_id,
+                &request.secret,
+                user_id,
+                &label,
+            )
+            .await
             {
                 Ok(()) => {}
                 Err(LibraryError::Forbidden(_)) => {
@@ -268,23 +293,14 @@ pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Requ
             return enroll_error(StatusCode::SERVICE_UNAVAILABLE, "enrollment_unavailable");
         }
     }
-    let request = RedeemRequest {
-        link_id,
-        secret,
-        sign_public_key,
-        box_public_key,
-        software_version: body.software_version,
-    };
     match connection {
         ConnectionType::Branch => {
-            redeem_answer(redeem_enrollment_link_as(&library, &request, NodeKind::Host).await)
+            redeem_answer(redeem_enrollment_link_as(&library, &request, kind).await)
         }
-        ConnectionType::Clerk => {
-            match redeem_enrollment_link_as(&library, &request, NodeKind::Owner).await {
-                Ok(enrolled) => clerk_answer(&state, &library, &enrolled, &request).await,
-                Err(err) => redeem_answer(Err(err)),
-            }
-        }
+        ConnectionType::Clerk => match redeem_enrollment_link_as(&library, &request, kind).await {
+            Ok(enrolled) => clerk_answer(&state, &library, &enrolled, &request).await,
+            Err(err) => redeem_answer(Err(err)),
+        },
     }
 }
 

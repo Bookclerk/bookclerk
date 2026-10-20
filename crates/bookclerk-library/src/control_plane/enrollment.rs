@@ -785,16 +785,24 @@ pub const AUTHORIZED_LINK_CREATED_BY: &str = "oauth:";
 /// request, so it only has to outlive a retry.
 const AUTHORIZED_LINK_TTL: Duration = Duration::minutes(10);
 
-/// The link a branch sign-in redeems through: its id and secret are derived
-/// from the authorization code and the PKCE verifier, so a retry of the
-/// same exchange (same code, verifier and keys) finds the same link and
+/// The link a branch or clerk sign-in redeems through: its id and secret are
+/// derived from the authorization code and the PKCE verifier, so a retry of
+/// the same exchange (same code, verifier and keys) finds the same link and
 /// answers from its receipt, and a wrong verifier can never redeem it.
+///
+/// The secret also binds the node kind the code was approved for, so a link
+/// recorded for one kind never redeems as the other, even when the first
+/// redeem failed and left the link unredeemed.
 ///
 /// The id is `hex(SHA-256("bookclerk-branch-link-v1\0" || code))[..32]`; the
 /// secret is base64url `SHA-256("bookclerk-branch-secret-v1\0" || code ||
-/// "\0" || verifier)`.
+/// "\0" || verifier || "\0" || kind)`.
 #[must_use]
-pub fn authorized_enrollment_link(code: &str, verifier: &str) -> (String, EnrollmentSecret) {
+pub fn authorized_enrollment_link(
+    code: &str,
+    verifier: &str,
+    kind: super::NodeKind,
+) -> (String, EnrollmentSecret) {
     let mut id = Sha256::new();
     id.update(b"bookclerk-branch-link-v1\0");
     id.update(code.as_bytes());
@@ -804,6 +812,8 @@ pub fn authorized_enrollment_link(code: &str, verifier: &str) -> (String, Enroll
     secret.update(code.as_bytes());
     secret.update([0]);
     secret.update(verifier.as_bytes());
+    secret.update([0]);
+    secret.update(kind.as_str().as_bytes());
     let secret = Zeroizing::new(secret.finalize().to_vec());
     (
         link_id,
@@ -973,6 +983,28 @@ fn validate_public_keys(sign_public_key: &[u8], box_public_key: &[u8]) -> Result
     Ok(())
 }
 
+/// Checks what a redeem would refuse as malformed before anything is
+/// written: its keys ([`validate_public_keys`]) and `software_version`. A
+/// sign-in's redeem runs this before it spends its code, so a malformed
+/// request leaves the code for a corrected retry.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] for malformed keys or a version that is
+/// too long or holds control characters.
+pub fn check_redeem_request(req: &RedeemRequest) -> Result<()> {
+    validate_public_keys(&req.sign_public_key, &req.box_public_key)?;
+    let software_version = req.software_version.trim();
+    if software_version.len() > MAX_SOFTWARE_VERSION_BYTES
+        || software_version.chars().any(char::is_control)
+    {
+        return Err(LibraryError::Invalid(
+            "software_version must be at most 64 bytes without control characters".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Redeems a link: one canonical batch marks it redeemed, inserts a host
 /// `nodes` row owned by the link's user, inserts its `node_credentials`,
 /// and records a receipt.
@@ -1013,15 +1045,8 @@ pub async fn redeem_enrollment_link_as(
     req: &RedeemRequest,
     kind: super::NodeKind,
 ) -> Result<EnrolledNode> {
-    validate_public_keys(&req.sign_public_key, &req.box_public_key)?;
+    check_redeem_request(req)?;
     let software_version = req.software_version.trim();
-    if software_version.len() > MAX_SOFTWARE_VERSION_BYTES
-        || software_version.chars().any(char::is_control)
-    {
-        return Err(LibraryError::Invalid(
-            "software_version must be at most 64 bytes without control characters".into(),
-        ));
-    }
     if !is_link_id(&req.link_id) || !is_base64url(req.secret.expose()) {
         return Err(redeem_refused());
     }
