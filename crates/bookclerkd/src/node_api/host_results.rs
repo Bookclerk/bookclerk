@@ -105,6 +105,26 @@ pub(super) async fn scan_results(
     )
 }
 
+/// The library row of `book`'s podcast parent, when `book` is an episode
+/// whose parent the library holds: the row an acquire names an episode's
+/// folder from when episodes are saved to the parent's folder.
+///
+/// # Errors
+///
+/// Returns the store's read error.
+async fn podcast_parent(
+    library: &LibraryStore,
+    book: &bookclerk_library::BookRecord,
+) -> bookclerk_library::Result<Option<bookclerk_library::BookRecord>> {
+    if !bookclerk_library::is_episode(&book.content_kind) {
+        return Ok(None);
+    }
+    let Some(parent_asin) = book.series_asin.as_deref() else {
+        return Ok(None);
+    };
+    library.get_book(parent_asin, &book.account_id).await
+}
+
 /// `acquire.plan`: the titles the job still needs, and how to name them.
 pub(super) async fn acquire_plan(
     library: &LibraryStore,
@@ -141,11 +161,13 @@ pub(super) async fn acquire_plan(
         if !crate::jobs::acquire_job_includes_book(&book, false, download_episodes) {
             continue;
         }
+        let parent = podcast_parent(library, &book).await?;
         targets.push(AcquireTarget {
             book_uuid: book.uuid.clone(),
             plugin_key: book.plugin_key.clone(),
             account_id: book.account_id.clone(),
             book: serde_json::to_value(&book).unwrap_or_default(),
+            parent: parent.map(|parent| serde_json::to_value(&parent).unwrap_or_default()),
         });
     }
     let destinations = destinations

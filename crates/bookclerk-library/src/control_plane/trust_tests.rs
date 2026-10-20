@@ -273,6 +273,95 @@ async fn demotion_before_handoff_denies(owner_db: LibraryStore, host_db: Library
     assert_eq!(local.job.attempt_count, 1);
 }
 
+/// Handoff requires the claim to still own the job's running lease: a claim
+/// presented under another worker's owner, a claim whose lease expired, a
+/// claim reclaimed by another node, and a finished claim hand nothing over,
+/// and only the expired claim's own row and permits are released.
+async fn stale_claim_handoff_denies(owner_db: LibraryStore, host_db: LibraryStore) {
+    let riley = user(&owner_db, UserRole::Administrator, "Riley").await;
+    add_node(&owner_db, HOST, "host", Some(riley)).await;
+    let job = scan(&owner_db, Some("acct")).await;
+    let host_request = request(HOST, Claimant::Remote, HOST);
+
+    let claimed = claim(&host_db, HOST, Claimant::Remote)
+        .await
+        .expect("an Administrator's host claims any job");
+    // Another worker's request may not take, or release, this claim.
+    let other = request(HOST, Claimant::Remote, "other-worker");
+    assert!(handoff_routed_job(&host_db, &other, claimed.clone())
+        .await
+        .unwrap()
+        .is_none());
+    let row = owner_db.get_job(&job).await.unwrap().unwrap();
+    assert_eq!(row.state, JobState::Running);
+    assert_eq!(row.fence(), claimed.job.fence(), "the row is left alone");
+    for permit in &claimed.permits {
+        assert_eq!(
+            live_permits(&owner_db, &permit.semaphore, 8)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "{} is still held",
+            permit.semaphore
+        );
+    }
+
+    // An expired lease hands nothing over; its own fence releases the row.
+    jobs::Entity::update_many()
+        .col_expr(
+            jobs::Column::LeaseExpiresAt,
+            Expr::value(Some(
+                (chrono::Utc::now() - chrono::Duration::seconds(5)).to_rfc3339(),
+            )),
+        )
+        .filter(jobs::Column::Id.eq(job.as_str()))
+        .exec(owner_db.db())
+        .await
+        .unwrap();
+    assert!(handoff_routed_job(&host_db, &host_request, claimed.clone())
+        .await
+        .unwrap()
+        .is_none());
+    let row = owner_db.get_job(&job).await.unwrap().unwrap();
+    assert_eq!(row.state, JobState::Pending);
+    assert_eq!(row.attempt_count, 0);
+
+    // Once another node holds the job, the old claim hands nothing over and
+    // does not disturb the new holder.
+    let local = claim(&owner_db, "node-owner", Claimant::Local)
+        .await
+        .expect("the owner node's worker claims it");
+    assert!(handoff_routed_job(&host_db, &host_request, claimed.clone())
+        .await
+        .unwrap()
+        .is_none());
+    let row = owner_db.get_job(&job).await.unwrap().unwrap();
+    assert_eq!(row.state, JobState::Running);
+    assert_eq!(row.fence(), local.job.fence());
+    for permit in &local.permits {
+        assert_eq!(
+            live_permits(&owner_db, &permit.semaphore, 8)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "{} is still held by the new claim",
+            permit.semaphore
+        );
+    }
+
+    // A finished claim hands nothing over either.
+    finish(&owner_db, &local).await;
+    let request_local = request("node-owner", Claimant::Local, "node-owner");
+    assert!(handoff_routed_job(&owner_db, &request_local, local)
+        .await
+        .unwrap()
+        .is_none());
+    let row = owner_db.get_job(&job).await.unwrap().unwrap();
+    assert_eq!(row.state, JobState::Succeeded);
+}
+
 /// Nodes that are trusted with nothing: an unknown remote node, a Host with
 /// no owner, a disabled owner, and a revoked credential. An owner node is
 /// trusted with everything.
@@ -405,6 +494,32 @@ async fn scoped_trust_refuses_unowned_secrets(owner_db: LibraryStore, host_db: L
     )
     .await
     .unwrap());
+    // The executor matches an account needle by id or label, ignoring
+    // case, so Sam's `SHARED-ID` or an account labeled `shared-id` would be
+    // touched too.
+    for (id, label) in [("SHARED-ID", None), ("sam-other", Some("Shared-Id"))] {
+        add_account(&owner_db, OTHER_PLUGIN, id, true).await;
+        if let Some(label) = label {
+            accounts::Entity::update_many()
+                .col_expr(accounts::Column::Label, Expr::value(label))
+                .filter(accounts::Column::AccountId.eq(id))
+                .exec(owner_db.db())
+                .await
+                .unwrap();
+        }
+        link(&owner_db, sam, OTHER_PLUGIN, id).await;
+        assert!(
+            !job_trusted(&host_db, &trust, &job(JobKind::Scan, account("shared-id")))
+                .await
+                .unwrap(),
+            "{id} {label:?}"
+        );
+        accounts::Entity::delete_many()
+            .filter(accounts::Column::PluginKey.eq(OTHER_PLUGIN))
+            .exec(owner_db.db())
+            .await
+            .unwrap();
+    }
     let refused = [
         job(JobKind::Scan, JobPayload::default()),
         job(JobKind::Acquire, JobPayload::default()),
@@ -436,6 +551,34 @@ async fn scoped_trust_refuses_unowned_secrets(owner_db: LibraryStore, host_db: L
             item.payload
         );
     }
+}
+
+/// More untrusted jobs than one claim page queued ahead of a trusted one do
+/// not hide it: untrusted rows are skipped and paging continues.
+async fn untrusted_window_does_not_hide_trusted_jobs(
+    owner_db: LibraryStore,
+    host_db: LibraryStore,
+) {
+    let riley = user(&owner_db, UserRole::Member, "Riley").await;
+    let sam = user(&owner_db, UserRole::Member, "Sam").await;
+    add_node(&owner_db, HOST, "host", Some(riley)).await;
+    let ahead = ROUTED_CLAIM_CANDIDATES + 1;
+    for n in 0..ahead {
+        let account = format!("sam-{n}");
+        add_account(&owner_db, PLUGIN, &account, true).await;
+        link(&owner_db, sam, PLUGIN, &account).await;
+        scan(&owner_db, Some(&account)).await;
+    }
+    add_account(&owner_db, PLUGIN, "riley-1", true).await;
+    link(&owner_db, riley, PLUGIN, "riley-1").await;
+    let riley_job = scan(&owner_db, Some("riley-1")).await;
+
+    let claimed = claim(&host_db, HOST, Claimant::Remote)
+        .await
+        .expect("the trusted job past the first page is claimed");
+    assert_eq!(claimed.job.id, riley_job);
+    finish(&host_db, &claimed).await;
+    assert!(claim(&host_db, HOST, Claimant::Remote).await.is_none());
 }
 
 /// Scan-all is split per scan-enabled account for operators, Owners and
@@ -551,6 +694,119 @@ async fn scan_planner_splits_and_scopes(owner_db: LibraryStore, host_db: Library
     assert_eq!(pending.len(), 3);
 }
 
+/// Scan-all leaves a scan-disabled account alone even when another plugin
+/// holds the same id with scanning on, and a pinned scan does not stand in
+/// for the unpinned one.
+async fn scan_all_respects_per_plugin_flags(owner_db: LibraryStore, host_db: LibraryStore) {
+    let operator = ConfigActor::Operator {
+        id: "operator".into(),
+    };
+    let instance = super::instances::create_plugin_instance(&owner_db, &operator, PLUGIN, "")
+        .await
+        .unwrap();
+    add_account(&owner_db, PLUGIN, "mixed", true).await;
+    add_account(&owner_db, OTHER_PLUGIN, "mixed", false).await;
+    add_account(&owner_db, PLUGIN, "plain", true).await;
+    // Same account under another case on another plugin: one job covers both.
+    add_account(&owner_db, OTHER_PLUGIN, "Plain", true).await;
+
+    let plan = plan_scan(&host_db, ScanRequester::Operator, None, None)
+        .await
+        .unwrap();
+    let jobs: Vec<(Option<String>, Option<String>)> = plan
+        .iter()
+        .map(|p| (p.account.clone(), p.plugin_instance_id.clone()))
+        .collect();
+    assert_eq!(
+        jobs,
+        vec![
+            (Some("Plain".into()), None),
+            (Some("mixed".into()), Some(instance.id.to_string())),
+        ]
+    );
+
+    // A queued pinned scan of `plain` does not swallow scan-all's unpinned one.
+    let enqueue = |payload: JobPayload| {
+        let owner_db = owner_db.clone();
+        async move {
+            owner_db
+                .enqueue_job(EnqueueJobSpec {
+                    kind: JobKind::Scan,
+                    payload,
+                    priority: 0,
+                    max_attempts: 3,
+                    max_pending: 256,
+                    run_after: None,
+                })
+                .await
+                .unwrap()
+        }
+    };
+    let pinned = JobPayload {
+        account: Some("plain".into()),
+        plugin_instance_id: Some(instance.id.to_string()),
+        ..Default::default()
+    };
+    assert!(matches!(
+        enqueue(pinned.clone()).await,
+        EnqueueOutcome::Created { .. }
+    ));
+    for payload in plan {
+        assert!(matches!(
+            enqueue(payload).await,
+            EnqueueOutcome::Created { .. }
+        ));
+    }
+    assert!(!matches!(
+        enqueue(pinned).await,
+        EnqueueOutcome::Created { .. }
+    ));
+
+    // Riley's account is labelled with Sam's account id. The job for Sam's id
+    // would touch both, so Riley's plan drops it but keeps Riley's own id.
+    let riley = user(&owner_db, UserRole::Member, "Riley").await;
+    let sam = user(&owner_db, UserRole::Member, "Sam").await;
+    add_account(&owner_db, OTHER_PLUGIN, "acct-a", true).await;
+    add_account(&owner_db, OTHER_PLUGIN, "acct-b", true).await;
+    accounts::Entity::update_many()
+        .col_expr(accounts::Column::Label, Expr::value("acct-a"))
+        .filter(accounts::Column::AccountId.eq("acct-b"))
+        .exec(owner_db.db())
+        .await
+        .unwrap();
+    link(&owner_db, sam, OTHER_PLUGIN, "acct-a").await;
+    link(&owner_db, riley, OTHER_PLUGIN, "acct-b").await;
+    let plan = plan_scan(&host_db, ScanRequester::User(riley), None, None)
+        .await
+        .unwrap();
+    let accounts: Vec<Option<String>> = plan.into_iter().map(|p| p.account).collect();
+    assert_eq!(accounts, vec![Some("acct-b".into())]);
+
+    // `acct-c` is labelled with `acct-d`, which sorts after it. The needle
+    // `acct-d` reaches both, so scan-all keeps it alone rather than also
+    // scanning `acct-c` on its own (twice in all).
+    add_account(&owner_db, OTHER_PLUGIN, "acct-c", true).await;
+    add_account(&owner_db, OTHER_PLUGIN, "acct-d", true).await;
+    accounts::Entity::update_many()
+        .col_expr(accounts::Column::Label, Expr::value("acct-d"))
+        .filter(accounts::Column::AccountId.eq("acct-c"))
+        .exec(owner_db.db())
+        .await
+        .unwrap();
+    let plan = plan_scan(&host_db, ScanRequester::Operator, None, None)
+        .await
+        .unwrap();
+    let accounts: Vec<String> = plan.into_iter().filter_map(|p| p.account).collect();
+    for (id, kept) in [
+        ("acct-a", true),
+        ("acct-b", false),
+        ("acct-c", false),
+        ("acct-d", true),
+    ] {
+        assert_eq!(accounts.iter().any(|a| a == id), kept, "{id}: {accounts:?}");
+    }
+}
+
 #[tokio::test]
 async fn sqlite_host_trust_follows_its_owners_role() {
     let (_dir, a, b) = sqlite_stores().await;
@@ -561,6 +817,12 @@ async fn sqlite_host_trust_follows_its_owners_role() {
 async fn sqlite_demotion_before_handoff_denies() {
     let (_dir, a, b) = sqlite_stores().await;
     demotion_before_handoff_denies(a, b).await;
+}
+
+#[tokio::test]
+async fn sqlite_stale_claim_handoff_denies() {
+    let (_dir, a, b) = sqlite_stores().await;
+    stale_claim_handoff_denies(a, b).await;
 }
 
 #[tokio::test]
@@ -576,9 +838,31 @@ async fn sqlite_scoped_trust_refuses_unowned_secrets() {
 }
 
 #[tokio::test]
+async fn sqlite_untrusted_window_does_not_hide_trusted_jobs() {
+    let (_dir, a, b) = sqlite_stores().await;
+    untrusted_window_does_not_hide_trusted_jobs(a, b).await;
+}
+
+#[tokio::test]
 async fn sqlite_scan_planner_splits_and_scopes() {
     let (_dir, a, b) = sqlite_stores().await;
     scan_planner_splits_and_scopes(a, b).await;
+}
+
+#[tokio::test]
+async fn sqlite_scan_all_respects_per_plugin_flags() {
+    let (_dir, a, b) = sqlite_stores().await;
+    scan_all_respects_per_plugin_flags(a, b).await;
+}
+
+#[tokio::test]
+#[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+async fn postgres_scan_all_respects_per_plugin_flags() {
+    if !postgres_tests_enabled() {
+        return;
+    }
+    let (a, b) = postgres_stores().await;
+    scan_all_respects_per_plugin_flags(a, b).await;
 }
 
 #[tokio::test]
@@ -599,6 +883,16 @@ async fn postgres_demotion_before_handoff_denies() {
     }
     let (a, b) = postgres_stores().await;
     demotion_before_handoff_denies(a, b).await;
+}
+
+#[tokio::test]
+#[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+async fn postgres_stale_claim_handoff_denies() {
+    if !postgres_tests_enabled() {
+        return;
+    }
+    let (a, b) = postgres_stores().await;
+    stale_claim_handoff_denies(a, b).await;
 }
 
 #[tokio::test]
@@ -629,4 +923,14 @@ async fn postgres_scan_planner_splits_and_scopes() {
     }
     let (a, b) = postgres_stores().await;
     scan_planner_splits_and_scopes(a, b).await;
+}
+
+#[tokio::test]
+#[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+async fn postgres_untrusted_window_does_not_hide_trusted_jobs() {
+    if !postgres_tests_enabled() {
+        return;
+    }
+    let (a, b) = postgres_stores().await;
+    untrusted_window_does_not_hide_trusted_jobs(a, b).await;
 }

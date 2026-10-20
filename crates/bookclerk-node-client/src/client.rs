@@ -1445,6 +1445,7 @@ async fn claim_loop<R: HostJobRunner>(shared: Arc<Shared>, conn: Conn, runner: A
         // The owner starts the lease after this; counting from here never
         // overstates it.
         let claimed_at = tokio::time::Instant::now();
+        let claimed_wall = std::time::SystemTime::now();
         let answer = conn
             .request(Body::Claim {
                 item: ITEM_JOB.into(),
@@ -1466,6 +1467,7 @@ async fn claim_loop<R: HostJobRunner>(shared: Arc<Shared>, conn: Conn, runner: A
                         sealed_secrets,
                         plugin_keys,
                         source_plugin_key,
+                        resumed,
                     },
                 ..
             }) if item == ITEM_JOB => {
@@ -1477,6 +1479,8 @@ async fn claim_loop<R: HostJobRunner>(shared: Arc<Shared>, conn: Conn, runner: A
                     lease_secs,
                     plugin_keys,
                     source_plugin_key,
+                    lease_deadline: claimed_wall + Duration::from_secs(lease_secs).min(MAX_LEASE),
+                    resumed,
                 };
                 tokio::spawn(run_job(
                     Arc::clone(&shared),
@@ -1546,6 +1550,7 @@ async fn run_job<R: HostJobRunner>(
     let job_id = host_job.job.id.clone();
     let fence = host_job.fence;
     let lease_secs = host_job.lease_secs;
+    let claim_resumed = host_job.resumed;
     let cancel = Arc::new(AtomicBool::new(false));
     let lost = Arc::new(AtomicBool::new(false));
     let finished = Arc::new(AtomicBool::new(false));
@@ -1583,7 +1588,7 @@ async fn run_job<R: HostJobRunner>(
     let refused = *lock(&release);
     if let Some(reason) = refused {
         tracing::warn!(%job_id, fence, reason, "giving back a job this host will not run");
-        give_back(&shared, &job_id, fence, reason, &lost).await;
+        give_back(&shared, &job_id, fence, claim_resumed, reason, &lost).await;
         shared.release(&job_id, fence);
         drop(slot);
         return;
@@ -1594,8 +1599,18 @@ async fn run_job<R: HostJobRunner>(
     };
     // Renewals keep running through `report`, which can take up to
     // [`REPORT_DEADLINE`]: a slow report must not let the fence lapse and
-    // throw away finished work.
-    let mut renewer = None;
+    // throw away finished work, nor a fail for secrets that do not open.
+    let renewer = (!lost.load(Ordering::SeqCst)).then(|| {
+        AbortOnDrop(vec![tokio::spawn(renew_loop(
+            Arc::clone(&shared),
+            job_id.clone(),
+            fence,
+            (claimed_at, grant),
+            Arc::clone(&cancel),
+            Arc::clone(&lost),
+            resumed,
+        ))])
+    });
     let result = match opened {
         // Abandoned (shutdown, revocation) since it was held: never start
         // the runner under a fence whose result is discarded.
@@ -1619,15 +1634,6 @@ async fn run_job<R: HostJobRunner>(
                 Arc::clone(&finished),
                 Arc::clone(&shared),
             );
-            renewer = Some(AbortOnDrop(vec![tokio::spawn(renew_loop(
-                Arc::clone(&shared),
-                job_id.clone(),
-                fence,
-                (claimed_at, grant),
-                Arc::clone(&cancel),
-                Arc::clone(&lost),
-                resumed,
-            ))]));
             runner.run(ctx).await
         }
     };
@@ -1645,7 +1651,7 @@ async fn run_job<R: HostJobRunner>(
         tracing::warn!(%job_id, fence, "discarding the result of a job whose fence was lost");
     } else if let Some(reason) = given_back {
         tracing::warn!(%job_id, fence, reason, "discarding the result of a job given back");
-        give_back(&shared, &job_id, fence, reason, &lost).await;
+        give_back(&shared, &job_id, fence, claim_resumed, reason, &lost).await;
     } else if finished.load(Ordering::SeqCst) && result.is_ok() {
         // The owner completed the job with its last upload's commit.
         tracing::info!(%job_id, fence, "the job completed with its last upload");
@@ -1657,11 +1663,13 @@ async fn run_job<R: HostJobRunner>(
     drop(slot);
 }
 
-/// Gives a job back unrun with `release` under its fence.
+/// Gives a job back unrun with `release` under its fence. `resumed` is
+/// the claim's [`HostJob::resumed`].
 async fn give_back(
     shared: &Arc<Shared>,
     job_id: &str,
     fence: i64,
+    resumed: bool,
     reason: &'static str,
     lost: &AtomicBool,
 ) {
@@ -1669,6 +1677,7 @@ async fn give_back(
         job_id: job_id.to_string(),
         fence,
         reason: reason.into(),
+        resumed,
     };
     send_final(shared, job_id, fence, body, false, lost).await;
 }

@@ -237,17 +237,23 @@ mod tests {
         }
     }
 
+    /// A fresh challenge nonce, as the owner draws one.
+    fn random_nonce() -> [u8; NONCE_LEN] {
+        rand::random()
+    }
+
     #[test]
     fn signatures_bind_every_field() {
         let key = SigningKey::from_bytes(&[3u8; 32]);
         let public = key.verifying_key().to_bytes();
-        let nonce = [1u8; NONCE_LEN];
+        let nonce = random_nonce();
         let sig = sign_auth(&key, &ctx(&nonce, "https://owner.example"));
         assert_eq!(
             verify_auth(&public, &ctx(&nonce, "https://owner.example"), &sig),
             Ok(())
         );
-        let other_nonce = [2u8; NONCE_LEN];
+        let mut other_nonce = nonce;
+        other_nonce[0] ^= 1;
         assert_eq!(
             verify_auth(&public, &ctx(&other_nonce, "https://owner.example"), &sig),
             Err(AuthError::Mismatch)
@@ -370,7 +376,7 @@ mod tests {
             Some("http://localhost:8787")
         );
         assert_eq!(canonical_origin("ftp://owner.example"), None);
-        let nonce = [5u8; NONCE_LEN];
+        let nonce = random_nonce();
         assert_eq!(decode_nonce(&encode_nonce(&nonce)), Some(nonce));
         assert_eq!(decode_nonce("AAAA"), None);
     }

@@ -446,14 +446,15 @@ pub struct RemoteApproval<'a> {
 /// one the operator reviewed: a request that changed in between (a new
 /// version, a wider grant, another archive) answers [`LibraryError::Conflict`] and nothing
 /// is written. An automatic approval ([`RemoteApprover::Platform`]) is
-/// likewise refused while a revoke is recorded; an operator approval
-/// clears it.
+/// likewise refused while a revoke is recorded (an operator approval
+/// clears it) and over an operator's approval, which it would replace
+/// along with its narrowing.
 ///
 /// # Errors
 ///
 /// Returns [`LibraryError::NotFound`] when no request is recorded,
 /// [`LibraryError::Conflict`] when it changed or an automatic approval
-/// meets a revoke, [`LibraryError::Invalid`] for a malformed field (an
+/// meets a revoke or an operator's approval, [`LibraryError::Invalid`] for a malformed field (an
 /// operator identity of [`REMOTE_CONSENT_PLATFORM`] among them), and the
 /// write error.
 pub async fn approve_remote_plugin(
@@ -480,6 +481,17 @@ pub async fn approve_remote_plugin(
     if automatic && existing.is_revoked() {
         return Err(LibraryError::Conflict(format!(
             "this host's operator revoked {}; only the operator can approve it again",
+            approval.plugin_key
+        )));
+    }
+    if automatic
+        && existing
+            .approved_by
+            .as_deref()
+            .is_some_and(|by| by != REMOTE_CONSENT_PLATFORM)
+    {
+        return Err(LibraryError::Conflict(format!(
+            "this host's operator approved {}; only the operator can approve it again",
             approval.plugin_key
         )));
     }
@@ -547,8 +559,15 @@ pub async fn approve_remote_plugin(
                 .eq(approval.reviewed_artifact.payload_root_sha256),
         );
     if automatic {
-        // A revoke that lands after the read above still wins.
-        update = update.filter(remote_plugin_consents::Column::RevokedAt.is_null());
+        // A revoke or an operator approval that lands after the read above
+        // still wins.
+        update = update
+            .filter(remote_plugin_consents::Column::RevokedAt.is_null())
+            .filter(
+                sea_orm::Condition::any()
+                    .add(remote_plugin_consents::Column::ApprovedBy.is_null())
+                    .add(remote_plugin_consents::Column::ApprovedBy.eq(REMOTE_CONSENT_PLATFORM)),
+            );
     }
     let updated = update.exec(store.db()).await.map_err(LibraryError::Orm)?;
     if updated.rows_affected != 1 {
@@ -988,5 +1007,41 @@ mod tests {
             .await
             .unwrap();
         assert!(again.is_approved() && !again.is_revoked());
+    }
+
+    /// An automatic approval never replaces an operator's, whether it is
+    /// for the current request or an earlier one, so the operator's
+    /// narrowing is kept.
+    #[tokio::test]
+    async fn an_operator_approval_holds_against_automatic_approval() {
+        let store = store().await;
+        let requested = r"{}";
+        record_remote_plugin_request(&store, "cluster-a", "store", "1.0.0", requested, ARTIFACT)
+            .await
+            .unwrap();
+        approve_remote_plugin(&store, &approval("1.0.0", requested, "{}"))
+            .await
+            .unwrap();
+        let platform = |version: &'static str| RemoteApproval {
+            approver: RemoteApprover::Platform,
+            ..approval(version, requested, "{}")
+        };
+        assert!(matches!(
+            approve_remote_plugin(&store, &platform("1.0.0")).await,
+            Err(LibraryError::Conflict(_))
+        ));
+        record_remote_plugin_request(&store, "cluster-a", "store", "1.1.0", requested, ARTIFACT)
+            .await
+            .unwrap();
+        assert!(matches!(
+            approve_remote_plugin(&store, &platform("1.1.0")).await,
+            Err(LibraryError::Conflict(_))
+        ));
+        let row = load_remote_plugin_consent(&store, "cluster-a", "store")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(row.approved_by.as_deref(), Some(REMOTE_CONSENT_PLATFORM));
+        assert_eq!(row.version.as_deref(), Some("1.0.0"));
     }
 }

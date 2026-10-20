@@ -932,16 +932,27 @@ async fn a_wrong_spki_pin_is_refused() {
     let _dek = crate::auth::tests::process_dek_lock().await;
     let owner_files = tempfile::tempdir().unwrap();
     let host_files = tempfile::tempdir().unwrap();
+    // The node API serves only the origin its TLS listener started for, so
+    // the port is picked before the listener starts. The certificate names
+    // `localhost`.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let origin = format!("https://localhost:{port}");
     let (state, owner) = crate::node_api::tests::test_state_with(
         &owner_files,
-        "[daemon.node_api]\nmode = \"self_signed\"\ntls_listen = \"127.0.0.1:0\"\n",
+        &format!(
+            "[integrations]\npublic_origin = \"{origin}\"\n\n\
+             [daemon.node_api]\nmode = \"self_signed\"\ntls_listen = \"127.0.0.1:{port}\"\n"
+        ),
     )
     .await;
     let cfg = state.config.read().await.clone();
     let started = crate::node_api::tls::start(&state, &cfg, owner_files.path()).await;
     let tls = started.local.expect("the TLS listener is bound");
-    let origin = format!("https://localhost:{}", tls.port());
-    state.config.write().await.integrations.public_origin = Some(origin.clone());
+    assert_eq!(tls.port(), port);
     let pin = bookclerk_config::read_node_api_spki_pin(owner_files.path()).unwrap();
     let wrong = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7u8; 32]);
     let host = host_store(host_files.path()).await;
@@ -2683,6 +2694,7 @@ mod results_and_uploads {
                 job_id: job_id.clone(),
                 fence,
                 reason: "awaiting_host_consent".into(),
+                resumed: false,
             })
             .await
             .expect("the owner answers");
@@ -3094,6 +3106,56 @@ mod results_and_uploads {
         };
         let planned: Vec<&str> = targets.iter().map(|t| t.book_uuid.as_str()).collect();
         assert_eq!(planned, vec![fresh.uuid.as_str()]);
+    }
+
+    /// `acquire.plan` sends an episode's podcast parent row with it, so a
+    /// host names the episode under the parent's folder as the owner does.
+    #[tokio::test]
+    async fn the_plan_sends_an_episodes_podcast_parent() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        world.state.config.write().await.library.download_episodes = true;
+        let show = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&NewBook {
+                content_kind: "podcast".into(),
+                ..owner_book("riley-acct", "show")
+            })
+            .await
+            .unwrap();
+        let episode = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&NewBook {
+                content_kind: "episode".into(),
+                series_asin: Some("show".into()),
+                ..owner_book("riley-acct", "ep1")
+            })
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 60).await;
+        let (handle, _stop) = start(&world, StubGuests::default()).await;
+        let answer = handle
+            .request(Body::AcquirePlan {
+                job_id: job_id.clone(),
+                fence,
+            })
+            .await
+            .expect("the owner answers");
+        let Body::AcquireTargets { targets, .. } = answer.body else {
+            panic!("expected targets: {answer:?}");
+        };
+        let target = targets
+            .iter()
+            .find(|t| t.book_uuid == episode.uuid)
+            .expect("the episode is planned");
+        let parent: bookclerk_library::BookRecord =
+            serde_json::from_value(target.parent.clone().expect("its parent is sent")).unwrap();
+        assert_eq!(parent.uuid, show.uuid);
     }
 
     /// A title the owner refuses after this host copied it to its own

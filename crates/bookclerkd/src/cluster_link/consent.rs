@@ -45,7 +45,7 @@ use std::time::Duration;
 use bookclerk_library::control_plane::{
     list_remote_plugin_consents, load_artifact_blob, put_artifact_blob,
     record_remote_plugin_request, PluginArtifact, PluginVersion, RemoteApprover, RemoteArtifactRef,
-    RemotePluginConsent, ARTIFACT_BLOB_SCHEME,
+    RemotePluginConsent, ARTIFACT_BLOB_SCHEME, REMOTE_CONSENT_PLATFORM,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_node_client::{HostClientHandle, AWAITING_HOST_CONSENT};
@@ -474,9 +474,10 @@ impl LinkSupervisor {
         (entry, false)
     }
 
-    /// Approves an unapproved platform plugin when this host bundles the
-    /// owner's artifact and its operator has not revoked it; answers the
-    /// row as it stands afterwards.
+    /// Approves a platform plugin that is unapproved, or whose automatic
+    /// approval no longer covers the owner's request (a version update),
+    /// when this host bundles the owner's artifact and its operator has not
+    /// revoked it; answers the row as it stands afterwards.
     async fn auto_approve_platform(
         &self,
         row: RemotePluginConsent,
@@ -668,11 +669,21 @@ pub(crate) fn reconcile_consent(
     changed
 }
 
-/// True when a row may be approved automatically at all: not approved yet
-/// and not revoked by this host's operator (a revoke holds until the
-/// operator approves again; the store refuses it too).
+/// True when a row may be approved automatically at all: not revoked by
+/// this host's operator (a revoke holds until the operator approves again;
+/// the store refuses it too), and either never approved or approved
+/// automatically before for a request that no longer covers the current
+/// one (a platform version update). An operator's own approval is never
+/// replaced automatically, since it may narrow the request.
 pub(crate) fn platform_auto_approval_allowed(row: &RemotePluginConsent) -> bool {
-    !row.is_approved() && !row.is_revoked()
+    if row.is_revoked() {
+        return false;
+    }
+    if !row.is_approved() {
+        return true;
+    }
+    row.approved_by.as_deref() == Some(REMOTE_CONSENT_PLATFORM)
+        && !matches!(consent_state(row), RemoteConsentState::Consented(_))
 }
 
 /// A consent row's state.
@@ -991,7 +1002,50 @@ mod tests {
             approved_by: Some("platform".into()),
             ..row()
         };
-        assert!(!platform_auto_approval_allowed(&approved));
+        assert!(platform_auto_approval_allowed(&approved));
+    }
+
+    /// A platform update re-approves only an automatic approval the new
+    /// request outgrew; an operator's approval, a covering one and a
+    /// revoked one stay.
+    #[test]
+    fn a_platform_update_is_approved_automatically_again() {
+        let grant = serde_json::to_string(&PluginGrant {
+            plugin_key: row().plugin_key,
+            plugin_id: "sqlite".into(),
+            ..PluginGrant::empty()
+        })
+        .unwrap();
+        let (current, _) = approved_for("blob:current");
+        let current = RemotePluginConsent {
+            requested_grant_json: grant.clone(),
+            approved_request_json: Some(grant.clone()),
+            grant_json: Some(grant),
+            approved_by: Some(REMOTE_CONSENT_PLATFORM.into()),
+            ..current
+        };
+        assert!(matches!(
+            consent_state(&current),
+            RemoteConsentState::Consented(_)
+        ));
+        assert!(!platform_auto_approval_allowed(&current));
+        let updated = RemotePluginConsent {
+            requested_version: "1.1.0".into(),
+            requested_artifact_url: "blob:updated".into(),
+            ..current
+        };
+        assert_eq!(consent_state(&updated), RemoteConsentState::NeedsReapproval);
+        assert!(platform_auto_approval_allowed(&updated));
+        let by_operator = RemotePluginConsent {
+            approved_by: Some("operator".into()),
+            ..updated.clone()
+        };
+        assert!(!platform_auto_approval_allowed(&by_operator));
+        let revoked = RemotePluginConsent {
+            revoked_at: Some("2026-10-03T00:00:00Z".into()),
+            ..updated
+        };
+        assert!(!platform_auto_approval_allowed(&revoked));
     }
 
     /// `row()` approved for `url` (archive digest `ab…`, payload digest

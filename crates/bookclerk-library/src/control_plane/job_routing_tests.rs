@@ -495,3 +495,180 @@ async fn postgres_crashed_holder_is_reclaimed_and_fenced() {
     let (a, b) = postgres_stores().await;
     crashed_holder_is_reclaimed_and_fenced(a, b).await;
 }
+
+/// More routed jobs than one candidate page sit ahead of runnable work: a
+/// node that can run none of them still reaches the jobs behind them, on
+/// both the routed and the unrouted claim.
+async fn blocked_rows_do_not_hide_runnable_jobs(store_a: LibraryStore, store_b: LibraryStore) {
+    let local = create_plugin_instance(&store_a, &operator(), LOCAL_KEY, "")
+        .await
+        .unwrap();
+    deploy(&store_a, &local.id, "node-a", DeploymentStatus::Healthy).await;
+    let blocked = usize::try_from(ROUTED_CLAIM_CANDIDATES).unwrap() + 4;
+    for i in 0..blocked {
+        enqueue(
+            &store_a,
+            JobKind::Acquire,
+            JobPayload {
+                title: Some(format!("routed-{i}")),
+                requires: vec![local.id.to_string()],
+                ..Default::default()
+            },
+        )
+        .await;
+    }
+    let first_free = acquire_title(&store_a, "free-1", None).await;
+    let second_free = acquire_title(&store_a, "free-2", None).await;
+
+    let routed = claim_routed_job(&store_b, &request("node-b", "worker-b", 60, 4))
+        .await
+        .unwrap()
+        .expect("node B pages past the jobs it cannot run");
+    assert_eq!(routed.job.id, first_free);
+    let unrouted = store_b
+        .claim_next_job(JobResourceClass::Network, "worker-b", 60, "op-b")
+        .await
+        .unwrap()
+        .expect("the unrouted claim pages past routed rows");
+    assert_eq!(unrouted.id, second_free);
+    assert!(
+        claim_routed_job(&store_b, &request("node-b", "worker-b", 60, 4))
+            .await
+            .unwrap()
+            .is_none(),
+        "only routed jobs remain"
+    );
+}
+
+/// Admission refuses requirements no single node can meet (two `local`
+/// instances deployed on different nodes) and accepts them once one node
+/// runs both.
+async fn requirements_without_a_common_node_are_refused(
+    store_a: LibraryStore,
+    store_b: LibraryStore,
+) {
+    let first = create_plugin_instance(&store_a, &operator(), LOCAL_KEY, "")
+        .await
+        .unwrap();
+    let second = create_plugin_instance(&store_a, &operator(), LOCAL_KEY, "second")
+        .await
+        .unwrap();
+    deploy(&store_a, &first.id, "node-a", DeploymentStatus::Healthy).await;
+    deploy(&store_b, &second.id, "node-b", DeploymentStatus::Healthy).await;
+    let bound: BTreeSet<String> = [LOCAL_KEY.to_string()].into();
+    let payload = JobPayload {
+        title: Some("split".into()),
+        ..Default::default()
+    };
+    let err = resolve_job_requirements(&store_a, JobKind::Acquire, &payload, &bound)
+        .await
+        .expect_err("no node runs both outputs");
+    assert!(
+        matches!(err, crate::error::LibraryError::Conflict(_)),
+        "{err:?}"
+    );
+
+    deploy(&store_a, &second.id, "node-a", DeploymentStatus::Healthy).await;
+    let mut requires = resolve_job_requirements(&store_a, JobKind::Acquire, &payload, &bound)
+        .await
+        .unwrap();
+    requires.sort();
+    let mut expected = vec![first.id.to_string(), second.id.to_string()];
+    expected.sort();
+    assert_eq!(requires, expected);
+    assert_eq!(
+        common_deployment_nodes(&store_b, &requires).await.unwrap(),
+        BTreeSet::from(["node-a".to_string()])
+    );
+}
+
+/// After a limit drop, live permits on slots at or above the new limit
+/// still count: nothing is granted until the live count is under it.
+async fn lowered_limit_counts_high_slots(store_a: LibraryStore, store_b: LibraryStore) {
+    const NAME: &str = "jobs:lowered";
+    let ttl = Duration::from_secs(60);
+    let mut held = Vec::new();
+    for i in 0..3 {
+        let permit = acquire_permit(&store_a, NAME, 3, &format!("h{i}"), ttl)
+            .await
+            .unwrap()
+            .expect("room under the old limit");
+        assert_eq!(permit.slot, i);
+        held.push(permit);
+    }
+    // Slot 0 frees up, but slots 1 and 2 are still live: 2 >= the new limit.
+    release_permits(&store_a, &held[..1]).await.unwrap();
+    assert!(acquire_permit(&store_b, NAME, 2, "new-1", ttl)
+        .await
+        .unwrap()
+        .is_none());
+    // Slot 1 drains too; one live permit (slot 2) is under the new limit.
+    release_permits(&store_a, &held[1..2]).await.unwrap();
+    let granted = acquire_permit(&store_b, NAME, 2, "new-1", ttl)
+        .await
+        .unwrap()
+        .expect("the live count is under the new limit");
+    assert!(granted.slot < 2);
+    assert!(acquire_permit(&store_b, NAME, 2, "new-2", ttl)
+        .await
+        .unwrap()
+        .is_none());
+    // Another semaphore whose name extends this one is not counted.
+    assert!(acquire_permit(&store_b, "jobs:lowered#x", 1, "other", ttl)
+        .await
+        .unwrap()
+        .is_some());
+    release_permits(&store_a, &held[2..]).await.unwrap();
+    assert!(acquire_permit(&store_b, NAME, 2, "new-2", ttl)
+        .await
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test]
+async fn sqlite_blocked_rows_do_not_hide_runnable_jobs() {
+    let (_dir, a, b) = sqlite_stores().await;
+    blocked_rows_do_not_hide_runnable_jobs(a, b).await;
+}
+
+#[tokio::test]
+async fn sqlite_requirements_without_a_common_node_are_refused() {
+    let (_dir, a, b) = sqlite_stores().await;
+    requirements_without_a_common_node_are_refused(a, b).await;
+}
+
+#[tokio::test]
+async fn sqlite_lowered_limit_counts_high_slots() {
+    let (_dir, a, b) = sqlite_stores().await;
+    lowered_limit_counts_high_slots(a, b).await;
+}
+
+#[tokio::test]
+#[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+async fn postgres_blocked_rows_do_not_hide_runnable_jobs() {
+    if !postgres_tests_enabled() {
+        return;
+    }
+    let (a, b) = postgres_stores().await;
+    blocked_rows_do_not_hide_runnable_jobs(a, b).await;
+}
+
+#[tokio::test]
+#[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+async fn postgres_requirements_without_a_common_node_are_refused() {
+    if !postgres_tests_enabled() {
+        return;
+    }
+    let (a, b) = postgres_stores().await;
+    requirements_without_a_common_node_are_refused(a, b).await;
+}
+
+#[tokio::test]
+#[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+async fn postgres_lowered_limit_counts_high_slots() {
+    if !postgres_tests_enabled() {
+        return;
+    }
+    let (a, b) = postgres_stores().await;
+    lowered_limit_counts_high_slots(a, b).await;
+}

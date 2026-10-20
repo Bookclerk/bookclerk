@@ -1042,15 +1042,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         online_since_ms INTEGER NOT NULL
     )",
     ),
-    MigrationOp::Schema(
-        r"CREATE TABLE IF NOT EXISTS cluster_leases (
-        name TEXT PRIMARY KEY NOT NULL,
-        holder TEXT NOT NULL,
-        token INTEGER NOT NULL,
-        expires_at_ms INTEGER NOT NULL,
-        renewed_at TEXT NOT NULL
-    )",
-    ),
+    MigrationOp::Schema(super::CLUSTER_LEASES_DDL),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS plugin_artifacts (
         sha256 TEXT PRIMARY KEY NOT NULL,
