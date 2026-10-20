@@ -8,7 +8,7 @@ mod common;
 
 use std::io::Write as _;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use bookclerk_library::control_plane::{
     load_cluster_link_keys, load_remote_plugin_consent, record_cluster_link,
@@ -107,12 +107,7 @@ fn json_out(output: &std::process::Output) -> Value {
 
 /// `bookclerk clusters join` with `input` on stdin.
 fn join_with_stdin(files: &Path, input: &str) -> std::process::Output {
-    let mut child = Command::new(common::bookclerk_bin())
-        .env("BOOKCLERK_FILES_DIR", files)
-        .env_remove("BOOKCLERK_PLUGIN_DIRS")
-        .env_remove("BOOKCLERK_AUTH_PASSWORD")
-        .env_remove("BOOKCLERK_CONFIG")
-        .env_remove("BOOKCLERK_OPERATOR_TOKEN")
+    let mut child = common::bookclerk_command(files)
         .args(["--format", "json", "clusters", "join"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -422,13 +417,8 @@ impl PtyJoin {
         };
 
         let mut child = {
-            let mut command = Command::new(common::bookclerk_bin());
+            let mut command = common::bookclerk_command(files_dir.path());
             command
-                .env("BOOKCLERK_FILES_DIR", files_dir.path())
-                .env_remove("BOOKCLERK_PLUGIN_DIRS")
-                .env_remove("BOOKCLERK_AUTH_PASSWORD")
-                .env_remove("BOOKCLERK_CONFIG")
-                .env_remove("BOOKCLERK_OPERATOR_TOKEN")
                 .args(["--format", "json", "clusters", "join"])
                 .stdin(Stdio::from(slave))
                 .stdout(Stdio::piped())

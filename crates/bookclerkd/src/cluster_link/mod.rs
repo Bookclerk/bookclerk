@@ -198,12 +198,25 @@ const CLIENT_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Waits up to [`CLIENT_STOP_TIMEOUT`] for a stopped `task` to exit, then
 /// aborts it.
-async fn join_or_abort(mut task: JoinHandle<()>) {
-    if tokio::time::timeout(CLIENT_STOP_TIMEOUT, &mut task)
-        .await
-        .is_err()
-    {
-        task.abort();
+async fn join_or_abort(task: JoinHandle<()>) {
+    // The guard aborts a task that did not stop in time, and also one
+    // whose wait is itself dropped (an aborted caller).
+    let mut guard = AbortOnDrop(Some(task));
+    if let Some(task) = guard.0.as_mut() {
+        let _ = tokio::time::timeout(CLIENT_STOP_TIMEOUT, task).await;
+    }
+}
+
+/// A task aborted when its guard drops (a no-op once it finished), so a
+/// task spawned for a link's client goes with that client's task when
+/// [`join_or_abort`] aborts it.
+struct AbortOnDrop<T>(Option<JoinHandle<T>>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
     }
 }
 
@@ -363,9 +376,10 @@ async fn start_clients(
         };
         running.insert(cluster_id.clone());
         // The link's consent supervisor stops with its client: on a swap,
-        // when the client is revoked, or when its task is aborted.
+        // when the client is revoked, or when its task is aborted (the
+        // guard aborts it with the task).
         let (link_stop, link_shutdown) = watch::channel(false);
-        let supervisor = tokio::spawn(
+        let supervisor = AbortOnDrop(Some(tokio::spawn(
             consent::LinkSupervisor {
                 library: library.clone(),
                 files_dir: files_dir.clone(),
@@ -374,17 +388,17 @@ async fn start_clients(
                 platform_payloads: platform_payloads.clone(),
             }
             .run(link_shutdown),
-        );
+        )));
         // The client stops on a swap (forwarded from `shutdown`), once its
         // link is no longer active, or once it is enrolled as another node.
         let (client_stop, client_shutdown) = watch::channel(false);
-        let watcher = tokio::spawn(stop_when_inactive(
+        let watcher = AbortOnDrop(Some(tokio::spawn(stop_when_inactive(
             library.clone(),
             cluster_id.clone(),
             node_id.clone(),
             Arc::new(client_stop),
             shutdown.clone(),
-        ));
+        ))));
         let library = library.clone();
         let relink = relink.clone();
         clients.push(tokio::spawn(async move {
@@ -392,14 +406,20 @@ async fn start_clients(
             let _ = link_stop.send(true);
             // Both exit before a client for a new enrollment can start, so
             // one cluster never has two consent supervisors.
-            join_or_abort(supervisor).await;
+            let mut supervisor = supervisor;
+            if let Some(supervisor) = supervisor.0.take() {
+                join_or_abort(supervisor).await;
+            }
+            let mut watcher = watcher;
             if exit != ClientExit::Revoked {
-                if let Ok(LinkStop::Replaced) = watcher.await {
-                    let _ = relink.send(cluster_id);
+                if let Some(stopped) = watcher.0.as_mut() {
+                    if let Ok(LinkStop::Replaced) = stopped.await {
+                        let _ = relink.send(cluster_id);
+                    }
                 }
                 return;
             }
-            watcher.abort();
+            drop(watcher);
             // The link belongs to the store it was read from. Only the
             // enrollment this client ran as is revoked: a re-enrollment
             // recorded meanwhile keeps its new link.

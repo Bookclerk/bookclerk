@@ -42,7 +42,7 @@ use tokio::sync::watch;
 
 use super::consent::{notify_consent_changed, LinkSupervisor};
 use super::remote_bindings::RemoteCatalog;
-use super::TransportRunner;
+use super::{AbortOnDrop, TransportRunner};
 use crate::job_handler::{JobCommand, JobExecCtx, JobTransport};
 
 /// Plugin key of the owner's store account.
@@ -3607,4 +3607,36 @@ async fn a_rejoined_link_is_dialed_as_the_new_node() {
         !crate::node_api::ws::node_session_live(&first.remote_node_id)
     })
     .await;
+}
+
+/// A link's supervisor and watcher are aborted with their client's task:
+/// dropping the guard (as aborting the task that holds it does) aborts the
+/// guarded task, and so does dropping a [`super::join_or_abort`] wait.
+#[tokio::test]
+async fn a_guarded_task_is_aborted_with_its_guard() {
+    /// Waits until `task` finished.
+    async fn finished(task: &tokio::task::AbortHandle) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the guarded task is aborted");
+    }
+    let guard = AbortOnDrop(Some(tokio::spawn(std::future::pending::<()>())));
+    let aborted = guard
+        .0
+        .as_ref()
+        .map(tokio::task::JoinHandle::abort_handle)
+        .unwrap();
+    drop(guard);
+    finished(&aborted).await;
+    let pending = tokio::spawn(std::future::pending::<()>());
+    let waited = pending.abort_handle();
+    let wait = tokio::spawn(super::join_or_abort(pending));
+    tokio::task::yield_now().await;
+    assert!(!waited.is_finished());
+    wait.abort();
+    finished(&waited).await;
 }
