@@ -745,3 +745,24 @@ async fn a_resume_counts_the_lease_the_owner_names() {
     );
     assert!(handle.held_fences().is_empty());
 }
+
+/// Handed secrets are registered for redaction before a runner sees them,
+/// so a store token in a job's log or error is scrubbed on this host.
+#[test]
+fn handed_secrets_are_registered_for_redaction() {
+    let _registry = bookclerk_config::secrets_registry_test_lock();
+    let token = "handed-store-token_0123456789abcdefABCDEF";
+    let entry = SecretEntry {
+        secret_ref: SecretRef {
+            kind: "source_auth".into(),
+            provider: "libro".into(),
+            account_id: "acct-1".into(),
+            name: "token".into(),
+        },
+        value: bookclerk_node_proto::SecretValue::new(token.as_bytes().to_vec()),
+    };
+    let line = format!("refresh failed for {token}");
+    assert!(!bookclerk_config::contains_registered_secret(&line));
+    register_for_redaction(&[entry]);
+    assert!(!bookclerk_config::redact_str(&line).contains(token));
+}

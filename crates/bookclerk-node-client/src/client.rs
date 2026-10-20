@@ -55,8 +55,9 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_node_proto::{
     decode_nonce, open_secrets, seal_secret_update, sign_auth, validate_box_public_key,
-    AuthContext, Body, Frame, HeldFence, SecretRef, SigningKey, CLOSE_PROTOCOL, CLOSE_REVOKED,
-    HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS, SEND_QUEUE_FRAMES,
+    AuthContext, Body, Frame, HeldFence, SecretEntry, SecretRef, SigningKey, CLOSE_PROTOCOL,
+    CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS,
+    SEND_QUEUE_FRAMES,
 };
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt as _, StreamExt as _};
@@ -289,6 +290,18 @@ pub(crate) struct Shared {
     /// Set (under the `held` lock) once every job was abandoned; a job
     /// starting after that is abandoned at once.
     abandoned: AtomicBool,
+}
+
+/// Makes each handed secret known to the log and diagnostics scrubber
+/// before the runner sees it, so this host redacts store tokens it never
+/// held at rest. A value that is not UTF-8 cannot appear in text output
+/// verbatim and is skipped.
+fn register_for_redaction(entries: &[SecretEntry]) {
+    for entry in entries {
+        if let Ok(text) = std::str::from_utf8(entry.value.expose()) {
+            bookclerk_config::register_secret(text);
+        }
+    }
 }
 
 /// Cancels every job `0` holds when dropped: [`HostClient::run`] keeps one
@@ -1184,6 +1197,9 @@ async fn run_job<R: HostJobRunner>(
         None => Ok(Vec::new()),
         Some(sealed) => open_secrets(&shared.box_secret, &shared.node_id, &job_id, fence, sealed),
     };
+    if let Ok(entries) = &opened {
+        register_for_redaction(entries);
+    }
     // Renewals keep running through `report`, which can take up to
     // [`REPORT_DEADLINE`]: a slow report must not let the fence lapse and
     // throw away finished work, nor a fail for secrets that do not open.
