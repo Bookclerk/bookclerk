@@ -462,6 +462,38 @@ pub fn checked_d1_api_base(api_base: &str) -> Result<String, JoinError> {
     Ok(parsed.to_string().trim_end_matches('/').to_string())
 }
 
+/// Names the copies an interrupted clerk join left beside this install's
+/// bootstrap files, or `None` when there are none. The daemon refuses to
+/// start while any is there: a process that died while replacing the files
+/// leaves some new and some old, and starting on that mix would pair a
+/// database with the wrong node identity or key. The message says how to
+/// finish or undo the join by hand (see [`apply_clerk_bootstrap`]).
+#[must_use]
+pub fn interrupted_clerk_join(files_dir: &Path, config_file: &Path) -> Option<String> {
+    let targets = [
+        files_dir.join(CLERK_POSTGRES_URL_FILE),
+        node_identity_path(files_dir),
+        bookclerk_library::master_key_path(files_dir),
+        config_file.to_path_buf(),
+    ];
+    let left: Vec<String> = targets
+        .iter()
+        .map(|target| backup_path(target))
+        .filter(|backup| backup.exists())
+        .map(|backup| backup.display().to_string())
+        .collect();
+    if left.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "a clerk join was interrupted while replacing this server's bootstrap files; copies of the originals are still here: {}. \
+         If {} is already the joined library's (its [database] names the library's database), the join finished: delete the copies. \
+         Otherwise move each copy back over its file (dropping the {CLERK_BACKUP_SUFFIX} suffix) and delete any of those files that has no copy, then start again",
+        left.join(", "),
+        config_file.display()
+    ))
+}
+
 /// Writes `bootstrap` as this install's own bootstrap under `files_dir`:
 ///
 /// - `database-postgres.url` (Postgres only): the URL, mode `0600`;
@@ -487,7 +519,8 @@ pub fn checked_d1_api_base(api_base: &str) -> Result<String, JoinError> {
 /// A process that dies while replacing leaves the files before that point
 /// in the list new and the rest old, with every original still beside its
 /// file as `<name>.pre-clerk`; a later apply refuses to start while a copy
-/// is there. If `config_file` is already new, every file was replaced and
+/// is there, and so does the daemon ([`interrupted_clerk_join`]). If
+/// `config_file` is already new, every file was replaced and
 /// the join is complete: delete the copies. Otherwise moving the copies
 /// back over their files restores the install (a target with no copy did
 /// not exist before and can be deleted). Staged `.<name>.clerk-<hex>` files
@@ -616,6 +649,18 @@ mod tests {
             database,
             dek: SecretValue::new(vec![5u8; 32]),
         }
+    }
+
+    /// A copy left beside a bootstrap file names the interrupted join.
+    #[test]
+    fn a_left_copy_marks_an_interrupted_clerk_join() {
+        let files = tempfile::tempdir().unwrap();
+        let config = files.path().join("config.toml");
+        assert!(interrupted_clerk_join(files.path(), &config).is_none());
+        let copy = backup_path(&bookclerk_library::master_key_path(files.path()));
+        std::fs::write(&copy, b"old").unwrap();
+        let problem = interrupted_clerk_join(files.path(), &config).unwrap();
+        assert!(problem.contains(&copy.display().to_string()), "{problem}");
     }
 
     /// A bootstrap may only name Cloudflare's D1 API over HTTPS.

@@ -120,6 +120,13 @@ async fn main() -> anyhow::Result<()> {
 
     let paths = config.paths().clone();
     paths.ensure_dirs()?;
+    // Before any bootstrap file is read: a half-applied clerk join would
+    // pair a database with the wrong node identity or key.
+    if let Some(problem) =
+        bookclerk_node_client::interrupted_clerk_join(&paths.files_dir, &paths.config_file)
+    {
+        anyhow::bail!(problem);
+    }
     bookclerk_plugin_host::retry_abandoned_acl_journals(&paths.files_dir);
 
     let bookclerk_plugin_host::HostControlPlane {

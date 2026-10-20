@@ -55,8 +55,8 @@ pub use branch::{
 };
 pub use clerk::{
     apply_clerk_bootstrap, bootstrap_database_kind, checked_d1_api_base, database_guest_installed,
-    install_problem, redeem_clerk_code, AppliedClerk, ClerkJoined, CLERK_POSTGRES_URL_FILE,
-    DATABASE_ENV_OVERRIDES,
+    install_problem, interrupted_clerk_join, redeem_clerk_code, AppliedClerk, ClerkJoined,
+    CLERK_POSTGRES_URL_FILE, DATABASE_ENV_OVERRIDES,
 };
 pub use client::{
     ClientExit, ClientTiming, HeartbeatSource, HostClient, HostClientConfig, HostClientHandle,
