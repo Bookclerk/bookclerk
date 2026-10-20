@@ -196,7 +196,10 @@ owner's configuration; joining, consent, uploads and the protocol are in
 [ADR: Control plane](adr/control-plane.md#host-node-enrollment-and-transport).
 
 Enrollment is a cluster document, `core.host_enrollment`, on by default.
-Only the operator or an Owner turns it off:
+Only the operator or an Owner turns it off: the operator with the CLI, an
+Owner (or the operator) over HTTP with `PUT /api/config/host-enrollment`
+and `{"enabled": false}`. Any signed-in user may read it with
+`GET /api/config/host-enrollment`.
 
 ```bash
 bookclerk config get host_enrollment.enabled
@@ -214,6 +217,10 @@ bookclerk nodes invites list
 bookclerk nodes invites revoke <link_id>
 bookclerk nodes revoke <node_id>                # revoke an enrolled host
 ```
+
+Any signed-in user may also revoke a host they own with
+`DELETE /api/config/node-credentials/<node_id>`; the operator or an Owner
+may revoke any host.
 
 The link is `<public_origin>/enroll#bcn1.<link_id>.<secret>[.<spki_pin>]`
 (the pin only in `self_signed` mode, below). The secret is in
@@ -244,10 +251,10 @@ mode = "loopback"                # loopback | proxy | acme | self_signed
 
 | Mode | Allowed |
 | --- | --- |
-| `loopback` (default) | Only connections where both ends are loopback and no forwarding header is present. Loopback is allowed in every mode. |
-| `proxy` | Plain HTTP from a `daemon.trusted_proxies` peer that sends exactly one `X-Forwarded-Proto: https`. Requires an https `integrations.public_origin` and at least one trusted proxy. |
+| `loopback` (default) | Only connections where both ends are loopback and no forwarding header is present. Loopback is allowed in every mode, including on a wildcard `daemon.listen` (`0.0.0.0` / `[::]`): the check reads each connection's own local address, not the bind address. |
+| `proxy` | Plain HTTP from a `daemon.trusted_proxies` peer that sends exactly one `X-Forwarded-Proto: https`. Requires an https `integrations.public_origin` and at least one trusted proxy. Every connection from a trusted proxy is checked this way, even one with no forwarding headers, so with a same-host proxy (`127.0.0.1` trusted) loopback enrollment goes through the proxy too. |
 | `acme` | The built-in TLS listener on `tls_listen` with a certificate for `integrations.public_origin`'s DNS name, issued over TLS-ALPN-01 (forward port 443 of that name to `tls_listen`). Account and certificate are cached under `$BOOKCLERK_FILES_DIR/acme/` (mode 0700) and renewed automatically. Requires `acme_contact` and an https `public_origin` with a DNS name. |
-| `self_signed` | The built-in TLS listener on `tls_listen` with a P-256 certificate generated once under `$BOOKCLERK_FILES_DIR/node-api/self-signed/` (mode 0700). Its SPKI pin (`spki-pin` there) is appended to every enrollment link, and the host trusts exactly that key. For a private network without ACME or a proxy. |
+| `self_signed` | The built-in TLS listener on `tls_listen` with a P-256 certificate generated once under `$BOOKCLERK_FILES_DIR/node-api/self-signed/` (mode 0700), and re-issued under the same key when the public origin's host changes, so the pin stays valid. Its SPKI pin (`spki-pin` there) is appended to every enrollment link, and the host trusts exactly that key; until the daemon has written it, minting an invite fails rather than produce an unpinned link. Needs an https `integrations.public_origin` naming the TLS listener, since enrollment links carry that origin. For a private network without ACME or a proxy. |
 
 Everything else gets `403 {"error": "transport_insecure"}`: plain HTTP from a
 LAN address is refused, and forwarding headers from a peer that is not a

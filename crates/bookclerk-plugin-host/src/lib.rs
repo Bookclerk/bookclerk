@@ -124,10 +124,10 @@ pub use deployment::{
 pub use destinations::{build_acquire_destinations, build_storage_backend};
 pub use discover::{
     discover_plugins, first_party_database_kind, identity_matches_occupancy,
-    is_first_party_audiobookshelf, is_first_party_local_output, is_first_party_s3_output,
-    occupancy_matches_alias, occupancy_names_alias, occupancy_spec, plugin_matches_occupancy,
-    plugin_search_dirs, resolve_plugin_ref, resolve_plugin_slot, settings_table,
-    settings_table_for, stamp_occupancy_plugin_key, upgrade_unique_alias_occupancy,
+    is_first_party_audiobookshelf, is_first_party_local_output, is_first_party_local_output_key,
+    is_first_party_s3_output, occupancy_matches_alias, occupancy_names_alias, occupancy_spec,
+    plugin_matches_occupancy, plugin_search_dirs, resolve_plugin_ref, resolve_plugin_slot,
+    settings_table, settings_table_for, stamp_occupancy_plugin_key, upgrade_unique_alias_occupancy,
     DiscoveredPlugin,
 };
 pub use enrollment::{
@@ -148,10 +148,10 @@ pub use host_control_plane::{
 };
 pub use install::{
     add_package_version, enroll_version, grant_covers_version, host_artifact, install_plugin_key,
-    install_version, materialize_version, open_installed_plugin, sweep_version_cache,
-    version_cache_path, version_cache_root, version_consent_request, version_grant, Activate,
-    AddedVersion, InstallRequest, InstalledVersion, VersionRequest, VERSION_CACHE_DIR,
-    VERSION_CACHE_GRACE,
+    install_version, is_sha256_hex, materialize_owner_version, materialize_version,
+    open_installed_plugin, sweep_version_cache, version_cache_path, version_cache_root,
+    version_consent_request, version_grant, Activate, AddedVersion, InstallRequest,
+    InstalledVersion, VersionRequest, VERSION_CACHE_DIR, VERSION_CACHE_GRACE,
 };
 pub use install_preflight::{
     configured_alias_occupants, install_from_manifest_with_configured_aliases,
@@ -177,7 +177,8 @@ pub use registry::{
 };
 pub use remote_consent::{
     approve_remote_request, narrow_remote_grant, remote_consent, remote_consent_state,
-    remote_platform_auto_approval, remote_request_within, RemoteConsentState, RemoteNarrowing,
+    remote_consent_view, remote_platform_auto_approval, remote_request_within,
+    remote_row_consent_state, RemoteApprovalError, RemoteConsentState, RemoteNarrowing,
 };
 pub use rpc_session::{
     plugin_instance_key, ExecutorIdentity, GuestDatabaseFactory, PluginSession, PluginStorage,

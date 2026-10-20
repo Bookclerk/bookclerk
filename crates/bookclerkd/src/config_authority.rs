@@ -1080,6 +1080,29 @@ pub async fn get_cluster_status(
         .map_err(events_error)?;
     let visible = visible_nodes(&library, caller).await?;
     let nodes = nodes_json(&library, &this_node, &visible).await?;
+    let leases: Vec<serde_json::Value> = bookclerk_library::control_plane::list_leases(&library)
+        .await
+        .map_err(events_error)?
+        .into_iter()
+        .map(|lease| {
+            json!({
+                "name": lease.name,
+                "holder": lease.holder,
+                "token": lease.token,
+                "held": lease.is_held_at(now_ms),
+                "expires_at_ms": lease.expires_at_ms,
+            })
+        })
+        .collect();
+    // Whether the database is exactly the schema this binary applies; the
+    // migration lease (above) names the last migrator.
+    let schema = match bookclerk_library::current_schema_state(library.db()).await {
+        Ok(state) => json!({
+            "state": state.to_string(),
+            "compatible": bookclerk_library::schema_state_compatible(&state),
+        }),
+        Err(err) => json!({ "state": null, "compatible": false, "error": err.to_string() }),
+    };
     Ok(Json(json!({
         "cluster": {
             "nodes": all.len(),
@@ -1098,6 +1121,8 @@ pub async fn get_cluster_status(
                 "dead_letter": events.dead_letter,
                 "oldest_pending_age_secs": events.oldest_pending_age_secs,
             },
+            "leases": leases,
+            "schema": schema,
         },
         "node_id": this_node,
         "nodes": nodes,
@@ -1443,6 +1468,7 @@ pub(crate) fn control_plane_test_state(
         tray: RwLock::new(None),
         tray_handoff: Mutex::new(None),
         deployment_runtime: OnceLock::new(),
+        library_swaps: tokio::sync::watch::Sender::new(0),
     }
 }
 
@@ -1894,6 +1920,7 @@ mod tests {
             files_path,
             &artifact.payload_root_sha256
         )
+        .unwrap()
         .join("plugin.toml")
         .is_file());
         for entry in std::fs::read_dir(files_path.join("plugins")).unwrap() {

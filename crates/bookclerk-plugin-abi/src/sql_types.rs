@@ -3904,8 +3904,9 @@ impl<'a> TScan<'a> {
                 self.i += rest.find('\n').unwrap_or(rest.len());
                 continue;
             }
-            if rest.starts_with("/*") {
-                self.i += rest.find("*/").map(|p| p + 2).unwrap_or(rest.len());
+            if let Some(body) = rest.strip_prefix("/*") {
+                // Search past the opener so `/*/` does not close itself.
+                self.i += body.find("*/").map(|p| p + 4).unwrap_or(rest.len());
                 continue;
             }
             let Some(ch) = rest.chars().next() else {

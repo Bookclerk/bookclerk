@@ -32,6 +32,7 @@ use crate::naming::{
     NamingContext,
 };
 use crate::reconcile::{find_existing_for_request, StorageIndex};
+use crate::record::recording_destinations;
 use crate::split::split_audio_by_chapters;
 
 /// Request to acquire a single title.
@@ -118,10 +119,33 @@ pub async fn acquire_book(
 /// Fetch always goes through [`ContentSource::fetch_title`] (Plain only;
 /// Audible decrypts Adrm/CENC inside the plugin before returning).
 ///
+/// Every key the run writes on a destination (audio, chapter or part
+/// files, sidecars, the companion PDF) is recorded for the title in the
+/// library's `title_files` just before it is written, so a host upload of
+/// another title is never granted it.
+///
 /// # Errors
 ///
 /// Returns an error when the operation fails.
 pub async fn acquire_book_indexed(
+    library: &LibraryStore,
+    destinations: &AcquireDestinations,
+    req: AcquireRequest,
+    index: Option<&mut StorageIndex>,
+    source: &dyn ContentSource,
+) -> Result<AcquireResult> {
+    let book_uuid = resolve_book(library, &req).await.map(|book| book.uuid);
+    let recorded = recording_destinations(library, destinations, book_uuid.as_deref());
+    acquire_book_recorded(library, &recorded, req, index, source).await
+}
+
+/// [`acquire_book_indexed`] against destinations whose writes are recorded
+/// for the title ([`recording_destinations`]).
+///
+/// # Errors
+///
+/// Returns an error when fetch, package, storage, or library updates fail.
+async fn acquire_book_recorded(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
     mut req: AcquireRequest,
@@ -1615,7 +1639,7 @@ async fn resume_missing_companion_pdf(
             }
         }
     }
-    match acquire_pdf_only(library, destinations, req, source).await {
+    match acquire_pdf_only_recorded(library, destinations, req, source).await {
         Ok(_) => Ok(()),
         Err(err) => {
             record_companion_pdf_failure(library, req, &err).await;
@@ -2327,14 +2351,57 @@ pub async fn planned_storage_key(library: &LibraryStore, req: &AcquireRequest) -
     planned_storage_key_for(library, req, fallback_audio_ext(&req.options)).await
 }
 
+/// The folders an acquire of `req` writes the title's files under on a
+/// destination with `req.options`: the folder of its planned audio key,
+/// which its sidecars, chapter files and parts share. When podcast
+/// episodes are saved to the parent's folder, the episode's own folder is
+/// included too, since a library without the parent's row names it so. An
+/// empty string is the destination's root (a template with no folder).
+pub async fn planned_title_folders(library: &LibraryStore, req: &AcquireRequest) -> Vec<String> {
+    /// The folder part of a storage key.
+    fn folder_of(key: &str) -> String {
+        key.rsplit_once('/')
+            .map_or_else(String::new, |(folder, _)| folder.to_string())
+    }
+    let ext = fallback_audio_ext(&req.options);
+    let mut folders = vec![folder_of(&planned_storage_key_for(library, req, ext).await)];
+    if req.options.save_podcasts_to_parent_folder {
+        let mut own = req.clone();
+        own.options.save_podcasts_to_parent_folder = false;
+        let folder = folder_of(&planned_storage_key_for(library, &own, ext).await);
+        if !folders.contains(&folder) {
+            folders.push(folder);
+        }
+    }
+    folders
+}
+
 /// Download and store companion PDF only (classic `acquire --pdf`).
 ///
 /// Fetches via [`ContentSource::fetch_title`]; requires `PlainFetch.pdf_url`, then HTTP GETs that URL.
+/// Each PDF key written is recorded for the title in `title_files`.
 ///
 /// # Errors
 ///
 /// Returns an error when the operation fails.
 pub async fn acquire_pdf_only(
+    library: &LibraryStore,
+    destinations: &AcquireDestinations,
+    req: &AcquireRequest,
+    source: &dyn ContentSource,
+) -> Result<AcquireResult> {
+    let book_uuid = resolve_book(library, req).await.map(|book| book.uuid);
+    let recorded = recording_destinations(library, destinations, book_uuid.as_deref());
+    acquire_pdf_only_recorded(library, &recorded, req, source).await
+}
+
+/// [`acquire_pdf_only`] against destinations whose writes are already
+/// recorded for the title ([`recording_destinations`]).
+///
+/// # Errors
+///
+/// Returns an error when the fetch, the download or a write fails.
+async fn acquire_pdf_only_recorded(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
     req: &AcquireRequest,
@@ -2988,6 +3055,7 @@ mod tests {
                 .expect("claim");
             assert_eq!(claimed.id, id);
 
+            let book_uuid_for_record = book.uuid.clone();
             let mut req = dummy_req(&cache, Some(id.clone()), None);
             req.asin = "B00CRASH".into();
             req.book_uuid = Some(book.uuid);
@@ -3008,6 +3076,14 @@ mod tests {
             .expect("first acquire must write the destination");
             assert!(!first.matched_existing);
             assert_eq!(puts.load(Ordering::SeqCst), 1);
+            // The written key is recorded for the title on its destination.
+            let recorded = store
+                .title_file("local", &first.storage_key)
+                .await
+                .unwrap()
+                .expect("the acquire records the key it wrote");
+            assert_eq!(recorded.book_uuid, book_uuid_for_record);
+            assert_eq!(recorded.writer, bookclerk_library::ACQUIRE_WRITER);
             assert_eq!(fetches.load(Ordering::SeqCst), 1);
 
             // Crash window: destination succeeded and the book is acquired, but

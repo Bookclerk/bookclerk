@@ -51,6 +51,16 @@ ureq.workspace = true
 secrecy.workspace = true
 zeroize.workspace = true
 
+# Reading a secret from a terminal with echo off (`secret_input`).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_Console",
+] }
+
 [dev-dependencies]
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 bookclerk-plugin-manifest.workspace = true

@@ -7,6 +7,7 @@ mod format_out;
 mod progress;
 /// CLI helpers that open the library store and source/integration registries.
 mod registry;
+mod secret_input;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

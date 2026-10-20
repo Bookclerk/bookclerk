@@ -58,8 +58,9 @@ reconciles at least every 60s as a backstop.
 `GET /api/status` includes event queue counts plus durable retry/suspend totals
 and average dispatch/handler latency. Retention is independent of jobs
 (`[events].retention_days` for acked/rejected + empty parent events after that
-cutoff, `dead_letter_retention_days` for dead letters). Prune runs on startup
-and a coarse hourly cadence, not every dispatcher tick. Operator APIs: `GET /api/events`,
+cutoff, `dead_letter_retention_days` for dead letters). Prune is a
+cluster singleton, not a dispatcher tick: see *Cluster maintenance* below.
+Operator APIs: `GET /api/events`,
 `GET /api/events/deliveries?state=dead_letter`,
 `POST /api/events/deliveries/{id}/retry`,
 `POST /api/events/deliveries/{id}/acknowledge`,
@@ -183,6 +184,7 @@ Reserved classes (no worker in this release): `media`, `transcription`,
 | Created | 200 | New row; worker is notified |
 | Duplicate | 409 | Same dedup key already `pending` or `running`; `job_id` is the existing row |
 | QueueFull | 429 | `pending + running >= jobs.max_pending` |
+| Unroutable | 409 | `error: "unroutable"`: the job's required instances share no node (see job routing below); no row is written |
 
 A scan goes through the scan planner first (`control_plane::plan_scan`).
 An operator, an Owner, an Administrator, or the scheduler scanning every
@@ -303,21 +305,74 @@ node that runs it needs. At admission the daemon records
 - An acquire requires every deployed instance of a node-bound output (today
   the verified first-party `local` destination), because it writes to every
   deployed destination and a `local` output is the disk of the nodes it is
-  deployed to.
+  deployed to. If plugin discovery fails on the admitting node (say an
+  unrelated plugin has a duplicate alias), every instance whose plugin key
+  names the first-party `local` package is required instead, unverified, so
+  the acquire is never left claimable by a node without those outputs.
 - Everything else (unpinned scans, listen sync, integration scans,
   `plugin_copy`) has no requirements and is claimable on any node.
 
+The required instances must share a node where all of them are deployed to
+run (`control_plane::common_deployment_nodes`); otherwise admission refuses
+the job with a conflict (HTTP 409 `unroutable`) instead of leaving a row no
+node can ever claim.
+Required instances are never dropped to make a node fit.
+
 The daemon's worker claims through `control_plane::claim_routed_job`: it
-reads up to 16 ready pending jobs of its class, best first, and skips one
-unless every required instance has a deployment on this node whose desired
+pages through the ready pending jobs of its class, best first (16 per page,
+keyset-ordered by priority, `created_at`, id, until it claims one or the rows
+run out, so jobs this node cannot run never hide runnable ones behind them),
+and skips one unless every required instance has a deployment on this node whose desired
 state runs it (`present` or `placed`) and whose observation from this node
 says the guest is up (`running` or `healthy`) — the same placement and
 observation rows delivery routing reads. Then it takes the job's cluster
 permits (below) and claims that row with `claim_job_by_id`, one CAS on
 `state = 'pending'` and the lease generation it read, so concurrent
 claimers on any number of connections admit one. A lost CAS gives the
-permits back and tries the next candidate. Requirements are fixed at
-admission: a deployment that moves later does not re-route a pending job.
+permits back and tries the next candidate. A job whose account or instance
+semaphore is full is skipped too; a full class semaphore ends the attempt.
+Requirements recorded at admission are kept current by the requirements
+sweep below.
+
+### Requirements sweep
+
+Deployments keep moving after a job is queued: a `local` output is deployed
+or retired, or the scheduler moves a replica. Each daemon runs a sweep loop
+(`bookclerkd` `requirements_sweep`, rules in
+`control_plane::sweep_job_requirements`), but only the holder of the
+`jobs:requirements-sweep` cluster lease (90 s, renewed every pass) sweeps.
+A pass runs every 30 s, on a deployment or install wakeup on this node, and
+after a scheduler pass that moved replicas. It re-resolves the requirements
+of every pending acquire, pinned job, or job that already has requirements,
+with the node-bound output keys the daemon discovers plus every instance
+keyed as the first-party `local` destination (so a sweeping node without
+that plugin, or whose discovery failed, never strips them; a pass that cannot
+read the instance list is skipped), and:
+
+- **applies at once** a set that is unchanged or only gains instances when
+  some node is deployed to run all of them (a newly deployed `local` output
+  is added to queued acquires), clearing any unsettled mark;
+- otherwise (**unsettled**: no node runs all of them, or a recorded instance
+  is no longer deployed anywhere) stamps
+  `JobPayload.requires_unsettled_since_ms` on the first sweep and drops no
+  recorded instance for a **10-minute grace period**, so a placement move that
+  retires the old replica before the new one is up never fails queued work.
+  Instances the job gained are still recorded at once (the recorded set
+  becomes the union of old and new), so a job that waits cannot be claimed on
+  its old set and skip a newly deployed `local` output;
+- when the grace period has passed, writes the new set if some node can run
+  it (an instance was only dropped, which is what admission would record
+  now), or fails the job with `error_kind = "unroutable"` and a message naming
+  the instances. A failed job frees its `max_pending` slot and dedup key.
+
+The grace period is a wall-clock stamp rather than a count of unsettled
+sweeps, because sweeps also run on wakeups and a count would expire faster
+on a busy cluster. Every write is a compare-and-swap on `state = 'pending'`
+and the lease generation, which it bumps: a job claimed meanwhile is left
+alone, and a claimer that read the row before the sweep wrote it loses its
+own CAS (a routed claim matches the generation of the record whose
+requirements it checked) and moves on to re-read it on a later pass. A wakeup on a node that does not hold the lease does
+nothing; the holder's timer picks the change up within 30 s.
 
 Before requirements and permits, the routed claim filters candidates
 through the trust predicate (`control_plane::trust`). The daemon's own
@@ -327,11 +382,16 @@ a scan or acquire of a named account linked to that user; a scan-all, any
 pinned or instance-bound job, listen sync, integration scans, and plugin
 copies are refused to it. `control_plane::handoff_routed_job` repeats the
 check before a job's secrets would be handed over and, if the node lost
-that trust, returns the job to `pending` without spending an attempt. See
+that trust, returns the job to `pending` without spending an attempt. It
+also hands nothing over unless the claim still owns the job's running,
+unexpired lease (same lease owner and generation), so a late handoff
+after a reclaim, completion or expiry unseals nothing. See
 *Per-item trust and the scan planner* in `docs/adr/control-plane.md`.
 
 The unrouted `claim_next_job` (and its guest atomic plan) never claims a job
-with requirements; it remains for tests and tools that run one process.
+with requirements; it remains for tests and tools that run one process. It
+pages past routed rows the same way (the atomic plan filters them out before
+its `LIMIT 1`).
 
 ## Cluster semaphores
 
@@ -351,14 +411,20 @@ one permit of:
 | `account:<plugin_key>:<account_id>` | 1 | Scans and acquires touching that store account: the payload's account, else every account (of the pinned plugin, when pinned) |
 
 Permits last as long as the job lease, are renewed with each heartbeat, and
-are released after the row is finalized. A heartbeat whose permit renewal
+are released after the row is finalized. A routed claim's holder is
+`<lease owner>/<job id>/g<generation>/<random>`, with the lease generation
+the claim runs at (the CAS only succeeds one past the generation it read),
+so a node that finds its permits again by holder prefix never mistakes a
+leftover permit of an earlier claim of the same job for the current one. A heartbeat whose permit renewal
 matches no row (another holder took the slot) is a lost fence: the handler
 is cancelled and its result ignored. When a node dies, its permits and job
 lease expire; the next claimer reclaims the row, takes the slot with a
 larger token, and the old holder can neither renew the permit nor finalize
 the job (the job's lease generation moved on too). Lowering a limit does
-not revoke slots above it; no new permit is granted until the live count
-is under the new limit. Each node reads the limits from its own
+not revoke slots above it; live permits on those slots still count, so no
+new permit is granted until the live count is under the new limit. (That
+count is read before the slot CAS, so racing claimers can briefly overshoot
+the new limit, never the old one, until the high slots drain.) Each node reads the limits from its own
 `config.toml` (`[jobs]` is not a database document yet), so nodes should
 agree on them.
 
@@ -385,3 +451,28 @@ pool.
 
 See [configuration.md](configuration.md) (`[jobs]` / `BOOKCLERK_JOBS_*` and
 `[events]` / `BOOKCLERK_EVENTS_*`).
+
+## Cluster maintenance
+
+Cluster-wide cleanup runs on one daemon at a time. Each duty holds its own
+`cluster_leases` row; every daemon polls them every 60 s, the holder renews
+its leases on each poll and runs a duty when it takes the lease and then
+hourly. A daemon that stops polling loses its leases after 180 s and the
+next daemon to poll takes them over with a larger fencing token. Before
+each delete the holder renews the lease with a compare-and-swap on its
+holder and token (the fence), so a daemon that stalled past its expiry is
+refused before it deletes anything.
+
+| Lease | Duty |
+| --- | --- |
+| `maintenance.jobs` | Terminal jobs older than `jobs.retention_days` |
+| `maintenance.events` | Terminal deliveries, empty parent events, stale subscriber catalog rows (`[events]` retention) |
+| `maintenance.kv` | Expired plugin KV rows (already read as missing) |
+| `maintenance.sessions` | Expired operator sessions, OIDC RP states, WebAuthn challenges |
+
+The prunes are idempotent, so the fence bounds wasted work rather than
+guarding correctness: the window between a fence check and its delete is
+one statement. Node-local cleanup (scratch directories, expired job and
+delivery leases) still runs on every node. `GET /api/cluster/status`
+lists every lease with its holder, token, and whether it is held.
+

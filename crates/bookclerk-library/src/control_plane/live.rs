@@ -4,15 +4,17 @@
 //! of them (a job finishing elsewhere, a scan's rows, a heartbeat, a
 //! configuration write) shows up here. [`live_revisions`] reads a cheap
 //! revision per topic: the row count and the newest change stamp of the
-//! table behind it. The daemon compares successive reads and tells the
+//! table behind it (for `cluster_links`, which has no change stamp, a
+//! digest of its few rows). The daemon compares successive reads and tells the
 //! SPA which topics changed; the SPA then re-reads them through the
 //! ordinary authorized routes. A revision carries no row data.
 
 use sea_orm::{EntityTrait, PaginatorTrait, QueryOrder, QuerySelect};
+use sha2::{Digest as _, Sha256};
 
 use crate::entities::{
-    books, configuration_changes, event_deliveries, jobs, node_status, remote_plugin_consents,
-    users,
+    books, cluster_links, configuration_changes, event_deliveries, jobs, node_status,
+    remote_plugin_consents, users,
 };
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
@@ -32,19 +34,22 @@ pub enum LiveTopic {
     Config,
     /// Owner-plugin consent on this host (`remote_plugin_consents`).
     Consents,
+    /// Owner clusters this host joined, and their state (`cluster_links`).
+    Clusters,
     /// Users (`users`).
     Users,
 }
 
 impl LiveTopic {
     /// Every topic.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Library,
         Self::Jobs,
         Self::Deliveries,
         Self::Nodes,
         Self::Config,
         Self::Consents,
+        Self::Clusters,
         Self::Users,
     ];
 
@@ -58,6 +63,7 @@ impl LiveTopic {
             Self::Nodes => "nodes",
             Self::Config => "config",
             Self::Consents => "consents",
+            Self::Clusters => "clusters",
             Self::Users => "users",
         }
     }
@@ -68,7 +74,8 @@ impl LiveTopic {
 pub struct LiveRevision {
     /// Rows behind the topic.
     pub rows: u64,
-    /// The newest change stamp (RFC 3339 text, or a sequence number).
+    /// The newest change stamp (RFC 3339 text or a sequence number), or a
+    /// digest of the rows for a table without one.
     pub newest: Option<String>,
 }
 
@@ -96,6 +103,40 @@ where
         .await
         .map_err(LibraryError::from_db_err)?;
     Ok(LiveRevision { rows, newest })
+}
+
+/// Revision of `cluster_links`: its row count and a digest of every row.
+///
+/// The table has no change stamp, and a join, a leave or a revoke changes
+/// a row's state in place, so the newest enrollment time alone would miss
+/// it. It holds one row per owner cluster joined, so reading it whole is
+/// cheap.
+async fn cluster_links_revision(store: &LibraryStore) -> Result<LiveRevision> {
+    let rows = cluster_links::Entity::find()
+        .order_by_asc(cluster_links::Column::OwnerClusterId)
+        .all(store.db())
+        .await
+        .map_err(LibraryError::from_db_err)?;
+    let mut digest = Sha256::new();
+    for row in &rows {
+        for field in [
+            row.owner_cluster_id.as_str(),
+            row.owner_origin.as_str(),
+            row.remote_node_id.as_str(),
+            row.spki_pin.as_deref().unwrap_or(""),
+            row.state.as_str(),
+            row.enrolled_at.as_str(),
+        ] {
+            // Length-prefixed, so field boundaries cannot shift.
+            digest.update((field.len() as u64).to_be_bytes());
+            digest.update(field.as_bytes());
+        }
+    }
+    let newest = (!rows.is_empty()).then(|| hex::encode(digest.finalize()));
+    Ok(LiveRevision {
+        rows: rows.len() as u64,
+        newest,
+    })
 }
 
 /// Reads every topic's revision.
@@ -144,6 +185,7 @@ pub async fn live_revisions(store: &LibraryStore) -> Result<LiveRevisions> {
                 )
                 .await?
             }
+            LiveTopic::Clusters => cluster_links_revision(store).await?,
             LiveTopic::Users => {
                 revision::<users::Entity, _>(store, users::Column::UpdatedAt).await?
             }
@@ -214,5 +256,61 @@ mod tests {
             .unwrap();
         assert_eq!(jobs.1.rows, 1);
         assert!(jobs.1.newest.is_some());
+    }
+
+    /// Joining a cluster, a state change (revoked by the owner) and leaving
+    /// each change only the clusters topic, although `cluster_links` has no
+    /// change stamp and a state change keeps the row count.
+    #[tokio::test]
+    async fn joining_revoking_and_leaving_change_the_clusters_topic() {
+        use crate::control_plane::{
+            leave_cluster_link, record_cluster_link, set_cluster_link_state, ClusterLinkKeys,
+            NewClusterLink, CLUSTER_LINK_REVOKED,
+        };
+        let _lock = crate::master_key::master_key_test_lock_async().await;
+        let dir = tempfile::tempdir().unwrap();
+        let db = bookclerk_plugin_database_sqlite::open(&dir.path().join("library.db"))
+            .await
+            .unwrap();
+        crate::apply_host_schema(&db).await.unwrap();
+        crate::configure_master_key(dir.path()).unwrap();
+        let store = LibraryStore::from_connection(db);
+        let link = NewClusterLink {
+            owner_cluster_id: "cluster-1".into(),
+            owner_origin: "https://owner.example".into(),
+            remote_node_id: "node-1".into(),
+            spki_pin: None,
+        };
+        let keys = ClusterLinkKeys::from_bytes(&[1; 32], &[2; 32]);
+
+        let before = live_revisions(&store).await.unwrap();
+        record_cluster_link(&store, &link, &keys).await.unwrap();
+        let joined = live_revisions(&store).await.unwrap();
+        assert_eq!(changed_topics(&before, &joined), vec![LiveTopic::Clusters]);
+
+        assert!(
+            set_cluster_link_state(&store, "cluster-1", CLUSTER_LINK_REVOKED, None)
+                .await
+                .unwrap()
+        );
+        let revoked = live_revisions(&store).await.unwrap();
+        assert_eq!(changed_topics(&joined, &revoked), vec![LiveTopic::Clusters]);
+
+        // Re-enrolling makes it active again.
+        record_cluster_link(&store, &link, &keys).await.unwrap();
+        let rejoined = live_revisions(&store).await.unwrap();
+        assert_eq!(
+            changed_topics(&revoked, &rejoined),
+            vec![LiveTopic::Clusters]
+        );
+
+        leave_cluster_link(&store, "cluster-1")
+            .await
+            .unwrap()
+            .expect("the link");
+        let left = live_revisions(&store).await.unwrap();
+        assert_eq!(changed_topics(&rejoined, &left), vec![LiveTopic::Clusters]);
+        let again = live_revisions(&store).await.unwrap();
+        assert!(changed_topics(&left, &again).is_empty());
     }
 }

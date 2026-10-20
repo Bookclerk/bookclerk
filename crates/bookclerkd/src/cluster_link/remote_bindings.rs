@@ -151,6 +151,16 @@ impl RemoteCatalog {
 
     /// Plugin keys whose every deployed instance here can run now: the
     /// keys a host client may claim jobs for.
+    ///
+    /// Per plugin, not per instance, on purpose: the claim filter the owner
+    /// applies is a set of plugin keys, and a handed job names its plugins,
+    /// not the instance it is pinned to. Admitting a plugin while one of
+    /// its instances is not ready would let a job pinned to that instance
+    /// be claimed and then fail ([`INSTANCE_UNAVAILABLE`]
+    /// spends an attempt). Withholding the plugin instead gives jobs held
+    /// on its ready instances back unspent; they are claimed again once
+    /// every instance is ready (a consented instance that is not ready is
+    /// retried with backoff).
     #[must_use]
     pub fn consented_keys(&self) -> BTreeSet<String> {
         let entries = self.read();
@@ -212,7 +222,10 @@ impl Drop for HostJobBindings {
 }
 
 /// The catalog entry a handed job runs on: its pinned instance, or else
-/// the default instance of its one plugin.
+/// the default instance of its source plugin. The source plugin is the one
+/// the owner named, and must be one of the job's plugins; without it (an
+/// older owner) only a job of exactly one plugin has one. The job's other
+/// plugins are destinations it writes and never select the guest.
 fn job_entry(catalog: &RemoteCatalog, ctx: &HostJobCtx) -> Option<RemoteInstanceEntry> {
     let pinned = ctx
         .job
@@ -226,8 +239,14 @@ fn job_entry(catalog: &RemoteCatalog, ctx: &HostJobCtx) -> Option<RemoteInstance
             .get(instance_id)
             .filter(|entry| ctx.job.plugin_keys.contains(&entry.plugin_key));
     }
-    let [plugin_key] = ctx.job.plugin_keys.as_slice() else {
-        return None;
+    let plugin_key = match ctx.job.source_plugin_key.as_deref() {
+        Some(source) => ctx.job.plugin_keys.iter().find(|key| *key == source)?,
+        None => {
+            let [plugin_key] = ctx.job.plugin_keys.as_slice() else {
+                return None;
+            };
+            plugin_key
+        }
     };
     catalog
         .entries()

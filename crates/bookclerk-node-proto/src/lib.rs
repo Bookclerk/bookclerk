@@ -53,7 +53,7 @@ pub use ed25519_dalek::SigningKey;
 pub use frames::{
     is_destination_id, is_storage_key, AcquireTarget, Body, ClaimFilter, FileCopy, Frame,
     FrameError, HeldFence, JobStatusEntry, PlanDestination, RemoteArtifact, RemoteDeployment,
-    RemoteVersion, UploadAnswer, UploadCommitRequest, UploadFile, WorkJob, ITEM_JOB,
+    RemoteVersion, ScanImport, UploadAnswer, UploadCommitRequest, UploadFile, WorkJob, ITEM_JOB,
     MAX_DESTINATION_ID_BYTES, MAX_SCAN_BATCH_ROWS, MAX_SCAN_ROW_BYTES, MAX_STATUS_JOBS,
     MAX_UPLOAD_COPIES, MAX_UPLOAD_FILES, MAX_UPLOAD_FILE_BYTES, MAX_UPLOAD_KEY_BYTES,
 };

@@ -3919,6 +3919,7 @@ pub(crate) mod tests {
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
+            library_swaps: tokio::sync::watch::Sender::new(0),
         });
         if seed_users {
             // Seed owner (with password for elevate) + member for elevate/impersonate.
@@ -4474,6 +4475,7 @@ pub(crate) mod tests {
                 tray: RwLock::new(None),
                 tray_handoff: Mutex::new(None),
                 deployment_runtime: std::sync::OnceLock::new(),
+                library_swaps: tokio::sync::watch::Sender::new(0),
             });
             let app = crate::api::router(state.clone(), None);
             (state, app, library)

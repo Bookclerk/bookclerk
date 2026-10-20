@@ -190,7 +190,7 @@ On the host:
 bookclerk clusters join            # paste the link at the prompt, or pipe it on stdin
 sudo systemctl restart bookclerkd  # a running daemon dials new links only at start
 bookclerk clusters consents        # what the owner asks to run here
-bookclerk clusters approve <plugin_key> --version <v> [--deny-domain …] [--deny-binding …]
+bookclerk clusters approve <plugin_key> --request <digest> [--deny-domain …] [--deny-binding …]
 bookclerk clusters revoke <plugin_key>
 bookclerk clusters leave           # deletes the node keys; revoke the node on the owner too
 ```

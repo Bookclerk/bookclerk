@@ -399,10 +399,13 @@ fn terminal(state: JobState) -> bool {
 /// to stderr. Ctrl-C asks each unfinished job to cancel and keeps waiting
 /// until they stop; a second Ctrl-C stops waiting.
 ///
+/// An id listed more than once (a plan that admitted the same job twice) is
+/// waited on once.
+///
 /// # Returns
 ///
-/// The final record of each job, in `ids` order (a job that vanished is
-/// left out).
+/// The final record of each job, in `ids` order and once per job (a job
+/// that vanished is left out).
 ///
 /// # Errors
 ///
@@ -411,6 +414,12 @@ pub(crate) async fn wait_for_jobs(
     store: &LibraryStore,
     ids: &[String],
 ) -> anyhow::Result<Vec<JobRecord>> {
+    let mut unique = std::collections::BTreeSet::new();
+    let ids: Vec<String> = ids
+        .iter()
+        .filter(|id| unique.insert(id.as_str()))
+        .cloned()
+        .collect();
     let mut last: BTreeMap<String, (JobState, Option<String>)> = BTreeMap::new();
     // `None` marks a job whose row disappeared while it was waited on.
     let mut done: BTreeMap<String, Option<JobRecord>> = BTreeMap::new();
@@ -418,7 +427,7 @@ pub(crate) async fn wait_for_jobs(
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
     loop {
-        for id in ids {
+        for id in &ids {
             if done.contains_key(id) {
                 continue;
             }

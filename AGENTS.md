@@ -1,6 +1,135 @@
 # AGENTS.md
 
-## Cursor Cloud specific instructions
+Instructions for anyone, human or agent, changing this repository. The
+contributing workflow and review guidelines come first; environment, build and
+product facts follow.
+
+## Contributing workflow
+
+### Scope
+
+Every pull request states its intent and scope in its description (the
+[pull request template](.github/pull_request_template.md) has the headings).
+Changes and review fixes stay inside that scope.
+
+### Code standards
+
+Write code that passes the lints the first time; CI turns every warning into
+an error (`RUSTFLAGS="-D warnings"`).
+
+Documentation is enforced by `missing_docs` and
+`clippy::missing_docs_in_private_items`, by `# Errors` / `# Panics` sections on
+the publish crates, by TypeDoc and lint checks on the TypeScript SDK and
+`ui/src/lib`, and by Google-style docstring checks on the Python SDK:
+
+- Document **every** item, public and private, including struct fields and enum
+  variants, in the style described in
+  [`docs/code-documentation.md`](docs/code-documentation.md).
+- Start with a one-sentence summary, then details. Say what the value means,
+  its units and its invariants; never restate the identifier (`/// Path.` is
+  rejected).
+- Functions get `# Arguments`, `# Returns`, `# Errors` and `# Panics` whenever
+  they are not obvious from the signature.
+- No crate- or module-wide `allow(missing_docs)`; narrow allows only for
+  generated code that cannot carry comments.
+
+Types:
+
+- Encode meaning in types: newtypes for ids, keys, units and secrets instead of
+  bare `String`, `u64` or `Vec<u8>`; enums instead of string or boolean flags;
+  parse untrusted input into a validated type at the boundary.
+- No lossy `as` casts on sizes, offsets or durations (use `try_from`) and no
+  `unwrap` / `expect` outside tests. Where an invariant truly guarantees
+  success, use a narrow `#[allow(clippy::expect_used)]` with the reason in a
+  comment, and don't add new sites under a crate-level allow.
+- Exhaustive `match` on project enums (no catch-all `_` that would hide a new
+  variant).
+- TypeScript is `strict` with no `any`; Python has type hints on every
+  function.
+- Run `cargo fmt` before committing rather than formatting by hand.
+
+### Before every push
+
+- `cargo fmt --all -- --check` and
+  `cargo clippy --workspace --all-targets -- -D warnings`.
+- Tests for what changed (`<base>` is the pull request's target branch,
+  usually `origin/main`): `python3 scripts/ci-plan.py --base <base> --head HEAD
+  --format summary` shows the plan; `python3 scripts/ci-exec.py resolve
+  --selective 1 --base <base> --head HEAD --run-id local` writes it, then
+  `python3 scripts/ci-exec.py run <check> --run-id local` runs each planned
+  check. Run `cargo test --workspace` when the plan says full suite.
+- Where available: the cross-platform CI emulation for platform-specific
+  changes, a dependency vulnerability scan when a lockfile changed, and static
+  analysis for security-surface changes. Where they are not available, CI runs
+  them.
+- Review your own diff against `<base>`, including a security pass for
+  security-surface changes, and fix what you confirm.
+
+### Pull requests
+
+- Open pull requests as drafts. Mark ready only when the `CI Gate` check is
+  green and no review thread is unresolved.
+- Automated reviewers re-review new pushes, though some skip drafts, run on a
+  quota, or pause after many commits; request a review when one you need does
+  not start. Let a round of reviews land, then address it in one push.
+- Answer every review thread with the fixing commit, the follow-up issue, or
+  why it stays, then resolve it.
+- Never skip or disable a test, push an empty commit, or close and reopen a
+  pull request to re-run CI.
+
+### Security surface
+
+`bookclerk-jail`, `bookclerk-sandbox`, `bookclerk-workerd`,
+`bookclerk-plugin-host`, `bookclerk-plugin-abi` (`plugin.capnp`),
+`bookclerk-db-exec`, `docs/sql-contract/`, `bookclerk-media-worker`,
+`bookclerk-mp4`, secrets / `master.key` / operator-token code, and
+`.github/workflows/`.
+
+## Review guidelines
+
+### Judge against the declared scope
+
+Read the pull request's **Intent**, **In scope** and **Out of scope** first,
+and review the change against them:
+
+- Does the change do what the intent says, completely? Missing pieces of the
+  stated scope are findings.
+- Does it change anything the scope does not cover? Unexplained changes are
+  findings.
+- Does it break behavior outside its files? That is in scope.
+
+Findings that are substantially different from the pull request's intent
+(pre-existing problems, other features, redesigns, "while you're here"
+improvements) do not belong in the pull request. Mark them as out of scope.
+The author opens an issue for each one (labeled `review-followup`, linking the
+review comment) and addresses it in a follow-up pull request. A real security
+problem found out of scope still gets an issue right away. If a finding shows
+the declared scope itself is wrong, the author updates the scope in the
+description rather than widening the change silently.
+
+### Invariants (blocking)
+
+- No in-process fallback for plugins, database adapters, or codecs; missing
+  helpers fail closed (`media.isolation` / `plugins.isolation = "required"`).
+- Secrets never on argv, in env vars forwarded to guests, or in logs; new
+  secret paths register with redaction.
+- Guests get only their declared capabilities; network access only through
+  approved `[capabilities.network]` grants (`domains` for workerd fetch, `tcp`
+  for native sockets, operator-added hosts or CIDRs).
+- Host SQL goes through the canonical SQL-v1 contract
+  ([`docs/sql-contract/v1.md`](docs/sql-contract/v1.md)), never engine-specific
+  SQL.
+- `plugin.capnp` is append-only (new ordinals only) and changes ship with the
+  TS SDK.
+- Plugin configuration lives in the database; no new `[sources.*]`-style TOML
+  tables or `BOOKCLERK_*` env overrides.
+- Prefer a plugin entrypoint or job/event over host special-casing.
+
+### Low priority
+
+Formatting and lints already enforced by rustfmt and Clippy.
+
+## Environment and services
 
 This is a Rust workspace (edition 2021, `rust-toolchain.toml` pins the `stable`
 channel with `rustfmt` + `clippy`). Cloud Agent / Builds use the shared image in

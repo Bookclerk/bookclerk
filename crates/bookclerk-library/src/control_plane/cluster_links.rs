@@ -17,7 +17,7 @@
 use chrono::{SecondsFormat, Utc};
 use rand::RngCore as _;
 use sea_orm::sea_query::{Expr, OnConflict};
-use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QueryTrait};
 use serde::Serialize;
 use zeroize::Zeroizing;
 
@@ -200,6 +200,9 @@ pub fn decode_spki_pin(pin: &str) -> Result<[u8; 32]> {
 ///
 /// The key row is written first: a link row never exists without keys, and
 /// a key row left by a failed write is replaced by the next enrollment.
+/// When the re-enrollment minted a different node id, the earlier node's
+/// key row is deleted once the new link row is stored, so the sealed
+/// private keys of a node the owner no longer knows are not kept.
 ///
 /// # Errors
 ///
@@ -231,6 +234,7 @@ pub async fn record_cluster_link(
         &link.remote_node_id,
         CLUSTER_LINK_KEYS_NAME,
     )?;
+    let previous = load_cluster_link(store, &link.owner_cluster_id).await?;
     upsert_secret(store.db(), &record).await?;
     let row = cluster_links::ActiveModel {
         owner_cluster_id: Set(link.owner_cluster_id.clone()),
@@ -255,6 +259,29 @@ pub async fn record_cluster_link(
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
+    // The new link is committed by now, so failing to drop the previous
+    // node's keys must not report the enrollment failed: the one-use link
+    // is spent and a retry would be refused. The stale row is only left
+    // behind; nothing reads keys under a node id the link no longer names.
+    if let Some(previous) = previous.filter(|prev| prev.remote_node_id != link.remote_node_id) {
+        if let Err(err) = delete_secret(
+            store.db(),
+            secret_kind::CLUSTER_LINK,
+            Some(&link.owner_cluster_id),
+            secret_account_type::OPERATOR,
+            Some(&previous.remote_node_id),
+            CLUSTER_LINK_KEYS_NAME,
+        )
+        .await
+        {
+            tracing::warn!(
+                cluster_id = %link.owner_cluster_id,
+                previous_node_id = %previous.remote_node_id,
+                error = %err,
+                "could not delete the previous node's cluster link keys"
+            );
+        }
+    }
     load_cluster_link(store, &link.owner_cluster_id)
         .await?
         .ok_or_else(|| LibraryError::NotFound(format!("cluster link {}", link.owner_cluster_id)))
@@ -343,6 +370,16 @@ pub async fn load_cluster_link_keys(
 
 /// Sets a link's state. Answers false when no such link exists.
 ///
+/// # Arguments
+///
+/// * `store` - Library store holding the link.
+/// * `owner_cluster_id` - Owner cluster the link joins.
+/// * `state` - One of [`CLUSTER_LINK_ACTIVE`], [`CLUSTER_LINK_REVOKED`] or
+///   [`CLUSTER_LINK_LEFT`].
+/// * `remote_node_id` - When set, only a link still enrolled as this node is
+///   changed, so a client running under an earlier enrollment cannot touch the
+///   link that replaced it. `None` changes the link whatever its node.
+///
 /// # Errors
 ///
 /// Returns [`LibraryError::Invalid`] for an unknown state, and the write
@@ -351,6 +388,7 @@ pub async fn set_cluster_link_state(
     store: &LibraryStore,
     owner_cluster_id: &str,
     state: &str,
+    remote_node_id: Option<&str>,
 ) -> Result<bool> {
     if ![CLUSTER_LINK_ACTIVE, CLUSTER_LINK_REVOKED, CLUSTER_LINK_LEFT].contains(&state) {
         return Err(LibraryError::Invalid(format!(
@@ -360,6 +398,9 @@ pub async fn set_cluster_link_state(
     let updated = cluster_links::Entity::update_many()
         .col_expr(cluster_links::Column::State, Expr::value(state))
         .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
+        .apply_if(remote_node_id, |query, node| {
+            query.filter(cluster_links::Column::RemoteNodeId.eq(node))
+        })
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
@@ -387,7 +428,7 @@ pub async fn leave_cluster_link(
     };
     // State first: a link that is not active is never dialed, even if the
     // key delete below fails.
-    set_cluster_link_state(store, owner_cluster_id, CLUSTER_LINK_LEFT).await?;
+    set_cluster_link_state(store, owner_cluster_id, CLUSTER_LINK_LEFT, None).await?;
     delete_secret(
         store.db(),
         secret_kind::CLUSTER_LINK,
@@ -495,7 +536,7 @@ mod tests {
             .any(|w| w == [1; 32] || w == [2; 32]));
 
         assert!(
-            set_cluster_link_state(&store, "cluster-1", CLUSTER_LINK_REVOKED)
+            set_cluster_link_state(&store, "cluster-1", CLUSTER_LINK_REVOKED, None)
                 .await
                 .unwrap()
         );
@@ -507,7 +548,7 @@ mod tests {
             load_cluster_link_keys(&store, &revoked).await,
             Err(LibraryError::Forbidden(_))
         ));
-        assert!(set_cluster_link_state(&store, "cluster-1", "bogus")
+        assert!(set_cluster_link_state(&store, "cluster-1", "bogus", None)
             .await
             .is_err());
 
@@ -520,6 +561,69 @@ mod tests {
         assert_eq!(again.spki_pin, None);
         let loaded = load_cluster_link_keys(&store, &again).await.unwrap();
         assert_eq!(loaded.sign_seed(), &[3; 32]);
+    }
+
+    /// True when a key row is sealed for `node_id` in `cluster-1`.
+    async fn key_row_exists(store: &LibraryStore, node_id: &str) -> bool {
+        get_secret(
+            store.db(),
+            secret_kind::CLUSTER_LINK,
+            Some("cluster-1"),
+            secret_account_type::OPERATOR,
+            Some(node_id),
+            CLUSTER_LINK_KEYS_NAME,
+        )
+        .await
+        .unwrap()
+        .is_some()
+    }
+
+    #[tokio::test]
+    async fn re_enrolling_as_another_node_deletes_the_old_node_keys() {
+        let _lock = master_key_test_lock_async().await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in(dir.path()).await;
+        let first = ClusterLinkKeys::from_bytes(&[1; 32], &[2; 32]);
+        record_cluster_link(&store, &new_link(None), &first)
+            .await
+            .unwrap();
+        assert!(key_row_exists(&store, "node-1").await);
+
+        // The owner minted a new node id for the re-enrollment.
+        let mut again = new_link(None);
+        again.remote_node_id = "node-2".into();
+        let fresh = ClusterLinkKeys::from_bytes(&[3; 32], &[4; 32]);
+        let link = record_cluster_link(&store, &again, &fresh).await.unwrap();
+        assert_eq!(link.remote_node_id, "node-2");
+        assert!(key_row_exists(&store, "node-2").await);
+        assert!(
+            !key_row_exists(&store, "node-1").await,
+            "the previous node's sealed keys were left behind"
+        );
+
+        // A client still running as node-1 cannot revoke node-2's link.
+        assert!(
+            !set_cluster_link_state(&store, "cluster-1", CLUSTER_LINK_REVOKED, Some("node-1"))
+                .await
+                .unwrap()
+        );
+        let still = load_cluster_link(&store, "cluster-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            still.is_active(),
+            "an old client revoked the replacement link"
+        );
+        let loaded = load_cluster_link_keys(&store, &link).await.unwrap();
+        assert_eq!(loaded.box_secret(), &[4; 32]);
+
+        // Re-enrolling under the same node id keeps (replaces) its row.
+        let same = ClusterLinkKeys::from_bytes(&[5; 32], &[6; 32]);
+        let link = record_cluster_link(&store, &again, &same).await.unwrap();
+        assert!(key_row_exists(&store, "node-2").await);
+        let loaded = load_cluster_link_keys(&store, &link).await.unwrap();
+        assert_eq!(loaded.sign_seed(), &[5; 32]);
     }
 
     #[tokio::test]

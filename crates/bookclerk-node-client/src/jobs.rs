@@ -27,6 +27,17 @@ pub struct HostJob {
     pub lease_secs: u64,
     /// Plugin keys the job runs (each consented when it was claimed).
     pub plugin_keys: Vec<String>,
+    /// The one plugin of `plugin_keys` whose source guest runs the job,
+    /// when the owner named it.
+    pub source_plugin_key: Option<String>,
+    /// When the granted lease runs out, counted as the client counts it:
+    /// from before the claim was sent, capped at [`crate::MAX_LEASE`]. Work
+    /// handed a deadline should stop by then, since the fence may be lost
+    /// once it passes without a renewal.
+    pub lease_deadline: std::time::SystemTime,
+    /// The claim resumed a suspended job: no attempt was spent, and the
+    /// job's checkpoint applies.
+    pub resumed: bool,
 }
 
 /// The job's secrets, opened with this node's box key. Values are
@@ -167,6 +178,9 @@ pub struct HostJobCtx {
     pub secrets: Arc<HandedSecrets>,
     /// Set when the fence is lost or the operator asked to cancel.
     cancel: Arc<AtomicBool>,
+    /// Set when the fence is lost (the owner said so, or the lease ran out
+    /// unconfirmed): the owner may have handed the job elsewhere.
+    lost: Arc<AtomicBool>,
     /// Set when an upload's commit completed the job on the owner, so no
     /// `complete` follows.
     finished: Arc<AtomicBool>,
@@ -192,6 +206,7 @@ impl HostJobCtx {
         job: HostJob,
         secrets: HandedSecrets,
         cancel: Arc<AtomicBool>,
+        lost: Arc<AtomicBool>,
         finished: Arc<AtomicBool>,
         shared: Arc<Shared>,
     ) -> Self {
@@ -199,6 +214,7 @@ impl HostJobCtx {
             job,
             secrets: Arc::new(secrets),
             cancel,
+            lost,
             finished,
             batches: AtomicU64::new(0),
             shared,
@@ -210,6 +226,15 @@ impl HostJobCtx {
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::SeqCst)
+    }
+
+    /// True once the job's fence is lost: the owner reported it, or the
+    /// lease ran out without a confirmed renewal. The owner may already
+    /// have handed the job to another run, which then owns the job's
+    /// titles, so this run must not undo anything it wrote under them.
+    #[must_use]
+    pub fn is_lost(&self) -> bool {
+        self.lost.load(Ordering::SeqCst)
     }
 
     /// The cancel flag, for runners that poll it elsewhere.

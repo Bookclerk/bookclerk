@@ -2347,6 +2347,14 @@ export interface RemoteConsentView {
   requested_version: string;
   /** What that version asks for. */
   requested_grant: RemoteGrantView | null;
+  /** The archive this host would fetch for that version. */
+  requested_artifact?: {
+    url: string;
+    archive_sha256: string;
+    payload_root_sha256: string;
+  };
+  /** Digest of the whole request (version, grant, archive); approve by it. */
+  request_digest: string;
   /** Version this host approved, if any. */
   approved_version: string | null;
   /** What this host granted (the request, narrowed), if approved. */
@@ -2367,8 +2375,8 @@ export interface ClusterConsentsResponse {
 export interface RemoteApprovalBody {
   cluster_id: string;
   plugin_key: string;
-  /** The requested version reviewed; refused when the cluster now asks for another. */
-  version: string;
+  /** The `request_digest` reviewed; refused when the recorded request is another one. */
+  request_digest: string;
   deny_domains?: string[];
   deny_bindings?: string[];
   deny_network?: boolean;

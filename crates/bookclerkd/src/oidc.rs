@@ -1450,6 +1450,7 @@ mod tests {
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
+            library_swaps: tokio::sync::watch::Sender::new(0),
         });
         let user = library
             .create_user_with_login(UserRole::Member, Some("Abs User"), Some("absuser"), None)
@@ -1596,6 +1597,7 @@ mod tests {
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
+            library_swaps: tokio::sync::watch::Sender::new(0),
         });
         (state, library)
     }
