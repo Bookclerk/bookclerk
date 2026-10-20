@@ -583,6 +583,14 @@ async fn deployments(
     Ok(frame)
 }
 
+/// True when `now` is the same version, under the same grant, as `then`.
+fn same_version(now: Option<&PluginVersion>, then: Option<&PluginVersion>) -> bool {
+    match (now, then) {
+        (Some(now), Some(then)) => now.version == then.version && now.grant_json == then.grant_json,
+        _ => false,
+    }
+}
+
 /// `instance.config`: `CONFIG` and, for a node trusted with every job,
 /// `SECRETS` sealed to its box key.
 async fn instance_config(
@@ -643,9 +651,11 @@ async fn instance_config(
             .ok()
             .and_then(|value| value.as_object().map(|object| !object.is_empty()))
             .unwrap_or(true);
-    // The node's trust or the deployment may have changed while the
-    // bindings were read: re-read both right before sealing, as the job
-    // secret handoff does, so a node revoked meanwhile gets no secrets.
+    // The node's trust, the deployment or its active version (and so the
+    // grant the bindings were resolved under) may have changed while the
+    // bindings were read: re-read them right before sealing, as the job
+    // secret handoff does, so a node revoked meanwhile, or a grant that no
+    // longer allows secrets, gets none.
     let current = match remote_instance_for_node(library, &host.node_id, instance_id).await {
         Ok(current) => current,
         Err(err) => {
@@ -653,9 +663,10 @@ async fn instance_config(
             return Err(err);
         }
     };
-    let Some(current) = current
-        .filter(|current| current.deployment.deployment_id == instance.deployment.deployment_id)
-    else {
+    let Some(current) = current.filter(|current| {
+        current.deployment.deployment_id == instance.deployment.deployment_id
+            && same_version(current.version.as_ref(), Some(version))
+    }) else {
         secrets.payload.zeroize();
         return Ok(not_found());
     };
