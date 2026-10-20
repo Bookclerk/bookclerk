@@ -348,13 +348,23 @@ pub fn read_box_header(r: &mut (impl Read + Seek)) -> Result<BoxHeader> {
         // Extends to EOF.
         let end = r.seek(SeekFrom::End(0))?;
         r.seek(SeekFrom::Start(start + 8))?;
-        (end - start, 8u64)
+        let size = end.checked_sub(start).ok_or_else(|| {
+            Mp4Error::container(format!("box {kind} at {start} starts past EOF {end}"))
+        })?;
+        (size, 8u64)
     } else {
         (u64::from(size32), 8u64)
     };
     if size < header_len {
         return Err(Mp4Error::container(format!(
             "box {kind} at {start} has size {size} < header {header_len}"
+        )));
+    }
+    // `BoxHeader::end` and `content_start` add to `start`; a forged 64-bit size
+    // must not overflow them.
+    if start.checked_add(size).is_none() {
+        return Err(Mp4Error::container(format!(
+            "box {kind} at {start} has size {size} past the addressable range"
         )));
     }
     Ok(BoxHeader {
@@ -405,7 +415,7 @@ where
         let pos = r
             .stream_position()
             .map_err(|err| E::from(Mp4Error::from(err)))?;
-        if pos + 8 > end {
+        if pos.saturating_add(8) > end {
             break;
         }
         let header = read_box_header(r).map_err(E::from)?;
@@ -473,4 +483,22 @@ pub fn read_full_box_version_flags(r: &mut impl Read) -> Result<(u8, u32)> {
     let flags = read_array::<3>(r)?;
     let flags_u32 = (u32::from(flags[0]) << 16) | (u32::from(flags[1]) << 8) | u32::from(flags[2]);
     Ok((version, flags_u32))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn a_largesize_past_u64_is_refused() {
+        // An 8-byte prefix, then a `free` box claiming a 64-bit size of u64::MAX.
+        let mut data = vec![0u8; 8];
+        data.extend_from_slice(&1u32.to_be_bytes());
+        data.extend_from_slice(b"free");
+        data.extend_from_slice(&u64::MAX.to_be_bytes());
+        let mut r = Cursor::new(data);
+        r.set_position(8);
+        assert!(read_box_header(&mut r).is_err());
+    }
 }

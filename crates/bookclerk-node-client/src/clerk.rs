@@ -89,30 +89,41 @@ pub async fn install_problem(store: &LibraryStore) -> Result<Option<String>, Joi
 }
 
 /// Redeems an approved clerk sign-in and opens the bootstrap with the
-/// node's box secret. The code and verifier go once in the request body.
+/// node's box secret. The code and verifier go once in the request body,
+/// and are registered for redaction (the caller unregisters them).
 ///
 /// # Errors
 ///
 /// Returns [`JoinError`] when the library is unreachable or refuses (the
 /// code was approved for a branch, the user is no longer an Owner, or its
-/// database cannot be shared), it answers for another cluster or without a
-/// bootstrap, or the bootstrap does not open for this node.
+/// database cannot be shared). Once the library has enrolled the node, an
+/// answer for another cluster or type, without a bootstrap, or with one
+/// that does not open for this node gives [`JoinError::Unsaved`] naming
+/// it. [`JoinError::is_retryable`] tells which failures a repeat of the
+/// same exchange can fix (the library answers it with the same node and a
+/// freshly sealed bootstrap).
 pub async fn redeem_clerk_code(
     redeem: &BranchRedeem<'_>,
     keys: &ClusterLinkKeys,
 ) -> Result<ClerkJoined, JoinError> {
     let (_endpoint, enrolled) = post_redeem(redeem, keys, ConnectionType::Clerk).await?;
+    // The library has enrolled the node by now: a failure names it, so the
+    // operator knows which clerk to have removed there.
+    let unsaved = |reason: &str| JoinError::Unsaved {
+        node_id: Some(enrolled.node_id.clone()),
+        reason: reason.into(),
+    };
     let sealed = enrolled
         .bootstrap
         .as_deref()
-        .ok_or_else(|| JoinError::Record("the library sent no clerk bootstrap".into()))?;
+        .ok_or_else(|| unsaved("the library sent no clerk bootstrap"))?;
     let bootstrap = open_clerk_bootstrap(
         keys.box_secret(),
         &enrolled.cluster_id,
         &enrolled.node_id,
         sealed,
     )
-    .map_err(|_| JoinError::Record("the library's clerk bootstrap does not open here".into()))?;
+    .map_err(|_| unsaved("the library's clerk bootstrap does not open here"))?;
     tracing::info!(
         cluster_id = %enrolled.cluster_id,
         node_id = %enrolled.node_id,

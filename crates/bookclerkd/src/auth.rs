@@ -1456,8 +1456,10 @@ pub async fn require_operator_or_administrator_auth(
                 {
                     return Ok(denied);
                 }
-                // The scan planner re-reads this user's role; a portal
-                // identity without a user gets no requester and is refused.
+                // The scan planner re-reads this user's role. A portal
+                // identity without a user resolves as a Member and is
+                // refused above; were one let through, it would carry no
+                // requester and the handler would refuse it.
                 req.extensions_mut().insert(ScanRequester::User(user_id));
             }
             return Ok(next.run(req).await);
@@ -3919,6 +3921,8 @@ pub(crate) mod tests {
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
+            node_api_tls_bound: std::sync::OnceLock::new(),
+            library_swaps: tokio::sync::watch::Sender::new(0),
         });
         if seed_users {
             // Seed owner (with password for elevate) + member for elevate/impersonate.
@@ -4474,6 +4478,8 @@ pub(crate) mod tests {
                 tray: RwLock::new(None),
                 tray_handoff: Mutex::new(None),
                 deployment_runtime: std::sync::OnceLock::new(),
+                node_api_tls_bound: std::sync::OnceLock::new(),
+                library_swaps: tokio::sync::watch::Sender::new(0),
             });
             let app = crate::api::router(state.clone(), None);
             (state, app, library)

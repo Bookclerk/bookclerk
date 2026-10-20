@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use bookclerk_config::DatabasePluginKind;
 use bookclerk_node_client::{
     apply_clerk_bootstrap, authorize_join, inspect_library, install_problem, redeem_branch_code,
-    redeem_clerk_code, AppliedClerk, BranchRedeem, InspectedLibrary,
+    redeem_clerk_code, AppliedClerk, BranchRedeem, InspectedLibrary, JoinError,
 };
 use bookclerk_node_proto::{ConnectionType, JOIN_CALLBACK_PATH};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -214,7 +214,14 @@ fn confirm_fingerprint(library: &InspectedLibrary, given: Option<&str>) -> anyho
         return Ok(());
     };
     if let Some(given) = given {
-        if same(given.trim(), pin) {
+        // Settings → Branches shows the fingerprint in spaced groups, with
+        // or without its `sha256:` prefix.
+        let given: String = given.chars().filter(|c| !c.is_whitespace()).collect();
+        let given = match given.get(..7) {
+            Some(prefix) if prefix.eq_ignore_ascii_case("sha256:") => &given[7..],
+            _ => given.as_str(),
+        };
+        if same(given, pin) {
             return Ok(());
         }
         anyhow::bail!("the library's fingerprint is {pin}, not the one given; not joining");
@@ -297,9 +304,12 @@ pub async fn join_with_sign_in(
             anyhow::bail!("cannot join as a clerk: {problem}");
         }
     }
-    let library = inspect_library(address)
-        .await
-        .map_err(|err| anyhow::anyhow!("could not read the library: {err}"))?;
+    let library = inspect_library(address).await.map_err(|err| {
+        anyhow::anyhow!(
+            "could not read the library: {}",
+            super::clusters::printable(&err.to_string())
+        )
+    })?;
     if !library.info.enrollment {
         anyhow::bail!("This library isn't accepting new branches");
     }
@@ -321,7 +331,8 @@ pub async fn join_with_sign_in(
     }
     eprintln!(
         "Sign in to {} to let \"{branch_name}\" join it:\n\n  {}\n",
-        library.info.library_name, authorization.authorize_url
+        super::clusters::printable(&library.info.library_name),
+        authorization.authorize_url
     );
     open_browser(&authorization.authorize_url);
     eprintln!("Waiting for the sign-in (10 minutes)...");
@@ -353,15 +364,17 @@ pub async fn join_with_sign_in(
         branch_name: &branch_name,
         software_version: env!("CARGO_PKG_VERSION"),
     };
+    let keys = &authorization.keys;
     match connection {
         ConnectionType::Branch => {
             if offer_clerk {
                 eprintln!("The library's user chose to let this install join as a branch.");
             }
-            redeem_branch_code(store, &redeem, &authorization.keys)
+            let redeem = &redeem;
+            redeem_with_retries(|| redeem_branch_code(store, redeem, keys))
                 .await
                 .map(Joined::Branch)
-                .map_err(|err| anyhow::anyhow!("could not join the library: {err}"))
+                .map_err(join_failed)
         }
         ConnectionType::Clerk => {
             if !offer_clerk {
@@ -373,9 +386,10 @@ pub async fn join_with_sign_in(
             {
                 anyhow::bail!("cannot join as a clerk: {problem}");
             }
-            let joined = redeem_clerk_code(&redeem, &authorization.keys)
+            let redeem = &redeem;
+            let joined = redeem_with_retries(|| redeem_clerk_code(redeem, keys))
                 .await
-                .map_err(|err| anyhow::anyhow!("could not join the library: {err}"))?;
+                .map_err(join_failed)?;
             let kind = match joined.bootstrap.database.plugin() {
                 "postgres" => DatabasePluginKind::Postgres,
                 _ => DatabasePluginKind::D1,
@@ -398,7 +412,14 @@ pub async fn join_with_sign_in(
                 &joined.bootstrap,
                 password.as_ref().map(|p| p.as_str()),
             )
-            .map_err(|err| anyhow::anyhow!("{err}"))?;
+            // The library holds the node now: name it, so the operator can
+            // have that clerk removed there before joining again.
+            .map_err(|err| {
+                join_failed(JoinError::Unsaved {
+                    node_id: Some(joined.node_id.clone()),
+                    reason: err.to_string(),
+                })
+            })?;
             Ok(Joined::Clerk {
                 cluster_id: joined.cluster_id,
                 node_id: joined.node_id,
@@ -407,6 +428,58 @@ pub async fn join_with_sign_in(
         }
     }
 }
+
+/// Redeems a sign-in with `redeem`, again while it fails for a reason a
+/// repeat of the same exchange can fix, up to [`REDEEM_ATTEMPTS`] times.
+///
+/// The verifier and keys live only in this process, so a lost answer or a
+/// failed local write is retried here: the library answers a repeat of the
+/// same exchange with the same node. A later attempt that fails differently
+/// still reports the first save failure: it names the node the library
+/// enrolled.
+///
+/// # Errors
+///
+/// Returns the first [`JoinError::SaveFailed`], else the last error.
+async fn redeem_with_retries<T, F, Fut>(mut redeem: F) -> Result<T, JoinError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, JoinError>>,
+{
+    let mut attempt = 1;
+    let mut save_failed = None;
+    loop {
+        match redeem().await {
+            Err(err) if err.is_retryable() && attempt < REDEEM_ATTEMPTS => {
+                if matches!(err, JoinError::SaveFailed { .. }) {
+                    save_failed.get_or_insert(err);
+                }
+                attempt += 1;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            Ok(joined) => return Ok(joined),
+            Err(err) => return Err(save_failed.unwrap_or(err)),
+        }
+    }
+}
+
+/// The error a failed join reports, with what to do about a node the
+/// library enrolled but this install could not save.
+fn join_failed(err: JoinError) -> anyhow::Error {
+    let hint = if matches!(err, JoinError::SaveFailed { .. }) {
+        "; ask the library's owner to remove that node, then join again"
+    } else {
+        ""
+    };
+    anyhow::anyhow!(
+        "could not join the library: {}{hint}",
+        super::clusters::printable(&err.to_string())
+    )
+}
+
+/// How many times a join redeems its sign-in when the library's answer is
+/// lost or the link it enrolled cannot be saved here.
+const REDEEM_ATTEMPTS: u32 = 3;
 
 /// This machine's name, as a default branch name.
 fn default_branch_name() -> String {

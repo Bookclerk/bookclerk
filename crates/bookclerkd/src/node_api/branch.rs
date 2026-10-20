@@ -15,11 +15,13 @@
 //!   issues a single-use code that lives [`BRANCH_CODE_TTL_SECS`].
 //! - `POST /api/node/v1/enroll/oauth` ([`post_enroll_oauth`]): the joining
 //!   daemon redeems the code with its PKCE verifier and the node's public
-//!   keys. The code is consumed and checked (client, redirect URI, scope,
-//!   S256 verifier), then the redeem is the same canonical batch a minted
-//!   link takes ([`redeem_enrollment_link_as`]), through a link whose id and
-//!   secret derive from the code and verifier
-//!   ([`authorized_enrollment_link`]): one node row, `node_credentials`,
+//!   keys. The code is read and checked (client, redirect URI, scope and
+//!   the consented name and type it holds, S256 verifier), its link
+//!   recorded under the consented name, and only then consumed. The
+//!   redeem is the same canonical batch a minted link takes
+//!   ([`redeem_enrollment_link_as`]), through a link whose id and secret
+//!   derive from the code and verifier ([`authorized_enrollment_link`]):
+//!   one node row, `node_credentials`,
 //!   a receipt, idempotent retries, and one node under concurrency.
 //! - `GET|PUT /api/config/branches` ([`get_branches`], [`put_branches`]):
 //!   the owner's Settings → Branches (operator or Owner): the fingerprint
@@ -34,8 +36,8 @@
 //! [`shared_database`]) and a fresh second factor on the consent page
 //! (TOTP or a user-verified passkey, [`post_branch_consent_step_up`]); an
 //! Owner with neither is refused. The code is bound to the type chosen (the
-//! granted scope, [`ConnectionType::granted_scope`]), so a branch code is
-//! never redeemed as a clerk. A clerk's redeem answer carries the
+//! granted scope, [`ConnectionType::granted_scope`], stored with the
+//! consented branch name), so a branch code is never redeemed as a clerk. A clerk's redeem answer carries the
 //! `[database]` bootstrap and the DEK sealed to the joining node's box key
 //! ([`seal_clerk_bootstrap`]); never the `master.key` file, never through
 //! the browser, never logged. Both the consent and the redeem run under the
@@ -154,9 +156,6 @@ pub async fn get_info(State(state): State<Arc<AppState>>, request: Request) -> R
 /// Largest `enroll/oauth` body.
 const MAX_OAUTH_ENROLL_BODY_BYTES: usize = 16 * 1024;
 
-/// Default node label when the branch sent no name.
-const DEFAULT_BRANCH_LABEL: &str = "branch";
-
 /// `POST /api/node/v1/enroll/oauth`: redeem an approved branch sign-in.
 /// Answers `{cluster_id, node_id}`; 403 `transport_insecure` for a refused
 /// connection, 403 `enrollment_refused` for a code that does not redeem
@@ -188,30 +187,34 @@ pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Requ
     if code.is_empty() || verifier.is_empty() {
         return enroll_error(StatusCode::FORBIDDEN, "enrollment_refused");
     }
-    let label = body.branch_name.trim();
-    let label = if is_branch_name(label) {
-        label
-    } else {
-        DEFAULT_BRANCH_LABEL
-    };
     let connection = body.connection;
     let (link_id, secret) = authorized_enrollment_link(code, verifier);
     let library = state.library_snapshot().await;
-    match library.consume_oidc_auth_code(&hash_token(code)).await {
+    let code_hash = hash_token(code);
+    // The code is read, checked and its link recorded before the code is
+    // consumed: a failed write leaves the code for a retry of the same
+    // exchange, and a retry after the code is spent redeems the link the
+    // first attempt recorded.
+    match library.peek_oidc_auth_code(&code_hash).await {
         Ok(Some((client_id, user_id, redirect_uri, challenge, method, scope))) => {
-            // The scope is the connection type chosen at consent: a code
-            // approved for a branch never redeems as a clerk.
+            // The scope holds the connection type and the branch name
+            // chosen at consent: a code approved for a branch never redeems
+            // as a clerk (or the other way round).
+            let consented = consented_branch_name(&scope, connection);
             let matches = client_id == BRANCH_CLIENT_ID
                 && redirect_uri == body.redirect_uri
                 && method == "S256"
-                && scope == connection.granted_scope()
+                && consented.is_some()
                 && constant_time_eq(pkce_challenge(verifier).as_bytes(), challenge.as_bytes());
-            if !matches {
+            let Some(label) = consented.filter(|_| matches) else {
                 tracing::warn!(
                     user_id,
                     connection = connection.as_str(),
                     "branch enrollment refused: the code does not match its exchange"
                 );
+                // A mismatched exchange spends the code, as a failed
+                // OAuth exchange does.
+                let _ = library.consume_oidc_auth_code(&code_hash).await;
                 let _ = library
                     .insert_security_audit_event(
                         &format!("user:{user_id}"),
@@ -224,13 +227,17 @@ pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Requ
                     )
                     .await;
                 return enroll_error(StatusCode::FORBIDDEN, "enrollment_refused");
-            }
+            };
             if connection == ConnectionType::Clerk {
                 if let Err(refused) = clerk_still_allowed(&state, &library, user_id).await {
+                    // A refused clerk spends the code, as a mismatch does.
+                    let _ = library.consume_oidc_auth_code(&code_hash).await;
                     return refused;
                 }
             }
-            match record_authorized_enrollment_link(&library, &link_id, &secret, user_id, label)
+            // The node is labelled with the name the user consented to,
+            // whatever the redeem body says.
+            match record_authorized_enrollment_link(&library, &link_id, &secret, user_id, &label)
                 .await
             {
                 Ok(()) => {}
@@ -244,6 +251,13 @@ pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Requ
                     tracing::warn!(error = %err, "branch enrollment could not record its link");
                     return enroll_error(StatusCode::SERVICE_UNAVAILABLE, "enrollment_unavailable");
                 }
+            }
+            // Consumed here or by a concurrent attempt of the same exchange
+            // (the only one whose verifier matches): either way the link is
+            // recorded and the redeem below is single-use.
+            if let Err(err) = library.consume_oidc_auth_code(&code_hash).await {
+                tracing::warn!(error = %err, "branch enrollment could not spend the code");
+                return enroll_error(StatusCode::SERVICE_UNAVAILABLE, "enrollment_unavailable");
             }
         }
         // Already consumed (or unknown): only a retry of the same exchange
@@ -376,6 +390,81 @@ async fn clerk_answer(
         })
         .into_response(),
     )
+}
+
+/// Marks the branch name kept in a code's stored scope.
+const CONSENTED_NAME_MARK: &str = " name:";
+
+/// The scope stored with a sign-in's authorization code: the connection
+/// type's granted scope ([`BRANCH_SCOPE`] for a branch,
+/// [`bookclerk_node_proto::CLERK_GRANTED_SCOPE`] for a clerk), then the
+/// branch name the user consented to (base64url). The redeem enrolls the
+/// node under that name, not one the redeem body picks, and only as that
+/// type.
+fn consented_scope(connection: ConnectionType, branch_name: &str) -> String {
+    use base64::Engine as _;
+    format!(
+        "{}{CONSENTED_NAME_MARK}{}",
+        connection.granted_scope(),
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(branch_name.as_bytes())
+    )
+}
+
+/// The consented branch name in a stored scope written by
+/// [`consented_scope`] for `connection`; `None` for any other scope (a
+/// code approved for the other connection type among them) or a name that
+/// is not a valid branch name.
+fn consented_branch_name(scope: &str, connection: ConnectionType) -> Option<String> {
+    use base64::Engine as _;
+    // The granted scopes contain no `name:` token and base64url has no
+    // space, so a branch scope never parses as a clerk one or back.
+    let encoded = scope
+        .strip_prefix(connection.granted_scope())?
+        .strip_prefix(CONSENTED_NAME_MARK)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded)
+        .ok()?;
+    let name = String::from_utf8(bytes).ok()?;
+    is_branch_name(&name).then_some(name)
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::{consented_branch_name, consented_scope, ConnectionType};
+
+    #[test]
+    fn the_scope_carries_the_type_and_the_consented_name() {
+        for connection in [ConnectionType::Branch, ConnectionType::Clerk] {
+            let scope = consented_scope(connection, "Den PC");
+            assert_eq!(
+                consented_branch_name(&scope, connection).as_deref(),
+                Some("Den PC")
+            );
+        }
+        let branch = consented_scope(ConnectionType::Branch, "Den PC");
+        let clerk = consented_scope(ConnectionType::Clerk, "Den PC");
+        assert_eq!(branch, "node:enroll name:RGVuIFBD");
+        assert_eq!(clerk, "node:enroll node:clerk name:RGVuIFBD");
+        // A branch-approved code never redeems as a clerk, nor the reverse.
+        assert_eq!(consented_branch_name(&branch, ConnectionType::Clerk), None);
+        assert_eq!(consented_branch_name(&clerk, ConnectionType::Branch), None);
+        // The bare scopes (no consented name) and an invalid name refuse.
+        assert_eq!(
+            consented_branch_name("node:enroll", ConnectionType::Branch),
+            None
+        );
+        assert_eq!(
+            consented_branch_name("node:enroll node:clerk", ConnectionType::Clerk),
+            None
+        );
+        assert_eq!(
+            consented_branch_name(
+                &consented_scope(ConnectionType::Clerk, ""),
+                ConnectionType::Clerk
+            ),
+            None
+        );
+    }
 }
 
 /// The authorization request a consent is for (the query `/oidc/authorize`
@@ -775,7 +864,10 @@ pub async fn post_branch_consent(
             &params.redirect_uri,
             &params.code_challenge,
             "S256",
-            connection.granted_scope(),
+            &consented_scope(
+                connection,
+                params.branch_name.as_deref().unwrap_or("").trim(),
+            ),
             expires,
         )
         .await

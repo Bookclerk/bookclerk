@@ -43,7 +43,7 @@ from .plan import (
     plan_to_summary,
 )
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 ARTIFACT_NAME = "ci-plan.json"
 # One path segment. A fresh id is minted per resolve so marker dirs cannot
 # collide across local re-resolves that share a temp dir, commit, and run id.
@@ -72,6 +72,40 @@ CONFINEMENT_PACKAGES = (
     "bookclerk-media-worker",
     "bookclerk-jail",
 )
+# `rust_test` runs under cargo-nextest: every test binary's tests share one
+# parallel pool instead of running one binary after another, and each test
+# gets its own process. Exit-status semantics match `cargo test --tests`.
+NEXTEST_RUN = (
+    "cargo",
+    "nextest",
+    "run",
+    "--tests",
+    "--failure-output",
+    "immediate-final",
+    "--no-tests",
+    "warn",
+)
+# Merge-group runs retry a failed test once; nextest reports a pass on retry
+# as FLAKY in the summary, and a test that fails twice still fails the job.
+MERGE_GROUP_TEST_RETRIES = 1
+
+
+def _nextest_mode(event: str) -> list[str]:
+    """Failure handling for one nextest run, by the event the plan was resolved for.
+
+    A merge group only needs to know whether it can land, so it retries once and
+    stops at the first test that still fails. Pull requests run every test, so
+    one round of CI shows every failure to fix.
+    """
+    if event == "merge_group":
+        return ["--retries", str(MERGE_GROUP_TEST_RETRIES), "--fail-fast"]
+    return ["--no-fail-fast"]
+
+# `harness = false` test targets whose `main` does not answer libtest's
+# `--list` protocol: nextest would list zero tests in them, so they are
+# excluded from nextest and run with `cargo test --test`.
+# scripts/tests/test_ci_contract.py fails when a new one is not listed here.
+CUSTOM_HARNESS_TESTS: tuple[tuple[str, str], ...] = (("bookclerk-plugin-catalog", "plugin_mutation_lock"),)
 # Staged-installation targets of the e2e crate. `native_gateway*` is its own
 # check (three OSes) and must not run again here.
 E2E_STAGED_TARGETS = ("--lib", "--test", "staged_plugins", "--test", "installed_plugin_path")
@@ -137,6 +171,16 @@ POSTGRES_STEPS: dict[str, tuple[str, list[str]]] = {
         ],
     ),
 }
+
+
+# Cargo subcommands kept in build-only runs: each leaves artifacts in
+# `target/` that the dependency cache saves.
+BUILD_SUBCOMMANDS = frozenset({"build", "build-app", "check", "clippy", "install-platform"})
+# Jobs that save the dependency caches other runs restore (see ci.yml
+# `save-if`). Build-only runs skip every other job.
+BUILD_ONLY_JOBS = frozenset({"check", "test", "native-gateway", "release"})
+# Prerequisites kept in build-only runs (staging and installs only feed tests).
+BUILD_PREREQS = frozenset({"build", "ensure_workerd"})
 
 
 class ExecError(Exception):
@@ -208,6 +252,7 @@ def resolve(
     checkout_sha: str,
     event: str,
     force_full: bool = False,
+    build_only: bool = False,
     workspace: Path | None = None,
     paths: Sequence[str] | None = None,
     metadata: Mapping[str, Any] | None = None,
@@ -216,6 +261,9 @@ def resolve(
 
     Every call mints a new ``execution_id``. Prerequisite completion is
     namespaced by that id, so resolving again starts a fresh execution.
+    ``build_only`` (push to ``main``) compiles what every check compiles,
+    which saves the caches later runs restore, and runs no tests: the same
+    commit already passed the full suite in its merge group.
     """
     predicted = plan_from_event(
         base=base,
@@ -237,6 +285,10 @@ def resolve(
         )
     else:
         execution = predicted
+    if build_only:
+        execution = plan_from_dict(plan_to_dict(execution))
+        execution.checks = {c: v for c, v in execution.checks.items() if CHECK_JOB[c] in BUILD_ONLY_JOBS}
+        execution.jobs = {job: on and job in BUILD_ONLY_JOBS for job, on in execution.jobs.items()}
     return {
         "schema_version": SCHEMA_VERSION,
         "execution_id": uuid.uuid4().hex,
@@ -247,6 +299,7 @@ def resolve(
         "checkout_sha": checkout_sha,
         "selective_ci": selective_ci,
         "mode": mode,
+        "build_only": bool(build_only),
         "predicted": plan_to_dict(predicted),
         "execution": plan_to_dict(execution),
     }
@@ -299,10 +352,12 @@ def validate(
         raise ExecError(
             f"plan schema_version {artifact.get('schema_version')!r} != {SCHEMA_VERSION}"
         )
-    for key in ("run_id", "checkout_sha", "mode", "predicted", "execution", "execution_id"):
+    for key in ("run_id", "checkout_sha", "mode", "build_only", "predicted", "execution", "execution_id"):
         if key not in artifact:
             raise ExecError(f"plan artifact missing `{key}`")
     require_execution_id(artifact)
+    if not isinstance(artifact["build_only"], bool):
+        raise ExecError(f"plan build_only {artifact['build_only']!r} is not a boolean")
     if artifact["mode"] not in ("full", "shadow", "selective"):
         raise ExecError(f"plan mode {artifact['mode']!r} is invalid")
     if run_id is not None and str(artifact["run_id"]) != str(run_id):
@@ -369,8 +424,20 @@ def _pkg_args(pkgs: Sequence[str]) -> list[str]:
     return out
 
 
-def check_commands(check: str, plan: Plan, ctx: Context) -> list[Command]:
-    """Commands for ``check`` (prerequisites excluded)."""
+def _nextest_filter(custom: Sequence[tuple[str, str]]) -> list[str]:
+    """``-E`` filterset excluding custom-harness test binaries (run separately)."""
+    if not custom:
+        return []
+    ids = " | ".join(f"binary_id({pkg}::{target})" for pkg, target in custom)
+    return ["-E", f"not ({ids})"]
+
+
+def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "") -> list[Command]:
+    """Commands for ``check`` (prerequisites excluded).
+
+    ``event`` is the GitHub event the plan was resolved for; merge-group runs
+    retry a failed ``rust_test`` test once.
+    """
     params = plan.params(check)
     ws = str(ctx.workspace)
     ensured = any(p["kind"] == "ensure_workerd" for p in plan.prereqs(check))
@@ -474,19 +541,43 @@ def check_commands(check: str, plan: Plan, ctx: Context) -> list[Command]:
         if os.environ.get("BOOKCLERK_SKIP_WORKERD"):
             raise ExecError("CI must run the workerd contract (do not set BOOKCLERK_SKIP_WORKERD)")
         env = {**runtime_env, "BOOKCLERK_REQUIRE_TEST_GUESTS": "1"}
+        failure_mode = _nextest_mode(event)
         cmds: list[Command] = []
         if params.get("workspace"):
-            argv = ["cargo", "test", "--workspace"]
+            scope = ["--workspace"]
             for ex in params.get("exclude", []):
-                argv += ["--exclude", ex]
-            cmds.append(Command("unit + integration tests (workspace)", argv + ["--tests"], env=env))
+                scope += ["--exclude", ex]
+            custom = [t for t in CUSTOM_HARNESS_TESTS if t[0] not in params.get("exclude", [])]
+            cmds.append(
+                Command("unit + integration tests (workspace)", [*NEXTEST_RUN, *failure_mode, *scope, *_nextest_filter(custom)], env=env)
+            )
         elif params.get("packages"):
-            cmds.append(Command("unit + integration tests", ["cargo", "test", *_pkg_args(params["packages"]), "--tests"], env=env))
+            custom = [t for t in CUSTOM_HARNESS_TESTS if t[0] in params["packages"]]
+            cmds.append(
+                Command(
+                    "unit + integration tests",
+                    [*NEXTEST_RUN, *failure_mode, *_pkg_args(params["packages"]), *_nextest_filter(custom)],
+                    env=env,
+                )
+            )
+        else:
+            custom = []
+        for pkg, target in custom:
+            cmds.append(Command(f"{pkg} {target} (custom harness)", ["cargo", "test", "-p", pkg, "--test", target], env=env))
         for ft in params.get("feature_tests", []):
+            ft_custom = [t for t in CUSTOM_HARNESS_TESTS if t[0] == ft["package"]]
             cmds.append(
                 Command(
                     f"{ft['package']} tests with {','.join(ft['features'])}",
-                    ["cargo", "test", "-p", ft["package"], "--features", ",".join(ft["features"]), "--tests"],
+                    [
+                        *NEXTEST_RUN,
+                        *failure_mode,
+                        "-p",
+                        ft["package"],
+                        "--features",
+                        ",".join(ft["features"]),
+                        *_nextest_filter(ft_custom),
+                    ],
                     env=env,
                 )
             )
@@ -702,15 +793,57 @@ def planned_commands(artifact: Mapping[str, Any], check: str, ctx: Context) -> l
         raise ExecError(f"unknown check `{check}`")
     if not plan.selected(check):
         raise ExecError(f"check `{check}` is not in this run's execution plan")
+    build_only = bool(artifact.get("build_only"))
     out: list[tuple[str, Command]] = []
     for prereq in plan.prereqs(check):
+        if build_only and prereq["kind"] not in BUILD_PREREQS:
+            continue
         key_src = json.dumps({k: v for k, v in prereq.items() if k != "why"}, sort_keys=True)
         key = hashlib.sha256(key_src.encode()).hexdigest()[:16]
         for i, cmd in enumerate(prereq_commands(prereq, ctx)):
             out.append((f"{prereq['kind']}-{key}-{i}", cmd))
-    for cmd in check_commands(check, plan, ctx):
-        out.append(("", cmd))
+    for cmd in check_commands(check, plan, ctx, event=str(artifact.get("event", ""))):
+        if build_only:
+            built = build_only_command(cmd)
+            if built is not None:
+                out.append(("", built))
+        else:
+            out.append(("", cmd))
     return out
+
+
+def build_only_command(cmd: Command) -> Command | None:
+    """``cmd`` reduced to compiling, or ``None`` when it only runs or lints.
+
+    Builds, Clippy, installs and ``cargo bench --no-run`` keep running (they
+    produce the cached artifacts); test commands compile their targets with
+    ``--no-run``;
+    doctests, formatting, scripts and runtime assertions are dropped.
+    """
+    argv = cmd.argv
+    if argv[:3] == ["cargo", "nextest", "run"]:
+        # Same targets and profile as nextest's own build step.
+        scope: list[str] = []
+        i = 3
+        while i < len(argv):
+            if argv[i] in ("--failure-output", "--no-tests", "--retries", "-E"):
+                i += 2
+                continue
+            if argv[i] not in ("--no-fail-fast", "--fail-fast"):
+                scope.append(argv[i])
+            i += 1
+        return Command(cmd.label + " (build only)", ["cargo", "test", *scope, "--no-run"], cmd.cwd, cmd.env)
+    if argv[:2] == ["cargo", "test"]:
+        cargo_args = argv[2 : argv.index("--")] if "--" in argv else argv[2:]
+        if "--doc" in cargo_args:
+            return None
+        no_run = [] if "--no-run" in cargo_args else ["--no-run"]
+        return Command(cmd.label + " (build only)", ["cargo", "test", *cargo_args, *no_run], cmd.cwd, cmd.env)
+    if argv[:2] == ["cargo", "bench"] and "--no-run" in argv:
+        return cmd
+    if argv[0] == "cargo" and len(argv) > 1 and argv[1] in BUILD_SUBCOMMANDS:
+        return cmd
+    return None
 
 
 def _run_one(cmd: Command, ctx: Context) -> None:
@@ -812,6 +945,11 @@ def artifact_summary(artifact: Mapping[str, Any]) -> str:
         "shadow": "Shadow mode (`SELECTIVE_CI != 1`): every job runs; the selective prediction is recorded below for audit.",
         "selective": "Selective: jobs and checks follow the prediction.",
     }[mode]
+    if artifact.get("build_only"):
+        banner += (
+            " **Build only** (push to `main`): checks compile and save caches; no tests run,"
+            " because this commit already passed the full suite in its merge group."
+        )
     parts = [f"# CI execution: `{mode}`", "", banner, "", plan_to_summary(execution_plan(artifact), "Execution")]
     if mode == "shadow":
         parts.append(plan_to_summary(plan_from_dict(artifact["predicted"]), "Predicted (selective)"))
@@ -826,6 +964,7 @@ __all__ = [
     "PlanError",
     "SCHEMA_VERSION",
     "artifact_summary",
+    "build_only_command",
     "check_commands",
     "execution_mode",
     "gate",

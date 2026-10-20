@@ -6,12 +6,15 @@
 //! private keys are sealed with this install's DEK into one
 //! `encrypted_secrets` row (`kind = cluster_join`), and the `pending_joins`
 //! row stores only `hash_token(state)` and the public facts of the join.
-//! [`take_pending_join`] consumes the row once, when the browser comes back
-//! with the owner's code and the same `state`; a row older than
-//! [`PENDING_JOIN_TTL`] is refused and purged.
+//! [`open_pending_join`] reads the row when the browser comes back with the
+//! owner's code and the same `state`, and [`finish_pending_join`] deletes it
+//! once the redeem's outcome is final (a transient failure keeps it, so the
+//! join can be retried with the same keys); [`take_pending_join`] does both
+//! at once. A row older than [`PENDING_JOIN_TTL`] is refused, and deleted
+//! when it is opened.
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
-use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, TransactionTrait as _};
 use zeroize::Zeroizing;
 
 use super::cluster_links::{decode_spki_pin, ClusterLinkKeys};
@@ -19,7 +22,7 @@ use crate::entities::pending_joins;
 use crate::error::{LibraryError, Result};
 use crate::secrets::{
     build_sealed_record, delete_secret, get_secret, secret_account_type, secret_kind,
-    unseal_secret, upsert_secret,
+    unseal_secret, upsert_secret_on,
 };
 use crate::store::LibraryStore;
 use crate::token_hash::hash_token;
@@ -147,9 +150,16 @@ pub async fn create_pending_join(
     if let Some(pin) = join.spki_pin.as_deref() {
         decode_spki_pin(pin)?;
     }
-    if !is_display_name(&join.branch_name) || !is_display_name(&join.library_name) {
+    if !is_display_name(&join.branch_name) {
         return Err(LibraryError::Invalid(format!(
-            "branch and library names must be 1 to {MAX_JOIN_NAME_BYTES} bytes without control characters"
+            "branch names must be 1 to {MAX_JOIN_NAME_BYTES} bytes without control characters"
+        )));
+    }
+    // A library is named by its public host, which can be a long DNS name.
+    if !bookclerk_node_proto::is_library_name(&join.library_name) {
+        return Err(LibraryError::Invalid(format!(
+            "library names must be 1 to {} bytes without control characters",
+            bookclerk_node_proto::MAX_LIBRARY_NAME_BYTES
         )));
     }
     if state.len() < 16 || verifier.is_empty() || verifier.len() > MAX_VERIFIER_BYTES {
@@ -168,10 +178,13 @@ pub async fn create_pending_join(
         &state_hash,
         PENDING_JOIN_SECRET_NAME,
     )?;
-    upsert_secret(store.db(), &record).await?;
     let now = Utc::now();
     let ttl = Duration::from_std(PENDING_JOIN_TTL)
         .map_err(|_| LibraryError::Invalid("pending join ttl out of range".into()))?;
+    // The secret and its row land together: a secret without a row would
+    // never be purged. Dropping the transaction on an error rolls it back.
+    let txn = store.db().begin().await.map_err(LibraryError::Orm)?;
+    upsert_secret_on(&txn, &record).await?;
     let row = pending_joins::ActiveModel {
         state_hash: Set(state_hash),
         owner_origin: Set(origin),
@@ -185,9 +198,10 @@ pub async fn create_pending_join(
         expires_at: Set(stamp(now + ttl)),
     };
     pending_joins::Entity::insert(row)
-        .exec(store.db())
+        .exec(&txn)
         .await
         .map_err(LibraryError::Orm)?;
+    txn.commit().await.map_err(LibraryError::Orm)?;
     pending_joins::Entity::find_by_id(hash_token(state))
         .one(store.db())
         .await
@@ -196,15 +210,19 @@ pub async fn create_pending_join(
         .ok_or_else(|| LibraryError::NotFound("pending join".into()))
 }
 
-/// Consumes the pending join for `state`: answers its facts and secrets once
-/// and deletes both rows. `None` for an unknown, already consumed, or
-/// expired state.
+/// Reads the pending join for `state` without consuming it: its facts and
+/// unsealed secrets, so a redeem that fails for a reason a retry can fix
+/// (the library unreachable, or its answer lost) can be tried again with
+/// the same keys. `None` for an unknown, finished or expired state.
+///
+/// The caller serializes attempts for one state and calls
+/// [`finish_pending_join`] once the outcome is final.
 ///
 /// # Errors
 ///
-/// Returns the read or write error, or [`LibraryError::Invalid`] when the
-/// sealed material is malformed.
-pub async fn take_pending_join(store: &LibraryStore, state: &str) -> Result<Option<TakenJoin>> {
+/// Returns the read error, or [`LibraryError::Invalid`] when the sealed
+/// material is malformed.
+pub async fn open_pending_join(store: &LibraryStore, state: &str) -> Result<Option<TakenJoin>> {
     let state_hash = hash_token(state);
     let Some(row) = pending_joins::Entity::find_by_id(state_hash.clone())
         .one(store.db())
@@ -213,37 +231,20 @@ pub async fn take_pending_join(store: &LibraryStore, state: &str) -> Result<Opti
     else {
         return Ok(None);
     };
-    // Single use: only the caller whose delete removed the row goes on.
-    let deleted = pending_joins::Entity::delete_many()
-        .filter(pending_joins::Column::StateHash.eq(&state_hash))
-        .exec(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    if deleted.rows_affected != 1 {
-        return Ok(None);
-    }
-    let record = get_secret(
-        store.db(),
-        secret_kind::CLUSTER_JOIN,
-        Some(&row.owner_cluster_id),
-        secret_account_type::OPERATOR,
-        Some(&state_hash),
-        PENDING_JOIN_SECRET_NAME,
-    )
-    .await?;
-    delete_secret(
-        store.db(),
-        secret_kind::CLUSTER_JOIN,
-        Some(&row.owner_cluster_id),
-        secret_account_type::OPERATOR,
-        Some(&state_hash),
-        PENDING_JOIN_SECRET_NAME,
-    )
-    .await?;
     if row.expires_at <= stamp(Utc::now()) {
+        finish_pending_join(store, state).await?;
         return Ok(None);
     }
-    let Some(record) = record else {
+    let Some(record) = get_secret(
+        store.db(),
+        secret_kind::CLUSTER_JOIN,
+        Some(&row.owner_cluster_id),
+        secret_account_type::OPERATOR,
+        Some(&state_hash),
+        PENDING_JOIN_SECRET_NAME,
+    )
+    .await?
+    else {
         return Ok(None);
     };
     let plaintext = Zeroizing::new(unseal_secret(&record)?);
@@ -266,6 +267,63 @@ pub async fn take_pending_join(store: &LibraryStore, state: &str) -> Result<Opti
         verifier: Zeroizing::new(verifier.to_string()),
         keys,
     }))
+}
+
+/// Ends the pending join for `state`: deletes its row and sealed material.
+///
+/// # Returns
+///
+/// Whether this call removed the row (`false` when another call already
+/// did, or there was none).
+///
+/// # Errors
+///
+/// Returns the write error.
+pub async fn finish_pending_join(store: &LibraryStore, state: &str) -> Result<bool> {
+    let state_hash = hash_token(state);
+    let Some(row) = pending_joins::Entity::find_by_id(state_hash.clone())
+        .one(store.db())
+        .await
+        .map_err(LibraryError::Orm)?
+    else {
+        return Ok(false);
+    };
+    // The sealed keys go first: a row left behind by a failed delete is
+    // refused when opened (its secret is gone) and purged after its TTL.
+    delete_secret(
+        store.db(),
+        secret_kind::CLUSTER_JOIN,
+        Some(&row.owner_cluster_id),
+        secret_account_type::OPERATOR,
+        Some(&state_hash),
+        PENDING_JOIN_SECRET_NAME,
+    )
+    .await?;
+    let deleted = pending_joins::Entity::delete_many()
+        .filter(pending_joins::Column::StateHash.eq(&state_hash))
+        .exec(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(deleted.rows_affected == 1)
+}
+
+/// Consumes the pending join for `state`: answers its facts and secrets once
+/// and deletes both rows. `None` for an unknown, already consumed, or
+/// expired state.
+///
+/// # Errors
+///
+/// Returns the read or write error, or [`LibraryError::Invalid`] when the
+/// sealed material is malformed.
+pub async fn take_pending_join(store: &LibraryStore, state: &str) -> Result<Option<TakenJoin>> {
+    let opened = open_pending_join(store, state).await;
+    // Single use: only the caller whose delete removed the row goes on. An
+    // expired or malformed row goes too.
+    let removed = finish_pending_join(store, state).await?;
+    match opened? {
+        Some(taken) if removed => Ok(Some(taken)),
+        _ => Ok(None),
+    }
 }
 
 /// Deletes every expired pending join and its sealed material. Answers how

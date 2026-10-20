@@ -149,16 +149,22 @@ pub fn cgroup_sample_is_low_resource(sample: &CgroupSample) -> bool {
     }
 }
 
-/// Free bytes available to unprivileged callers (`statvfs` `f_bavail`).
+/// Free bytes available to unprivileged callers.
 ///
-/// Returns [`None`] when the path cannot be stated. Non-Unix hosts stay empty.
+/// `statvfs` `f_bavail` on Linux and macOS; `GetDiskFreeSpaceExW` (free bytes
+/// available to the caller, so quotas count) on Windows. Returns [`None`]
+/// when the path cannot be stated or on other platforms.
 #[must_use]
 pub fn filesystem_free_bytes(path: &Path) -> Option<u64> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         filesystem_free_bytes_unix(path)
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    {
+        windows_host::filesystem_free_bytes(path)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = path;
         None
@@ -238,27 +244,34 @@ fn read_memory_stat_field(path: &Path, field: &str) -> Option<u64> {
     None
 }
 
-/// Whole-machine memory and CPU counters from `/proc` (Linux).
+/// Whole-machine memory figures for heartbeats.
 ///
-/// The heartbeat diffs two [`CpuTimes`] samples to get utilization. Other
-/// platforms report nothing and the scheduler falls back to the detected
-/// capacity alone.
+/// Linux reads `/proc/meminfo`, macOS `hw.memsize` and the Mach VM
+/// statistics, Windows `GlobalMemoryStatusEx`. Other platforms report nothing
+/// and the scheduler falls back to the detected CPU capacity alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SystemMemory {
-    /// `MemTotal` in bytes.
+    /// Physical memory in bytes (`MemTotal`, `hw.memsize`, `ullTotalPhys`).
     pub total_bytes: Option<u64>,
-    /// `MemAvailable` in bytes: what new work can use without swapping.
+    /// Bytes new work can use without swapping (`MemAvailable`; free plus
+    /// inactive pages on macOS; `ullAvailPhys` on Windows).
     pub available_bytes: Option<u64>,
 }
 
 /// Cumulative CPU time counters. Two samples give utilization.
+///
+/// [`CpuTimes::System`] units differ by platform (jiffies on Linux, Mach
+/// ticks on macOS, 100 ns on Windows); only the busy/total ratio between two
+/// samples of the same host is used, so the unit cancels out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CpuTimes {
-    /// Aggregate `/proc/stat` line: busy and total jiffies across all CPUs.
+    /// Whole-machine busy and total time across all CPUs: the aggregate
+    /// `/proc/stat` line on Linux, `HOST_CPU_LOAD_INFO` on macOS,
+    /// `GetSystemTimes` on Windows.
     System {
-        /// Jiffies spent not idle (`user + nice + system + irq + softirq + steal`).
+        /// Time spent not idle (Linux: `user + nice + system + irq + softirq + steal`).
         busy: u64,
-        /// All jiffies, idle and iowait included.
+        /// All time, idle (and Linux iowait) included.
         total: u64,
     },
     /// cgroup v2 `cpu.stat` `usage_usec` of a CPU-limited cgroup.
@@ -268,7 +281,12 @@ pub enum CpuTimes {
     },
 }
 
-/// Reads `MemTotal` / `MemAvailable` from `/proc/meminfo`.
+/// Reads total and available physical memory for this machine.
+///
+/// Linux: `MemTotal` / `MemAvailable` from `/proc/meminfo`. macOS:
+/// `hw.memsize` and `HOST_VM_INFO64` (free plus inactive pages, see
+/// [`macos_vm_memory`]). Windows: `GlobalMemoryStatusEx`. Fields stay empty
+/// when the platform call fails or on other platforms.
 #[must_use]
 pub fn read_system_memory() -> SystemMemory {
     #[cfg(target_os = "linux")]
@@ -277,9 +295,68 @@ pub fn read_system_memory() -> SystemMemory {
             .map(|text| parse_meminfo(&text))
             .unwrap_or_default()
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        macos_host::system_memory()
+    }
+    #[cfg(windows)]
+    {
+        windows_host::system_memory()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         SystemMemory::default()
+    }
+}
+
+/// macOS available memory from `HOST_VM_INFO64` page counts.
+///
+/// Available is `free + inactive` pages (the figure `psutil` reports): pages
+/// the kernel hands to new work without paging anything out first. The
+/// result is clamped to `total_bytes`. A zero page size leaves it empty.
+#[must_use]
+pub fn macos_vm_memory(
+    total_bytes: Option<u64>,
+    free_pages: u64,
+    inactive_pages: u64,
+    page_size: u64,
+) -> SystemMemory {
+    let available = (page_size > 0).then(|| {
+        let bytes = free_pages
+            .saturating_add(inactive_pages)
+            .saturating_mul(page_size);
+        total_bytes.map_or(bytes, |total| bytes.min(total))
+    });
+    SystemMemory {
+        total_bytes,
+        available_bytes: available,
+    }
+}
+
+/// macOS `HOST_CPU_LOAD_INFO` ticks (`user`, `system`, `idle`, `nice`,
+/// summed over all CPUs) as [`CpuTimes::System`].
+///
+/// The kernel counters are 32-bit and wrap; a wrapped pair makes
+/// [`cpu_used_millicores`] skip that one sample rather than report nonsense.
+#[must_use]
+pub fn macos_cpu_ticks(user: u32, system: u32, idle: u32, nice: u32) -> CpuTimes {
+    let busy = u64::from(user) + u64::from(system) + u64::from(nice);
+    CpuTimes::System {
+        busy,
+        total: busy + u64::from(idle),
+    }
+}
+
+/// Windows `GetSystemTimes` values (100 ns units) as [`CpuTimes::System`].
+///
+/// `kernel` already includes `idle`, so busy is `kernel + user - idle` and
+/// total is `kernel + user`.
+#[must_use]
+pub fn windows_system_times(idle: u64, kernel: u64, user: u64) -> CpuTimes {
+    let total = kernel.saturating_add(user);
+    CpuTimes::System {
+        busy: total.saturating_sub(idle),
+        total,
     }
 }
 
@@ -302,7 +379,9 @@ pub fn parse_meminfo(text: &str) -> SystemMemory {
 /// Reads CPU time counters for utilization: the cgroup's own usage when the
 /// process runs under a CPU-limited cgroup (a container quota is the real
 /// ceiling), else the whole machine (a desktop's other applications count
-/// against what Bookclerk can use).
+/// against what Bookclerk can use). The whole-machine counters come from
+/// `/proc/stat` on Linux, `HOST_CPU_LOAD_INFO` on macOS, and
+/// `GetSystemTimes` on Windows.
 #[must_use]
 pub fn read_cpu_times(cgroup_dir: Option<&Path>, cgroup: &CgroupSample) -> Option<CpuTimes> {
     if cgroup.cpu_max_quota_us.is_some() {
@@ -321,9 +400,198 @@ pub fn read_cpu_times(cgroup_dir: Option<&Path>, cgroup: &CgroupSample) -> Optio
             .ok()
             .and_then(|text| parse_proc_stat(&text))
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        macos_host::cpu_times()
+    }
+    #[cfg(windows)]
+    {
+        windows_host::cpu_times()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         None
+    }
+}
+
+/// Mach host statistics and `sysctl` reads for macOS heartbeats.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod macos_host {
+    use super::{macos_cpu_ticks, macos_vm_memory, CpuTimes, SystemMemory};
+
+    // Declared here because `libc` deprecates its Mach port bindings in
+    // favour of `mach2`, which is not in the workspace dependency tree.
+    extern "C" {
+        /// This task's own port (`mach_task_self()` reads it).
+        static mach_task_self_: libc::mach_port_t;
+        /// Send right to the host port (`<mach/mach_init.h>`).
+        fn mach_host_self() -> libc::mach_port_t;
+        /// Releases a send right (`<mach/mach_port.h>`).
+        fn mach_port_deallocate(
+            task: libc::mach_port_t,
+            name: libc::mach_port_t,
+        ) -> libc::kern_return_t;
+    }
+
+    /// Host port send right, released on drop.
+    struct HostPort(libc::mach_port_t);
+
+    impl HostPort {
+        /// Acquires the host port.
+        fn acquire() -> Self {
+            Self(unsafe { mach_host_self() })
+        }
+    }
+
+    impl Drop for HostPort {
+        fn drop(&mut self) {
+            unsafe {
+                mach_port_deallocate(mach_task_self_, self.0);
+            }
+        }
+    }
+
+    /// `hw.memsize` in bytes.
+    fn total_bytes() -> Option<u64> {
+        let mut value: u64 = 0;
+        let mut len = std::mem::size_of::<u64>();
+        let rc = unsafe {
+            libc::sysctlbyname(
+                c"hw.memsize".as_ptr(),
+                std::ptr::addr_of_mut!(value).cast(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        (rc == 0 && len == std::mem::size_of::<u64>() && value > 0).then_some(value)
+    }
+
+    /// Total from `hw.memsize`, available from `HOST_VM_INFO64`.
+    pub(super) fn system_memory() -> SystemMemory {
+        let total = total_bytes();
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        let Ok(page_size) = u64::try_from(page_size) else {
+            return SystemMemory {
+                total_bytes: total,
+                available_bytes: None,
+            };
+        };
+        let host = HostPort::acquire();
+        let mut stats = std::mem::MaybeUninit::<libc::vm_statistics64>::zeroed();
+        let mut count = libc::HOST_VM_INFO64_COUNT;
+        let rc = unsafe {
+            libc::host_statistics64(
+                host.0,
+                libc::HOST_VM_INFO64,
+                stats.as_mut_ptr().cast(),
+                &mut count,
+            )
+        };
+        if rc != libc::KERN_SUCCESS {
+            return SystemMemory {
+                total_bytes: total,
+                available_bytes: None,
+            };
+        }
+        let stats = unsafe { stats.assume_init() };
+        let free = u64::from(stats.free_count);
+        let inactive = u64::from(stats.inactive_count);
+        macos_vm_memory(total, free, inactive, page_size)
+    }
+
+    /// Aggregate CPU ticks from `HOST_CPU_LOAD_INFO`.
+    pub(super) fn cpu_times() -> Option<CpuTimes> {
+        let host = HostPort::acquire();
+        let mut info = std::mem::MaybeUninit::<libc::host_cpu_load_info>::zeroed();
+        let mut count = libc::HOST_CPU_LOAD_INFO_COUNT;
+        let rc = unsafe {
+            libc::host_statistics(
+                host.0,
+                libc::HOST_CPU_LOAD_INFO,
+                info.as_mut_ptr().cast(),
+                &mut count,
+            )
+        };
+        if rc != libc::KERN_SUCCESS {
+            return None;
+        }
+        let ticks = unsafe { info.assume_init() }.cpu_ticks;
+        let tick = |state: libc::c_int| {
+            usize::try_from(state)
+                .ok()
+                .and_then(|i| ticks.get(i).copied())
+                .unwrap_or(0)
+        };
+        Some(macos_cpu_ticks(
+            tick(libc::CPU_STATE_USER),
+            tick(libc::CPU_STATE_SYSTEM),
+            tick(libc::CPU_STATE_IDLE),
+            tick(libc::CPU_STATE_NICE),
+        ))
+    }
+}
+
+/// Win32 memory, CPU-time, and free-space reads for Windows heartbeats.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod windows_host {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    use windows::Win32::System::Threading::GetSystemTimes;
+
+    use super::{windows_system_times, CpuTimes, SystemMemory};
+
+    /// `ullTotalPhys` / `ullAvailPhys` from `GlobalMemoryStatusEx`.
+    pub(super) fn system_memory() -> SystemMemory {
+        let mut status = MEMORYSTATUSEX {
+            dwLength: u32::try_from(std::mem::size_of::<MEMORYSTATUSEX>()).unwrap_or(0),
+            ..Default::default()
+        };
+        if unsafe { GlobalMemoryStatusEx(&mut status) }.is_err() {
+            return SystemMemory::default();
+        }
+        SystemMemory {
+            total_bytes: (status.ullTotalPhys > 0).then_some(status.ullTotalPhys),
+            available_bytes: Some(status.ullAvailPhys.min(status.ullTotalPhys)),
+        }
+    }
+
+    /// Joins a `FILETIME` into one 100 ns count.
+    fn filetime(ft: FILETIME) -> u64 {
+        (u64::from(ft.dwHighDateTime) << 32) | u64::from(ft.dwLowDateTime)
+    }
+
+    /// Whole-machine idle, kernel, and user time from `GetSystemTimes`.
+    pub(super) fn cpu_times() -> Option<CpuTimes> {
+        let mut idle = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        unsafe { GetSystemTimes(Some(&mut idle), Some(&mut kernel), Some(&mut user)) }.ok()?;
+        Some(windows_system_times(
+            filetime(idle),
+            filetime(kernel),
+            filetime(user),
+        ))
+    }
+
+    /// `GetDiskFreeSpaceExW` free bytes available to this caller.
+    pub(super) fn filesystem_free_bytes(path: &Path) -> Option<u64> {
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut available: u64 = 0;
+        unsafe { GetDiskFreeSpaceExW(PCWSTR(wide.as_ptr()), Some(&mut available), None, None) }
+            .ok()?;
+        Some(available)
     }
 }
 
@@ -499,5 +767,88 @@ mod tests {
             None,
             "no elapsed jiffies"
         );
+    }
+
+    #[test]
+    fn macos_vm_counts_normalise() {
+        // 16 KiB pages (Apple silicon): 1000 free + 3000 inactive pages.
+        let mem = super::macos_vm_memory(Some(8 << 30), 1000, 3000, 16_384);
+        assert_eq!(mem.total_bytes, Some(8 << 30));
+        assert_eq!(mem.available_bytes, Some(4000 * 16_384));
+        // Available never exceeds total.
+        let clamped = super::macos_vm_memory(Some(1024), 10, 10, 4096);
+        assert_eq!(clamped.available_bytes, Some(1024));
+        // A failed page-size read leaves available empty.
+        assert_eq!(
+            super::macos_vm_memory(None, 1, 1, 0),
+            super::SystemMemory::default()
+        );
+
+        let before = super::macos_cpu_ticks(100, 50, 800, 50);
+        let after = super::macos_cpu_ticks(200, 100, 1500, 100);
+        assert_eq!(
+            before,
+            super::CpuTimes::System {
+                busy: 200,
+                total: 1000
+            }
+        );
+        // 200 busy of 900 ticks on 9 cores is 2 cores.
+        assert_eq!(
+            super::cpu_used_millicores(before, after, 9000, std::time::Duration::from_secs(1)),
+            Some(2000)
+        );
+        // A wrapped 32-bit counter skips the sample.
+        let wrapped = super::macos_cpu_ticks(0, 0, 0, 0);
+        assert_eq!(
+            super::cpu_used_millicores(after, wrapped, 9000, std::time::Duration::from_secs(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn windows_system_times_subtract_idle_from_kernel() {
+        // Kernel time includes idle time.
+        let before = super::windows_system_times(600, 800, 200);
+        assert_eq!(
+            before,
+            super::CpuTimes::System {
+                busy: 400,
+                total: 1000
+            }
+        );
+        let after = super::windows_system_times(1100, 1600, 400);
+        // 500 busy of 1000 on 4 cores is 2 cores.
+        assert_eq!(
+            super::cpu_used_millicores(before, after, 4000, std::time::Duration::from_secs(1)),
+            Some(2000)
+        );
+        // Idle larger than the reported total saturates instead of wrapping.
+        assert_eq!(
+            super::windows_system_times(5, 1, 1),
+            super::CpuTimes::System { busy: 0, total: 2 }
+        );
+    }
+
+    #[test]
+    fn system_memory_reads_on_supported_hosts() {
+        let mem = super::read_system_memory();
+        if cfg!(any(target_os = "linux", target_os = "macos", windows)) {
+            let total = mem.total_bytes.expect("total memory");
+            let available = mem.available_bytes.expect("available memory");
+            assert!(total > 0);
+            assert!(available <= total);
+        }
+    }
+
+    #[test]
+    fn system_cpu_times_read_on_supported_hosts() {
+        let times = super::read_cpu_times(None, &super::CgroupSample::default());
+        if cfg!(any(target_os = "linux", target_os = "macos", windows)) {
+            match times.expect("cpu times") {
+                super::CpuTimes::System { busy, total } => assert!(busy <= total),
+                other => panic!("expected system times, got {other:?}"),
+            }
+        }
     }
 }

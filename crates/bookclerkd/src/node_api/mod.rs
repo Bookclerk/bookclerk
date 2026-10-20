@@ -8,6 +8,14 @@
 //! The invite list is the SPA's "Add a branch" dialog too; a mint answer is
 //! `Cache-Control: no-store`.
 //!
+//! `DELETE /api/config/node-credentials/{node_id}` revokes an enrolled
+//! host's credential: the operator or an Owner for any host, anyone else
+//! for the hosts they own.
+//!
+//! `/api/config/host-enrollment` reads and toggles the cluster's
+//! host-enrollment switch (`core.host_enrollment`). Any signed-in user may
+//! read it; only the operator or an active Owner may change it.
+//!
 //! `POST /api/node/v1/enroll` redeems a link. It sits outside the cookie and
 //! operator auth layers (the link secret is the credential) and is never
 //! disabled by `auth.enabled = false`; [`transport::classify_transport`]
@@ -23,6 +31,7 @@
 
 mod artifacts;
 pub mod branch;
+mod host_requests;
 mod host_results;
 pub mod tls;
 pub mod transport;
@@ -37,14 +46,16 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::extract::connect_info::ConnectInfo;
-use axum::extract::{Path, Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use bookclerk_library::control_plane::{
-    list_enrollment_links, mint_enrollment_link, redeem_enrollment_link, revoke_enrollment_link,
-    EnrollmentActor, EnrollmentLink, EnrollmentSecret, RedeemRequest,
+    list_enrollment_links, load_host_enrollment, mint_enrollment_link, redeem_enrollment_link,
+    revoke_enrollment_link, revoke_node_credential, set_host_enrollment_enabled,
+    verify_cluster_owner, ConfigActor, EnrollmentActor, EnrollmentLink, EnrollmentSecret,
+    NodeCredential, RedeemRequest,
 };
 use bookclerk_library::LibraryError;
 use serde::Deserialize;
@@ -104,10 +115,24 @@ pub(crate) struct PostNodeInvite {
 /// `POST /api/config/node-invites`: mint an enrollment link. Any user may
 /// mint one for themselves while host enrollment is on; the operator or an
 /// Owner may mint for any active user.
+///
+/// # Arguments
+///
+/// * `caller` - Who is asking; decides whose links they may mint.
+/// * `body` - Owner, lifetime, and label of the new link.
+///
+/// # Returns
+///
+/// `{link, url}`; the secret appears once, in `url`.
+///
+/// # Errors
+///
+/// Returns 503 `node_api_pin_unavailable` in `self_signed` mode while the
+/// certificate's SPKI pin cannot be read (nothing is minted), and an error
+/// response when the library refuses the mint.
 pub async fn post_node_invite(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
-    headers: HeaderMap,
     Json(body): Json<PostNodeInvite>,
 ) -> Result<Response, Response> {
     let for_user_id = match (body.user_id, caller) {
@@ -117,6 +142,28 @@ pub async fn post_node_invite(
                 "user_id is required: the operator has no user account".into(),
             )))
         }
+    };
+    // A self-signed owner pins its certificate in the link; resolve the pin
+    // before minting so a link a host cannot verify is never created.
+    let (origin, spki_pin) = {
+        let cfg = state.config.read().await;
+        let pin = if cfg.daemon.node_api.mode == bookclerk_config::NodeApiMode::SelfSigned {
+            match bookclerk_config::read_node_api_spki_pin(&cfg.paths().files_dir) {
+                Some(pin) => Some(pin),
+                None => {
+                    return Err((
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(json!({ "error": "node_api_pin_unavailable" })),
+                    )
+                        .into_response())
+                }
+            }
+        } else {
+            None
+        };
+        // The same origin the socket handshake verifies against, so a link
+        // minted through any listener is signed for the origin it checks.
+        (crate::origin::effective_origin_from_config(&cfg, None), pin)
     };
     let library = state.library_snapshot().await;
     let minted = mint_enrollment_link(
@@ -128,17 +175,6 @@ pub async fn post_node_invite(
     )
     .await
     .map_err(events_error)?;
-    let (origin, spki_pin) = {
-        let cfg = state.config.read().await;
-        // A self-signed owner pins its certificate in the link.
-        let pin = (cfg.daemon.node_api.mode == bookclerk_config::NodeApiMode::SelfSigned)
-            .then(|| bookclerk_config::read_node_api_spki_pin(&cfg.paths().files_dir))
-            .flatten();
-        (
-            crate::origin::effective_origin_from_config(&cfg, Some(&headers)),
-            pin,
-        )
-    };
     let url = minted.url(&origin, spki_pin.as_deref());
     // Shown once: no cache may keep it.
     Ok(branch::no_store(
@@ -150,16 +186,35 @@ pub async fn post_node_invite(
     ))
 }
 
+/// `GET /api/config/node-invites` query.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeInvitesQuery {
+    /// Only the links for the calling user's own branches (an Owner's
+    /// "Add a branch" dialog), even when the caller may see everyone's.
+    #[serde(default)]
+    mine: bool,
+}
+
 /// `GET /api/config/node-invites`: every link for the operator or an
-/// Owner; the caller's own links for anyone else.
+/// Owner; the caller's own links for anyone else, and with `?mine=true`.
 pub async fn get_node_invites(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
+    Query(query): Query<NodeInvitesQuery>,
 ) -> Result<Json<serde_json::Value>, Response> {
     let library = state.library_snapshot().await;
-    let links = list_enrollment_links(&library, &actor(caller))
+    let mut links = list_enrollment_links(&library, &actor(caller))
         .await
         .map_err(events_error)?;
+    if query.mine {
+        // The operator has no branches of its own.
+        let own = match caller {
+            UserCaller::User { user_id } => Some(user_id),
+            UserCaller::Operator => None,
+        };
+        links.retain(|link| Some(link.for_user_id) == own);
+    }
     Ok(Json(json!({
         "links": links.iter().map(link_json).collect::<Vec<_>>(),
     })))
@@ -233,10 +288,18 @@ where
             "/api/node/v1/uploads/{upload_id}/commit",
             axum::routing::post(uploads::post_commit),
         )
+        // The API deadline travels with the routes, so the TLS-only listener
+        // (which has no other layers) also drops a client that stalls its
+        // request body. An upgraded socket outlives it: only the upgrade
+        // response is timed.
+        .layer(axum::middleware::from_fn(
+            crate::api::api_timeout_middleware,
+        ))
         .with_state(state)
 }
 
-/// Checks that the node API is mounted ([`tls::node_api_mounted`]), then
+/// Checks that the node API is mounted ([`tls::node_api_mounted`], and the
+/// owner origin is still the one the TLS listener started for), then
 /// runs [`classify_transport`]. Answers 404 `node_api_unmounted` while a
 /// TLS mode has no certificate, or 403 `transport_insecure` when the
 /// connection is refused.
@@ -248,10 +311,13 @@ async fn check_transport(
     let conn = connection_info(state, parts).await;
     let decision = {
         let cfg = state.config.read().await;
-        if !tls::node_api_mounted(
-            cfg.daemon.node_api.mode,
-            parts.extensions.get::<tls::NodeApiGate>(),
-        ) {
+        let gate = parts.extensions.get::<tls::NodeApiGate>();
+        let live_origin = bookclerk_node_proto::canonical_origin(
+            &crate::origin::effective_origin_from_config(&cfg, None),
+        );
+        if !tls::node_api_mounted(cfg.daemon.node_api.mode, gate)
+            || gate.is_some_and(|gate| !gate.origin_matches(live_origin.as_deref()))
+        {
             return Err((
                 StatusCode::NOT_FOUND,
                 Json(json!({ "error": "node_api_unmounted" })),
@@ -272,6 +338,117 @@ async fn check_transport(
             Err(refused_response(reason))
         }
     }
+}
+
+/// JSON for one host credential; public keys only.
+fn credential_json(credential: &NodeCredential) -> serde_json::Value {
+    json!({
+        "node_id": credential.node_id,
+        "link_id": credential.link_id,
+        "enrolled_at": credential.enrolled_at,
+        "revoked_at": credential.revoked_at,
+        "last_connected_at": credential.last_connected_at,
+    })
+}
+
+/// `DELETE /api/config/node-credentials/{node_id}`: revoke an enrolled
+/// host's credential so it can no longer connect.
+///
+/// # Arguments
+///
+/// * `caller` - Who is asking; the operator or an Owner may revoke any host,
+///   any other active user only the hosts they own.
+/// * `node_id` - The host node to revoke.
+///
+/// # Returns
+///
+/// `{credential}` with `revoked_at` set; revoking twice keeps the first
+/// time.
+///
+/// # Errors
+///
+/// Returns 404 when the node is unknown or not the caller's, 400 when the
+/// node has no host credential, 403 for a disabled user, and an error
+/// response when the write fails.
+pub async fn delete_node_credential(
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<UserCaller>,
+    Path(node_id): Path<String>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let library = state.library_snapshot().await;
+    let credential = revoke_node_credential(&library, &actor(caller), node_id.trim())
+        .await
+        .map_err(events_error)?;
+    Ok(Json(json!({ "credential": credential_json(&credential) })))
+}
+
+/// `PUT /api/config/host-enrollment` body.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PutHostEnrollment {
+    /// Whether host nodes may enroll into this cluster.
+    enabled: bool,
+}
+
+/// `GET /api/config/host-enrollment`: whether host nodes may enroll.
+///
+/// # Returns
+///
+/// `{enabled, revision}`; `revision` is `null` while the default (enabled)
+/// applies.
+///
+/// # Errors
+///
+/// Returns an error response when the switch cannot be read.
+pub async fn get_host_enrollment(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let library = state.library_snapshot().await;
+    let settings = load_host_enrollment(&library).await.map_err(events_error)?;
+    Ok(Json(json!({
+        "enabled": settings.body.enabled,
+        "revision": settings.revision,
+    })))
+}
+
+/// `PUT /api/config/host-enrollment`: turn host enrollment on or off. The
+/// operator may always; a user only while the stored role is an active
+/// Owner.
+///
+/// # Arguments
+///
+/// * `caller` - Who is asking; a user's role is read from the database.
+/// * `body` - The new switch value.
+///
+/// # Returns
+///
+/// `{enabled, revision}` as stored.
+///
+/// # Errors
+///
+/// Returns 403 when the caller is neither the operator nor an active Owner,
+/// and an error response when the switch cannot be written.
+pub async fn put_host_enrollment(
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<UserCaller>,
+    Json(body): Json<PutHostEnrollment>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let library = state.library_snapshot().await;
+    let config_actor = match caller {
+        UserCaller::Operator => ConfigActor::Operator {
+            id: "operator".into(),
+        },
+        UserCaller::User { user_id } => verify_cluster_owner(&library, user_id)
+            .await
+            .map_err(events_error)?,
+    };
+    let doc = set_host_enrollment_enabled(&library, &config_actor, body.enabled)
+        .await
+        .map_err(events_error)?;
+    Ok(Json(json!({
+        "enabled": doc.body.enabled,
+        "revision": doc.revision,
+    })))
 }
 
 /// Largest enroll request body.
@@ -390,7 +567,7 @@ pub(crate) mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use axum::routing::{delete, get};
-    use bookclerk_config::{Config, EventsConfig};
+    use bookclerk_config::Config;
     use bookclerk_library::control_plane::bootstrap_control_plane;
     use http_body_util::BodyExt;
     use serde_json::{json, Value};
@@ -532,6 +709,10 @@ pub(crate) mod tests {
                 "/api/config/node-invites/{id}",
                 delete(super::delete_node_invite),
             )
+            .route(
+                "/api/config/node-credentials/{node_id}",
+                delete(super::delete_node_credential),
+            )
             .layer(axum::Extension(caller))
             .with_state(Arc::clone(state))
     }
@@ -560,7 +741,7 @@ pub(crate) mod tests {
             files_path,
             &files_path.join("cache"),
             None,
-            &EventsConfig::default(),
+            &Config::default(),
         )
         .await
         .unwrap();
@@ -635,6 +816,23 @@ pub(crate) mod tests {
         assert!(!listed.to_string().contains(secret));
         let (_, all) = send(&operator, "GET", "/api/config/node-invites", Value::Null).await;
         assert_eq!(all["links"].as_array().unwrap().len(), 2);
+        // `?mine=true` narrows to the caller's own (none for the operator).
+        let (_, own) = send(
+            &as_member,
+            "GET",
+            "/api/config/node-invites?mine=true",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(own["links"].as_array().unwrap().len(), 1);
+        let (_, none) = send(
+            &operator,
+            "GET",
+            "/api/config/node-invites?mine=true",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(none["links"].as_array().unwrap().len(), 0);
 
         let other_id = for_other["link"]["link_id"].as_str().unwrap();
         let (status, _) = send(
@@ -654,5 +852,159 @@ pub(crate) mod tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{revoked}");
         assert_eq!(revoked["link"]["state"], "revoked");
+    }
+
+    #[tokio::test]
+    async fn self_signed_invites_refuse_to_mint_without_a_pin() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let files = tempfile::tempdir().unwrap();
+        let (state, store) = test_state_with(
+            &files,
+            "[integrations]\npublic_origin = \"https://owner.example:8443\"\n\n[daemon.node_api]\nmode = \"self_signed\"\ntls_listen = \"127.0.0.1:0\"\n",
+        )
+        .await;
+        let member = store
+            .create_user(bookclerk_library::UserRole::Member, Some("Riley"), None)
+            .await
+            .unwrap();
+        let operator = invite_routes(&state, UserCaller::Operator);
+
+        // No certificate yet: refused, and no unpinned link is left behind.
+        let (status, refused) = send(
+            &operator,
+            "POST",
+            "/api/config/node-invites",
+            json!({ "user_id": member.id }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{refused}");
+        assert_eq!(refused["error"], "node_api_pin_unavailable");
+        let (_, listed) = send(&operator, "GET", "/api/config/node-invites", Value::Null).await;
+        assert!(listed["links"].as_array().unwrap().is_empty(), "{listed}");
+
+        // Once the pin exists, every link carries it.
+        let dir = files
+            .path()
+            .join(bookclerk_config::NODE_API_SELF_SIGNED_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pin = "A".repeat(43);
+        std::fs::write(dir.join(bookclerk_config::NODE_API_SPKI_PIN_FILE), &pin).unwrap();
+        let (status, minted) = send(
+            &operator,
+            "POST",
+            "/api/config/node-invites",
+            json!({ "user_id": member.id }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{minted}");
+        assert!(
+            minted["url"]
+                .as_str()
+                .unwrap()
+                .ends_with(&format!(".{pin}")),
+            "{minted}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_user_revokes_only_the_hosts_they_own() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let files = tempfile::tempdir().unwrap();
+        let (state, store) = test_state(&files).await;
+        let member = store
+            .create_user(bookclerk_library::UserRole::Member, Some("Riley"), None)
+            .await
+            .unwrap();
+        let other = store
+            .create_user(bookclerk_library::UserRole::Member, Some("Sam"), None)
+            .await
+            .unwrap();
+        let minted = bookclerk_library::control_plane::mint_enrollment_link(
+            &store,
+            &bookclerk_library::control_plane::EnrollmentActor::User { user_id: member.id },
+            member.id,
+            "",
+            None,
+        )
+        .await
+        .unwrap();
+        let local = enroll_route(&state, "127.0.0.1:5000", "127.0.0.1:8787");
+        let (status, enrolled) = send(
+            &local,
+            "POST",
+            "/api/node/v1/enroll",
+            json!({
+                "link_id": minted.link.link_id,
+                "secret": minted.secret.expose(),
+                "sign_pk": key(4),
+                "box_pk": box_key(5),
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{enrolled}");
+        let uri = format!(
+            "/api/config/node-credentials/{}",
+            enrolled["node_id"].as_str().unwrap()
+        );
+
+        let as_other = invite_routes(&state, UserCaller::User { user_id: other.id });
+        let (status, _) = send(&as_other, "DELETE", &uri, Value::Null).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let as_member = invite_routes(&state, UserCaller::User { user_id: member.id });
+        let (status, revoked) = send(&as_member, "DELETE", &uri, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{revoked}");
+        assert!(revoked["credential"]["revoked_at"].is_string(), "{revoked}");
+        assert!(revoked["credential"].get("sign_public_key").is_none());
+    }
+
+    #[tokio::test]
+    async fn only_the_operator_or_an_owner_toggles_host_enrollment() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let files = tempfile::tempdir().unwrap();
+        let (state, store) = test_state(&files).await;
+        let owner = store
+            .create_user(bookclerk_library::UserRole::Owner, Some("Avery"), None)
+            .await
+            .unwrap();
+        let member = store
+            .create_user(bookclerk_library::UserRole::Member, Some("Riley"), None)
+            .await
+            .unwrap();
+        let routes = |caller| {
+            axum::Router::new()
+                .route(
+                    "/api/config/host-enrollment",
+                    get(super::get_host_enrollment).put(super::put_host_enrollment),
+                )
+                .layer(axum::Extension(caller))
+                .with_state(Arc::clone(&state))
+        };
+        let as_owner = routes(UserCaller::User { user_id: owner.id });
+        let as_member = routes(UserCaller::User { user_id: member.id });
+        let operator = routes(UserCaller::Operator);
+        let uri = "/api/config/host-enrollment";
+
+        let (status, read) = send(&as_member, "GET", uri, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{read}");
+        assert_eq!(read, json!({ "enabled": true, "revision": null }));
+
+        let (status, refused) = send(&as_member, "PUT", uri, json!({ "enabled": false })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+
+        let (status, off) = send(&as_owner, "PUT", uri, json!({ "enabled": false })).await;
+        assert_eq!(status, StatusCode::OK, "{off}");
+        assert_eq!(off["enabled"], false);
+        let (_, read) = send(&as_member, "GET", uri, Value::Null).await;
+        assert_eq!(read["enabled"], false);
+
+        // The switch now refuses new links.
+        let invites = invite_routes(&state, UserCaller::User { user_id: member.id });
+        let (status, _) = send(&invites, "POST", "/api/config/node-invites", json!({})).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let (status, on) = send(&operator, "PUT", uri, json!({ "enabled": true })).await;
+        assert_eq!(status, StatusCode::OK, "{on}");
+        assert_eq!(on["enabled"], true);
     }
 }

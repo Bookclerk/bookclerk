@@ -64,6 +64,40 @@ const ARTIFACT_TIMEOUT_SECS: u64 = 120;
 /// destinations finish their writes first).
 pub const UPLOAD_ANSWER_TIMEOUT_SECS: u64 = 300;
 
+/// Seconds one read of an upload's body, or one write of it to the owner,
+/// may stall before the upload is abandoned (a stalled source or an owner
+/// that stopped reading); also how long an answer is awaited after a
+/// failed write.
+#[cfg(not(test))]
+const UPLOAD_IDLE_TIMEOUT_SECS: u64 = HTTP_TIMEOUT_SECS;
+
+/// Seconds one upload read or write may stall (short under test).
+#[cfg(test)]
+const UPLOAD_IDLE_TIMEOUT_SECS: u64 = 1;
+
+/// Bytes moved per read / write of a streamed upload.
+const UPLOAD_COPY_CHUNK: usize = 64 * 1024;
+
+/// Runs one I/O step of a streamed upload, failing it with
+/// [`std::io::ErrorKind::TimedOut`] once it stalls past
+/// [`UPLOAD_IDLE_TIMEOUT_SECS`].
+///
+/// # Errors
+///
+/// Returns the step's error, or `TimedOut`.
+async fn idle_step<T>(
+    step: impl std::future::Future<Output = std::io::Result<T>>,
+) -> std::io::Result<T> {
+    tokio::time::timeout(Duration::from_secs(UPLOAD_IDLE_TIMEOUT_SECS), step)
+        .await
+        .unwrap_or_else(|_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the upload stalled",
+            ))
+        })
+}
+
 /// A byte stream to the owner, plain (loopback) or TLS.
 pub trait OwnerIo: AsyncRead + AsyncWrite + Unpin + Send {}
 
@@ -364,12 +398,15 @@ impl OwnerEndpoint {
     /// never logged. Nothing is buffered beyond one copy chunk.
     ///
     /// An owner may answer before it has read the whole body (a lost
-    /// fence); the answer is still read after a failed write.
+    /// fence); the answer is still read after a failed write, for at most
+    /// the idle timeout. Every read of `body` and every write to the owner
+    /// must make progress within `UPLOAD_IDLE_TIMEOUT_SECS`.
     ///
     /// # Errors
     ///
     /// Returns [`DialError`] when the request cannot be made, `body` ends
-    /// early, or the answer is malformed or does not come within
+    /// early, a read or write stalls ([`DialError::Timeout`]), or the
+    /// answer is malformed or does not come within
     /// `UPLOAD_ANSWER_TIMEOUT_SECS` of the last byte.
     pub async fn put_stream<R: AsyncRead + Unpin + Send>(
         &self,
@@ -389,24 +426,42 @@ impl OwnerEndpoint {
             self.authority(),
         );
         let sent = async {
-            io.write_all(head.as_bytes()).await?;
-            let copied = tokio::io::copy(&mut body.take(length), &mut io).await?;
+            idle_step(io.write_all(head.as_bytes())).await?;
+            let mut body = body.take(length);
+            let mut chunk = vec![0u8; UPLOAD_COPY_CHUNK];
+            let mut copied = 0u64;
+            loop {
+                let n = idle_step(body.read(&mut chunk)).await?;
+                if n == 0 {
+                    break;
+                }
+                idle_step(io.write_all(&chunk[..n])).await?;
+                copied += n as u64;
+            }
             if copied != length {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
                     "the upload body ended early",
                 ));
             }
-            io.flush().await
+            idle_step(io.flush()).await
         }
         .await;
+        // After a failed write only an answer the owner already sent (or
+        // sends promptly) is worth waiting for.
+        let answer_secs = if sent.is_ok() {
+            UPLOAD_ANSWER_TIMEOUT_SECS
+        } else {
+            UPLOAD_IDLE_TIMEOUT_SECS
+        };
         let answer = tokio::time::timeout(
-            Duration::from_secs(UPLOAD_ANSWER_TIMEOUT_SECS),
+            Duration::from_secs(answer_secs),
             read_http_response(&mut io, MAX_HTTP_RESPONSE_BYTES),
         )
         .await;
         match (sent, answer) {
             (_, Ok(Ok(answer))) => Ok(answer),
+            (Err(err), _) if err.kind() == std::io::ErrorKind::TimedOut => Err(DialError::Timeout),
             (Err(err), _) => Err(DialError::Io(err)),
             (Ok(()), Ok(Err(err))) => Err(err),
             (Ok(()), Err(_)) => Err(DialError::Timeout),
@@ -669,10 +724,14 @@ async fn read_http_response(
         }
     }
     let body_start = header_end + 4;
+    // Where the next chunk's size line starts in the body: each read only
+    // scans what arrived since, so a large chunked body is not rescanned
+    // (and re-copied) after every read.
+    let mut next_chunk = 0usize;
     loop {
         let body = &buf[body_start..];
         let done = if chunked {
-            decode_chunked(body)?.is_some()
+            chunked_body_complete(body, &mut next_chunk, max_bytes)?
         } else if let Some(length) = length {
             body.len() >= length
         } else {
@@ -688,7 +747,7 @@ async fn read_http_response(
     }
     let body = &buf[body_start..];
     let body = if chunked {
-        decode_chunked(body)?.ok_or(DialError::Http)?
+        decode_chunked(body, max_bytes)?.ok_or(DialError::Http)?
     } else if let Some(length) = length {
         body.get(..length).ok_or(DialError::Http)?.to_vec()
     } else {
@@ -723,8 +782,19 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 /// Decodes a complete chunked body; `None` while incomplete.
-fn decode_chunked(mut body: &[u8]) -> Result<Option<Vec<u8>>, DialError> {
+///
+/// `max_bytes` is the cap the caller read the response under (for an
+/// artifact, the archive limit plus head room), so a chunked answer is held
+/// to the same limit as one with a `Content-Length`.
+///
+/// # Errors
+///
+/// Returns [`DialError::Http`] for a malformed chunk size, or one whose
+/// chunk would end past `max_bytes` of body.
+fn decode_chunked(mut body: &[u8], max_bytes: usize) -> Result<Option<Vec<u8>>, DialError> {
     let mut out = Vec::new();
+    // Bytes of the whole body already behind `body`.
+    let mut consumed = 0usize;
     loop {
         let Some(line_end) = find(body, b"\r\n") else {
             return Ok(None);
@@ -736,14 +806,64 @@ fn decode_chunked(mut body: &[u8]) -> Result<Option<Vec<u8>>, DialError> {
         if size == 0 {
             return Ok(Some(out));
         }
-        let Some(data) = body.get(data_start..data_start + size) else {
+        // The size is the owner's: a chunk that cannot fit in a response
+        // this client accepts is refused rather than waited for.
+        let data_end = data_start
+            .checked_add(size)
+            .filter(|end| {
+                consumed
+                    .checked_add(*end)
+                    .is_some_and(|end| end <= max_bytes)
+            })
+            .ok_or(DialError::Http)?;
+        let rest_start = data_end.checked_add(2).ok_or(DialError::Http)?;
+        let Some(data) = body.get(data_start..data_end) else {
             return Ok(None);
         };
         out.extend_from_slice(data);
-        let Some(rest) = body.get(data_start + size + 2..) else {
+        let Some(rest) = body.get(rest_start..) else {
             return Ok(None);
         };
+        consumed += rest_start;
         body = rest;
+    }
+}
+
+/// True once `body` holds a whole chunked body, scanning chunk headers from
+/// `*next_chunk` (the offset of the first size line not yet passed, which
+/// it advances) without copying chunk data. Fails as [`decode_chunked`]
+/// does on a malformed size line or a chunk past `max_bytes`.
+///
+/// # Errors
+///
+/// [`DialError::Http`] on a malformed size line or a chunk that cannot fit
+/// in `max_bytes`.
+fn chunked_body_complete(
+    body: &[u8],
+    next_chunk: &mut usize,
+    max_bytes: usize,
+) -> Result<bool, DialError> {
+    loop {
+        let rest = body.get(*next_chunk..).ok_or(DialError::Http)?;
+        let Some(line_end) = find(rest, b"\r\n") else {
+            return Ok(false);
+        };
+        let size_text = std::str::from_utf8(&rest[..line_end]).map_err(|_| DialError::Http)?;
+        let size_text = size_text.split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(size_text, 16).map_err(|_| DialError::Http)?;
+        if size == 0 {
+            return Ok(true);
+        }
+        let data_end = (*next_chunk)
+            .checked_add(line_end + 2)
+            .and_then(|start| start.checked_add(size))
+            .filter(|end| *end <= max_bytes)
+            .ok_or(DialError::Http)?;
+        let after = data_end.checked_add(2).ok_or(DialError::Http)?;
+        if after > body.len() {
+            return Ok(false);
+        }
+        *next_chunk = after;
     }
 }
 
@@ -885,13 +1005,134 @@ mod tests {
         assert_eq!(endpoint.authority(), "owner.example");
     }
 
+    /// A source that never yields a byte.
+    struct Stalled;
+
+    impl AsyncRead for Stalled {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    /// An owner that accepts one connection and then neither reads nor
+    /// answers; the connection is held until the test ends.
+    async fn silent_owner() -> (OwnerEndpoint, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let held = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let endpoint = OwnerEndpoint::new(&format!("http://127.0.0.1:{port}"), None).unwrap();
+        (endpoint, held)
+    }
+
+    /// A body source that stalls fails the upload at the idle timeout
+    /// instead of holding it open forever.
+    #[tokio::test]
+    async fn an_upload_whose_body_stalls_times_out() {
+        let (endpoint, held) = silent_owner().await;
+        let out = tokio::time::timeout(
+            Duration::from_secs(20),
+            endpoint.put_stream("/upload", "Bookclerk-Upload t", 10, Stalled),
+        )
+        .await
+        .expect("the stalled read is abandoned");
+        assert!(matches!(out, Err(DialError::Timeout)), "{out:?}");
+        held.abort();
+    }
+
+    /// An owner that stops reading fails the upload at the idle timeout
+    /// once the socket buffers are full.
+    #[tokio::test]
+    async fn an_upload_the_owner_stops_reading_times_out() {
+        let (endpoint, held) = silent_owner().await;
+        let length = 256u64 << 20;
+        let out = tokio::time::timeout(
+            Duration::from_secs(60),
+            endpoint.put_stream(
+                "/upload",
+                "Bookclerk-Upload t",
+                length,
+                tokio::io::repeat(7).take(length),
+            ),
+        )
+        .await
+        .expect("the stalled write is abandoned");
+        assert!(matches!(out, Err(DialError::Timeout)), "{out:?}");
+        held.abort();
+    }
+
+    /// A body shorter than its declared length is refused after the copy.
+    #[tokio::test]
+    async fn an_upload_body_that_ends_early_is_refused() {
+        let (endpoint, held) = silent_owner().await;
+        let out = endpoint
+            .put_stream("/upload", "Bookclerk-Upload t", 10, &b"abc"[..])
+            .await;
+        assert!(
+            matches!(&out, Err(DialError::Io(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof),
+            "{out:?}"
+        );
+        held.abort();
+    }
+
     #[test]
     fn chunked_bodies_decode() {
         assert_eq!(
-            decode_chunked(b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n").unwrap(),
+            decode_chunked(
+                b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n",
+                MAX_HTTP_RESPONSE_BYTES
+            )
+            .unwrap(),
             Some(b"Wikipedia".to_vec())
         );
-        assert_eq!(decode_chunked(b"4\r\nWi").unwrap(), None);
-        assert!(decode_chunked(b"zz\r\n").is_err());
+        assert_eq!(
+            decode_chunked(b"4\r\nWi", MAX_HTTP_RESPONSE_BYTES).unwrap(),
+            None
+        );
+        assert!(decode_chunked(b"zz\r\n", MAX_HTTP_RESPONSE_BYTES).is_err());
+        // Scanned in pieces, the cursor only moves past whole chunks.
+        let whole = b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n";
+        let mut next = 0;
+        assert!(!chunked_body_complete(&whole[..6], &mut next, MAX_HTTP_RESPONSE_BYTES).unwrap());
+        assert_eq!(next, 0);
+        assert!(!chunked_body_complete(&whole[..12], &mut next, MAX_HTTP_RESPONSE_BYTES).unwrap());
+        assert_eq!(next, 9);
+        assert!(chunked_body_complete(whole, &mut next, MAX_HTTP_RESPONSE_BYTES).unwrap());
+        assert!(chunked_body_complete(b"zz\r\n", &mut 0, MAX_HTTP_RESPONSE_BYTES).is_err());
+        assert!(chunked_body_complete(b"ffffffffffffffff\r\nab", &mut 0, usize::MAX).is_err());
+        // An owner-chosen size that overflows, or that no accepted
+        // response could hold, is refused instead of waited for.
+        assert!(matches!(
+            decode_chunked(b"ffffffffffffffff\r\nab", usize::MAX),
+            Err(DialError::Http)
+        ));
+        let too_big = format!("{:x}\r\nab", MAX_HTTP_RESPONSE_BYTES);
+        assert!(matches!(
+            decode_chunked(too_big.as_bytes(), MAX_HTTP_RESPONSE_BYTES),
+            Err(DialError::Http)
+        ));
+    }
+
+    /// A chunked artifact larger than the fixed frame cap decodes under the
+    /// caller's larger cap (a proxy may re-encode a `Content-Length` body
+    /// as chunked), and is still refused past that cap.
+    #[test]
+    fn a_chunked_body_is_held_to_the_callers_cap() {
+        let payload = vec![b'x'; MAX_HTTP_RESPONSE_BYTES * 2];
+        let mut body = format!("{:x}\r\n", payload.len()).into_bytes();
+        body.extend_from_slice(&payload);
+        body.extend_from_slice(b"\r\n0\r\n\r\n");
+        let cap = payload.len() + MAX_HTTP_RESPONSE_BYTES;
+        assert_eq!(decode_chunked(&body, cap).unwrap(), Some(payload.clone()));
+        assert!(matches!(
+            decode_chunked(&body, MAX_HTTP_RESPONSE_BYTES),
+            Err(DialError::Http)
+        ));
     }
 }

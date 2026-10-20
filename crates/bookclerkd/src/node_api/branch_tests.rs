@@ -214,18 +214,28 @@ async fn a_consented_code_enrolls_one_node_and_retries_replay() {
     assert_eq!(consent["user"]["id"], member);
 
     let code = approve(&app, &v).await;
-    let (status, _, enrolled) = call(
-        &app,
-        "POST",
-        "/api/node/v1/enroll/oauth",
-        Some(redeem(&code, &v, 4)),
-    )
-    .await;
+    // The redeem body names the branch differently: the node is still
+    // labelled with the name the user consented to.
+    let mut renamed = redeem(&code, &v, 4);
+    renamed["branch_name"] = json!("Not Den PC");
+    let (status, _, enrolled) =
+        call(&app, "POST", "/api/node/v1/enroll/oauth", Some(renamed)).await;
     assert_eq!(status, StatusCode::OK, "{enrolled}");
     let node_id = enrolled["node_id"].as_str().unwrap().to_string();
     let node = load_node(&store, &node_id).await.unwrap();
     assert_eq!(node.kind, NodeKind::Host);
     assert_eq!(node.owner_user_id, Some(member));
+    {
+        use bookclerk_library::entities::node_enrollment_links as links;
+        use sea_orm::{ColumnTrait as _, EntityTrait as _, QueryFilter as _};
+        let link = links::Entity::find()
+            .filter(links::Column::RedeemedNodeId.eq(node_id.as_str()))
+            .one(store.db())
+            .await
+            .unwrap()
+            .expect("the redeemed link");
+        assert_eq!(link.label, "Den PC");
+    }
 
     // A retry of the same exchange (a lost answer) replays the same node.
     let (status, _, again) = call(

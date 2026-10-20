@@ -1257,10 +1257,37 @@ impl JobKind {
     pub fn dedup_key(self, payload: &JobPayload) -> String {
         let account = payload.account.as_deref().unwrap_or("all");
         match self {
-            Self::Scan => format!("scan:account={account}"),
+            Self::Scan => match payload
+                .plugin_instance_id
+                .as_deref()
+                .filter(|id| !id.is_empty())
+            {
+                // A pinned scan covers one instance, so it must not stand in
+                // for an unpinned scan of the same account, or for another pin.
+                Some(instance) => format!("scan:account={account}:instance={instance}"),
+                None => format!("scan:account={account}"),
+            },
             Self::Acquire => {
                 let title = payload.title.as_deref().unwrap_or("all");
-                format!("acquire:title={title}:account={account}")
+                // A forced or PDF-only acquire is different work from a plain
+                // one; the plain key keeps its historical form.
+                let mut key = format!("acquire:title={title}:account={account}");
+                if payload.force {
+                    key.push_str(":force=1");
+                }
+                if payload.pdf_only {
+                    key.push_str(":pdf=1");
+                }
+                // A pinned acquire runs only that instance's plugin, so it
+                // must not stand in for an unpinned one or another pin.
+                if let Some(instance) = payload
+                    .plugin_instance_id
+                    .as_deref()
+                    .filter(|id| !id.is_empty())
+                {
+                    key.push_str(&format!(":instance={instance}"));
+                }
+                key
             }
             Self::ListenSync => "listen_sync".into(),
             Self::IntegrationScan => {
@@ -1441,7 +1468,9 @@ pub struct JobPayload {
     /// Integration plugin id for [`JobKind::IntegrationScan`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub integration_id: Option<String>,
-    /// When true, an integration scan asks the remote to rescan.
+    /// When true, an integration scan asks the remote to rescan, and an
+    /// acquire re-downloads titles already acquired (run only by nodes that
+    /// hold the library database).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub force: bool,
     /// Destination plugin id for [`JobKind::PluginCopy`].
@@ -1465,6 +1494,22 @@ pub struct JobPayload {
     /// retryable failure must not keep later claims in the resume path.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub resume_pending: bool,
+    /// For [`JobKind::Acquire`]: fetch only each title's companion PDF.
+    ///
+    /// Run only by nodes that hold the library database; a Host is never
+    /// handed such a job (`control_plane::node_may_claim_job`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pdf_only: bool,
+    /// Unix milliseconds when the requirements sweep first found this pending
+    /// job's [`Self::requires`] unsettled: no node runs all of them, or one of
+    /// them is no longer deployed anywhere.
+    ///
+    /// Cleared when they settle again. The sweep fails the job (or, when only
+    /// a dropped instance is involved, rewrites it) once it has been unsettled
+    /// for its grace period, so a placement move that briefly leaves no common
+    /// node does not fail queued work (`control_plane::sweep_job_requirements`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_unsettled_since_ms: Option<i64>,
 }
 
 /// Default envelope version for missing `v` on well-formed legacy rows.
@@ -1489,6 +1534,8 @@ impl Default for JobPayload {
             checkpoint: None,
             invocation_sequence: None,
             resume_pending: false,
+            pdf_only: false,
+            requires_unsettled_since_ms: None,
         }
     }
 }
@@ -1525,6 +1572,30 @@ pub enum EnqueueOutcome {
     },
     /// `pending + running` already equals `max_pending`.
     QueueFull,
+}
+
+/// Where the next page of routed-claim candidates starts (keyset paging).
+///
+/// Candidates are ordered by `priority DESC, created_at ASC, id ASC`; the
+/// cursor is the last row of the previous page, so rows that leave the
+/// pending state between pages never shift the window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobClaimCursor {
+    /// Priority of the last row read.
+    pub priority: i64,
+    /// `created_at` (RFC 3339 text) of the last row read.
+    pub created_at: String,
+    /// Id of the last row read.
+    pub id: String,
+}
+
+/// One page of routed-claim candidates.
+#[derive(Debug, Clone, Default)]
+pub struct JobClaimPage {
+    /// Readable, not cancel-requested pending jobs, best first.
+    pub jobs: Vec<JobRecord>,
+    /// Where the next page starts, or `None` when no row remains.
+    pub next: Option<JobClaimCursor>,
 }
 
 /// Durable job row returned to the daemon API and worker.

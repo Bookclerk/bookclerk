@@ -4,7 +4,8 @@
 //!
 //! The connection type is chosen on the library's consent page and bound to
 //! the authorization code there: a branch code is granted [`BRANCH_SCOPE`],
-//! a clerk code [`CLERK_GRANTED_SCOPE`], and the redeem names the type it
+//! a clerk code [`CLERK_GRANTED_SCOPE`] (the library stores either with the
+//! consented branch name after it), and the redeem names the type it
 //! expects ([`ConnectionType`]), so a code approved for a branch can never
 //! be redeemed as a clerk (or the other way round).
 //!

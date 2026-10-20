@@ -2353,16 +2353,10 @@ fn setting_value_json(value: &SettingValue) -> serde_json::Value {
     }
 }
 
-/// Reads one secret from stdin (first line, trailing newline removed).
+/// Reads one secret from stdin (first line, trailing newline removed); on
+/// a terminal, prompts with echo off.
 fn read_secret_from_stdin() -> anyhow::Result<String> {
-    use std::io::{IsTerminal, Read};
-    let mut text = String::new();
-    if std::io::stdin().is_terminal() {
-        eprint!("secret value: ");
-        std::io::stdin().read_line(&mut text)?;
-    } else {
-        std::io::stdin().read_to_string(&mut text)?;
-    }
+    let text = crate::secret_input::read_secret_stdin("secret value: ")?;
     let value = text
         .split_once('\n')
         .map_or(text.as_str(), |(first, _)| first)

@@ -4,7 +4,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bookclerk_config::EventsConfig;
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, ConnectionTrait, EntityTrait, TransactionTrait};
 use uuid::Uuid;
 
@@ -70,9 +69,15 @@ fn fixture_schema() -> bookclerk_plugin_abi::SettingsSchema {
 
 async fn bootstrap(store: &LibraryStore, files: &std::path::Path) -> ControlPlaneSession {
     let scratch = files.join("cache");
-    bootstrap_control_plane(store, files, &scratch, None, &EventsConfig::default())
-        .await
-        .expect("bootstrap")
+    bootstrap_control_plane(
+        store,
+        files,
+        &scratch,
+        None,
+        &bookclerk_config::Config::default(),
+    )
+    .await
+    .expect("bootstrap")
 }
 
 #[tokio::test]

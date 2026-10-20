@@ -24,7 +24,9 @@ import { ApiError, type ConfigNodeView } from "@/lib/api";
 
 /** What a library says about itself, read by this install's daemon. */
 export interface LibraryInfoView {
+  /** The library's owner cluster id: stable, and what a branch link is keyed by. */
   cluster_id: string;
+  /** The library's public host name, from its origin (at most 253 bytes). */
   library_name: string;
   /** The library's canonical origin (`https://library.example`). */
   origin: string;
@@ -34,17 +36,23 @@ export interface LibraryInfoView {
   enrollment: boolean;
   /** SPKI fingerprint to confirm (self-signed libraries only). */
   fingerprint: string | null;
+  /** True when the join must confirm `fingerprint` before it can start (self-signed transport). */
   needs_fingerprint: boolean;
 }
 
 /** A library this install is a branch of (no key material). */
 export interface BranchLinkView {
+  /** The library's owner cluster id. */
   cluster_id: string;
+  /** The library's canonical origin this install dials. */
   owner_origin: string;
+  /** The node id the library minted for this install when it joined. */
   node_id: string;
+  /** True when this install pins the library's certificate (SPKI) instead of trusting public CAs. */
   pinned: boolean;
   /** `active`, `revoked` (by the library), or `left`. */
   state: string;
+  /** When this install joined (RFC 3339, UTC). */
   enrolled_at: string;
   /** Whether this daemon's client for it is running. */
   running?: boolean;
@@ -54,8 +62,11 @@ export interface BranchLinkView {
 export interface JoinStatus {
   /** No Owner, no Administrator, and no library joined yet. */
   fresh: boolean;
+  /** True when this install has an Owner or an Administrator. */
   has_owner: boolean;
+  /** The branch name the join form suggests (this machine's name). */
   default_branch_name: string;
+  /** Every library this install has joined, current or past. */
   links: BranchLinkView[];
   /** This install is empty, so it may offer to join as a clerk. */
   clerk_eligible?: boolean;
@@ -68,9 +79,13 @@ export type ConnectionType = "branch" | "clerk";
 
 /** `POST /api/config/join/start`. */
 export interface JoinStart {
+  /** The library's sign-in URL to send the browser to (state and S256 challenge included). */
   authorize_url: string;
+  /** The library as this daemon read it when the join started. */
   library: LibraryInfoView;
+  /** The branch name the library's users will see (trimmed; this machine's name by default). */
   branch_name: string;
+  /** Seconds until the pending sign-in (its verifier and node keys) expires. */
   expires_in_secs: number;
   /** Whether the sign-in offered to join as a clerk. */
   clerk_offered?: boolean;
@@ -92,11 +107,15 @@ export type ConnectionChoiceView =
 
 /** `GET /api/auth/branch-consent`: what the consent page shows. */
 export interface BranchConsentView {
+  /** This library's name, as the consent question shows it. */
   library_name: string;
+  /** The name the joining install asked to appear as. */
   branch_name: string;
   /** Where the browser goes back to (the joining install). */
   redirect_origin: string;
+  /** False when this library has "Let new branches join" off; consent then refuses. */
   enrollment: boolean;
+  /** The signed-in user the branch would belong to. */
   user: { id: number; display_name: string | null };
   /** Branch or clerk (absent from an older library: branch only). */
   connection?: ConnectionChoiceView;
@@ -130,23 +149,37 @@ export interface BranchJoined {
 
 /** `GET /api/config/branches`: Settings → Branches on the library. */
 export interface BranchSettingsView {
+  /** This library's name, as joining installs see it. */
   library_name: string;
+  /** This library's canonical origin, which branches dial. */
   origin: string;
+  /** Node API transport (`loopback`, `proxy`, `acme`, `self_signed`). */
   transport: string;
+  /** "Let new branches join": whether sign-ins and invites may enroll new branches. */
   enrollment: boolean;
+  /** The certificate fingerprint a joining install confirms (self-signed transport only). */
   spki_fingerprint: string | null;
 }
 
 /** A branch invite as listed (never its secret). */
 export interface BranchInviteView {
+  /** The invite's id (not its secret). */
   link_id: string;
+  /** The user whose branch the invite enrolls. */
   for_user_id: number;
+  /** A note the minting user gave the invite. */
   label: string;
+  /** Audit id of the user who minted the invite. */
   created_by: string;
+  /** When it was minted (RFC 3339, UTC). */
   created_at: string;
+  /** When it stops working if not redeemed (RFC 3339, UTC). */
   expires_at: string;
+  /** When a branch used it (RFC 3339, UTC); an invite is single-use. */
   redeemed_at: string | null;
+  /** The node id minted for the branch that used it. */
   redeemed_node_id: string | null;
+  /** When it was revoked (RFC 3339, UTC), if it was. */
   revoked_at: string | null;
   /** `pending`, `redeemed`, `revoked`, or `expired`. */
   state: string;
@@ -154,7 +187,9 @@ export interface BranchInviteView {
 
 /** A freshly minted branch invite: `url` is shown once and dropped. */
 export interface MintedBranchInvite {
+  /** The invite as it is listed from now on. */
   link: BranchInviteView;
+  /** The whole invite, secret included: shown once, never stored. */
   url: string;
 }
 
@@ -187,8 +222,15 @@ async function joinError(res: Response): Promise<JoinApiError> {
 
 /** A join API refusal; `origin` is the library's own address on a mismatch. */
 export class JoinApiError extends ApiError {
+  /** The library's own canonical origin, when the refusal was an address mismatch. */
   origin?: string;
 
+  /**
+   * @param status - HTTP status of the refusal.
+   * @param message - The server's detail, for display.
+   * @param code - The server's machine-readable `error` code, when it sent one.
+   * @param origin - The library's own origin, on an address mismatch.
+   */
   constructor(status: number, message: string, code?: string, origin?: string) {
     super(status, message, { code });
     this.name = "JoinApiError";
@@ -406,10 +448,13 @@ export function mintBranchInvite(body: {
 /**
  * Outstanding and past branch invites the caller may see (no secrets).
  *
+ * @param mine - Only the caller's own, even for an Owner who may see all.
  * @returns The invites.
  */
-export function listBranchInvites(): Promise<{ links: BranchInviteView[] }> {
-  return request("/api/config/node-invites");
+export function listBranchInvites(
+  mine = false,
+): Promise<{ links: BranchInviteView[] }> {
+  return request(mine ? "/api/config/node-invites?mine=true" : "/api/config/node-invites");
 }
 
 /**
@@ -426,8 +471,11 @@ export function revokeBranchInvite(linkId: string): Promise<{ link: BranchInvite
 
 /** What the library sent back to `/join/callback`. */
 export interface JoinCallback {
+  /** The one-use authorization code; empty when the sign-in was refused. */
   code: string;
+  /** The opaque sign-in id this daemon issued, echoed back by the library. */
   state: string;
+  /** The library's OAuth error (`access_denied` when its user said no), if any. */
   error: string | null;
   /** `clerk` when the library approved a clerk join. */
   connection?: ConnectionType;

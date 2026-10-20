@@ -300,15 +300,26 @@ impl Resolved {
 
 /// Resolves `actor` against the stored user row; a disabled or unknown user
 /// is refused.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Forbidden`] when the user is unknown or
+/// disabled, and the store error unchanged when the lookup itself fails, so
+/// an outage is not reported as a denial.
 async fn resolve(store: &LibraryStore, actor: &EnrollmentActor) -> Result<Resolved> {
     match actor {
         EnrollmentActor::Operator { id } => Ok(Resolved::Admin {
             audit: format!("operator:{id}"),
         }),
         EnrollmentActor::User { user_id } => {
-            let user = active_user(store, *user_id).await.map_err(|_| {
-                LibraryError::Forbidden(format!("user {user_id} is not an active user"))
-            })?;
+            let user = active_user(store, *user_id)
+                .await
+                .map_err(|err| match err {
+                    LibraryError::NotFound(_) | LibraryError::Invalid(_) => {
+                        LibraryError::Forbidden(format!("user {user_id} is not an active user"))
+                    }
+                    other => other,
+                })?;
             if user.role == UserRole::Owner {
                 Ok(Resolved::Admin {
                     audit: format!("owner:{user_id}"),
@@ -468,6 +479,9 @@ pub struct EnrollmentToken {
 
 /// Parses a token, or a whole link whose fragment is the token.
 ///
+/// The secret is registered for redaction, so logs and diagnostics scrub
+/// it in the process that parsed it.
+///
 /// # Errors
 ///
 /// Returns [`LibraryError::Invalid`] when the text is not a `bcn1` token.
@@ -495,6 +509,9 @@ pub fn parse_enrollment_token(raw: &str) -> Result<EnrollmentToken> {
     if parts.next().is_some() {
         return Err(invalid());
     }
+    // A joining host learns the secret only here, so make it known to the
+    // log and diagnostics scrubber before any caller can print it.
+    bookclerk_config::register_secret(secret);
     Ok(EnrollmentToken {
         link_id: link_id.to_string(),
         secret: EnrollmentSecret(Zeroizing::new(secret.to_string())),
@@ -516,9 +533,89 @@ fn is_base64url(raw: &str) -> bool {
         .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// SQL predicate, and its binds after scope and namespace, that holds
+/// while `core.host_enrollment` is still the revision `seen` was read at.
+fn switch_unchanged_predicate(
+    seen: &HostEnrollmentSettings,
+) -> (&'static str, Vec<bookclerk_plugin_abi::DbValue>) {
+    match seen.revision {
+        None => (
+            "NOT EXISTS (SELECT 1 FROM configuration_documents \
+              WHERE scope_type = ? AND scope_id = ? AND namespace = ?)",
+            Vec::new(),
+        ),
+        Some(revision) => (
+            "EXISTS (SELECT 1 FROM configuration_documents \
+              WHERE scope_type = ? AND scope_id = ? AND namespace = ? AND revision = ?)",
+            vec![int(revision)],
+        ),
+    }
+}
+
+/// Columns of a new `node_enrollment_links` row.
+pub(super) struct NewLink<'a> {
+    /// Link id.
+    pub(super) link_id: &'a str,
+    /// Hash of the link secret.
+    pub(super) token_hash: &'a str,
+    /// User the link enrolls a host for.
+    pub(super) for_user_id: i64,
+    /// Operator-facing label.
+    pub(super) label: &'a str,
+    /// Audit id of the minting actor.
+    pub(super) created_by: &'a str,
+    /// RFC 3339 mint time.
+    pub(super) created_at: &'a str,
+    /// RFC 3339 expiry.
+    pub(super) expires_at: &'a str,
+}
+
+/// Inserts `row` only while `core.host_enrollment` is still the enabled
+/// revision `seen`, in one statement, so a disable that commits after the
+/// switch was read mints nothing.
+///
+/// # Returns
+///
+/// `true` when the row was inserted, `false` when the switch changed.
+///
+/// # Errors
+///
+/// Returns the write error when the statement fails.
+pub(super) async fn insert_link_while_switch_holds(
+    store: &LibraryStore,
+    seen: &HostEnrollmentSettings,
+    row: &NewLink<'_>,
+) -> Result<bool> {
+    let (switch_sql, mut switch_binds) = switch_unchanged_predicate(seen);
+    let mut binds = vec![
+        text(row.link_id),
+        text(row.token_hash),
+        int(row.for_user_id),
+        text(row.label),
+        text(row.created_by),
+        text(row.created_at),
+        text(row.expires_at),
+        text(CLUSTER_SCOPE_TYPE),
+        text(CLUSTER_SCOPE_ID),
+        text(HOST_ENROLLMENT_NAMESPACE),
+    ];
+    binds.append(&mut switch_binds);
+    let sql = format!(
+        "INSERT INTO node_enrollment_links (
+            link_id, token_hash, for_user_id, label, created_by, created_at, expires_at
+         ) SELECT ?, ?, ?, ?, ?, ?, ? WHERE {switch_sql}"
+    );
+    let operation_id = format!("enrollment.mint:{}", row.link_id);
+    let reply =
+        batch::execute_host_batch(store, request(&operation_id, vec![exec(&sql, binds)])).await?;
+    Ok(batch::rows_affected(&reply, 0) == 1)
+}
+
 /// Mints a link that enrolls one host node for `for_user_id`.
 ///
-/// `ttl` defaults to 24 hours and must be 5 minutes to 7 days.
+/// `ttl` defaults to 24 hours and must be 5 minutes to 7 days. The insert
+/// is predicated on the enrollment switch revision read as enabled, so a
+/// disable that commits while the link is minted wins.
 ///
 /// # Errors
 ///
@@ -541,7 +638,8 @@ pub async fn mint_enrollment_link(
             "only the operator or an Owner may mint an enrollment link for another user".into(),
         ));
     }
-    if !load_host_enrollment(store).await?.body.enabled {
+    let enrollment = load_host_enrollment(store).await?;
+    if !enrollment.body.enabled {
         return Err(enrollment_disabled());
     }
     let ttl = ttl.unwrap_or(DEFAULT_LINK_TTL);
@@ -561,26 +659,25 @@ pub async fn mint_enrollment_link(
     let mut raw = Zeroizing::new([0u8; SECRET_BYTES]);
     rand::rngs::OsRng.fill_bytes(raw.as_mut());
     let secret = EnrollmentSecret(Zeroizing::new(base64_url(raw.as_ref())));
+    // Known to the log and diagnostics scrubber before anything can print
+    // the returned token or the enrollment URL that carries it.
+    bookclerk_config::register_secret(secret.expose());
     let link_id = uuid::Uuid::new_v4().simple().to_string();
     let now = Utc::now();
     let ttl = Duration::from_std(ttl)
         .map_err(|_| LibraryError::Invalid("enrollment link ttl is out of range".into()))?;
-    let model = node_enrollment_links::ActiveModel {
-        link_id: Set(link_id.clone()),
-        token_hash: Set(hash_token(secret.expose())),
-        for_user_id: Set(for_user_id),
-        label: Set(label.to_string()),
-        created_by: Set(resolved.audit()),
-        created_at: Set(stamp(now)),
-        expires_at: Set(stamp(now + ttl)),
-        redeemed_at: Set(None),
-        redeemed_node_id: Set(None),
-        revoked_at: Set(None),
+    let row = NewLink {
+        link_id: &link_id,
+        token_hash: &hash_token(secret.expose()),
+        for_user_id,
+        label,
+        created_by: &resolved.audit(),
+        created_at: &stamp(now),
+        expires_at: &stamp(now + ttl),
     };
-    node_enrollment_links::Entity::insert(model)
-        .exec(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    if !insert_link_while_switch_holds(store, &enrollment, &row).await? {
+        return Err(enrollment_disabled());
+    }
     let link = load_link(store, &link_id)
         .await?
         .ok_or_else(|| LibraryError::NotFound(format!("enrollment link {link_id}")))?;
@@ -716,8 +813,9 @@ pub fn authorized_enrollment_link(code: &str, verifier: &str) -> (String, Enroll
 
 /// Records the link an approved branch sign-in redeems through
 /// ([`authorized_enrollment_link`]), for `for_user_id`, the user who signed
-/// in and consented. Called only after the authorization code was consumed
-/// and its PKCE verifier checked; the redeem itself is
+/// in and consented. Called only after the authorization code's client,
+/// redirect and PKCE verifier were checked, before the code is consumed, so
+/// a failed write leaves the code usable; the redeem itself is
 /// [`redeem_enrollment_link`], the same canonical batch a minted link takes.
 ///
 /// A second call for the same link id leaves the first row as it is.
@@ -955,18 +1053,7 @@ pub async fn redeem_enrollment_link_as(
         owner_user_id: link.for_user_id,
     })
     .map_err(|err| LibraryError::Other(anyhow::anyhow!("redeem receipt encode: {err}")))?;
-    let (switch_sql, mut switch_binds) = match enrollment.revision {
-        None => (
-            "NOT EXISTS (SELECT 1 FROM configuration_documents \
-              WHERE scope_type = ? AND scope_id = ? AND namespace = ?)",
-            Vec::new(),
-        ),
-        Some(revision) => (
-            "EXISTS (SELECT 1 FROM configuration_documents \
-              WHERE scope_type = ? AND scope_id = ? AND namespace = ? AND revision = ?)",
-            vec![int(revision)],
-        ),
-    };
+    let (switch_sql, mut switch_binds) = switch_unchanged_predicate(&enrollment);
     let mut claim_binds = vec![
         text(&now_text),
         text(&node_id),

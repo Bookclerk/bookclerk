@@ -1257,8 +1257,8 @@ authoritative rows. The CLI only produces them (`bookclerk plugins deploy
 node queue with its `node:<id>` consumer.
 
 A deployed guest is registered under its plugin instance id. `bookclerk
-library scan` and `bookclerk library acquire` route a plugin key to its
-default instance on this host; pass `--instance` to pin another. Accounts
+library scan` and `bookclerk library acquire` pin their queued jobs to a
+named plugin key's default instance; pass `--instance` to pin another. Accounts
 are keyed by plugin key, not instance: every instance of a plugin, on every
 host, serves the same connected accounts.
 
@@ -1300,7 +1300,12 @@ an alias another plugin's active version answers to.
 archive up to 1 MiB is stored in the database (`blob:sha256:<hex>`) so every
 node can materialize it. A larger local archive is referenced in place as a
 `file://` URL, which only nodes that see that path (shared storage) can
-materialize; the others record an `error` observation.
+materialize; the others record an `error` observation. A host node of
+another cluster fetches an owner's `https:` artifact only when its host
+operator approved that exact URL, archive digest and payload digest (they
+are part of the reviewed request) and neither its host nor any redirect
+hop's is, or resolves to, a local or private address (checked on the
+addresses actually dialed; no proxy); see [Host consent](adr/control-plane.md#host-consent).
 
 **The active version.** Each PluginKey has at most one active version. The
 first installed version becomes active; a later one becomes active with
@@ -1385,15 +1390,23 @@ reports:
   records each guest's ceiling on its deployment observation when it
   spawns it.
 - **Measured use**: CPU busy since the previous heartbeat and memory
-  available, from `/proc` and the cgroup.
+  available, for the whole machine (or the daemon's CPU-limited cgroup on
+  Linux).
 - **Availability**: how much of the recent past the node was up, as a
   decaying average over about a day. A desktop that is off every night
   ends up around 60%; an always-on VPS stays near 100%.
 
-Memory and measured use are read on Linux only for now. On macOS and
-Windows a heartbeat reports the CPU count (and free disk on macOS); with no
-memory figure the scheduler cannot hold such a node to a memory budget and
-ranks it by CPU headroom alone.
+Every desktop platform reports memory, measured use, and free disk:
+
+| Platform | Memory (total / available) | CPU busy | Free disk |
+| --- | --- | --- | --- |
+| Linux | `/proc/meminfo` `MemTotal` / `MemAvailable`, capped by cgroup `memory.max` | `/proc/stat`, or cgroup `cpu.stat` under a CPU quota | `statvfs` |
+| macOS | `hw.memsize` / free + inactive pages (`HOST_VM_INFO64`) | `HOST_CPU_LOAD_INFO` ticks | `statvfs` |
+| Windows | `GlobalMemoryStatusEx` `ullTotalPhys` / `ullAvailPhys` | `GetSystemTimes` | `GetDiskFreeSpaceExW` |
+
+Only Linux reads a container ceiling (cgroup v2). A daemon confined by a
+Windows Job Object or a macOS resource limit is measured against the whole
+machine.
 
 A node is **live** while its last heartbeat is younger than three
 intervals (45 s). A node where only the CLI ran has no heartbeat and is
@@ -1520,14 +1533,21 @@ received them, node-local ones included.
 A host node (a separate install that joined the cluster, see
 [Libraries and branches](cluster-hosts.md)) runs an owner's plugin only
 after **its own** operator approves it, with the same narrowing as above:
-`bookclerk clusters approve <plugin_key> [--deny-domain …] [--deny-binding
-…] [--deny-network]` or **Settings → Library** on the host. The owner's
+`bookclerk clusters approve <plugin_key> --request <DIGEST> [--deny-domain
+…] [--deny-binding …] [--deny-network]` (the digest of the request being
+approved, from `bookclerk clusters consents`) or **Settings → Library** on
+the host. The owner's
 grant is the request; the host's approval may only remove from it, a later
 version that asks for more waits for approval again, and a revoke cancels
 the plugin's jobs there and hands them back. The guest runs in the host's
-jail through `bookclerk-workerd`, as the host's own plugins do. Platform
-plugins whose bundled payload matches the owner's are approved
-automatically.
+jail through `bookclerk-workerd`, as the host's own plugins do. A platform
+plugin is approved automatically only when all of these hold: its key is a
+Bookclerk platform key; the host's own provenance check finds its install of
+that key platform-bundled; that bundled payload's digest equals the owner's
+artifact digest; the request stays inside the platform envelope (no network,
+only `config` and `work_fs`); and the host's operator has neither revoked it
+nor approved it by hand (an operator's approval, which may narrow the
+request, is never replaced automatically).
 
 ## ABI (api_version = 3, object-capability Workers RPC)
 

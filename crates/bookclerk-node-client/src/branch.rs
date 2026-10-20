@@ -25,9 +25,9 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_node_proto::{
-    canonical_origin, is_branch_name, is_branch_redirect_uri, pkce_challenge, Body, ConnectionType,
-    OAuthEnrollAnswer, OAuthEnrollRequest, OwnerInfo, AUTHORIZE_PATH, BRANCH_CLIENT_ID,
-    BRANCH_SCOPE, CLERK_OFFER_PARAM, ENROLL_OAUTH_PATH, INFO_PATH,
+    canonical_origin, is_branch_name, is_branch_redirect_uri, is_library_name, pkce_challenge,
+    Body, ConnectionType, OAuthEnrollAnswer, OAuthEnrollRequest, OwnerInfo, AUTHORIZE_PATH,
+    BRANCH_CLIENT_ID, BRANCH_SCOPE, CLERK_OFFER_PARAM, ENROLL_OAUTH_PATH, INFO_PATH,
 };
 use rand::RngCore as _;
 use tokio::sync::watch;
@@ -118,7 +118,9 @@ pub async fn inspect_library(address: &str) -> Result<InspectedLibrary, JoinErro
     if named != origin {
         return Err(JoinError::OriginMismatch { origin: named });
     }
-    if !is_branch_name(&info.library_name) || info.cluster_id.trim().is_empty() {
+    // The library is named by its public host: a DNS name, longer than a
+    // branch name may be.
+    if !is_library_name(&info.library_name) || info.cluster_id.trim().is_empty() {
         return Err(JoinError::Record("malformed library info".into()));
     }
     Ok(InspectedLibrary {
@@ -262,14 +264,20 @@ fn http_error(status: u16, body: &[u8]) -> JoinError {
 ///
 /// # Errors
 ///
-/// Returns [`JoinError`] when the library is unreachable or refuses, it
-/// answers for another cluster, or the local write fails.
+/// Returns [`JoinError`] when the library is unreachable or refuses; once
+/// the library has enrolled a node, a malformed answer or one for another
+/// cluster gives [`JoinError::Unsaved`], which names that node so it can be
+/// revoked there, as does a link this install refuses to record. A failed
+/// database or disk write gives [`JoinError::SaveFailed`] (redeeming the
+/// same code again with the same verifier and keys gets the same node, so
+/// that one can be retried).
 pub async fn redeem_branch_code(
     store: &LibraryStore,
     redeem: &BranchRedeem<'_>,
     keys: &ClusterLinkKeys,
 ) -> Result<ClusterLink, JoinError> {
     let (endpoint, enrolled) = post_redeem(redeem, keys, ConnectionType::Branch).await?;
+    let node_id = enrolled.node_id.clone();
     let recorded = record_cluster_link(
         store,
         &NewClusterLink {
@@ -281,7 +289,22 @@ pub async fn redeem_branch_code(
         keys,
     )
     .await
-    .map_err(|err| JoinError::Record(err.to_string()))?;
+    .map_err(|err| match err {
+        // A database or disk hiccup: the library answers a repeat of this
+        // exchange with the same node, so a retry can finish the join.
+        bookclerk_library::LibraryError::Orm(_) | bookclerk_library::LibraryError::Io(_) => {
+            JoinError::SaveFailed {
+                node_id,
+                reason: err.to_string(),
+            }
+        }
+        // Anything else (an answer this install refuses to record, no
+        // master key) fails the same way every time.
+        _ => JoinError::Unsaved {
+            node_id: Some(node_id),
+            reason: err.to_string(),
+        },
+    })?;
     tracing::info!(
         cluster_id = %recorded.owner_cluster_id,
         node_id = %recorded.remote_node_id,
@@ -295,12 +318,25 @@ pub async fn redeem_branch_code(
 /// Sends the code, the verifier and the public keys to `POST
 /// /api/node/v1/enroll/oauth` for `connection`, and checks the answer is
 /// for the cluster the library reported and that connection type.
+///
+/// The code and verifier are registered for redaction first, so an answer
+/// (or an error string from the library) that echoes either is redacted
+/// wherever it is logged; the caller unregisters them once it is done.
+///
+/// # Errors
+///
+/// Returns [`JoinError`] when the library is unreachable or refuses. Once
+/// the library has enrolled a node, a malformed answer, or one for another
+/// cluster or connection type, gives [`JoinError::Unsaved`] naming that
+/// node.
 pub(crate) async fn post_redeem(
     redeem: &BranchRedeem<'_>,
     keys: &ClusterLinkKeys,
     connection: ConnectionType,
 ) -> Result<(OwnerEndpoint, OAuthEnrollAnswer), JoinError> {
     let endpoint = OwnerEndpoint::new(redeem.origin, redeem.spki_pin)?;
+    bookclerk_config::register_secret(redeem.code);
+    bookclerk_config::register_secret(redeem.verifier);
     let b64 = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
     let body = Zeroizing::new(
         serde_json::to_vec(&OAuthEnrollRequest {
@@ -320,19 +356,30 @@ pub(crate) async fn post_redeem(
     if status != 200 {
         return Err(http_error(status, &answer));
     }
-    let enrolled: OAuthEnrollAnswer = serde_json::from_slice(&answer)
-        .map_err(|_| JoinError::Record("malformed enroll answer".into()))?;
+    // From here the library has enrolled a node: a failure names it, so the
+    // operator knows which node to have removed there.
+    let enrolled: OAuthEnrollAnswer =
+        serde_json::from_slice(&answer).map_err(|_| JoinError::Unsaved {
+            node_id: serde_json::from_slice::<serde_json::Value>(&answer)
+                .ok()
+                .and_then(|value| value.get("node_id")?.as_str().map(str::to_string)),
+            reason: "malformed enroll answer".into(),
+        })?;
     if enrolled.cluster_id != redeem.cluster_id {
-        return Err(JoinError::Record(
-            "the library answered for another cluster".into(),
-        ));
+        return Err(JoinError::Unsaved {
+            node_id: Some(enrolled.node_id),
+            reason: "the library answered for another cluster".into(),
+        });
     }
     if enrolled.connection != connection {
-        return Err(JoinError::Record(format!(
-            "the library recorded this install as a {}, not a {}",
-            enrolled.connection.as_str(),
-            connection.as_str()
-        )));
+        return Err(JoinError::Unsaved {
+            reason: format!(
+                "the library recorded this install as a {}, not a {}",
+                enrolled.connection.as_str(),
+                connection.as_str()
+            ),
+            node_id: Some(enrolled.node_id),
+        });
     }
     Ok((endpoint, enrolled))
 }
@@ -369,6 +416,8 @@ pub async fn announce_leaving(
         incarnation: uuid_like(),
         max_jobs: 0,
         claim_kinds: Vec::new(),
+        // It claims nothing, so nothing waits for a deployments re-read.
+        claims_after_refresh: false,
         timing: ClientTiming {
             request_timeout: timeout,
             ..ClientTiming::default()

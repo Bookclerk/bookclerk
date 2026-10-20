@@ -33,6 +33,7 @@ export type LiveTopic =
   | "nodes"
   | "config"
   | "consents"
+  | "clusters"
   | "users";
 
 /** Connection state of a {@link LiveClient}. */
@@ -115,7 +116,6 @@ export class LiveClient {
   private socket: LiveSocket | null = null;
   private retry: ReturnType<typeof setTimeout> | null = null;
   private failures = 0;
-  private everOpened = false;
   private current: LiveState = "idle";
 
   /**
@@ -193,11 +193,12 @@ export class LiveClient {
       if (!frame) return;
       if (frame.type === "hello") {
         this.failures = 0;
-        const reconnected = this.everOpened;
-        this.everOpened = true;
         this.setState("open");
-        // Changes made while the socket was down were never announced.
-        if (reconnected) this.dispatch(frame.topics);
+        // The daemon's baseline is read just before `hello`: a change that
+        // landed after a panel's own read but before the baseline (or while
+        // the socket was down) is never announced, so every hello counts as
+        // a change to the topics it advertises.
+        this.dispatch(frame.topics);
         return;
       }
       this.dispatch(frame.topics);
@@ -231,7 +232,6 @@ export class LiveClient {
     this.socket = null;
     socket?.close(1000);
     this.failures = 0;
-    this.everOpened = false;
     this.setState("idle");
   }
 }
@@ -268,7 +268,7 @@ export function liveClient(): LiveClient {
 
 /** How {@link watchLive} refreshes. */
 export interface LiveRefreshOptions {
-  /** Poll interval while the socket is not open. */
+  /** Poll interval while the socket is not open; 0 for none. */
   pollMs: number;
   /**
    * Poll interval while it is open, for what changes without a row

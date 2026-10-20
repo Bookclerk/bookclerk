@@ -179,7 +179,9 @@ pub fn verify_artifact_request(
     sig: &str,
     now: i64,
 ) -> Result<(), AuthError> {
-    if (now - request.issued_at).abs() > ARTIFACT_REQUEST_MAX_SKEW_SECS {
+    // `issued_at` is the requester's, read before the signature is checked:
+    // `abs_diff` cannot overflow on an extreme value (`now - i64::MIN`).
+    if now.abs_diff(request.issued_at) > ARTIFACT_REQUEST_MAX_SKEW_SECS.unsigned_abs() {
         return Err(AuthError::Mismatch);
     }
     let key = validate_sign_public_key(public_key).map_err(|_| AuthError::Key)?;
@@ -235,17 +237,23 @@ mod tests {
         }
     }
 
+    /// A fresh challenge nonce, as the owner draws one.
+    fn random_nonce() -> [u8; NONCE_LEN] {
+        rand::random()
+    }
+
     #[test]
     fn signatures_bind_every_field() {
         let key = SigningKey::from_bytes(&[3u8; 32]);
         let public = key.verifying_key().to_bytes();
-        let nonce = [1u8; NONCE_LEN];
+        let nonce = random_nonce();
         let sig = sign_auth(&key, &ctx(&nonce, "https://owner.example"));
         assert_eq!(
             verify_auth(&public, &ctx(&nonce, "https://owner.example"), &sig),
             Ok(())
         );
-        let other_nonce = [2u8; NONCE_LEN];
+        let mut other_nonce = nonce;
+        other_nonce[0] ^= 1;
         assert_eq!(
             verify_auth(&public, &ctx(&other_nonce, "https://owner.example"), &sig),
             Err(AuthError::Mismatch)
@@ -329,6 +337,23 @@ mod tests {
                 Err(AuthError::Mismatch)
             );
         }
+        // An extreme `issued_at` (the requester's, checked before the
+        // signature) is refused without overflowing.
+        for issued_at in [i64::MIN, i64::MAX] {
+            let extreme = ArtifactRequest {
+                issued_at,
+                ..request
+            };
+            for now in [i64::MIN, 0, 1_000, i64::MAX] {
+                if now == issued_at {
+                    continue;
+                }
+                assert_eq!(
+                    verify_artifact_request(&public, &extreme, sig, now),
+                    Err(AuthError::Mismatch)
+                );
+            }
+        }
         assert_eq!(parse_artifact_authorization("Bearer x"), None);
         assert_eq!(
             parse_artifact_authorization("Bookclerk-Node n 1 s extra"),
@@ -351,7 +376,7 @@ mod tests {
             Some("http://localhost:8787")
         );
         assert_eq!(canonical_origin("ftp://owner.example"), None);
-        let nonce = [5u8; NONCE_LEN];
+        let nonce = random_nonce();
         assert_eq!(decode_nonce(&encode_nonce(&nonce)), Some(nonce));
         assert_eq!(decode_nonce("AAAA"), None);
     }
