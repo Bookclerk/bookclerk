@@ -118,6 +118,10 @@ bookclerk library search 'title:Dune'
 
 Title ids may be UUID, ASIN, ISBN, or source product id.
 
+`library scan` and `library acquire` queue jobs that a running `bookclerkd`
+executes (`cargo dev` in development), and wait for them; start the daemon
+first, or pass `--no-wait` to only queue. See [Jobs](jobs.md#planners-and-the-cli).
+
 ### Existing audiobooks already on disk/S3
 
 ```bash

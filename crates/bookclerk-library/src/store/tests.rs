@@ -1873,6 +1873,17 @@ async fn enqueue_dedupes_active_scan_and_acquire() {
         .await
         .unwrap();
     assert!(matches!(acq_other, EnqueueOutcome::Created { .. }));
+    // A pinned acquire of the same title is different work, and so is a
+    // pin to another instance.
+    for instance in ["instance-a", "instance-b"] {
+        let mut spec = acquire_spec(Some("B00TEST"), None, 32);
+        spec.payload.plugin_instance_id = Some(instance.into());
+        let pinned = store.enqueue_job(spec).await.unwrap();
+        assert!(
+            matches!(pinned, EnqueueOutcome::Created { .. }),
+            "{instance}: {pinned:?}"
+        );
+    }
 
     let listen = store
         .enqueue_job(EnqueueJobSpec {

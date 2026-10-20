@@ -2021,11 +2021,25 @@ fn plan_enqueue_job(
             ),
             None => format!("scan:account={}", json_account_from_payload(payload_json)),
         },
-        "acquire" => format!(
-            "acquire:title={}:account={}",
-            json_title_from_payload(payload_json),
-            json_account_from_payload(payload_json)
-        ),
+        "acquire" => {
+            // Mirrors `JobKind::dedup_key`: a forced or PDF-only acquire is
+            // different work from a plain one.
+            let mut key = format!(
+                "acquire:title={}:account={}",
+                json_title_from_payload(payload_json),
+                json_account_from_payload(payload_json)
+            );
+            if json_force_from_payload(payload_json) == 1 {
+                key.push_str(":force=1");
+            }
+            if json_flag_from_payload(payload_json, "pdf_only") {
+                key.push_str(":pdf=1");
+            }
+            match json_instance_from_payload(payload_json) {
+                Some(instance) => format!("{key}:instance={instance}"),
+                None => key,
+            }
+        }
         "listen_sync" => "listen_sync".into(),
         "integration_scan" => format!(
             "integration_scan:id={}:force={}",
@@ -2738,6 +2752,15 @@ fn json_force_from_payload(payload_json: &str) -> u8 {
             .and_then(|v| v.get("force").and_then(JsonValue::as_bool))
             .unwrap_or(false),
     )
+}
+
+/// Best-effort boolean `field` of a job payload JSON string (`false` when
+/// absent or not a boolean).
+fn json_flag_from_payload(payload_json: &str, field: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(payload_json)
+        .ok()
+        .and_then(|v| v.get(field).and_then(JsonValue::as_bool))
+        .unwrap_or(false)
 }
 
 /// Best-effort integration id from a job payload JSON string.
@@ -4164,6 +4187,48 @@ mod tests {
             ),
         );
         assert_eq!(again.status, atomic_status::DUPLICATE);
+    }
+
+    /// The SQL dedup key of an acquire matches `JobKind::dedup_key`: a
+    /// forced or PDF-only acquire is not absorbed by a plain one, and each
+    /// payload's plan key is the ORM's.
+    #[test]
+    fn enqueue_keeps_forced_and_pdf_acquires_distinct() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        let payloads = [
+            r#"{"v":1,"account":"a1","title":"B0X"}"#,
+            r#"{"v":1,"account":"a1","title":"B0X","force":true}"#,
+            r#"{"v":1,"account":"a1","title":"B0X","pdf_only":true}"#,
+            r#"{"v":1,"account":"a1","title":"B0X","force":true,"pdf_only":true}"#,
+        ];
+        for (i, payload) in payloads.iter().enumerate() {
+            let now = format!("2024-06-01T00:00:{:02}Z", 2 * i);
+            let first = run_plan(
+                &conn,
+                &plan_enqueue_job("acquire", payload, 0, 3, 8, None, &now),
+            );
+            assert_eq!(first.status, atomic_status::OK, "{payload}");
+            let later = format!("2024-06-01T00:00:{:02}Z", 2 * i + 1);
+            let again = run_plan(
+                &conn,
+                &plan_enqueue_job("acquire", payload, 0, 3, 8, None, &later),
+            );
+            assert_eq!(again.status, atomic_status::DUPLICATE, "{payload}");
+            let parsed: crate::models::JobPayload = serde_json::from_str(payload).unwrap();
+            let stored: String = conn
+                .query_row(
+                    "SELECT dedup_key FROM jobs WHERE payload = ?1",
+                    [payload],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                stored,
+                crate::models::JobKind::Acquire.dedup_key(&parsed),
+                "{payload}"
+            );
+        }
     }
 
     fn confirm_totp_params(user_id: i64) -> DbAtomicParams {

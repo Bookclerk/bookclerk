@@ -164,8 +164,8 @@ pending → running → succeeded
 
 | Kind | Dedup key | Resource class | Handler |
 | --- | --- | --- | --- |
-| `scan` | `scan:account={id\|all}` | `network` | `run_scan` |
-| `acquire` | `acquire:title={id\|all}:account={id\|all}` | `network` | `run_acquire` |
+| `scan` | `scan:account={id\|all}`, then `:instance={id}` when pinned | `network` | `run_scan` |
+| `acquire` | `acquire:title={id\|all}:account={id\|all}`, then `:force=1`, `:pdf=1` and `:instance={id}` when set | `network` | `run_acquire` |
 | `listen_sync` | `listen_sync` | `network` | `run_listen_sync` |
 | `integration_scan` | `integration_scan:id={id}:force={0\|1}` | `network` | `run_integration_scan` |
 | `plugin_copy` | `plugin_copy:plugin={id}:from={key}:to={key}` | `network` | ABI `JobRunner` stream-copy (`run_plugin_copy`) |
@@ -218,8 +218,44 @@ an unknown `resource_class`, or an unsupported envelope version as
 `invalid_job` before class-specific selection, so a bad row cannot occupy
 `max_pending` forever or abort a D1 batch.
 
-CLI `bookclerk library scan/acquire` still runs in-process and does not use
-this queue.
+### Planners and the CLI
+
+Every scan and acquire is admitted through a planner, whoever asks:
+
+- **Scan** (`control_plane::plan_scan`): operator authority, an Owner or an
+  Administrator scanning every account gets one job per scan-enabled
+  account; anyone else only the accounts they own (see the control-plane
+  ADR, *Per-item trust and the scan planner*).
+- **Acquire** (`control_plane::plan_acquire`): each named title id
+  (`titles`, UUID, ASIN, ISBN or product id) becomes its own job, so each
+  can go to any node trusted with it. Operator authority, an Owner or an
+  Administrator acquiring everything gets one unsplit job. Anyone else must
+  own a named account and every library row a named title matches (403
+  otherwise); with neither, they get one job per account they wholly own.
+  `POST /api/library/acquire` takes `{account, plugin_instance_id, titles,
+  force, pdf_only}` and answers a multi-job plan like a scan (`job_ids`;
+  200, 409, 429, or 422 `nothing_to_acquire` for an empty plan).
+- `force` (re-download acquired titles) and `pdf_only` (companion PDFs only)
+  are part of the acquire's dedup key and run only on owner nodes; a host
+  is never handed such a job. A pinned instance is part of the key too, so
+  a pinned acquire never stands in for an unpinned one or another pin.
+
+The CLI `bookclerk library scan` and `library acquire` do not run guests.
+They plan as operator authority (the CLI holds the database), record each
+job's routing requirements, insert the rows, and then wait for them,
+printing state changes to stderr; the first Ctrl-C asks unfinished jobs to
+cancel, a second stops waiting. Waiting needs a live `bookclerkd` node of
+the cluster (the CLI fails before queueing otherwise); `--no-wait` only
+queues and prints the job ids. `library scan --account <id>` is still
+exactly one job for that account (bypassing `scan_enabled`), and
+`library acquire --asin <ASIN>` exactly one job for that title.
+`--match-storage` and the search index rebuild still run in the CLI after
+the scans succeed. `library acquire --dry-run` plans keys locally without
+queueing. `library acquire` has no `--license` or `-o key=value` flags
+(both were removed, never implemented); a queued acquire runs with the
+settings of the node that claims it.
+A host node's operator asks its owner cluster for a scan with `bookclerk
+clusters scan` ([Clusters and host nodes](cluster-hosts.md)).
 
 ## Leases and crash recovery
 
