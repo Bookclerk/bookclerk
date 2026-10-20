@@ -579,6 +579,10 @@ impl LinkSupervisor {
                 sealed_secrets,
                 secrets_withheld,
             } if answered == instance_id => {
+                // Secrets the grant does not allow are dropped unopened and
+                // reported as withheld.
+                let secrets_withheld =
+                    secrets_withheld || (!open_secrets && sealed_secrets.is_some());
                 let secrets = match sealed_secrets.filter(|_| open_secrets) {
                     Some(sealed) => Some(Arc::new(
                         self.handle

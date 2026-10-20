@@ -123,7 +123,7 @@ impl RemoteCatalog {
 
     /// Sets the consent of every entry of `plugin_key`; an entry that loses
     /// consent, or whose consented grant changes, drops its fetched
-    /// bindings, so its plugin is withdrawn (and held jobs given back)
+    /// bindings (and, on a grant change, its materialized tree), so its plugin is withdrawn (and held jobs given back)
     /// until they are fetched again under the new grant. Answers whether
     /// any entry changed from or to consented, or changed its grant.
     pub fn set_consent(&self, plugin_key: &str, consent: &RemoteConsentState) -> bool {
@@ -140,6 +140,10 @@ impl RemoteCatalog {
                 changed = true;
             }
             entry.consent = consent.clone();
+            if regranted {
+                // Materialized under the old grant, like `reconcile_consent`.
+                entry.root = None;
+            }
             if !now || regranted {
                 entry.config = None;
             }
@@ -374,7 +378,8 @@ mod tests {
         assert!(catalog.get("instance-1").unwrap().config.is_some());
 
         assert!(catalog.set_consent("store", &consented(narrow)));
-        assert!(catalog.get("instance-1").unwrap().config.is_none());
+        let entry = catalog.get("instance-1").unwrap();
+        assert!(entry.config.is_none() && entry.root.is_none());
         assert!(catalog.consented_keys().is_empty());
     }
 }

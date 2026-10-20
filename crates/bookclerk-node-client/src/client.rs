@@ -28,7 +28,10 @@
 //!    owner never hands this host a job of a plugin its operator did not
 //!    approve. A job whose plugins are not all consented when it arrives,
 //!    or whose consent is revoked while it runs, is cancelled and given
-//!    back with `release` (unspent) instead of being reported.
+//!    back with `release` (unspent) instead of being reported. That
+//!    includes a job that finished but whose report was still waiting
+//!    for a connection: the owner runs it again, so its side effects
+//!    (uploads, local writes) may happen twice.
 //!    Each job runs on its own task through the [`HostJobRunner`],
 //!    with its secrets opened by this node's box key; a renewer extends
 //!    the lease every third of it; the result is reported with `complete`
