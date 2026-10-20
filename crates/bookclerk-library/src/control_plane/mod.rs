@@ -2,7 +2,8 @@
 //!
 //! Bootstrap material (database target, `master.key`, `node-identity.json`) is
 //! read before these rows exist. After enrollment, `core.events` is the
-//! authority for `[events]`. Other `config.toml` sections stay transitional.
+//! authority for `[events]` and `core.output` for the shared `[output]`
+//! table. Other `config.toml` sections stay transitional.
 //!
 //! See `docs/adr/control-plane.md`.
 
@@ -18,6 +19,7 @@ mod job_routing;
 mod leases;
 mod node_queue;
 mod node_status;
+mod output;
 mod ownership;
 mod placement;
 mod remote_catalog;
@@ -103,6 +105,12 @@ pub use node_status::{
     record_deployment_reservation, record_node_heartbeat, GuestReservation, NodeHeartbeat,
     NodeSampler, NodeStatus, AVAILABILITY_FULL_PPM, AVAILABILITY_TAU, DEFAULT_GUEST_CPU_MILLICORES,
     DEFAULT_GUEST_MEMORY_BYTES, NODE_HEARTBEAT_INTERVAL, NODE_LIVE_INTERVALS,
+};
+pub use output::{
+    import_output_if_absent, is_output_setting_key, load_output, overlay_output,
+    portable_output_seed, replace_output, OutputReplace, OutputSettingsV1,
+    MAX_OUTPUT_REPLACEMENT_RULES, MAX_OUTPUT_TEMPLATE_BYTES, OUTPUT_NAMESPACE,
+    OUTPUT_SCHEMA_VERSION, OUTPUT_SETTING_ALIASES, OUTPUT_SETTING_KEYS,
 };
 pub use ownership::{nodes_owned_by, set_node_owner, verify_node_owner};
 pub use placement::undeploy_instance;
@@ -357,29 +365,36 @@ pub struct ControlPlaneSession {
     pub cluster_id: String,
     /// Authoritative `[events]` document.
     pub events: ConfigurationDocument<EventsSettingsV1>,
+    /// Authoritative shared `[output]` document.
+    pub output: ConfigurationDocument<OutputSettingsV1>,
     /// This node's runtime document. Other nodes' documents are not included.
     pub node_runtime: ConfigurationDocument<NodeRuntimeSettingsV1>,
 }
 
-/// Enrolls this files directory and imports `[events]` when the domain is absent.
+/// Enrolls this files directory and imports `[events]` and `[output]` when
+/// their documents are absent.
 ///
-/// After this returns, callers must treat [`ControlPlaneSession::events`] as
-/// authority. A later TOML load or environment override must not replace it
-/// without a compare-and-swap write.
+/// `seed` is the effective `config.toml` plus environment configuration; only
+/// its `events` and `output` tables are read, and only for a document that
+/// does not exist yet. After this returns, callers must treat
+/// [`ControlPlaneSession::events`] and [`ControlPlaneSession::output`] as
+/// authority (see [`overlay_core_documents`]). A later TOML load or
+/// environment override must not replace them without a compare-and-swap
+/// write.
 ///
 /// `scratch_dir` is [`bookclerk_config::Config::download_cache_dir`]: the
 /// heartbeat records the byte size of its `acquire` and `acquire-pdf` trees.
 ///
 /// # Errors
 ///
-/// Returns an error when the secret root, cluster binding, schema, or events
+/// Returns an error when the secret root, cluster binding, schema, or a core
 /// document cannot be established.
 pub async fn bootstrap_control_plane(
     store: &LibraryStore,
     files_dir: &Path,
     scratch_dir: &Path,
     password: Option<&str>,
-    events_seed: &bookclerk_config::EventsConfig,
+    seed: &bookclerk_config::Config,
 ) -> Result<ControlPlaneSession> {
     let _identity = identity::load_or_create_node_identity(files_dir)?;
     let secret = align_cluster_root(store, files_dir, password).await?;
@@ -407,8 +422,15 @@ pub async fn bootstrap_control_plane(
     let events = import_events_if_absent(
         store,
         &ConfigActor::Bootstrap,
-        events_seed,
+        &seed.events,
         "bootstrap-core-events",
+    )
+    .await?;
+    let output = import_output_if_absent(
+        store,
+        &ConfigActor::Bootstrap,
+        &output::portable_output_seed(&seed.output, files_dir),
+        "bootstrap-core-output",
     )
     .await?;
     let node_runtime = import_node_runtime_if_absent(
@@ -423,8 +445,18 @@ pub async fn bootstrap_control_plane(
         node,
         cluster_id: secret.cluster_id,
         events,
+        output,
         node_runtime,
     })
+}
+
+/// Copies every authoritative cluster document in `session` onto `config`.
+pub fn overlay_core_documents(
+    config: &mut bookclerk_config::Config,
+    session: &ControlPlaneSession,
+) {
+    overlay_events(config, &session.events, &session.cluster_id);
+    overlay_output(config, &session.output, &session.cluster_id);
 }
 
 /// Copies the authoritative events document onto `config` for `cluster_id`.
@@ -740,7 +772,7 @@ fn parse_node_runtime(
 }
 
 /// Attaches revision metadata to a parsed body.
-fn document<T>(stored: StoredDocument, body: T) -> ConfigurationDocument<T> {
+pub(super) fn document<T>(stored: StoredDocument, body: T) -> ConfigurationDocument<T> {
     ConfigurationDocument {
         body,
         revision: stored.revision,
@@ -766,6 +798,8 @@ mod instance_tests;
 mod job_routing_tests;
 #[cfg(test)]
 mod leases_tests;
+#[cfg(test)]
+mod output_tests;
 #[cfg(test)]
 mod placement_tests;
 #[cfg(test)]

@@ -68,6 +68,21 @@ impl HostJobRunner for UntilCancelled {
     }
 }
 
+/// A token the [`QuotesToken`] runner leaks into its error.
+const QUOTED_TOKEN: &str = "quoted-store-token_0123456789abcdefABCDEF";
+
+/// A runner whose error quotes a registered secret.
+struct QuotesToken;
+
+impl HostJobRunner for QuotesToken {
+    async fn run(&self, _ctx: HostJobCtx) -> Result<String, HostJobError> {
+        Err(HostJobError::new(
+            "refresh",
+            format!("token {QUOTED_TOKEN} was rejected"),
+        ))
+    }
+}
+
 /// Fixed heartbeat measurements.
 struct FixedSampler;
 
@@ -218,7 +233,7 @@ async fn accept(listener: &TcpListener) -> OwnerSide {
         &mut socket,
         "challenge",
         Body::Challenge {
-            nonce: encode_nonce(&[9u8; 32]),
+            nonce: encode_nonce(&rand::random::<[u8; 32]>()),
             cluster_id: CLUSTER.into(),
         },
     )
@@ -490,6 +505,42 @@ async fn shutdown_cancels_held_jobs() {
     assert!(handle.held_fences().is_empty());
 }
 
+/// Aborting the client's task (as a database swap does when a client does
+/// not stop in time) still cancels the jobs it holds.
+#[tokio::test]
+async fn aborting_the_client_cancels_held_jobs() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let runner = UntilCancelled::default();
+    let (handle, _stop, exit) =
+        start_with(listener.local_addr().unwrap().port(), 1, runner.clone());
+    let mut socket = accept(&listener).await;
+    let mut granted = false;
+    read_for(
+        &mut socket,
+        Duration::from_millis(500),
+        |frame| match &frame.body {
+            Body::Heartbeat { .. } => Some(Body::Accepted {}),
+            Body::Claim { .. } if !std::mem::replace(&mut granted, true) => {
+                Some(work("job-1", 3, 60))
+            }
+            Body::Claim { .. } => Some(Body::NoWork {
+                retry_after_secs: 300,
+            }),
+            _ => None,
+        },
+    )
+    .await;
+    assert!(wait_for(&runner.started, Duration::from_secs(1)).await);
+    assert_eq!(handle.held_fences().len(), 1);
+
+    exit.abort();
+    assert!(exit.await.unwrap_err().is_cancelled());
+    assert!(
+        wait_for(&runner.cancelled, Duration::from_secs(1)).await,
+        "the job outlived its aborted client"
+    );
+}
+
 /// A finished job whose report the owner leaves unanswered keeps renewing
 /// its lease, so a slow report does not let the fence lapse.
 #[tokio::test]
@@ -716,4 +767,107 @@ async fn a_resume_counts_the_lease_the_owner_names() {
         "the job ran past the lease its resume named"
     );
     assert!(handle.held_fences().is_empty());
+}
+
+/// Handed secrets are registered for redaction before a runner sees them,
+/// so a store token in a job's log or error is scrubbed on this host.
+#[test]
+fn handed_secrets_are_registered_for_redaction() {
+    let _registry = bookclerk_config::secrets_registry_test_lock();
+    let token = "handed-store-token_0123456789abcdefABCDEF";
+    let entry = SecretEntry {
+        secret_ref: SecretRef {
+            kind: "source_auth".into(),
+            provider: "libro".into(),
+            account_id: "acct-1".into(),
+            name: "token".into(),
+        },
+        value: bookclerk_node_proto::SecretValue::new(token.as_bytes().to_vec()),
+    };
+    let line = format!("refresh failed for {token}");
+    assert!(!bookclerk_config::contains_registered_secret(&line));
+    register_for_redaction(&[entry]);
+    assert!(!bookclerk_config::redact_str(&line).contains(token));
+
+    let inner = "bundled-access-token_0123456789abcdefABCDEF";
+    let bundle = format!(r#"{{"tokens":{{"access_token":"{inner}"}},"expires":3600}}"#);
+    register_value_for_redaction(bundle.as_bytes());
+    assert!(!bookclerk_config::redact_str(&format!("Bearer {inner}")).contains(inner));
+}
+
+/// A job whose grant already ran out when it would start is never run
+/// and never reported: its fence may already belong to another host.
+#[tokio::test]
+async fn an_expired_grant_is_never_started() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let runner = RecordsDeadline::default();
+    let (handle, _stop, _exit) =
+        start_with(listener.local_addr().unwrap().port(), 1, runner.clone());
+    let mut socket = accept(&listener).await;
+    let mut granted = false;
+    let frames = read_for(
+        &mut socket,
+        Duration::from_millis(1000),
+        |frame| match &frame.body {
+            Body::Heartbeat { .. } | Body::Fail { .. } => Some(Body::Accepted {}),
+            Body::Claim { .. } if !std::mem::replace(&mut granted, true) => {
+                Some(work("job-1", 3, 0))
+            }
+            Body::Claim { .. } => Some(Body::NoWork {
+                retry_after_secs: 300,
+            }),
+            _ => None,
+        },
+    )
+    .await;
+    assert!(lock(&runner.deadline).is_none(), "the expired job ran");
+    assert!(
+        !frames
+            .iter()
+            .any(|frame| matches!(frame.body, Body::Fail { .. } | Body::Complete { .. })),
+        "the expired job was reported"
+    );
+    assert!(handle.held_fences().is_empty());
+}
+
+/// A runner error that quotes a registered secret reaches the owner
+/// scrubbed.
+#[tokio::test]
+async fn a_failed_report_is_scrubbed_of_secrets() {
+    bookclerk_config::register_secret(QUOTED_TOKEN);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (_handle, _stop, _exit) = start_with(listener.local_addr().unwrap().port(), 1, QuotesToken);
+    let mut socket = accept(&listener).await;
+    let mut granted = false;
+    let frames = read_for(
+        &mut socket,
+        Duration::from_millis(1500),
+        |frame| match &frame.body {
+            Body::Heartbeat { .. } | Body::Fail { .. } => Some(Body::Accepted {}),
+            Body::Claim { .. } if !std::mem::replace(&mut granted, true) => {
+                Some(work("job-1", 3, 30))
+            }
+            Body::Claim { .. } => Some(Body::NoWork {
+                retry_after_secs: 300,
+            }),
+            Body::Renew { .. } => Some(Body::Renewed {
+                lease_secs: 30,
+                cancel: false,
+            }),
+            _ => None,
+        },
+    )
+    .await;
+    let message = frames
+        .iter()
+        .find_map(|frame| match &frame.body {
+            Body::Fail { message, .. } => Some(message.clone()),
+            _ => None,
+        })
+        .expect("the job was reported");
+    assert!(message.contains("was rejected"), "{message}");
+    assert!(
+        !message.contains(QUOTED_TOKEN),
+        "the report carried the token"
+    );
 }

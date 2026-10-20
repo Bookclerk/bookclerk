@@ -6,6 +6,7 @@ import { AppTopBar } from "@/components/AppTopBar";
 import { ErrorStatePage } from "@/components/ErrorStatePage";
 import { NodesPanel } from "@/components/NodesPanel";
 import { OidcSettingsPanel } from "@/components/OidcSettingsPanel";
+import { OutputSettingsPanel } from "@/components/OutputSettingsPanel";
 import { PlacementBadge, PlacementPanel } from "@/components/PlacementPanel";
 import { UserManagementPanel } from "@/components/UserManagementPanel";
 import {
@@ -61,7 +62,7 @@ const DEFAULT_DAEMON_PORT = "8787";
 
 type ListenExposure = "localhost" | "all" | "custom";
 type ListenRow = { host: string; port: string };
-type SettingsTab = "account" | "users" | "signin" | "server" | "plugins" | "nodes";
+type SettingsTab = "account" | "users" | "signin" | "server" | "plugins" | "output" | "nodes";
 
 const ISOLATION_OPTIONS = [
   ["required", "Required"],
@@ -519,7 +520,10 @@ export function SettingsPage({
     if (!showSignInSettings && activeTab === "signin") {
       setActiveTab("account");
     }
-    if (!showOperatorChrome && (activeTab === "server" || activeTab === "plugins")) {
+    if (
+      !showOperatorChrome &&
+      (activeTab === "server" || activeTab === "plugins" || activeTab === "output")
+    ) {
       setActiveTab("account");
     }
     if (!showNodes && activeTab === "nodes") {
@@ -1248,7 +1252,7 @@ export function SettingsPage({
             <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">Settings</h1>
             <p className="text-sm text-ink/60">
               {showOperatorChrome
-                ? "Account, users, sign-in providers, daemon, and plugin knobs for this server."
+                ? "Account, users, sign-in providers, daemon, output packaging, and plugin knobs for this server."
                 : showSignInSettings
                   ? "Account security, user management, and sign-in providers."
                   : showUserAdmin
@@ -1338,6 +1342,20 @@ export function SettingsPage({
                 >
                   Plugins
                 </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === "output"}
+                  className={cn(
+                    "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                    activeTab === "output"
+                      ? "bg-ink text-paper shadow-sm"
+                      : "text-ink/60 hover:text-ink",
+                  )}
+                  onClick={() => setActiveTab("output")}
+                >
+                  Output
+                </button>
               </>
             ) : null}
             {showNodes ? (
@@ -1420,6 +1438,10 @@ export function SettingsPage({
 
         {activeTab === "nodes" && showNodes ? (
           <NodesPanel onSessionExpired={onSessionExpired} />
+        ) : null}
+
+        {activeTab === "output" && showOperatorChrome ? (
+          <OutputSettingsPanel onSessionExpired={onSessionExpired} />
         ) : null}
 
         {(activeTab === "server" || activeTab === "plugins") && showOperatorChrome ? (

@@ -63,7 +63,7 @@ use bookclerk_library::control_plane::{
 use bookclerk_node_proto::{
     decode_nonce, open_instance_secrets, open_secrets, seal_secret_update, sign_artifact_request,
     sign_auth, validate_box_public_key, ArtifactRequest, AuthContext, Body, ClaimFilter, Frame,
-    HeldFence, SealError, SecretRef, SecretValue, SigningKey, ARTIFACTS_PATH, CLOSE_PROTOCOL,
+    HeldFence, SealError, SecretEntry, SecretRef, SecretValue, SigningKey, ARTIFACTS_PATH, CLOSE_PROTOCOL,
     CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS,
     SEND_QUEUE_FRAMES,
 };
@@ -321,6 +321,49 @@ pub(crate) struct Shared {
     abandoned: AtomicBool,
 }
 
+/// Makes each handed secret known to the log and diagnostics scrubber
+/// before the runner sees it, so this host redacts store tokens it never
+/// held at rest. A value that is not UTF-8 cannot appear in text output
+/// verbatim and is skipped.
+fn register_for_redaction(entries: &[SecretEntry]) {
+    for entry in entries {
+        register_value_for_redaction(entry.value.expose());
+    }
+}
+
+/// Registers one secret value with the scrubber when it is UTF-8 text.
+/// A JSON credential (a token bundle) also registers each string inside
+/// it, since a log quotes the token field, not the whole document.
+fn register_value_for_redaction(value: &[u8]) {
+    let Ok(text) = std::str::from_utf8(value) else {
+        return;
+    };
+    bookclerk_config::register_secret(text);
+    if let Ok(document) = serde_json::from_str::<serde_json::Value>(text) {
+        register_json_strings(&document);
+    }
+}
+
+/// Registers every string in `value`, at any depth.
+fn register_json_strings(value: &serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => bookclerk_config::register_secret(text),
+        serde_json::Value::Array(items) => items.iter().for_each(register_json_strings),
+        serde_json::Value::Object(fields) => fields.values().for_each(register_json_strings),
+        _ => {}
+    }
+}
+
+/// Cancels every job `0` holds when dropped: [`HostClient::run`] keeps one
+/// so its jobs are abandoned however it ends, an abort included.
+struct AbandonOnDrop<'a>(&'a Shared);
+
+impl Drop for AbandonOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.abandon_all();
+    }
+}
+
 impl Shared {
     /// Every fence still held (not lost), for a hello.
     fn held_fences(&self) -> Vec<HeldFence> {
@@ -466,6 +509,9 @@ impl Shared {
         secret_ref: &SecretRef,
         value: &[u8],
     ) -> Result<(), WriteBackError> {
+        // A refreshed token is new to this process too: scrub it from
+        // anything the job prints after this, whether or not it is sent.
+        register_value_for_redaction(value);
         if !self.holds(job_id, fence) {
             return Err(WriteBackError::Lost);
         }
@@ -747,12 +793,12 @@ impl<R: HostJobRunner> HostClient<R> {
     /// Connects, serves, and reconnects until `shutdown` turns true (or its
     /// sender is dropped) or the owner revokes this node.
     ///
-    /// Every held job is cancelled as lost before this returns, whatever
-    /// the reason, so no job task keeps running for a client that is gone.
+    /// Every held job is cancelled as lost when this returns, whatever the
+    /// reason, and also when the future is dropped or its task aborted
+    /// first, so no job task keeps running for a client that is gone.
     pub async fn run(self, shutdown: watch::Receiver<bool>) -> ClientExit {
-        let exit = self.serve_until_exit(shutdown).await;
-        self.shared.abandon_all();
-        exit
+        let _abandon = AbandonOnDrop(&self.shared);
+        self.serve_until_exit(shutdown).await
     }
 
     /// The reconnect loop behind [`Self::run`].
@@ -1385,6 +1431,9 @@ async fn run_job<R: HostJobRunner>(
         None => Ok(Vec::new()),
         Some(sealed) => open_secrets(&shared.box_secret, &shared.node_id, &job_id, fence, sealed),
     };
+    if let Ok(entries) = &opened {
+        register_for_redaction(entries);
+    }
     // Renewals keep running through `report`, which can take up to
     // [`REPORT_DEADLINE`]: a slow report must not let the fence lapse and
     // throw away finished work, nor a fail for secrets that do not open.
@@ -1406,6 +1455,17 @@ async fn run_job<R: HostJobRunner>(
             "cancelled",
             "the client stopped before the job started",
         )),
+        // The grant ran out before the job could start (a late `work`, a
+        // starved runtime): the owner may already have handed the fence to
+        // another host, so never start it and drop the result.
+        _ if tokio::time::Instant::now() >= claimed_at + grant => {
+            tracing::warn!(%job_id, fence, "the job's lease ran out before it started; dropping it");
+            lost.store(true, Ordering::SeqCst);
+            Err(HostJobError::new(
+                "cancelled",
+                "the job's lease ran out before it started",
+            ))
+        }
         Err(_) => {
             tracing::warn!(%job_id, fence, "job secrets do not open with this node's box key");
             Err(HostJobError::new(
@@ -1560,6 +1620,9 @@ async fn renew_loop(
 
 /// Reports a finished job under its fence, waiting for a connection when
 /// there is none, until the owner answers or [`REPORT_DEADLINE`] passes.
+///
+/// The detail or error text is scrubbed of registered secrets first, so a
+/// runner error that quotes a handed token never reaches the owner.
 async fn report(
     shared: &Arc<Shared>,
     job_id: &str,
@@ -1572,13 +1635,13 @@ async fn report(
         Ok(detail) => Body::Complete {
             job_id: job_id.to_string(),
             fence,
-            detail: Some(bounded(detail)),
+            detail: Some(bounded(bookclerk_config::redact_str(&detail))),
         },
         Err(err) => Body::Fail {
             job_id: job_id.to_string(),
             fence,
             error_kind: bounded(err.kind),
-            message: bounded(err.message),
+            message: bounded(bookclerk_config::redact_str(&err.message)),
         },
     };
     send_final(shared, job_id, fence, body, failed, lost).await;

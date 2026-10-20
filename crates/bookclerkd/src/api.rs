@@ -380,6 +380,11 @@ struct SettingsUpdate {
 struct PatchSettingsRequest {
     /// Key/value pairs to validate, persist, and reload.
     settings: Vec<SettingsUpdate>,
+    /// `core.output` document revision the client read (`output_revision` in
+    /// `GET /api/settings`). When set and stale, an `output.*` update is
+    /// rejected with 409.
+    #[serde(default)]
+    expected_output_revision: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -458,7 +463,8 @@ struct PluginSettingsGroup {
 #[derive(Debug, Serialize)]
 /// Settings page payload: file values, effective runtime, and plugin groups.
 struct SettingsResponse {
-    /// Values as written in config.toml (and env overlays).
+    /// Values as written in config.toml (and env overlays), plus `output.*`
+    /// from the `core.output` database document.
     settings: std::collections::BTreeMap<String, String>,
     /// Runtime-effective values after the last successful reload (auth, plugins).
     effective: std::collections::BTreeMap<String, String>,
@@ -469,6 +475,12 @@ struct SettingsResponse {
     /// Optional global per-jail CPU ceiling in cores (from `[plugins.jail]`).
     #[serde(skip_serializing_if = "Option::is_none")]
     jail_cpu_cores: Option<f64>,
+    /// Revision of the `core.output` document the `output.*` values in
+    /// `settings` were read from; send it back as `expected_output_revision`.
+    /// `effective["output.revision"]` is the revision this host has applied,
+    /// which lags the document until the host's next wakeup.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_revision: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -873,6 +885,11 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             "/api/config/domains/core.events",
             get(crate::config_authority::get_events_domain)
                 .put(crate::config_authority::put_events_domain),
+        )
+        .route(
+            "/api/config/domains/core.output",
+            get(crate::config_authority::get_output_domain)
+                .put(crate::config_authority::put_output_domain),
         )
         .route(
             "/api/config/plugin-instances",
@@ -1510,6 +1527,7 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
     // error here leaves library, auth, and the media pool on the previous
     // runtime.
     let fresh = crate::config_authority::load_events_publication(&library_for_auth).await?;
+    let fresh_output = crate::config_authority::load_output_publication(&library_for_auth).await?;
 
     // Fail closed before publishing when the new listen set cannot bind at all
     // (ports we already hold are skipped — those need a post-rebind rollback).
@@ -1553,6 +1571,12 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
                 &config,
                 &mut new_cfg,
                 &fresh,
+                db_plugin_changed,
+            );
+            crate::config_authority::finish_reload_output(
+                &config,
+                &mut new_cfg,
+                &fresh_output,
                 db_plugin_changed,
             );
             *config = new_cfg.clone();
@@ -1745,6 +1769,28 @@ pub async fn revert_listen_after_bind_failure(state: &AppState) -> bool {
     true
 }
 
+/// Which store owns a Settings key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum SettingsAuthority {
+    /// `config.toml` (bootstrap and still-transitional tables).
+    File,
+    /// The `core.events` cluster document.
+    Events,
+    /// The `core.output` cluster document.
+    Output,
+}
+
+/// Authority that owns `key`.
+fn settings_authority(key: &str) -> SettingsAuthority {
+    if key.starts_with("events.") {
+        SettingsAuthority::Events
+    } else if bookclerk_library::control_plane::is_output_setting_key(key) {
+        SettingsAuthority::Output
+    } else {
+        SettingsAuthority::File
+    }
+}
+
 /// True when `key` is a Settings-editable dotted path (global knobs or `kind.id.field`).
 fn allowed_setting_key(key: &str) -> bool {
     if matches!(
@@ -1771,6 +1817,9 @@ fn allowed_setting_key(key: &str) -> bool {
             | "plugins.jail.cpu_cores"
             | "plugins.jail.extra_processes"
     ) {
+        return true;
+    }
+    if bookclerk_library::control_plane::OUTPUT_SETTING_KEYS.contains(&key) {
         return true;
     }
 
@@ -1905,6 +1954,18 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
             }
         }
         _ => Ok(value.trim().to_string()),
+    }
+}
+
+/// Adds every `core.output` key to a Settings map.
+fn insert_output_settings(
+    settings: &mut std::collections::BTreeMap<String, String>,
+    body: &bookclerk_library::control_plane::OutputSettingsV1,
+) {
+    for key in bookclerk_library::control_plane::OUTPUT_SETTING_KEYS {
+        if let Some(value) = body.get(key) {
+            settings.insert((*key).to_string(), value);
+        }
     }
 }
 
@@ -2999,7 +3060,19 @@ async fn get_settings(
         .map(|host| host.node_id)
         .unwrap_or_default();
     let auth = state.auth_snapshot().await;
-    let settings = current_settings_snapshot(&cfg);
+    let mut settings = current_settings_snapshot(&cfg);
+    // `output.*` comes from the `core.output` document itself, so a relative
+    // `widevine_cdm` reads back as stored rather than resolved for this host.
+    let output_revision = match bookclerk_library::control_plane::load_output(&library).await {
+        Ok(doc) => {
+            insert_output_settings(&mut settings, &doc.body);
+            Some(doc.revision)
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "core.output unavailable for settings");
+            None
+        }
+    };
     let mut effective = settings.clone();
     effective.insert("daemon.auth.enabled".into(), auth.enabled.to_string());
     effective.insert("daemon.listen".into(), cfg.daemon.listen.join_comma());
@@ -3024,6 +3097,9 @@ async fn get_settings(
     if let Some(revision) = cfg.events_revision {
         effective.insert("events.revision".into(), revision.to_string());
     }
+    if let Some(revision) = cfg.output_revision {
+        effective.insert("output.revision".into(), revision.to_string());
+    }
     Ok(Json(SettingsResponse {
         settings,
         effective,
@@ -3034,6 +3110,7 @@ async fn get_settings(
             .jail
             .cpu_rate_percent
             .map(|n| effective_cpu_cores(Some(percent_to_cores(n)))),
+        output_revision,
     }))
 }
 
@@ -3048,6 +3125,7 @@ async fn patch_settings(
             .map_err(IntoResponse::into_response);
     }
 
+    let body_expected_output_revision = body.expected_output_revision;
     let updates: Vec<(String, String)> = body
         .settings
         .into_iter()
@@ -3160,30 +3238,34 @@ async fn patch_settings(
 
     let mut normalized_pairs = Vec::<(String, String)>::new();
     let mut events_updates = Vec::<(String, String)>::new();
+    let mut output_updates = Vec::<(String, String)>::new();
     for (key, value) in &updates {
         if key.starts_with("database.") && key.ends_with(".enabled") {
             // Exclusive enablement is applied via `apply_database_enable_updates`.
             continue;
         }
-        if key.starts_with("events.") {
-            events_updates.push((key.clone(), value.clone()));
-            continue;
+        match settings_authority(key) {
+            SettingsAuthority::Events => events_updates.push((key.clone(), value.clone())),
+            SettingsAuthority::Output => output_updates.push((key.clone(), value.clone())),
+            SettingsAuthority::File => normalized_pairs.push((key.clone(), value.clone())),
         }
-        normalized_pairs.push((key.clone(), value.clone()));
     }
 
-    // `core.events` and file-backed keys are different authorities. A later
-    // TOML or reload failure must not leave the events commit behind, so this
-    // spike rejects a mixed request before either side is written.
-    let touches_events = updates.iter().any(|(key, _)| key.starts_with("events."));
-    let touches_file = updates.iter().any(|(key, _)| !key.starts_with("events."));
-    if touches_events && touches_file {
-        tracing::warn!("rejected settings update that mixes core.events with file-backed keys");
+    // `core.events`, `core.output`, and file-backed keys are different
+    // authorities, each committed separately. A later failure on one must not
+    // leave a commit on another behind, so a mixed request is rejected before
+    // any side is written.
+    let authorities: std::collections::HashSet<SettingsAuthority> = updates
+        .iter()
+        .map(|(key, _)| settings_authority(key))
+        .collect();
+    if authorities.len() > 1 {
+        tracing::warn!("rejected settings update that mixes configuration authorities");
         return Err((
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "error": "mixed_configuration_authorities",
-                "message": "send core.events and file-backed settings in separate requests",
+                "message": "send core.events, core.output, and file-backed settings in separate requests",
             })),
         )
             .into_response());
@@ -3191,6 +3273,14 @@ async fn patch_settings(
     let _reload_guard = state.reload_lock.lock().await;
     if !events_updates.is_empty() {
         crate::config_authority::commit_events_settings(&state, &events_updates).await?;
+    }
+    if !output_updates.is_empty() {
+        crate::config_authority::commit_output_settings(
+            &state,
+            &output_updates,
+            body_expected_output_revision,
+        )
+        .await?;
     }
     if normalized_pairs.is_empty() && enabling.is_empty() {
         drop(_reload_guard);
@@ -6625,7 +6715,7 @@ mode = "deny"
         bookclerk_library::apply_host_schema(&db).await.unwrap();
         let store = LibraryStore::from_connection(db);
         let scratch = dir.path().join("cache");
-        let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg.events)
+        let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg)
             .await
             .unwrap();
         overlay_events(&mut cfg, &session.events, &session.cluster_id);
@@ -6656,6 +6746,7 @@ mode = "deny"
                         value: "false".into(),
                     },
                 ],
+                expected_output_revision: None,
             }),
         )
         .await
@@ -6708,7 +6799,7 @@ mode = "deny"
         bookclerk_library::apply_host_schema(&db).await.unwrap();
         let store = LibraryStore::from_connection(db);
         let scratch = dir.path().join("cache");
-        let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg.events)
+        let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg)
             .await
             .unwrap();
         overlay_events(&mut cfg, &session.events, &session.cluster_id);
@@ -6728,6 +6819,7 @@ mode = "deny"
                     key: "events.retention_days".into(),
                     value: requested.to_string(),
                 }],
+                expected_output_revision: None,
             }),
         )
         .await
@@ -6744,6 +6836,216 @@ mode = "deny"
         let live = state.config.read().await;
         assert_eq!(live.events.retention_days, requested);
         assert_eq!(live.events_revision, Some(loaded.revision));
+    }
+
+    #[tokio::test]
+    async fn output_settings_patch_commits_and_rejects_mixed_or_invalid_requests() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        use axum::extract::State;
+        use axum::http::StatusCode;
+        use axum::Json;
+        use bookclerk_library::control_plane::{
+            audit_count, bootstrap_control_plane, load_output, overlay_core_documents,
+            OUTPUT_NAMESPACE,
+        };
+        use bookclerk_library::LibraryStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        // The TOML seed: imported once, then ignored.
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[daemon]\nlisten = \"127.0.0.1:8787\"\n\n[daemon.auth]\nenabled = true\n\n\
+             [output]\nwidevine = true\nnaming_profile = \"classic\"\n",
+        )
+        .unwrap();
+        let mut cfg = bookclerk_config::Config::load(Some(dir.path().to_path_buf()), None).unwrap();
+        let db = bookclerk_plugin_database_sqlite::open(&dir.path().join("library.db"))
+            .await
+            .unwrap();
+        bookclerk_library::apply_host_schema(&db).await.unwrap();
+        let store = LibraryStore::from_connection(db);
+        let scratch = dir.path().join("cache");
+        let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg)
+            .await
+            .unwrap();
+        assert!(session.output.body.widevine);
+        overlay_core_documents(&mut cfg, &session);
+        let state = std::sync::Arc::new(crate::config_authority::control_plane_test_state(
+            store.clone(),
+            cfg,
+        ));
+        let patch = |settings: Vec<(&str, &str)>| {
+            super::patch_settings(
+                State(state.clone()),
+                Json(super::PatchSettingsRequest {
+                    settings: settings
+                        .into_iter()
+                        .map(|(key, value)| super::SettingsUpdate {
+                            key: key.into(),
+                            value: value.into(),
+                        })
+                        .collect(),
+                    expected_output_revision: None,
+                }),
+            )
+        };
+
+        let shown = super::get_settings(State(state.clone())).await.unwrap();
+        assert_eq!(
+            shown
+                .0
+                .settings
+                .get("output.naming_profile")
+                .map(String::as_str),
+            Some("classic")
+        );
+        assert_eq!(
+            shown.0.effective.get("output.revision").map(String::as_str),
+            Some("1")
+        );
+
+        let ok = patch(vec![
+            ("output.format", "single_mp3"),
+            ("output.multi_destination", "refetch_all"),
+        ])
+        .await
+        .expect("output-only patch");
+        assert_eq!(
+            ok.0.settings.get("output.format").map(String::as_str),
+            Some("single_mp3")
+        );
+        let loaded = load_output(&store).await.unwrap();
+        assert_eq!(loaded.revision, session.output.revision + 1);
+        assert_eq!(
+            loaded.body.format,
+            bookclerk_config::OutputFormat::SingleMp3
+        );
+        {
+            let live = state.config.read().await;
+            assert_eq!(
+                live.output.format,
+                bookclerk_config::OutputFormat::SingleMp3
+            );
+            assert_eq!(
+                live.output.multi_destination,
+                bookclerk_config::MultiDestinationMode::RefetchAll
+            );
+            assert_eq!(live.output_revision, Some(loaded.revision));
+        }
+        let audits = audit_count(&store, OUTPUT_NAMESPACE).await.unwrap();
+
+        // A client that read an older revision gets 409 and writes nothing.
+        let stale = super::patch_settings(
+            State(state.clone()),
+            Json(super::PatchSettingsRequest {
+                settings: vec![super::SettingsUpdate {
+                    key: "output.create_cue".into(),
+                    value: "true".into(),
+                }],
+                expected_output_revision: Some(session.output.revision),
+            }),
+        )
+        .await
+        .expect_err("stale expected revision");
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        assert_eq!(load_output(&store).await.unwrap(), loaded);
+        assert_eq!(audit_count(&store, OUTPUT_NAMESPACE).await.unwrap(), audits);
+
+        let mixed = patch(vec![
+            ("output.create_cue", "true"),
+            ("library.auto_acquire", "true"),
+        ])
+        .await
+        .expect_err("mixed authorities");
+        assert_eq!(mixed.status(), StatusCode::BAD_REQUEST);
+        let invalid = patch(vec![("output.cover_size", "huge")])
+            .await
+            .expect_err("invalid value");
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(load_output(&store).await.unwrap(), loaded);
+        assert_eq!(audit_count(&store, OUTPUT_NAMESPACE).await.unwrap(), audits);
+    }
+
+    #[tokio::test]
+    async fn output_settings_revision_tracks_the_document_not_the_applied_runtime() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        use axum::extract::State;
+        use axum::Json;
+        use bookclerk_library::control_plane::{
+            bootstrap_control_plane, load_output, overlay_core_documents, replace_output,
+            ConfigActor, OutputReplace,
+        };
+        use bookclerk_library::LibraryStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[daemon]\nlisten = \"127.0.0.1:8787\"\n\n[daemon.auth]\nenabled = true\n",
+        )
+        .unwrap();
+        let mut cfg = bookclerk_config::Config::load(Some(dir.path().to_path_buf()), None).unwrap();
+        let db = bookclerk_plugin_database_sqlite::open(&dir.path().join("library.db"))
+            .await
+            .unwrap();
+        bookclerk_library::apply_host_schema(&db).await.unwrap();
+        let store = LibraryStore::from_connection(db);
+        let scratch = dir.path().join("cache");
+        let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg)
+            .await
+            .unwrap();
+        overlay_core_documents(&mut cfg, &session);
+        let state = std::sync::Arc::new(crate::config_authority::control_plane_test_state(
+            store.clone(),
+            cfg,
+        ));
+
+        // Another host commits a new revision; this host has not applied it.
+        let mut body = session.output.body.clone();
+        body.set("output.create_cue", "true").unwrap();
+        let written = match replace_output(
+            &store,
+            &ConfigActor::Operator { id: "peer".into() },
+            session.output.revision,
+            &body,
+            "peer-write",
+        )
+        .await
+        .unwrap()
+        {
+            OutputReplace::Applied(doc) => doc,
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+
+        let shown = super::get_settings(State(state.clone())).await.unwrap().0;
+        assert_eq!(
+            shown.settings.get("output.create_cue").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(shown.output_revision, Some(written.revision));
+        assert_eq!(
+            shown.effective.get("output.revision").map(String::as_str),
+            Some(session.output.revision.to_string()).as_deref()
+        );
+
+        // The document revision the panel echoes back is accepted.
+        let saved = super::patch_settings(
+            State(state.clone()),
+            Json(super::PatchSettingsRequest {
+                settings: vec![super::SettingsUpdate {
+                    key: "output.download_pdf".into(),
+                    value: (!written.body.download_pdf).to_string(),
+                }],
+                expected_output_revision: shown.output_revision,
+            }),
+        )
+        .await
+        .expect("document revision is current")
+        .0;
+        let loaded = load_output(&store).await.unwrap();
+        assert_eq!(loaded.revision, written.revision + 1);
+        assert_eq!(saved.output_revision, Some(loaded.revision));
+        assert_ne!(loaded.body.download_pdf, written.body.download_pdf);
+        assert!(loaded.body.create_cue);
     }
 
     #[tokio::test]
@@ -6811,7 +7113,7 @@ mode = "deny"
         bookclerk_library::apply_host_schema(&db).await.unwrap();
         let store = LibraryStore::from_connection(db);
         let scratch = dir.path().join("cache");
-        let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg.events)
+        let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg)
             .await
             .unwrap();
         overlay_events(&mut cfg, &session.events, &session.cluster_id);

@@ -133,9 +133,10 @@ async fn main() -> anyhow::Result<()> {
         node_id = %control_plane.node.node_id,
         cluster_id = %control_plane.cluster_id,
         events_revision = control_plane.events.revision,
+        output_revision = control_plane.output.revision,
         enrolled = enrolled.len(),
         present = present.len(),
-        "enrolled control plane; core.events and plugin deployments are database-authoritative"
+        "enrolled control plane; core.events, core.output, and plugin deployments are database-authoritative"
     );
     // Guests are the deployment reconciler's: the registries start empty and
     // the first reconcile pass below brings every present deployment up
