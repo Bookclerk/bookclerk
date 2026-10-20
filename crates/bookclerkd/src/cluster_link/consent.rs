@@ -296,6 +296,9 @@ impl LinkSupervisor {
     /// Answers [`Refreshed::Unfinished`] when the owner did not answer or
     /// any entry hit a failure that may pass, so the caller retries.
     async fn refresh(&self) -> Refreshed {
+        // Read before the request, so a list answered on an older
+        // connection never opens claims on a newer one.
+        let connection = *self.handle.connections().borrow();
         let Some(frame) = self.handle.request(Body::DeploymentsList {}).await else {
             return Refreshed::Unfinished;
         };
@@ -331,6 +334,8 @@ impl LinkSupervisor {
         }
         self.catalog.replace(entries.clone());
         self.publish();
+        // The catalog and consent now describe this connection.
+        self.handle.deployments_refreshed(connection);
         for item in &items {
             let Some(entry) = entries.get(&item.instance_id) else {
                 continue;

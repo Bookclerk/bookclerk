@@ -823,6 +823,38 @@ async fn a_host_claims_only_consented_plugins_and_kinds() {
     assert_eq!(claimed.plugin_keys, vec![PLUGIN.to_string()]);
 }
 
+/// A job naming its account by label, or by its id in another case, is
+/// filtered by that account's plugin, as the executor resolves it.
+#[tokio::test]
+async fn a_filter_resolves_an_account_named_by_label() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    accounts::Entity::update_many()
+        .col_expr(accounts::Column::Label, Expr::value("Riley Main"))
+        .filter(accounts::Column::AccountId.eq("riley-acct"))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    for needle in ["riley main", "RILEY-ACCT"] {
+        let job_id = enqueue(&w.store, JobKind::Scan, needle).await;
+        let claimed = claim_filtered(&w.store, &filter(&["scan"], &[PLUGIN]))
+            .await
+            .unwrap_or_else(|| panic!("{needle}: a consented plugin is claimed"));
+        assert_eq!(claimed.job.id, job_id, "{needle}");
+        assert_eq!(claimed.plugin_keys, vec![PLUGIN.to_string()], "{needle}");
+        finish_remote_job(
+            &w.store,
+            HOST,
+            &job_id,
+            claimed.job.lease_generation,
+            SETTINGS.limits,
+            RemoteOutcome::Complete(None),
+        )
+        .await
+        .unwrap();
+    }
+}
+
 /// A scan of every account names no plugin, so no filter admits it.
 #[tokio::test]
 async fn a_job_whose_plugins_are_unknown_passes_no_filter() {

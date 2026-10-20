@@ -172,6 +172,11 @@ pub struct HostClientConfig {
     pub max_jobs: usize,
     /// Job kinds this host runs (`scan`, ...). Empty claims nothing.
     pub claim_kinds: Vec<String>,
+    /// When set, a connection claims nothing until
+    /// [`HostClientHandle::deployments_refreshed`] names it, so the caller
+    /// can re-read what the owner deployed (which may have changed while
+    /// this host was away) before work runs against it.
+    pub claims_after_refresh: bool,
     /// Timers.
     pub timing: ClientTiming,
 }
@@ -310,6 +315,11 @@ pub(crate) struct Shared {
     conn: watch::Sender<Option<Conn>>,
     /// Welcomed connections so far.
     connections: watch::Sender<u64>,
+    /// Whether claims wait for [`Self::refreshed`] to reach the connection.
+    claims_after_refresh: bool,
+    /// The newest connection (by its [`Self::connections`] count) whose
+    /// deployments the caller re-read.
+    refreshed: watch::Sender<u64>,
     /// Wakes for local handlers.
     wakes: broadcast::Sender<serde_json::Value>,
     /// One permit per job slot.
@@ -586,6 +596,21 @@ impl HostClientHandle {
         self.shared.connections.subscribe()
     }
 
+    /// Records that the deployments were re-read on the connection counted
+    /// `connection` (a [`Self::connections`] value read before the
+    /// request), which opens its claims under
+    /// [`HostClientConfig::claims_after_refresh`]. A read made on an
+    /// earlier connection opens nothing on a later one.
+    pub fn deployments_refreshed(&self, connection: u64) {
+        self.shared.refreshed.send_if_modified(|through| {
+            let newer = connection > *through;
+            if newer {
+                *through = connection;
+            }
+            newer
+        });
+    }
+
     /// True while a welcomed connection is live.
     #[must_use]
     pub fn is_connected(&self) -> bool {
@@ -758,6 +783,7 @@ impl<R: HostJobRunner> HostClient<R> {
             OwnerEndpoint::new(&config.link.owner_origin, config.link.spki_pin.as_deref())?;
         let (conn, _) = watch::channel(None);
         let (connections, _) = watch::channel(0);
+        let (refreshed, _) = watch::channel(0);
         let (consented, _) = watch::channel(BTreeSet::new());
         let (wakes, _) = broadcast::channel(WAKE_BUFFER);
         let shared = Arc::new(Shared {
@@ -775,6 +801,8 @@ impl<R: HostJobRunner> HostClient<R> {
             held: Mutex::new(HashMap::new()),
             conn,
             connections,
+            claims_after_refresh: config.claims_after_refresh,
+            refreshed,
             wakes,
             job_slots: Arc::new(Semaphore::new(config.max_jobs)),
             next_serial: AtomicU64::new(1),
@@ -986,9 +1014,13 @@ impl<R: HostJobRunner> HostClient<R> {
             Arc::clone(&self.sampler),
         )));
         if shared.max_jobs > 0 {
+            // The count this connection gets once welcomed below; only this
+            // task serves a connection, so nothing else bumps it first.
+            let number = *shared.connections.borrow() + 1;
             tasks.push(tokio::spawn(claim_loop(
                 Arc::clone(shared),
                 conn.clone(),
+                number,
                 Arc::clone(&self.runner),
             )));
         }
@@ -1262,10 +1294,29 @@ async fn heartbeat_loop(
 }
 
 /// Pulls jobs while job slots are free and the host would claim anything
-/// (some kind runs here and some plugin is consented). A claim the owner
-/// does not answer is retried with backoff; the loop ends only with its
-/// connection.
-async fn claim_loop<R: HostJobRunner>(shared: Arc<Shared>, conn: Conn, runner: Arc<R>) {
+/// (some kind runs here and some plugin is consented). Under
+/// [`HostClientConfig::claims_after_refresh`] it first waits for the
+/// caller to re-read the deployments on connection `number`. A claim the
+/// owner does not answer is retried with backoff; the loop ends only with
+/// its connection.
+async fn claim_loop<R: HostJobRunner>(
+    shared: Arc<Shared>,
+    conn: Conn,
+    number: u64,
+    runner: Arc<R>,
+) {
+    if shared.claims_after_refresh {
+        // Consent and deployments still describe the last connection until
+        // the caller re-reads them on this one.
+        let mut refreshed = shared.refreshed.subscribe();
+        if refreshed
+            .wait_for(|through| *through >= number)
+            .await
+            .is_err()
+        {
+            return;
+        }
+    }
     let mut consented = shared.consented.subscribe();
     let mut retry = shared.timing.backoff_min;
     loop {

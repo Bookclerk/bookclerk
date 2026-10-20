@@ -44,7 +44,7 @@ use super::semaphore::{
     acquire_permits, release_permits, PermitAcquire, SemaphorePermit, SemaphoreRequest,
 };
 use super::trust::{
-    account_owned, job_trusted, node_trust, owned_job_account, Claimant, NodeTrust,
+    account_owned, accounts_named, job_trusted, node_trust, owned_job_account, Claimant, NodeTrust,
 };
 use crate::entities::accounts;
 use crate::error::{LibraryError, Result};
@@ -176,17 +176,14 @@ pub async fn job_plugin_keys(
         keys.insert(key);
     }
     match job.payload.account.as_deref().filter(|a| !a.is_empty()) {
+        // Resolved like the executor and the trust checks do (id or
+        // label, ignoring case), so the set covers every store it touches.
         Some(account) => {
-            let mut query =
-                accounts::Entity::find().filter(accounts::Column::AccountId.eq(account));
-            if let Some(key) = pinned.as_deref() {
-                query = query.filter(accounts::Column::PluginKey.eq(key));
-            }
-            let rows = query.all(store.db()).await.map_err(LibraryError::Orm)?;
-            if rows.is_empty() {
+            let named = accounts_named(store, account, pinned.as_deref()).await?;
+            if named.is_empty() {
                 return Ok(None);
             }
-            keys.extend(rows.into_iter().map(|row| row.plugin_key));
+            keys.extend(named.into_iter().map(|(plugin_key, _)| plugin_key));
         }
         // Every account of the pinned plugin stays within that plugin;
         // every account of every plugin cannot be told.

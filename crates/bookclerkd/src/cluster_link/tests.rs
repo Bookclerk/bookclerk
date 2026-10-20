@@ -341,6 +341,7 @@ async fn start_client(
             incarnation: uuid::Uuid::new_v4().to_string(),
             max_jobs: 1,
             claim_kinds: vec!["scan".into()],
+            claims_after_refresh: true,
             timing: timing(backoff_min),
         },
         TransportRunner::new(transport, Arc::clone(&catalog)),

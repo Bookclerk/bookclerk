@@ -132,6 +132,21 @@ fn start_with<R: HostJobRunner>(
     watch::Sender<bool>,
     JoinHandle<ClientExit>,
 ) {
+    start_configured(port, max_jobs, false, runner)
+}
+
+/// [`start_with`], with claims waiting for a deployments refresh when
+/// `claims_after_refresh` is set.
+fn start_configured<R: HostJobRunner>(
+    port: u16,
+    max_jobs: usize,
+    claims_after_refresh: bool,
+    runner: R,
+) -> (
+    HostClientHandle,
+    watch::Sender<bool>,
+    JoinHandle<ClientExit>,
+) {
     let link = ClusterLink {
         owner_cluster_id: CLUSTER.into(),
         owner_origin: format!("http://127.0.0.1:{port}"),
@@ -148,6 +163,7 @@ fn start_with<R: HostJobRunner>(
             incarnation: "inc".into(),
             max_jobs,
             claim_kinds: vec!["scan".into()],
+            claims_after_refresh,
             timing: timing(),
         },
         runner,
@@ -869,5 +885,39 @@ async fn a_failed_report_is_scrubbed_of_secrets() {
     assert!(
         !message.contains(QUOTED_TOKEN),
         "the report carried the token"
+    );
+}
+
+/// Under `claims_after_refresh` a connection claims nothing until the
+/// deployments were re-read on it; a read on an older connection does not
+/// count.
+#[tokio::test]
+async fn claims_wait_for_the_connections_deployments_refresh() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (handle, _stop, _exit) =
+        start_configured(listener.local_addr().unwrap().port(), 1, true, NoJobs);
+    let mut socket = accept(&listener).await;
+    let answer = |frame: &Frame| match &frame.body {
+        Body::Heartbeat { .. } => Some(Body::Accepted {}),
+        Body::Claim { .. } => Some(Body::NoWork {
+            retry_after_secs: 300,
+        }),
+        _ => None,
+    };
+    handle.deployments_refreshed(0);
+    let before = read_for(&mut socket, Duration::from_millis(500), answer).await;
+    assert!(
+        !before
+            .iter()
+            .any(|frame| matches!(frame.body, Body::Claim { .. })),
+        "claimed before the deployments were re-read"
+    );
+    handle.deployments_refreshed(*handle.connections().borrow());
+    let after = read_for(&mut socket, Duration::from_millis(500), answer).await;
+    assert!(
+        after
+            .iter()
+            .any(|frame| matches!(frame.body, Body::Claim { .. })),
+        "no claim after the refresh"
     );
 }

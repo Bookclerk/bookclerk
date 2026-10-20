@@ -264,6 +264,8 @@ async fn start_clients(
                 .iter()
                 .map(|kind| (*kind).to_string())
                 .collect(),
+            // The supervisor re-reads deployments on each connection first.
+            claims_after_refresh: true,
             timing: ClientTiming::default(),
         };
         let catalog = Arc::new(RemoteCatalog::default());
