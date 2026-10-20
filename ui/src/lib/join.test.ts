@@ -10,6 +10,7 @@ import {
   isConsentRedirect,
   JoinApiError,
   joinErrorMessage,
+  listClerks,
   looksLikeBranchInvite,
   parseJoinCallback,
 } from "./join";
@@ -207,5 +208,19 @@ describe("clerkNodes", () => {
         (n) => n.node_id,
       ),
     ).toEqual(["a", "b"]);
+  });
+});
+
+describe("listClerks", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("reads the Owner-wide clerk listing, not the owned-nodes one", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string, _init: RequestInit) =>
+        new Response(JSON.stringify({ node_id: "a", nodes: [] }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(listClerks()).resolves.toEqual({ node_id: "a", nodes: [] });
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/config/clerks");
   });
 });

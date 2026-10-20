@@ -87,7 +87,7 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use axum::routing::{get, put};
+    use axum::routing::{delete, get, put};
     use bookclerk_config::Config;
     use bookclerk_library::control_plane::{
         bootstrap_control_plane, create_plugin_instance, list_deployments_for_instance,
@@ -409,5 +409,142 @@ mod tests {
         assert_eq!(cluster["nodes"][0]["node_id"], json!(mine));
         let (_, cluster) = send(&operator, "GET", "/api/cluster/status", Value::Null).await;
         assert_eq!(cluster["nodes"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_owner_lists_every_clerk_and_a_member_only_its_own() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let files = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let files_path = files.path();
+        std::fs::write(files_path.join("config.toml"), "").unwrap();
+        let db = bookclerk_plugin_database_sqlite::open(&files_path.join("library.db"))
+            .await
+            .unwrap();
+        bookclerk_library::apply_host_schema(&db).await.unwrap();
+        let store = bookclerk_library::LibraryStore::from_connection(db);
+        let mine = bootstrap_control_plane(
+            &store,
+            files_path,
+            &files_path.join("cache"),
+            None,
+            &bookclerk_config::Config::default(),
+        )
+        .await
+        .unwrap()
+        .node
+        .node_id;
+        // A stopped clerk sharing the database and `master.key`.
+        std::fs::copy(
+            bookclerk_library::master_key_path(files_path),
+            bookclerk_library::master_key_path(other.path()),
+        )
+        .unwrap();
+        let clerk = bootstrap_control_plane(
+            &store,
+            other.path(),
+            &other.path().join("cache"),
+            None,
+            &bookclerk_config::Config::default(),
+        )
+        .await
+        .unwrap()
+        .node
+        .node_id;
+        let owner = store
+            .create_user(bookclerk_library::UserRole::Owner, Some("Owner"), None)
+            .await
+            .unwrap();
+        let member = store
+            .create_user(bookclerk_library::UserRole::Member, Some("Member"), None)
+            .await
+            .unwrap();
+        let host = store
+            .create_user(bookclerk_library::UserRole::Host, Some("Hosting"), None)
+            .await
+            .unwrap();
+        let config = Config::load(
+            Some(files_path.to_path_buf()),
+            Some(files_path.join("config.toml")),
+        )
+        .unwrap();
+        let state = Arc::new(crate::config_authority::control_plane_test_state(
+            store.clone(),
+            config,
+        ));
+        let routes = |caller: crate::auth::NodeAdminCaller| {
+            axum::Router::new()
+                .route("/api/config/nodes", get(crate::config_authority::get_nodes))
+                .route(
+                    "/api/config/clerks",
+                    get(crate::config_authority::get_clerks),
+                )
+                .route(
+                    "/api/config/nodes/{node_id}",
+                    delete(crate::config_authority::delete_owner_node),
+                )
+                .route(
+                    "/api/config/nodes/{node_id}/owner",
+                    put(crate::config_authority::put_node_owner),
+                )
+                .layer(axum::Extension(caller))
+                .with_state(Arc::clone(&state))
+        };
+        let operator = routes(crate::auth::NodeAdminCaller::Operator);
+        let as_owner = routes(crate::auth::NodeAdminCaller::NodeOwner { user_id: owner.id });
+        let as_member = routes(crate::auth::NodeAdminCaller::NodeOwner { user_id: member.id });
+        let as_host = routes(crate::auth::NodeAdminCaller::NodeOwner { user_id: host.id });
+        // The member owns the clerk; the Owner owns neither node.
+        let (status, assigned) = send(
+            &operator,
+            "PUT",
+            &format!("/api/config/nodes/{clerk}/owner"),
+            json!({ "user_id": member.id }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{assigned}");
+
+        let ids = |listed: &Value| -> Vec<String> {
+            let mut ids: Vec<String> = listed["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|node| node["node_id"].as_str().unwrap().to_string())
+                .collect();
+            ids.sort();
+            ids
+        };
+        let mut both = vec![mine.clone(), clerk.clone()];
+        both.sort();
+        // The operator and the Owner see this node and the clerk.
+        for app in [&operator, &as_owner] {
+            let (status, listed) = send(app, "GET", "/api/config/clerks", Value::Null).await;
+            assert_eq!(status, StatusCode::OK, "{listed}");
+            assert_eq!(ids(&listed), both);
+            assert_eq!(listed["node_id"], json!(mine));
+        }
+        // The nodes listing stays scoped to owned nodes for the Owner.
+        let (_, listed) = send(&as_owner, "GET", "/api/config/nodes", Value::Null).await;
+        assert_eq!(listed["nodes"], json!([]));
+        // A member sees only the clerk it owns, as the nodes listing does;
+        // a host owning nothing sees none.
+        let (_, listed) = send(&as_member, "GET", "/api/config/clerks", Value::Null).await;
+        assert_eq!(ids(&listed), std::slice::from_ref(&clerk));
+        let (_, nodes) = send(&as_member, "GET", "/api/config/nodes", Value::Null).await;
+        assert_eq!(ids(&nodes), std::slice::from_ref(&clerk));
+        let (_, listed) = send(&as_host, "GET", "/api/config/clerks", Value::Null).await;
+        assert_eq!(listed["nodes"], json!([]));
+
+        // The Owner removes the stopped clerk it sees there.
+        let (status, removed) = send(
+            &as_owner,
+            "DELETE",
+            &format!("/api/config/nodes/{clerk}"),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{removed}");
+        let (_, listed) = send(&as_owner, "GET", "/api/config/clerks", Value::Null).await;
+        assert_eq!(ids(&listed), [mine]);
     }
 }

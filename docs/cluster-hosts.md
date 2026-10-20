@@ -239,7 +239,8 @@ bookclerk clusters join --url https://library.example --as clerk
 bootstrap files and asks you to restart `bookclerkd`.
 
 **Listing and removing.** **Settings → Clerks** on the library (operator or
-Owner) lists the owner nodes, this server first. A clerk that is not
+Owner) lists every owner node, this server first, whoever approved it
+(`GET /api/config/clerks`; another user sees only the ones they own). A clerk that is not
 running can be removed there (`DELETE /api/config/nodes/{node_id}`); stop
 Bookclerk on it first. Removing it does not take back the database
 credentials or key it held: rotate them if it is no longer trusted.

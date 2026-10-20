@@ -984,7 +984,7 @@ fn validate_public_keys(sign_public_key: &[u8], box_public_key: &[u8]) -> Result
 }
 
 /// Checks what a redeem would refuse as malformed before anything is
-/// written: its keys ([`validate_public_keys`]) and `software_version`. A
+/// written: its keys (canonical Curve25519 points) and `software_version`. A
 /// sign-in's redeem runs this before it spends its code, so a malformed
 /// request leaves the code for a corrected retry.
 ///

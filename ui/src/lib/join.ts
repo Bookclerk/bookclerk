@@ -402,9 +402,29 @@ export function beginClerkStepUp(): Promise<{
   return request("/api/auth/branch-consent/step-up", { method: "POST", body: {} });
 }
 
+/** `GET /api/config/clerks`: the owner nodes for Settings → Clerks. */
+export interface ClerksResponse {
+  /** This server's node id. */
+  node_id: string;
+  /** The owner nodes the caller may see, shaped like `listConfigNodes`'s. */
+  nodes: ConfigNodeView[];
+}
+
+/**
+ * Lists the owner nodes (this server and its clerks) for Settings → Clerks:
+ * every one for the operator or an Owner, who may remove any of them;
+ * another user only the ones they own. Unlike `listConfigNodes`, an Owner
+ * sees clerks owned by nobody or by other Owners.
+ *
+ * @returns This server's node id and the owner nodes.
+ */
+export function listClerks(): Promise<ClerksResponse> {
+  return request("/api/config/clerks");
+}
+
 /**
  * Removes an owner node (a clerk) that no longer runs; Settings → Clerks
- * lists them from `listConfigNodes` (`kind = owner`).
+ * lists them from `listClerks`.
  *
  * @param nodeId - The node to remove.
  * @returns The removed id.
@@ -624,9 +644,9 @@ export function joinErrorMessage(error: unknown, fallback: string): string {
       case "clerk_not_offered":
         return "The joining server did not offer to join as a clerk.";
       case "database_guest_missing":
-        return "This server doesn't have the library's database plugin installed.";
+        return "This server doesn't have the library's database plugin installed. Install it, then try again within 10 minutes.";
       case "d1_token_missing":
-        return "Set this server's Cloudflare D1 API token before joining as a clerk.";
+        return "Set this server's Cloudflare D1 API token (BOOKCLERK_D1_API_TOKEN), then try again within 10 minutes.";
       default:
         return error.message || fallback;
     }

@@ -19,8 +19,9 @@
 //!   the consented name and type it holds, S256 verifier), its link
 //!   recorded under the consented name, and only then consumed. The
 //!   redeem is the same canonical batch a minted link takes
-//!   ([`redeem_enrollment_link_as`]), through a link whose id and secret
-//!   derive from the code and verifier ([`authorized_enrollment_link`]):
+//!   ([`redeem_enrollment_link_as`]), through a link whose id derives from
+//!   the code and whose secret from the code, verifier and node kind
+//!   ([`authorized_enrollment_link`]):
 //!   one node row, `node_credentials`,
 //!   a receipt, idempotent retries, and one node under concurrency.
 //! - `GET|PUT /api/config/branches` ([`get_branches`], [`put_branches`]):

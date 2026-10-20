@@ -1018,12 +1018,18 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         .with_state(state.clone());
 
     // Node administration: operators see and edit every node; a user who
-    // owns nodes (Host, Administrator, Owner) sees and edits only those.
+    // owns nodes (Host, Administrator, Owner) sees and edits only those. An
+    // Owner also sees and removes every owner node (the clerks).
     let node_admin = Router::new()
         .route("/api/config/nodes", get(crate::config_authority::get_nodes))
         .route(
             "/api/config/nodes/{node_id}",
             delete(crate::config_authority::delete_owner_node),
+        )
+        // Settings → Clerks: every owner node for the operator or an Owner.
+        .route(
+            "/api/config/clerks",
+            get(crate::config_authority::get_clerks),
         )
         .route(
             "/api/config/nodes/{node_id}/runtime",

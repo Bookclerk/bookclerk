@@ -355,16 +355,72 @@ pub fn wrap_master_key(files_dir: &Path, password: &str) -> Result<MasterKey> {
 /// receives the library's DEK (sealed to its node key, never the
 /// passphrase-wrapped file) and keeps it under its own `password`.
 ///
-/// Writes `BCK2` (Argon2id + XChaCha20-Poly1305) when `password` is set and
-/// non-empty, `BCK1` otherwise, mode `0600`, replacing any existing file
-/// atomically. The process cache is not changed: the daemon restarts on the
-/// new bootstrap.
+/// Writes [`encode_master_key_file`]'s bytes, mode `0600`, replacing any
+/// existing file atomically. The process cache is not changed: the daemon
+/// restarts on the new bootstrap.
 ///
 /// # Errors
 ///
 /// Returns an error when `dek` is not 32 bytes or the file cannot be
 /// written.
 pub fn install_master_key(files_dir: &Path, dek: &[u8], password: Option<&str>) -> Result<()> {
+    let encoded = encode_master_key_file(dek, password)?;
+    prepare_master_key_dir(files_dir)?;
+    let path = master_key_path(files_dir);
+    write_secret_file_atomic(&path, &encoded)?;
+    let wrapped = password.map(str::trim).is_some_and(|p| !p.is_empty());
+    tracing::info!(
+        path = %path.display(),
+        wrapped,
+        "installed the library's data-encryption key (mode 0600)"
+    );
+    if !wrapped {
+        warn_unwrapped_master_key(&path);
+    }
+    Ok(())
+}
+
+/// Creates the directory that holds `master.key` and sets it to mode
+/// `0700` on Unix, as a first mint does.
+///
+/// # Errors
+///
+/// Returns an error when the directory cannot be created or hardened.
+pub fn prepare_master_key_dir(files_dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(files_dir).map_err(|e| {
+        LibraryError::Other(anyhow::anyhow!(
+            "failed to create master key directory {}: {e}",
+            files_dir.display()
+        ))
+    })?;
+    harden_path(files_dir, true)
+}
+
+/// Warns that the `master.key` at `path` was written as `BCK1` (the DEK
+/// unwrapped at rest), and how to wrap it.
+pub fn warn_unwrapped_master_key(path: &Path) {
+    tracing::warn!(
+        path = %path.display(),
+        "master.key is BCK1 (unwrapped). Set {AUTH_PASSWORD_ENV} or \
+         [auth].password, then run `bookclerk config master-key wrap` \
+         (or reload bookclerkd) to wrap the DEK at rest."
+    );
+}
+
+/// The `master.key` file contents for `dek`: `BCK2` (Argon2id +
+/// XChaCha20-Poly1305) when `password` is set and non-empty after
+/// trimming, `BCK1` otherwise. A caller that stages the file itself (a
+/// clerk applying its bootstrap as one recoverable step) writes these
+/// bytes with mode `0600`.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] when `dek` is not 32 bytes, and the
+/// wrapping error.
+pub fn encode_master_key_file(
+    dek: &[u8],
+    password: Option<&str>,
+) -> Result<zeroize::Zeroizing<Vec<u8>>> {
     let bytes: [u8; DEK_LEN] = dek
         .try_into()
         .map_err(|_| LibraryError::Invalid(format!("a data-encryption key is {DEK_LEN} bytes")))?;
@@ -373,24 +429,10 @@ pub fn install_master_key(files_dir: &Path, dek: &[u8], password: Option<&str>) 
         .map(str::trim)
         .filter(|p| !p.is_empty())
         .inspect(|p| bookclerk_config::register_secret(p));
-    let encoded = zeroize::Zeroizing::new(match password {
+    Ok(zeroize::Zeroizing::new(match password {
         Some(pw) => encode_wrapped_master_key(&key, pw)?,
         None => encode_raw_master_key(&key),
-    });
-    std::fs::create_dir_all(files_dir).map_err(|e| {
-        LibraryError::Other(anyhow::anyhow!(
-            "failed to create master key directory {}: {e}",
-            files_dir.display()
-        ))
-    })?;
-    let path = master_key_path(files_dir);
-    write_secret_file_atomic(&path, &encoded)?;
-    tracing::info!(
-        path = %path.display(),
-        wrapped = password.is_some(),
-        "installed the library's data-encryption key (mode 0600)"
-    );
-    Ok(())
+    }))
 }
 
 /// Reads `BOOKCLERK_AUTH_PASSWORD` and registers it for log redaction; empty is treated as absent.
@@ -428,12 +470,7 @@ fn mint_master_key(path: &Path, password: Option<&str>) -> Result<MasterKeyResol
                 "minted data-encryption key for encrypted_secrets (mode 0600)"
             );
             if password.is_none() {
-                tracing::warn!(
-                    path = %path.display(),
-                    "master.key is BCK1 (unwrapped). Set {AUTH_PASSWORD_ENV} or \
-                     [auth].password, then run `bookclerk config master-key wrap` \
-                     (or reload bookclerkd) to wrap the DEK at rest."
-                );
+                warn_unwrapped_master_key(path);
             }
             Ok(MasterKeyResolution {
                 key: dek,
@@ -619,7 +656,10 @@ fn write_secret_file_create_new(path: &Path, bytes: &[u8]) -> std::io::Result<()
     Ok(())
 }
 
-/// Atomic replace via temp file + rename (for BCK1→BCK2 re-wrap).
+/// Atomic replace via temp file + [`bookclerk_config::replace_file`] (for
+/// BCK1→BCK2 re-wrap and a clerk's installed DEK). That replace overwrites
+/// an existing `master.key` on Windows too, where a plain `rename` onto an
+/// existing file is not relied on; the `0600` temp file keeps its mode.
 fn write_secret_file_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -654,7 +694,7 @@ fn write_secret_file_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         })?;
     }
     harden_path(&tmp, false)?;
-    std::fs::rename(&tmp, path).map_err(|e| {
+    bookclerk_config::replace_file(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         LibraryError::Other(anyhow::anyhow!(
             "failed to replace master key {}: {e}",

@@ -44,8 +44,9 @@ use bookclerk_library::control_plane::{
     create_pending_join, finish_pending_join, list_cluster_links, open_pending_join, NewPendingJoin,
 };
 use bookclerk_node_client::{
-    apply_clerk_bootstrap, authorize_join, inspect_library, install_problem, join_cluster,
-    redeem_branch_code, redeem_clerk_code, BranchRedeem, InspectedLibrary, JoinError,
+    apply_clerk_bootstrap, authorize_join, bootstrap_database_kind, inspect_library,
+    install_problem, join_cluster, redeem_branch_code, redeem_clerk_code, BranchRedeem,
+    InspectedLibrary, JoinError,
 };
 use bookclerk_node_proto::{is_branch_name, ConnectionType, JOIN_CALLBACK_PATH};
 use serde::Deserialize;
@@ -477,31 +478,25 @@ async fn end_sign_in(store: &bookclerk_library::LibraryStore, sign_in: &str) {
 }
 
 /// True when the guest for `kind` is installed here, so the daemon can
-/// open the library's database after the restart.
+/// open the library's database after the restart
+/// ([`bookclerk_node_client::database_guest_installed`]; tests may assume
+/// it).
 fn database_guest_installed(cfg: &bookclerk_config::Config, kind: DatabasePluginKind) -> bool {
     #[cfg(test)]
     if tests::ASSUME_DATABASE_GUESTS.load(std::sync::atomic::Ordering::SeqCst) {
         return true;
     }
-    let Ok(plugins) = bookclerk_plugin_host::discover_plugins(cfg) else {
-        return false;
-    };
-    let adapters: Vec<_> = plugins
-        .into_iter()
-        .filter(|plugin| {
-            plugin
-                .manifest
-                .has_entrypoint(bookclerk_plugin_host::Entrypoint::DatabaseAdapter)
-        })
-        .collect();
-    bookclerk_plugin_host::resolve_plugin_ref(&adapters, kind.as_str()).is_ok()
+    bookclerk_node_client::database_guest_installed(cfg, kind)
 }
 
 /// The callback for a clerk: redeem as a clerk, open the sealed bootstrap,
 /// write it as this install's own, and restart on it. The caller holds the
 /// callback lock. Like a branch's, the pending sign-in is kept when the
 /// redeem fails for a reason a retry can fix (502 `join_retry`), and ended
-/// on success, refusal, or anything else.
+/// on success, refusal, or anything else. It is also kept when this server
+/// lacks the database guest or D1 token the bootstrap needs (409
+/// `database_guest_missing`, `d1_token_missing`), so Try again works once
+/// that is fixed.
 async fn join_as_clerk(
     state: &Arc<AppState>,
     store: &bookclerk_library::LibraryStore,
@@ -579,20 +574,20 @@ async fn join_as_clerk(
             return join_failed(&err);
         }
     };
-    // The bootstrap is in hand: what follows does not redeem again.
-    end_sign_in(store, sign_in).await;
+    // The library holds the node now. What it needs here is checked while
+    // the sign-in is still pending: once the operator fixes it, Try again
+    // repeats the same exchange, and the library answers it with the same
+    // node and a freshly sealed bootstrap, so no orphan node is left.
     let cfg = state.config.read().await.clone();
-    let kind = match joined.bootstrap.database.plugin() {
-        "postgres" => DatabasePluginKind::Postgres,
-        _ => DatabasePluginKind::D1,
-    };
+    let kind = bootstrap_database_kind(&joined.bootstrap.database);
     if !database_guest_installed(&cfg, kind) {
         return join_error(
             StatusCode::CONFLICT,
             "database_guest_missing",
             &format!(
-                "the library's database is {}, and its database plugin is not installed on this server; install it and join again",
-                kind.as_str()
+                "the library's database is {}, and its database plugin is not installed on this server; install it, then try again within 10 minutes (the library holds this server as node {})",
+                kind.as_str(),
+                joined.node_id
             ),
         );
     }
@@ -600,9 +595,15 @@ async fn join_as_clerk(
         return join_error(
             StatusCode::CONFLICT,
             "d1_token_missing",
-            "the library's database is Cloudflare D1: set BOOKCLERK_D1_API_TOKEN for this server (the token is never sent between servers) and join again",
+            &format!(
+                "the library's database is Cloudflare D1: set BOOKCLERK_D1_API_TOKEN for this server and restart it (the token is never sent between servers), then try again within 10 minutes (the library holds this server as node {})",
+                joined.node_id
+            ),
         );
     }
+    // The bootstrap is in hand and can be used here: what follows does not
+    // redeem again.
+    end_sign_in(store, sign_in).await;
     let files_dir = cfg.paths().files_dir.clone();
     let config_file = cfg.paths().config_file.clone();
     let password = cfg.auth_password().map(Zeroizing::new);

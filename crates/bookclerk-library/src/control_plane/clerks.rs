@@ -5,17 +5,24 @@
 //!   join as a clerk: a clerk's own database is replaced by the library's,
 //!   so the install must hold no library data of its own (no users, store
 //!   accounts, books, or libraries it is a branch of).
+//! - [`owner_nodes_visible_to`] lists the owner nodes a caller may see
+//!   (Settings → Clerks), by the same rule [`remove_owner_node`] removes
+//!   them.
 //! - [`remove_owner_node`] removes an owner node that is no longer running
 //!   from the library's node list, the way any owner node leaves.
 
 use chrono::Utc;
-use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
+use sea_orm::sea_query::Query;
+use sea_orm::{ColumnTrait, Condition, EntityTrait, PaginatorTrait, QueryFilter, TransactionTrait};
 use serde::Serialize;
 
 use super::cluster_links::CLUSTER_LINK_LEFT;
 use super::enrollment::EnrollmentActor;
-use super::identity::{load_node, NodeKind};
-use crate::entities::{accounts, books, cluster_links, node_status, nodes, users};
+use super::identity::{list_nodes, load_node, NodeKind, NodeRecord};
+use crate::entities::{
+    accounts, books, cluster_links, event_subscriber_nodes, job_secret_handoffs, node_status,
+    nodes, plugin_deployment_observations, plugin_deployments, users,
+};
 use crate::error::{LibraryError, Result};
 use crate::models::{UserRole, UserStatus};
 use crate::store::LibraryStore;
@@ -43,25 +50,20 @@ impl LibraryContents {
     /// Why the install is not empty, for the operator.
     #[must_use]
     pub fn reasons(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        for (count, what) in [
-            (self.users, "user"),
-            (self.accounts, "store account"),
-            (self.books, "book"),
-            (self.libraries_joined, "library it is a branch of"),
-        ] {
-            if count > 0 {
-                out.push(format!(
-                    "{count} {what}{}",
-                    if count == 1 || what.starts_with("library") {
-                        ""
-                    } else {
-                        "s"
-                    }
-                ));
-            }
-        }
-        out
+        [
+            (self.users, "user", "users"),
+            (self.accounts, "store account", "store accounts"),
+            (self.books, "book", "books"),
+            (
+                self.libraries_joined,
+                "library it is a branch of",
+                "libraries it is a branch of",
+            ),
+        ]
+        .into_iter()
+        .filter(|(count, _, _)| *count > 0)
+        .map(|(count, one, many)| format!("{count} {}", if count == 1 { one } else { many }))
+        .collect()
     }
 }
 
@@ -93,8 +95,44 @@ pub async fn library_contents(store: &LibraryStore) -> Result<LibraryContents> {
     })
 }
 
-/// Removes owner node `node_id` from the library's node list: its `nodes`
-/// row (and with it its labels and status). Only a node that is not
+/// The owner nodes (`kind = owner`: this one and its clerks) `actor` may
+/// see, by the rule [`remove_owner_node`] removes them: the operator or an
+/// active Owner sees every one; another active user only the ones they own;
+/// an unknown or disabled user none.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub async fn owner_nodes_visible_to(
+    store: &LibraryStore,
+    actor: &EnrollmentActor,
+) -> Result<Vec<NodeRecord>> {
+    let owner_nodes = list_nodes(store)
+        .await?
+        .into_iter()
+        .filter(|node| node.kind == NodeKind::Owner);
+    match actor {
+        EnrollmentActor::Operator { .. } => Ok(owner_nodes.collect()),
+        EnrollmentActor::User { user_id } => {
+            let user = store
+                .get_user(*user_id)
+                .await?
+                .filter(|user| user.status == UserStatus::Active);
+            Ok(match user {
+                None => Vec::new(),
+                Some(user) if user.role == UserRole::Owner => owner_nodes.collect(),
+                Some(user) => owner_nodes
+                    .filter(|node| node.owner_user_id == Some(user.id))
+                    .collect(),
+            })
+        }
+    }
+}
+
+/// Removes owner node `node_id` from the library's node list, in one
+/// transaction: its `nodes` row (and with it its labels and credentials),
+/// status, event-subscriber registrations, secret handoffs, and plugin
+/// deployments with their observations. Only a node that is not
 /// running may go, and never `this_node`: a running owner node writes its
 /// row back at its next heartbeat. Removing a node does not take back the
 /// database credentials or DEK it held; rotate those when it is not
@@ -154,21 +192,104 @@ pub async fn remove_owner_node(
             "node {node_id} is running; stop Bookclerk there first"
         )));
     }
+    // The node's rows go together. These tables are keyed by node id with
+    // no foreign key to `nodes` (only `node_credentials` and
+    // `node_upload_sessions` cascade), so each is cleared here: the node's
+    // heartbeat, event-subscriber registrations, secret handoffs, plugin
+    // deployments and their observations (its own, and other nodes' of its
+    // deployments). Node-scoped configuration documents and their audit
+    // history are kept, as the configuration audit trail is. Dropping the
+    // transaction on an error rolls it back.
+    let txn = store.db().begin().await.map_err(LibraryError::Orm)?;
     node_status::Entity::delete_many()
         .filter(node_status::Column::NodeId.eq(node_id))
-        .exec(store.db())
+        .exec(&txn)
+        .await
+        .map_err(LibraryError::Orm)?;
+    event_subscriber_nodes::Entity::delete_many()
+        .filter(event_subscriber_nodes::Column::NodeId.eq(node_id))
+        .exec(&txn)
+        .await
+        .map_err(LibraryError::Orm)?;
+    job_secret_handoffs::Entity::delete_many()
+        .filter(job_secret_handoffs::Column::NodeId.eq(node_id))
+        .exec(&txn)
+        .await
+        .map_err(LibraryError::Orm)?;
+    plugin_deployment_observations::Entity::delete_many()
+        .filter(
+            Condition::any()
+                .add(plugin_deployment_observations::Column::NodeId.eq(node_id))
+                .add(
+                    plugin_deployment_observations::Column::DeploymentId.in_subquery(
+                        Query::select()
+                            .column(plugin_deployments::Column::DeploymentId)
+                            .from(plugin_deployments::Entity)
+                            .and_where(plugin_deployments::Column::NodeId.eq(node_id))
+                            .to_owned(),
+                    ),
+                ),
+        )
+        .exec(&txn)
+        .await
+        .map_err(LibraryError::Orm)?;
+    plugin_deployments::Entity::delete_many()
+        .filter(plugin_deployments::Column::NodeId.eq(node_id))
+        .exec(&txn)
         .await
         .map_err(LibraryError::Orm)?;
     nodes::Entity::delete_many()
         .filter(nodes::Column::NodeId.eq(node_id))
         .filter(nodes::Column::Kind.eq(NodeKind::Owner.as_str()))
-        .exec(store.db())
+        .exec(&txn)
         .await
         .map_err(LibraryError::Orm)?;
+    txn.commit().await.map_err(LibraryError::Orm)?;
     let detail = serde_json::json!({ "node_id": node_id }).to_string();
-    let _ = store
+    if let Err(err) = store
         .insert_security_audit_event(&audit, "owner_node_removed", Some(&detail))
-        .await;
+        .await
+    {
+        tracing::warn!(
+            node_id,
+            error = %err,
+            "removed an owner node, but could not record the owner_node_removed audit event"
+        );
+    }
     tracing::info!(node_id, "removed an owner node from the library");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reasons_use_each_entrys_own_singular_and_plural() {
+        let one = LibraryContents {
+            users: 1,
+            accounts: 1,
+            books: 1,
+            libraries_joined: 1,
+        };
+        assert_eq!(
+            one.reasons(),
+            [
+                "1 user",
+                "1 store account",
+                "1 book",
+                "1 library it is a branch of"
+            ]
+        );
+        let many = LibraryContents {
+            users: 2,
+            accounts: 0,
+            books: 3,
+            libraries_joined: 2,
+        };
+        assert_eq!(
+            many.reasons(),
+            ["2 users", "3 books", "2 libraries it is a branch of"]
+        );
+    }
 }

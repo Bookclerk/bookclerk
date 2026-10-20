@@ -25,8 +25,9 @@ use std::time::{Duration, Instant};
 
 use bookclerk_config::DatabasePluginKind;
 use bookclerk_node_client::{
-    apply_clerk_bootstrap, authorize_join, inspect_library, install_problem, redeem_branch_code,
-    redeem_clerk_code, AppliedClerk, BranchRedeem, InspectedLibrary, JoinError,
+    apply_clerk_bootstrap, authorize_join, bootstrap_database_kind, database_guest_installed,
+    inspect_library, install_problem, redeem_branch_code, redeem_clerk_code, AppliedClerk,
+    BranchRedeem, InspectedLibrary, JoinError,
 };
 use bookclerk_node_proto::{ConnectionType, JOIN_CALLBACK_PATH};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -264,20 +265,36 @@ pub enum Joined {
     },
 }
 
-/// True when the guest for `kind` is installed for `config`.
-fn database_guest_installed(config: &bookclerk_config::Config, kind: DatabasePluginKind) -> bool {
-    let Ok(plugins) = bookclerk_plugin_host::discover_plugins(config) else {
-        return false;
-    };
-    let adapters: Vec<_> = plugins
-        .into_iter()
-        .filter(|plugin| {
-            plugin
-                .manifest
-                .has_entrypoint(bookclerk_plugin_host::Entrypoint::DatabaseAdapter)
-        })
-        .collect();
-    bookclerk_plugin_host::resolve_plugin_ref(&adapters, kind.as_str()).is_ok()
+/// Refuses a clerk join while `bookclerkd` runs on this install: applying
+/// the bootstrap rewrites `config.toml` and `master.key` under it. Running
+/// means this install's node (its `node-identity.json`) heartbeated within
+/// the live window, the signal the library uses before removing an owner
+/// node. An install whose daemon never ran has no identity file yet.
+///
+/// # Errors
+///
+/// Returns an error saying to stop `bookclerkd` while it runs, and the
+/// read error.
+async fn refuse_while_daemon_runs(
+    store: &bookclerk_library::LibraryStore,
+    config: &bookclerk_config::Config,
+) -> anyhow::Result<()> {
+    let files_dir = &config.paths().files_dir;
+    if !bookclerk_library::control_plane::node_identity_path(files_dir).is_file() {
+        return Ok(());
+    }
+    let node = bookclerk_library::control_plane::load_or_create_node_identity(files_dir)?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    if bookclerk_library::control_plane::load_node_status(store, &node.node_id)
+        .await?
+        .is_some_and(|status| status.is_live(now_ms))
+    {
+        anyhow::bail!(
+            "bookclerkd is running on this install (node {}): stop bookclerkd first, then join as a clerk",
+            node.node_id
+        );
+    }
+    Ok(())
 }
 
 /// Runs `clusters join --url`, as a branch, or offering a clerk when
@@ -303,6 +320,7 @@ pub async fn join_with_sign_in(
         {
             anyhow::bail!("cannot join as a clerk: {problem}");
         }
+        refuse_while_daemon_runs(store, config).await?;
     }
     let library = inspect_library(address).await.map_err(|err| {
         anyhow::anyhow!(
@@ -390,21 +408,31 @@ pub async fn join_with_sign_in(
             let joined = redeem_with_retries(|| redeem_clerk_code(redeem, keys))
                 .await
                 .map_err(join_failed)?;
-            let kind = match joined.bootstrap.database.plugin() {
-                "postgres" => DatabasePluginKind::Postgres,
-                _ => DatabasePluginKind::D1,
-            };
+            // The library holds the node now; the verifier lives only in
+            // this process, so a failure from here names the node for the
+            // operator to have removed there.
+            let kind = bootstrap_database_kind(&joined.bootstrap.database);
             if !database_guest_installed(config, kind) {
                 anyhow::bail!(
-                    "the library's database is {}, and its database plugin is not installed here; install it (cargo stage-plugins --optional) and join again",
-                    kind.as_str()
+                    "the library's database is {}, and its database plugin is not installed here; install it (cargo stage-plugins --optional), ask the library's owner to remove node {}, and join again",
+                    kind.as_str(),
+                    joined.node_id
                 );
             }
             if kind == DatabasePluginKind::D1 && bookclerk_config::resolve_d1_api_token().is_err() {
                 anyhow::bail!(
-                    "the library's database is Cloudflare D1: set BOOKCLERK_D1_API_TOKEN here (the token is never sent between servers) and join again"
+                    "the library's database is Cloudflare D1: set BOOKCLERK_D1_API_TOKEN here (the token is never sent between servers), ask the library's owner to remove node {}, and join again",
+                    joined.node_id
                 );
             }
+            // Checked again: a daemon started during the sign-in would run
+            // on files rewritten under it.
+            refuse_while_daemon_runs(store, config).await.map_err(|err| {
+                anyhow::anyhow!(
+                    "{err}; the library holds this install as node {}: ask its owner to remove it if you do not join again",
+                    joined.node_id
+                )
+            })?;
             let password = config.auth_password().map(Zeroizing::new);
             let applied = apply_clerk_bootstrap(
                 &config.paths().files_dir,

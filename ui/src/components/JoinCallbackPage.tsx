@@ -30,8 +30,9 @@ export interface JoinCallbackPageProps {
  *
  * The query is removed from the address bar before the request, so the
  * code is not kept in history; it stays in memory only so a failure the
- * daemon marks retryable (`join_retry`: the library unreachable), or a
- * request that got no answer at all, can offer Try again.
+ * daemon marks retryable (`join_retry`: the library unreachable; or a
+ * clerk's missing database plugin or D1 token, once fixed), or a request
+ * that got no answer at all, can offer Try again.
  *
  * For a clerk join (`connection=clerk`) the daemon receives the library's
  * database settings and keys sealed to this node, writes them as its own,
@@ -68,8 +69,14 @@ export function JoinCallbackPage({ onOpenLibrary }: JoinCallbackPageProps) {
           kind: "failed",
           message: joinErrorMessage(err, "Could not join the library."),
           // A request that never got an answer may be tried again: the
-          // pending join stays until the library's answer is recorded.
-          retry: !isApiError(err) || err.code === "join_retry",
+          // pending join stays until the library's answer is recorded. So
+          // may a clerk join this server could not use yet (a missing
+          // database plugin or D1 token): the daemon keeps the sign-in.
+          retry:
+            !isApiError(err) ||
+            err.code === "join_retry" ||
+            err.code === "database_guest_missing" ||
+            err.code === "d1_token_missing",
         }),
       );
   }, []);

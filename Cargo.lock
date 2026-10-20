@@ -1762,6 +1762,7 @@ dependencies = [
  "bookclerk-config",
  "bookclerk-library",
  "bookclerk-node-proto",
+ "bookclerk-plugin-host",
  "futures",
  "rand 0.8.7",
  "serde",

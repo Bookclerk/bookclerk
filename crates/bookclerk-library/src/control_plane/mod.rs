@@ -42,7 +42,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-pub use clerks::{library_contents, remove_owner_node, LibraryContents};
+pub use clerks::{library_contents, owner_nodes_visible_to, remove_owner_node, LibraryContents};
 pub use cluster_links::{
     decode_spki_pin, leave_cluster_link, list_cluster_links, load_cluster_link,
     load_cluster_link_keys, mark_cluster_link_revoked, record_cluster_link, set_cluster_link_state,
@@ -76,9 +76,9 @@ pub use enrollment::{
     MIN_LINK_TTL, NODE_PUBLIC_KEY_LEN,
 };
 pub use identity::{
-    current_process_incarnation, install_node_identity, list_node_ids, list_nodes, load_node,
-    load_or_create_node_identity, node_identity_path, node_target, NodeIdentity, NodeKind,
-    NodeRecord, NODE_IDENTITY_FILE,
+    current_process_incarnation, encode_node_identity_file, install_node_identity, list_node_ids,
+    list_nodes, load_node, load_or_create_node_identity, node_identity_path, node_target,
+    NodeIdentity, NodeKind, NodeRecord, NODE_IDENTITY_FILE,
 };
 pub use instance_config::{
     import_instance_config_if_absent, load_instance_config, parse_setting_text,

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { isApiError, listConfigNodes, type ConfigNodeView } from "@/lib/api";
-import { clerkNodes, joinErrorMessage, removeClerk } from "@/lib/join";
+import { isApiError, type ConfigNodeView } from "@/lib/api";
+import { clerkNodes, joinErrorMessage, listClerks, removeClerk } from "@/lib/join";
 
 /** Props for {@link ClerksPanel}. */
 export interface ClerksPanelProps {
@@ -22,7 +22,7 @@ export function ClerksPanel({ onSessionExpired }: ClerksPanelProps) {
 
   const refresh = useCallback(async () => {
     try {
-      const body = await listConfigNodes();
+      const body = await listClerks();
       setNodes(clerkNodes(body.nodes));
       setError(null);
     } catch (err) {
@@ -45,6 +45,10 @@ export function ClerksPanel({ onSessionExpired }: ClerksPanelProps) {
       await removeClerk(nodeId);
       await refresh();
     } catch (err) {
+      if (isApiError(err) && err.status === 401) {
+        onSessionExpired();
+        return;
+      }
       setError(joinErrorMessage(err, "Could not remove that clerk."));
     } finally {
       setBusy(null);

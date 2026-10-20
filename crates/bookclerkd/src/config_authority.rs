@@ -1445,6 +1445,39 @@ fn node_json(
     })
 }
 
+/// The clerk actor for a node-administration `caller`: the library's
+/// clerk rules (an Owner reaches every owner node) are checked on it.
+fn clerk_actor(caller: NodeAdminCaller) -> bookclerk_library::control_plane::EnrollmentActor {
+    match caller {
+        NodeAdminCaller::Operator => bookclerk_library::control_plane::EnrollmentActor::Operator {
+            id: "operator".into(),
+        },
+        NodeAdminCaller::NodeOwner { user_id } => {
+            bookclerk_library::control_plane::EnrollmentActor::User { user_id }
+        }
+    }
+}
+
+/// `GET /api/config/clerks`: the owner nodes (this one and its clerks) for
+/// Settings → Clerks, shaped like `GET /api/config/nodes`. The operator or
+/// an Owner sees every one, as `DELETE /api/config/nodes/{node_id}` lets
+/// them remove any; another user only the ones they own, which the nodes
+/// listing already shows them. Branches are not listed.
+pub async fn get_clerks(
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<NodeAdminCaller>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let cfg = state.config.read().await.clone();
+    let this_node = this_node_id(&cfg)?;
+    let library = state.library_snapshot().await;
+    let nodes =
+        bookclerk_library::control_plane::owner_nodes_visible_to(&library, &clerk_actor(caller))
+            .await
+            .map_err(events_error)?;
+    let nodes = nodes_json(&library, &this_node, &nodes).await?;
+    Ok(Json(json!({ "node_id": this_node, "nodes": nodes })))
+}
+
 /// `DELETE /api/config/nodes/{node_id}`: remove an owner node (a clerk, or
 /// any node sharing this database) that is no longer running from the
 /// library's node list. The operator or an Owner may remove any; another
@@ -1458,14 +1491,7 @@ pub async fn delete_owner_node(
     let cfg = state.config.read().await.clone();
     let this_node = this_node_id(&cfg)?;
     let library = state.library_snapshot().await;
-    let actor = match caller {
-        NodeAdminCaller::Operator => bookclerk_library::control_plane::EnrollmentActor::Operator {
-            id: "operator".into(),
-        },
-        NodeAdminCaller::NodeOwner { user_id } => {
-            bookclerk_library::control_plane::EnrollmentActor::User { user_id }
-        }
-    };
+    let actor = clerk_actor(caller);
     let node_id = node_id.trim().to_string();
     bookclerk_library::control_plane::remove_owner_node(&library, &actor, &node_id, &this_node)
         .await

@@ -1813,7 +1813,9 @@ owner node and host node.
   same arguments and environment (same PID on Unix). It comes back as an
   owner node of the library. `clusters join --as clerk` writes the same
   files and asks the operator to restart `bookclerkd`.
-- **Removing a clerk.** Settings → Clerks lists the owner nodes;
+- **Removing a clerk.** Settings → Clerks lists the owner nodes
+  (`GET /api/config/clerks`: all of them for the operator or an Owner,
+  the owned ones for another user, by the same rule as removal);
   `DELETE /api/config/nodes/{node_id}` removes one that is not running
   (operator or Owner; never this node or a host node). Removal does not
   take back the database credentials or DEK it held: rotate them when it
