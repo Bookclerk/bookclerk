@@ -773,6 +773,16 @@ pub struct AcquireRequestBody {
     pub account: Option<String>,
     /// When set, fetch through this deployed plugin instance.
     pub plugin_instance_id: Option<String>,
+    /// More title ids; each (with the single filter above) becomes its own
+    /// job.
+    #[serde(default)]
+    pub titles: Vec<String>,
+    /// Re-download titles already acquired.
+    #[serde(default)]
+    pub force: bool,
+    /// Fetch only each title's companion PDF.
+    #[serde(default)]
+    pub pdf_only: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -943,6 +953,14 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         .route(
             "/api/config/cluster-consents",
             get(crate::cluster_link::api::get_cluster_consents),
+        )
+        .route(
+            "/api/config/clusters/{cluster_id}/scan",
+            post(crate::cluster_link::api::post_cluster_scan),
+        )
+        .route(
+            "/api/config/clusters/{cluster_id}/jobs",
+            post(crate::cluster_link::api::post_cluster_jobs),
         )
         .route(
             "/api/config/cluster-consents/approve",
@@ -3595,7 +3613,7 @@ async fn trigger_scan(
     let account = body.as_ref().and_then(|b| b.account.clone());
     let instance = body.and_then(|b| b.plugin_instance_id);
     match enqueue_scan(state, requester, account, instance, JobTrigger::Api).await {
-        Ok(admits) => scan_plan_response(admits),
+        Ok(admits) => plan_response("scan", admits),
         Err(err) => match err.downcast_ref::<LibraryError>() {
             Some(LibraryError::Forbidden(message)) => (
                 StatusCode::FORBIDDEN,
@@ -3623,7 +3641,7 @@ async fn trigger_scan(
 }
 
 #[derive(Debug, Serialize)]
-/// Result of a planned scan: [`ActionResponse`] plus every job id.
+/// Result of a planned scan or acquire: [`ActionResponse`] plus every job id.
 struct ScanPlanResponse {
     /// True when at least one job was accepted.
     ok: bool,
@@ -3634,30 +3652,31 @@ struct ScanPlanResponse {
     /// Every accepted or already-queued job id, in plan order.
     job_ids: Vec<String>,
     /// Machine slug when nothing was accepted (`conflict`, `queue_full`,
-    /// `nothing_to_scan`).
+    /// `nothing_to_scan`, `nothing_to_acquire`).
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
 
-/// Folds the per-account admissions of one scan into one response.
+/// Folds the admissions of one planned scan or acquire into one response.
 ///
 /// The body is always a [`ScanPlanResponse`], so `job_ids` is present
-/// whatever the account count. A single planned job keeps the status and
+/// whatever the job count. A single planned job keeps the status and
 /// message of any other admission. Several answer 200 when any was
 /// accepted, otherwise 409 when all were already queued and 429 when the
-/// queue was full.
-fn scan_plan_response(admits: Vec<AdmitJob>) -> Response {
+/// queue was full; an empty plan is 422 `nothing_to_scan` /
+/// `nothing_to_acquire`.
+fn plan_response(kind: &str, admits: Vec<AdmitJob>) -> Response {
     if let [admit] = admits.as_slice() {
         let (status, message, job_id, error) = match admit {
             AdmitJob::Created(id) => (
                 StatusCode::OK,
-                format!("scan job {id} accepted"),
+                format!("{kind} job {id} accepted"),
                 id.clone(),
                 None,
             ),
             AdmitJob::Duplicate(id) => (
                 StatusCode::CONFLICT,
-                "scan already pending or running".to_string(),
+                format!("{kind} already pending or running"),
                 id.clone(),
                 Some("conflict"),
             ),
@@ -3701,21 +3720,25 @@ fn scan_plan_response(admits: Vec<AdmitJob>) -> Response {
             AdmitJob::QueueFull => full += 1,
         }
     }
+    let nothing = format!("nothing_to_{kind}");
     let (status, error) = if created > 0 {
         (StatusCode::OK, None)
     } else if job_ids.is_empty() && full == 0 {
-        (StatusCode::UNPROCESSABLE_ENTITY, Some("nothing_to_scan"))
+        (StatusCode::UNPROCESSABLE_ENTITY, Some(nothing.as_str()))
     } else if full == 0 {
         (StatusCode::CONFLICT, Some("conflict"))
     } else {
         (StatusCode::TOO_MANY_REQUESTS, Some("queue_full"))
     };
-    let message = if error == Some("nothing_to_scan") {
-        "no scan-enabled store account to scan".to_string()
+    let message = if error == Some(nothing.as_str()) {
+        if kind == "scan" {
+            "no scan-enabled store account to scan".to_string()
+        } else {
+            "no store account of yours to acquire from".to_string()
+        }
     } else {
         format!(
-            "scan planned per account: {} accepted, {} already pending or running, {} not admitted (queue full)",
-            created, duplicates, full
+            "{kind} planned: {created} accepted, {duplicates} already pending or running, {full} not admitted (queue full)"
         )
     };
     (
@@ -3731,25 +3754,64 @@ fn scan_plan_response(admits: Vec<AdmitJob>) -> Response {
         .into_response()
 }
 
-/// Enqueues an acquire job, optionally filtered by title id and account.
+/// Plans and enqueues acquire jobs; returns the accepted job ids.
+///
+/// The acquire planner makes one job per title id, and limits a user who is
+/// not an Owner or Administrator to the accounts they own (one job per
+/// account when no title or account is named). `job_id` is the first
+/// accepted (or already queued) job and `job_ids` lists every one.
 async fn trigger_acquire(
     State(state): State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
     body: Option<Json<AcquireRequestBody>>,
-) -> impl IntoResponse {
+) -> Response {
+    let Some(axum::Extension(requester)) = requester else {
+        return planner_error_response(None, "acquire requester unknown");
+    };
     let body = body.map(|Json(b)| b).unwrap_or_default();
-    let title_filter = body.uuid.or(body.asin).or(body.isbn).or(body.product_id);
-    match enqueue_acquire(
-        state,
-        title_filter,
-        body.account,
-        body.plugin_instance_id,
-        JobTrigger::Api,
-    )
-    .await
-    {
-        Ok(admit) => admit_response("acquire", admit),
-        Err(err) => enqueue_error_response(err),
+    let mut titles: Vec<String> = body
+        .uuid
+        .or(body.asin)
+        .or(body.isbn)
+        .or(body.product_id)
+        .into_iter()
+        .collect();
+    titles.extend(body.titles);
+    let ask = crate::jobs::AcquireAsk {
+        titles,
+        account: body.account,
+        plugin_instance_id: body.plugin_instance_id,
+        force: body.force,
+        pdf_only: body.pdf_only,
+    };
+    match enqueue_acquire(state, requester, ask, JobTrigger::Api).await {
+        Ok(admits) => plan_response("acquire", admits),
+        Err(err) => match err.downcast_ref::<LibraryError>() {
+            Some(LibraryError::Forbidden(message)) => planner_error_response(None, message),
+            Some(LibraryError::Invalid(message)) => {
+                planner_error_response(Some(StatusCode::BAD_REQUEST), message)
+            }
+            _ => enqueue_error_response(err),
+        },
     }
+}
+
+/// A planner refusal: 403 `forbidden` by default, or `status` with `invalid`.
+fn planner_error_response(status: Option<StatusCode>, message: &str) -> Response {
+    let (status, slug) = match status {
+        Some(status) => (status, "invalid"),
+        None => (StatusCode::FORBIDDEN, "forbidden"),
+    };
+    (
+        status,
+        Json(ActionResponse {
+            ok: false,
+            message: message.to_string(),
+            job_id: String::new(),
+            error: Some(slug.into()),
+        }),
+    )
+        .into_response()
 }
 
 /// Maps a durable job row onto the control-plane `JobInfo` JSON.
@@ -6669,6 +6731,11 @@ mode = "deny"
                 .await
                 .unwrap();
         }
+        let member = library
+            .create_user(bookclerk_library::UserRole::Member, Some("Riley"), None)
+            .await
+            .unwrap()
+            .id;
         let mut cfg = Config::default();
         cfg.daemon.auth.enabled = false;
         cfg.jobs.max_pending = 8;
@@ -6716,8 +6783,50 @@ mode = "deny"
 
         let app = Router::new()
             .route("/api/library/scan", post(super::trigger_scan))
+            .route("/api/library/acquire", post(super::trigger_acquire))
             .layer(axum::Extension(super::ScanRequester::Operator))
-            .with_state(state);
+            .with_state(state.clone());
+        let acquire = |body: serde_json::Value| {
+            Request::builder()
+                .method("POST")
+                .uri("/api/library/acquire")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        };
+        // Each named title is its own acquire job.
+        let titles = app
+            .clone()
+            .oneshot(acquire(serde_json::json!({ "titles": ["T1", "T2", "t1"] })))
+            .await
+            .unwrap();
+        assert_eq!(titles.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&titles.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["job_ids"].as_array().unwrap().len(), 2, "{body}");
+        // A Member may not acquire an account that is not theirs, and owning
+        // nothing has nothing to acquire.
+        let as_member = Router::new()
+            .route("/api/library/acquire", post(super::trigger_acquire))
+            .layer(axum::Extension(super::ScanRequester::User(member)))
+            .with_state(state.clone());
+        let refused = as_member
+            .clone()
+            .oneshot(acquire(serde_json::json!({ "account": "a1" })))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        let nothing = as_member
+            .oneshot(acquire(serde_json::json!({})))
+            .await
+            .unwrap();
+        assert_eq!(nothing.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body: serde_json::Value =
+            serde_json::from_slice(&nothing.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["error"], "nothing_to_acquire");
+
         let first = app.clone().oneshot(scan()).await.unwrap();
         assert_eq!(first.status(), StatusCode::OK);
         let body: serde_json::Value =

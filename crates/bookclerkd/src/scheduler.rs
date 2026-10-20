@@ -53,7 +53,13 @@ fn spawn_scan_loop(state: Arc<AppState>) {
                 cfg.library.auto_acquire
             };
             if auto {
-                match enqueue_acquire(state.clone(), None, None, None, JobTrigger::Scheduler).await
+                match enqueue_acquire(
+                    state.clone(),
+                    ScanRequester::Operator,
+                    crate::jobs::AcquireAsk::default(),
+                    JobTrigger::Scheduler,
+                )
+                .await
                 {
                     Ok(admit) => info!(?admit, "scheduled auto-acquire enqueued"),
                     Err(err) => warn!(error = %err, "scheduled auto-acquire enqueue failed"),

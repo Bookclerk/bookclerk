@@ -13,8 +13,9 @@ bookclerk config paths
 ```
 
 Classic Libation setting names are accepted as aliases where documented in
-[libation-parity.md](libation-parity.md). Runtime overrides on acquire:
-`-o key=value` (repeatable).
+[libation-parity.md](libation-parity.md). There are no per-run overrides:
+`library acquire -o key=value` was removed, so change settings with
+`bookclerk config set` (or the plugin's settings) before acquiring.
 
 ## Top-level tables
 

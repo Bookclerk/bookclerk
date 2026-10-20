@@ -27,6 +27,7 @@
 //! upload token and write them straight to this node's destinations.
 
 mod artifacts;
+mod host_requests;
 mod host_results;
 pub mod tls;
 pub mod transport;
