@@ -1264,7 +1264,8 @@ join`) and `bookclerkd/src/cluster_link.rs`.
   live library. When a config reload swaps the database, every client is
   stopped (and awaited, so a node never dials twice) and the new store's
   active links are started; a link enrolled while the daemon runs is
-  picked up at the next start or swap.
+  picked up at the next start or swap, and re-enrolling a running link
+  restarts its client.
 - **Jobs.** A claim loop runs while job slots are free. Each job runs on
   its own task, outliving the connection: its secrets are opened with the
   enrolled box key (a bundle that does not open is failed as
@@ -1753,8 +1754,9 @@ Not in this phase, and not claimed as production HA:
   binding frames over the node socket, per-item trust for deliveries and
   instance ownership (`plugin_instances.owner_user_id`; instance
   `SECRETS` reach only a node trusted with every job). A link joined
-  while the daemon runs is dialed only after a restart, and a leave does
-  not tell the owner. Uploaded objects carry content type, length and
+  while the daemon runs is dialed only at the next start or database swap
+  (re-enrolling a running link restarts its client), and a leave does not
+  tell the owner. Uploaded objects carry content type, length and
   digest but not the title metadata (ASIN, title, timestamps) a local
   acquire records with its files. Settings has no enrollment switch, and
   by design no invite or join screen (CLI and HTTP only). Everything else
