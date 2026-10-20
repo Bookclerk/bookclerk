@@ -192,8 +192,11 @@ account gets one `scan` job per scan-enabled account id, so the response
 also carries `job_ids` (200 when any was accepted, 409 when all were
 already queued, 429 when the queue was full, 422 `nothing_to_scan` for an
 empty plan); with no scan-enabled account it stays one `scan:account=all`
-job. Any other user scans only accounts linked to them, and naming someone
-else's account is 403.
+job. The scan endpoint takes the operator, Owners and Administrators only:
+any other portal user is 401, and an operator impersonating one is 403.
+The planner also scopes any other user to the accounts linked to them
+(naming someone else's account is forbidden), but no HTTP caller reaches
+that path yet.
 
 Admission, claim, and handler execution share an `RwLock` (`job_runtime`).
 A database plugin swap takes the write permit so it cannot observe an idle

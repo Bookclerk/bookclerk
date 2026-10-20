@@ -1140,7 +1140,12 @@ Built 2026-10-17 (H-4 step 6), over the node socket and the claim above.
   job row, then an update of the existing secret row guarded on the
   fence, the handoff row and the credential, so a reclaim, a claim by
   another node, or a revocation that lands after the checks leaves the
-  token untouched.
+  token untouched. The trust predicate itself (the owner's role and
+  status, and the account links) is checked just before the batch, not
+  inside it, so a demotion, a disabled owner or an unlinked account that
+  lands between the check and the batch can still let one update of a
+  secret already handed under that fence through. Moving the whole trust
+  predicate into the batch guard is follow-up work (issue #306).
   Rejected: plaintext values inside TLS. tungstenite traces every
   received message at TRACE, and the daemon bridges `log` into tracing
   with the diagnostics ring at TRACE, so a plaintext value would land in
