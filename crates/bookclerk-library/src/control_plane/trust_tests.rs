@@ -1022,6 +1022,25 @@ async fn acquires_are_trusted_and_planned_per_item(owner_db: LibraryStore, host_
         let accounts: Vec<_> = scans.into_iter().map(|p| p.account).collect();
         assert_eq!(accounts, vec![s("a1")], "{requester:?}");
     }
+    // When the id would match more than the label did (here Sam's account
+    // is labelled with Riley's id), the job keeps the label, so it never
+    // touches an account ownership was not checked against.
+    accounts::Entity::update_many()
+        .col_expr(accounts::Column::Label, Expr::value("A1"))
+        .filter(accounts::Column::AccountId.eq("a2"))
+        .exec(host_db.db())
+        .await
+        .unwrap();
+    let scans = plan_scan(
+        &host_db,
+        ScanRequester::User(riley),
+        Some("My Audible"),
+        None,
+    )
+    .await
+    .unwrap();
+    let accounts: Vec<_> = scans.into_iter().map(|p| p.account).collect();
+    assert_eq!(accounts, vec![s("My Audible")]);
     // A named account that is blank never widens to every account, and a
     // list of blank titles never widens to every title.
     for requester in [ScanRequester::User(riley), ScanRequester::Operator] {

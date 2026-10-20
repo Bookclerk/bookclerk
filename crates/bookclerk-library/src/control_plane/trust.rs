@@ -489,8 +489,9 @@ fn named_account(account: Option<&str>) -> Result<Option<&str>> {
 }
 
 /// The account id `needle` (an id or a label) names, limited to
-/// `plugin_key` when given: `needle` itself when it is an id exactly or
-/// names no account, else the one id its label names.
+/// `plugin_key` when given: `needle` itself when it is an id exactly,
+/// names no account, or its id would match more accounts than it does;
+/// else the one id its label names.
 ///
 /// # Errors
 ///
@@ -501,21 +502,29 @@ async fn resolve_named_account(
     needle: &str,
     plugin_key: Option<&str>,
 ) -> Result<String> {
-    let ids: BTreeSet<String> = accounts_named(store, needle, plugin_key)
-        .await?
-        .into_iter()
-        .map(|(_, id)| id)
-        .collect();
+    let named = accounts_named(store, needle, plugin_key).await?;
+    let ids: BTreeSet<&str> = named.iter().map(|(_, id)| id.as_str()).collect();
     if ids.contains(needle) {
         return Ok(needle.to_string());
     }
     let mut ids = ids.into_iter();
-    match (ids.next(), ids.next()) {
-        (None, _) => Ok(needle.to_string()),
-        (Some(id), None) => Ok(id),
-        (Some(first), Some(second)) => Err(LibraryError::Invalid(format!(
-            "account name `{needle}` matches several accounts ({first}, {second}, ...); use the account id"
-        ))),
+    let id = match (ids.next(), ids.next()) {
+        (None, _) => return Ok(needle.to_string()),
+        (Some(id), None) => id.to_string(),
+        (Some(first), Some(second)) => {
+            return Err(LibraryError::Invalid(format!(
+                "account name `{needle}` matches several accounts ({first}, {second}, ...); use the account id"
+            )))
+        }
+    };
+    // The job matches its account by id or label again when it runs, so
+    // the id must touch exactly what the label did (what ownership was
+    // checked against): an id that is also another account's id or label
+    // would widen the job, so the label is kept then.
+    if accounts_named(store, &id, plugin_key).await? == named {
+        Ok(id)
+    } else {
+        Ok(needle.to_string())
     }
 }
 
@@ -721,7 +730,17 @@ pub async fn plan_acquire(
     };
     let Some(user_id) = owner else {
         let resolved = match account {
-            Some(needle) => Some(resolve_named_account(store, needle, None).await?),
+            Some(needle) => {
+                // Within the pinned plugin, as the job runs; an unknown pin
+                // fails at run time.
+                let key = match pinned.as_deref().map(PluginInstanceId::parse) {
+                    Some(Ok(id)) => load_plugin_instance(store, &id)
+                        .await?
+                        .map(|instance| instance.plugin_key),
+                    _ => None,
+                };
+                Some(resolve_named_account(store, needle, key.as_deref()).await?)
+            }
             None => None,
         };
         return Ok(per_title(resolved.as_deref()));
