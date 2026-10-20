@@ -186,6 +186,15 @@ Reserved classes (no worker in this release): `media`, `transcription`,
 | QueueFull | 429 | `pending + running >= jobs.max_pending` |
 | Unroutable | 409 | `error: "unroutable"`: the job's required instances share no node (see job routing below); no row is written |
 
+A scan goes through the scan planner first (`control_plane::plan_scan`).
+An operator, an Owner, an Administrator, or the scheduler scanning every
+account gets one `scan` job per scan-enabled account id, so the response
+also carries `job_ids` (200 when any was accepted, 409 when all were
+already queued, 429 when the queue was full, 422 `nothing_to_scan` for an
+empty plan); with no scan-enabled account it stays one `scan:account=all`
+job. Any other user scans only accounts linked to them, and naming someone
+else's account is 403.
+
 Admission, claim, and handler execution share an `RwLock` (`job_runtime`).
 A database plugin swap takes the write permit so it cannot observe an idle
 worker that is about to claim. Admission waits up to 15s for a read permit
@@ -329,6 +338,20 @@ alone, and a claimer that read the row before the sweep wrote it loses its
 own CAS (a routed claim matches the generation of the record whose
 requirements it checked) and moves on to re-read it on a later pass. A wakeup on a node that does not hold the lease does
 nothing; the holder's timer picks the change up within 30 s.
+
+Before requirements and permits, the routed claim filters candidates
+through the trust predicate (`control_plane::trust`). The daemon's own
+worker holds the database and is trusted with every job. A Host node
+(H-4) owned by a user who is not an Owner or Administrator may claim only
+a scan or acquire of a named account linked to that user; a scan-all, any
+pinned or instance-bound job, listen sync, integration scans, and plugin
+copies are refused to it. `control_plane::handoff_routed_job` repeats the
+check before a job's secrets would be handed over and, if the node lost
+that trust, returns the job to `pending` without spending an attempt. It
+also hands nothing over unless the claim still owns the job's running,
+unexpired lease (same lease owner and generation), so a late handoff
+after a reclaim, completion or expiry unseals nothing. See
+*Per-item trust and the scan planner* in `docs/adr/control-plane.md`.
 
 The unrouted `claim_next_job` (and its guest atomic plan) never claims a job
 with requirements; it remains for tests and tools that run one process. It

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bookclerk_library::control_plane::{
-    claim_routed_job, release_permits, renew_permits, JobClaimLimits, JobClaimRequest,
+    claim_routed_job, release_permits, renew_permits, Claimant, JobClaimLimits, JobClaimRequest,
     RoutedJobClaim, SemaphorePermit,
 };
 use bookclerk_library::{JobRecord, JobResourceClass, JobState, LibraryError, LibraryStore};
@@ -168,6 +168,8 @@ fn spawn_network_worker(state: Arc<AppState>, index: u32) {
             let claim = JobClaimRequest {
                 resource_class: JobResourceClass::Network,
                 node_id: &node_id,
+                // This worker holds the library database: an owner node.
+                claimant: Claimant::Local,
                 owner: &owner,
                 lease_secs: cfg.jobs.lease_seconds,
                 limits: JobClaimLimits {

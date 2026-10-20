@@ -19,6 +19,11 @@
 //! are taken over with a new fencing token, after which the stale holder can
 //! neither renew them nor finalize the job (whose own lease generation has
 //! moved on as well).
+//!
+//! Before either, the claim filters candidates through the trust predicate
+//! ([`super::trust`]): a Host node only claims jobs whose secrets it is
+//! trusted with, and [`super::handoff_routed_job`] repeats that check before
+//! the job's secrets would be handed over.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -32,6 +37,9 @@ use super::deployments::{
 use super::instances::{list_all_plugin_instances, load_plugin_instance, PluginInstanceId};
 use super::semaphore::{
     acquire_permits, release_permits, PermitAcquire, SemaphorePermit, SemaphoreRequest,
+};
+use super::trust::{
+    account_owned, job_trusted, node_trust, owned_job_account, Claimant, NodeTrust,
 };
 use crate::entities::accounts;
 use crate::error::{LibraryError, Result};
@@ -80,6 +88,9 @@ pub struct JobClaimRequest<'a> {
     /// The claiming node (`node-identity.json`). Empty when unknown, in
     /// which case only jobs without requirements are claimable.
     pub node_id: &'a str,
+    /// How the node reaches the queue; decides how an unknown node id is
+    /// trusted (see [`Claimant`]).
+    pub claimant: Claimant,
     /// Worker lease owner written on the job row.
     pub owner: &'a str,
     /// Lease length; permits are taken for the same time.
@@ -95,6 +106,9 @@ pub struct RoutedJobClaim {
     pub job: JobRecord,
     /// Permits to renew with the job heartbeat and release at the end.
     pub permits: Vec<SemaphorePermit>,
+    /// True when this claim resumed a suspended job, so it spent no
+    /// attempt; a release at handoff restores that state.
+    pub resumed: bool,
 }
 
 /// The instances a new job must find on its claiming node.
@@ -324,8 +338,9 @@ pub async fn job_semaphores(
 /// Claims the best ready job this node can run, under the cluster semaphores.
 ///
 /// Pages through the ready pending jobs of the class, best first
-/// ([`ROUTED_CLAIM_CANDIDATES`] per page); skips those whose requirements
-/// this node does not meet or whose account or instance semaphore is full;
+/// ([`ROUTED_CLAIM_CANDIDATES`] per page); skips those the node is not
+/// trusted with ([`super::node_trust`]), those whose requirements this node
+/// does not meet, and those whose account or instance semaphore is full;
 /// takes the permits of the first one left and claims it with
 /// [`LibraryStore::claim_job_by_id`] at the lease generation of the record
 /// it evaluated, so a job whose requirements were rewritten after this node
@@ -348,9 +363,16 @@ pub async fn claim_routed_job(
 ) -> Result<Option<RoutedJobClaim>> {
     let class = class_semaphore(request.resource_class);
     let ttl = Duration::from_secs(request.lease_secs);
+    let trust = node_trust(store, request.node_id, request.claimant).await?;
+    if trust == NodeTrust::Nothing {
+        return Ok(None);
+    }
     // Many queued jobs share one requirement set (every acquire bound to the
     // same outputs), so each set is checked against this node once per call.
     let mut runnable: BTreeMap<Vec<String>, bool> = BTreeMap::new();
+    // A user's Host is checked against each named account once per call
+    // too, rather than reading the accounts and links per candidate.
+    let mut owned_accounts: BTreeMap<String, bool> = BTreeMap::new();
     let mut after: Option<JobClaimCursor> = None;
     loop {
         let page = store
@@ -361,6 +383,21 @@ pub async fn claim_routed_job(
             )
             .await?;
         for job in page.jobs {
+            let trusted = match (&trust, owned_job_account(&job)) {
+                (NodeTrust::OwnedBy(_), None) => false,
+                (NodeTrust::OwnedBy(user_id), Some(account)) => match owned_accounts.get(account) {
+                    Some(known) => *known,
+                    None => {
+                        let known = account_owned(store, *user_id, account).await?;
+                        owned_accounts.insert(account.to_owned(), known);
+                        known
+                    }
+                },
+                _ => job_trusted(store, &trust, &job).await?,
+            };
+            if !trusted {
+                continue;
+            }
             let can_run = match runnable.get(&job.payload.requires) {
                 Some(known) => *known,
                 None => {
@@ -375,6 +412,7 @@ pub async fn claim_routed_job(
             }
             let semaphores = job_semaphores(store, &job, request.limits).await?;
             let holder = format!("{}/{}/{}", request.owner, job.id, Uuid::new_v4().simple());
+            let resumed = job.payload.resume_pending;
             let permits = match acquire_permits(store, &semaphores, &holder, ttl).await? {
                 PermitAcquire::Granted(permits) => permits,
                 PermitAcquire::Blocked(name) if name == class => return Ok(None),
@@ -389,7 +427,13 @@ pub async fn claim_routed_job(
                 )
                 .await
             {
-                Ok(Some(job)) => return Ok(Some(RoutedJobClaim { job, permits })),
+                Ok(Some(job)) => {
+                    return Ok(Some(RoutedJobClaim {
+                        job,
+                        permits,
+                        resumed,
+                    }))
+                }
                 Ok(None) => release_permits(store, &permits).await?,
                 Err(err) => {
                     let _ = release_permits(store, &permits).await;

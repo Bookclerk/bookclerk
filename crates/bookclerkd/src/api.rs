@@ -17,9 +17,11 @@ use axum::Router;
 use bookclerk_acquire::sidecar_key;
 use bookclerk_config::{Config, ListenAddrs};
 use bookclerk_integrations::{portal_spa_router, IntegrationRegistry, PortalState};
+use bookclerk_library::control_plane::ScanRequester;
 use bookclerk_library::{
-    hash_token, AcquireStatus, BookRecord, ClaimTicketRecord, JobRecord, JobTrigger, LibraryStore,
-    NewTitleRequest, NewTitleRequestSource, QueueWisher, RequestStatus, TitleRequestRecord,
+    hash_token, AcquireStatus, BookRecord, ClaimTicketRecord, JobRecord, JobTrigger, LibraryError,
+    LibraryStore, NewTitleRequest, NewTitleRequestSource, QueueWisher, RequestStatus,
+    TitleRequestRecord,
 };
 use bookclerk_plugin_host::{
     consent_request, consent_summary, cores_to_percent, effective_cpu_cores, format_cpu_cores,
@@ -3434,18 +3436,167 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
     }))
 }
 
-/// Enqueues a library scan job and returns the accepted job id.
+/// Plans and enqueues a library scan; returns the accepted job ids.
+///
+/// The scan planner splits a scan of every account into one job per
+/// scan-enabled account for operators, Owners and Administrators, and
+/// limits anyone else to the accounts they own. `job_id` is the first
+/// accepted (or already queued) job and `job_ids` lists every one.
 async fn trigger_scan(
     State(state): State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
     body: Option<Json<ScanRequest>>,
-) -> impl IntoResponse {
+) -> Response {
+    let Some(axum::Extension(requester)) = requester else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ActionResponse {
+                ok: false,
+                message: "scan requester unknown".into(),
+                job_id: String::new(),
+                error: Some("forbidden".into()),
+            }),
+        )
+            .into_response();
+    };
     let body = body.map(|Json(b)| b);
     let account = body.as_ref().and_then(|b| b.account.clone());
     let instance = body.and_then(|b| b.plugin_instance_id);
-    match enqueue_scan(state, account, instance, JobTrigger::Api).await {
-        Ok(admit) => admit_response("scan", admit),
-        Err(err) => enqueue_error_response(err),
+    match enqueue_scan(state, requester, account, instance, JobTrigger::Api).await {
+        Ok(admits) => scan_plan_response(admits),
+        Err(err) => match err.downcast_ref::<LibraryError>() {
+            Some(LibraryError::Forbidden(message)) => (
+                StatusCode::FORBIDDEN,
+                Json(ActionResponse {
+                    ok: false,
+                    message: message.clone(),
+                    job_id: String::new(),
+                    error: Some("forbidden".into()),
+                }),
+            )
+                .into_response(),
+            Some(LibraryError::Invalid(message)) => (
+                StatusCode::BAD_REQUEST,
+                Json(ActionResponse {
+                    ok: false,
+                    message: message.clone(),
+                    job_id: String::new(),
+                    error: Some("invalid".into()),
+                }),
+            )
+                .into_response(),
+            _ => enqueue_error_response(err),
+        },
     }
+}
+
+#[derive(Debug, Serialize)]
+/// Result of a planned scan: [`ActionResponse`] plus every job id.
+struct ScanPlanResponse {
+    /// True when at least one job was accepted.
+    ok: bool,
+    /// Operator-facing status text.
+    message: String,
+    /// First accepted (or, when none was, already queued) job id.
+    job_id: String,
+    /// Every accepted or already-queued job id, in plan order.
+    job_ids: Vec<String>,
+    /// Machine slug when nothing was accepted (`conflict`, `queue_full`,
+    /// `nothing_to_scan`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// Folds the per-account admissions of one scan into one response.
+///
+/// The body is always a [`ScanPlanResponse`], so `job_ids` is present
+/// whatever the account count. A single planned job keeps the status and
+/// message of any other admission. Several answer 200 when any was
+/// accepted, otherwise 409 when all were already queued and 429 when the
+/// queue was full.
+fn scan_plan_response(admits: Vec<AdmitJob>) -> Response {
+    if let [admit] = admits.as_slice() {
+        let (status, message, job_id, error) = match admit {
+            AdmitJob::Created(id) => (
+                StatusCode::OK,
+                format!("scan job {id} accepted"),
+                id.clone(),
+                None,
+            ),
+            AdmitJob::Duplicate(id) => (
+                StatusCode::CONFLICT,
+                "scan already pending or running".to_string(),
+                id.clone(),
+                Some("conflict"),
+            ),
+            AdmitJob::QueueFull => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "job queue is full".to_string(),
+                String::new(),
+                Some("queue_full"),
+            ),
+        };
+        let job_ids = if job_id.is_empty() {
+            Vec::new()
+        } else {
+            vec![job_id.clone()]
+        };
+        return (
+            status,
+            Json(ScanPlanResponse {
+                ok: status == StatusCode::OK,
+                message,
+                job_id,
+                job_ids,
+                error: error.map(str::to_string),
+            }),
+        )
+            .into_response();
+    }
+    // Ids stay in plan order, whatever each admission's outcome.
+    let mut job_ids = Vec::new();
+    let (mut created, mut duplicates, mut full) = (0usize, 0usize, 0usize);
+    for admit in admits {
+        match admit {
+            AdmitJob::Created(id) => {
+                created += 1;
+                job_ids.push(id);
+            }
+            AdmitJob::Duplicate(id) => {
+                duplicates += 1;
+                job_ids.push(id);
+            }
+            AdmitJob::QueueFull => full += 1,
+        }
+    }
+    let (status, error) = if created > 0 {
+        (StatusCode::OK, None)
+    } else if job_ids.is_empty() && full == 0 {
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("nothing_to_scan"))
+    } else if full == 0 {
+        (StatusCode::CONFLICT, Some("conflict"))
+    } else {
+        (StatusCode::TOO_MANY_REQUESTS, Some("queue_full"))
+    };
+    let message = if error == Some("nothing_to_scan") {
+        "no scan-enabled store account to scan".to_string()
+    } else {
+        format!(
+            "scan planned per account: {} accepted, {} already pending or running, {} not admitted (queue full)",
+            created, duplicates, full
+        )
+    };
+    (
+        status,
+        Json(ScanPlanResponse {
+            ok: created > 0,
+            message,
+            job_id: job_ids.first().cloned().unwrap_or_default(),
+            job_ids,
+            error: error.map(str::to_string),
+        }),
+    )
+        .into_response()
 }
 
 /// Enqueues an acquire job, optionally filtered by title id and account.
@@ -6241,6 +6392,7 @@ mode = "deny"
             .route("/api/library/acquire", post(super::trigger_acquire))
             .route("/api/jobs", get(super::list_jobs))
             .route("/api/jobs/{id}/cancel", post(super::cancel_job))
+            .layer(axum::Extension(super::ScanRequester::Operator))
             .with_state(state);
 
         let first = app
@@ -6326,6 +6478,100 @@ mode = "deny"
             .await
             .unwrap();
         assert_eq!(cancel.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn scan_all_is_planned_per_account_and_needs_a_requester() {
+        use std::sync::Arc;
+
+        use axum::body::Body;
+        use axum::http::{header, Request, StatusCode};
+        use axum::routing::post;
+        use axum::Router;
+        use bookclerk_integrations::IntegrationRegistry;
+        use bookclerk_library::LibraryStore;
+        use bookclerk_plugin_host::{DatabaseRegistry, DestinationRegistry};
+        use bookclerk_source::SourceRegistry;
+        use http_body_util::BodyExt;
+        use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
+        use tower::ServiceExt;
+
+        use crate::api::AppState;
+        use crate::auth::OperatorAuthState;
+
+        let library = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .expect("sqlite memory"),
+        );
+        for (account, scan) in [("a1", true), ("a2", true), ("a3", false)] {
+            library
+                .upsert_account("pk", account, "us", None, scan, "test")
+                .await
+                .unwrap();
+        }
+        let mut cfg = Config::default();
+        cfg.daemon.auth.enabled = false;
+        cfg.jobs.max_pending = 8;
+        let state = Arc::new(AppState {
+            config: Arc::new(RwLock::new(cfg)),
+            library: Arc::new(RwLock::new(library)),
+            database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
+            job_notify: Arc::new(Notify::new()),
+            job_runtime: Arc::new(RwLock::new(())),
+            work_lock: Mutex::new(()),
+            discover_gate: Arc::new(Semaphore::new(1)),
+            integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
+            sources: Arc::new(RwLock::new(SourceRegistry::new())),
+            destinations: Arc::new(RwLock::new(DestinationRegistry::default())),
+            auth: Arc::new(RwLock::new(Arc::new(OperatorAuthState::new(
+                String::new(),
+                12,
+                false,
+                5,
+                30,
+            )))),
+            reload_lock: Mutex::new(()),
+            listen_reload: Arc::new(Notify::new()),
+            last_bound_listen: RwLock::new(None),
+            tray: RwLock::new(None),
+            tray_handoff: Mutex::new(None),
+            deployment_runtime: std::sync::OnceLock::new(),
+        });
+        let scan = || {
+            Request::builder()
+                .method("POST")
+                .uri("/api/library/scan")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{}"))
+                .unwrap()
+        };
+
+        // Without the auth layer's requester the handler refuses.
+        let bare = Router::new()
+            .route("/api/library/scan", post(super::trigger_scan))
+            .with_state(state.clone());
+        let refused = bare.oneshot(scan()).await.unwrap();
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+        let app = Router::new()
+            .route("/api/library/scan", post(super::trigger_scan))
+            .layer(axum::Extension(super::ScanRequester::Operator))
+            .with_state(state);
+        let first = app.clone().oneshot(scan()).await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&first.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        let ids = body["job_ids"].as_array().unwrap().clone();
+        assert_eq!(ids.len(), 2, "one job per scan-enabled account: {body}");
+        assert_eq!(body["job_id"], ids[0]);
+
+        let again = app.oneshot(scan()).await.unwrap();
+        assert_eq!(again.status(), StatusCode::CONFLICT);
+        let body: serde_json::Value =
+            serde_json::from_slice(&again.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(body["error"], "conflict");
+        assert_eq!(body["job_ids"].as_array().unwrap(), &ids);
     }
 
     #[tokio::test]
