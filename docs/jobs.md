@@ -164,8 +164,8 @@ pending → running → succeeded
 
 | Kind | Dedup key | Resource class | Handler |
 | --- | --- | --- | --- |
-| `scan` | `scan:account={id\|all}` | `network` | `run_scan` |
-| `acquire` | `acquire:title={id\|all}:account={id\|all}` | `network` | `run_acquire` |
+| `scan` | `scan:account={id\|all}`, then `:instance={id}` when pinned | `network` | `run_scan` |
+| `acquire` | `acquire:title={id\|all}:account={id\|all}`, then `:force=1`, `:pdf=1` and `:instance={id}` when set | `network` | `run_acquire` |
 | `listen_sync` | `listen_sync` | `network` | `run_listen_sync` |
 | `integration_scan` | `integration_scan:id={id}:force={0\|1}` | `network` | `run_integration_scan` |
 | `plugin_copy` | `plugin_copy:plugin={id}:from={key}:to={key}` | `network` | ABI `JobRunner` stream-copy (`run_plugin_copy`) |
@@ -234,7 +234,8 @@ Every scan and acquire is admitted through a planner, whoever asks:
   200, 409, 429, or 422 `nothing_to_acquire` for an empty plan).
 - `force` (re-download acquired titles) and `pdf_only` (companion PDFs only)
   are part of the acquire's dedup key and run only on owner nodes; a host
-  is never handed such a job.
+  is never handed such a job. A pinned instance is part of the key too, so
+  a pinned acquire never stands in for an unpinned one or another pin.
 
 The CLI `bookclerk library scan` and `library acquire` do not run guests.
 They plan as operator authority (the CLI holds the database), record each

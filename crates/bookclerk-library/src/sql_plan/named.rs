@@ -2021,11 +2021,17 @@ fn plan_enqueue_job(
             ),
             None => format!("scan:account={}", json_account_from_payload(payload_json)),
         },
-        "acquire" => format!(
-            "acquire:title={}:account={}",
-            json_title_from_payload(payload_json),
-            json_account_from_payload(payload_json)
-        ),
+        "acquire" => {
+            let key = format!(
+                "acquire:title={}:account={}",
+                json_title_from_payload(payload_json),
+                json_account_from_payload(payload_json)
+            );
+            match json_instance_from_payload(payload_json) {
+                Some(instance) => format!("{key}:instance={instance}"),
+                None => key,
+            }
+        }
         "listen_sync" => "listen_sync".into(),
         "integration_scan" => format!(
             "integration_scan:id={}:force={}",

@@ -1278,6 +1278,15 @@ impl JobKind {
                 if payload.pdf_only {
                     key.push_str(":pdf=1");
                 }
+                // A pinned acquire runs only that instance's plugin, so it
+                // must not stand in for an unpinned one or another pin.
+                if let Some(instance) = payload
+                    .plugin_instance_id
+                    .as_deref()
+                    .filter(|id| !id.is_empty())
+                {
+                    key.push_str(&format!(":instance={instance}"));
+                }
                 key
             }
             Self::ListenSync => "listen_sync".into(),

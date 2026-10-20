@@ -1,10 +1,9 @@
 //! `bookclerk library` — scan, acquire, accounts, set-status, get-license, search, export.
 
 use bookclerk_acquire::{
-    acquire_book_indexed, acquire_pdf_only, convert_book, match_storage_to_library, AcquireRequest,
-    ConvertRequest, MatchStorageOptions,
+    convert_book, match_storage_to_library, AcquireRequest, ConvertRequest, MatchStorageOptions,
 };
-use bookclerk_config::{AudioQuality, BadBookAction, Config};
+use bookclerk_config::{AudioQuality, Config};
 use bookclerk_library::{AcquireStatus, LibraryStore};
 use bookclerk_plugin_host::HostControlPlane;
 use bookclerk_search::SearchEngine;
@@ -341,33 +340,14 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 .await?;
                 return Ok(());
             }
-            let _ = no_wait;
             let cfg = config;
             let destinations = crate::registry::destinations(&host).await?;
             let destinations =
                 bookclerk_plugin_host::build_acquire_destinations(cfg, &destinations)?;
-            let storage = destinations.listing_backend()?;
             // The primary destination's options carry its naming overrides
-            // and prefix, so match, layout, and acquire agree on keys.
+            // and prefix, so the planned keys match what an acquire writes.
             let options = destinations.primary_destination().options.clone();
             let registry = sources(&host).await?;
-
-            // Match existing media first (same as bookclerkd) so we do not
-            // re-download titles already on disk.
-            if !dry_run {
-                let _ = match_storage_to_library(
-                    &store,
-                    storage.as_ref(),
-                    MatchStorageOptions {
-                        account: account.clone(),
-                        clear_missing: true,
-                        fix_layout: cfg.library.fix_storage_layout,
-                        download: options.clone(),
-                        ..Default::default()
-                    },
-                )
-                .await?;
-            }
 
             let books = store.list_books(account.as_deref()).await?;
             let filter_ids: Vec<String> = asin.into_iter().chain(isbn).chain(asins).collect();
@@ -404,29 +384,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 return Ok(());
             }
 
-            paths.ensure_dirs()?;
-            let mut index = if dry_run {
-                None
-            } else {
-                Some(
-                    bookclerk_acquire::scan_storage(&store, storage.as_ref(), None, None, true)
-                        .await?,
-                )
-            };
-
-            let mut ok = 0u32;
-            let mut matched = 0u32;
-            let mut failed = 0u32;
-            let bad_book = cfg.output.bad_book_action;
-
-            let total = targets.len();
-            let mut batch = BatchProgress::new(total, if pdf { "pdf" } else { "acquire" });
-
-            for (idx, book) in targets.into_iter().enumerate() {
-                batch.set(idx + 1, book.asin_or_isbn());
-                let content_source = registry
-                    .require_routed(&book.plugin_key, instance.as_deref())
-                    .map_err(|err| anyhow::anyhow!("{err} (title {})", book.asin_or_isbn()))?;
+            for book in targets {
                 let req = AcquireRequest {
                     asin: book.download_product_id().to_string(),
                     book_uuid: Some(book.uuid.clone()),
@@ -445,78 +403,13 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                     job_id: None,
                     temp_quota_bytes: None,
                 };
-                if dry_run {
-                    let key = if pdf {
-                        bookclerk_acquire::sidecar_key(
-                            &bookclerk_acquire::planned_storage_key(&store, &req).await,
-                            "pdf",
-                        )
-                    } else {
-                        bookclerk_acquire::planned_storage_key(&store, &req).await
-                    };
-                    println!("{}\t{}", book.asin_or_isbn(), key);
-                    continue;
-                }
-
-                let mut attempts = 0u32;
-                loop {
-                    attempts += 1;
-                    let result = if pdf {
-                        acquire_pdf_only(&store, &destinations, &req, content_source.as_ref()).await
-                    } else {
-                        acquire_book_indexed(
-                            &store,
-                            &destinations,
-                            req.clone(),
-                            index.as_mut(),
-                            content_source.as_ref(),
-                        )
-                        .await
-                    };
-                    match result {
-                        Ok(result) if result.matched_existing => {
-                            println!("matched {} -> {}", result.asin, result.storage_key);
-                            matched += 1;
-                            break;
-                        }
-                        Ok(result) => {
-                            println!("acquired {} -> {}", result.asin, result.storage_key);
-                            ok += 1;
-                            break;
-                        }
-                        Err(err) => {
-                            if bad_book == BadBookAction::Retry && attempts < 2 {
-                                eprintln!("acquire {}: {err} (retrying)", book.asin_or_isbn());
-                                continue;
-                            }
-                            eprintln!("acquire {}: {err}", book.asin_or_isbn());
-                            failed += 1;
-                            if matches!(bad_book, BadBookAction::Ask | BadBookAction::Abort) {
-                                anyhow::bail!(
-                                    "acquire aborted after failure on {} ({err})",
-                                    book.asin_or_isbn()
-                                );
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-
-            batch.finish();
-
-            if dry_run {
-                return Ok(());
-            }
-            if failed > 0 && bad_book == BadBookAction::Retry {
-                anyhow::bail!(
-                    "acquire finished with {failed} failure(s) (acquired={ok} matched={matched})"
-                );
-            }
-            if let Some(index) = index.as_ref() {
-                if let Some(scan_id) = index.scan_id() {
-                    let _ = store.storage_scan_delete(scan_id).await;
-                }
+                let key = bookclerk_acquire::planned_storage_key(&store, &req).await;
+                let key = if pdf {
+                    bookclerk_acquire::sidecar_key(&key, "pdf")
+                } else {
+                    key
+                };
+                println!("{}\t{}", book.asin_or_isbn(), key);
             }
             Ok(())
         }
