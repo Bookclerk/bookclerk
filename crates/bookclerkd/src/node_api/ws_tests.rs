@@ -1097,3 +1097,116 @@ async fn a_failed_check_on_resume_is_not_a_lost_fence() {
         }
     );
 }
+
+/// A host's `scan.request` runs as its owner (H-5): a Member's host queues
+/// a scan of its owner's accounts only and is refused another user's; once
+/// the owner is an Administrator the same request fans out to one job per
+/// scan-enabled account. `job.status` lists only jobs the host could claim.
+#[tokio::test]
+async fn a_hosts_scan_request_is_planned_as_its_owner() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (state, store) = super::tests::test_state(&files).await;
+    let addr = serve(crate::api::router(Arc::clone(&state), None)).await;
+    let (node_id, member) = enroll_member(&store).await;
+    let origin = owner_origin(&state).await;
+    let key = SigningKey::from_bytes(&SEED);
+    for account in ["riley-acct", "sam-acct"] {
+        store
+            .upsert_account(PLUGIN, account, "us", None, true, "test")
+            .await
+            .unwrap();
+    }
+    let identity = store
+        .ensure_local_portal_identity(member, None)
+        .await
+        .unwrap();
+    store
+        .link_account(identity.id, PLUGIN, "riley-acct", "test")
+        .await
+        .unwrap();
+
+    let mut client = dial(addr, Some(SUBPROTOCOL)).await.unwrap();
+    handshake(&mut client, &node_id, &key, &origin)
+        .await
+        .unwrap();
+    let scan = |id: &str, account: Option<&str>| {
+        Frame::new(
+            id,
+            Body::ScanRequest {
+                account: account.map(str::to_string),
+                plugin_instance_id: None,
+            },
+        )
+    };
+
+    let planned = request(&mut client, scan("s1", None)).await;
+    assert_eq!(planned.id, "s1");
+    let Body::ScanPlanned {
+        created,
+        duplicates,
+        queue_full,
+    } = planned.body
+    else {
+        panic!("expected scan.planned: {planned:?}");
+    };
+    assert_eq!((created.len(), duplicates.len(), queue_full), (1, 0, 0));
+    let riley_job = created[0].clone();
+    let job = store.get_job(&riley_job).await.unwrap().unwrap();
+    assert_eq!(job.payload.account.as_deref(), Some("riley-acct"));
+
+    let refused = request(&mut client, scan("s2", Some("sam-acct"))).await;
+    assert!(
+        matches!(&refused.body, Body::Error { code, .. } if code == "forbidden"),
+        "{refused:?}"
+    );
+
+    // Promoted, the owner's scan-all fans out per account.
+    store
+        .set_user_role(member, UserRole::Administrator)
+        .await
+        .unwrap();
+    let planned = request(&mut client, scan("s3", None)).await;
+    let Body::ScanPlanned {
+        created,
+        duplicates,
+        ..
+    } = planned.body
+    else {
+        panic!("expected scan.planned: {planned:?}");
+    };
+    assert_eq!(duplicates, vec![riley_job.clone()]);
+    assert_eq!(created.len(), 1);
+    let sam_job = created[0].clone();
+    assert_eq!(
+        store
+            .get_job(&sam_job)
+            .await
+            .unwrap()
+            .unwrap()
+            .payload
+            .account
+            .as_deref(),
+        Some("sam-acct")
+    );
+
+    // Demoted again, the host sees only its owner's job.
+    store.set_user_role(member, UserRole::Member).await.unwrap();
+    let statuses = request(
+        &mut client,
+        Frame::new(
+            "j1",
+            Body::JobStatus {
+                job_ids: vec![riley_job.clone(), sam_job, "missing".into()],
+            },
+        ),
+    )
+    .await;
+    let Body::JobStatuses { jobs } = statuses.body else {
+        panic!("expected job.statuses: {statuses:?}");
+    };
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].id, riley_job);
+    assert_eq!(jobs[0].kind, "scan");
+    assert_eq!(jobs[0].state, "pending");
+}

@@ -232,6 +232,13 @@ pub fn is_link_running(cluster_id: &str) -> bool {
     running().contains_key(cluster_id)
 }
 
+/// The running client of the link to owner cluster `cluster_id`, so
+/// operator requests (`POST /api/config/clusters/{id}/scan`) can reach the
+/// owner over that link's socket.
+pub(crate) fn link_handle(cluster_id: &str) -> Option<HostClientHandle> {
+    running().get(cluster_id).map(|run| run.handle.clone())
+}
+
 /// True while a client for `cluster_id` runs in this process as
 /// `node_id`.
 fn is_node_running(cluster_id: &str, node_id: &str) -> bool {

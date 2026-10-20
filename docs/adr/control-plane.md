@@ -1749,6 +1749,65 @@ names are unchanged.
   parsing, the consent redirect check, invite shape, countdown, and
   error copy.
 
+### Routed library work (H-5)
+
+Built 2026-10-18. Library work no longer runs where it is asked for.
+
+- **CLI through the queue.** `bookclerk library scan` and `library
+  acquire` plan with the same planners as the HTTP API (as operator
+  authority, since the CLI holds the database), record each job's routing
+  requirements, and insert the rows; any live node or trusted host claims
+  them through the routed claim. The CLI waits for every job and prints
+  progress (the first Ctrl-C asks them to cancel). Waiting fails closed
+  when no `bookclerkd` node of the cluster is live; `--no-wait` only
+  queues. The live-store rule holds: `--account <id>` is exactly one scan
+  job and `--asin <ASIN>` exactly one acquire job. No guest runs in the CLI
+  for either; `--dry-run` still plans locally. Rejected: a CLI fallback
+  that runs the guests itself when no daemon is up, which would be an
+  in-process path beside the routed one.
+- **No license file or per-run overrides** (product decision). The
+  never-implemented `library acquire --license <file>` (or `-` for standard
+  input) and `-o key=value` flags were removed, with and without
+  `--dry-run`. A job carries no license file, setting overrides or node
+  pin: an acquire runs with the settings of the node that claims it.
+  Rejected: pinning such an acquire to the node that ran the command (it
+  added a node pin to the queue for a feature that does not exist), and
+  embedding the license file in the job (a secret in a job row).
+- **Acquire planner** (`plan_acquire`). Each named title becomes its own
+  job. Operator authority, an Owner or an Administrator acquiring
+  everything gets one unsplit job (splitting it per account would repeat
+  the storage listing for every account; only a fully trusted node claims
+  it). Anyone else must own a named account and every library row a named
+  title matches; with neither they get one job per account they wholly
+  own. `POST /api/library/acquire` takes `titles`, `force` and `pdf_only`
+  and answers like a scan plan (422 `nothing_to_acquire`).
+- **Per-item trust at claim** (`job_item_accounts`). A scan touches the
+  named account's rows; an acquire touches the named account's rows plus
+  the account of every library row its filters match (title, account,
+  pinned plugin), whatever its acquire status. A node trusted with one
+  user's work claims a job only when every item is that user's, and is
+  handed exactly those accounts' secrets. An unpinned acquire that names
+  no account now runs the plugins of the rows it matches
+  (`job_plugin_keys`), so a host's claim filter and `acquire.plan` see
+  them. A forced or PDF-only acquire runs only on an owner node
+  (`claimant_may_run`): the host acquire path does neither.
+- **Scan All from any node** (decision 2). A host's operator runs
+  `bookclerk clusters scan`, which its daemon sends over the link as
+  `scan.request`; the owner plans it as the node's owner
+  (`remote_node_requester`): an Owner or Administrator gets one job per
+  scan-enabled account, distributed by the routed claim, and anyone else
+  only their own accounts. A node trusted with nothing is refused.
+  `job.status` reports only jobs the node would be trusted to claim.
+- **Tests.** Library (SQLite with PostgreSQL twins): item sets, per-item
+  trust, the queue claiming only a Member's own title, force and PDF-only
+  never handed out, the acquire planner's splitting and scoping, and whom
+  a host's requests run as; per-item secrets for a title acquire. Daemon:
+  a Member's host scan request is scoped, an Administrator's fans out per
+  account, and `job.status` hides other users' jobs; the acquire route
+  splits titles and scopes a Member. CLI: `--account` queues one job, a
+  bare scan one per enabled account, an acquire one per title, waiting
+  without a live node queues nothing.
+
 ## Consequences
 
 - New unreleased tables: `cluster_identity`, `nodes`,
@@ -1805,8 +1864,10 @@ Not in this phase, and not claimed as production HA:
   across nodes. `[jobs]` limits are read from each node's `config.toml`.
 - Singleton maintenance and schema migration run under `cluster_leases`
   (see the implementation notes); other work is not leased.
-- Synchronous calls (HTTP API, portal, CLI) run on the host that receives
-  them; only queued deliveries reach the best host.
+- Synchronous calls other than scans and acquires (portal actions, the
+  rest of the HTTP API and CLI) run on the node that receives them. Scans
+  and acquires are queued and routed (*Routed library work (H-5)* above);
+  `clusters scan` covers only scans from a host, not acquires.
 - Per-guest measured usage is not sampled. Reservations are jail ceilings,
   so a guest that idles well below its ceiling still occupies it in the
   scheduler's view. Free disk is reported but not placed on.

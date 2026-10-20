@@ -3388,6 +3388,86 @@ async fn the_commit_gate_carries_the_nodes_trust() {
     assert!(!passes(None).await, "a disabled owner");
 }
 
+/// Queues a job of `kind` with `payload`.
+async fn enqueue_payload(store: &LibraryStore, kind: JobKind, payload: JobPayload) -> String {
+    match store
+        .enqueue_job(EnqueueJobSpec {
+            kind,
+            payload,
+            priority: 0,
+            max_attempts: 3,
+            max_pending: 256,
+            run_after: None,
+        })
+        .await
+        .unwrap()
+    {
+        EnqueueOutcome::Created { id } => id,
+        other => panic!("expected a new job: {other:?}"),
+    }
+}
+
+/// A title acquire reaches a Host only when it names an account of the
+/// Host owner's, and is handed that account's secrets; one naming only a
+/// title, or a forced one, is never handed out.
+#[tokio::test]
+async fn a_title_acquire_is_handed_its_named_accounts_secrets() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let scope = w.store.scope(PLUGIN, "test");
+    for (account, product, asin) in [
+        ("riley-acct", "r1", "B0RILEY"),
+        ("sam-acct", "s1", "B0SAM"),
+        ("riley-acct", "x1", "B0BOTH"),
+        ("sam-acct", "x2", "B0BOTH"),
+    ] {
+        scope
+            .upsert_book(&crate::store::NewBook {
+                uuid: None,
+                asin: Some(asin.into()),
+                ..scanned(account, product)
+            })
+            .await
+            .unwrap();
+    }
+    let title = |id: &str| JobPayload {
+        title: Some(id.into()),
+        ..Default::default()
+    };
+    enqueue_payload(&w.store, JobKind::Acquire, title("B0SAM")).await;
+    enqueue_payload(&w.store, JobKind::Acquire, title("B0BOTH")).await;
+    enqueue_payload(
+        &w.store,
+        JobKind::Acquire,
+        JobPayload {
+            force: true,
+            ..title("B0RILEY")
+        },
+    )
+    .await;
+    enqueue_payload(&w.store, JobKind::Acquire, title("B0RILEY")).await;
+    let riley_job = enqueue_payload(
+        &w.store,
+        JobKind::Acquire,
+        JobPayload {
+            account: Some("riley-acct".into()),
+            ..title("B0RILEY")
+        },
+    )
+    .await;
+
+    let claimed = claim(&w.store).await.expect("Riley's title is claimed");
+    assert_eq!(claimed.job.id, riley_job);
+    assert_eq!(claimed.plugin_keys, vec![PLUGIN.to_string()]);
+    assert_eq!(claimed.secrets.len(), 1);
+    assert_eq!(claimed.secrets[0].secret_ref, w.riley_token);
+    assert_eq!(claimed.secrets[0].value.as_slice(), b"riley-token-v1");
+    assert!(
+        claim(&w.store).await.is_none(),
+        "a title alone, Sam's titles and a forced acquire are never handed"
+    );
+}
+
 /// Grants an upload of `book_uuid` with `files` under `fence`, in the
 /// `Author/Title` scope on `local`.
 async fn grant_title(

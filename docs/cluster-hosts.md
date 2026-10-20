@@ -253,6 +253,22 @@ local acquire on the owner would name them. It then **uploads** the title
 (below). The host also keeps a best-effort copy of each title in its own
 deployed destinations.
 
+## Asking the owner for a scan
+
+```bash
+bookclerk clusters scan [--cluster <id>] [--account <id>] [--instance <id>] [--no-wait]
+```
+
+The host's operator asks the owner cluster, through this install's running
+daemon and its link (`POST /api/config/clusters/{cluster_id}/scan`, a
+`scan.request` frame), to queue a scan. It runs as the user who owns this
+node: an Owner or Administrator scanning every account gets one job per
+scan-enabled account, spread over every owner node and host trusted with
+each; anyone else scans only their own accounts, and a named account that
+is not theirs is refused (403). A node trusted with nothing (no owner, a
+disabled owner, revoked) is refused. The command then polls the jobs
+(`job.status`), which shows only jobs this node would be trusted to claim.
+
 ## Uploads
 
 Files stream **through** the owner to its destinations; nothing is staged
@@ -355,6 +371,8 @@ request is answered by a frame with the same `id`. Both sides ping every
 | `acquire.plan` | `acquire.targets {targets, destinations}` |
 | `upload.grant` | `upload.granted {upload_id, sealed_token, expires_in_secs}` |
 | `node.leaving` | `accepted`, then close 4403 (the node is revoked) |
+| `scan.request {account, plugin_instance_id}` | `scan.planned {created, duplicates, queue_full}`, or `error` `forbidden` / `invalid` |
+| `job.status {job_ids}` (at most 64) | `job.statuses {jobs}`: only jobs this node may claim |
 
 The owner also sends `wake` frames (deployment, install, placement,
 configuration and revocation changes), which the host acks. Secrets are

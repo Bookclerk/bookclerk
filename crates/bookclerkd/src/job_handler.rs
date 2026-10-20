@@ -156,6 +156,10 @@ impl JobTransport for InProcessJobTransport {
                     cmd.payload.title.as_deref(),
                     cmd.payload.account.as_deref(),
                     cmd.payload.plugin_instance_id.as_deref(),
+                    crate::jobs::AcquireMode {
+                        force: cmd.payload.force,
+                        pdf_only: cmd.payload.pdf_only,
+                    },
                     Some(&ctx),
                 )
                 .await
