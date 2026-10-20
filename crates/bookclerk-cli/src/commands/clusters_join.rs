@@ -199,8 +199,13 @@ fn confirm_fingerprint(library: &InspectedLibrary, given: Option<&str>) -> anyho
         return Ok(());
     };
     if let Some(given) = given {
-        let given = given.trim();
-        let given = given.strip_prefix("sha256:").unwrap_or(given);
+        // Settings → Branches shows the fingerprint in spaced groups, with
+        // or without its `sha256:` prefix.
+        let given: String = given.chars().filter(|c| !c.is_whitespace()).collect();
+        let given = match given.get(..7) {
+            Some(prefix) if prefix.eq_ignore_ascii_case("sha256:") => &given[7..],
+            _ => given.as_str(),
+        };
         if same(given, pin) {
             return Ok(());
         }
@@ -299,7 +304,7 @@ pub async fn join_with_sign_in(
     let joined = loop {
         match redeem_branch_code(store, &redeem, &authorization.keys).await {
             Err(err @ JoinError::SaveFailed { .. }) if attempt < SAVE_ATTEMPTS => {
-                save_failed = Some(err);
+                save_failed.get_or_insert(err);
                 attempt += 1;
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }

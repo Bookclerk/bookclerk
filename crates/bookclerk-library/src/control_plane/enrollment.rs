@@ -813,8 +813,9 @@ pub fn authorized_enrollment_link(code: &str, verifier: &str) -> (String, Enroll
 
 /// Records the link an approved branch sign-in redeems through
 /// ([`authorized_enrollment_link`]), for `for_user_id`, the user who signed
-/// in and consented. Called only after the authorization code was consumed
-/// and its PKCE verifier checked; the redeem itself is
+/// in and consented. Called only after the authorization code's client,
+/// redirect and PKCE verifier were checked, before the code is consumed, so
+/// a failed write leaves the code usable; the redeem itself is
 /// [`redeem_enrollment_link`], the same canonical batch a minted link takes.
 ///
 /// A second call for the same link id leaves the first row as it is.
