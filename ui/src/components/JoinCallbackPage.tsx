@@ -23,8 +23,8 @@ export interface JoinCallbackPageProps {
  *
  * The query is removed from the address bar before the request, so the
  * code is not kept in history; it stays in memory only so a failure the
- * daemon marks retryable (`join_retry`: the library unreachable) can offer
- * Try again.
+ * daemon marks retryable (`join_retry`: the library unreachable), or a
+ * request that got no answer at all, can offer Try again.
  */
 export function JoinCallbackPage({ onOpenLibrary }: JoinCallbackPageProps) {
   const [phase, setPhase] = useState<Phase>({ kind: "working" });
