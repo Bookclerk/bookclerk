@@ -871,8 +871,9 @@ Decided 2026-10-14 with the owner. A cluster has two kinds of node:
   transport* below), and so is the owner side of the work frames (see
   *Work frames, sealed secrets, wakes and resume* below), and so is the
   host client (see *Host client* below; a host claims only the job kinds
-  in `HOST_RUNNABLE_KINDS` whose plugins its operator approved, see *Host
-  consent* below). A redeemed
+  in `HOST_RUNNABLE_KINDS` whose plugins its operator approved, or that
+  were approved automatically as this host's own platform plugins, see
+  *Host consent* below). A redeemed
   enrollment link records the node with `nodes.kind = host`.
 
 Who may administer a node is separate from its kind. `nodes.owner_user_id`

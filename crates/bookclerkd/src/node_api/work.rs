@@ -643,7 +643,23 @@ async fn instance_config(
             .ok()
             .and_then(|value| value.as_object().map(|object| !object.is_empty()))
             .unwrap_or(true);
-    let trusted = instance.trust == NodeTrust::All;
+    // The node's trust or the deployment may have changed while the
+    // bindings were read: re-read both right before sealing, as the job
+    // secret handoff does, so a node revoked meanwhile gets no secrets.
+    let current = match remote_instance_for_node(library, &host.node_id, instance_id).await {
+        Ok(current) => current,
+        Err(err) => {
+            secrets.payload.zeroize();
+            return Err(err);
+        }
+    };
+    let Some(current) = current
+        .filter(|current| current.deployment.deployment_id == instance.deployment.deployment_id)
+    else {
+        secrets.payload.zeroize();
+        return Ok(not_found());
+    };
+    let trusted = instance.trust == NodeTrust::All && current.trust == NodeTrust::All;
     let sealed = if has_secrets && trusted {
         let mut ephemeral = [0u8; 32];
         rand::rngs::OsRng.fill_bytes(&mut ephemeral);
