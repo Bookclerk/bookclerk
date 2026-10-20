@@ -15,19 +15,34 @@
 //! Frames are JSON text of at most [`MAX_FRAME_BYTES`]; binary frames are a
 //! protocol error because bulk data travels over HTTP.
 //!
+//! After the handshake, a hello that listed held fences is answered with
+//! [`Body::Resumed`]. Work is pulled: the host sends [`Body::Claim`] and
+//! gets [`Body::Work`] (the job, its fence, and its secrets sealed to the
+//! node's box key with [`seal_secrets`]) or [`Body::NoWork`]; it then
+//! sends [`Body::Renew`], [`Body::Complete`] or [`Body::Fail`] under that
+//! fence, and may write a refreshed store token back with
+//! [`Body::SecretUpdate`]. The owner forwards the host's `node.<id>` queue
+//! as [`Body::Wake`] frames, each answered with [`Body::Ack`].
+//!
 //! This crate is pure: no I/O, no clock, no randomness. The daemon (owner)
 //! and the host client share it so both sides sign and check the same
 //! bytes.
 
 mod frames;
 mod keys;
+mod sealed;
 mod signature;
 
 pub use ed25519_dalek::SigningKey;
-pub use frames::{Body, Frame, FrameError, HeldFence};
+pub use frames::{Body, Frame, FrameError, HeldFence, WorkJob, ITEM_JOB};
 pub use keys::{
     box_public_key, sign_public_key, validate_box_public_key, validate_sign_public_key, KeyError,
     PUBLIC_KEY_LEN,
+};
+pub use sealed::{
+    open, open_secret_update, open_secrets, seal, seal_secret_update, seal_secrets,
+    secret_update_aad, secrets_aad, SealError, SecretEntry, SecretRef, SecretValue,
+    SEALED_BOX_INFO, SEALED_BOX_OVERHEAD, SECRETS_AAD_DOMAIN, SECRET_UPDATE_AAD_DOMAIN,
 };
 pub use signature::{
     auth_transcript, canonical_origin, decode_nonce, encode_nonce, sign_auth, verify_auth,
@@ -48,6 +63,10 @@ pub const PING_INTERVAL_SECS: u64 = 20;
 
 /// Seconds without any inbound frame before a side closes the connection.
 pub const IDLE_TIMEOUT_SECS: u64 = 60;
+
+/// Frames a side queues for sending before it stops forwarding wakes and
+/// waits for the peer to read.
+pub const SEND_QUEUE_FRAMES: usize = 64;
 
 /// Seconds the owner waits for each handshake frame.
 pub const HANDSHAKE_TIMEOUT_SECS: u64 = 10;

@@ -90,6 +90,9 @@ fn slots(limit: u32) -> u32 {
     limit.clamp(1, MAX_SEMAPHORE_LIMIT)
 }
 
+/// Slot lease names read per statement, within every backend's bind limit.
+const SLOT_READ_CHUNK: usize = bookclerk_plugin_abi::HOST_MIN_BINDS as usize;
+
 /// Current slot rows of `name` below `limit`, by slot.
 async fn load_slots(
     store: &LibraryStore,
@@ -99,11 +102,18 @@ async fn load_slots(
     let names: Vec<String> = (0..slots(limit))
         .map(|slot| semaphore_slot_lease_name(name, slot))
         .collect();
-    let rows = cluster_leases::Entity::find()
-        .filter(cluster_leases::Column::Name.is_in(names.clone()))
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    // Read in chunks every backend binds in one statement (D1 caps a
+    // statement at 100 parameters; a semaphore has up to 256 slots).
+    let mut rows = Vec::new();
+    for chunk in names.chunks(SLOT_READ_CHUNK) {
+        rows.extend(
+            cluster_leases::Entity::find()
+                .filter(cluster_leases::Column::Name.is_in(chunk.to_vec()))
+                .all(store.db())
+                .await
+                .map_err(LibraryError::Orm)?,
+        );
+    }
     let mut by_slot = BTreeMap::new();
     for row in rows {
         if let Some(slot) = names.iter().position(|n| *n == row.name) {
@@ -299,6 +309,86 @@ pub async fn live_permits(
                 token: row.token,
                 expires_at_ms: row.expires_at_ms,
             },
+        })
+        .collect())
+}
+
+/// Permits of `name` among its first `max_slots` slots whose holder starts
+/// with `holder_prefix`, expired ones included.
+///
+/// A worker that holds permits only by name (a host that reconnected to
+/// another owner node) finds them again with this. An expired slot nobody
+/// took over is still returned, since [`renew_fenced_lease`] still renews
+/// it; a slot another holder took is not.
+///
+/// # Errors
+///
+/// Returns an error when the read fails.
+pub async fn permits_held_by(
+    store: &LibraryStore,
+    name: &str,
+    max_slots: u32,
+    holder_prefix: &str,
+) -> Result<Vec<SemaphorePermit>> {
+    Ok(load_slots(store, name, max_slots)
+        .await?
+        .into_iter()
+        .filter(|(_, row)| row.holder.starts_with(holder_prefix))
+        .map(|(slot, row)| SemaphorePermit {
+            semaphore: name.to_string(),
+            slot,
+            lease: ClusterLease {
+                name: row.name,
+                holder: row.holder,
+                token: row.token,
+                expires_at_ms: row.expires_at_ms,
+            },
+        })
+        .collect())
+}
+
+/// Every semaphore permit whose holder starts with `holder_prefix`, across
+/// all semaphores and slots.
+///
+/// Like [`permits_held_by`], but for a holder that must renew exactly what
+/// it took, whatever the semaphores it would ask for now: an expired slot
+/// nobody took over is returned, a slot another holder took is not.
+///
+/// # Errors
+///
+/// Returns an error when the read fails.
+pub async fn permits_with_holder_prefix(
+    store: &LibraryStore,
+    holder_prefix: &str,
+) -> Result<Vec<SemaphorePermit>> {
+    // A coarse LIKE pre-filter, as in `load_all_slots`; the exact checks
+    // below drop the extras.
+    let pattern_prefix = holder_prefix.split('\\').next().unwrap_or_default();
+    let rows = cluster_leases::Entity::find()
+        .filter(cluster_leases::Column::Holder.like(format!("{pattern_prefix}%")))
+        .filter(cluster_leases::Column::Name.like(format!("{SEMAPHORE_LEASE_PREFIX}%")))
+        .all(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(rows
+        .into_iter()
+        .filter(|row| row.holder.starts_with(holder_prefix))
+        .filter_map(|row| {
+            let (semaphore, slot) = row
+                .name
+                .strip_prefix(SEMAPHORE_LEASE_PREFIX)?
+                .rsplit_once('#')?;
+            let slot = slot.parse::<u32>().ok()?;
+            Some(SemaphorePermit {
+                semaphore: semaphore.to_string(),
+                slot,
+                lease: ClusterLease {
+                    name: row.name.clone(),
+                    holder: row.holder,
+                    token: row.token,
+                    expires_at_ms: row.expires_at_ms,
+                },
+            })
         })
         .collect())
 }

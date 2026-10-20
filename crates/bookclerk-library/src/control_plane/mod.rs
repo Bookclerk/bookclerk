@@ -21,6 +21,7 @@ mod node_status;
 mod output;
 mod ownership;
 mod placement;
+mod remote_work;
 mod requirements_sweep;
 mod routing;
 mod schemas;
@@ -77,8 +78,9 @@ pub use instances::{
 };
 pub use job_routing::{
     account_semaphore, claim_routed_job, class_semaphore, common_deployment_nodes,
-    instance_semaphore, job_semaphores, node_can_run_job, resolve_job_requirements, JobClaimLimits,
-    JobClaimRequest, RoutedJobClaim, ACCOUNT_SEMAPHORE_LIMIT, ROUTED_CLAIM_CANDIDATES,
+    instance_semaphore, job_permit_holder_prefix, job_semaphores, node_can_run_job,
+    resolve_job_requirements, JobClaimLimits, JobClaimRequest, RoutedJobClaim,
+    ACCOUNT_SEMAPHORE_LIMIT, ROUTED_CLAIM_CANDIDATES,
 };
 pub use leases::{
     acquire_lease, acquire_lease_on, list_leases, load_lease, load_lease_on, release_lease,
@@ -113,6 +115,12 @@ pub use placement::{
     MAX_PLACEMENT_CONSTRAINTS, MAX_REPLICAS, NODE_LABEL, SCHEDULER_LEASE, SCHEDULER_LEASE_TTL,
     TARGET_LABEL,
 };
+pub use remote_work::{
+    claim_remote_job, finish_remote_job, job_secret_refs, release_remote_job, remote_job_fence,
+    remote_lease_owner, renew_remote_job, write_back_job_secret, JobSecret, JobSecretRef,
+    RemoteClaimSettings, RemoteFinish, RemoteJobClaim, RemoteOutcome, RemoteRenew, WriteBack,
+    MAX_WRITE_BACK_BYTES, REMOTE_LEASE_OWNER_PREFIX, SECRETS_UNAVAILABLE,
+};
 pub use requirements_sweep::{
     sweep_job_requirements, RequirementsSweepReport, REQUIREMENTS_GRACE, REQUIREMENTS_SWEEP_LEASE,
     REQUIREMENTS_SWEEP_LEASE_TTL, UNROUTABLE_ERROR_KIND,
@@ -125,9 +133,9 @@ pub use schemas::{
 };
 pub use secret::{align_cluster_root, load_cluster_row, ClusterSecret};
 pub use semaphore::{
-    acquire_permit, acquire_permits, live_permits, release_permits, renew_fenced_lease,
-    renew_permits, semaphore_slot_lease_name, PermitAcquire, SemaphorePermit, SemaphoreRequest,
-    MAX_SEMAPHORE_LIMIT, SEMAPHORE_LEASE_PREFIX,
+    acquire_permit, acquire_permits, live_permits, permits_held_by, release_permits,
+    renew_fenced_lease, renew_permits, semaphore_slot_lease_name, PermitAcquire, SemaphorePermit,
+    SemaphoreRequest, MAX_SEMAPHORE_LIMIT, SEMAPHORE_LEASE_PREFIX,
 };
 pub use trust::{
     accounts_owned_by, handoff_routed_job, job_trusted, node_may_claim_job, node_trust, plan_scan,
@@ -777,6 +785,8 @@ mod leases_tests;
 mod output_tests;
 #[cfg(test)]
 mod placement_tests;
+#[cfg(test)]
+mod remote_work_tests;
 #[cfg(test)]
 mod requirements_sweep_tests;
 #[cfg(test)]

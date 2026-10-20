@@ -152,13 +152,17 @@ impl LibraryStore {
         Ok(JobClaimPage { jobs: out, next })
     }
 
-    /// Claims the pending job `job_id` for `owner` with a single CAS.
+    /// Claims the pending job `job_id` for `owner` with a single CAS, but
+    /// only while its lease generation is still `expected_generation`.
     ///
     /// The update matches `state = 'pending'` and `expected_generation`, the
     /// lease generation of the record the caller routed on, so of several
     /// concurrent claimers on any number of connections exactly one moves the
     /// row to `running` (and bumps the generation that fences every later
-    /// write). A row whose payload was rewritten after the caller read it
+    /// write). A successful claim therefore always runs at
+    /// `expected_generation + 1`, which lets the caller name the claim's
+    /// generation (in its permit holders, say) before claiming. A row whose
+    /// payload was rewritten after the caller read it
     /// ([`Self::rewrite_pending_job_payload`] bumps the generation) is not
     /// claimed, so a job never runs on requirements its claimer did not
     /// check. No transaction is needed: a pending → running move does not
@@ -168,7 +172,7 @@ impl LibraryStore {
     ///
     /// * `job_id` - The job to claim.
     /// * `expected_generation` - `lease_generation` of the record the caller
-    ///   evaluated.
+    ///   evaluated; a successful claim runs at `expected_generation + 1`.
     /// * `owner` - Worker lease owner written on the row.
     /// * `lease_secs` - Lease length.
     ///

@@ -192,8 +192,11 @@ account gets one `scan` job per scan-enabled account id, so the response
 also carries `job_ids` (200 when any was accepted, 409 when all were
 already queued, 429 when the queue was full, 422 `nothing_to_scan` for an
 empty plan); with no scan-enabled account it stays one `scan:account=all`
-job. Any other user scans only accounts linked to them, and naming someone
-else's account is 403.
+job. The scan endpoint takes the operator, Owners and Administrators only:
+any other portal user is 401, and an operator impersonating one is 403.
+The planner also scopes any other user to the accounts linked to them
+(naming someone else's account is forbidden), but no HTTP caller reaches
+that path yet.
 
 Admission, claim, and handler execution share an `RwLock` (`job_runtime`).
 A database plugin swap takes the write permit so it cannot observe an idle
@@ -376,7 +379,11 @@ one permit of:
 | `account:<plugin_key>:<account_id>` | 1 | Scans and acquires touching that store account: the payload's account, else every account (of the pinned plugin, when pinned) |
 
 Permits last as long as the job lease, are renewed with each heartbeat, and
-are released after the row is finalized. A heartbeat whose permit renewal
+are released after the row is finalized. A routed claim's holder is
+`<lease owner>/<job id>/g<generation>/<random>`, with the lease generation
+the claim runs at (the CAS only succeeds one past the generation it read),
+so a node that finds its permits again by holder prefix never mistakes a
+leftover permit of an earlier claim of the same job for the current one. A heartbeat whose permit renewal
 matches no row (another holder took the slot) is a lost fence: the handler
 is cancelled and its result ignored. When a node dies, its permits and job
 lease expire; the next claimer reclaims the row, takes the slot with a
