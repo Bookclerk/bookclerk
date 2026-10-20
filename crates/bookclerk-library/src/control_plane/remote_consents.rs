@@ -319,6 +319,23 @@ pub async fn list_remote_plugin_consents(
         .collect())
 }
 
+/// Payload-root digests of every owner tree an operator approval still
+/// covers, which a sweep of the shared version cache must keep: owner
+/// versions have no local deployment row to reference them.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub async fn approved_remote_payload_digests(
+    store: &LibraryStore,
+) -> Result<std::collections::BTreeSet<String>> {
+    Ok(list_remote_plugin_consents(store, None)
+        .await?
+        .into_iter()
+        .filter_map(|row| row.approved_artifact_payload_sha256)
+        .collect())
+}
+
 /// Records what the owner asks to run here: `version` of `plugin_key` with
 /// the owner's approved grant, fetched from `artifact`. A stored approval
 /// is kept; whether it still covers the new request is decided when the
@@ -721,6 +738,10 @@ mod tests {
             .unwrap();
         assert!(approved.is_approved());
         assert_eq!(approved.version.as_deref(), Some("1.0.0"));
+        assert_eq!(
+            approved_remote_payload_digests(&store).await.unwrap(),
+            std::collections::BTreeSet::from(["ef".to_string()])
+        );
         assert_eq!(approved.approved_request_json.as_deref(), Some(requested));
 
         // A new request keeps the approval for the grant algebra to judge.
@@ -738,6 +759,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!revoked.is_approved());
+        assert!(approved_remote_payload_digests(&store)
+            .await
+            .unwrap()
+            .is_empty());
         assert_eq!(revoked.requested_version, "1.1.0");
         assert!(matches!(
             approve_remote_plugin(

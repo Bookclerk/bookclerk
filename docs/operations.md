@@ -24,8 +24,9 @@ HTTP control plane (default `127.0.0.1:8787`):
 | `POST /api/auth/elevate` | owner + password / passkey / OIDC step-up | Short-lived elevated operator session |
 | `GET` / `POST` / `PATCH` `/api/users…` | provisioner | List/create/patch users; remint claim tickets |
 | `GET` / `POST` `/api/plugins/{id}/consent` | operator | Plugin grant status / approve (widen or narrow; host-capped) |
-| `GET` / `PATCH` `/api/settings` | operator | Daemon, library, plugins, confinement knobs. `events.*` is compare-and-swap against the database |
+| `GET` / `PATCH` `/api/settings` | operator | Daemon, library, plugins, confinement knobs. `events.*` and `output.*` are compare-and-swap against the database (one authority per request) |
 | `GET` / `PUT /api/config/domains/core.events` | operator | Authoritative `[events]` document and revision |
+| `GET` / `PUT /api/config/domains/core.output` | operator | Authoritative shared `[output]` document and revision (`{expected_revision, document}`) |
 | `GET` / `PUT /api/auth/mfa-policy` | owner or operator | Host `require_second_factor` (password login must use TOTP or a passkey) |
 | `GET /api/status` (also `/status`) | yes | Status snapshot |
 | `POST /api/library/scan` (also `/scan`) | yes | Queue scan (`Content-Type: application/json`); `409` if already pending/running, `429` if the queue is full |

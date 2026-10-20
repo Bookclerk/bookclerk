@@ -47,7 +47,7 @@ use super::semaphore::{
     acquire_permits, release_permits, PermitAcquire, SemaphorePermit, SemaphoreRequest,
 };
 use super::trust::{
-    account_owned, job_trusted, node_trust, owned_job_account, Claimant, NodeTrust,
+    account_owned, accounts_named, job_trusted, node_trust, owned_job_account, Claimant, NodeTrust,
 };
 use crate::entities::accounts;
 use crate::error::{LibraryError, Result};
@@ -155,10 +155,11 @@ impl JobClaimFilter {
 /// alone does not name exactly one.
 ///
 /// Only a scan or acquire has one: the plugin of the instance it is pinned
-/// to, or else the one plugin holding an `accounts` row with the account
-/// it names. Required instances ([`crate::JobPayload::requires`], the
-/// destinations an acquire writes) never count. An unpinned job of every
-/// account, or one whose account id exists under several plugins, answers
+/// to, or else the one plugin holding an `accounts` row the account it
+/// names resolves to (by id or label, ignoring ASCII case). Required
+/// instances ([`crate::JobPayload::requires`], the destinations an acquire
+/// writes) never count. An unpinned job of every account, or one whose
+/// account name matches rows under several plugins, answers
 /// `None`, as do other kinds and unknown instances or accounts.
 ///
 /// # Errors
@@ -177,13 +178,11 @@ pub async fn job_source_plugin_key(
     let Some(account) = job.payload.account.as_deref().filter(|a| !a.is_empty()) else {
         return Ok(None);
     };
-    let keys: BTreeSet<String> = accounts::Entity::find()
-        .filter(accounts::Column::AccountId.eq(account))
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
+    // Resolved like the claim filter and the secret handoff (id or label).
+    let keys: BTreeSet<String> = accounts_named(store, account, None)
+        .await?
         .into_iter()
-        .map(|row| row.plugin_key)
+        .map(|(plugin_key, _)| plugin_key)
         .collect();
     let mut keys = keys.into_iter();
     Ok(match (keys.next(), keys.next()) {
@@ -228,17 +227,14 @@ pub async fn job_plugin_keys(
         keys.insert(key);
     }
     match job.payload.account.as_deref().filter(|a| !a.is_empty()) {
+        // Resolved like the executor and the trust checks do (id or
+        // label, ignoring case), so the set covers every store it touches.
         Some(account) => {
-            let mut query =
-                accounts::Entity::find().filter(accounts::Column::AccountId.eq(account));
-            if let Some(key) = pinned.as_deref() {
-                query = query.filter(accounts::Column::PluginKey.eq(key));
-            }
-            let rows = query.all(store.db()).await.map_err(LibraryError::Orm)?;
-            if rows.is_empty() {
+            let named = accounts_named(store, account, pinned.as_deref()).await?;
+            if named.is_empty() {
                 return Ok(None);
             }
-            keys.extend(rows.into_iter().map(|row| row.plugin_key));
+            keys.extend(named.into_iter().map(|(plugin_key, _)| plugin_key));
         }
         // Every account of the pinned plugin stays within that plugin;
         // every account of every plugin cannot be told.

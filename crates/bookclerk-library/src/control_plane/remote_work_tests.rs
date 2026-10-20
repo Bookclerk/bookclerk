@@ -911,6 +911,38 @@ async fn a_pinned_job_without_an_account_passes_no_filter() {
     assert!(consented.admits(&w.store, &record).await.unwrap());
 }
 
+/// A job naming its account by label, or by its id in another case, is
+/// filtered by that account's plugin, as the executor resolves it.
+#[tokio::test]
+async fn a_filter_resolves_an_account_named_by_label() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    accounts::Entity::update_many()
+        .col_expr(accounts::Column::Label, Expr::value("Riley Main"))
+        .filter(accounts::Column::AccountId.eq("riley-acct"))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    for needle in ["riley main", "RILEY-ACCT"] {
+        let job_id = enqueue(&w.store, JobKind::Scan, needle).await;
+        let claimed = claim_filtered(&w.store, &filter(&["scan"], &[PLUGIN]))
+            .await
+            .unwrap_or_else(|| panic!("{needle}: a consented plugin is claimed"));
+        assert_eq!(claimed.job.id, job_id, "{needle}");
+        assert_eq!(claimed.plugin_keys, vec![PLUGIN.to_string()], "{needle}");
+        finish_remote_job(
+            &w.store,
+            HOST,
+            &job_id,
+            claimed.job.lease_generation,
+            SETTINGS.limits,
+            RemoteOutcome::Complete(None),
+        )
+        .await
+        .unwrap();
+    }
+}
+
 /// A scan of every account names no plugin, so no filter admits it.
 #[tokio::test]
 async fn a_job_whose_plugins_are_unknown_passes_no_filter() {
@@ -1352,6 +1384,7 @@ fn local(folder: &str) -> Vec<UploadDestination> {
     vec![UploadDestination {
         id: "local".into(),
         title_folders: vec![folder.into()],
+        title_names: None,
     }]
 }
 
@@ -1695,6 +1728,7 @@ async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
     let s3 = UploadDestination {
         id: "s3".into(),
         title_folders: vec!["Title".into()],
+        title_names: None,
     };
     let two = vec![destinations[0].clone(), s3.clone()];
     let unwritten = UploadGrantRequest {
@@ -2274,6 +2308,7 @@ async fn an_upload_is_bound_to_its_titles_key_scope() {
     let unscoped = vec![UploadDestination {
         id: "local".into(),
         title_folders: Vec::new(),
+        title_names: None,
     }];
     assert!(matches!(
         grant_upload(
@@ -2343,6 +2378,7 @@ fn a_destination_scope_admits_only_keys_below_its_folders() {
     let folder = UploadDestination {
         id: "local".into(),
         title_folders: vec!["A/T".into()],
+        title_names: None,
     };
     assert!(folder.admits("A/T/T.m4b"));
     assert!(folder.admits("A/T/sub/c1.mp3"));
@@ -2352,14 +2388,203 @@ fn a_destination_scope_admits_only_keys_below_its_folders() {
     let root = UploadDestination {
         id: "local".into(),
         title_folders: vec![String::new()],
+        title_names: None,
     };
     assert!(root.admits("T.m4b"));
     assert!(!root.admits("A/T.m4b"));
     let none = UploadDestination {
         id: "local".into(),
         title_folders: Vec::new(),
+        title_names: None,
     };
     assert!(!none.admits("T.m4b"));
+}
+
+/// The planned names of title `One [B00ONE]` by `Ann Author` in `folder`
+/// (empty for the root), as the owner renders them for a template whose
+/// folder other titles share: its audio stem, its plain parts and its
+/// split chapters (`<title> - <ch#> - <chapter title>`).
+fn shared_scope(folder: &str) -> UploadDestination {
+    let at = |name: String| {
+        if folder.is_empty() {
+            name
+        } else {
+            format!("{folder}/{name}")
+        }
+    };
+    UploadDestination {
+        id: "local".into(),
+        title_folders: vec![folder.into()],
+        title_names: Some(TitleNames {
+            audio_stems: vec![at("One [B00ONE]".into())],
+            part_patterns: vec![
+                at(format!(
+                    "One — {UPLOAD_NAME_WILDCARD} [B00ONE-p{UPLOAD_NUMBER_WILDCARD}]"
+                )),
+                at(format!(
+                    "One - {UPLOAD_NUMBER_WILDCARD} - {UPLOAD_NAME_WILDCARD}"
+                )),
+            ],
+        }),
+    }
+}
+
+/// In a folder several titles share (`<first author>`) and at the root, an
+/// upload's scope is the title's planned names, not the folder: its audio
+/// with any extension, its sidecars, its parts and its chapters are
+/// admitted; another title's planned name and an arbitrary name are not,
+/// and only audio names (not a sidecar's) may be the primary key.
+#[test]
+fn an_upload_into_a_shared_folder_admits_only_the_titles_planned_names() {
+    for folder in ["Ann Author", ""] {
+        let scope = shared_scope(folder);
+        let at = |name: &str| {
+            if folder.is_empty() {
+                name.to_string()
+            } else {
+                format!("{folder}/{name}")
+            }
+        };
+        for name in [
+            "One [B00ONE].m4b",
+            "One [B00ONE].mp3",
+            "One [B00ONE].jpg",
+            "One [B00ONE].pdf",
+            "One [B00ONE].cue",
+            "One [B00ONE].chapters.flat.json",
+            "One [B00ONE].chapters.tree.json",
+            "One [B00ONE].m4b.bookclerk-meta.json",
+            "One — Part 1 [B00ONE-p001].mp3",
+            "One — Part 1 [B00ONE-p001].jpg",
+            "One - 3 - The Storm.mp3",
+            "One - 12 - A. B. Sea.m4a",
+        ] {
+            assert!(scope.admits(&at(name)), "{folder:?}: {name}");
+        }
+        for name in [
+            "One [B00ONE].m4b",
+            "One [B00ONE].flac",
+            "One — Part 1 [B00ONE-p001].mp3",
+            "One - 3 - The Storm.mp3",
+        ] {
+            assert!(scope.admits_primary(&at(name)), "{folder:?}: {name}");
+        }
+        for name in [
+            // Another title's planned audio and sidecar, and its parts.
+            "Two [B00TWO].m4b",
+            "Two [B00TWO].jpg",
+            "Two — Part 1 [B00TWO-p001].mp3",
+            // Arbitrary names, and near misses of this title's.
+            "cover.jpg",
+            "anything.m4b",
+            "One [B00ONE]",
+            "One [B00ONE]x.m4b",
+            "One.m4b",
+            "One — Part 1 [B00ONE-pX].mp3",
+            "One - x - The Storm.mp3",
+            "One - 3 - .mp3",
+            "One [B00ONE]/inside.m4b",
+        ] {
+            assert!(!scope.admits(&at(name)), "{folder:?}: {name}");
+        }
+        assert!(
+            !scope.admits_primary(&at("One [B00ONE].m4b.bookclerk-meta.json")),
+            "{folder:?}: a sidecar is not the audio"
+        );
+    }
+    assert!(
+        !shared_scope("Ann Author").admits("Ann Author Two/One [B00ONE].m4b"),
+        "still bound to the folder"
+    );
+}
+
+/// A Host trusted with one title cannot claim another title's not yet
+/// acquired name in a folder they share: the grant is refused
+/// (`key_out_of_scope`) for another title's planned name, an arbitrary
+/// name or a primary that is not the title's audio, and granted for the
+/// title's own audio and sidecars.
+#[tokio::test]
+async fn an_upload_grant_into_a_shared_folder_is_bound_to_the_titles_names() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, mut files) = riley_title(&w.store).await;
+    files[0].copies[0].key = "Ann Author/One [B00ONE].m4b".into();
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let destinations = vec![shared_scope("Ann Author")];
+    let with_extra = |key: &str| {
+        let mut out = files.clone();
+        out.push(bookclerk_node_proto::UploadFile {
+            copies: vec![bookclerk_node_proto::FileCopy {
+                destination: "local".into(),
+                key: key.into(),
+            }],
+            sha256: "cd".repeat(32),
+            ..files[0].clone()
+        });
+        out
+    };
+    let grant = |files: Vec<bookclerk_node_proto::UploadFile>, primary: &'static str| {
+        let store = w.store.clone();
+        let job_id = job_id.clone();
+        let book_uuid = book_uuid.clone();
+        let destinations = destinations.clone();
+        async move {
+            grant_upload(
+                &store,
+                HOST,
+                &job_id,
+                fence,
+                "owner",
+                &UploadGrantRequest {
+                    book_uuid: &book_uuid,
+                    primary_key: primary,
+                    pdf_key: None,
+                    files: &files,
+                    destinations: &destinations,
+                },
+            )
+            .await
+            .unwrap()
+        }
+    };
+    for key in ["Ann Author/Two [B00TWO].m4b", "Ann Author/anything.m4b"] {
+        assert!(
+            matches!(
+                grant(with_extra(key), "Ann Author/One [B00ONE].m4b").await,
+                UploadGrant::Refused("key_out_of_scope")
+            ),
+            "{key}"
+        );
+    }
+    let sidecar_primary = with_extra("Ann Author/One [B00ONE].m4b.bookclerk-meta.json");
+    assert!(
+        matches!(
+            grant(
+                sidecar_primary,
+                "Ann Author/One [B00ONE].m4b.bookclerk-meta.json"
+            )
+            .await,
+            UploadGrant::Refused("key_out_of_scope")
+        ),
+        "the primary must be the title's audio"
+    );
+    assert!(
+        node_upload_sessions::Entity::find()
+            .all(w.store.db())
+            .await
+            .unwrap()
+            .is_empty(),
+        "nothing was granted"
+    );
+    assert!(matches!(
+        grant(
+            with_extra("Ann Author/One [B00ONE].jpg"),
+            "Ann Author/One [B00ONE].m4b"
+        )
+        .await,
+        UploadGrant::Granted { .. }
+    ));
 }
 
 /// A job whose cancel was requested never succeeds on a Host's word: a
@@ -3161,4 +3386,371 @@ async fn the_commit_gate_carries_the_nodes_trust() {
         .await
         .unwrap();
     assert!(!passes(None).await, "a disabled owner");
+}
+
+/// Grants an upload of `book_uuid` with `files` under `fence`, in the
+/// `Author/Title` scope on `local`.
+async fn grant_title(
+    store: &LibraryStore,
+    job_id: &str,
+    fence: i64,
+    book_uuid: &str,
+    files: &[bookclerk_node_proto::UploadFile],
+) -> UploadGrant {
+    grant_upload(
+        store,
+        HOST,
+        job_id,
+        fence,
+        "owner",
+        &UploadGrantRequest {
+            book_uuid,
+            primary_key: "Author/Title/Title.m4b",
+            pdf_key: None,
+            files,
+            destinations: &local("Author/Title"),
+        },
+    )
+    .await
+    .unwrap()
+}
+
+/// A grant refused once claiming began leaves every key as it was: a key
+/// it claimed fresh is unrecorded again, a key an open upload of the
+/// title held is that upload's again (it is neither superseded nor robbed
+/// of its keys), and no upload of the refused grant stays open.
+#[tokio::test]
+async fn a_refused_upload_grant_gives_back_the_keys_it_claimed() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    let neighbour = w
+        .store
+        .scope(PLUGIN, "test")
+        .upsert_book(&crate::store::NewBook {
+            uuid: None,
+            ..scanned("riley-acct", "t8")
+        })
+        .await
+        .unwrap();
+    w.store
+        .record_title_file("local", "Author/Title/Neighbour - 01.mp3", &neighbour.uuid)
+        .await
+        .unwrap();
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let UploadGrant::Granted {
+        upload_id: first, ..
+    } = grant_title(&w.store, &job_id, fence, &book_uuid, &files).await
+    else {
+        panic!("the title's first upload is granted");
+    };
+    // Title.m4b (the open upload's), then a fresh key, then the
+    // neighbour's key, which refuses the grant after two claims.
+    let refused = with_local_file(
+        &with_local_file(&files, "Author/Title/fresh.jpg"),
+        "Author/Title/Neighbour - 01.mp3",
+    );
+    assert!(matches!(
+        grant_title(&w.store, &job_id, fence, &book_uuid, &refused).await,
+        UploadGrant::Refused("key_of_another_book")
+    ));
+    let primary = w
+        .store
+        .title_file("local", "Author/Title/Title.m4b")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(primary.writer, first, "the open upload holds its key again");
+    assert_eq!(primary.book_uuid, book_uuid);
+    assert!(
+        w.store
+            .title_file("local", "Author/Title/fresh.jpg")
+            .await
+            .unwrap()
+            .is_none(),
+        "a key the refused grant claimed fresh is unrecorded again"
+    );
+    assert_eq!(
+        w.store
+            .title_file("local", "Author/Title/Neighbour - 01.mp3")
+            .await
+            .unwrap()
+            .unwrap()
+            .book_uuid,
+        neighbour.uuid
+    );
+    let open: Vec<String> = node_upload_sessions::Entity::find()
+        .filter(node_upload_sessions::Column::JobId.eq(&job_id))
+        .filter(node_upload_sessions::Column::State.eq("open"))
+        .all(w.store.db())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.upload_id)
+        .collect();
+    assert_eq!(open, vec![first], "only the first upload is open");
+}
+
+/// A title's commit records its keys only while the upload still holds
+/// every one: once another writer took a key since the grant, the commit
+/// is refused `key_taken` and the title is not marked acquired.
+#[tokio::test]
+async fn an_upload_commit_is_refused_once_a_key_was_taken() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    let files = with_local_file(&files, "Author/Title/cover.jpg");
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let UploadGrant::Granted { upload_id, .. } =
+        grant_title(&w.store, &job_id, fence, &book_uuid, &files).await
+    else {
+        panic!("granted");
+    };
+    for index in 0..files.len() {
+        assert!(record_upload_file(&w.store, &upload_id, index)
+            .await
+            .unwrap());
+    }
+    // An acquire on the owner wrote the cover since.
+    w.store
+        .record_title_file("local", "Author/Title/cover.jpg", &book_uuid)
+        .await
+        .unwrap();
+    assert_eq!(
+        commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
+            .await
+            .unwrap(),
+        UploadCommit::Refused("key_taken")
+    );
+    let book = w.store.get_book_by_uuid(&book_uuid).await.unwrap().unwrap();
+    assert_ne!(book.acquire_status, crate::models::AcquireStatus::Acquired);
+    assert_eq!(
+        load_upload(&w.store, &upload_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "open",
+        "nothing was committed"
+    );
+}
+
+/// A job naming its account by label, or by its id in another case,
+/// covers that account's titles: `job_titles` (the plan and the closing
+/// commit's scope) resolves the selector as the claim path does.
+#[tokio::test]
+async fn an_upload_job_naming_its_account_by_label_covers_its_titles() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    label_riley(&w.store).await;
+    let (book_uuid, _) = riley_title(&w.store).await;
+    for selector in ["riley books", "RILEY-ACCT", "riley-acct"] {
+        let job_id = enqueue(&w.store, JobKind::Acquire, selector).await;
+        let job = w.store.get_job(&job_id).await.unwrap().unwrap();
+        let titles = job_titles(&w.store, HOST, &job).await.unwrap().unwrap();
+        assert_eq!(
+            titles.iter().map(|b| b.uuid.as_str()).collect::<Vec<_>>(),
+            vec![book_uuid.as_str()],
+            "{selector}"
+        );
+        jobs::Entity::delete_by_id(job_id)
+            .exec(w.store.db())
+            .await
+            .unwrap();
+    }
+}
+
+/// Labels Riley's account `Riley Books`.
+async fn label_riley(store: &LibraryStore) {
+    accounts::Entity::update_many()
+        .col_expr(accounts::Column::Label, Expr::value(Some("Riley Books")))
+        .filter(accounts::Column::AccountId.eq("riley-acct"))
+        .exec(store.db())
+        .await
+        .unwrap();
+}
+
+/// A lease that ran out no longer owns its job, even before the reclaim
+/// runs: no upload is granted under it and an open upload cannot commit.
+#[tokio::test]
+async fn an_expired_lease_neither_grants_nor_commits_an_upload() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let UploadGrant::Granted { upload_id, .. } =
+        grant_title(&w.store, &job_id, fence, &book_uuid, &files).await
+    else {
+        panic!("granted");
+    };
+    assert!(record_upload_file(&w.store, &upload_id, 0).await.unwrap());
+    let past = (chrono::Utc::now() - chrono::Duration::seconds(5)).to_rfc3339();
+    jobs::Entity::update_many()
+        .col_expr(jobs::Column::LeaseExpiresAt, Expr::value(Some(past)))
+        .filter(jobs::Column::Id.eq(&job_id))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    assert!(matches!(
+        grant_title(&w.store, &job_id, fence, &book_uuid, &files).await,
+        UploadGrant::Lost
+    ));
+    let session = load_upload(&w.store, &upload_id).await.unwrap().unwrap();
+    assert!(!upload_fence_live(&w.store, &session).await.unwrap());
+    assert_eq!(
+        commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
+            .await
+            .unwrap(),
+        UploadCommit::Lost
+    );
+    let book = w.store.get_book_by_uuid(&book_uuid).await.unwrap().unwrap();
+    assert_ne!(book.acquire_status, crate::models::AcquireStatus::Acquired);
+}
+
+/// A scan job naming its account by label, or by its id in another case,
+/// is handed with the account's canonical id (the host's credential lookup
+/// and its rows use it), and the rows it returns for that id validate.
+#[tokio::test]
+async fn a_label_named_scans_results_validate_under_the_canonical_id() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    label_riley(&w.store).await;
+    for (selector, product) in [("riley books", "p-label"), ("RILEY-ACCT", "p-case")] {
+        let job_id = enqueue(&w.store, JobKind::Scan, selector).await;
+        let claimed = claim(&w.store).await.expect("claimed");
+        assert_eq!(claimed.job.id, job_id);
+        assert_eq!(
+            claimed.job.payload.account.as_deref(),
+            Some("riley-acct"),
+            "{selector}: handed with the canonical id"
+        );
+        let stored = w.store.get_job(&job_id).await.unwrap().unwrap();
+        assert_eq!(stored.payload.account.as_deref(), Some(selector));
+        assert_eq!(
+            accept_scan_results(
+                &w.store,
+                HOST,
+                &job_id,
+                claimed.job.lease_generation,
+                PLUGIN,
+                vec![scanned("riley-acct", product)]
+            )
+            .await
+            .unwrap(),
+            ScanAccept::Accepted { upserted: 1 },
+            "{selector}"
+        );
+        assert_eq!(
+            accept_scan_results(
+                &w.store,
+                HOST,
+                &job_id,
+                claimed.job.lease_generation,
+                PLUGIN,
+                vec![scanned("sam-acct", product)]
+            )
+            .await
+            .unwrap(),
+            ScanAccept::Refused("account_not_in_job"),
+            "{selector}: another account's row is still refused"
+        );
+        assert_eq!(
+            finish_remote_job(
+                &w.store,
+                HOST,
+                &job_id,
+                claimed.job.lease_generation,
+                SETTINGS.limits,
+                RemoteOutcome::Complete(None)
+            )
+            .await
+            .unwrap(),
+            RemoteFinish::Done
+        );
+    }
+}
+
+/// Of two grants of one title, the newest wins: an older grant never
+/// aborts a newer one. A grant that finds a newer open upload of the title
+/// is refused `superseded`, gives back what it claimed, and leaves the
+/// newer upload open and holding its keys.
+#[tokio::test]
+async fn an_older_upload_grant_never_aborts_a_newer_one() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let UploadGrant::Granted {
+        upload_id: newer, ..
+    } = grant_title(&w.store, &job_id, fence, &book_uuid, &files).await
+    else {
+        panic!("granted");
+    };
+    // Stamp it as created after any grant this test makes next, as if
+    // that grant had started first and was still claiming.
+    node_upload_sessions::Entity::update_many()
+        .col_expr(
+            node_upload_sessions::Column::CreatedAt,
+            Expr::value("9999-01-01T00:00:00.000000000Z"),
+        )
+        .filter(node_upload_sessions::Column::UploadId.eq(&newer))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    assert!(matches!(
+        grant_title(&w.store, &job_id, fence, &book_uuid, &files).await,
+        UploadGrant::Refused("superseded")
+    ));
+    assert_eq!(
+        load_upload(&w.store, &newer).await.unwrap().unwrap().state,
+        "open"
+    );
+    assert_eq!(
+        w.store
+            .title_file("local", "Author/Title/Title.m4b")
+            .await
+            .unwrap()
+            .unwrap()
+            .writer,
+        newer,
+        "the newer upload holds its key again"
+    );
+}
+
+/// A commit whose fence is lost answers `Lost` (so the receiving node
+/// discards the upload), even when one of its keys was also taken.
+#[tokio::test]
+async fn a_lost_fence_upload_commit_answers_lost_before_key_taken() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let UploadGrant::Granted { upload_id, .. } =
+        grant_title(&w.store, &job_id, fence, &book_uuid, &files).await
+    else {
+        panic!("granted");
+    };
+    assert!(record_upload_file(&w.store, &upload_id, 0).await.unwrap());
+    w.store
+        .record_title_file("local", "Author/Title/Title.m4b", &book_uuid)
+        .await
+        .unwrap();
+    let past = (chrono::Utc::now() - chrono::Duration::seconds(5)).to_rfc3339();
+    jobs::Entity::update_many()
+        .col_expr(jobs::Column::LeaseExpiresAt, Expr::value(Some(past)))
+        .filter(jobs::Column::Id.eq(&job_id))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    assert_eq!(
+        commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
+            .await
+            .unwrap(),
+        UploadCommit::Lost
+    );
 }

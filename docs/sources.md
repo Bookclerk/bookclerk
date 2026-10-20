@@ -90,11 +90,14 @@ Low-level auth/download notes: [`crates/bookclerk-plugins/optional/source-audibl
 bookclerk plugins config set audible bitrate normal
 ```
 
-```toml
-[output]            # shared, still config.toml
-widevine = false
-xhe_aac = false
-format = "enriched_m4b"
+Widevine, xHE-AAC, and the packaging format are shared `core.output`
+settings (seeded once from `[output]`; see
+[configuration.md](configuration.md#output-shared)):
+
+```bash
+bookclerk config set output.widevine true
+bookclerk config set output.xhe_aac false
+bookclerk config set output.format enriched_m4b
 ```
 
 ## Libro.fm

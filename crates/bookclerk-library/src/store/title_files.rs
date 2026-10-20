@@ -11,7 +11,8 @@
 //! file ([`LibraryStore::record_title_file`]; the file is the title's from
 //! then on, whichever title had it before). A host upload claims every key
 //! of its manifest when it is granted ([`LibraryStore::claim_title_file`]),
-//! and only keys no other library title holds.
+//! and only keys no other library title holds; a grant refused part way
+//! gives back what it claimed ([`LibraryStore::release_title_file`]).
 
 use sea_orm::sea_query::{OnConflict, Query};
 use sea_orm::{ActiveValue::Set, ColumnTrait, Condition, EntityTrait, QueryFilter};
@@ -82,6 +83,12 @@ impl LibraryStore {
     /// one conditional write, so of two uploads of different titles racing
     /// for one key only one wins.
     ///
+    /// `expected` is the record the caller read before ([`Self::title_file`];
+    /// `None` when unrecorded), which a refused claim's release restores: the
+    /// claim also answers false, changing nothing, when the record is no
+    /// longer that one (an acquire recorded the key in between), so a
+    /// release never removes a record the claim did not replace.
+    ///
     /// # Errors
     ///
     /// Returns an error when a write fails.
@@ -91,26 +98,32 @@ impl LibraryStore {
         key: &str,
         book_uuid: &str,
         writer: &str,
+        expected: Option<&TitleFile>,
     ) -> Result<bool> {
         let now = now_str();
-        title_files::Entity::insert(title_files::ActiveModel {
-            destination: Set(destination.to_string()),
-            storage_key: Set(key.to_string()),
-            book_uuid: Set(book_uuid.to_string()),
-            writer: Set(writer.to_string()),
-            written_at: Set(now.clone()),
-        })
-        .on_conflict(
-            OnConflict::columns([
-                title_files::Column::Destination,
-                title_files::Column::StorageKey,
-            ])
-            .do_nothing()
-            .to_owned(),
-        )
-        .exec_without_returning(self.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+        // Only a key read as unrecorded is inserted: a claim expecting a
+        // record that has since gone must change nothing, so its retry
+        // reads the key afresh.
+        if expected.is_none() {
+            title_files::Entity::insert(title_files::ActiveModel {
+                destination: Set(destination.to_string()),
+                storage_key: Set(key.to_string()),
+                book_uuid: Set(book_uuid.to_string()),
+                writer: Set(writer.to_string()),
+                written_at: Set(now.clone()),
+            })
+            .on_conflict(
+                OnConflict::columns([
+                    title_files::Column::Destination,
+                    title_files::Column::StorageKey,
+                ])
+                .do_nothing()
+                .to_owned(),
+            )
+            .exec_without_returning(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        }
         let library_titles = Query::select()
             .column(books::Column::Uuid)
             .from(books::Entity)
@@ -135,10 +148,83 @@ impl LibraryStore {
                     .add(title_files::Column::BookUuid.eq(book_uuid))
                     .add(title_files::Column::BookUuid.not_in_subquery(library_titles)),
             )
+            // Unrecorded before: only the row the insert above created.
+            .filter(match expected {
+                Some(prior) => Condition::all()
+                    .add(title_files::Column::BookUuid.eq(prior.book_uuid.as_str()))
+                    .add(title_files::Column::Writer.eq(prior.writer.as_str())),
+                None => Condition::all()
+                    .add(title_files::Column::BookUuid.eq(book_uuid))
+                    .add(title_files::Column::Writer.eq(writer)),
+            })
             .exec(self.db())
             .await
             .map_err(LibraryError::Orm)?;
         Ok(claimed.rows_affected == 1)
+    }
+
+    /// Gives back a claim `writer` made on `key` on `destination`: the
+    /// record returns to `prior` (who held it before the claim), or is
+    /// removed when `prior` is `None` (the claim created it). Changes
+    /// nothing once someone else has written the key since (its writer is
+    /// no longer `writer`), so a release never takes a key from a later
+    /// claim or acquire.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the write fails.
+    pub async fn release_title_file(
+        &self,
+        destination: &str,
+        key: &str,
+        writer: &str,
+        prior: Option<&TitleFile>,
+    ) -> Result<()> {
+        let ours = Condition::all()
+            .add(title_files::Column::Destination.eq(destination))
+            .add(title_files::Column::StorageKey.eq(key))
+            .add(title_files::Column::Writer.eq(writer));
+        match prior {
+            None => {
+                title_files::Entity::delete_many()
+                    .filter(ours)
+                    .exec(self.db())
+                    .await
+                    .map_err(LibraryError::Orm)?;
+            }
+            Some(prior) => {
+                title_files::Entity::update_many()
+                    .col_expr(
+                        title_files::Column::BookUuid,
+                        sea_orm::sea_query::Expr::value(prior.book_uuid.as_str()),
+                    )
+                    .col_expr(
+                        title_files::Column::Writer,
+                        sea_orm::sea_query::Expr::value(prior.writer.as_str()),
+                    )
+                    .filter(ours)
+                    .exec(self.db())
+                    .await
+                    .map_err(LibraryError::Orm)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// How many keys `writer` (a host upload id) holds for the title
+    /// `book_uuid`, on every destination together.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    pub async fn count_title_files_of(&self, book_uuid: &str, writer: &str) -> Result<u64> {
+        use sea_orm::PaginatorTrait as _;
+        title_files::Entity::find()
+            .filter(title_files::Column::BookUuid.eq(book_uuid))
+            .filter(title_files::Column::Writer.eq(writer))
+            .count(self.db())
+            .await
+            .map_err(LibraryError::Orm)
     }
 
     /// Who holds `key` on `destination`; `None` when it is unrecorded.

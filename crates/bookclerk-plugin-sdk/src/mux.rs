@@ -2152,7 +2152,9 @@ mod tests {
             };
             let _ = done_tx.send(message);
         });
-        match done_rx.recv_timeout(std::time::Duration::from_secs(2)) {
+        // A deadlock never finishes, so the bound only has to outlast 64
+        // round trips on a loaded runner; 2 s was hit by a merge-group run.
+        match done_rx.recv_timeout(std::time::Duration::from_secs(30)) {
             Ok(Ok(_)) => {}
             Ok(Err(message)) => panic!("generation lock test failed: {message}"),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {

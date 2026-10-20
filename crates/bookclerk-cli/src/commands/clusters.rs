@@ -54,8 +54,9 @@ pub enum ClustersCommand {
     },
     /// Approve an owner plugin's request to run here, optionally narrowed.
     /// Name the request you reviewed by the digest `clusters consents`
-    /// shows (it covers the version, the grant and the archive URL and
-    /// digest); it is refused when the cluster has changed the request since.
+    /// shows (it covers the version, the grant, the archive URL, the
+    /// archive digest and the payload digest); it is refused when the
+    /// cluster has changed the request since.
     /// Only what the request asks for can be approved; a later version that
     /// asks for more needs approval again.
     Approve {
@@ -131,6 +132,26 @@ fn state(row: &RemotePluginConsent) -> &'static str {
     remote_row_consent_state(row).as_str()
 }
 
+/// `text` from an owner, safe to print to a terminal: control characters
+/// (C0 and C1, which can start escape sequences) and bidirectional
+/// formatting characters (which can reorder what the operator reads) are
+/// written as `\u{..}` escapes.
+fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            let bidi = matches!(
+                c,
+                '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+            );
+            if c.is_control() || bidi {
+                c.escape_unicode().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+
 /// The cluster a command acts on: the named one, or the only one this
 /// install is still enrolled in.
 ///
@@ -182,7 +203,10 @@ pub async fn run(
                 for link in &links {
                     println!(
                         "{} {} node={} {}",
-                        link.owner_cluster_id, link.owner_origin, link.remote_node_id, link.state
+                        printable(&link.owner_cluster_id),
+                        printable(&link.owner_origin),
+                        printable(&link.remote_node_id),
+                        link.state
                     );
                 }
             })
@@ -226,15 +250,18 @@ pub async fn run(
                     for row in &rows {
                         println!(
                             "{} {} {} {} request={} artifact={} sha256={} payload={}",
-                            row.owner_cluster_id,
-                            row.plugin_key,
-                            row.requested_version,
+                            printable(&row.owner_cluster_id),
+                            printable(&row.plugin_key),
+                            printable(&row.requested_version),
                             state(row),
                             row.request_digest(),
-                            row.requested_artifact_url,
-                            row.requested_artifact_sha256,
-                            row.requested_artifact_payload_sha256
+                            printable(&row.requested_artifact_url),
+                            printable(&row.requested_artifact_sha256),
+                            printable(&row.requested_artifact_payload_sha256)
                         );
+                        // The capabilities the digest covers, so an approval
+                        // by digest names something the operator saw.
+                        println!("  grant: {}", printable(&row.requested_grant_json));
                     }
                 },
             )
@@ -264,9 +291,9 @@ pub async fn run(
             emit(format, &json!({ "consent": consent_json(&row) }), || {
                 println!(
                     "approved {} {} for cluster {} ({})",
-                    row.plugin_key,
-                    row.requested_version,
-                    row.owner_cluster_id,
+                    printable(&row.plugin_key),
+                    printable(&row.requested_version),
+                    printable(&row.owner_cluster_id),
                     state(&row)
                 );
             })
@@ -274,14 +301,32 @@ pub async fn run(
         ClustersCommand::Revoke { plugin, cluster } => {
             let cluster = cluster_id(store, cluster).await?;
             let Some(row) = revoke_remote_plugin(store, &cluster, plugin.trim()).await? else {
-                anyhow::bail!("cluster {cluster} has not asked to run {plugin} here");
+                anyhow::bail!(
+                    "cluster {} has not asked to run {} here",
+                    printable(&cluster),
+                    printable(&plugin)
+                );
             };
             emit(format, &json!({ "consent": consent_json(&row) }), || {
                 println!(
                     "revoked {} for cluster {}",
-                    row.plugin_key, row.owner_cluster_id
+                    printable(&row.plugin_key),
+                    printable(&row.owner_cluster_id)
                 );
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::printable;
+
+    #[test]
+    fn owner_text_cannot_steer_the_terminal() {
+        assert_eq!(printable("plain {\"a\":1}"), "plain {\"a\":1}");
+        assert_eq!(printable("a\u{1b}[2Jb"), "a\\u{1b}[2Jb");
+        assert_eq!(printable("a\u{9b}2Jb"), "a\\u{9b}2Jb");
+        assert_eq!(printable("x\u{202e}y\u{2066}z"), "x\\u{202e}y\\u{2066}z");
     }
 }

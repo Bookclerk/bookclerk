@@ -990,9 +990,10 @@ pub type LocalCopy = (Arc<dyn StorageBackend>, String);
 
 /// Copies one title's files (the primary destination's keys) to every one
 /// of this host's own destinations. Any failed copy fails the title. Each
-/// copy is put in `copied` as soon as it is written, so the caller removes
-/// exactly what this run wrote ([`remove_local_copies`]) whether this
-/// fails or is dropped mid-copy.
+/// copy this run created (its key was not there before) is put in `copied`
+/// as soon as it is written, so the caller removes exactly what this run
+/// created ([`remove_local_copies`]) whether this fails or is dropped
+/// mid-copy; a key that was already there is never deleted by it.
 ///
 /// # Errors
 ///
@@ -1019,14 +1020,22 @@ pub async fn copy_to_local_destinations<G: HostGuests>(
                 content_type: content_type(key),
                 ..ObjectMeta::default()
             };
+            // Only a key this run creates is this run's to roll back: one
+            // already there (an earlier acquire of the title, or another
+            // writer's file) is overwritten as before but never deleted by
+            // this run's cleanup. An unreadable probe counts as present,
+            // so a failure leaves the file rather than risk another's.
+            let existed = destination.exists(key).await.unwrap_or(true);
             if let Err(err) = destination.put_file(key, &primary.join(key), meta).await {
                 tracing::warn!(book_uuid, %key, error = %err, "could not copy a title to this host's own destination");
                 anyhow::bail!("this host's own destination did not take {key:?}: {err}");
             }
-            copied
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push((Arc::clone(destination), key.clone()));
+            if !existed {
+                copied
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((Arc::clone(destination), key.clone()));
+            }
         }
     }
     Ok(())
