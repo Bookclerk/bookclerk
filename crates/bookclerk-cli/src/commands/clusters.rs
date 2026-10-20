@@ -156,7 +156,10 @@ pub async fn run(
                 for link in &links {
                     println!(
                         "{} {} node={} {}",
-                        link.owner_cluster_id, link.owner_origin, link.remote_node_id, link.state
+                        printable(&link.owner_cluster_id),
+                        printable(&link.owner_origin),
+                        printable(&link.remote_node_id),
+                        link.state
                     );
                 }
             })
@@ -221,7 +224,11 @@ pub async fn run(
         ClustersCommand::Revoke { plugin, cluster } => {
             let cluster = cluster_id(store, cluster).await?;
             let Some(row) = revoke_remote_plugin(store, &cluster, plugin.trim()).await? else {
-                anyhow::bail!("cluster {cluster} has not asked to run {plugin} here");
+                anyhow::bail!(
+                    "cluster {} has not asked to run {} here",
+                    printable(&cluster),
+                    printable(&plugin)
+                );
             };
             emit(format, &json!({ "consent": consent_json(&row) }), || {
                 println!(
