@@ -46,13 +46,15 @@ use super::batch::{self, exec, request, text};
 use super::job_routing::{job_plugin_keys, JobClaimLimits};
 use super::remote_work::{fenced_job, held_job_permits, remote_job_fence};
 use super::semaphore::release_permits;
-use super::trust::{accounts_owned_by, node_may_claim_job, node_trust, Claimant, NodeTrust};
+use super::trust::{
+    accounts_named, accounts_owned_by, node_may_claim_job, node_trust, Claimant, NodeTrust,
+};
 use crate::entities::{books, node_upload_sessions};
 use crate::error::{LibraryError, Result};
 use crate::models::{is_downloadable, AcquireStatus, BookRecord, JobRecord};
 use crate::models::{JobKind, JobState};
 use crate::store::event_outbox::{book_acquired_spec, prepare_publish_domain_event};
-use crate::store::LibraryStore;
+use crate::store::{LibraryStore, TitleFile};
 
 /// How long a granted upload's token is accepted past its latest
 /// extension (the grant, an accepted file, or a renewal of the job's
@@ -271,10 +273,30 @@ pub fn names_book(title: &str, book: &BookRecord) -> bool {
             .is_some_and(|asin| title.eq_ignore_ascii_case(asin))
 }
 
+/// The store accounts (`(plugin_key, account_id)`) the job's account
+/// selector names, resolved as the claim path and the executor resolve it
+/// ([`accounts_named`]: the account id or its label, ignoring ASCII case);
+/// `None` when the job names no account.
+///
+/// # Errors
+///
+/// Returns an error when the read fails.
+async fn job_accounts(
+    store: &LibraryStore,
+    job: &JobRecord,
+) -> Result<Option<BTreeSet<(String, String)>>> {
+    match job.payload.account.as_deref().filter(|a| !a.is_empty()) {
+        Some(account) => Ok(Some(accounts_named(store, account, None).await?)),
+        None => Ok(None),
+    }
+}
+
 /// The owner's library rows the acquire `job` run by `node_id` covers: of
-/// the job's plugins ([`job_plugin_keys`]), its account and its title when
-/// it names them, and, for a Host trusted only with its owner's accounts,
-/// one of that user's. `None` when the node is trusted with nothing.
+/// the job's plugins ([`job_plugin_keys`]), of the accounts its account
+/// selector names (`job_accounts`, so a job naming its account by label
+/// or in another case covers that account's titles) and its title when it
+/// names them, and, for a Host trusted only with its owner's accounts, one
+/// of that user's. `None` when the node is trusted with nothing.
 ///
 /// # Errors
 ///
@@ -290,11 +312,26 @@ pub async fn job_titles(
         NodeTrust::Nothing => return Ok(None),
     };
     let keys = job_plugin_keys(store, job).await?.unwrap_or_default();
-    let account = job.payload.account.as_deref().filter(|a| !a.is_empty());
+    let accounts = job_accounts(store, job).await?;
     let title = job.payload.title.as_deref().filter(|t| !t.is_empty());
-    let mut books = store.list_books(account).await?;
+    // Read one account's rows when the selector names a single account
+    // id; otherwise read them all and keep the named accounts' below.
+    let account_ids: BTreeSet<&str> = accounts
+        .iter()
+        .flatten()
+        .map(|(_, account_id)| account_id.as_str())
+        .collect();
+    let only = match (&accounts, account_ids.len()) {
+        (Some(_), 0) => return Ok(Some(Vec::new())),
+        (Some(_), 1) => account_ids.first().copied(),
+        _ => None,
+    };
+    let mut books = store.list_books(only).await?;
     books.retain(|book| {
         keys.contains(&book.plugin_key)
+            && accounts.as_ref().is_none_or(|accounts| {
+                accounts.contains(&(book.plugin_key.clone(), book.account_id.clone()))
+            })
             && title.is_none_or(|title| names_book(title, book))
             && owned.as_ref().is_none_or(|owned| {
                 owned.contains(&(book.plugin_key.clone(), book.account_id.clone()))
@@ -457,31 +494,118 @@ async fn claims_another_books_key(
         .any(|key| exact.contains(*key) || sidecar_stems(key).any(|stem| stems.contains(stem))))
 }
 
+/// One key a grant claimed for its upload, and who held it before.
+struct ClaimedKey<'a> {
+    /// The destination the key is on.
+    destination: &'a str,
+    /// The storage key.
+    key: &'a str,
+    /// Its record before the claim; `None` when it was unrecorded.
+    prior: Option<TitleFile>,
+}
+
 /// Claims every copy of `files` for the title `book_uuid` with `upload_id`
 /// as its writer ([`LibraryStore::claim_title_file`]); answers false as
 /// soon as one is a key another library title holds on that destination
 /// (one its acquire wrote, or another title's upload claimed), so a folder
 /// several titles share never lets one overwrite another's chapter, part or
-/// sidecar files. Keys claimed before a refusal stay the title's own.
+/// sidecar files.
+///
+/// Every key claimed (or possibly claimed, when a write fails) is pushed
+/// onto `claimed` with its prior record, so a grant that is then refused or
+/// fails gives them back ([`release_upload_keys`]).
 ///
 /// # Errors
 ///
-/// Returns an error when a write fails.
-async fn claim_upload_keys(
+/// Returns an error when a read or write fails.
+async fn claim_upload_keys<'a>(
     store: &LibraryStore,
     book_uuid: &str,
     upload_id: &str,
-    files: &[UploadFile],
+    files: &'a [UploadFile],
+    claimed: &mut Vec<ClaimedKey<'a>>,
 ) -> Result<bool> {
     for copy in files.iter().flat_map(|file| &file.copies) {
+        let prior = store.title_file(&copy.destination, &copy.key).await?;
+        claimed.push(ClaimedKey {
+            destination: &copy.destination,
+            key: &copy.key,
+            prior,
+        });
         if !store
             .claim_title_file(&copy.destination, &copy.key, book_uuid, upload_id)
             .await?
         {
+            // A refused claim changed nothing.
+            claimed.pop();
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+/// Gives back every key in `claimed` that `upload_id` still holds, newest
+/// first, to whoever held it before ([`LibraryStore::release_title_file`]).
+///
+/// # Errors
+///
+/// Returns an error when a write fails.
+async fn release_upload_keys(
+    store: &LibraryStore,
+    upload_id: &str,
+    claimed: &[ClaimedKey<'_>],
+) -> Result<()> {
+    for claim in claimed.iter().rev() {
+        store
+            .release_title_file(
+                claim.destination,
+                claim.key,
+                upload_id,
+                claim.prior.as_ref(),
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+/// Undoes a grant refused or failed after its session row was inserted:
+/// gives back the keys it claimed and aborts the row. Best effort, logged:
+/// a key not given back stays recorded for this (now aborted) upload of
+/// its own title, which every later claim of that title takes over.
+async fn undo_grant(store: &LibraryStore, upload_id: &str, claimed: &[ClaimedKey<'_>]) {
+    if let Err(err) = release_upload_keys(store, upload_id, claimed).await {
+        tracing::warn!(upload_id, error = %err, "could not give back a refused upload's keys");
+    }
+    if let Err(err) = abort_upload(store, upload_id).await {
+        tracing::warn!(upload_id, error = %err, "could not abort a refused upload");
+    }
+}
+
+/// How many keys an upload of `session`'s title was granted: every copy of
+/// every declared file (unique per destination, [`manifest_problem`]).
+fn granted_key_count(session: &UploadSession) -> u64 {
+    session
+        .files
+        .iter()
+        .map(|file| file.copies.len() as u64)
+        .sum()
+}
+
+/// True while `session` still holds every key it was granted: each is
+/// still recorded for its title with this upload as the latest writer.
+/// A closing upload holds none and always answers true.
+///
+/// # Errors
+///
+/// Returns an error when the read fails.
+async fn upload_holds_its_keys(store: &LibraryStore, session: &UploadSession) -> Result<bool> {
+    if session.book_uuid.is_empty() {
+        return Ok(true);
+    }
+    Ok(store
+        .count_title_files_of(&session.book_uuid, &session.upload_id)
+        .await?
+        == granted_key_count(session))
 }
 
 /// True while `key` on `destination` is still `session`'s own: its
@@ -541,7 +665,10 @@ fn sidecar_stems(key: &str) -> impl Iterator<Item = &str> {
 /// title's recorded audio, PDF or audio sidecar (`claims_another_books_key`)
 /// nor any key recorded for another title on that destination
 /// (`claim_upload_keys`, which then claims every key for this upload). An
-/// earlier open upload of the same title by the same job is aborted.
+/// earlier open upload of the same title by the same job is aborted. A
+/// grant refused or failed once claiming began claims nothing in the end:
+/// the session row is inserted first and aborted again, and every key
+/// claimed goes back to its prior holder (`undo_grant`).
 ///
 /// # Errors
 ///
@@ -573,12 +700,11 @@ pub async fn grant_upload(
             return Ok(UploadGrant::Refused("unknown_book"));
         };
         let keys = job_plugin_keys(store, &job).await?.unwrap_or_default();
-        let account_ok = job
-            .payload
-            .account
-            .as_deref()
-            .filter(|a| !a.is_empty())
-            .is_none_or(|account| account == book.account_id);
+        // The selector is resolved as `job_titles` resolves it, so every
+        // title the plan offered can be granted.
+        let account_ok = job_accounts(store, &job).await?.is_none_or(|accounts| {
+            accounts.contains(&(book.plugin_key.clone(), book.account_id.clone()))
+        });
         let title_ok = job
             .payload
             .title
@@ -601,9 +727,6 @@ pub async fn grant_upload(
         if claims_another_books_key(store, &book.uuid, req.files).await? {
             return Ok(UploadGrant::Refused("key_of_another_book"));
         }
-        if !claim_upload_keys(store, &book.uuid, &upload_id, req.files).await? {
-            return Ok(UploadGrant::Refused("key_of_another_book"));
-        }
     }
     let manifest = serde_json::to_string(&Manifest {
         destinations: if req.book_uuid.is_empty() {
@@ -615,10 +738,14 @@ pub async fn grant_upload(
         pdf_key: req.pdf_key.map(str::to_string),
     })
     .map_err(|err| LibraryError::Other(anyhow::anyhow!("upload manifest encode: {err}")))?;
-    let superseded = abort_matching(store, job_id, |row| row.book_uuid == req.book_uuid).await?;
     let token = mint_token();
     let now = Utc::now();
     let expires_at = now + Duration::seconds(UPLOAD_TOKEN_TTL_SECS);
+    // The row goes in before any key is claimed, so a claim always names
+    // an upload that exists, even when this grant stops half way (no one
+    // holds the token before it returns, so the open row is unusable until
+    // then). A refused or failed claim gives back what this grant claimed
+    // and aborts the row (`undo_grant`).
     let row = node_upload_sessions::ActiveModel {
         upload_id: Set(upload_id.clone()),
         token_hash: Set(crate::hash_token(&token)),
@@ -639,6 +766,26 @@ pub async fn grant_upload(
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
+    if !req.book_uuid.is_empty() {
+        let mut claimed = Vec::new();
+        match claim_upload_keys(store, req.book_uuid, &upload_id, req.files, &mut claimed).await {
+            Ok(true) => {}
+            Ok(false) => {
+                undo_grant(store, &upload_id, &claimed).await;
+                return Ok(UploadGrant::Refused("key_of_another_book"));
+            }
+            Err(err) => {
+                undo_grant(store, &upload_id, &claimed).await;
+                return Err(err);
+            }
+        }
+    }
+    // Superseded only once this grant holds the title's keys, so their
+    // cleanup leaves the files this upload is about to write.
+    let superseded = abort_matching(store, job_id, |row| {
+        row.book_uuid == req.book_uuid && row.upload_id != upload_id
+    })
+    .await?;
     tracing::info!(
         node_id,
         job_id,
@@ -996,9 +1143,12 @@ pub(super) fn commit_trust_gate(
 /// `job_cancelled`) and nothing is written.
 ///
 /// One canonical batch, every statement gated on the upload still being
-/// open, the job still running under this upload's fence, the node's
-/// credential still being live, and the node still trusted with the title
-/// (`commit_trust_gate`); trust is also re-checked just before. A repeat
+/// open, the job still running under this upload's unexpired fence, the node's
+/// credential still being live, the node still trusted with the title
+/// (`commit_trust_gate`), and the upload still holding every key it was
+/// granted (`upload_holds_its_keys`); trust and the keys are also
+/// re-checked just before. A key another title or an acquire took since
+/// the grant refuses the commit (`key_taken`) and records nothing. A repeat
 /// of a commit that already landed answers [`UploadCommit::Committed`]
 /// again without writing.
 ///
@@ -1022,6 +1172,11 @@ pub async fn commit_upload(
     }
     if !session.complete() {
         return Ok(UploadCommit::Refused("files_missing"));
+    }
+    // A key another title (or an acquire) took since the grant is not
+    // recorded for this one; the batch re-checks this in its gate.
+    if !upload_holds_its_keys(store, &session).await? {
+        return Ok(UploadCommit::Refused("key_taken"));
     }
     let fence = remote_job_fence(&session.node_id, &session.job_id, session.generation);
     let Some(job) = fenced_job(store, &fence).await? else {
@@ -1065,24 +1220,45 @@ pub async fn commit_upload(
                      WHERE upload_id = ? AND state = 'committed' AND committed_at = ?)";
     let gate = || vec![text(upload_id), text(&now)];
     let (trust_sql, trust_binds) = commit_trust_gate(&session.node_id, model.as_ref());
+    // The lease must not have run out (compared as the reclaim and the
+    // job-secret handoff compare it), not only still name this fence.
+    let lease_now = Utc::now().to_rfc3339();
     let mut binds = vec![
         text(&now),
         text(upload_id),
         text(&fence.job_id),
         text(&fence.owner),
         batch::int(fence.generation),
+        text(&lease_now),
         text(&session.node_id),
     ];
     binds.extend(trust_binds);
+    // A title's upload still holds every key it was granted: each is
+    // recorded for the title with this upload as its latest writer (the
+    // keys are unique, so the count says all of them). Gated in the same
+    // statement, so a key taken between the check above and the batch is
+    // never recorded as this title's. The closing upload holds none.
+    let keys_sql = if session.book_uuid.is_empty() {
+        "1 = 1"
+    } else {
+        binds.extend([
+            text(&session.book_uuid),
+            text(upload_id),
+            batch::int(i64::try_from(granted_key_count(&session)).unwrap_or(i64::MAX)),
+        ]);
+        "(SELECT COUNT(*) FROM title_files WHERE book_uuid = ? AND writer = ?) = ?"
+    };
     let mut statements = vec![exec(
         &format!(
             "UPDATE node_upload_sessions SET state = 'committed', committed_at = ? \
               WHERE upload_id = ? AND state = 'open' \
                 AND EXISTS (SELECT 1 FROM jobs WHERE id = ? AND state = 'running' \
-                             AND lease_owner = ? AND lease_generation = ?) \
+                             AND lease_owner = ? AND lease_generation = ? \
+                             AND lease_expires_at > ?) \
                 AND EXISTS (SELECT 1 FROM node_credentials \
                              WHERE node_id = ? AND revoked_at IS NULL) \
-                AND {trust_sql}"
+                AND {trust_sql} \
+                AND {keys_sql}"
         ),
         binds,
     )];
@@ -1182,6 +1358,9 @@ pub async fn commit_upload(
         return match again {
             Some(row) if row.state == STATE_COMMITTED => {
                 already_committed(store, &row.node_id, &row.job_id, limits).await
+            }
+            Some(row) if !upload_holds_its_keys(store, &row).await? => {
+                Ok(UploadCommit::Refused("key_taken"))
             }
             _ => Ok(UploadCommit::Lost),
         };

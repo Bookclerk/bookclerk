@@ -3194,3 +3194,225 @@ async fn the_commit_gate_carries_the_nodes_trust() {
         .unwrap();
     assert!(!passes(None).await, "a disabled owner");
 }
+
+/// Grants an upload of `book_uuid` with `files` under `fence`, in the
+/// `Author/Title` scope on `local`.
+async fn grant_title(
+    store: &LibraryStore,
+    job_id: &str,
+    fence: i64,
+    book_uuid: &str,
+    files: &[bookclerk_node_proto::UploadFile],
+) -> UploadGrant {
+    grant_upload(
+        store,
+        HOST,
+        job_id,
+        fence,
+        "owner",
+        &UploadGrantRequest {
+            book_uuid,
+            primary_key: "Author/Title/Title.m4b",
+            pdf_key: None,
+            files,
+            destinations: &local("Author/Title"),
+        },
+    )
+    .await
+    .unwrap()
+}
+
+/// A grant refused once claiming began leaves every key as it was: a key
+/// it claimed fresh is unrecorded again, a key an open upload of the
+/// title held is that upload's again (it is neither superseded nor robbed
+/// of its keys), and no upload of the refused grant stays open.
+#[tokio::test]
+async fn a_refused_upload_grant_gives_back_the_keys_it_claimed() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    let neighbour = w
+        .store
+        .scope(PLUGIN, "test")
+        .upsert_book(&crate::store::NewBook {
+            uuid: None,
+            ..scanned("riley-acct", "t8")
+        })
+        .await
+        .unwrap();
+    w.store
+        .record_title_file("local", "Author/Title/Neighbour - 01.mp3", &neighbour.uuid)
+        .await
+        .unwrap();
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let UploadGrant::Granted {
+        upload_id: first, ..
+    } = grant_title(&w.store, &job_id, fence, &book_uuid, &files).await
+    else {
+        panic!("the title's first upload is granted");
+    };
+    // Title.m4b (the open upload's), then a fresh key, then the
+    // neighbour's key, which refuses the grant after two claims.
+    let refused = with_local_file(
+        &with_local_file(&files, "Author/Title/fresh.jpg"),
+        "Author/Title/Neighbour - 01.mp3",
+    );
+    assert!(matches!(
+        grant_title(&w.store, &job_id, fence, &book_uuid, &refused).await,
+        UploadGrant::Refused("key_of_another_book")
+    ));
+    let primary = w
+        .store
+        .title_file("local", "Author/Title/Title.m4b")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(primary.writer, first, "the open upload holds its key again");
+    assert_eq!(primary.book_uuid, book_uuid);
+    assert!(
+        w.store
+            .title_file("local", "Author/Title/fresh.jpg")
+            .await
+            .unwrap()
+            .is_none(),
+        "a key the refused grant claimed fresh is unrecorded again"
+    );
+    assert_eq!(
+        w.store
+            .title_file("local", "Author/Title/Neighbour - 01.mp3")
+            .await
+            .unwrap()
+            .unwrap()
+            .book_uuid,
+        neighbour.uuid
+    );
+    let open: Vec<String> = node_upload_sessions::Entity::find()
+        .filter(node_upload_sessions::Column::JobId.eq(&job_id))
+        .filter(node_upload_sessions::Column::State.eq("open"))
+        .all(w.store.db())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.upload_id)
+        .collect();
+    assert_eq!(open, vec![first], "only the first upload is open");
+}
+
+/// A title's commit records its keys only while the upload still holds
+/// every one: once another writer took a key since the grant, the commit
+/// is refused `key_taken` and the title is not marked acquired.
+#[tokio::test]
+async fn an_upload_commit_is_refused_once_a_key_was_taken() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    let files = with_local_file(&files, "Author/Title/cover.jpg");
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let UploadGrant::Granted { upload_id, .. } =
+        grant_title(&w.store, &job_id, fence, &book_uuid, &files).await
+    else {
+        panic!("granted");
+    };
+    for index in 0..files.len() {
+        assert!(record_upload_file(&w.store, &upload_id, index)
+            .await
+            .unwrap());
+    }
+    // An acquire on the owner wrote the cover since.
+    w.store
+        .record_title_file("local", "Author/Title/cover.jpg", &book_uuid)
+        .await
+        .unwrap();
+    assert_eq!(
+        commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
+            .await
+            .unwrap(),
+        UploadCommit::Refused("key_taken")
+    );
+    let book = w.store.get_book_by_uuid(&book_uuid).await.unwrap().unwrap();
+    assert_ne!(book.acquire_status, crate::models::AcquireStatus::Acquired);
+    assert_eq!(
+        load_upload(&w.store, &upload_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "open",
+        "nothing was committed"
+    );
+}
+
+/// A job naming its account by label, or by its id in another case,
+/// covers that account's titles: `job_titles` (the plan and the closing
+/// commit's scope) resolves the selector as the claim path does.
+#[tokio::test]
+async fn an_upload_job_naming_its_account_by_label_covers_its_titles() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    label_riley(&w.store).await;
+    let (book_uuid, _) = riley_title(&w.store).await;
+    for selector in ["riley books", "RILEY-ACCT", "riley-acct"] {
+        let job_id = enqueue(&w.store, JobKind::Acquire, selector).await;
+        let job = w.store.get_job(&job_id).await.unwrap().unwrap();
+        let titles = job_titles(&w.store, HOST, &job).await.unwrap().unwrap();
+        assert_eq!(
+            titles.iter().map(|b| b.uuid.as_str()).collect::<Vec<_>>(),
+            vec![book_uuid.as_str()],
+            "{selector}"
+        );
+        jobs::Entity::delete_by_id(job_id)
+            .exec(w.store.db())
+            .await
+            .unwrap();
+    }
+}
+
+/// Labels Riley's account `Riley Books`.
+async fn label_riley(store: &LibraryStore) {
+    accounts::Entity::update_many()
+        .col_expr(accounts::Column::Label, Expr::value(Some("Riley Books")))
+        .filter(accounts::Column::AccountId.eq("riley-acct"))
+        .exec(store.db())
+        .await
+        .unwrap();
+}
+
+/// A lease that ran out no longer owns its job, even before the reclaim
+/// runs: no upload is granted under it and an open upload cannot commit.
+#[tokio::test]
+async fn an_expired_lease_neither_grants_nor_commits_an_upload() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let UploadGrant::Granted { upload_id, .. } =
+        grant_title(&w.store, &job_id, fence, &book_uuid, &files).await
+    else {
+        panic!("granted");
+    };
+    assert!(record_upload_file(&w.store, &upload_id, 0).await.unwrap());
+    let past = (chrono::Utc::now() - chrono::Duration::seconds(5)).to_rfc3339();
+    jobs::Entity::update_many()
+        .col_expr(jobs::Column::LeaseExpiresAt, Expr::value(Some(past)))
+        .filter(jobs::Column::Id.eq(&job_id))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    assert!(matches!(
+        grant_title(&w.store, &job_id, fence, &book_uuid, &files).await,
+        UploadGrant::Lost
+    ));
+    let session = load_upload(&w.store, &upload_id).await.unwrap().unwrap();
+    assert!(!upload_fence_live(&w.store, &session).await.unwrap());
+    assert_eq!(
+        commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
+            .await
+            .unwrap(),
+        UploadCommit::Lost
+    );
+    let book = w.store.get_book_by_uuid(&book_uuid).await.unwrap().unwrap();
+    assert_ne!(book.acquire_status, crate::models::AcquireStatus::Acquired);
+}

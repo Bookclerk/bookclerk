@@ -558,15 +558,23 @@ async fn was_handed(
     handed_on(store.db(), fence, secret_ref).await
 }
 
-/// The job `fence` owns right now, if it still owns one.
+/// The job `fence` owns right now, if it still owns one: the job is
+/// running under that owner and generation and its lease has not run out.
+/// An expired lease no longer owns the job even before the reclaim runs
+/// (it may be claimed again at any moment), so a node past its lease can
+/// neither renew it nor write scan rows, open or commit uploads, or finish
+/// the job, as the job-secret handoff gate (`record_handoff`) already
+/// requires.
 pub(super) async fn fenced_job(
     store: &LibraryStore,
     fence: &JobFence,
 ) -> Result<Option<JobRecord>> {
+    let now = Utc::now();
     Ok(store.get_job(&fence.job_id).await?.filter(|job| {
         job.state == JobState::Running
             && job.lease_owner.as_deref() == Some(fence.owner.as_str())
             && job.lease_generation == fence.generation
+            && job.lease_expires_at.is_some_and(|expires| expires > now)
     }))
 }
 

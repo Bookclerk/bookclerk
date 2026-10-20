@@ -2493,6 +2493,165 @@ mod results_and_uploads {
         String::from_utf8_lossy(&answer).into_owned()
     }
 
+    /// Grants an upload of one local file `key` of `bytes` for `book_uuid`
+    /// in `job_id` under `fence`, in the scope of the key's folder; answers
+    /// its id and token.
+    async fn grant_one(
+        world: &Linked,
+        job_id: &str,
+        fence: i64,
+        book_uuid: &str,
+        key: &str,
+        bytes: &[u8],
+    ) -> (String, String) {
+        let folder = key.rsplit_once('/').map_or("", |(folder, _)| folder);
+        let UploadGrant::Granted {
+            upload_id, token, ..
+        } = grant_upload(
+            &world.owner,
+            &world.link.remote_node_id,
+            job_id,
+            fence,
+            &owner_node_id(world),
+            &UploadGrantRequest {
+                book_uuid,
+                primary_key: key,
+                pdf_key: None,
+                files: &[local_file(key, bytes)],
+                destinations: &local_scope(folder),
+            },
+        )
+        .await
+        .unwrap()
+        else {
+            panic!("granted");
+        };
+        (upload_id, token.to_string())
+    }
+
+    /// Opens a PUT of file 0 of `upload_id` declaring `len` bytes and sends
+    /// `first` of them; the rest follows on the returned stream.
+    async fn put_start(
+        addr: SocketAddr,
+        upload_id: &str,
+        token: &str,
+        len: usize,
+        first: &[u8],
+    ) -> tokio::net::TcpStream {
+        let mut tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let head = format!(
+            "PUT /api/node/v1/uploads/{upload_id}/files/0 HTTP/1.1\r\n\
+             Host: localhost:{}\r\nAuthorization: Bookclerk-Upload {token}\r\n\
+             Content-Length: {len}\r\nConnection: close\r\n\r\n",
+            addr.port(),
+        );
+        tcp.write_all(head.as_bytes()).await.unwrap();
+        tcp.write_all(first).await.unwrap();
+        tcp.flush().await.unwrap();
+        tcp
+    }
+
+    /// Sends `rest` of a started PUT and answers the raw response.
+    async fn put_finish(mut tcp: tokio::net::TcpStream, rest: &[u8]) -> String {
+        tcp.write_all(rest).await.unwrap();
+        let mut answer = Vec::new();
+        tokio::time::timeout(Duration::from_secs(20), tcp.read_to_end(&mut answer))
+            .await
+            .unwrap()
+            .unwrap();
+        String::from_utf8_lossy(&answer).into_owned()
+    }
+
+    /// A key taken by another title while an upload's file streams (its
+    /// acquire recorded the key, then wrote it) stops the upload short of
+    /// the end of its stream: it is refused `key_taken` and the other
+    /// title's file is left as that acquire wrote it.
+    #[tokio::test]
+    async fn an_upload_stops_short_of_a_key_taken_while_it_streamed() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let local_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), local_out.path());
+        let title = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t2"))
+            .await
+            .unwrap();
+        let other = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t3"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 30).await;
+        const KEY: &str = "Author/Title t2/Title t2.m4b";
+        let (upload_id, token) = grant_one(&world, &job_id, fence, &title.uuid, KEY, b"abc").await;
+        let tcp = put_start(world.addr, &upload_id, &token, 3, b"ab").await;
+        eventually("the destination to start writing", || async {
+            !files_under(local_out.path()).is_empty()
+        })
+        .await;
+        world
+            .owner
+            .record_title_file("local", KEY, &other.uuid)
+            .await
+            .unwrap();
+        std::fs::write(local_out.path().join(KEY), b"xyz").unwrap();
+        let answer = put_finish(tcp, b"c").await;
+        assert!(answer.starts_with("HTTP/1.1 422"), "{answer}");
+        assert!(answer.contains("key_taken"), "{answer}");
+        assert_eq!(std::fs::read(local_out.path().join(KEY)).unwrap(), b"xyz");
+        eventually("the aborted write's temp file to go", || async {
+            files_under(local_out.path()).len() == 1
+        })
+        .await;
+    }
+
+    /// A retried PUT of a file whose first attempt is still streaming
+    /// waits for that attempt, then is answered from what it recorded: the
+    /// two never write (or clean up) the same key at once.
+    #[tokio::test]
+    async fn a_retried_upload_put_waits_for_the_first_attempt() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let local_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), local_out.path());
+        let title = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t2"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 30).await;
+        const KEY: &str = "Author/Title t2/Title t2.m4b";
+        let (upload_id, token) = grant_one(&world, &job_id, fence, &title.uuid, KEY, b"abc").await;
+        let first = put_start(world.addr, &upload_id, &token, 3, b"ab").await;
+        eventually("the first attempt to start writing", || async {
+            !files_under(local_out.path()).is_empty()
+        })
+        .await;
+        let retry = tokio::spawn({
+            let upload_id = upload_id.clone();
+            let token = token.clone();
+            let addr = world.addr;
+            async move { put_raw(addr, &upload_id, &token, 0, b"abc").await }
+        });
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            !retry.is_finished(),
+            "the retry waits while the first attempt streams"
+        );
+        let answer = put_finish(first, b"c").await;
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        let answer = retry.await.unwrap();
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        assert!(answer.contains("\"received\""), "{answer}");
+        assert_eq!(std::fs::read(local_out.path().join(KEY)).unwrap(), b"abc");
+    }
+
     /// One declared file of `bytes` on the owner's local destination.
     fn local_file(key: &str, bytes: &[u8]) -> UploadFile {
         UploadFile {
@@ -3409,6 +3568,24 @@ mod results_and_uploads {
         assert!(copy.is_file(), "a lost fence leaves the copy");
         remove_local_copies("t1", &copies, false).await;
         assert!(!copy.exists(), "a held fence removes it");
+
+        // A key already on the destination (another writer's file, or an
+        // earlier acquire of the title) is not this run's to roll back.
+        tokio::fs::create_dir_all(copy.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&copy, b"earlier").await.unwrap();
+        let copied = Mutex::new(Vec::new());
+        copy_to_local_destinations(&guests, "t1", &outbox, &acquired, &copied)
+            .await
+            .unwrap();
+        let copies = copied.into_inner().unwrap();
+        assert!(copies.is_empty(), "a key that was there is not recorded");
+        remove_local_copies("t1", &copies, false).await;
+        assert!(
+            copy.is_file(),
+            "the rollback leaves a key it did not create"
+        );
     }
 }
 

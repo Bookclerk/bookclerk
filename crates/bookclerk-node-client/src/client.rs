@@ -346,6 +346,27 @@ fn register_for_redaction(entries: &[SecretEntry]) {
     }
 }
 
+/// Opens the upload token an `upload.granted` answer sealed to this
+/// node's box key, and registers it with the log and diagnostics scrubber
+/// before anything can quote it: the bearer token is a credential like a
+/// handed secret.
+fn open_granted_upload(
+    box_secret: &[u8; bookclerk_node_proto::PUBLIC_KEY_LEN],
+    node_id: &str,
+    job_id: &str,
+    fence: i64,
+    upload_id: String,
+    sealed_token: &str,
+) -> Result<HostUpload, OwnerCallError> {
+    let token = open_upload_token(box_secret, node_id, job_id, fence, &upload_id, sealed_token)
+        .map_err(|_| {
+            tracing::warn!(job_id, fence, %upload_id, "the upload token does not open with this node's box key");
+            OwnerCallError::Unavailable
+        })?;
+    register_value_for_redaction(token.expose());
+    Ok(HostUpload::new(upload_id, token))
+}
+
 /// Registers one secret value with the scrubber when it is UTF-8 text.
 /// A JSON credential (a token bundle) also registers each string inside
 /// it, since a log quotes the token field, not the whole document.
@@ -682,19 +703,14 @@ impl Shared {
         else {
             return Err(OwnerCallError::Unavailable);
         };
-        let token = open_upload_token(
+        open_granted_upload(
             &self.box_secret,
             &self.node_id,
             job_id,
             fence,
-            &upload_id,
+            upload_id,
             &sealed_token,
         )
-        .map_err(|_| {
-            tracing::warn!(job_id, fence, %upload_id, "the upload token does not open with this node's box key");
-            OwnerCallError::Unavailable
-        })?;
-        Ok(HostUpload::new(upload_id, token))
     }
 
     /// The `Authorization` value of `upload`'s requests.

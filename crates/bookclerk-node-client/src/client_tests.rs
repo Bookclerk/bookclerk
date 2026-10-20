@@ -815,6 +815,31 @@ fn handed_secrets_are_registered_for_redaction() {
     assert!(!bookclerk_config::redact_str(&format!("Bearer {inner}")).contains(inner));
 }
 
+/// An opened upload token is registered for redaction before the upload
+/// is used, so a request error quoting it is scrubbed on this host.
+#[test]
+fn an_opened_upload_token_is_registered_for_redaction() {
+    let _registry = bookclerk_config::secrets_registry_test_lock();
+    let token = "upload-bearer-token_0123456789abcdefABCDEF";
+    let secret = [5u8; bookclerk_node_proto::PUBLIC_KEY_LEN];
+    let sealed = bookclerk_node_proto::seal_upload_token(
+        &bookclerk_node_proto::box_public_key(&secret),
+        &[8; 32],
+        "node-1",
+        "job-1",
+        3,
+        "upload-1",
+        token.as_bytes(),
+    )
+    .unwrap();
+    let line = format!("PUT failed with Bookclerk-Upload {token}");
+    assert!(!bookclerk_config::contains_registered_secret(&line));
+    let upload =
+        open_granted_upload(&secret, "node-1", "job-1", 3, "upload-1".into(), &sealed).unwrap();
+    assert_eq!(upload.token().expose(), token.as_bytes());
+    assert!(!bookclerk_config::redact_str(&line).contains(token));
+}
+
 /// A job whose grant already ran out when it would start is never run
 /// and never reported: its fence may already belong to another host.
 #[tokio::test]
