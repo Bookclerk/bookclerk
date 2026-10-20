@@ -598,6 +598,10 @@ async fn claims_another_books_key(
         .any(|key| exact.contains(*key) || sidecar_stems(key).any(|stem| stems.contains(stem))))
 }
 
+/// How many times [`claim_upload_keys`] claims one key whose record keeps
+/// changing under it before it refuses the grant.
+const CLAIM_ATTEMPTS: usize = 4;
+
 /// One key a grant claimed for its upload, and who held it before.
 struct ClaimedKey<'a> {
     /// The destination the key is on.
@@ -629,21 +633,37 @@ async fn claim_upload_keys<'a>(
     files: &'a [UploadFile],
     claimed: &mut Vec<ClaimedKey<'a>>,
 ) -> Result<bool> {
-    for copy in files.iter().flat_map(|file| &file.copies) {
-        let prior = store.title_file(&copy.destination, &copy.key).await?;
-        claimed.push(ClaimedKey {
-            destination: &copy.destination,
-            key: &copy.key,
-            prior,
-        });
-        if !store
-            .claim_title_file(&copy.destination, &copy.key, book_uuid, upload_id)
-            .await?
-        {
+    'copies: for copy in files.iter().flat_map(|file| &file.copies) {
+        let mut prior = store.title_file(&copy.destination, &copy.key).await?;
+        // A claim fails when another title holds the key, or when the
+        // record changed since it was read; only the latter is retried.
+        for _ in 0..CLAIM_ATTEMPTS {
+            claimed.push(ClaimedKey {
+                destination: &copy.destination,
+                key: &copy.key,
+                prior: prior.clone(),
+            });
+            if store
+                .claim_title_file(
+                    &copy.destination,
+                    &copy.key,
+                    book_uuid,
+                    upload_id,
+                    prior.as_ref(),
+                )
+                .await?
+            {
+                continue 'copies;
+            }
             // A refused claim changed nothing.
             claimed.pop();
-            return Ok(false);
+            let now = store.title_file(&copy.destination, &copy.key).await?;
+            if now == prior {
+                return Ok(false);
+            }
+            prior = now;
         }
+        return Ok(false);
     }
     Ok(true)
 }

@@ -83,6 +83,12 @@ impl LibraryStore {
     /// one conditional write, so of two uploads of different titles racing
     /// for one key only one wins.
     ///
+    /// `expected` is the record the caller read before ([`Self::title_file`];
+    /// `None` when unrecorded), which a refused claim's release restores: the
+    /// claim also answers false, changing nothing, when the record is no
+    /// longer that one (an acquire recorded the key in between), so a
+    /// release never removes a record the claim did not replace.
+    ///
     /// # Errors
     ///
     /// Returns an error when a write fails.
@@ -92,6 +98,7 @@ impl LibraryStore {
         key: &str,
         book_uuid: &str,
         writer: &str,
+        expected: Option<&TitleFile>,
     ) -> Result<bool> {
         let now = now_str();
         title_files::Entity::insert(title_files::ActiveModel {
@@ -136,6 +143,15 @@ impl LibraryStore {
                     .add(title_files::Column::BookUuid.eq(book_uuid))
                     .add(title_files::Column::BookUuid.not_in_subquery(library_titles)),
             )
+            // Unrecorded before: only the row the insert above created.
+            .filter(match expected {
+                Some(prior) => Condition::all()
+                    .add(title_files::Column::BookUuid.eq(prior.book_uuid.as_str()))
+                    .add(title_files::Column::Writer.eq(prior.writer.as_str())),
+                None => Condition::all()
+                    .add(title_files::Column::BookUuid.eq(book_uuid))
+                    .add(title_files::Column::Writer.eq(writer)),
+            })
             .exec(self.db())
             .await
             .map_err(LibraryError::Orm)?;

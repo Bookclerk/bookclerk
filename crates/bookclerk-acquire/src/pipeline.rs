@@ -2437,11 +2437,40 @@ pub async fn planned_title_names(
             _ => key.to_string(),
         }
     }
-    /// A rendered key's stem with its sentinels turned into wildcards.
+    /// `text` with every ASCII-case-insensitive match of `needle` (ASCII)
+    /// replaced by `with`: a template's case flags (`[u]`, `[l]`) change
+    /// a sentinel's case, never its length.
+    fn replace_ignoring_case(text: &str, needle: &str, with: &str) -> String {
+        let folded = text.to_ascii_lowercase();
+        let needle = needle.to_ascii_lowercase();
+        let mut out = String::with_capacity(text.len());
+        let mut from = 0;
+        while let Some(at) = folded[from..].find(&needle) {
+            out.push_str(&text[from..from + at]);
+            out.push_str(with);
+            from += at + needle.len();
+        }
+        out.push_str(&text[from..]);
+        out
+    }
+    /// A rendered key's stem with its sentinels turned into wildcards. The
+    /// number may come out grouped (`#,##0`), so each grouped form is
+    /// matched too; a form the template changes beyond that stays literal
+    /// and the upload is refused rather than widened.
     fn pattern_of(key: &str) -> String {
-        stem_of(key)
-            .replace(TITLE_SENTINEL, &NAME_WILDCARD.to_string())
-            .replace(&NUMBER_SENTINEL.to_string(), &NUMBER_WILDCARD.to_string())
+        let mut pattern =
+            replace_ignoring_case(&stem_of(key), TITLE_SENTINEL, &NAME_WILDCARD.to_string());
+        let number = NUMBER_SENTINEL.to_string();
+        let wildcard = NUMBER_WILDCARD.to_string();
+        for grouped in [
+            number.clone(),
+            "987,654,321".to_string(),
+            "987.654.321".to_string(),
+            "987 654 321".to_string(),
+        ] {
+            pattern = pattern.replace(&grouped, &wildcard);
+        }
+        pattern
     }
     let ext = fallback_audio_ext(&req.options);
     let mut variants = vec![req.clone()];
@@ -2471,27 +2500,35 @@ pub async fn planned_title_names(
             rules,
             variant.options.path_limits,
         );
-        // The folder is the title's own only when another title (other
-        // id, title and subtitle) would be filed elsewhere.
-        let mut other = folder_ctx.clone();
-        other.asin = TITLE_SENTINEL.into();
-        other.title = TITLE_SENTINEL.into();
-        other.subtitle = Some(TITLE_SENTINEL.into());
-        let other_key = storage_key_with_contexts(
-            &other,
-            &file_ctx,
-            Some(templates.folder.as_str()),
-            Some(templates.file.as_str()),
-            ext,
-            rules,
-            variant.options.path_limits,
-        );
+        // The folder is the title's own only when every other title probed
+        // (other id, title and subtitle) would be filed elsewhere: one
+        // wholly different, and one that only extends this title's fields
+        // (`Dune: Messiah: …`), which a template using part of a field
+        // (`<title short>`, a leading slice) files in the same folder.
+        let probes: [fn(&str) -> String; 2] = [
+            |_| TITLE_SENTINEL.to_string(),
+            |field| format!("{field}: {TITLE_SENTINEL}"),
+        ];
+        let filed_apart = probes.iter().all(|probe| {
+            let mut other = folder_ctx.clone();
+            other.asin = probe(&folder_ctx.asin);
+            other.title = probe(&folder_ctx.title);
+            other.subtitle = Some(probe(folder_ctx.subtitle.as_deref().unwrap_or_default()));
+            let other_key = storage_key_with_contexts(
+                &other,
+                &file_ctx,
+                Some(templates.folder.as_str()),
+                Some(templates.file.as_str()),
+                ext,
+                rules,
+                variant.options.path_limits,
+            );
+            folder_of(&key) != folder_of(&other_key)
+        });
         // A podcast parent's folder holds all its episodes: never one
         // title's own, however its template reads.
         let parents_folder = folder_ctx.asin != file_ctx.asin;
-        own_folder &= !parents_folder
-            && !folder_of(&key).is_empty()
-            && folder_of(&key) != folder_of(&other_key);
+        own_folder &= !parents_folder && !folder_of(&key).is_empty() && filed_apart;
         let stem = stem_of(&key);
         if !names.audio_stems.contains(&stem) {
             names.audio_stems.push(stem);
@@ -3443,5 +3480,37 @@ mod tests {
         let names = planned_title_names(&store, &own).await;
         assert_eq!(names.folders, vec!["Ann Author/One".to_string()]);
         assert!(names.own_folder, "a folder named for the title is its own");
+    }
+
+    /// A folder that uses only part of the title (`<title short>`, a
+    /// leading slice) is shared by every title that part matches, so it
+    /// is not the title's own.
+    #[tokio::test]
+    async fn a_folder_from_part_of_the_title_is_not_the_titles_own() {
+        let store = test_store().await;
+        let tmp = tempfile::tempdir().unwrap();
+        for folder in ["<first author>/<title short>", "<first author>/<title[3]>"] {
+            let req = upload_naming_req(tmp.path(), "B00TWO", "Dune: Messiah", folder);
+            let names = planned_title_names(&store, &req).await;
+            assert!(!names.own_folder, "{folder} is shared with other titles");
+        }
+    }
+
+    /// A template that changes the case of a part or chapter title still
+    /// yields a pattern with its wildcards, not a literal no file matches.
+    #[tokio::test]
+    async fn part_patterns_survive_a_templates_case_flags() {
+        let store = test_store().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let mut req = upload_naming_req(tmp.path(), "B00ONE", "One", "<first author>");
+        req.options.chapter_file_template = Some("<title> - <ch#> - <chapter title[u]>".into());
+        let names = planned_title_names(&store, &req).await;
+        assert!(
+            names.part_patterns.contains(&format!(
+                "Ann Author/One - {NUMBER_WILDCARD} - {NAME_WILDCARD}"
+            )),
+            "{:?}",
+            names.part_patterns
+        );
     }
 }

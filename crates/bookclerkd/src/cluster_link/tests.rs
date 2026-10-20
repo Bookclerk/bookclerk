@@ -2922,8 +2922,8 @@ mod results_and_uploads {
         let job_id = enqueue_acquire(&world.owner).await;
         let fence = claim_acquire(&world, 60).await;
         let files = vec![
-            local_file("Author/Title t1/t1.m4b", b"audio"),
-            local_file("Author/Title t1/cover.jpg", b"jpeg"),
+            local_file("Author/Title t1/Title t1 [t1].m4b", b"audio"),
+            local_file("Author/Title t1/Title t1 [t1].jpg", b"jpeg"),
         ];
         let UploadGrant::Granted {
             upload_id, token, ..
@@ -2935,7 +2935,7 @@ mod results_and_uploads {
             &owner_node_id(&world),
             &UploadGrantRequest {
                 book_uuid: &book.uuid,
-                primary_key: "Author/Title t1/t1.m4b",
+                primary_key: "Author/Title t1/Title t1 [t1].m4b",
                 pdf_key: None,
                 files: &files,
                 destinations: &local_scope("Author/Title t1"),
@@ -2948,7 +2948,10 @@ mod results_and_uploads {
         };
         let first = put_raw(world.addr, &upload_id, &token, 1, b"jpeg").await;
         assert!(first.starts_with("HTTP/1.1 200"), "{first}");
-        assert!(owner_out.path().join("Author/Title t1/cover.jpg").is_file());
+        assert!(owner_out
+            .path()
+            .join("Author/Title t1/Title t1 [t1].jpg")
+            .is_file());
 
         // The host (connected now; the job is already running) re-sends
         // the title over its socket.
@@ -2958,7 +2961,7 @@ mod results_and_uploads {
                 job_id: job_id.clone(),
                 fence,
                 book_uuid: book.uuid.clone(),
-                primary_key: "Author/Title t1/t1.m4b".into(),
+                primary_key: "Author/Title t1/Title t1 [t1].m4b".into(),
                 pdf_key: None,
                 files: vec![files[0].clone()],
             })
@@ -3122,25 +3125,35 @@ mod results_and_uploads {
                 &other.product_id,
                 "riley-acct",
                 bookclerk_library::AcquireStatus::Acquired,
-                Some("Author/Title t1/Title t2.m4b"),
+                Some("Author/Title t2/Title t2 [t2].m4b"),
                 None,
             )
             .await
             .unwrap();
-        for key in [
-            "Author/Title t1/Title t2.m4b",
-            "Author/Title t1/Title t2.jpg",
+        world
+            .owner
+            .record_title_file("local", "Author/Title t1/Title t1 [t1].cue", &other.uuid)
+            .await
+            .unwrap();
+        // The folder template (`<title short>`) is shared, so only the
+        // title's planned names are in scope there: another title's names
+        // are refused by name, and a planned name another title holds by
+        // its claim.
+        for (key, reason) in [
+            ("Author/Title t1/Title t2.m4b", "key_out_of_scope"),
+            ("Author/Title t1/Title t2.jpg", "key_out_of_scope"),
+            ("Author/Title t1/Title t1 [t1].cue", "key_of_another_book"),
         ] {
             let body = grant(vec![
-                local_file("Author/Title t1/Title t1.m4b", b"audio"),
+                local_file("Author/Title t1/Title t1 [t1].m4b", b"audio"),
                 local_file(key, b"other"),
             ])
             .await;
-            assert_eq!(refusal(&body), "key_of_another_book", "{key}");
+            assert_eq!(refusal(&body), reason, "{key}");
         }
         let body = grant(vec![
-            local_file("Author/Title t1/Title t1.m4b", b"audio"),
-            local_file("Author/Title t1/Title t1.jpg", b"jpeg"),
+            local_file("Author/Title t1/Title t1 [t1].m4b", b"audio"),
+            local_file("Author/Title t1/Title t1 [t1].jpg", b"jpeg"),
         ])
         .await;
         assert!(matches!(body, Body::UploadGranted { .. }), "{body:?}");

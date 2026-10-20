@@ -518,6 +518,11 @@ struct Unrecorded {
     pending: Vec<Option<DestinationWrite>>,
     /// Copies that reached their destination.
     written: Vec<(OwnerDestination, String)>,
+    /// The copies' locks ([`lock_copies`]) while the writes finish: a
+    /// cancelled request hands them to the cleanup, which holds them until
+    /// the pending writes resolve, so no newer upload of the keys can land
+    /// before this one's late rename.
+    copy_locks: Vec<NamedLock>,
     /// Set by [`Unrecorded::keep`]: nothing is rolled back.
     kept: bool,
 }
@@ -543,6 +548,7 @@ impl Drop for Unrecorded {
         );
         let pending: Vec<DestinationWrite> = self.pending.drain(..).flatten().collect();
         let mut copies = std::mem::take(&mut self.written);
+        let copy_locks = std::mem::take(&mut self.copy_locks);
         if pending.is_empty() && copies.is_empty() {
             return;
         }
@@ -558,6 +564,8 @@ impl Drop for Unrecorded {
                     copies.push((destination, key));
                 }
             }
+            // [`discard_copy`] takes the same locks.
+            drop(copy_locks);
             tracing::warn!(upload_id = %session.upload_id, files = copies.len(), "an upload request ended before its file was recorded; deleting its copies");
             for (destination, key) in copies {
                 discard_copy(&library, &session, &destination, &key).await;
@@ -589,12 +597,19 @@ async fn watch_fence(library: LibraryStore, session: UploadSession, lost: watch:
     every.tick().await;
     loop {
         every.tick().await;
-        // A read error is treated as lost: fail closed.
-        let open = matches!(
-            load_upload(&library, &session.upload_id).await,
-            Ok(Some(current)) if current.state == "open"
-        );
-        if !open || !upload_fence_live(&library, &session).await.unwrap_or(false) {
+        // A read error proves nothing either way: check again on the next
+        // tick. The checks at the end of the stream and the commit gate
+        // still refuse a file whose fence cannot be read.
+        let open = match load_upload(&library, &session.upload_id).await {
+            Ok(Some(current)) => current.state == "open",
+            Ok(None) => false,
+            Err(_) => continue,
+        };
+        let live = match upload_fence_live(&library, &session).await {
+            Ok(live) => live,
+            Err(_) => continue,
+        };
+        if !open || !live {
             let _ = lost.send(true);
             return;
         }
@@ -693,6 +708,7 @@ async fn tee(
         state: Arc::clone(&state),
         pending: Vec::with_capacity(file.copies.len()),
         written: Vec::new(),
+        copy_locks: Vec::new(),
         kept: false,
     };
     let mut senders = Vec::with_capacity(file.copies.len());
@@ -768,13 +784,21 @@ async fn tee(
     // the same locks), so a stale cleanup cannot remove what this write is
     // about to finish, nor this write land after a check that let a
     // cleanup proceed.
-    let copy_locks = lock_copies(&file.copies).await;
+    unrecorded.copy_locks = lock_copies(&file.copies).await;
     if failure.is_none() {
         let digest = hex_lower(&hasher.finalize());
         if seen != file.size || digest != file.sha256 {
             failure = Some(StreamFailure::Mismatch);
-        } else if *lost_rx.borrow() || !upload_fence_live(library, session).await.unwrap_or(false) {
+        } else if *lost_rx.borrow() {
             failure = Some(StreamFailure::Lost);
+        } else if let Err(failure_now) = match upload_fence_live(library, session).await {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(StreamFailure::Lost),
+            // A read error is not a lost fence: answer 503 and keep the
+            // upload's other files, as the check before the stream does.
+            Err(_) => Err(StreamFailure::Broken),
+        } {
+            failure = Some(failure_now);
         } else {
             failure = still_writable(library, session, index).await.err();
         }
@@ -810,7 +834,7 @@ async fn tee(
             }
         }
     }
-    drop(copy_locks);
+    drop(std::mem::take(&mut unrecorded.copy_locks));
     match failure {
         None => Ok(unrecorded),
         Some(failure) => {
