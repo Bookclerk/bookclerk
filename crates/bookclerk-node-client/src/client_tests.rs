@@ -212,7 +212,7 @@ async fn accept(listener: &TcpListener) -> OwnerSide {
         &mut socket,
         "challenge",
         Body::Challenge {
-            nonce: encode_nonce(&[9u8; 32]),
+            nonce: encode_nonce(&rand::random::<[u8; 32]>()),
             cluster_id: CLUSTER.into(),
         },
     )
