@@ -3108,6 +3108,56 @@ mod results_and_uploads {
         assert_eq!(planned, vec![fresh.uuid.as_str()]);
     }
 
+    /// `acquire.plan` sends an episode's podcast parent row with it, so a
+    /// host names the episode under the parent's folder as the owner does.
+    #[tokio::test]
+    async fn the_plan_sends_an_episodes_podcast_parent() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        world.state.config.write().await.library.download_episodes = true;
+        let show = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&NewBook {
+                content_kind: "podcast".into(),
+                ..owner_book("riley-acct", "show")
+            })
+            .await
+            .unwrap();
+        let episode = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&NewBook {
+                content_kind: "episode".into(),
+                series_asin: Some("show".into()),
+                ..owner_book("riley-acct", "ep1")
+            })
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 60).await;
+        let (handle, _stop) = start(&world, StubGuests::default()).await;
+        let answer = handle
+            .request(Body::AcquirePlan {
+                job_id: job_id.clone(),
+                fence,
+            })
+            .await
+            .expect("the owner answers");
+        let Body::AcquireTargets { targets, .. } = answer.body else {
+            panic!("expected targets: {answer:?}");
+        };
+        let target = targets
+            .iter()
+            .find(|t| t.book_uuid == episode.uuid)
+            .expect("the episode is planned");
+        let parent: bookclerk_library::BookRecord =
+            serde_json::from_value(target.parent.clone().expect("its parent is sent")).unwrap();
+        assert_eq!(parent.uuid, show.uuid);
+    }
+
     /// A title the owner refuses after this host copied it to its own
     /// destination (here: its key is another title's file) leaves no copy
     /// on this host either.

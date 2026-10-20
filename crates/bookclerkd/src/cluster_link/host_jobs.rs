@@ -161,6 +161,10 @@ impl HostDestination {
 pub struct HostTitle {
     /// The owner's library row.
     pub book: BookRecord,
+    /// The owner's row for the title's podcast parent, when it sent one;
+    /// seeded into the scratch library so episodes are named as on the
+    /// owner.
+    pub parent: Option<BookRecord>,
     /// The owner node's destinations, the primary first; never empty.
     pub destinations: Vec<HostDestination>,
 }
@@ -441,6 +445,9 @@ async fn acquire_into(
         .scope(book.plugin_key.as_str(), book.source.as_str())
         .ensure_account(&book.account_id, &book.marketplace, None)
         .await?;
+    if let Some(parent) = &title.parent {
+        scratch.upsert_book(&new_book_from(parent)).await?;
+    }
     scratch.upsert_book(&new_book_from(book)).await?;
     let Some(primary) = title.destinations.first() else {
         anyhow::bail!("the owner planned no destination");
@@ -740,9 +747,15 @@ async fn acquire_titles<G: HostGuests>(
             if book.uuid != target.book_uuid {
                 anyhow::bail!("the owner's library row is not the title it planned");
             }
+            let parent: Option<BookRecord> = target
+                .parent
+                .map(serde_json::from_value)
+                .transpose()
+                .context("the owner's podcast parent row")?;
             let outbox = work_path(job_dir, &target.book_uuid)?;
             let title = HostTitle {
                 book,
+                parent,
                 destinations: destinations.clone(),
             };
             // Both the guest's acquire and the title's upload stop once the

@@ -543,6 +543,12 @@ pub struct AcquireTarget {
     pub account_id: String,
     /// The owner's library row (JSON), for naming and metadata.
     pub book: serde_json::Value,
+    /// The owner's row for the title's podcast parent (JSON), when the
+    /// title is an episode whose parent is in the owner's library: a
+    /// destination that saves episodes to the parent's folder names them
+    /// from it, as an acquire on the owner would.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<serde_json::Value>,
 }
 
 /// One output destination of the owner node that answered an acquire plan
@@ -989,6 +995,7 @@ mod tests {
                         plugin_key: "store".into(),
                         account_id: "a".into(),
                         book: serde_json::json!({}),
+                        parent: None,
                     }],
                     destinations: vec![PlanDestination {
                         id: "local".into(),

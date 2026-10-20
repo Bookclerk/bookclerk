@@ -305,6 +305,9 @@ async fn discard_file(
     };
     for copy in &file.copies {
         let Some(destination) = destinations.iter().find(|d| d.id == copy.destination) else {
+            // The destination was undeployed since the copy was written;
+            // its backend is gone, so the file stays where it is.
+            tracing::warn!(upload_id = %session.upload_id, destination = %copy.destination, key = %copy.key, "an aborted upload's file is on a destination this node no longer has; left in place");
             continue;
         };
         discard_copy(library, session, destination, &copy.key).await;
