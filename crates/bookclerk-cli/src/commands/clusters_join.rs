@@ -237,9 +237,12 @@ pub async fn join_with_sign_in(
     branch_name: Option<&str>,
     fingerprint: Option<&str>,
 ) -> anyhow::Result<bookclerk_library::control_plane::ClusterLink> {
-    let library = inspect_library(address)
-        .await
-        .map_err(|err| anyhow::anyhow!("could not read the library: {err}"))?;
+    let library = inspect_library(address).await.map_err(|err| {
+        anyhow::anyhow!(
+            "could not read the library: {}",
+            super::clusters::printable(&err.to_string())
+        )
+    })?;
     if !library.info.enrollment {
         anyhow::bail!("This library isn't accepting new branches");
     }
@@ -255,7 +258,8 @@ pub async fn join_with_sign_in(
         .map_err(|err| anyhow::anyhow!("{err}"))?;
     eprintln!(
         "Sign in to {} to let \"{branch_name}\" join it:\n\n  {}\n",
-        library.info.library_name, authorization.authorize_url
+        super::clusters::printable(&library.info.library_name),
+        authorization.authorize_url
     );
     open_browser(&authorization.authorize_url);
     eprintln!("Waiting for the sign-in (10 minutes)...");
@@ -287,7 +291,12 @@ pub async fn join_with_sign_in(
         &authorization.keys,
     )
     .await
-    .map_err(|err| anyhow::anyhow!("could not join the library: {err}"))
+    .map_err(|err| {
+        anyhow::anyhow!(
+            "could not join the library: {}",
+            super::clusters::printable(&err.to_string())
+        )
+    })
 }
 
 /// This machine's name, as a default branch name.

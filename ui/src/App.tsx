@@ -209,7 +209,16 @@ export default function App() {
     return () => window.removeEventListener("popstate", onPopState);
   }, [knownPath, auth, session?.default_view]);
 
-  function navigate(next: AppView) {
+  // Back/forward and other view changes leave Settings on its default
+  // section next time.
+  useEffect(() => {
+    if (view !== "settings") setSettingsTab(undefined);
+  }, [view]);
+
+  function navigate(next: AppView, tab?: SettingsTab) {
+    // A requested Settings section applies only to the navigation that
+    // asked for it; Settings otherwise opens on its default section.
+    setSettingsTab(next === "settings" ? tab : undefined);
     setView(next);
     syncUrlToView(next, "push");
   }
@@ -246,8 +255,7 @@ export default function App() {
   function openSettings(tab: SettingsTab) {
     setJoin(null);
     setWelcome(null);
-    setSettingsTab(tab);
-    navigate("settings");
+    navigate("settings", tab);
   }
 
   function onLoginSuccess(next: AuthSession) {
@@ -315,6 +323,20 @@ export default function App() {
     return <LoginPage onSuccess={onLoginSuccess} />;
   }
 
+  // Before any join page: a consent needs an enrolled second factor, and
+  // the address (with its query) is kept, so the join resumes after enrolling.
+  if (needsSecondFactorEnrollment(session)) {
+    return (
+      <PageSuspense>
+        <MfaEnrollDialog
+          role={session.role}
+          onEnrolled={refreshSession}
+          onLoggedOut={onLogout}
+        />
+      </PageSuspense>
+    );
+  }
+
   if (join === "approve") {
     return (
       <PageSuspense>
@@ -346,18 +368,6 @@ export default function App() {
             openSettings("users");
           }}
           onJoined={() => openSettings("clusters")}
-        />
-      </PageSuspense>
-    );
-  }
-
-  if (needsSecondFactorEnrollment(session)) {
-    return (
-      <PageSuspense>
-        <MfaEnrollDialog
-          role={session.role}
-          onEnrolled={refreshSession}
-          onLoggedOut={onLogout}
         />
       </PageSuspense>
     );

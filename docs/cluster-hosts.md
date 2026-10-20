@@ -23,7 +23,7 @@ A fresh install (no Owner or Administrator yet, and no library joined)
 opens, for its operator, a welcome screen with two choices:
 
 - **Start a new library**: today's first run. Settings → User management
-  sets up the first administrator, and you carry on as before.
+  sets up the first Owner, and you carry on as before.
 - **Join a library**: the wizard below. The install keeps its own operator,
   its own database and its own consent screen, and does not need local
   users first.

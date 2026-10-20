@@ -3921,6 +3921,7 @@ pub(crate) mod tests {
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
+            node_api_tls_bound: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
         });
         if seed_users {
@@ -4477,6 +4478,7 @@ pub(crate) mod tests {
                 tray: RwLock::new(None),
                 tray_handoff: Mutex::new(None),
                 deployment_runtime: std::sync::OnceLock::new(),
+                node_api_tls_bound: std::sync::OnceLock::new(),
                 library_swaps: tokio::sync::watch::Sender::new(0),
             });
             let app = crate::api::router(state.clone(), None);

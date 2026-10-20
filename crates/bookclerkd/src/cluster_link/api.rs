@@ -30,8 +30,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bookclerk_library::control_plane::{
-    list_cluster_links, list_remote_plugin_consents, revoke_remote_plugin, ClusterLink,
-    RemoteApprover, RemotePluginConsent,
+    list_cluster_links, list_remote_plugin_consents, load_cluster_link, revoke_remote_plugin,
+    ClusterLink, RemoteApprover, RemotePluginConsent,
 };
 use bookclerk_plugin_host::{
     approve_remote_request, remote_consent_view, RemoteApprovalError, RemoteNarrowing,
@@ -207,18 +207,32 @@ pub struct ClusterJobsBody {
     job_ids: Vec<String>,
 }
 
-/// The live client of `cluster_id`'s link, or 503 `not_connected`.
-fn connected_link(cluster_id: &str) -> Result<bookclerk_node_client::HostClientHandle, Response> {
-    super::link_handle(cluster_id.trim()).ok_or_else(|| {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "error": "not_connected",
-                "detail": "this daemon has no running link to that owner cluster",
-            })),
-        )
-            .into_response()
-    })
+/// The live client of `cluster_id`'s link, running as the node the link
+/// names now, or 503 `not_connected` (also while a re-join's new node has no
+/// client yet).
+async fn connected_link(
+    state: &Arc<AppState>,
+    cluster_id: &str,
+) -> Result<bookclerk_node_client::HostClientHandle, Response> {
+    let cluster_id = cluster_id.trim();
+    let library = state.library_snapshot().await;
+    let node_id = match load_cluster_link(&library, cluster_id).await {
+        Ok(Some(link)) if link.is_active() => Some(link.remote_node_id),
+        Ok(_) => None,
+        Err(err) => return Err(events_error(err)),
+    };
+    node_id
+        .and_then(|node_id| super::link_handle(cluster_id, &node_id))
+        .ok_or_else(|| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": "not_connected",
+                    "detail": "this daemon has no running link to that owner cluster",
+                })),
+            )
+                .into_response()
+        })
 }
 
 /// Maps an owner's `error` frame (or no answer) onto an HTTP refusal.
@@ -249,6 +263,7 @@ fn owner_refusal(answer: Option<bookclerk_node_proto::Frame>) -> Response {
 /// to queue a scan for this node's owner (H-5). The owner's planner decides
 /// what that user may scan; the answer lists the queued job ids.
 pub async fn post_cluster_scan(
+    State(state): State<Arc<AppState>>,
     axum::extract::Path(cluster_id): axum::extract::Path<String>,
     body: Option<Json<ClusterScanBody>>,
 ) -> Result<Json<serde_json::Value>, Response> {
@@ -262,7 +277,7 @@ pub async fn post_cluster_scan(
         )
             .into_response());
     }
-    let handle = connected_link(&cluster_id)?;
+    let handle = connected_link(&state, &cluster_id).await?;
     let answer = handle
         .request(bookclerk_node_proto::Body::ScanRequest {
             account: body.account,
@@ -300,6 +315,7 @@ pub async fn post_cluster_scan(
 /// `POST /api/config/clusters/{cluster_id}/jobs`: the owner's view of jobs
 /// this node may see (those it would be trusted to claim).
 pub async fn post_cluster_jobs(
+    State(state): State<Arc<AppState>>,
     axum::extract::Path(cluster_id): axum::extract::Path<String>,
     Json(body): Json<ClusterJobsBody>,
 ) -> Result<Json<serde_json::Value>, Response> {
@@ -310,7 +326,7 @@ pub async fn post_cluster_jobs(
         )
             .into_response());
     }
-    let handle = connected_link(&cluster_id)?;
+    let handle = connected_link(&state, &cluster_id).await?;
     match handle
         .request(bookclerk_node_proto::Body::JobStatus {
             job_ids: body.job_ids,

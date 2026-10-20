@@ -95,7 +95,7 @@ pub enum NodeApiStatus {
 pub struct NodeApiGate {
     /// Status published by the TLS listener (or fixed at start).
     status: watch::Receiver<NodeApiStatus>,
-    /// The mode [`start`] ran for; a reloaded config naming another mode
+    /// The mode [`start_with`] ran for; a reloaded config naming another mode
     /// leaves the node API unmounted until the daemon restarts.
     mode: NodeApiMode,
     /// Canonical owner origin the TLS listener was started for (`acme` and
@@ -288,6 +288,9 @@ pub async fn start_with(
     let Ok(local) = tcp.local_addr() else {
         return failed(&status, &gate);
     };
+    // A reload that turns auth off is checked against this listener, which
+    // stays bound for the process lifetime.
+    let _ = state.node_api_tls_bound.set(local);
     let certs = match node_api.mode {
         NodeApiMode::Acme => start_acme(cfg, files_dir, status.clone()),
         _ => self_signed(cfg, files_dir, local),

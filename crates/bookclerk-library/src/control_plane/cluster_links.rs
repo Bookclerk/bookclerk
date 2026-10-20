@@ -456,21 +456,37 @@ pub async fn mark_cluster_link_revoked(
 /// running daemon stops the link's client when it next re-reads the link.
 /// Joining again needs a new sign-in or invite.
 ///
-/// Only the enrollment read here is left: one a concurrent join replaced
-/// (another node id) is refused, so the new enrollment is never marked
-/// left with its keys still stored.
+/// Only one enrollment is left: `expected_node_id` when given (the node the
+/// caller told the owner about), else the one read here. A link a join
+/// enrolled as another node, before this call or while it runs, is refused,
+/// so a new enrollment is never marked left with its keys still stored or
+/// left without the owner having been told.
+///
+/// # Arguments
+///
+/// * `store` - Library store holding the link.
+/// * `owner_cluster_id` - Owner cluster the link joins.
+/// * `expected_node_id` - The node the caller means to leave, when it read
+///   the link earlier (to send `node.leaving`); `None` leaves whatever node
+///   the link names now.
 ///
 /// # Errors
 ///
-/// Returns [`LibraryError::Invalid`] when the link was re-enrolled while
-/// leaving, and the read or write error.
+/// Returns [`LibraryError::Invalid`] when the link was re-enrolled as
+/// another node, and the read or write error.
 pub async fn leave_cluster_link(
     store: &LibraryStore,
     owner_cluster_id: &str,
+    expected_node_id: Option<&str>,
 ) -> Result<Option<ClusterLink>> {
     let Some(mut link) = load_cluster_link(store, owner_cluster_id).await? else {
         return Ok(None);
     };
+    if expected_node_id.is_some_and(|node| node != link.remote_node_id) {
+        return Err(LibraryError::Invalid(
+            "the cluster was joined again while leaving it; nothing was left".into(),
+        ));
+    }
     // State first: a link that is not active is never dialed, even if the
     // key delete below fails.
     if !set_cluster_link_state(
@@ -532,8 +548,11 @@ mod tests {
         record_cluster_link(&store, &new_link(None), &keys)
             .await
             .unwrap();
-        assert!(leave_cluster_link(&store, "nope").await.unwrap().is_none());
-        let left = leave_cluster_link(&store, "cluster-1")
+        assert!(leave_cluster_link(&store, "nope", None)
+            .await
+            .unwrap()
+            .is_none());
+        let left = leave_cluster_link(&store, "cluster-1", None)
             .await
             .unwrap()
             .expect("the link");

@@ -168,19 +168,16 @@ fn link_json(link: &ClusterLink) -> serde_json::Value {
 async fn announce_leaving(
     store: &bookclerk_library::LibraryStore,
     config: &Config,
-    cluster: &str,
+    link: &ClusterLink,
 ) -> bool {
-    let Ok(Some(link)) = load_cluster_link(store, cluster).await else {
-        return false;
-    };
     if !link.is_active() {
         return false;
     }
-    let Ok(keys) = load_cluster_link_keys(store, &link).await else {
+    let Ok(keys) = load_cluster_link_keys(store, link).await else {
         return false;
     };
     bookclerk_node_client::announce_leaving(
-        link,
+        link.clone(),
         keys,
         env!("CARGO_PKG_VERSION"),
         Box::new(NodeSampler::new(&config.paths().files_dir)),
@@ -217,7 +214,7 @@ fn state(row: &RemotePluginConsent) -> &'static str {
 /// (C0 and C1, which can start escape sequences) and bidirectional
 /// formatting characters (which can reorder what the operator reads) are
 /// written as `\u{..}` escapes.
-fn printable(text: &str) -> String {
+pub(super) fn printable(text: &str) -> String {
     text.chars()
         .map(|c| {
             let bidi = matches!(
@@ -344,8 +341,14 @@ pub async fn run(
         }
         ClustersCommand::Leave { cluster } => {
             let cluster = cluster_id(store, cluster).await?;
-            let notified = announce_leaving(store, config, &cluster).await;
-            let Some(left) = leave_cluster_link(store, &cluster).await? else {
+            let Some(link) = load_cluster_link(store, &cluster).await? else {
+                anyhow::bail!("this install is not enrolled in cluster {cluster}");
+            };
+            let notified = announce_leaving(store, config, &link).await;
+            // Only the node the owner was told about is left.
+            let Some(left) =
+                leave_cluster_link(store, &cluster, Some(&link.remote_node_id)).await?
+            else {
                 anyhow::bail!("this install is not enrolled in cluster {cluster}");
             };
             emit(

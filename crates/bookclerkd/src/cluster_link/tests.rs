@@ -3772,7 +3772,7 @@ async fn leaving_stops_the_running_client() {
             .is_err(),
         "an active link keeps its client"
     );
-    bookclerk_library::control_plane::leave_cluster_link(&host, "cluster-leave")
+    bookclerk_library::control_plane::leave_cluster_link(&host, "cluster-leave", None)
         .await
         .unwrap()
         .expect("the link");

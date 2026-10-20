@@ -1,12 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { JoinShell } from "@/components/JoinShell";
 import { Button } from "@/components/ui/button";
-import { finishJoin, joinErrorMessage, parseJoinCallback } from "@/lib/join";
+import { isApiError } from "@/lib/api";
+import { finishJoin, joinErrorMessage, parseJoinCallback, type JoinCallback } from "@/lib/join";
 
 type Phase =
   | { kind: "working" }
   | { kind: "connected"; library: string; running: boolean }
-  | { kind: "failed"; message: string };
+  /** `retry`: the daemon kept the sign-in, so the same code can be sent again. */
+  | { kind: "failed"; message: string; retry: boolean };
 
 /** Props for {@link JoinCallbackPage}. */
 export interface JoinCallbackPageProps {
@@ -20,12 +22,36 @@ export interface JoinCallbackPageProps {
  * verifier only it holds, and shows "Connected to <library>".
  *
  * The query is removed from the address bar before the request, so the
- * code is not kept in history.
+ * code is not kept in history; it stays in memory only so a failure the
+ * daemon marks retryable (`join_retry`: the library unreachable) can offer
+ * Try again.
  */
 export function JoinCallbackPage({ onOpenLibrary }: JoinCallbackPageProps) {
   const [phase, setPhase] = useState<Phase>({ kind: "working" });
   // One redeem per page load (StrictMode runs effects twice).
   const sent = useRef(false);
+
+  // The callback, kept for Try again.
+  const pending = useRef<JoinCallback | null>(null);
+
+  const redeem = useCallback((callback: JoinCallback) => {
+    setPhase({ kind: "working" });
+    void finishJoin(callback)
+      .then((joined) =>
+        setPhase({
+          kind: "connected",
+          library: joined.library_name || joined.cluster.owner_origin,
+          running: joined.running,
+        }),
+      )
+      .catch((err: unknown) =>
+        setPhase({
+          kind: "failed",
+          message: joinErrorMessage(err, "Could not join the library."),
+          retry: isApiError(err) && err.code === "join_retry",
+        }),
+      );
+  }, []);
 
   useEffect(() => {
     if (sent.current) return;
@@ -36,21 +62,13 @@ export function JoinCallbackPage({ onOpenLibrary }: JoinCallbackPageProps) {
       setPhase({
         kind: "failed",
         message: "This page has nothing to finish. Start Join a library again.",
+        retry: false,
       });
       return;
     }
-    void finishJoin(callback)
-      .then((joined) =>
-        setPhase({
-          kind: "connected",
-          library: joined.library_name || joined.cluster.owner_origin,
-          running: joined.running,
-        }),
-      )
-      .catch((err: unknown) =>
-        setPhase({ kind: "failed", message: joinErrorMessage(err, "Could not join the library.") }),
-      );
-  }, []);
+    pending.current = callback;
+    redeem(callback);
+  }, [redeem]);
 
   if (phase.kind === "working") {
     return (
@@ -63,9 +81,25 @@ export function JoinCallbackPage({ onOpenLibrary }: JoinCallbackPageProps) {
   if (phase.kind === "failed") {
     return (
       <JoinShell title="Could not join" lead={phase.message}>
-        <Button type="button" onClick={onOpenLibrary}>
-          Back to Settings → Library
-        </Button>
+        <div className="flex gap-2">
+          {phase.retry && pending.current ? (
+            <Button
+              type="button"
+              onClick={() => {
+                if (pending.current) redeem(pending.current);
+              }}
+            >
+              Try again
+            </Button>
+          ) : null}
+          <Button
+            type="button"
+            variant={phase.retry ? "secondary" : "primary"}
+            onClick={onOpenLibrary}
+          >
+            Back to Settings → Library
+          </Button>
+        </div>
       </JoinShell>
     );
   }

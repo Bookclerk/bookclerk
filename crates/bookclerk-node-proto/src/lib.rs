@@ -64,9 +64,10 @@ pub use frames::{
     MAX_UPLOAD_COPIES, MAX_UPLOAD_FILES, MAX_UPLOAD_FILE_BYTES, MAX_UPLOAD_KEY_BYTES,
 };
 pub use join::{
-    is_branch_name, is_branch_redirect_uri, pkce_challenge, OAuthEnrollRequest, OwnerInfo,
-    AUTHORIZE_PATH, BRANCH_CLIENT_ID, BRANCH_CODE_TTL_SECS, BRANCH_SCOPE, ENROLL_OAUTH_PATH,
-    INFO_PATH, JOIN_CALLBACK_PATH, MAX_BRANCH_NAME_BYTES,
+    is_branch_name, is_branch_redirect_uri, is_library_name, pkce_challenge, OAuthEnrollRequest,
+    OwnerInfo, AUTHORIZE_PATH, BRANCH_CLIENT_ID, BRANCH_CODE_TTL_SECS, BRANCH_SCOPE,
+    ENROLL_OAUTH_PATH, INFO_PATH, JOIN_CALLBACK_PATH, MAX_BRANCH_NAME_BYTES,
+    MAX_LIBRARY_NAME_BYTES,
 };
 pub use keys::{
     box_public_key, sign_public_key, validate_box_public_key, validate_sign_public_key, KeyError,

@@ -1486,6 +1486,7 @@ mod tests {
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
+            node_api_tls_bound: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
         });
         let user = library
@@ -1633,6 +1634,7 @@ mod tests {
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
+            node_api_tls_bound: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
         });
         (state, library)

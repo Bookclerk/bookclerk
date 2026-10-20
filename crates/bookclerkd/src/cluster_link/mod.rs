@@ -155,8 +155,9 @@ enum LinkStop {
 ///
 /// # Returns
 ///
-/// Why the client was stopped; on [`LinkStop::Replaced`] the caller starts
-/// a client for the new node.
+/// Why the client was stopped. On [`LinkStop::Replaced`] and
+/// [`LinkStop::Inactive`] the caller lets the supervisor start the
+/// cluster's next enrollment (the new node, or a later join).
 async fn stop_when_inactive(
     library: LibraryStore,
     cluster_id: String,
@@ -207,7 +208,8 @@ struct RunningLink {
     node_id: String,
     /// Stops the client (and, through it, its consent supervisor).
     stop: Arc<watch::Sender<bool>>,
-    /// The client, for `node.leaving`.
+    /// The client: Leave library's `node.leaving` and the operator's
+    /// requests to the owner ([`link_handle`]) go through it.
     handle: HostClientHandle,
 }
 
@@ -226,21 +228,26 @@ fn running() -> std::sync::MutexGuard<'static, HashMap<String, RunningLink>> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// True while a client for `cluster_id` runs in this process.
+/// True while a client for `cluster_id` runs in this process (tests).
+#[cfg(test)]
 #[must_use]
 pub fn is_link_running(cluster_id: &str) -> bool {
     running().contains_key(cluster_id)
 }
 
-/// The running client of the link to owner cluster `cluster_id`, so
-/// operator requests (`POST /api/config/clusters/{id}/scan`) can reach the
-/// owner over that link's socket.
-pub(crate) fn link_handle(cluster_id: &str) -> Option<HostClientHandle> {
-    running().get(cluster_id).map(|run| run.handle.clone())
+/// The running client of the link to owner cluster `cluster_id` as
+/// `node_id` (the node the link names now), so operator requests
+/// (`POST /api/config/clusters/{id}/scan`) reach the owner over that
+/// enrollment's socket, never one a re-join replaced.
+pub(crate) fn link_handle(cluster_id: &str, node_id: &str) -> Option<HostClientHandle> {
+    running()
+        .get(cluster_id)
+        .filter(|run| run.node_id == node_id)
+        .map(|run| run.handle.clone())
 }
 
 /// True while a client for `cluster_id` runs in this process as
-/// `node_id`.
+/// `node_id` (a client of an enrollment a re-join replaced does not count).
 fn is_node_running(cluster_id: &str, node_id: &str) -> bool {
     running()
         .get(cluster_id)
@@ -273,7 +280,7 @@ static JOINED: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::channel(0)
 /// How long [`start_link_now`] waits for the supervisor to start a client:
 /// longer than [`consent::CONSENT_POLL`], within which a replaced
 /// enrollment's client is stopped.
-const START_NOW_TIMEOUT: Duration = Duration::from_secs(15);
+pub(super) const START_NOW_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Starts a client for `cluster_id` now (a join through this daemon), with
 /// no restart: the supervisor started by [`spawn_cluster_links`] is woken
@@ -309,9 +316,10 @@ pub async fn start_link_now(state: &Arc<AppState>, cluster_id: &str) -> bool {
 pub const LEAVE_NOTICE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Leave library: tells the owner (`node.leaving`, through the running
-/// client or, when none runs here, a short connection with the link's
-/// keys), then marks the link `left`, deletes its node keys, and stops the
-/// client.
+/// client of the node the link names or, when none runs here as that node,
+/// a short connection with the link's keys), then marks that node's link
+/// `left`, deletes its node keys, and stops the client. A link a join
+/// enrolled as another node meanwhile is not left (an error).
 ///
 /// # Returns
 ///
@@ -329,7 +337,9 @@ pub async fn leave_link(
     let Some(link) = load_cluster_link(&library, cluster_id).await? else {
         return Ok(None);
     };
-    let handle = running().get(cluster_id).map(|run| run.handle.clone());
+    // Only a client running as the node the link names may say it leaves;
+    // one of an enrollment a re-join replaced would revoke the wrong node.
+    let handle = link_handle(cluster_id, &link.remote_node_id);
     let notified = if !link.is_active() {
         false
     } else if let Some(handle) = handle {
@@ -353,8 +363,21 @@ pub async fn leave_link(
             Err(_) => false,
         }
     };
-    let left = leave_cluster_link(&library, cluster_id).await?;
-    if let Some(run) = running().remove(cluster_id) {
+    // Only the node the owner was told about is left.
+    let left = leave_cluster_link(&library, cluster_id, Some(&link.remote_node_id)).await?;
+    // A client already running for a newer join of this library is kept.
+    let run = {
+        let mut running = running();
+        let ours = running
+            .get(cluster_id)
+            .is_some_and(|run| run.node_id == link.remote_node_id);
+        if ours {
+            running.remove(cluster_id)
+        } else {
+            None
+        }
+    };
+    if let Some(run) = run {
         let _ = run.stop.send(true);
     }
     Ok(left.map(|left| (left, notified)))
@@ -423,7 +446,8 @@ async fn supervise_cluster_links(state: Arc<AppState>) {
         swaps.borrow_and_update();
         let library = state.library_snapshot().await;
         let (stop, shutdown) = watch::channel(false);
-        // Clusters whose client exited because the link was re-enrolled.
+        // Clusters whose client exited for anything but a swap (re-enrolled,
+        // left, inactive or revoked), so a later enrollment can start.
         let (relink, mut relinks) = mpsc::unbounded_channel();
         let mut running = BTreeSet::new();
         let mut clients = Vec::new();
@@ -647,14 +671,10 @@ async fn start_clients(
                 match mark_cluster_link_revoked(&library, &cluster_id, &node_id).await {
                     Ok(true) => {
                         crate::live::poke(bookclerk_library::control_plane::LiveTopic::Clusters);
-                        // A later join of this library is started.
-                        let _ = relink.send(cluster_id);
                         break;
                     }
                     Ok(false) => {
                         tracing::info!(%cluster_id, %node_id, "revoked enrollment was already left or replaced; keeping the link as it is");
-                        // Dial the enrollment that replaced this one, if any.
-                        let _ = relink.send(cluster_id.clone());
                         break;
                     }
                     Err(err) => {
@@ -663,6 +683,10 @@ async fn start_clients(
                     }
                 }
             }
+            // The supervisor re-reads the link before it dials: a revoked or
+            // left one is started only once joined again, and one still
+            // active after failed writes is retried (and refused again).
+            let _ = relink.send(cluster_id);
         }));
     }
     complete

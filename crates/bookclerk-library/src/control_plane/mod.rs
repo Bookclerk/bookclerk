@@ -124,8 +124,9 @@ pub use output::{
 };
 pub use ownership::{nodes_owned_by, set_node_owner, verify_node_owner};
 pub use pending_joins::{
-    create_pending_join, purge_expired_pending_joins, take_pending_join, NewPendingJoin,
-    PendingJoin, TakenJoin, MAX_JOIN_NAME_BYTES, PENDING_JOIN_TTL,
+    create_pending_join, finish_pending_join, open_pending_join, purge_expired_pending_joins,
+    take_pending_join, NewPendingJoin, PendingJoin, TakenJoin, MAX_JOIN_NAME_BYTES,
+    PENDING_JOIN_TTL,
 };
 pub use placement::undeploy_instance;
 pub use placement::{

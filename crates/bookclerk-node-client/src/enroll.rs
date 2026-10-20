@@ -40,19 +40,32 @@ pub enum JoinError {
     /// The enroll request could not be built.
     #[error("enrollment could not be recorded: {0}")]
     Record(String),
-    /// The owner accepted the link, but its answer did not parse or the
-    /// local write failed. The one-use link is spent and the node keys are
-    /// gone, so this install cannot use the node the owner minted: the
-    /// owner revokes it (named when the answer said which) and issues a new
-    /// link.
+    /// The library accepted the join (an invite link or a sign-in code),
+    /// but its answer did not parse or the local write failed. The one-use
+    /// credential is spent and the node keys are gone, so this install
+    /// cannot use the node the library minted: its owner removes that node
+    /// (named when the answer said which) and this install joins again.
     #[error(
-        "the owner enrolled this host{} but it could not be saved here ({reason}); \
-         the link is spent, so ask the owner to revoke that node and send a new link",
+        "the library enrolled this host{} but it could not be saved here ({reason}); \
+         ask the library's owner to remove that node, then join again",
         node_id.as_deref().map(|id| format!(" as node {id}")).unwrap_or_default()
     )]
     Unsaved {
         /// The node id the owner minted, when its answer named one.
         node_id: Option<String>,
+        /// What failed.
+        reason: String,
+    },
+    /// A sign-in's code was redeemed and the library enrolled this host,
+    /// but the local write failed. The library answers a repeat of the
+    /// same exchange (code, verifier, keys) with the same node, so a retry
+    /// with the sign-in still pending can finish the join.
+    #[error(
+        "the library enrolled this host as node {node_id} but it could not be saved here ({reason})"
+    )]
+    SaveFailed {
+        /// The node id the library minted.
+        node_id: String,
         /// What failed.
         reason: String,
     },
