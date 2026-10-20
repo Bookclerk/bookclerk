@@ -686,12 +686,15 @@ fn write_secret_file_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
                 tmp.display()
             ))
         })?;
-        file.write_all(bytes).map_err(|e| {
-            LibraryError::Other(anyhow::anyhow!(
-                "failed to write master key temp {}: {e}",
-                tmp.display()
-            ))
-        })?;
+        file.write_all(bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&tmp);
+                LibraryError::Other(anyhow::anyhow!(
+                    "failed to write master key temp {}: {e}",
+                    tmp.display()
+                ))
+            })?;
     }
     harden_path(&tmp, false)?;
     bookclerk_config::replace_file(&tmp, path).map_err(|e| {
@@ -702,6 +705,10 @@ fn write_secret_file_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         ))
     })?;
     harden_path(path, false)?;
+    // Best effort: not every platform can open a directory.
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
     Ok(())
 }
 

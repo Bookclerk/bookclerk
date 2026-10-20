@@ -431,6 +431,36 @@ fn replace_files(files: &[NewFile<'_>]) -> Result<(), JoinError> {
     Ok(())
 }
 
+/// The only host a clerk bootstrap may name as its D1 API origin.
+const D1_API_HOST: &str = "api.cloudflare.com";
+
+/// Checks the D1 API origin a library's bootstrap names. Every D1 query
+/// carries this server's own API token to that origin, so a library may
+/// only name Cloudflare's API over HTTPS; a different endpoint has to be
+/// set in this server's own `config.toml`.
+///
+/// # Errors
+///
+/// Returns [`JoinError::Record`] when `api_base` is not an `https` URL on
+/// [`D1_API_HOST`] (no other port, user name or password).
+fn checked_d1_api_base(api_base: &str) -> Result<String, JoinError> {
+    let refused = || {
+        JoinError::Record(format!(
+            "the library named a D1 API origin other than https://{D1_API_HOST}; set a custom D1 endpoint in this server's own config.toml instead"
+        ))
+    };
+    let parsed = url::Url::parse(api_base.trim()).map_err(|_| refused())?;
+    let on_cloudflare = parsed.scheme() == "https"
+        && parsed.host_str() == Some(D1_API_HOST)
+        && parsed.port().is_none()
+        && parsed.username().is_empty()
+        && parsed.password().is_none();
+    if !on_cloudflare {
+        return Err(refused());
+    }
+    Ok(parsed.to_string().trim_end_matches('/').to_string())
+}
+
 /// Writes `bootstrap` as this install's own bootstrap under `files_dir`:
 ///
 /// - `database-postgres.url` (Postgres only): the URL, mode `0600`;
@@ -509,7 +539,7 @@ pub fn apply_clerk_bootstrap(
             cfg.database.plugin = DatabasePluginKind::D1.as_str().into();
             cfg.database.d1.account_id.clone_from(account_id);
             cfg.database.d1.database_id.clone_from(database_id);
-            cfg.database.d1.api_base.clone_from(api_base);
+            cfg.database.d1.api_base = checked_d1_api_base(api_base)?;
             DatabasePluginKind::D1
         }
     };
@@ -584,6 +614,25 @@ mod tests {
             node_id: "0b5c3d52-6f1e-4f39-9a3c-1b7f0a2c9e11".into(),
             database,
             dek: SecretValue::new(vec![5u8; 32]),
+        }
+    }
+
+    /// A bootstrap may only name Cloudflare's D1 API over HTTPS.
+    #[test]
+    fn a_bootstrap_d1_origin_must_be_cloudflare_over_https() {
+        assert_eq!(
+            checked_d1_api_base("https://api.cloudflare.com/client/v4/").unwrap(),
+            "https://api.cloudflare.com/client/v4"
+        );
+        for refused in [
+            "http://api.cloudflare.com/client/v4",
+            "https://api.cloudflare.com.evil.example/client/v4",
+            "https://evil.example/client/v4",
+            "https://api.cloudflare.com:8443/client/v4",
+            "https://user:pw@api.cloudflare.com/client/v4",
+            "not a url",
+        ] {
+            assert!(checked_d1_api_base(refused).is_err(), "{refused}");
         }
     }
 

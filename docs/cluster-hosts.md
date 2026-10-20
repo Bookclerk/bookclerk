@@ -199,7 +199,8 @@ the reason, when:
 **On the joining server.** The Join wizard shows **Offer to join as a
 clerk** only on an empty install: no users, store accounts, books or joined
 libraries of its own, and no `BOOKCLERK_DATABASE_*` or `BOOKCLERK_D1_*`
-environment override. Ticking it asks you to confirm that the server's own
+environment override of the database settings (`BOOKCLERK_D1_API_TOKEN` is
+not one: it stays this server's own). Ticking it asks you to confirm that the server's own
 database settings and keys are replaced. The daemon checks again when the
 sign-in starts and when it comes back. For a D1 library, set this server's
 own `BOOKCLERK_D1_API_TOKEN` (the token is never sent between servers), and
