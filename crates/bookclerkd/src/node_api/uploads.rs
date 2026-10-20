@@ -461,6 +461,9 @@ enum StreamFailure {
     Lost,
     /// The body does not match the manifest.
     Mismatch,
+    /// A key the upload was granted is recorded for another title or
+    /// writer since (a local acquire wrote it meanwhile).
+    Taken,
     /// The connection broke, or a destination failed.
     Broken,
 }
@@ -503,6 +506,19 @@ async fn tee(
         .any(|copy| !by_id.contains_key(&copy.destination))
     {
         return Err(StreamFailure::Mismatch);
+    }
+    // The grant claimed each key for this upload; one claimed since by
+    // another writer (a local acquire records before it writes) is not
+    // overwritten.
+    for copy in &file.copies {
+        match upload_owns_key(library, session, &copy.destination, &copy.key).await {
+            Ok(true) => {}
+            Ok(false) => return Err(StreamFailure::Taken),
+            Err(err) => {
+                tracing::warn!(upload_id = %session.upload_id, error = %err, "could not check an upload's key before writing it");
+                return Err(StreamFailure::Broken);
+            }
+        }
     }
     let mut senders = Vec::with_capacity(file.copies.len());
     let mut writes = Vec::with_capacity(file.copies.len());
@@ -715,6 +731,10 @@ pub async fn put_file(
         Err(StreamFailure::Mismatch) => {
             tracing::warn!(upload_id = %session.upload_id, index, "an uploaded file does not match its manifest; discarded");
             refused("content_mismatch")
+        }
+        Err(StreamFailure::Taken) => {
+            tracing::warn!(upload_id = %session.upload_id, index, "an uploaded file's key was written by another title since its grant; refused");
+            refused("key_taken")
         }
         Err(StreamFailure::Broken) => unavailable(),
     }

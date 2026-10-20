@@ -866,6 +866,51 @@ async fn a_job_without_one_source_plugin_passes_no_filter() {
     assert_eq!(untouched.attempt_count, 0, "no attempt is spent");
 }
 
+/// A job pinned to an instance but naming no account has one source
+/// plugin, yet no filter admits it: a Host is handed one account's
+/// secrets, and this job has none to hand. Naming the account admits it.
+#[tokio::test]
+async fn a_pinned_job_without_an_account_passes_no_filter() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let actor = ConfigActor::Operator { id: "test".into() };
+    let instance = create_plugin_instance(&w.store, &actor, PLUGIN, "Pinned")
+        .await
+        .unwrap();
+    let pinned = |account: Option<&str>| JobPayload {
+        plugin_instance_id: Some(instance.id.to_string()),
+        account: account.map(str::to_string),
+        ..Default::default()
+    };
+    let EnqueueOutcome::Created { id } = w
+        .store
+        .enqueue_job(EnqueueJobSpec {
+            kind: JobKind::Acquire,
+            payload: pinned(None),
+            priority: 0,
+            max_attempts: 3,
+            max_pending: 256,
+            run_after: None,
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("expected a new job");
+    };
+    let mut record = w.store.get_job(&id).await.unwrap().unwrap();
+    assert_eq!(
+        job_source_plugin_key(&w.store, &record)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(PLUGIN)
+    );
+    let consented = filter(&["acquire"], &[PLUGIN]);
+    assert!(!consented.admits(&w.store, &record).await.unwrap());
+    record.payload = pinned(Some("riley-acct"));
+    assert!(consented.admits(&w.store, &record).await.unwrap());
+}
+
 /// A scan of every account names no plugin, so no filter admits it.
 #[tokio::test]
 async fn a_job_whose_plugins_are_unknown_passes_no_filter() {

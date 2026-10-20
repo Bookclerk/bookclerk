@@ -2053,6 +2053,117 @@ mod results_and_uploads {
         );
     }
 
+    /// A key an upload was granted, then written by a local acquire of
+    /// another title before the file arrived, is refused and left as the
+    /// acquire wrote it.
+    #[tokio::test]
+    async fn an_upload_does_not_overwrite_a_key_taken_since_its_grant() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let local_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), local_out.path());
+        let title = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t2"))
+            .await
+            .unwrap();
+        let other = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t3"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let node_id = world.link.remote_node_id.clone();
+        let claim = claim_remote_job(
+            &world.owner,
+            &node_id,
+            JobResourceClass::Network,
+            RemoteClaimSettings {
+                lease_secs: 30,
+                limits: JobClaimLimits {
+                    class: 8,
+                    plugin_instance: 8,
+                },
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("the member's host may claim the acquire");
+        assert_eq!(claim.job.id, job_id);
+        let owner_node = bookclerk_library::control_plane::load_or_create_node_identity(
+            world.owner_files.path(),
+        )
+        .unwrap()
+        .node_id;
+        const KEY: &str = "Author/Title t2/Title t2.m4b";
+        let file = UploadFile {
+            copies: vec![bookclerk_node_proto::FileCopy {
+                destination: "local".into(),
+                key: KEY.into(),
+            }],
+            size: 3,
+            sha256: sha2::Sha256::digest(b"abc")
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+            content_type: None,
+        };
+        let UploadGrant::Granted {
+            upload_id, token, ..
+        } = grant_upload(
+            &world.owner,
+            &node_id,
+            &job_id,
+            claim.job.lease_generation,
+            &owner_node,
+            &UploadGrantRequest {
+                book_uuid: &title.uuid,
+                primary_key: KEY,
+                pdf_key: None,
+                files: std::slice::from_ref(&file),
+                destinations: &[UploadDestination {
+                    id: "local".into(),
+                    title_folders: vec!["Author/Title t2".into()],
+                }],
+            },
+        )
+        .await
+        .unwrap()
+        else {
+            panic!("granted");
+        };
+        // A local acquire of another title records the key, then writes it.
+        world
+            .owner
+            .record_title_file("local", KEY, &other.uuid)
+            .await
+            .unwrap();
+        let mut tcp = tokio::net::TcpStream::connect(world.addr).await.unwrap();
+        let head = format!(
+            "PUT /api/node/v1/uploads/{upload_id}/files/0 HTTP/1.1\r\n\
+             Host: localhost:{}\r\nAuthorization: Bookclerk-Upload {}\r\n\
+             Content-Length: 3\r\nConnection: close\r\n\r\nabc",
+            world.addr.port(),
+            token.as_str(),
+        );
+        tcp.write_all(head.as_bytes()).await.unwrap();
+        let mut answer = Vec::new();
+        tokio::time::timeout(Duration::from_secs(20), tcp.read_to_end(&mut answer))
+            .await
+            .unwrap()
+            .unwrap();
+        let answer = String::from_utf8_lossy(&answer);
+        assert!(answer.starts_with("HTTP/1.1 422"), "{answer}");
+        assert!(answer.contains("key_taken"), "{answer}");
+        assert!(
+            !local_out.path().join(KEY).exists(),
+            "the upload wrote nothing over the other title's key"
+        );
+    }
+
     /// An upload granted for one destination set is refused, and writes
     /// nothing, once the receiving node's set changed: the host named the
     /// files for the destinations it was planned with.

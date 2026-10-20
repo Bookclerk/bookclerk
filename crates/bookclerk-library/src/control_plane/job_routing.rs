@@ -127,16 +127,21 @@ impl JobClaimFilter {
         self.kinds.is_empty() || self.plugin_keys.is_empty()
     }
 
-    /// True when `job` is of an admitted kind, every plugin it runs
-    /// ([`job_plugin_keys`]) is admitted, and its one source plugin can be
-    /// told ([`job_source_plugin_key`]), so the Host can select the guest
-    /// it runs.
+    /// True when `job` is of an admitted kind, names the account it runs
+    /// for, every plugin it runs ([`job_plugin_keys`]) is admitted, and its
+    /// one source plugin can be told ([`job_source_plugin_key`]), so the
+    /// Host can select the guest it runs. The account is required even
+    /// when the job is pinned to an instance: a Host is handed only that
+    /// account's secrets, and a job of every account has none to hand.
     ///
     /// # Errors
     ///
     /// Returns an error when a read fails.
     pub async fn admits(&self, store: &LibraryStore, job: &JobRecord) -> Result<bool> {
         if !self.kinds.contains(job.kind.as_str()) {
+            return Ok(false);
+        }
+        if job.payload.account.as_deref().is_none_or(str::is_empty) {
             return Ok(false);
         }
         let admitted = job_plugin_keys(store, job)
