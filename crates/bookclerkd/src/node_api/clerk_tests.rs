@@ -545,3 +545,24 @@ async fn clerk_is_refused_to_non_owners_without_a_shareable_database_or_second_f
     assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
     assert!(refused.get("bootstrap").is_none());
 }
+
+/// A D1 library is offered to clerks only on Cloudflare's own API origin:
+/// a clerk sends its D1 token nowhere else, so it would refuse anything
+/// else after the library had already recorded its node.
+#[test]
+fn a_d1_library_off_cloudflare_is_not_offered_to_clerks() {
+    let d1 = |api_base: &str| {
+        bookclerk_config::Config::from_toml_str(
+            &format!(
+                "[database]\nplugin = \"d1\"\n\n[database.d1]\naccount_id = \"acct\"\ndatabase_id = \"db\"\napi_base = \"{api_base}\"\n"
+            ),
+            "test",
+        )
+        .unwrap()
+    };
+    assert!(matches!(
+        super::shared_database(&d1("https://api.cloudflare.com/client/v4")),
+        Ok(ClerkDatabase::D1 { .. })
+    ));
+    assert!(super::shared_database(&d1("https://d1-proxy.example/client/v4")).is_err());
+}

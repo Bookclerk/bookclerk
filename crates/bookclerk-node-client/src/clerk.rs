@@ -434,19 +434,20 @@ fn replace_files(files: &[NewFile<'_>]) -> Result<(), JoinError> {
 /// The only host a clerk bootstrap may name as its D1 API origin.
 const D1_API_HOST: &str = "api.cloudflare.com";
 
-/// Checks the D1 API origin a library's bootstrap names. Every D1 query
-/// carries this server's own API token to that origin, so a library may
-/// only name Cloudflare's API over HTTPS; a different endpoint has to be
-/// set in this server's own `config.toml`.
+/// Checks the D1 API origin a library's bootstrap names, and returns it
+/// normalized. Every D1 query carries the joining server's own API token
+/// to that origin, so a clerk may only be pointed at Cloudflare's API over
+/// HTTPS. The library checks its own origin the same way before it offers
+/// a clerk join, so a library on another D1 endpoint cannot take clerks.
 ///
 /// # Errors
 ///
 /// Returns [`JoinError::Record`] when `api_base` is not an `https` URL on
-/// [`D1_API_HOST`] (no other port, user name or password).
-fn checked_d1_api_base(api_base: &str) -> Result<String, JoinError> {
+/// `api.cloudflare.com` (no other port, user name or password).
+pub fn checked_d1_api_base(api_base: &str) -> Result<String, JoinError> {
     let refused = || {
         JoinError::Record(format!(
-            "the library named a D1 API origin other than https://{D1_API_HOST}; set a custom D1 endpoint in this server's own config.toml instead"
+            "the library's D1 API origin is not https://{D1_API_HOST}, and a clerk only sends its D1 token to Cloudflare"
         ))
     };
     let parsed = url::Url::parse(api_base.trim()).map_err(|_| refused())?;

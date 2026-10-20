@@ -98,11 +98,21 @@ pub(crate) fn shared_database(cfg: &bookclerk_config::Config) -> Result<ClerkDat
                 url: SecretValue::new(url.into_bytes()),
             })
             .map_err(|_| "This library's PostgreSQL connection is not readable here.".into()),
-        Some(DatabasePluginKind::D1) => Ok(ClerkDatabase::D1 {
-            account_id: cfg.database.d1.account_id.clone(),
-            database_id: cfg.database.d1.database_id.clone(),
-            api_base: cfg.database.d1.api_base.clone(),
-        }),
+        // A clerk sends its own D1 token only to Cloudflare's API, so a
+        // library on another D1 endpoint is not offered as a clerk's.
+        Some(DatabasePluginKind::D1) => {
+            bookclerk_node_client::checked_d1_api_base(&cfg.database.d1.api_base)
+                .map(|api_base| ClerkDatabase::D1 {
+                    account_id: cfg.database.d1.account_id.clone(),
+                    database_id: cfg.database.d1.database_id.clone(),
+                    api_base,
+                })
+                .map_err(|_| {
+                    "This library's Cloudflare D1 API origin is not https://api.cloudflare.com, \
+             and a clerk only sends its D1 token there."
+                        .into()
+                })
+        }
         Some(DatabasePluginKind::Sqlite) => Err("This library keeps its database in a SQLite \
              file that only this server can open. A clerk needs a PostgreSQL or Cloudflare D1 \
              database."
