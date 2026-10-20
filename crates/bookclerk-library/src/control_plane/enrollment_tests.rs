@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use bookclerk_config::EventsConfig;
+use bookclerk_config::Config;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter};
 use tempfile::TempDir;
@@ -45,7 +45,7 @@ async fn bootstrap(store: &LibraryStore, dir: &TempDir) -> ControlPlaneSession {
         dir.path(),
         &dir.path().join("cache"),
         None,
-        &EventsConfig::default(),
+        &Config::default(),
     )
     .await
     .expect("bootstrap")
@@ -267,6 +267,52 @@ async fn an_expired_or_revoked_link_does_not_redeem() {
         .unwrap()
         .iter()
         .all(|node| node.kind == NodeKind::Owner));
+}
+
+#[tokio::test]
+async fn a_disable_after_the_switch_read_mints_nothing() {
+    let _guard = master_key_test_lock_async().await;
+    let (store, _dir) = cluster().await;
+    let riley = user(&store, UserRole::Member, "Riley").await;
+    // The mint read the switch as enabled, then a disable committed.
+    let seen = load_host_enrollment(&store).await.unwrap();
+    assert!(seen.body.enabled);
+    set_host_enrollment_enabled(&store, &config_operator(), false)
+        .await
+        .unwrap();
+    let row = super::enrollment::NewLink {
+        link_id: "stale-switch",
+        token_hash: "00",
+        for_user_id: riley,
+        label: "",
+        created_by: "operator:cli",
+        created_at: "2026-01-01T00:00:00Z",
+        expires_at: "2099-01-01T00:00:00Z",
+    };
+    let inserted = super::enrollment::insert_link_while_switch_holds(&store, &seen, &row)
+        .await
+        .unwrap();
+    assert!(!inserted);
+    assert!(node_enrollment_links::Entity::find_by_id("stale-switch")
+        .one(store.db())
+        .await
+        .unwrap()
+        .is_none());
+
+    // Re-enabling bumps the revision, so the stale read still mints nothing.
+    set_host_enrollment_enabled(&store, &config_operator(), true)
+        .await
+        .unwrap();
+    let inserted = super::enrollment::insert_link_while_switch_holds(&store, &seen, &row)
+        .await
+        .unwrap();
+    assert!(!inserted);
+    let current = load_host_enrollment(&store).await.unwrap();
+    assert!(
+        super::enrollment::insert_link_while_switch_holds(&store, &current, &row)
+            .await
+            .unwrap()
+    );
 }
 
 #[tokio::test]
@@ -614,4 +660,20 @@ async fn redeem_refuses_keys_that_are_not_prime_order_points() {
         .await
         .unwrap());
     assert!(!record_node_connected(&store, "no-such-node").await.unwrap());
+}
+
+/// Parsing a link registers its secret for redaction, so a joining host
+/// that never minted it still scrubs it from logs and diagnostics.
+#[test]
+fn parsing_a_link_registers_its_secret_for_redaction() {
+    let _registry = bookclerk_config::secrets_registry_test_lock();
+    let secret = "parsed-only-enrollment-secret_0123456789abcdefABCDEF";
+    let link = format!(
+        "https://owner.example/enroll#bcn1.{}.{secret}",
+        "a".repeat(32)
+    );
+    assert!(!bookclerk_config::contains_registered_secret(&link));
+    parse_enrollment_token(&link).unwrap();
+    assert!(bookclerk_config::contains_registered_secret(&link));
+    assert!(!bookclerk_config::redact_str(&link).contains(secret));
 }

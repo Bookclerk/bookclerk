@@ -107,20 +107,23 @@ describe("LiveClient", () => {
     expect(sockets).toHaveLength(1);
     last().hello(["jobs", "deliveries", "nodes"]);
     expect(client.state).toBe("open");
-    expect(jobs).not.toHaveBeenCalled();
+    // The first hello refreshes too: a write between a panel's own read
+    // and the daemon's baseline is never announced otherwise.
+    expect(jobs).toHaveBeenCalledWith(["jobs", "deliveries"]);
+    expect(nodes).toHaveBeenCalledWith(["nodes"]);
 
     last().changed(["jobs", "consents"]);
-    expect(jobs).toHaveBeenCalledWith(["jobs"]);
-    expect(nodes).not.toHaveBeenCalled();
-    last().changed(["nodes"]);
+    expect(jobs).toHaveBeenLastCalledWith(["jobs"]);
     expect(nodes).toHaveBeenCalledTimes(1);
-    expect(jobs).toHaveBeenCalledTimes(1);
+    last().changed(["nodes"]);
+    expect(nodes).toHaveBeenCalledTimes(2);
+    expect(jobs).toHaveBeenCalledTimes(2);
 
     // Junk frames are ignored.
     last().send("not json");
     last().send({ v: 2, type: "changed", topics: ["jobs"] });
     last().send({ v: 1, type: "rows", topics: ["jobs"] });
-    expect(jobs).toHaveBeenCalledTimes(1);
+    expect(jobs).toHaveBeenCalledTimes(2);
   });
 
   it("reconnects with backoff and replays the hello topics after a drop", () => {
@@ -187,23 +190,24 @@ describe("watchLive", () => {
     vi.advanceTimersByTime(15_000);
     expect(refresh).toHaveBeenCalledTimes(1);
 
-    // Open: no timer, only topic changes.
+    // Open: one refresh for the hello, then no timer, only topic changes.
     last().hello(["nodes"]);
-    vi.advanceTimersByTime(60_000);
-    expect(refresh).toHaveBeenCalledTimes(1);
-    last().changed(["jobs"]);
-    expect(refresh).toHaveBeenCalledTimes(1);
-    last().changed(["nodes"]);
     expect(refresh).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(60_000);
+    expect(refresh).toHaveBeenCalledTimes(2);
+    last().changed(["jobs"]);
+    expect(refresh).toHaveBeenCalledTimes(2);
+    last().changed(["nodes"]);
+    expect(refresh).toHaveBeenCalledTimes(3);
 
     // Down again: polling resumes.
     last().drop();
     vi.advanceTimersByTime(15_000);
-    expect(refresh).toHaveBeenCalledTimes(3);
+    expect(refresh).toHaveBeenCalledTimes(4);
 
     stop();
     vi.advanceTimersByTime(120_000);
-    expect(refresh).toHaveBeenCalledTimes(3);
+    expect(refresh).toHaveBeenCalledTimes(4);
   });
 
   it("keeps a slow poll while open when asked", () => {
@@ -211,9 +215,36 @@ describe("watchLive", () => {
     const refresh = vi.fn();
     watchLive(client, ["users"], refresh, { pollMs: 5_000, openPollMs: 30_000 });
     last().hello(["users"]);
-    vi.advanceTimersByTime(29_999);
-    expect(refresh).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1);
     expect(refresh).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(29_999);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1);
+    expect(refresh).toHaveBeenCalledTimes(2);
+  });
+
+  it("never polls with a zero interval, and refreshes on change and reconnect", () => {
+    const { client, last } = harness();
+    const refresh = vi.fn();
+    watchLive(client, ["library"], refresh, { pollMs: 0 });
+    vi.advanceTimersByTime(120_000);
+    expect(refresh).not.toHaveBeenCalled();
+    last().hello(["library", "nodes"]);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    last().changed(["library"]);
+    expect(refresh).toHaveBeenCalledTimes(2);
+    last().drop();
+    vi.advanceTimersByTime(120_000);
+    expect(refresh).toHaveBeenCalledTimes(2);
+    last().hello(["library", "nodes"]);
+    expect(refresh).toHaveBeenCalledTimes(3);
+  });
+
+  it("refreshes the clusters panel on cluster link changes", () => {
+    const { client, last } = harness();
+    const refresh = vi.fn();
+    watchLive(client, ["consents", "clusters"], refresh, { pollMs: 15_000 });
+    last().hello(["consents", "clusters"]);
+    last().changed(["clusters"]);
+    expect(refresh).toHaveBeenCalledTimes(2);
   });
 });

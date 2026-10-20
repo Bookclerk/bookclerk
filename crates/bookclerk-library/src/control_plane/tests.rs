@@ -15,7 +15,7 @@ use crate::master_key::{master_key_fingerprint, master_key_path, master_key_test
 use crate::require_master_key;
 use crate::store::LibraryStore;
 
-async fn memory_store() -> LibraryStore {
+pub(super) async fn memory_store() -> LibraryStore {
     LibraryStore::from_connection(
         bookclerk_plugin_database_sqlite::open_memory()
             .await
@@ -23,7 +23,7 @@ async fn memory_store() -> LibraryStore {
     )
 }
 
-async fn file_store(path: &Path) -> LibraryStore {
+pub(super) async fn file_store(path: &Path) -> LibraryStore {
     let db = bookclerk_plugin_database_sqlite::open(path)
         .await
         .expect("open sqlite file");
@@ -31,7 +31,7 @@ async fn file_store(path: &Path) -> LibraryStore {
     LibraryStore::from_connection(db)
 }
 
-fn operator() -> ConfigActor {
+pub(super) fn operator() -> ConfigActor {
     ConfigActor::Operator {
         id: "operator".into(),
     }
@@ -45,11 +45,17 @@ fn events(retention: u64) -> EventsSettingsV1 {
     }
 }
 
-async fn bootstrap_pair(store: &LibraryStore, files: &Path) -> ControlPlaneSession {
+pub(super) async fn bootstrap_pair(store: &LibraryStore, files: &Path) -> ControlPlaneSession {
     let scratch = files.join("cache");
-    bootstrap_control_plane(store, files, &scratch, None, &EventsConfig::default())
-        .await
-        .expect("bootstrap")
+    bootstrap_control_plane(
+        store,
+        files,
+        &scratch,
+        None,
+        &bookclerk_config::Config::default(),
+    )
+    .await
+    .expect("bootstrap")
 }
 
 #[tokio::test]
@@ -122,7 +128,7 @@ async fn copied_identity_rejects_a_different_cluster() {
         dir_b.path(),
         &scratch_b,
         None,
-        &EventsConfig::default(),
+        &bookclerk_config::Config::default(),
     )
     .await
     .expect_err("copied identity must not join a different cluster");
@@ -492,10 +498,13 @@ async fn existing_events_ignore_an_invalid_seed() {
     let session = bootstrap_pair(&store, files.path()).await;
     let audits = audit_count(&store, EVENTS_NAMESPACE).await.unwrap();
     let changes = change_count(&store, EVENTS_NAMESPACE).await.unwrap();
-    let bad = EventsConfig {
-        retention_days: 0,
-        dead_letter_retention_days: 0,
-        concurrency: 33,
+    let bad = bookclerk_config::Config {
+        events: EventsConfig {
+            retention_days: 0,
+            dead_letter_retention_days: 0,
+            concurrency: 33,
+        },
+        ..bookclerk_config::Config::default()
     };
     let scratch = files.path().join("cache");
     let again = bootstrap_control_plane(&store, files.path(), &scratch, None, &bad)
@@ -521,10 +530,13 @@ async fn first_import_rejects_an_invalid_seed() {
         files.path(),
         &scratch,
         None,
-        &EventsConfig {
-            retention_days: 0,
-            dead_letter_retention_days: 30,
-            concurrency: 1,
+        &bookclerk_config::Config {
+            events: EventsConfig {
+                retention_days: 0,
+                dead_letter_retention_days: 30,
+                concurrency: 1,
+            },
+            ..bookclerk_config::Config::default()
         },
     )
     .await
@@ -1218,11 +1230,11 @@ async fn heartbeat_persists_fake_cgroup_observations() {
     assert_eq!(node.memory_current_bytes, Some(4096));
     assert_eq!(node.memory_anon_bytes, Some(2048));
     assert_eq!(node.scratch_bytes, Some(32));
-    // `filesystem_free_bytes` is implemented on Linux and macOS. Windows has no
-    // populated value, so the heartbeat stores None there.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    // `filesystem_free_bytes` is implemented on Linux, macOS, and Windows.
+    // Other platforms store None.
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     assert!(node.files_dir_free_bytes.is_some());
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     assert!(node.files_dir_free_bytes.is_none());
     assert!(node.logical_cpus.is_some());
     assert_eq!(node.created_at, session.node.created_at);
@@ -1591,4 +1603,144 @@ async fn postgres_scheduler_lease_and_placement_cross_two_pools() {
         read.cpu_millicores * i64::from(DEFAULT_CPU_BUDGET_PERCENT) / 100
     );
     assert!(read.is_live(chrono::Utc::now().timestamp_millis()));
+}
+
+/// Backend pid of the session sleeping in the injected commit-time fault.
+async fn sleeping_backend(store: &LibraryStore) -> Option<i32> {
+    let backend = store.db().get_database_backend();
+    let row = store
+        .db()
+        .query_one_raw(sea_orm::Statement::from_string(
+            backend,
+            "SELECT pid FROM pg_stat_activity \
+             WHERE datname = current_database() AND wait_event = 'PgSleep'",
+        ))
+        .await
+        .expect("pg_stat_activity")?;
+    row.try_get::<i32>("", "pid").ok()
+}
+
+#[tokio::test]
+#[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+async fn postgres_connection_killed_mid_commit_replays_once_after_reconnect() {
+    if !postgres_tests_enabled() {
+        return;
+    }
+    let _guard = master_key_test_lock_async().await;
+    let (store_a, store_b) = postgres_stores().await;
+    let files = tempdir().unwrap();
+    let session = bootstrap_pair(&store_a, files.path()).await;
+    let base = session.events.revision;
+    let audits = audit_count(&store_b, EVENTS_NAMESPACE).await.unwrap();
+    let changes = change_count(&store_b, EVENTS_NAMESPACE).await.unwrap();
+
+    // A deferred constraint trigger runs inside COMMIT. For the faulted
+    // operation id it sleeps there, so the second connection can kill the
+    // backend while the commit is in progress.
+    store_b
+        .db()
+        .execute_unprepared(
+            "CREATE OR REPLACE FUNCTION bookclerk_stall_commit() RETURNS trigger AS $$
+             BEGIN
+               IF NEW.write_operation_id = 'pg-midcommit' THEN
+                 PERFORM pg_sleep(30);
+               END IF;
+               RETURN NULL;
+             END;
+             $$ LANGUAGE plpgsql",
+        )
+        .await
+        .expect("stall function");
+    store_b
+        .db()
+        .execute_unprepared(
+            "CREATE CONSTRAINT TRIGGER stall_commit AFTER UPDATE ON configuration_documents
+             DEFERRABLE INITIALLY DEFERRED
+             FOR EACH ROW EXECUTE FUNCTION bookclerk_stall_commit()",
+        )
+        .await
+        .expect("stall trigger");
+
+    let write = {
+        let store = store_a.clone();
+        tokio::spawn(async move {
+            replace_events(&store, &operator(), base, &events(17), "pg-midcommit").await
+        })
+    };
+    let mut pid = None;
+    for _ in 0..200 {
+        pid = sleeping_backend(&store_b).await;
+        if pid.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let pid = pid.expect("commit reached the stall");
+    let backend = store_b.db().get_database_backend();
+    store_b
+        .db()
+        .execute_raw(sea_orm::Statement::from_string(
+            backend,
+            format!("SELECT pg_terminate_backend({pid})"),
+        ))
+        .await
+        .expect("terminate");
+    let outcome = write.await.unwrap();
+    assert!(
+        outcome.is_err(),
+        "a connection killed mid-commit must surface as a failure: {outcome:?}"
+    );
+    store_b
+        .db()
+        .execute_unprepared("DROP TRIGGER stall_commit ON configuration_documents")
+        .await
+        .unwrap();
+
+    // The killed commit rolled back: nothing of it is visible.
+    let after_kill = load_events(&store_b).await.unwrap();
+    assert_eq!(after_kill.revision, base);
+    assert!(
+        crate::entities::bookclerk_receipts::Entity::find_by_id("pg-midcommit")
+            .one(store_b.db())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        audit_count(&store_b, EVENTS_NAMESPACE).await.unwrap(),
+        audits
+    );
+
+    // The caller does not know whether it committed, so it retries the same
+    // operation on the same pool, which reconnects. It applies exactly once.
+    let retried = replace_events(&store_a, &operator(), base, &events(17), "pg-midcommit")
+        .await
+        .expect("retry after reconnect");
+    let EventsReplace::Applied(applied) = retried else {
+        panic!("retry should apply: {retried:?}");
+    };
+    assert_eq!(applied.revision, base + 1);
+
+    // Ambiguous again (say the reply was lost after this commit): another
+    // retry replays the durable receipt instead of applying twice.
+    let replayed = replace_events(&store_a, &operator(), base, &events(17), "pg-midcommit")
+        .await
+        .unwrap();
+    assert_eq!(
+        replayed,
+        EventsReplace::Replayed {
+            revision: applied.revision
+        }
+    );
+    let from_b = load_events(&store_b).await.unwrap();
+    assert_eq!(from_b.revision, base + 1);
+    assert_eq!(from_b.body.retention_days, 17);
+    assert_eq!(
+        audit_count(&store_b, EVENTS_NAMESPACE).await.unwrap(),
+        audits + 1
+    );
+    assert_eq!(
+        change_count(&store_b, EVENTS_NAMESPACE).await.unwrap(),
+        changes + 1
+    );
 }

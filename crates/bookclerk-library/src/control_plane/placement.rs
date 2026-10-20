@@ -41,7 +41,7 @@ use super::instances::{load_plugin_instance, PluginInstanceId};
 use super::node_queue::{notify_all_nodes, NodeMessage};
 use super::node_status::{GuestReservation, NodeStatus};
 use super::versions::load_active_version;
-use crate::entities::{cluster_leases, nodes, plugin_placements};
+use crate::entities::{nodes, plugin_placements};
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
 
@@ -699,126 +699,6 @@ pub async fn live_node_ids(store: &LibraryStore) -> Result<BTreeSet<String>> {
         .filter(|status| status.is_live(now_ms))
         .map(|status| status.node_id)
         .collect())
-}
-
-/// A held cluster lease.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClusterLease {
-    /// Lease name.
-    pub name: String,
-    /// Holder (a node id).
-    pub holder: String,
-    /// Fencing token; a new holder always gets a larger one.
-    pub token: i64,
-    /// Expiry in Unix milliseconds.
-    pub expires_at_ms: i64,
-}
-
-/// Acquires or renews `name` for `holder` for `ttl`.
-///
-/// Returns `None` when another holder's lease has not expired, or when a
-/// concurrent acquire won. Renewing keeps the token; taking over an expired
-/// lease bumps it.
-///
-/// # Errors
-///
-/// Returns an error when the read or write fails.
-pub async fn acquire_lease(
-    store: &LibraryStore,
-    name: &str,
-    holder: &str,
-    ttl: Duration,
-) -> Result<Option<ClusterLease>> {
-    let now_ms = Utc::now().timestamp_millis();
-    let expires_at_ms = now_ms.saturating_add(i64::try_from(ttl.as_millis()).unwrap_or(i64::MAX));
-    let renewed_at = Utc::now().to_rfc3339();
-    let lease = |token| ClusterLease {
-        name: name.to_string(),
-        holder: holder.to_string(),
-        token,
-        expires_at_ms,
-    };
-    let Some(row) = cluster_leases::Entity::find_by_id(name.to_string())
-        .one(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
-    else {
-        let model = cluster_leases::ActiveModel {
-            name: Set(name.to_string()),
-            holder: Set(holder.to_string()),
-            token: Set(1),
-            expires_at_ms: Set(expires_at_ms),
-            renewed_at: Set(renewed_at),
-        };
-        return match cluster_leases::Entity::insert(model).exec(store.db()).await {
-            Ok(_) => Ok(Some(lease(1))),
-            // A concurrent first acquire inserted the row; this one lost.
-            Err(err) => match load_lease(store, name).await? {
-                Some(_) => Ok(None),
-                None => Err(LibraryError::Orm(err)),
-            },
-        };
-    };
-    let token = if row.holder == holder {
-        row.token
-    } else if row.expires_at_ms <= now_ms {
-        row.token + 1
-    } else {
-        return Ok(None);
-    };
-    let res = cluster_leases::Entity::update_many()
-        .col_expr(
-            cluster_leases::Column::Holder,
-            Expr::value(holder.to_string()),
-        )
-        .col_expr(cluster_leases::Column::Token, Expr::value(token))
-        .col_expr(
-            cluster_leases::Column::ExpiresAtMs,
-            Expr::value(expires_at_ms),
-        )
-        .col_expr(cluster_leases::Column::RenewedAt, Expr::value(renewed_at))
-        .filter(cluster_leases::Column::Name.eq(name))
-        .filter(cluster_leases::Column::Holder.eq(row.holder))
-        .filter(cluster_leases::Column::Token.eq(row.token))
-        .exec(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    Ok((res.rows_affected == 1).then(|| lease(token)))
-}
-
-/// Gives up a held lease so another holder may take it at once.
-///
-/// # Errors
-///
-/// Returns an error when the write fails.
-pub async fn release_lease(store: &LibraryStore, lease: &ClusterLease) -> Result<()> {
-    cluster_leases::Entity::update_many()
-        .col_expr(cluster_leases::Column::ExpiresAtMs, Expr::value(0_i64))
-        .filter(cluster_leases::Column::Name.eq(lease.name.as_str()))
-        .filter(cluster_leases::Column::Holder.eq(lease.holder.as_str()))
-        .filter(cluster_leases::Column::Token.eq(lease.token))
-        .exec(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    Ok(())
-}
-
-/// The current row of lease `name`, held or expired.
-///
-/// # Errors
-///
-/// Returns an error when the read fails.
-pub async fn load_lease(store: &LibraryStore, name: &str) -> Result<Option<ClusterLease>> {
-    Ok(cluster_leases::Entity::find_by_id(name.to_string())
-        .one(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
-        .map(|row| ClusterLease {
-            name: row.name,
-            holder: row.holder,
-            token: row.token,
-            expires_at_ms: row.expires_at_ms,
-        }))
 }
 
 /// One node as the planner sees it: identity, liveness, and the budget

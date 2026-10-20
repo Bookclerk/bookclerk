@@ -24,10 +24,11 @@
 //! - claims narrowed to the job kinds this host runs and the plugins its
 //!   operator consented to ([`HostClientHandle::set_consented_plugins`]);
 //!   a job whose consent is revoked is cancelled and given back unspent;
-//! - the owner reads a host acts on after a wake
+//! - after a wake, the host requests its deployment list and instance
+//!   configuration from the owner and sends its observations back
 //!   ([`HostClientHandle::request`] for `deployments.list`,
-//!   `instance.config` and `observation`; [`HostClientHandle::fetch_artifact`]
-//!   for a stored archive, signed with the node key).
+//!   `instance.config` and `observation`), and fetches a stored archive
+//!   with [`HostClientHandle::fetch_artifact`], signed with the node key.
 //!
 //! - a scan's rows returned in fenced batches
 //!   ([`HostJobCtx::send_scan_results`]); an acquire's titles asked for
@@ -51,7 +52,7 @@ pub use branch::{
 };
 pub use client::{
     ClientExit, ClientTiming, HeartbeatSource, HostClient, HostClientConfig, HostClientHandle,
-    AWAITING_HOST_CONSENT, KIND_NOT_RUN_HERE, MAX_ARTIFACT_BYTES, SECRETS_UNOPENABLE,
+    AWAITING_HOST_CONSENT, KIND_NOT_RUN_HERE, MAX_ARTIFACT_BYTES, MAX_LEASE, SECRETS_UNOPENABLE,
 };
 pub use endpoint::{
     DialError, OwnerEndpoint, OwnerIo, OwnerSocket, TlsProbe, CONNECT_PATH, ENROLL_OAUTH_PATH,

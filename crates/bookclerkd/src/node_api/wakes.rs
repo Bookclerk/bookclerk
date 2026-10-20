@@ -7,19 +7,25 @@
 //! session. Each claimed delivery is sent as a `wake` frame; it is acked
 //! only once the host answers `ack` with the same frame id. When the
 //! session ends, deliveries still waiting for an ack are released without
-//! spending an attempt, and the catalog row is disabled.
+//! spending an attempt, and the catalog row is disabled unless a newer
+//! connection for the same host has taken it over (see
+//! [`super::ws`]).
 //!
 //! Backpressure: a delivery is claimed only after a slot in the session's
 //! bounded send queue is reserved for its frame, and no more than
 //! [`SEND_QUEUE_FRAMES`] wakes wait for acks at once. When the queue is
 //! full the forwarder claims nothing; the deliveries stay pending (or, if
-//! claimed earlier, expire) and are redelivered later.
+//! claimed earlier, expire) and are redelivered later. A wake still unacked
+//! after [`WAKE_LEASE_SECS`] stops counting against that limit: its lease
+//! has run out, so the delivery is redelivered and a late ack for it is
+//! ignored.
 //!
 //! Only messages a host acts on are forwarded (`deployment.changed`,
 //! `install.changed`, `configuration.changed`); others are acked at once,
 //! and a body that is not a node message is dead-lettered.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::Message;
 use bookclerk_library::control_plane::{
@@ -45,8 +51,10 @@ pub(crate) struct WakeForwarder {
     consumer: String,
     /// Lease owner written on claimed deliveries.
     lease_owner: String,
-    /// Wakes sent and not yet acked, by frame id.
-    in_flight: HashMap<String, EventDeliveryFence>,
+    /// Lease on each claimed delivery ([`WAKE_LEASE_SECS`]).
+    lease_secs: u64,
+    /// Wakes sent and not yet acked, by frame id, with when each was sent.
+    in_flight: HashMap<String, (EventDeliveryFence, Instant)>,
 }
 
 impl WakeForwarder {
@@ -61,6 +69,7 @@ impl WakeForwarder {
             host_id: host_id.to_string(),
             consumer: node_consumer_id(host_id),
             lease_owner: format!("wake-{owner_node_id}-{serial}"),
+            lease_secs: WAKE_LEASE_SECS,
             in_flight: HashMap::new(),
         })
     }
@@ -92,6 +101,11 @@ impl WakeForwarder {
         library: &LibraryStore,
         outbox: &mpsc::Sender<Message>,
     ) -> usize {
+        // A wake unacked for a whole lease is redelivered once its lease is
+        // reclaimed; holding its slot would stall forwarding for good.
+        let lease = Duration::from_secs(self.lease_secs);
+        self.in_flight
+            .retain(|_, (_, sent_at)| sent_at.elapsed() < lease);
         let mut sent = 0;
         while self.in_flight.len() < SEND_QUEUE_FRAMES {
             // Reserve the frame's slot before claiming, so a claimed
@@ -102,7 +116,7 @@ impl WakeForwarder {
             let claimed = library
                 .claim_next_event_delivery(
                     &self.lease_owner,
-                    WAKE_LEASE_SECS,
+                    self.lease_secs,
                     &uuid::Uuid::new_v4().to_string(),
                     std::slice::from_ref(&self.consumer),
                     u32::try_from(SEND_QUEUE_FRAMES).unwrap_or(u32::MAX),
@@ -159,7 +173,7 @@ impl WakeForwarder {
                 message: serde_json::to_value(&message).unwrap_or_default(),
             };
             slot.send(Message::Text(Frame::new(id.clone(), body).to_text().into()));
-            self.in_flight.insert(id, fence);
+            self.in_flight.insert(id, (fence, Instant::now()));
             sent += 1;
         }
         sent
@@ -168,7 +182,7 @@ impl WakeForwarder {
     /// Handles the host's `ack` for frame `id`. Returns `false` for an id
     /// this connection did not send (or already acked).
     pub(crate) async fn ack(&mut self, library: &LibraryStore, id: &str) -> bool {
-        let Some(fence) = self.in_flight.remove(id) else {
+        let Some((fence, _)) = self.in_flight.remove(id) else {
             return false;
         };
         match library.ack_event_delivery(&fence).await {
@@ -183,15 +197,19 @@ impl WakeForwarder {
         true
     }
 
-    /// Releases every unacked wake for prompt redelivery and disables this
-    /// owner node's consumer row.
-    pub(crate) async fn shutdown(mut self, library: &LibraryStore) {
-        for (_, fence) in self.in_flight.drain() {
+    /// Releases every unacked wake for prompt redelivery and, with
+    /// `disable`, disables this owner node's consumer row. The session
+    /// passes `disable = false` when a newer connection for the same host
+    /// has registered, since that connection now owns the shared row.
+    pub(crate) async fn shutdown(mut self, library: &LibraryStore, disable: bool) {
+        for (_, (fence, _)) in self.in_flight.drain() {
             let _ = library
                 .release_unexecuted_event_delivery(&fence, false)
                 .await;
         }
-        self.heartbeat(library, false).await;
+        if disable {
+            self.heartbeat(library, false).await;
+        }
     }
 }
 
@@ -295,8 +313,39 @@ mod tests {
         publish(&store, 2).await;
         assert_eq!(forwarder.forward(&store, &outbox).await, 1);
         assert_eq!(count(&store, "running").await, 1);
-        forwarder.shutdown(&store).await;
+        forwarder.shutdown(&store, true).await;
         assert_eq!(count(&store, "running").await, 0);
         assert_eq!(count(&store, "pending").await, 1);
+    }
+
+    #[tokio::test]
+    async fn wakes_whose_lease_ran_out_stop_counting_against_the_limit() {
+        let store = memory_store().await;
+        let mut forwarder = WakeForwarder::new(OWNER, HOST, 1).unwrap();
+        forwarder.lease_secs = 1;
+        forwarder.heartbeat(&store, true).await;
+        for revision in 0..=i64::try_from(SEND_QUEUE_FRAMES).unwrap() {
+            publish(&store, revision).await;
+        }
+        // Room for every frame: only the in-flight limit applies.
+        let (outbox, _socket) = mpsc::channel(4 * SEND_QUEUE_FRAMES);
+        assert_eq!(forwarder.forward(&store, &outbox).await, SEND_QUEUE_FRAMES);
+        assert_eq!(
+            forwarder.forward(&store, &outbox).await,
+            0,
+            "no more until the host acks"
+        );
+
+        // The host acks none within the lease; the reclaimer returns the
+        // deliveries to pending while the socket stays up.
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        store.reclaim_expired_event_deliveries().await.unwrap();
+        assert_eq!(count(&store, "pending").await, SEND_QUEUE_FRAMES + 1);
+        assert_eq!(
+            forwarder.forward(&store, &outbox).await,
+            SEND_QUEUE_FRAMES,
+            "expired wakes no longer hold the forwarder back"
+        );
+        assert_eq!(forwarder.in_flight(), SEND_QUEUE_FRAMES);
     }
 }

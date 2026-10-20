@@ -1,27 +1,24 @@
-//! Acquired-audio output packaging and destination plugins.
+//! Acquired-audio output packaging (`[output]`).
 //!
 //! ```toml
 //! [output]
 //! format = "enriched_m4b"
 //! naming_profile = "audiobookshelf"
-//!
-//! [output.local]
-//! enabled = true
-//! root = "/data/Audiobooks"
-//!
-//! [output.s3]
-//! enabled = false
-//! bucket = "my-library"
-//! region = "us-east-1"
+//! # Host-local scratch directory (stays in config.toml).
+//! # in_progress = "/var/tmp/bookclerk"
 //! ```
 //!
-//! Each destination plugin has its own `enabled` flag; multiple may be on at
-//! once (acquired files are written to every enabled destination).
+//! The shared table is the `core.output` cluster configuration document in
+//! the library database. This TOML table (plus `BOOKCLERK_OUTPUT_*`) only
+//! seeds that document the first time a host enrolls against a database
+//! without one; after that, edit it with `bookclerk config set output.*`,
+//! `PATCH /api/settings`, or `PUT /api/config/domains/core.output`. The
+//! scratch directory `in_progress` is host-local bootstrap and is read from
+//! here on every start.
 //!
-//! S3 credentials come from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
-//! (optional `AWS_SESSION_TOKEN`) when both are set; otherwise the AWS SDK
-//! default provider chain is used (shared `~/.aws/credentials` / config, SSO,
-//! instance/task roles — same as AWS CLI).
+//! Destinations (`local`, `s3`, …) are plugin instances with their own
+//! settings (root, bucket, prefix, naming overrides) and credentials; nothing
+//! destination-specific lives in `config.toml`.
 
 use std::path::PathBuf;
 

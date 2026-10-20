@@ -2,7 +2,8 @@
 //! job end to end through the daemon's job transport with the owner's
 //! sealed secret and a token write-back, ack a wake, resume a held fence
 //! after a disconnect and abandon one reclaimed while away, refuse a wrong
-//! SPKI pin, and keep every token out of TRACE logs.
+//! SPKI pin, keep every token out of TRACE logs, and follow a database
+//! swap to the new store's links.
 //!
 //! Host consent (step 8): an owner plugin deployed to the host is recorded
 //! as a request and never claimed until the host's operator approves it;
@@ -23,7 +24,7 @@ use bookclerk_library::control_plane::{
     mint_enrollment_link, node_queue_name, publish_node_message, replace_instance_config,
     revoke_remote_plugin, seal_instance_secret, set_secret_ref, ClusterLink, ConfigActor,
     DeploymentStatus, DesiredState, EnrollmentActor, NodeHeartbeat, NodeMessage,
-    PluginInstanceConfigV1, PluginInstanceId, SettingValue,
+    PluginInstanceConfigV1, PluginInstanceId, RemoteApprover, SettingValue,
 };
 use bookclerk_library::secrets::{
     build_sealed_record, get_secret, secret_account_type, secret_kind, unseal_secret, upsert_secret,
@@ -41,7 +42,7 @@ use tokio::sync::watch;
 
 use super::consent::{notify_consent_changed, LinkSupervisor};
 use super::remote_bindings::RemoteCatalog;
-use super::TransportRunner;
+use super::{AbortOnDrop, TransportRunner};
 use crate::job_handler::{JobCommand, JobExecCtx, JobTransport};
 
 /// Plugin key of the owner's store account.
@@ -132,6 +133,9 @@ struct EchoTransport {
     refresh_to: Option<&'static str>,
     /// Block until [`Self::release`] or cancellation.
     block: bool,
+    /// A cancelled blocked run stops cooperatively and returns `Ok` with
+    /// what it had, instead of an error.
+    succeed_on_cancel: bool,
     /// Lets blocked runs finish.
     release: Arc<AtomicBool>,
     /// Runs so far.
@@ -199,6 +203,9 @@ impl JobTransport for EchoTransport {
             loop {
                 if ctx.is_cancelled() {
                     self.runs.lock().unwrap()[index].cancelled = true;
+                    if self.succeed_on_cancel {
+                        break;
+                    }
                     anyhow::bail!("cancelled");
                 }
                 if self.release.load(Ordering::SeqCst) {
@@ -352,6 +359,7 @@ async fn start_host_client<T: JobTransport + 'static>(
             incarnation: uuid::Uuid::new_v4().to_string(),
             max_jobs: 1,
             claim_kinds: kinds.iter().map(|kind| (*kind).to_string()).collect(),
+            claims_after_refresh: true,
             timing: timing(backoff_min),
         },
         TransportRunner::new(transport, Arc::clone(&catalog)),
@@ -562,13 +570,18 @@ async fn approve_store(host: &LibraryStore, cluster_id: &str) {
             .is_some()
     })
     .await;
+    let reviewed = load_remote_plugin_consent(host, cluster_id, PLUGIN)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reviewed.requested_version, "0.1.0");
     approve_remote_request(
         host,
         cluster_id,
         PLUGIN,
-        Some("0.1.0"),
+        &reviewed.request_digest(),
         &RemoteNarrowing::default(),
-        "test",
+        RemoteApprover::Operator("test"),
     )
     .await
     .unwrap();
@@ -920,16 +933,27 @@ async fn a_wrong_spki_pin_is_refused() {
     let _dek = crate::auth::tests::process_dek_lock().await;
     let owner_files = tempfile::tempdir().unwrap();
     let host_files = tempfile::tempdir().unwrap();
+    // The node API serves only the origin its TLS listener started for, so
+    // the port is picked before the listener starts. The certificate names
+    // `localhost`.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let origin = format!("https://localhost:{port}");
     let (state, owner) = crate::node_api::tests::test_state_with(
         &owner_files,
-        "[daemon.node_api]\nmode = \"self_signed\"\ntls_listen = \"127.0.0.1:0\"\n",
+        &format!(
+            "[integrations]\npublic_origin = \"{origin}\"\n\n\
+             [daemon.node_api]\nmode = \"self_signed\"\ntls_listen = \"127.0.0.1:{port}\"\n"
+        ),
     )
     .await;
     let cfg = state.config.read().await.clone();
     let started = crate::node_api::tls::start(&state, &cfg, owner_files.path()).await;
     let tls = started.local.expect("the TLS listener is bound");
-    let origin = format!("https://localhost:{}", tls.port());
-    state.config.write().await.integrations.public_origin = Some(origin.clone());
+    assert_eq!(tls.port(), port);
     let pin = bookclerk_config::read_node_api_spki_pin(owner_files.path()).unwrap();
     let wrong = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7u8; 32]);
     let host = host_store(host_files.path()).await;
@@ -1152,6 +1176,79 @@ async fn an_owner_plugin_runs_only_after_host_consent() {
     }
 }
 
+/// A consented plugin whose archive could not be fetched (the owner's
+/// copy was gone for a moment) is retried with backoff and becomes
+/// claimable once the archive is back, with no wake or consent change.
+#[tokio::test]
+async fn a_transient_fetch_failure_is_retried() {
+    use sea_orm::ConnectionTrait as _;
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let host_files = tempfile::tempdir().unwrap();
+    let (state, owner) = crate::node_api::tests::test_state(&owner_files).await;
+    let addr = serve(crate::api::router(Arc::clone(&state), None)).await;
+    let origin = public_origin(&state, &format!("http://127.0.0.1:{}", addr.port())).await;
+    let host = host_store(host_files.path()).await;
+    let (member, _token) = owner_account(&owner, b"riley-token-v1").await;
+    let link = join(&owner, &host, member, &origin, None).await.unwrap();
+    let node_id = link.remote_node_id.clone();
+    let cluster_id = link.owner_cluster_id.clone();
+    let deployed = deploy_store(&owner, owner_files.path(), &node_id).await;
+    let archive_sha = bookclerk_library::control_plane::load_active_version(&owner, PLUGIN)
+        .await
+        .unwrap()
+        .unwrap()
+        .artifacts[0]
+        .archive_sha256
+        .clone();
+    let archive = bookclerk_library::control_plane::load_artifact_blob(&owner, &archive_sha)
+        .await
+        .unwrap()
+        .unwrap();
+    owner
+        .db()
+        .execute_unprepared("DELETE FROM plugin_artifacts")
+        .await
+        .unwrap();
+    let transport = EchoTransport::default();
+    let (handle, _stop) = start_client(
+        &host,
+        host_files.path(),
+        link,
+        transport.clone(),
+        Duration::from_millis(200),
+    )
+    .await;
+    connected(&handle, 1).await;
+    approve_store(&host, &cluster_id).await;
+    eventually("the host to report the failed fetch", || async {
+        observed(&owner, &deployed, &node_id)
+            .await
+            .is_some_and(|seen| {
+                seen.status == DeploymentStatus::Error
+                    && seen.detail.contains("could not be fetched")
+            })
+    })
+    .await;
+    assert!(handle.consented_plugins().is_empty());
+
+    bookclerk_library::control_plane::put_artifact_blob(&owner, &archive)
+        .await
+        .unwrap();
+    eventually("the retried fetch to make the plugin claimable", || async {
+        handle.consented_plugins().contains(PLUGIN)
+    })
+    .await;
+    let job_id = enqueue_scan(&owner).await;
+    eventually("the scan to finish on the host", || async {
+        job(&owner, &job_id).await.state == JobState::Succeeded
+    })
+    .await;
+    assert!(observed(&owner, &deployed, &node_id)
+        .await
+        .is_some_and(|seen| seen.status == DeploymentStatus::Materialized));
+}
+
 /// Revoking consent while the host runs a job (as `bookclerk clusters
 /// revoke` does, with no notification) cancels the run and gives the job
 /// back unspent; nothing of the plugin is claimed again, and the host
@@ -1218,17 +1315,65 @@ async fn revoking_consent_mid_job_gives_the_job_back() {
     assert_eq!(job(&owner, &job_id).await.state, JobState::Pending);
 }
 
+/// An operator's cancel stops a host run that then returns what it had
+/// so far: the run ends cancelled, never as a success.
+#[tokio::test]
+async fn an_operator_cancel_is_never_reported_as_success() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let host_files = tempfile::tempdir().unwrap();
+    let (state, owner) = crate::node_api::tests::test_state(&owner_files).await;
+    // Renewals (which carry the cancel) every second.
+    state.config.write().await.jobs.lease_seconds = 3;
+    let addr = serve(crate::api::router(Arc::clone(&state), None)).await;
+    let origin = public_origin(&state, &format!("http://127.0.0.1:{}", addr.port())).await;
+    let host = host_store(host_files.path()).await;
+    let (member, _token) = owner_account(&owner, b"riley-token-v1").await;
+    let link = join(&owner, &host, member, &origin, None).await.unwrap();
+    let node_id = link.remote_node_id.clone();
+    let cluster_id = link.owner_cluster_id.clone();
+    deploy_store(&owner, owner_files.path(), &node_id).await;
+    let transport = EchoTransport {
+        block: true,
+        succeed_on_cancel: true,
+        ..EchoTransport::default()
+    };
+    let (handle, _stop) = start_client(
+        &host,
+        host_files.path(),
+        link,
+        transport.clone(),
+        Duration::from_millis(200),
+    )
+    .await;
+    connected(&handle, 1).await;
+    approve_store(&host, &cluster_id).await;
+    let job_id = enqueue_scan(&owner).await;
+    eventually("the host to start the job", || async {
+        !transport.runs().is_empty()
+    })
+    .await;
+    owner.request_job_cancel(&job_id).await.unwrap();
+    eventually("the job to end", || async {
+        job(&owner, &job_id).await.state != JobState::Running
+    })
+    .await;
+    assert!(transport.runs()[0].cancelled, "the run saw the cancel");
+    assert_eq!(job(&owner, &job_id).await.state, JobState::Cancelled);
+}
+
 /// Step 9: a host's scan rows and acquired files go back to the owner.
 mod results_and_uploads {
     use std::path::{Path, PathBuf};
 
     use bookclerk_library::control_plane::{
         authorize_upload, claim_remote_job, grant_upload, JobClaimLimits, RemoteClaimSettings,
-        UploadGrant, UploadGrantRequest,
+        UploadDestination, UploadGrant, UploadGrantRequest,
     };
     use bookclerk_library::{JobResourceClass, NewBook};
     use bookclerk_node_proto::{Body, UploadFile};
     use bookclerk_plugin_abi::ScanBook;
+    use bookclerk_source::DownloadOptions;
     use bookclerk_storage::StorageBackend;
     use sha2::Digest as _;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -1239,10 +1384,34 @@ mod results_and_uploads {
     use super::super::remote_bindings::HostJobBindings;
     use super::*;
 
+    /// The key an acquire names `book`'s audio with under `options`.
+    fn planned_key(book: &bookclerk_library::BookRecord, options: &DownloadOptions) -> String {
+        let templates = options.naming_templates();
+        bookclerk_acquire::storage_key(
+            &bookclerk_acquire::NamingContext {
+                asin: book.product_id.clone(),
+                title: book.title.clone(),
+                authors: book.authors.clone(),
+                ..Default::default()
+            },
+            Some(templates.folder.as_str()),
+            Some(templates.file.as_str()),
+            "m4b",
+        )
+    }
+
+    /// The owner's one `local` destination, its title scope `folder`.
+    fn local_scope(folder: &str) -> Vec<UploadDestination> {
+        vec![UploadDestination {
+            id: "local".into(),
+            title_folders: vec![folder.into()],
+            title_names: None,
+        }]
+    }
+
     /// A stand-in for the owner's store guest behind the host transport:
     /// a scan answers `rows`; an acquire writes `payload` to each planned
-    /// destination's outbox, named with that destination's templates
-    /// (`Author/<product>/<product>.m4b` when it has none).
+    /// destination's outbox, named with that destination's templates.
     #[derive(Clone, Default)]
     struct StubGuests {
         /// Rows a scan returns.
@@ -1255,6 +1424,24 @@ mod results_and_uploads {
         work: PathBuf,
         /// Account ids of the credentials each run was handed.
         credentials: Arc<Mutex<Vec<Vec<String>>>>,
+        /// Each scan's `(import_episodes, import_plus_titles)`.
+        scans: Arc<Mutex<Vec<(bool, bool)>>>,
+        /// A scan never ends on its own (it ignores its cancel flag, so
+        /// only the transport can stop it).
+        block_scan: bool,
+        /// Set once a blocked scan started.
+        entered: Arc<AtomicBool>,
+        /// Set when a blocked scan's call was dropped.
+        dropped: Arc<AtomicBool>,
+    }
+
+    /// Sets its flag when dropped.
+    struct DropFlag(Arc<AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
     }
 
     impl StubGuests {
@@ -1273,9 +1460,19 @@ mod results_and_uploads {
         async fn scan(
             &self,
             bindings: &HostJobBindings,
-            _scan: HostScan,
+            scan: HostScan,
+            _cancel: Arc<AtomicBool>,
         ) -> anyhow::Result<Vec<ScanBook>> {
             self.note(bindings);
+            self.scans
+                .lock()
+                .unwrap()
+                .push((scan.import_episodes, scan.import_plus_titles));
+            if self.block_scan {
+                let _flag = DropFlag(Arc::clone(&self.dropped));
+                self.entered.store(true, Ordering::SeqCst);
+                std::future::pending::<()>().await;
+            }
             Ok(self.rows.clone())
         }
 
@@ -1284,27 +1481,12 @@ mod results_and_uploads {
             bindings: &HostJobBindings,
             title: &HostTitle,
             outbox: &Path,
+            _cancel: Arc<AtomicBool>,
         ) -> anyhow::Result<AcquiredTitle> {
             self.note(bindings);
-            let product = &title.book.product_id;
             let mut keys = Vec::new();
             for (index, destination) in title.destinations.iter().enumerate() {
-                let options = &destination.options;
-                let key = if options.folder_template.is_none() && options.file_template.is_none() {
-                    format!("Author/{product}/{product}.m4b")
-                } else {
-                    bookclerk_acquire::storage_key(
-                        &bookclerk_acquire::NamingContext {
-                            asin: product.clone(),
-                            title: title.book.title.clone(),
-                            authors: title.book.authors.clone(),
-                            ..Default::default()
-                        },
-                        options.folder_template.as_deref(),
-                        options.file_template.as_deref(),
-                        "m4b",
-                    )
-                };
+                let key = planned_key(&title.book, &destination.options);
                 let path = destination_outbox(outbox, index).join(&key);
                 tokio::fs::create_dir_all(path.parent().unwrap()).await?;
                 tokio::fs::write(&path, self.payload.as_slice()).await?;
@@ -1317,14 +1499,15 @@ mod results_and_uploads {
             })
         }
 
-        async fn local_destinations(&self) -> Vec<Box<dyn StorageBackend>> {
-            self.local
+        async fn local_destinations(&self) -> anyhow::Result<Vec<Box<dyn StorageBackend>>> {
+            Ok(self
+                .local
                 .iter()
                 .map(|root| {
                     Box::new(bookclerk_storage::LocalFsBackend::new(root.clone()).unwrap())
                         as Box<dyn StorageBackend>
                 })
-                .collect()
+                .collect())
         }
 
         fn work_dir(&self) -> PathBuf {
@@ -1463,12 +1646,18 @@ mod results_and_uploads {
 
     /// A member's host scans with the guest and returns its rows in fenced
     /// batches; the rows land in the owner's library under the store
-    /// plugin, the guest got only the job's account's credentials, and a
-    /// batch sent afterwards under the finished job's fence is refused.
+    /// plugin, the guest got only the job's account's credentials and the
+    /// owner's import settings (not the host's defaults), and a batch sent
+    /// afterwards under the finished job's fence is refused.
     #[tokio::test]
     async fn a_host_scan_returns_rows_that_land_in_the_owners_library() {
         let _dek = crate::auth::tests::process_dek_lock().await;
         let world = linked().await;
+        {
+            let mut cfg = world.state.config.write().await;
+            cfg.library.import_episodes = false;
+            cfg.library.import_plus_titles = true;
+        }
         let guests = StubGuests {
             rows: vec![row("riley-acct", "p1"), row("riley-acct", "p2")],
             work: world.host_files.path().join("cluster-work"),
@@ -1502,6 +1691,7 @@ mod results_and_uploads {
             guests.credentials.lock().unwrap().as_slice(),
             &[vec!["riley-acct".to_string()]]
         );
+        assert_eq!(guests.scans.lock().unwrap().as_slice(), &[(false, true)]);
 
         let answer = handle
             .request(Body::ScanResults {
@@ -1632,17 +1822,6 @@ mod results_and_uploads {
             job(&world.owner, &job_id).await.state == JobState::Succeeded
         })
         .await;
-        let key = "Author/t1/t1.m4b";
-        assert_eq!(
-            std::fs::read(owner_out.path().join(key)).unwrap(),
-            payload,
-            "the owner's destination has the file"
-        );
-        assert_eq!(
-            std::fs::read(host_local.path().join(key)).unwrap(),
-            payload,
-            "the host's own destination has its copy"
-        );
         let acquired = world
             .owner
             .get_book_by_uuid(&book.uuid)
@@ -1653,7 +1832,21 @@ mod results_and_uploads {
             acquired.acquire_status,
             bookclerk_library::AcquireStatus::Acquired
         );
-        assert_eq!(acquired.storage_key.as_deref(), Some(key));
+        let key = acquired.storage_key.clone().unwrap_or_default();
+        assert!(
+            key.starts_with("Author/Title t1/"),
+            "named as a local acquire would: {key}"
+        );
+        assert_eq!(
+            std::fs::read(owner_out.path().join(&key)).unwrap(),
+            payload,
+            "the owner's destination has the file"
+        );
+        assert_eq!(
+            std::fs::read(host_local.path().join(&key)).unwrap(),
+            payload,
+            "the host's own destination has its copy"
+        );
         assert!(job(&world.owner, &job_id)
             .await
             .progress
@@ -1862,6 +2055,118 @@ mod results_and_uploads {
         );
     }
 
+    /// A key an upload was granted, then written by a local acquire of
+    /// another title before the file arrived, is refused and left as the
+    /// acquire wrote it.
+    #[tokio::test]
+    async fn an_upload_does_not_overwrite_a_key_taken_since_its_grant() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let local_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), local_out.path());
+        let title = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t2"))
+            .await
+            .unwrap();
+        let other = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t3"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let node_id = world.link.remote_node_id.clone();
+        let claim = claim_remote_job(
+            &world.owner,
+            &node_id,
+            JobResourceClass::Network,
+            RemoteClaimSettings {
+                lease_secs: 30,
+                limits: JobClaimLimits {
+                    class: 8,
+                    plugin_instance: 8,
+                },
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("the member's host may claim the acquire");
+        assert_eq!(claim.job.id, job_id);
+        let owner_node = bookclerk_library::control_plane::load_or_create_node_identity(
+            world.owner_files.path(),
+        )
+        .unwrap()
+        .node_id;
+        const KEY: &str = "Author/Title t2/Title t2.m4b";
+        let file = UploadFile {
+            copies: vec![bookclerk_node_proto::FileCopy {
+                destination: "local".into(),
+                key: KEY.into(),
+            }],
+            size: 3,
+            sha256: sha2::Sha256::digest(b"abc")
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+            content_type: None,
+        };
+        let UploadGrant::Granted {
+            upload_id, token, ..
+        } = grant_upload(
+            &world.owner,
+            &node_id,
+            &job_id,
+            claim.job.lease_generation,
+            &owner_node,
+            &UploadGrantRequest {
+                book_uuid: &title.uuid,
+                primary_key: KEY,
+                pdf_key: None,
+                files: std::slice::from_ref(&file),
+                destinations: &[UploadDestination {
+                    id: "local".into(),
+                    title_folders: vec!["Author/Title t2".into()],
+                    title_names: None,
+                }],
+            },
+        )
+        .await
+        .unwrap()
+        else {
+            panic!("granted");
+        };
+        // A local acquire of another title records the key, then writes it.
+        world
+            .owner
+            .record_title_file("local", KEY, &other.uuid)
+            .await
+            .unwrap();
+        let mut tcp = tokio::net::TcpStream::connect(world.addr).await.unwrap();
+        let head = format!(
+            "PUT /api/node/v1/uploads/{upload_id}/files/0 HTTP/1.1\r\n\
+             Host: localhost:{}\r\nAuthorization: Bookclerk-Upload {}\r\n\
+             Content-Length: 3\r\nConnection: close\r\n\r\nabc",
+            world.addr.port(),
+            token.as_str(),
+        );
+        tcp.write_all(head.as_bytes()).await.unwrap();
+        let mut answer = Vec::new();
+        tokio::time::timeout(Duration::from_secs(20), tcp.read_to_end(&mut answer))
+            .await
+            .unwrap()
+            .unwrap();
+        let answer = String::from_utf8_lossy(&answer);
+        assert!(answer.starts_with("HTTP/1.1 422"), "{answer}");
+        assert!(answer.contains("key_taken"), "{answer}");
+        assert!(
+            !local_out.path().join(KEY).exists(),
+            "the upload wrote nothing over the other title's key"
+        );
+    }
+
     /// An upload granted for one destination set is refused, and writes
     /// nothing, once the receiving node's set changed: the host named the
     /// files for the destinations it was planned with.
@@ -1950,7 +2255,18 @@ mod results_and_uploads {
                 primary_key: "Author/Title t2/Title t2.m4b",
                 pdf_key: None,
                 files: std::slice::from_ref(&file),
-                destinations: &["local".to_string(), "s3".to_string()],
+                destinations: &[
+                    UploadDestination {
+                        id: "local".into(),
+                        title_folders: vec!["Author/Title t2".into()],
+                        title_names: None,
+                    },
+                    UploadDestination {
+                        id: "s3".into(),
+                        title_folders: vec!["library/t2".into()],
+                        title_names: None,
+                    },
+                ],
             },
         )
         .await
@@ -1980,6 +2296,69 @@ mod results_and_uploads {
         assert!(
             !local_out.path().join("Author/Title t2").exists(),
             "nothing is written to a changed destination set"
+        );
+    }
+
+    /// A title whose files all arrived is still refused at its commit, and
+    /// what it received is deleted, once the receiving node's destination
+    /// set changed after its last file: the new destination never got it.
+    #[tokio::test]
+    async fn a_commit_is_refused_after_the_destinations_change() {
+        use crate::node_api::uploads::{set_test_destinations, TestDestination};
+        use bookclerk_config::{DestinationNaming, OutputBackendKind};
+
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        let s3_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 60).await;
+        let scope = local_scope("Author/Title t1");
+        let files = vec![local_file("Author/Title t1/t1.m4b", b"audio")];
+        let (upload_id, token, _) =
+            grant_direct(&world, &job_id, fence, &book.uuid, &files, &scope).await;
+        let put = put_raw(world.addr, &upload_id, &token, 0, b"audio").await;
+        assert!(put.starts_with("HTTP/1.1 200"), "{put}");
+        assert!(owner_out.path().join("Author/Title t1/t1.m4b").is_file());
+        // The node deploys an s3 destination before the commit.
+        set_test_destinations(
+            world.owner_files.path(),
+            vec![
+                TestDestination {
+                    kind: OutputBackendKind::Local,
+                    root: owner_out.path().to_path_buf(),
+                    naming: DestinationNaming::default(),
+                },
+                TestDestination {
+                    kind: OutputBackendKind::S3,
+                    root: s3_out.path().to_path_buf(),
+                    naming: DestinationNaming::default(),
+                },
+            ],
+        );
+        let committed = commit_raw(world.addr, &upload_id, &token, "{}").await;
+        assert!(committed.starts_with("HTTP/1.1 422"), "{committed}");
+        assert!(committed.contains("destinations_changed"), "{committed}");
+        let row = world
+            .owner
+            .get_book_by_uuid(&book.uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            row.acquire_status,
+            bookclerk_library::AcquireStatus::Acquired
+        );
+        assert!(
+            !owner_out.path().join("Author/Title t1/t1.m4b").exists(),
+            "the refused title's received file is deleted"
         );
     }
 
@@ -2021,7 +2400,7 @@ mod results_and_uploads {
         let file = UploadFile {
             copies: vec![bookclerk_node_proto::FileCopy {
                 destination: "local".into(),
-                key: "Author/t1/t1.m4b".into(),
+                key: "Author/Title t1/t1.m4b".into(),
             }],
             size: payload.len() as u64,
             sha256: sha2::Sha256::digest(&payload)
@@ -2045,10 +2424,10 @@ mod results_and_uploads {
             &owner_node,
             &UploadGrantRequest {
                 book_uuid: &book.uuid,
-                primary_key: "Author/t1/t1.m4b",
+                primary_key: "Author/Title t1/t1.m4b",
                 pdf_key: None,
                 files: std::slice::from_ref(&file),
-                destinations: &["local".to_string()],
+                destinations: &local_scope("Author/Title t1"),
             },
         )
         .await
@@ -2090,11 +2469,1252 @@ mod results_and_uploads {
             .is_none());
         let _ = &world.state;
     }
+
+    /// Sends `body` as declared file `index` of `upload_id` over plain
+    /// HTTP; answers the raw response.
+    async fn put_raw(
+        addr: SocketAddr,
+        upload_id: &str,
+        token: &str,
+        index: usize,
+        body: &[u8],
+    ) -> String {
+        let mut tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let head = format!(
+            "PUT /api/node/v1/uploads/{upload_id}/files/{index} HTTP/1.1\r\n\
+             Host: localhost:{}\r\nAuthorization: Bookclerk-Upload {token}\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n",
+            addr.port(),
+            body.len()
+        );
+        tcp.write_all(head.as_bytes()).await.unwrap();
+        tcp.write_all(body).await.unwrap();
+        let mut answer = Vec::new();
+        tokio::time::timeout(Duration::from_secs(20), tcp.read_to_end(&mut answer))
+            .await
+            .unwrap()
+            .unwrap();
+        String::from_utf8_lossy(&answer).into_owned()
+    }
+
+    /// Grants an upload of one local file `key` of `bytes` for `book_uuid`
+    /// in `job_id` under `fence`, in the scope of the key's folder; answers
+    /// its id and token.
+    async fn grant_one(
+        world: &Linked,
+        job_id: &str,
+        fence: i64,
+        book_uuid: &str,
+        key: &str,
+        bytes: &[u8],
+    ) -> (String, String) {
+        let folder = key.rsplit_once('/').map_or("", |(folder, _)| folder);
+        let UploadGrant::Granted {
+            upload_id, token, ..
+        } = grant_upload(
+            &world.owner,
+            &world.link.remote_node_id,
+            job_id,
+            fence,
+            &owner_node_id(world),
+            &UploadGrantRequest {
+                book_uuid,
+                primary_key: key,
+                pdf_key: None,
+                files: &[local_file(key, bytes)],
+                destinations: &local_scope(folder),
+            },
+        )
+        .await
+        .unwrap()
+        else {
+            panic!("granted");
+        };
+        (upload_id, token.to_string())
+    }
+
+    /// Opens a PUT of file 0 of `upload_id` declaring `len` bytes and sends
+    /// `first` of them; the rest follows on the returned stream.
+    async fn put_start(
+        addr: SocketAddr,
+        upload_id: &str,
+        token: &str,
+        len: usize,
+        first: &[u8],
+    ) -> tokio::net::TcpStream {
+        let mut tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let head = format!(
+            "PUT /api/node/v1/uploads/{upload_id}/files/0 HTTP/1.1\r\n\
+             Host: localhost:{}\r\nAuthorization: Bookclerk-Upload {token}\r\n\
+             Content-Length: {len}\r\nConnection: close\r\n\r\n",
+            addr.port(),
+        );
+        tcp.write_all(head.as_bytes()).await.unwrap();
+        tcp.write_all(first).await.unwrap();
+        tcp.flush().await.unwrap();
+        tcp
+    }
+
+    /// Sends `rest` of a started PUT and answers the raw response.
+    async fn put_finish(mut tcp: tokio::net::TcpStream, rest: &[u8]) -> String {
+        tcp.write_all(rest).await.unwrap();
+        let mut answer = Vec::new();
+        tokio::time::timeout(Duration::from_secs(20), tcp.read_to_end(&mut answer))
+            .await
+            .unwrap()
+            .unwrap();
+        String::from_utf8_lossy(&answer).into_owned()
+    }
+
+    /// A key taken by another title while an upload's file streams (its
+    /// acquire recorded the key, then wrote it) stops the upload short of
+    /// the end of its stream: it is refused `key_taken` and the other
+    /// title's file is left as that acquire wrote it.
+    #[tokio::test]
+    async fn an_upload_stops_short_of_a_key_taken_while_it_streamed() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let local_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), local_out.path());
+        let title = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t2"))
+            .await
+            .unwrap();
+        let other = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t3"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 30).await;
+        const KEY: &str = "Author/Title t2/Title t2.m4b";
+        let (upload_id, token) = grant_one(&world, &job_id, fence, &title.uuid, KEY, b"abc").await;
+        let tcp = put_start(world.addr, &upload_id, &token, 3, b"ab").await;
+        eventually("the destination to start writing", || async {
+            !files_under(local_out.path()).is_empty()
+        })
+        .await;
+        world
+            .owner
+            .record_title_file("local", KEY, &other.uuid)
+            .await
+            .unwrap();
+        std::fs::write(local_out.path().join(KEY), b"xyz").unwrap();
+        let answer = put_finish(tcp, b"c").await;
+        assert!(answer.starts_with("HTTP/1.1 422"), "{answer}");
+        assert!(answer.contains("key_taken"), "{answer}");
+        assert_eq!(std::fs::read(local_out.path().join(KEY)).unwrap(), b"xyz");
+        eventually("the aborted write's temp file to go", || async {
+            files_under(local_out.path()).len() == 1
+        })
+        .await;
+    }
+
+    /// A PUT handler dropped after the whole body arrived, while it waits
+    /// to finish the file (here: for the locks on its keys), commits
+    /// nothing: the destinations see the stream fail, not end, and the
+    /// partial write is discarded.
+    #[tokio::test]
+    async fn a_dropped_upload_put_commits_nothing() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let local_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), local_out.path());
+        let title = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t2"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 30).await;
+        const KEY: &str = "Author/Title t2/Title t2.m4b";
+        let (upload_id, _) = grant_one(&world, &job_id, fence, &title.uuid, KEY, b"abc").await;
+        let session = bookclerk_library::control_plane::load_upload(&world.owner, &upload_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let destinations = crate::node_api::uploads::owner_destinations(&world.state)
+            .await
+            .unwrap();
+        crate::node_api::uploads::drop_tee_waiting_for_its_locks(
+            world.owner.clone(),
+            session,
+            0,
+            axum::body::Body::from("abc"),
+            destinations,
+        )
+        .await;
+        eventually("the dropped write to be discarded", || async {
+            files_under(local_out.path()).is_empty()
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !local_out.path().join(KEY).exists(),
+            "a dropped PUT never commits its file"
+        );
+        assert!(load_upload_received(&world.owner, &upload_id)
+            .await
+            .is_empty());
+    }
+
+    /// The files `upload_id` recorded as received.
+    async fn load_upload_received(store: &LibraryStore, upload_id: &str) -> Vec<usize> {
+        bookclerk_library::control_plane::load_upload(store, upload_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .received
+            .into_iter()
+            .collect()
+    }
+
+    /// A retried PUT of a file whose first attempt is still streaming
+    /// waits for that attempt, then is answered from what it recorded: the
+    /// two never write (or clean up) the same key at once.
+    #[tokio::test]
+    async fn a_retried_upload_put_waits_for_the_first_attempt() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let local_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), local_out.path());
+        let title = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t2"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 30).await;
+        const KEY: &str = "Author/Title t2/Title t2.m4b";
+        let (upload_id, token) = grant_one(&world, &job_id, fence, &title.uuid, KEY, b"abc").await;
+        let first = put_start(world.addr, &upload_id, &token, 3, b"ab").await;
+        eventually("the first attempt to start writing", || async {
+            !files_under(local_out.path()).is_empty()
+        })
+        .await;
+        let retry = tokio::spawn({
+            let upload_id = upload_id.clone();
+            let token = token.clone();
+            let addr = world.addr;
+            async move { put_raw(addr, &upload_id, &token, 0, b"abc").await }
+        });
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            !retry.is_finished(),
+            "the retry waits while the first attempt streams"
+        );
+        let answer = put_finish(first, b"c").await;
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        let answer = retry.await.unwrap();
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        assert!(answer.contains("\"received\""), "{answer}");
+        assert_eq!(std::fs::read(local_out.path().join(KEY)).unwrap(), b"abc");
+    }
+
+    /// One declared file of `bytes` on the owner's local destination.
+    fn local_file(key: &str, bytes: &[u8]) -> UploadFile {
+        UploadFile {
+            copies: vec![bookclerk_node_proto::FileCopy {
+                destination: "local".into(),
+                key: key.into(),
+            }],
+            size: bytes.len() as u64,
+            sha256: sha2::Sha256::digest(bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+            content_type: None,
+        }
+    }
+
+    /// The owner's own node id.
+    fn owner_node_id(world: &Linked) -> String {
+        bookclerk_library::control_plane::load_or_create_node_identity(world.owner_files.path())
+            .unwrap()
+            .node_id
+    }
+
+    /// Claims the queued acquire for the host directly, under `lease_secs`.
+    async fn claim_acquire(world: &Linked, lease_secs: u64) -> i64 {
+        claim_remote_job(
+            &world.owner,
+            &world.link.remote_node_id,
+            JobResourceClass::Network,
+            RemoteClaimSettings {
+                lease_secs,
+                limits: JobClaimLimits {
+                    class: 8,
+                    plugin_instance: 8,
+                },
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("the member's host may claim the acquire")
+        .job
+        .lease_generation
+    }
+
+    /// Revoking consent while the guest's scan is running drops the guest
+    /// call itself (the stand-in ignores its cancel flag, so only the
+    /// transport can stop it): the handed credentials are not used past
+    /// the revoke, and the job is given back unspent.
+    #[tokio::test]
+    async fn a_revoke_mid_scan_drops_the_guest_call() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let guests = StubGuests {
+            block_scan: true,
+            work: world.host_files.path().join("cluster-work"),
+            ..StubGuests::default()
+        };
+        let (handle, _stop) = start(&world, guests.clone()).await;
+        let job_id = enqueue_scan(&world.owner).await;
+        eventually("the guest scan to start", || async {
+            guests.entered.load(Ordering::SeqCst)
+        })
+        .await;
+        assert!(!guests.dropped.load(Ordering::SeqCst));
+        revoke_remote_plugin(&world.host, &world.link.owner_cluster_id, PLUGIN)
+            .await
+            .unwrap()
+            .unwrap();
+        eventually("the guest call to be dropped", || async {
+            guests.dropped.load(Ordering::SeqCst)
+        })
+        .await;
+        eventually("the job to be given back", || async {
+            job(&world.owner, &job_id).await.state == JobState::Pending
+                && handle.held_fences().is_empty()
+        })
+        .await;
+        assert_eq!(job(&world.owner, &job_id).await.attempt_count, 0);
+    }
+
+    /// A title this host's own destination refused is not uploaded: the
+    /// owner's destination gets nothing, the title stays unacquired, and
+    /// the job fails rather than succeeding with a destination missing the
+    /// title.
+    #[tokio::test]
+    async fn a_title_this_hosts_destination_refused_is_not_uploaded() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        let host_local = tempfile::tempdir().unwrap();
+        // A file where the title's folder would go: the copy fails.
+        std::fs::write(host_local.path().join("Author"), b"in the way").unwrap();
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let guests = StubGuests {
+            payload: Arc::new(b"audio".to_vec()),
+            local: Some(host_local.path().to_path_buf()),
+            work: world.host_files.path().join("cluster-work"),
+            ..StubGuests::default()
+        };
+        let (_handle, _stop) = start(&world, guests).await;
+        let job_id = enqueue_acquire(&world.owner).await;
+        eventually("the acquire to fail its title", || async {
+            job(&world.owner, &job_id)
+                .await
+                .error_message
+                .is_some_and(|message| message.contains("acquired=0 failed=1"))
+        })
+        .await;
+        assert_ne!(job(&world.owner, &job_id).await.state, JobState::Succeeded);
+        assert!(
+            files_under(owner_out.path()).is_empty(),
+            "nothing reached the owner"
+        );
+        let row = world
+            .owner
+            .get_book_by_uuid(&book.uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            row.acquire_status,
+            bookclerk_library::AcquireStatus::Acquired
+        );
+    }
+
+    /// An upload aborted after some of its files arrived (its fence lost
+    /// before a later file) leaves none of them in the destination.
+    #[tokio::test]
+    async fn a_fence_lost_before_a_later_file_deletes_the_received_ones() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 2).await;
+        let files = vec![
+            local_file("Author/Title t1/t1.m4b", b"audio"),
+            local_file("Author/Title t1/cover.jpg", b"jpeg"),
+        ];
+        let UploadGrant::Granted {
+            upload_id, token, ..
+        } = grant_upload(
+            &world.owner,
+            &world.link.remote_node_id,
+            &job_id,
+            fence,
+            &owner_node_id(&world),
+            &UploadGrantRequest {
+                book_uuid: &book.uuid,
+                primary_key: "Author/Title t1/t1.m4b",
+                pdf_key: None,
+                files: &files,
+                destinations: &local_scope("Author/Title t1"),
+            },
+        )
+        .await
+        .unwrap()
+        else {
+            panic!("granted");
+        };
+        let first = put_raw(world.addr, &upload_id, &token, 0, b"audio").await;
+        assert!(first.starts_with("HTTP/1.1 200"), "{first}");
+        assert!(owner_out.path().join("Author/Title t1/t1.m4b").is_file());
+
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        assert_eq!(world.owner.reclaim_expired_leases().await.unwrap(), 1);
+        let second = put_raw(world.addr, &upload_id, &token, 1, b"jpeg").await;
+        assert!(second.starts_with("HTTP/1.1 409"), "{second}");
+        assert!(
+            files_under(owner_out.path()).is_empty(),
+            "the received file is deleted with the abort: {:?}",
+            files_under(owner_out.path())
+        );
+    }
+
+    /// A title sent again replaces its earlier upload, and what that one
+    /// had received is deleted before the new one takes files (a key the
+    /// new one declares is its own now, and it writes it again).
+    #[tokio::test]
+    async fn a_resent_title_deletes_what_its_superseded_upload_received() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 60).await;
+        let files = vec![
+            local_file("Author/Title t1/Title t1 [t1].m4b", b"audio"),
+            local_file("Author/Title t1/Title t1 [t1].jpg", b"jpeg"),
+        ];
+        let UploadGrant::Granted {
+            upload_id, token, ..
+        } = grant_upload(
+            &world.owner,
+            &world.link.remote_node_id,
+            &job_id,
+            fence,
+            &owner_node_id(&world),
+            &UploadGrantRequest {
+                book_uuid: &book.uuid,
+                primary_key: "Author/Title t1/Title t1 [t1].m4b",
+                pdf_key: None,
+                files: &files,
+                destinations: &local_scope("Author/Title t1"),
+            },
+        )
+        .await
+        .unwrap()
+        else {
+            panic!("granted");
+        };
+        let first = put_raw(world.addr, &upload_id, &token, 1, b"jpeg").await;
+        assert!(first.starts_with("HTTP/1.1 200"), "{first}");
+        assert!(owner_out
+            .path()
+            .join("Author/Title t1/Title t1 [t1].jpg")
+            .is_file());
+
+        // The host (connected now; the job is already running) re-sends
+        // the title over its socket.
+        let (handle, _stop) = start(&world, StubGuests::default()).await;
+        let answer = handle
+            .request(Body::UploadGrant {
+                job_id: job_id.clone(),
+                fence,
+                book_uuid: book.uuid.clone(),
+                primary_key: "Author/Title t1/Title t1 [t1].m4b".into(),
+                pdf_key: None,
+                files: vec![files[0].clone()],
+            })
+            .await
+            .expect("the owner answers");
+        assert!(
+            matches!(answer.body, Body::UploadGranted { .. }),
+            "{answer:?}"
+        );
+        assert!(
+            files_under(owner_out.path()).is_empty(),
+            "the superseded upload's file is deleted"
+        );
+        assert!(authorize_upload(&world.owner, &upload_id, &token, false)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    /// A release (a consent revoke or a host giving a job back) aborts the
+    /// job's open uploads and deletes what they had already received.
+    #[tokio::test]
+    async fn a_release_deletes_what_the_jobs_uploads_received() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 60).await;
+        let files = vec![
+            local_file("Author/Title t1/t1.m4b", b"audio"),
+            local_file("Author/Title t1/cover.jpg", b"jpeg"),
+        ];
+        let UploadGrant::Granted {
+            upload_id, token, ..
+        } = grant_upload(
+            &world.owner,
+            &world.link.remote_node_id,
+            &job_id,
+            fence,
+            &owner_node_id(&world),
+            &UploadGrantRequest {
+                book_uuid: &book.uuid,
+                primary_key: "Author/Title t1/t1.m4b",
+                pdf_key: None,
+                files: &files,
+                destinations: &local_scope("Author/Title t1"),
+            },
+        )
+        .await
+        .unwrap()
+        else {
+            panic!("granted");
+        };
+        let first = put_raw(world.addr, &upload_id, &token, 0, b"audio").await;
+        assert!(first.starts_with("HTTP/1.1 200"), "{first}");
+        assert!(owner_out.path().join("Author/Title t1/t1.m4b").is_file());
+
+        let (handle, _stop) = start(&world, StubGuests::default()).await;
+        let answer = handle
+            .request(Body::Release {
+                job_id: job_id.clone(),
+                fence,
+                reason: "awaiting_host_consent".into(),
+                resumed: false,
+            })
+            .await
+            .expect("the owner answers");
+        assert!(matches!(answer.body, Body::Accepted {}), "{answer:?}");
+        assert!(
+            files_under(owner_out.path()).is_empty(),
+            "the released job's received file is deleted: {:?}",
+            files_under(owner_out.path())
+        );
+        assert!(authorize_upload(&world.owner, &upload_id, &token, false)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(job(&world.owner, &job_id).await.state, JobState::Pending);
+    }
+
+    /// The owner computes each title's key scope from its own row: over
+    /// the socket, a grant whose key lies in another title's folder, or
+    /// names a file another title has, is refused, and the title's own
+    /// keys are granted.
+    #[tokio::test]
+    async fn the_owner_binds_a_grants_keys_to_the_granted_title() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let other = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t2"))
+            .await
+            .unwrap();
+        world
+            .owner
+            .set_acquire_status(
+                &other.product_id,
+                "riley-acct",
+                bookclerk_library::AcquireStatus::Acquired,
+                Some("Author/Title t2/Title t2.m4b"),
+                None,
+            )
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 60).await;
+        let (handle, _stop) = start(&world, StubGuests::default()).await;
+        let grant = |files: Vec<UploadFile>| {
+            let handle = handle.clone();
+            let job_id = job_id.clone();
+            let book_uuid = book.uuid.clone();
+            async move {
+                let primary_key = files[0].copies[0].key.clone();
+                handle
+                    .request(Body::UploadGrant {
+                        job_id,
+                        fence,
+                        book_uuid,
+                        primary_key,
+                        pdf_key: None,
+                        files,
+                    })
+                    .await
+                    .expect("the owner answers")
+                    .body
+            }
+        };
+        let refusal = |body: &Body| match body {
+            Body::Error { message, .. } => message.clone(),
+            other => panic!("expected a refusal: {other:?}"),
+        };
+        for (key, reason) in [
+            ("Author/Title t2/cover.jpg", "key_out_of_scope"),
+            ("Title t1.m4b", "key_out_of_scope"),
+            ("../Author/Title t1/t1.m4b", "invalid_manifest"),
+        ] {
+            let body = grant(vec![local_file(key, b"audio")]).await;
+            assert_eq!(refusal(&body), reason, "{key}");
+        }
+        // A file another title has, written into this title's folder by a
+        // shared-folder template, is refused as well.
+        world
+            .owner
+            .set_acquire_status(
+                &other.product_id,
+                "riley-acct",
+                bookclerk_library::AcquireStatus::Acquired,
+                Some("Author/Title t2/Title t2 [t2].m4b"),
+                None,
+            )
+            .await
+            .unwrap();
+        world
+            .owner
+            .record_title_file("local", "Author/Title t1/Title t1 [t1].cue", &other.uuid)
+            .await
+            .unwrap();
+        // The folder template (`<title short>`) is shared, so only the
+        // title's planned names are in scope there: another title's names
+        // are refused by name, and a planned name another title holds by
+        // its claim.
+        for (key, reason) in [
+            ("Author/Title t1/Title t2.m4b", "key_out_of_scope"),
+            ("Author/Title t1/Title t2.jpg", "key_out_of_scope"),
+            ("Author/Title t1/Title t1 [t1].cue", "key_of_another_book"),
+        ] {
+            let body = grant(vec![
+                local_file("Author/Title t1/Title t1 [t1].m4b", b"audio"),
+                local_file(key, b"other"),
+            ])
+            .await;
+            assert_eq!(refusal(&body), reason, "{key}");
+        }
+        let body = grant(vec![
+            local_file("Author/Title t1/Title t1 [t1].m4b", b"audio"),
+            local_file("Author/Title t1/Title t1 [t1].jpg", b"jpeg"),
+        ])
+        .await;
+        assert!(matches!(body, Body::UploadGranted { .. }), "{body:?}");
+        // A title the plan would not hand out (its audio is acquired) is
+        // refused even under its own keys, so it is never overwritten.
+        let body = handle
+            .request(Body::UploadGrant {
+                job_id: job_id.clone(),
+                fence,
+                book_uuid: other.uuid.clone(),
+                primary_key: "Author/Title t2/Title t2.m4b".into(),
+                pdf_key: None,
+                files: vec![local_file("Author/Title t2/Title t2.m4b", b"other")],
+            })
+            .await
+            .expect("the owner answers")
+            .body;
+        assert_eq!(refusal(&body), "book_not_planned");
+        assert!(files_under(owner_out.path()).is_empty());
+    }
+
+    /// A guest call that ends while the job is cancelled (a guest that
+    /// stopped cooperatively and returned what it had) is answered
+    /// `cancelled`, never with its result.
+    #[tokio::test]
+    async fn work_that_ends_after_a_cancel_is_cancelled() {
+        use super::super::host_jobs::until_cancelled;
+
+        let cancel = AtomicBool::new(false);
+        let out = until_cancelled(&cancel, async {
+            cancel.store(true, Ordering::SeqCst);
+            Ok(vec![1, 2])
+        })
+        .await;
+        assert!(out.is_err_and(|err| err.to_string() == "cancelled"));
+        let calm = AtomicBool::new(false);
+        assert_eq!(until_cancelled(&calm, async { Ok(3) }).await.unwrap(), 3);
+    }
+
+    /// Owner-supplied job and title ids become work directories only as one
+    /// plain segment; anything that could leave the work dir is refused
+    /// before any path is used.
+    #[test]
+    fn owner_ids_are_used_as_paths_only_as_one_plain_segment() {
+        use super::super::host_jobs::{is_work_id, work_path, MAX_WORK_ID_BYTES};
+
+        let root = Path::new("/files/cluster-work");
+        assert_eq!(
+            work_path(root, "acquire-0b3c6c1e-6f0e-4d7b-9f39-1a2b3c4d5e6f").unwrap(),
+            root.join("acquire-0b3c6c1e-6f0e-4d7b-9f39-1a2b3c4d5e6f")
+        );
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../escape",
+            "a/../../b",
+            "a/b",
+            "a\\b",
+            "/etc",
+            "/",
+            "C:",
+            "C:\\Windows",
+            "\\\\server\\share",
+            "~",
+            "a b",
+            "a\0b",
+            "t1.library",
+        ] {
+            assert!(!is_work_id(bad), "{bad:?}");
+            assert!(work_path(root, bad).is_err(), "{bad:?}");
+        }
+        assert!(is_work_id(&"a".repeat(MAX_WORK_ID_BYTES)));
+        assert!(!is_work_id(&"a".repeat(MAX_WORK_ID_BYTES + 1)));
+    }
+
+    /// `POST`s a commit of `upload_id` with `body`; answers the raw HTTP
+    /// response.
+    async fn commit_raw(addr: SocketAddr, upload_id: &str, token: &str, body: &str) -> String {
+        let mut tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let head = format!(
+            "POST /api/node/v1/uploads/{upload_id}/commit HTTP/1.1\r\n\
+             Host: localhost:{}\r\nAuthorization: Bookclerk-Upload {token}\r\n\
+             Content-Type: application/json\r\nContent-Length: {}\r\n\
+             Connection: close\r\n\r\n",
+            addr.port(),
+            body.len()
+        );
+        tcp.write_all(head.as_bytes()).await.unwrap();
+        tcp.write_all(body.as_bytes()).await.unwrap();
+        let mut answer = Vec::new();
+        tokio::time::timeout(Duration::from_secs(20), tcp.read_to_end(&mut answer))
+            .await
+            .unwrap()
+            .unwrap();
+        String::from_utf8_lossy(&answer).into_owned()
+    }
+
+    /// Grants `files` of the title `book_uuid` under `fence` directly in
+    /// the owner's library; answers the upload id, token and the uploads
+    /// it superseded.
+    async fn grant_direct(
+        world: &Linked,
+        job_id: &str,
+        fence: i64,
+        book_uuid: &str,
+        files: &[UploadFile],
+        scope: &[UploadDestination],
+    ) -> (
+        String,
+        String,
+        Vec<bookclerk_library::control_plane::UploadSession>,
+    ) {
+        let primary_key = files.first().map_or("", |file| file.copies[0].key.as_str());
+        match grant_upload(
+            &world.owner,
+            &world.link.remote_node_id,
+            job_id,
+            fence,
+            &owner_node_id(world),
+            &UploadGrantRequest {
+                book_uuid,
+                primary_key,
+                pdf_key: None,
+                files,
+                destinations: scope,
+            },
+        )
+        .await
+        .unwrap()
+        {
+            UploadGrant::Granted {
+                upload_id,
+                token,
+                superseded,
+                ..
+            } => (upload_id, token.to_string(), superseded),
+            other => panic!("expected a grant: {other:?}"),
+        }
+    }
+
+    /// A cleanup of an aborted upload that runs after a later upload of the
+    /// title wrote the same key (a stale abort, after the job's permits were
+    /// given back) leaves the later file alone and deletes only what is
+    /// still the aborted upload's own.
+    #[tokio::test]
+    async fn a_stale_cleanup_never_deletes_a_later_uploads_file() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 60).await;
+        let scope = local_scope("Author/Title t1");
+        let old_files = vec![
+            local_file("Author/Title t1/t1.m4b", b"old audio"),
+            local_file("Author/Title t1/old.jpg", b"old jpeg"),
+        ];
+        let (old_id, old_token, _) =
+            grant_direct(&world, &job_id, fence, &book.uuid, &old_files, &scope).await;
+        for (index, body) in [(0, &b"old audio"[..]), (1, &b"old jpeg"[..])] {
+            let put = put_raw(world.addr, &old_id, &old_token, index, body).await;
+            assert!(put.starts_with("HTTP/1.1 200"), "{put}");
+        }
+        // The replacement claims the audio key and writes it again.
+        let new_files = vec![local_file("Author/Title t1/t1.m4b", b"new audio")];
+        let (new_id, new_token, superseded) =
+            grant_direct(&world, &job_id, fence, &book.uuid, &new_files, &scope).await;
+        let put = put_raw(world.addr, &new_id, &new_token, 0, b"new audio").await;
+        assert!(put.starts_with("HTTP/1.1 200"), "{put}");
+        // Only now does the old upload's cleanup run.
+        let [stale] = superseded.as_slice() else {
+            panic!("the old upload is superseded: {superseded:?}");
+        };
+        crate::node_api::uploads::discard_received(&world.state, &world.owner, stale).await;
+        assert_eq!(
+            std::fs::read(owner_out.path().join("Author/Title t1/t1.m4b")).unwrap(),
+            b"new audio",
+            "the replacement's file stays"
+        );
+        assert!(
+            !owner_out.path().join("Author/Title t1/old.jpg").exists(),
+            "the stale upload's own file is deleted"
+        );
+    }
+
+    /// The closing commit that completes the job aborts an upload of the
+    /// job still open (a title re-sent but never committed) and deletes
+    /// what it received, leaving the committed title's files.
+    #[tokio::test]
+    async fn the_closing_commit_discards_a_leftover_open_upload() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 60).await;
+        let scope = local_scope("Author/Title t1");
+        let files = vec![local_file("Author/Title t1/t1.m4b", b"audio")];
+        let (upload_id, token, _) =
+            grant_direct(&world, &job_id, fence, &book.uuid, &files, &scope).await;
+        let put = put_raw(world.addr, &upload_id, &token, 0, b"audio").await;
+        assert!(put.starts_with("HTTP/1.1 200"), "{put}");
+        let committed = commit_raw(world.addr, &upload_id, &token, "{}").await;
+        assert!(committed.starts_with("HTTP/1.1 200"), "{committed}");
+        // A re-send of the title that never commits.
+        let extra = vec![local_file("Author/Title t1/extra.jpg", b"jpeg")];
+        let (left_id, left_token, _) =
+            grant_direct(&world, &job_id, fence, &book.uuid, &extra, &scope).await;
+        let put = put_raw(world.addr, &left_id, &left_token, 0, b"jpeg").await;
+        assert!(put.starts_with("HTTP/1.1 200"), "{put}");
+        assert!(owner_out.path().join("Author/Title t1/extra.jpg").is_file());
+
+        let (closing_id, closing_token, _) =
+            grant_direct(&world, &job_id, fence, "", &[], &[]).await;
+        let closed = commit_raw(
+            world.addr,
+            &closing_id,
+            &closing_token,
+            r#"{"finish":true,"detail":"done"}"#,
+        )
+        .await;
+        assert!(closed.starts_with("HTTP/1.1 200"), "{closed}");
+        assert!(
+            closed.contains("\"job_completed\":true") || closed.contains("\"jobCompleted\":true"),
+            "{closed}"
+        );
+        assert_eq!(job(&world.owner, &job_id).await.state, JobState::Succeeded);
+        assert!(
+            !owner_out.path().join("Author/Title t1/extra.jpg").exists(),
+            "the leftover upload's file is deleted"
+        );
+        assert!(owner_out.path().join("Author/Title t1/t1.m4b").is_file());
+        assert!(authorize_upload(&world.owner, &left_id, &left_token, false)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    /// `acquire.plan` hands a host only titles whose audio is not acquired:
+    /// a title whose audio is acquired but whose companion PDF is missing
+    /// is not sent (a host would fetch its audio again), matching what the
+    /// closing commit waits for.
+    #[tokio::test]
+    async fn the_plan_leaves_a_missing_pdf_to_the_owner() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        world.state.config.write().await.output.download_pdf = true;
+        let fresh = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let audio_only = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t2"))
+            .await
+            .unwrap();
+        world
+            .owner
+            .set_acquire_status(
+                &audio_only.product_id,
+                "riley-acct",
+                bookclerk_library::AcquireStatus::Acquired,
+                Some("Author/Title t2/Title t2.m4b"),
+                None,
+            )
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 60).await;
+        let (handle, _stop) = start(&world, StubGuests::default()).await;
+        let answer = handle
+            .request(Body::AcquirePlan {
+                job_id: job_id.clone(),
+                fence,
+            })
+            .await
+            .expect("the owner answers");
+        let Body::AcquireTargets { targets, .. } = answer.body else {
+            panic!("expected targets: {answer:?}");
+        };
+        let planned: Vec<&str> = targets.iter().map(|t| t.book_uuid.as_str()).collect();
+        assert_eq!(planned, vec![fresh.uuid.as_str()]);
+    }
+
+    /// `acquire.plan` sends an episode's podcast parent row with it, so a
+    /// host names the episode under the parent's folder as the owner does.
+    #[tokio::test]
+    async fn the_plan_sends_an_episodes_podcast_parent() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        world.state.config.write().await.library.download_episodes = true;
+        let show = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&NewBook {
+                content_kind: "podcast".into(),
+                ..owner_book("riley-acct", "show")
+            })
+            .await
+            .unwrap();
+        let episode = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&NewBook {
+                content_kind: "episode".into(),
+                series_asin: Some("show".into()),
+                ..owner_book("riley-acct", "ep1")
+            })
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 60).await;
+        let (handle, _stop) = start(&world, StubGuests::default()).await;
+        let answer = handle
+            .request(Body::AcquirePlan {
+                job_id: job_id.clone(),
+                fence,
+            })
+            .await
+            .expect("the owner answers");
+        let Body::AcquireTargets { targets, .. } = answer.body else {
+            panic!("expected targets: {answer:?}");
+        };
+        let target = targets
+            .iter()
+            .find(|t| t.book_uuid == episode.uuid)
+            .expect("the episode is planned");
+        let parent: bookclerk_library::BookRecord =
+            serde_json::from_value(target.parent.clone().expect("its parent is sent")).unwrap();
+        assert_eq!(parent.uuid, show.uuid);
+    }
+
+    /// A title the owner refuses after this host copied it to its own
+    /// destination (here: its key is another title's file) leaves no copy
+    /// on this host either.
+    #[tokio::test]
+    async fn a_title_the_owner_refuses_is_removed_from_this_hosts_destination() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        let host_local = tempfile::tempdir().unwrap();
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        // Another, already acquired title of the library wrote the file
+        // this title's acquire names.
+        let other = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t2"))
+            .await
+            .unwrap();
+        world
+            .owner
+            .set_acquire_status(
+                &other.product_id,
+                "riley-acct",
+                bookclerk_library::AcquireStatus::Acquired,
+                Some("Author/Title t2/Title t2.m4b"),
+                None,
+            )
+            .await
+            .unwrap();
+        let options = crate::node_api::uploads::owner_destinations(&world.state)
+            .await
+            .unwrap()
+            .remove(0)
+            .options;
+        let key = planned_key(&book, &options);
+        world
+            .owner
+            .record_title_file("local", &key, &other.uuid)
+            .await
+            .unwrap();
+        let guests = StubGuests {
+            payload: Arc::new(b"audio".to_vec()),
+            local: Some(host_local.path().to_path_buf()),
+            work: world.host_files.path().join("cluster-work"),
+            ..StubGuests::default()
+        };
+        let (_handle, _stop) = start(&world, guests).await;
+        let job_id = enqueue_acquire(&world.owner).await;
+        eventually("the acquire to fail its title", || async {
+            job(&world.owner, &job_id)
+                .await
+                .error_message
+                .is_some_and(|message| message.contains("acquired=0 failed=1"))
+        })
+        .await;
+        assert!(
+            files_under(host_local.path()).is_empty(),
+            "the host's own copy is removed: {:?}",
+            files_under(host_local.path())
+        );
+        assert!(files_under(owner_out.path()).is_empty());
+    }
+
+    /// Each fence generation of a job has its own scratch dir, so a stale
+    /// run unwinding after its lease expired removes only its own
+    /// generation's scratch, never the replacement run's on the same host.
+    #[test]
+    fn each_fence_generation_has_its_own_job_dir() {
+        use super::super::host_jobs::job_work_path;
+
+        let root = Path::new("/files/cluster-work");
+        let stale = job_work_path(root, "job-1", 3).unwrap();
+        let fresh = job_work_path(root, "job-1", 4).unwrap();
+        assert_eq!(stale, root.join("job-1-g3"));
+        assert_ne!(stale, fresh);
+        assert!(!fresh.starts_with(&stale) && !stale.starts_with(&fresh));
+        assert_eq!(fresh.parent(), Some(root));
+        assert!(job_work_path(root, "../escape", 1).is_err());
+    }
+
+    /// A title's pipeline scratch is its own, inside the job dir the host
+    /// removes when a job ends or is dropped, never the host-wide cache.
+    #[test]
+    fn a_titles_pipeline_scratch_sits_in_the_job_dir() {
+        use super::super::host_jobs::{title_cache_dir, work_path};
+
+        let job_dir = work_path(Path::new("/files/cluster-work"), "job-1").unwrap();
+        let outbox = work_path(&job_dir, "t1").unwrap();
+        let cache = title_cache_dir(&outbox);
+        assert!(cache.starts_with(&job_dir), "{cache:?}");
+        assert_ne!(cache, outbox);
+        assert_ne!(cache, outbox.with_extension("library"));
+        assert_ne!(cache, title_cache_dir(&work_path(&job_dir, "t2").unwrap()));
+    }
+
+    /// Each copy to this host's own destination is recorded as it is
+    /// written, and an uncommitted title's copies are removed only while
+    /// the fence is held: once it is lost, a replacement run may own them.
+    #[tokio::test]
+    async fn local_copies_are_removed_only_under_a_held_fence() {
+        use super::super::host_jobs::{copy_to_local_destinations, remove_local_copies};
+
+        let host_local = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let guests = StubGuests {
+            local: Some(host_local.path().to_path_buf()),
+            ..StubGuests::default()
+        };
+        let outbox = work.path().join("t1");
+        let key = "Author/Title/Title.m4b".to_string();
+        let source = destination_outbox(&outbox, 0).join(&key);
+        tokio::fs::create_dir_all(source.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&source, b"audio").await.unwrap();
+        let acquired = AcquiredTitle {
+            primary_key: key.clone(),
+            pdf_key: None,
+            keys: vec![vec![key.clone()]],
+        };
+        let copied = Mutex::new(Vec::new());
+        copy_to_local_destinations(&guests, "t1", &outbox, &acquired, &copied)
+            .await
+            .unwrap();
+        let copies = copied.into_inner().unwrap();
+        assert_eq!(copies.len(), 1);
+        assert_eq!(copies[0].1, key);
+        let copy = host_local.path().join(&key);
+
+        remove_local_copies("t1", &copies, true).await;
+        assert!(copy.is_file(), "a lost fence leaves the copy");
+        remove_local_copies("t1", &copies, false).await;
+        assert!(!copy.exists(), "a held fence removes it");
+
+        // A key already on the destination (another writer's file, or an
+        // earlier acquire of the title) is not this run's to roll back.
+        tokio::fs::create_dir_all(copy.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&copy, b"earlier").await.unwrap();
+        let copied = Mutex::new(Vec::new());
+        copy_to_local_destinations(&guests, "t1", &outbox, &acquired, &copied)
+            .await
+            .unwrap();
+        let copies = copied.into_inner().unwrap();
+        assert!(copies.is_empty(), "a key that was there is not recorded");
+        remove_local_copies("t1", &copies, false).await;
+        assert!(
+            copy.is_file(),
+            "the rollback leaves a key it did not create"
+        );
+    }
+}
+
+/// A database swap stops the client of the previous store's link and
+/// starts one for the new store's link.
+#[tokio::test]
+async fn a_database_swap_restarts_cluster_links_on_the_new_store() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let host_files = tempfile::tempdir().unwrap();
+    let swapped_files = tempfile::tempdir().unwrap();
+    let (state, owner) = crate::node_api::tests::test_state(&owner_files).await;
+    let addr = serve(crate::api::router(Arc::clone(&state), None)).await;
+    let origin = public_origin(&state, &format!("http://127.0.0.1:{}", addr.port())).await;
+    let (member, _token) = owner_account(&owner, b"riley-token-v1").await;
+
+    // The host daemon, enrolled once into its first store.
+    let (host_state, first_store) = crate::node_api::tests::test_state(&host_files).await;
+    let first = join(&owner, &first_store, member, &origin, None)
+        .await
+        .unwrap();
+    super::spawn_cluster_links(Arc::clone(&host_state));
+    eventually("the first store's link to connect", || async {
+        crate::node_api::ws::node_session_live(&first.remote_node_id)
+    })
+    .await;
+
+    // A config reload swaps in a store that holds another link.
+    let second_store = host_store(swapped_files.path()).await;
+    let second = join(&owner, &second_store, member, &origin, None)
+        .await
+        .unwrap();
+    *host_state.library.write().await = second_store;
+    host_state.library_swaps.send_modify(|swaps| *swaps += 1);
+    eventually("the new store's link to connect", || async {
+        crate::node_api::ws::node_session_live(&second.remote_node_id)
+    })
+    .await;
+    eventually("the previous store's link to disconnect", || async {
+        !crate::node_api::ws::node_session_live(&first.remote_node_id)
+    })
+    .await;
+    // It stays down: nothing dials the previous store's link again.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(!crate::node_api::ws::node_session_live(
+        &first.remote_node_id
+    ));
 }
 
 /// `bookclerk clusters leave` against a running daemon: the watcher stops
-/// the link's client once the link is no longer active, and returns on
-/// shutdown without stopping anything.
+/// the link's client once the link is no longer active, and on the store's
+/// shutdown (a database swap) stops the client too and returns.
 #[tokio::test]
 async fn leaving_stops_the_running_client() {
     let _dek = crate::auth::tests::process_dek_lock().await;
@@ -2116,28 +3736,33 @@ async fn leaving_stops_the_running_client() {
     .await
     .unwrap();
 
-    // Shutdown first: the watcher returns and stops nothing.
+    // Shutdown first: the watcher forwards it to the client and returns.
     let (stop, mut stopped) = watch::channel(false);
     let stop = Arc::new(stop);
     let (shut, shutdown) = watch::channel(false);
     let watcher = tokio::spawn(super::stop_when_inactive(
         host.clone(),
         "cluster-leave".into(),
+        "node-leave".into(),
         Arc::clone(&stop),
         shutdown,
     ));
     shut.send(true).unwrap();
-    tokio::time::timeout(Duration::from_secs(5), watcher)
+    let why = tokio::time::timeout(Duration::from_secs(5), watcher)
         .await
         .expect("the watcher returns on shutdown")
         .unwrap();
-    assert!(!*stopped.borrow_and_update());
+    assert_eq!(why, super::LinkStop::Shutdown);
+    assert!(*stopped.borrow_and_update(), "shutdown stops the client");
 
     // While active, nothing stops; after leaving, the client is stopped.
+    let (stop, mut stopped) = watch::channel(false);
+    let stop = Arc::new(stop);
     let (_shut, shutdown) = watch::channel(false);
     let watcher = tokio::spawn(super::stop_when_inactive(
         host.clone(),
         "cluster-leave".into(),
+        "node-leave".into(),
         Arc::clone(&stop),
         shutdown,
     ));
@@ -2156,5 +3781,117 @@ async fn leaving_stops_the_running_client() {
         .expect("the client is stopped after leaving")
         .unwrap();
     assert!(*stopped.borrow());
-    watcher.await.unwrap();
+    assert_eq!(watcher.await.unwrap(), super::LinkStop::Inactive);
+}
+
+/// A link re-enrolled as another node (`bookclerk clusters join` again)
+/// stops the client running as the previous node, and says so.
+#[tokio::test]
+async fn a_rejoin_as_another_node_stops_the_previous_client() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let _owner = crate::node_api::tests::test_state(&owner_files).await;
+    let host_files = tempfile::tempdir().unwrap();
+    let host = host_store(host_files.path()).await;
+    let enroll = |node: &str| bookclerk_library::control_plane::NewClusterLink {
+        owner_cluster_id: "cluster-rejoin".into(),
+        owner_origin: "https://owner.example".into(),
+        remote_node_id: node.into(),
+        spki_pin: None,
+    };
+    let keys = bookclerk_library::control_plane::ClusterLinkKeys::generate;
+    bookclerk_library::control_plane::record_cluster_link(&host, &enroll("node-old"), &keys())
+        .await
+        .unwrap();
+
+    let (stop, mut stopped) = watch::channel(false);
+    let (_shut, shutdown) = watch::channel(false);
+    let watcher = tokio::spawn(super::stop_when_inactive(
+        host.clone(),
+        "cluster-rejoin".into(),
+        "node-old".into(),
+        Arc::new(stop),
+        shutdown,
+    ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), stopped.changed())
+            .await
+            .is_err(),
+        "the link as enrolled keeps its client"
+    );
+    bookclerk_library::control_plane::record_cluster_link(&host, &enroll("node-new"), &keys())
+        .await
+        .unwrap();
+    tokio::time::timeout(super::consent::CONSENT_POLL * 3, stopped.changed())
+        .await
+        .expect("the previous node's client is stopped")
+        .unwrap();
+    assert!(*stopped.borrow());
+    assert_eq!(watcher.await.unwrap(), super::LinkStop::Replaced);
+}
+
+/// Through the running supervisor: after the host joins the same cluster
+/// again, the client of the previous node disconnects and one for the new
+/// node connects, without a restart or a database swap.
+#[tokio::test]
+async fn a_rejoined_link_is_dialed_as_the_new_node() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let host_files = tempfile::tempdir().unwrap();
+    let (state, owner) = crate::node_api::tests::test_state(&owner_files).await;
+    let addr = serve(crate::api::router(Arc::clone(&state), None)).await;
+    let origin = public_origin(&state, &format!("http://127.0.0.1:{}", addr.port())).await;
+    let (member, _token) = owner_account(&owner, b"riley-token-v1").await;
+
+    let (host_state, host) = crate::node_api::tests::test_state(&host_files).await;
+    let first = join(&owner, &host, member, &origin, None).await.unwrap();
+    super::spawn_cluster_links(Arc::clone(&host_state));
+    eventually("the first node to connect", || async {
+        crate::node_api::ws::node_session_live(&first.remote_node_id)
+    })
+    .await;
+
+    let second = join(&owner, &host, member, &origin, None).await.unwrap();
+    assert_eq!(second.owner_cluster_id, first.owner_cluster_id);
+    assert_ne!(second.remote_node_id, first.remote_node_id);
+    eventually("the new node to connect", || async {
+        crate::node_api::ws::node_session_live(&second.remote_node_id)
+    })
+    .await;
+    eventually("the previous node to disconnect", || async {
+        !crate::node_api::ws::node_session_live(&first.remote_node_id)
+    })
+    .await;
+}
+
+/// A link's supervisor and watcher are aborted with their client's task:
+/// dropping the guard (as aborting the task that holds it does) aborts the
+/// guarded task, and so does dropping a [`super::join_or_abort`] wait.
+#[tokio::test]
+async fn a_guarded_task_is_aborted_with_its_guard() {
+    /// Waits until `task` finished.
+    async fn finished(task: &tokio::task::AbortHandle) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the guarded task is aborted");
+    }
+    let guard = AbortOnDrop(Some(tokio::spawn(std::future::pending::<()>())));
+    let aborted = guard
+        .0
+        .as_ref()
+        .map(tokio::task::JoinHandle::abort_handle)
+        .unwrap();
+    drop(guard);
+    finished(&aborted).await;
+    let pending = tokio::spawn(std::future::pending::<()>());
+    let waited = pending.abort_handle();
+    let wait = tokio::spawn(super::join_or_abort(pending));
+    tokio::task::yield_now().await;
+    assert!(!waited.is_finished());
+    wait.abort();
+    finished(&waited).await;
 }

@@ -156,7 +156,7 @@ Branded daemon HTML (invite / 404) cannot read that row and only queries
     sign-in on the library; or "I have an invite") and **Leave library**,
     and each library plugin's request to run here, with a deny checkbox per
     requested domain and binding, a deny-network switch, Approve (for the
-    version shown) and Revoke. A refused approval shows the daemon's reason.
+    request shown, archive included) and Revoke. A refused approval shows the daemon's reason.
   - **Branches** (operator or Owner): "Let new branches join", the address
     to join, and the self-signed fingerprint a joining operator checks.
     Branch invites are minted with **Add a branch** in User management (and
@@ -166,9 +166,9 @@ Branded daemon HTML (invite / 404) cannot read that row and only queries
 
 **Live updates.** The SPA holds one WebSocket, `GET /api/live`
 (subprotocol `bookclerk-live.v1`), that names topics whose data changed
-(`library`, `jobs`, `deliveries`, `nodes`, `config`, `consents`, `users`);
-Status, Library, Settings → Nodes, User Management and Settings → Library re-read
-their routes when told. The socket carries topic names only, requires an
+(`library`, `jobs`, `deliveries`, `nodes`, `config`, `consents`, `clusters`,
+`users`); Status, Library, Settings → Nodes, User Management and Settings →
+Library re-read their routes when told. The socket carries topic names only, requires an
 exact `Origin` match and a signed-in session, and is scoped to the caller's
 role. While it is down, panels poll on their old timers and the client
 reconnects with backoff (1 s to 30 s). The Vite dev server proxies it

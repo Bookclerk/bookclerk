@@ -30,7 +30,9 @@ pub struct Config {
     /// Library database backend plugin (`[database]`).
     #[serde(default)]
     pub database: crate::database::DatabaseConfig,
-    /// Acquire packaging and destination backends (`[output]`).
+    /// Acquire packaging (`[output]`). After control-plane enrollment every
+    /// field except the host-local `in_progress` is overlaid from the
+    /// `core.output` database document; the TOML table only seeds it once.
     pub output: OutputConfig,
     /// HTTP control-plane / tray settings (`[daemon]`).
     pub daemon: DaemonConfig,
@@ -69,6 +71,14 @@ pub struct Config {
     /// replaces this authority explicitly. Not serialized to `config.toml`.
     #[serde(skip)]
     pub events_authority: Option<String>,
+    /// Revision of the DB-authoritative `[output]` document (`core.output`)
+    /// after overlay. Absent until control-plane bootstrap or reconcile loads
+    /// it; compared only with [`Self::output_authority`]. Not serialized.
+    #[serde(skip)]
+    pub output_revision: Option<i64>,
+    /// Cluster id that produced [`Self::output_revision`]. Not serialized.
+    #[serde(skip)]
+    pub output_authority: Option<String>,
 }
 
 /// Auth encryption settings (`[auth]` section).
@@ -302,6 +312,19 @@ pub struct NodeApiConfig {
 /// Let's Encrypt's production ACME directory.
 pub const LETS_ENCRYPT_DIRECTORY: &str = "https://acme-v02.api.letsencrypt.org/directory";
 
+/// True when `directory` is a Let's Encrypt directory (production or
+/// staging), which only certifies registrable, dotted DNS names.
+fn is_public_acme(directory: &str) -> bool {
+    let host = directory
+        .strip_prefix("https://")
+        .unwrap_or(directory)
+        .split(['/', ':'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    host == "letsencrypt.org" || host.ends_with(".letsencrypt.org")
+}
+
 /// Directory under `$BOOKCLERK_FILES_DIR` holding the ACME account and
 /// certificate cache (mode 0700 on Unix).
 pub const NODE_API_ACME_DIR: &str = "acme";
@@ -401,11 +424,18 @@ impl NodeApiConfig {
                          integrations.public_origin"
                         .into());
                 }
-                // ACME certifies a DNS name, not an address.
+                // ACME certifies a DNS name, not an address. The public
+                // directory also needs a registrable (dotted) name; a private
+                // directory may issue single-label internal names.
                 let host = public_origin.and_then(origin_host).unwrap_or("");
+                let private_directory = self
+                    .acme_directory
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|directory| !directory.is_empty() && !is_public_acme(directory));
                 if host.is_empty()
                     || host.parse::<std::net::IpAddr>().is_ok()
-                    || !host.contains('.')
+                    || (!private_directory && !host.contains('.'))
                 {
                     return Err("daemon.node_api.mode = \"acme\" needs a DNS name \
                          (not an IP address) in integrations.public_origin"
@@ -418,7 +448,18 @@ impl NodeApiConfig {
                 }
                 tls_listen()
             }
-            NodeApiMode::SelfSigned => tls_listen(),
+            NodeApiMode::SelfSigned => {
+                // Enrollment links carry the public origin and hosts dial it
+                // over TLS. Without one, links fall back to the plain-HTTP
+                // loopback UI origin, which no remote host can reach.
+                let host = public_origin.and_then(origin_host).unwrap_or("");
+                if !https_origin || host.is_empty() {
+                    return Err("daemon.node_api.mode = \"self_signed\" needs an https \
+                         integrations.public_origin naming the TLS listener"
+                        .into());
+                }
+                tls_listen()
+            }
         }
     }
 }
@@ -1329,6 +1370,24 @@ mode = "proxy"
             .validate(&[], Some("https://owner.example"))
             .is_err());
         staging.acme_directory = Some("https://pebble:14000/dir".into());
+        // A private directory may certify a single-label internal name; the
+        // public one may not.
+        assert!(staging.validate(&[], Some("https://bookclerk")).is_ok());
+        for public in [
+            LETS_ENCRYPT_DIRECTORY,
+            "https://acme-staging-v02.api.letsencrypt.org/directory",
+        ] {
+            staging.acme_directory = Some(public.into());
+            assert!(
+                staging.validate(&[], Some("https://bookclerk")).is_err(),
+                "{public}"
+            );
+        }
+        assert!(acme
+            .daemon
+            .node_api
+            .validate(&[], Some("https://bookclerk"))
+            .is_err());
         assert!(staging
             .validate(&[], Some("https://owner.example:8443/"))
             .is_ok());
@@ -1338,6 +1397,18 @@ mode = "proxy"
             ..NodeApiConfig::default()
         };
         assert!(self_signed.validate(&[], None).is_err());
+        let self_signed = NodeApiConfig {
+            tls_listen: Some("0.0.0.0:8443".into()),
+            ..self_signed
+        };
+        assert!(self_signed.validate(&[], None).is_err());
+        assert!(self_signed
+            .validate(&[], Some("https://owner.example:8443"))
+            .is_ok());
+        assert!(self_signed
+            .validate(&[], Some("http://owner.example:8443"))
+            .is_err());
+        assert!(self_signed.validate(&[], Some("https://")).is_err());
         assert!(Config::from_toml_str("[daemon.node_api]\nmode = \"plain\"\n", "test").is_err());
     }
 

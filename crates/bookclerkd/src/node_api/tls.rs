@@ -26,9 +26,12 @@
 //! there is no plain-HTTP fallback. `[daemon.node_api]` is bootstrap
 //! configuration: changing it needs a daemon restart.
 
+use std::future::Future as _;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::serve::ListenerExt as _;
@@ -37,8 +40,9 @@ use bookclerk_config::{Config, NodeApiMode};
 use futures::StreamExt as _;
 use rustls_acme::caches::DirCache;
 use rustls_acme::{is_tls_alpn_challenge, AcmeConfig, EventOk};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, watch, Semaphore};
+use tokio::sync::{mpsc, watch, OwnedSemaphorePermit, Semaphore};
 use tokio_rustls::rustls::crypto::{aws_lc_rs, CryptoProvider};
 use tokio_rustls::rustls::pki_types::pem::PemObject as _;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -53,11 +57,24 @@ use crate::api::AppState;
 /// Seconds a client has to finish its TLS handshake.
 const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 
-/// Handshakes in flight at once.
+/// Connections in flight at once: handshaking, or finished and waiting for
+/// room in [`ACCEPT_QUEUE`]. Further connections are shed.
 const MAX_PENDING_HANDSHAKES: usize = 256;
 
 /// Finished handshakes waiting for the HTTP server.
 const ACCEPT_QUEUE: usize = 64;
+
+/// Node API connections open at once, from TCP accept until the HTTP
+/// connection closes. The HTTP server has no header-read deadline and the
+/// API timeout starts only once a request is parsed, so this bound and
+/// [`CONNECTION_IDLE_SECS`] are what keep silent or idle connections from
+/// piling up. Further connections are shed.
+const MAX_CONNECTIONS: usize = 1024;
+
+/// Seconds an open connection may pass with no bytes read or written before
+/// it is closed. Longer than the node session's idle timeout, and an open
+/// session pings well inside it, so only a stalled or idle client trips it.
+const CONNECTION_IDLE_SECS: u64 = 2 * bookclerk_node_proto::IDLE_TIMEOUT_SECS;
 
 /// Whether the node API is being served.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,40 +89,72 @@ pub enum NodeApiStatus {
 }
 
 /// Request extension every listener carries: whether the node API is
-/// mounted. Modes without a TLS listener are always mounted.
+/// mounted, and the `[daemon.node_api]` mode it was started for. Modes
+/// without a TLS listener are always mounted.
 #[derive(Debug, Clone)]
-pub struct NodeApiGate(watch::Receiver<NodeApiStatus>);
+pub struct NodeApiGate {
+    /// Status published by the TLS listener (or fixed at start).
+    status: watch::Receiver<NodeApiStatus>,
+    /// The mode [`start`] ran for; a reloaded config naming another mode
+    /// leaves the node API unmounted until the daemon restarts.
+    mode: NodeApiMode,
+    /// Canonical owner origin the TLS listener was started for (`acme` and
+    /// `self_signed` only). Its certificate and the links already handed
+    /// out name it, so a reload that changes it leaves the node API
+    /// unmounted until a restart.
+    origin: Option<String>,
+}
 
 impl NodeApiGate {
-    /// A gate fixed at `status`.
+    /// A gate for `mode` fixed at `status`.
     #[cfg(test)]
     #[must_use]
-    pub fn fixed(status: NodeApiStatus) -> Self {
-        Self(watch::channel(status).1)
+    pub fn fixed(mode: NodeApiMode, status: NodeApiStatus) -> Self {
+        Self {
+            status: watch::channel(status).1,
+            mode,
+            origin: None,
+        }
+    }
+
+    /// True when `live` (the canonical owner origin in the current config)
+    /// is the one this gate's listener was started for, or the mode has no
+    /// TLS listener.
+    #[must_use]
+    pub fn origin_matches(&self, live: Option<&str>) -> bool {
+        self.origin
+            .as_deref()
+            .is_none_or(|started| live == Some(started))
     }
 
     /// Current status.
     #[must_use]
     pub fn status(&self) -> NodeApiStatus {
-        *self.0.borrow()
+        *self.status.borrow()
     }
 
     /// Waits until the status is no longer [`NodeApiStatus::Starting`].
     #[cfg(test)]
     pub async fn settled(&mut self) -> NodeApiStatus {
         let _ = self
-            .0
+            .status
             .wait_for(|status| *status != NodeApiStatus::Starting)
             .await;
         self.status()
     }
 }
 
-/// True when the node API may serve a request in `mode`. Modes with a TLS
-/// listener need a gate reporting [`NodeApiStatus::Ready`]; a request
-/// without a gate is refused in those modes (fail closed).
+/// True when the node API may serve a request in `mode` (the live config).
+/// Modes with a TLS listener need a gate reporting
+/// [`NodeApiStatus::Ready`]; a request without a gate is refused in those
+/// modes (fail closed). A gate started for another mode means
+/// `[daemon.node_api]` changed on reload: the listeners still match the old
+/// mode, so the node API stays unmounted until a restart.
 #[must_use]
 pub fn node_api_mounted(mode: NodeApiMode, gate: Option<&NodeApiGate>) -> bool {
+    if gate.is_some_and(|gate| gate.mode != mode) {
+        return false;
+    }
     match mode {
         NodeApiMode::Loopback | NodeApiMode::Proxy => true,
         NodeApiMode::Acme | NodeApiMode::SelfSigned => {
@@ -141,9 +190,15 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Writes `contents` to `path`, readable only by this user.
+/// Writes `contents` to `path`, readable only by this user. The bytes go to
+/// a temporary sibling that is synced and then renamed over `path`, so a
+/// crash leaves either the old file or the complete new one, never a
+/// truncated certificate or key that would fail every later start.
 fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
+    let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
+    tmp_name.push(".tmp");
+    let tmp = path.with_file_name(tmp_name);
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -151,7 +206,11 @@ fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
-    options.open(path)?.write_all(contents)
+    let mut file = options.open(&tmp)?;
+    file.write_all(contents)?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&tmp, path)
 }
 
 /// [`start_with`] serving only the node API routes (tests).
@@ -172,7 +231,20 @@ pub async fn start_with(
 ) -> NodeApiTls {
     let node_api = &cfg.daemon.node_api;
     let (status, receiver) = watch::channel(NodeApiStatus::Starting);
-    let gate = NodeApiGate(receiver);
+    let origin = match node_api.mode {
+        NodeApiMode::Acme | NodeApiMode::SelfSigned => Some(
+            bookclerk_node_proto::canonical_origin(&crate::origin::effective_origin_from_config(
+                cfg, None,
+            ))
+            .unwrap_or_default(),
+        ),
+        NodeApiMode::Loopback | NodeApiMode::Proxy => None,
+    };
+    let gate = NodeApiGate {
+        status: receiver,
+        mode: node_api.mode,
+        origin,
+    };
     let failed = |status: &watch::Sender<NodeApiStatus>, gate: &NodeApiGate| {
         status.send_replace(NodeApiStatus::Failed);
         NodeApiTls {
@@ -191,6 +263,12 @@ pub async fn start_with(
     let public_origin = cfg.integrations.public_origin.as_deref();
     if let Err(err) = node_api.validate(&cfg.daemon.trusted_proxies, public_origin) {
         tracing::error!(error = %err, "node API unmounted: invalid [daemon.node_api]");
+        return failed(&status, &gate);
+    }
+    if gate.origin.as_deref().is_none_or(str::is_empty) {
+        // Hosts sign over the canonical origin; without one no handshake
+        // could verify, so refuse to serve rather than mount a dead API.
+        tracing::error!("node API unmounted: integrations.public_origin is not a valid URL");
         return failed(&status, &gate);
     }
     let Some(listen) = node_api
@@ -227,7 +305,14 @@ pub async fn start_with(
         .layer(Extension(LocalAddr(local)))
         .layer(Extension(gate.clone()));
     let (handshakes, accepted) = mpsc::channel(ACCEPT_QUEUE);
-    tokio::spawn(accept_loop(tcp, server_config, challenge, handshakes));
+    tokio::spawn(accept_loop(
+        tcp,
+        server_config,
+        challenge,
+        handshakes,
+        MAX_PENDING_HANDSHAKES,
+        MAX_CONNECTIONS,
+    ));
     tokio::spawn(async move {
         // `tap_io` gives a custom listener axum's `ConnectInfo<SocketAddr>`.
         let listener = TlsListener { accepted, local }.tap_io(|_| {});
@@ -364,17 +449,51 @@ fn load_or_create_self_signed(
     let cert_path = dir.join("cert.der");
     let key_path = dir.join("key.der");
     let pin_path = dir.join(bookclerk_config::NODE_API_SPKI_PIN_FILE);
+    let names_path = dir.join("names");
+    let names = self_signed_names(cfg, local);
+    let listed = names.join("\n");
     if let (Ok(cert), Ok(key)) = (std::fs::read(&cert_path), std::fs::read(&key_path)) {
         let key_pair = rcgen::KeyPair::try_from(key.as_slice())?;
         let pin = spki_pin(&key_pair);
         // The pin file is what the CLI reads; keep it in step with the key.
         write_private(&pin_path, pin.as_bytes())?;
+        if std::fs::read_to_string(&names_path).is_ok_and(|stored| stored == listed) {
+            return Ok(SelfSigned {
+                cert: CertificateDer::from(cert),
+                key: PrivatePkcs8KeyDer::from(key),
+                pin,
+            });
+        }
+        // The origin (or bound address) changed: re-issue for the new names
+        // under the same key, so the pin hosts already trust still holds.
+        let cert = rcgen::CertificateParams::new(names)?.self_signed(&key_pair)?;
+        write_private(&cert_path, cert.der())?;
+        write_private(&names_path, listed.as_bytes())?;
+        tracing::info!(%pin, "re-issued the self-signed node API certificate for new names");
         return Ok(SelfSigned {
-            cert: CertificateDer::from(cert),
+            cert: cert.der().clone(),
             key: PrivatePkcs8KeyDer::from(key),
             pin,
         });
     }
+    let generated = rcgen::generate_simple_self_signed(names)?;
+    let pin = spki_pin(&generated.key_pair);
+    let key = generated.key_pair.serialize_der();
+    write_private(&key_path, &key)?;
+    write_private(&cert_path, generated.cert.der())?;
+    write_private(&names_path, listed.as_bytes())?;
+    write_private(&pin_path, pin.as_bytes())?;
+    tracing::info!(%pin, "generated the self-signed node API certificate");
+    Ok(SelfSigned {
+        cert: generated.cert.der().clone(),
+        key: PrivatePkcs8KeyDer::from(key),
+        pin,
+    })
+}
+
+/// Subject names for the self-signed certificate: loopback, the public
+/// origin's host, and a specific bound address, sorted and deduplicated.
+fn self_signed_names(cfg: &Config, local: SocketAddr) -> Vec<String> {
     let mut names = vec![
         "localhost".to_string(),
         "127.0.0.1".to_string(),
@@ -397,18 +516,7 @@ fn load_or_create_self_signed(
     }
     names.sort();
     names.dedup();
-    let generated = rcgen::generate_simple_self_signed(names)?;
-    let pin = spki_pin(&generated.key_pair);
-    let key = generated.key_pair.serialize_der();
-    write_private(&key_path, &key)?;
-    write_private(&cert_path, generated.cert.der())?;
-    write_private(&pin_path, pin.as_bytes())?;
-    tracing::info!(%pin, "generated the self-signed node API certificate");
-    Ok(SelfSigned {
-        cert: generated.cert.der().clone(),
-        key: PrivatePkcs8KeyDer::from(key),
-        pin,
-    })
+    names
 }
 
 /// Server config for the self-signed certificate.
@@ -429,14 +537,18 @@ fn self_signed(
 
 /// Accepts TCP connections and runs each TLS handshake in its own task.
 /// TLS-ALPN-01 challenge handshakes are answered and closed; finished
-/// handshakes go to the HTTP server.
+/// handshakes go to the HTTP server. At most `max_pending` connections are
+/// handshaking or waiting to be handed over at once; the rest are shed.
 async fn accept_loop(
     tcp: TcpListener,
     server_config: Arc<ServerConfig>,
     challenge: Option<Arc<ServerConfig>>,
-    handshakes: mpsc::Sender<(TlsStream<TcpStream>, SocketAddr)>,
+    handshakes: mpsc::Sender<(BoundedStream, SocketAddr)>,
+    max_pending: usize,
+    max_connections: usize,
 ) {
-    let pending = Arc::new(Semaphore::new(MAX_PENDING_HANDSHAKES));
+    let pending = Arc::new(Semaphore::new(max_pending));
+    let connections = Arc::new(Semaphore::new(max_connections));
     loop {
         let (stream, peer) = match tcp.accept().await {
             Ok(accepted) => accepted,
@@ -453,23 +565,33 @@ async fn accept_loop(
         let server_config = Arc::clone(&server_config);
         let challenge = challenge.clone();
         let handshakes = handshakes.clone();
+        let connections = Arc::clone(&connections);
         tokio::spawn(async move {
             let handshake =
                 tokio::time::timeout(Duration::from_secs(HANDSHAKE_TIMEOUT_SECS), async move {
                     let start = LazyConfigAcceptor::new(Acceptor::default(), stream).await?;
                     if let Some(challenge) = challenge {
                         if is_tls_alpn_challenge(&start.client_hello()) {
+                            // Challenges never take a connection slot, so a
+                            // full cap cannot block certificate renewal.
                             start.into_stream(challenge).await?;
                             return Ok::<_, std::io::Error>(None);
                         }
                     }
-                    start.into_stream(server_config).await.map(Some)
+                    let Ok(connection) = connections.try_acquire_owned() else {
+                        // Too many open connections: shed this one.
+                        return Err(std::io::Error::other("node API connection cap reached"));
+                    };
+                    let tls = start.into_stream(server_config).await?;
+                    Ok(Some((tls, connection)))
                 })
                 .await;
-            drop(permit);
             match handshake {
-                Ok(Ok(Some(tls))) => {
-                    let _ = handshakes.send((tls, peer)).await;
+                Ok(Ok(Some((tls, connection)))) => {
+                    // Hold the permit until the server takes the stream, so a
+                    // stalled server bounds waiters too, not just handshakes.
+                    let stream = BoundedStream::new(tls, connection);
+                    let _ = handshakes.send((stream, peer)).await;
                 }
                 Ok(Ok(None)) => tracing::debug!(%peer, "answered a TLS-ALPN-01 challenge"),
                 Ok(Err(err)) => {
@@ -477,20 +599,149 @@ async fn accept_loop(
                 }
                 Err(_) => tracing::debug!(%peer, "node API TLS handshake timed out"),
             }
+            drop(permit);
         });
+    }
+}
+
+/// A TLS connection that holds its [`MAX_CONNECTIONS`] permit until the
+/// HTTP server drops it, and fails once it has been idle for
+/// [`CONNECTION_IDLE_SECS`], so an idle or stalled client cannot keep its
+/// slot (and its file descriptor) indefinitely.
+struct BoundedStream {
+    /// The connection.
+    inner: TlsStream<TcpStream>,
+    /// Fires when nothing has been read or written for [`CONNECTION_IDLE_SECS`].
+    idle: Pin<Box<tokio::time::Sleep>>,
+    /// The idle limit, kept per stream so tests can shorten it.
+    idle_after: Duration,
+    /// Released when the connection closes.
+    _connection: OwnedSemaphorePermit,
+}
+
+impl BoundedStream {
+    /// Wraps a finished handshake with the default idle limit.
+    fn new(inner: TlsStream<TcpStream>, connection: OwnedSemaphorePermit) -> Self {
+        Self::with_idle(inner, connection, Duration::from_secs(CONNECTION_IDLE_SECS))
+    }
+
+    /// Wraps a finished handshake that closes after `idle_after` without traffic.
+    fn with_idle(
+        inner: TlsStream<TcpStream>,
+        connection: OwnedSemaphorePermit,
+        idle_after: Duration,
+    ) -> Self {
+        Self {
+            inner,
+            idle: Box::pin(tokio::time::sleep(idle_after)),
+            idle_after,
+            _connection: connection,
+        }
+    }
+
+    /// Pushes the idle deadline out after traffic.
+    fn touch(&mut self) {
+        let deadline = tokio::time::Instant::now() + self.idle_after;
+        self.idle.as_mut().reset(deadline);
+    }
+
+    /// Maps a pending poll to a timeout error once the idle deadline passes.
+    fn pending_or_idle<T>(&mut self, cx: &mut Context<'_>) -> Poll<std::io::Result<T>> {
+        match self.idle.as_mut().poll(cx) {
+            Poll::Ready(()) => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "node API connection idle",
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl AsyncRead for BoundedStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        match Pin::new(&mut self.inner).poll_read(cx, buf) {
+            Poll::Ready(Ok(())) => {
+                if buf.filled().len() > before {
+                    self.touch();
+                }
+                Poll::Ready(Ok(()))
+            }
+            Poll::Pending => self.pending_or_idle(cx),
+            ready => ready,
+        }
+    }
+}
+
+impl AsyncWrite for BoundedStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match Pin::new(&mut self.inner).poll_write(cx, buf) {
+            Poll::Ready(Ok(written)) => {
+                if written > 0 {
+                    self.touch();
+                }
+                Poll::Ready(Ok(written))
+            }
+            Poll::Pending => self.pending_or_idle(cx),
+            ready => ready,
+        }
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        match Pin::new(&mut self.inner).poll_write_vectored(cx, bufs) {
+            Poll::Ready(Ok(written)) => {
+                if written > 0 {
+                    self.touch();
+                }
+                Poll::Ready(Ok(written))
+            }
+            Poll::Pending => self.pending_or_idle(cx),
+            ready => ready,
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match Pin::new(&mut self.inner).poll_flush(cx) {
+            Poll::Pending => self.pending_or_idle(cx),
+            ready => ready,
+        }
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        // Writing `close_notify` can stall on a peer that stopped reading.
+        match Pin::new(&mut self.inner).poll_shutdown(cx) {
+            Poll::Pending => self.pending_or_idle(cx),
+            ready => ready,
+        }
     }
 }
 
 /// Finished TLS connections, as an axum listener.
 struct TlsListener {
     /// Handshakes finished by [`accept_loop`].
-    accepted: mpsc::Receiver<(TlsStream<TcpStream>, SocketAddr)>,
+    accepted: mpsc::Receiver<(BoundedStream, SocketAddr)>,
     /// Bound address.
     local: SocketAddr,
 }
 
 impl axum::serve::Listener for TlsListener {
-    type Io = TlsStream<TcpStream>;
+    type Io = BoundedStream;
     type Addr = SocketAddr;
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {

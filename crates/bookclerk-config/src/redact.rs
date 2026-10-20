@@ -45,6 +45,26 @@ pub fn register_secret(value: impl AsRef<str>) {
     insert_secret_variants(&mut guard, trimmed);
 }
 
+/// Forget a secret [`register_secret`] registered, with its encoded forms,
+/// once nothing in the process holds it any more (a short-lived bearer
+/// token whose holder was dropped), so per-request credentials do not pile
+/// up in the registry every log line is checked against. Lines captured
+/// while it was registered were scrubbed then. Only for values unique to
+/// one holder: the registry keeps no count, so a value two holders share
+/// would stop being scrubbed for both.
+pub fn unregister_secret(value: impl AsRef<str>) {
+    let trimmed = value.as_ref().trim();
+    if trimmed.len() < MIN_SECRET_LEN {
+        return;
+    }
+    let mut variants = BTreeSet::new();
+    insert_secret_variants(&mut variants, trimmed);
+    let Ok(mut guard) = exact_secrets().lock() else {
+        return;
+    };
+    guard.retain(|secret| !variants.contains(secret));
+}
+
 /// Inserts `raw` plus percent-encoded and `+`-for-space forms into the set.
 fn insert_secret_variants(guard: &mut BTreeSet<String>, raw: &str) {
     guard.insert(raw.to_string());

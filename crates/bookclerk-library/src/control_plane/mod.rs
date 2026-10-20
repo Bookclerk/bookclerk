@@ -2,7 +2,8 @@
 //!
 //! Bootstrap material (database target, `master.key`, `node-identity.json`) is
 //! read before these rows exist. After enrollment, `core.events` is the
-//! authority for `[events]`. Other `config.toml` sections stay transitional.
+//! authority for `[events]` and `core.output` for the shared `[output]`
+//! table. Other `config.toml` sections stay transitional.
 //!
 //! See `docs/adr/control-plane.md`.
 
@@ -15,9 +16,11 @@ mod identity;
 mod instance_config;
 mod instances;
 mod job_routing;
+mod leases;
 mod live;
 mod node_queue;
 mod node_status;
+mod output;
 mod ownership;
 mod pending_joins;
 mod placement;
@@ -25,6 +28,7 @@ mod remote_catalog;
 mod remote_consents;
 mod remote_results;
 mod remote_work;
+mod requirements_sweep;
 mod routing;
 mod schemas;
 mod secret;
@@ -89,9 +93,17 @@ pub use instances::{
     PluginInstanceId,
 };
 pub use job_routing::{
-    account_semaphore, claim_routed_job, class_semaphore, instance_semaphore, job_plugin_keys,
-    job_semaphores, node_can_run_job, resolve_job_requirements, JobClaimFilter, JobClaimLimits,
-    JobClaimRequest, RoutedJobClaim, ACCOUNT_SEMAPHORE_LIMIT, ROUTED_CLAIM_CANDIDATES,
+    account_semaphore, claim_routed_job, class_semaphore, common_deployment_nodes,
+    instance_semaphore, job_permit_holder_prefix, job_plugin_keys, job_semaphores,
+    job_source_plugin_key, node_can_run_job, resolve_job_requirements, JobClaimFilter,
+    JobClaimLimits, JobClaimRequest, RoutedJobClaim, ACCOUNT_SEMAPHORE_LIMIT,
+    ROUTED_CLAIM_CANDIDATES,
+};
+pub use leases::{
+    acquire_lease, acquire_lease_on, list_leases, load_lease, load_lease_on, release_lease,
+    release_lease_on, renew_lease, renew_lease_on, ClusterLease, LeaseFence, SingletonDuty,
+    EVENT_RETENTION_LEASE, JOB_RETENTION_LEASE, KV_EXPIRY_LEASE, MIGRATION_LEASE,
+    SESSION_EXPIRY_LEASE,
 };
 pub use live::{changed_topics, live_revisions, LiveRevision, LiveRevisions, LiveTopic};
 pub use node_queue::{
@@ -104,6 +116,12 @@ pub use node_status::{
     NodeSampler, NodeStatus, AVAILABILITY_FULL_PPM, AVAILABILITY_TAU, DEFAULT_GUEST_CPU_MILLICORES,
     DEFAULT_GUEST_MEMORY_BYTES, NODE_HEARTBEAT_INTERVAL, NODE_LIVE_INTERVALS,
 };
+pub use output::{
+    import_output_if_absent, is_output_setting_key, load_output, overlay_output,
+    portable_output_seed, replace_output, OutputReplace, OutputSettingsV1,
+    MAX_OUTPUT_REPLACEMENT_RULES, MAX_OUTPUT_TEMPLATE_BYTES, OUTPUT_NAMESPACE,
+    OUTPUT_SCHEMA_VERSION, OUTPUT_SETTING_ALIASES, OUTPUT_SETTING_KEYS,
+};
 pub use ownership::{nodes_owned_by, set_node_owner, verify_node_owner};
 pub use pending_joins::{
     create_pending_join, purge_expired_pending_joins, take_pending_join, NewPendingJoin,
@@ -111,21 +129,22 @@ pub use pending_joins::{
 };
 pub use placement::undeploy_instance;
 pub use placement::{
-    acquire_lease, delete_plugin_placement, effective_node_labels, ensure_hand_managed,
-    labels_satisfy, list_plugin_placements, live_node_ids, load_lease, load_plugin_placement,
-    plan_placement, put_plugin_placement, release_lease, schedule_placements, set_node_labels,
-    validate_constraint, validate_label, validate_node_label, ClusterLease, NodeCandidate,
-    PlacementPlan, PlacementSpec, PlacementWrite, PluginPlacement, Replicas, ScheduleReport,
-    MAX_NODE_LABELS, MAX_PLACEMENT_CONSTRAINTS, MAX_REPLICAS, NODE_LABEL, SCHEDULER_LEASE,
-    SCHEDULER_LEASE_TTL, TARGET_LABEL,
+    delete_plugin_placement, effective_node_labels, ensure_hand_managed, labels_satisfy,
+    list_plugin_placements, live_node_ids, load_plugin_placement, plan_placement,
+    put_plugin_placement, schedule_placements, set_node_labels, validate_constraint,
+    validate_label, validate_node_label, NodeCandidate, PlacementPlan, PlacementSpec,
+    PlacementWrite, PluginPlacement, Replicas, ScheduleReport, MAX_NODE_LABELS,
+    MAX_PLACEMENT_CONSTRAINTS, MAX_REPLICAS, NODE_LABEL, SCHEDULER_LEASE, SCHEDULER_LEASE_TTL,
+    TARGET_LABEL,
 };
 pub use remote_catalog::{
     artifact_served_to_node, record_remote_observation, remote_deployments_for_node,
     remote_instance_for_node, RemoteDeploymentEntry, RemoteInstance, RemoteObservation,
 };
 pub use remote_consents::{
-    approve_remote_plugin, list_remote_plugin_consents, load_remote_plugin_consent,
-    record_remote_plugin_request, revoke_remote_plugin, RemoteApproval, RemotePluginConsent,
+    approve_remote_plugin, approved_remote_payload_digests, list_remote_plugin_consents,
+    load_remote_plugin_consent, record_remote_plugin_request, remote_request_digest,
+    revoke_remote_plugin, RemoteApproval, RemoteApprover, RemoteArtifactRef, RemotePluginConsent,
     REMOTE_CONSENT_PLATFORM,
 };
 pub use remote_results::{accept_scan_results, ScanAccept, MAX_SCAN_RESULT_ROWS};
@@ -134,6 +153,10 @@ pub use remote_work::{
     remote_job_fence, remote_lease_owner, renew_remote_job, write_back_job_secret, JobSecret,
     JobSecretRef, RemoteClaimSettings, RemoteFinish, RemoteJobClaim, RemoteOutcome, RemoteRenew,
     WriteBack, MAX_WRITE_BACK_BYTES, REMOTE_LEASE_OWNER_PREFIX, SECRETS_UNAVAILABLE,
+};
+pub use requirements_sweep::{
+    sweep_job_requirements, RequirementsSweepReport, REQUIREMENTS_GRACE, REQUIREMENTS_SWEEP_LEASE,
+    REQUIREMENTS_SWEEP_LEASE_TTL, UNROUTABLE_ERROR_KIND,
 };
 pub use routing::{rank_nodes, route_ranks, RouteRank, ROUTE_DEFER_PER_RANK};
 pub use schemas::{
@@ -152,8 +175,10 @@ pub use trust::{
     Claimant, NodeTrust, ScanRequester,
 };
 pub use uploads::{
-    abort_upload, authorize_upload, commit_upload, grant_upload, load_upload, record_upload_file,
-    upload_fence_live, UploadCommit, UploadGrant, UploadGrantRequest, UploadSession,
+    abort_job_uploads, abort_upload, authorize_upload, commit_upload, extend_job_uploads,
+    grant_upload, job_titles, load_upload, names_book, record_upload_file, upload_fence_live,
+    upload_owns_key, TitleNames, UploadCommit, UploadDestination, UploadFinish, UploadGrant,
+    UploadGrantRequest, UploadSession, UPLOAD_NAME_WILDCARD, UPLOAD_NUMBER_WILDCARD,
     UPLOAD_TOKEN_TTL_SECS,
 };
 pub use versions::{
@@ -363,29 +388,36 @@ pub struct ControlPlaneSession {
     pub cluster_id: String,
     /// Authoritative `[events]` document.
     pub events: ConfigurationDocument<EventsSettingsV1>,
+    /// Authoritative shared `[output]` document.
+    pub output: ConfigurationDocument<OutputSettingsV1>,
     /// This node's runtime document. Other nodes' documents are not included.
     pub node_runtime: ConfigurationDocument<NodeRuntimeSettingsV1>,
 }
 
-/// Enrolls this files directory and imports `[events]` when the domain is absent.
+/// Enrolls this files directory and imports `[events]` and `[output]` when
+/// their documents are absent.
 ///
-/// After this returns, callers must treat [`ControlPlaneSession::events`] as
-/// authority. A later TOML load or environment override must not replace it
-/// without a compare-and-swap write.
+/// `seed` is the effective `config.toml` plus environment configuration; only
+/// its `events` and `output` tables are read, and only for a document that
+/// does not exist yet. After this returns, callers must treat
+/// [`ControlPlaneSession::events`] and [`ControlPlaneSession::output`] as
+/// authority (see [`overlay_core_documents`]). A later TOML load or
+/// environment override must not replace them without a compare-and-swap
+/// write.
 ///
 /// `scratch_dir` is [`bookclerk_config::Config::download_cache_dir`]: the
 /// heartbeat records the byte size of its `acquire` and `acquire-pdf` trees.
 ///
 /// # Errors
 ///
-/// Returns an error when the secret root, cluster binding, schema, or events
+/// Returns an error when the secret root, cluster binding, schema, or a core
 /// document cannot be established.
 pub async fn bootstrap_control_plane(
     store: &LibraryStore,
     files_dir: &Path,
     scratch_dir: &Path,
     password: Option<&str>,
-    events_seed: &bookclerk_config::EventsConfig,
+    seed: &bookclerk_config::Config,
 ) -> Result<ControlPlaneSession> {
     let _identity = identity::load_or_create_node_identity(files_dir)?;
     let secret = align_cluster_root(store, files_dir, password).await?;
@@ -413,8 +445,15 @@ pub async fn bootstrap_control_plane(
     let events = import_events_if_absent(
         store,
         &ConfigActor::Bootstrap,
-        events_seed,
+        &seed.events,
         "bootstrap-core-events",
+    )
+    .await?;
+    let output = import_output_if_absent(
+        store,
+        &ConfigActor::Bootstrap,
+        &output::portable_output_seed(&seed.output, files_dir),
+        "bootstrap-core-output",
     )
     .await?;
     let node_runtime = import_node_runtime_if_absent(
@@ -429,8 +468,18 @@ pub async fn bootstrap_control_plane(
         node,
         cluster_id: secret.cluster_id,
         events,
+        output,
         node_runtime,
     })
+}
+
+/// Copies every authoritative cluster document in `session` onto `config`.
+pub fn overlay_core_documents(
+    config: &mut bookclerk_config::Config,
+    session: &ControlPlaneSession,
+) {
+    overlay_events(config, &session.events, &session.cluster_id);
+    overlay_output(config, &session.output, &session.cluster_id);
 }
 
 /// Copies the authoritative events document onto `config` for `cluster_id`.
@@ -746,7 +795,7 @@ fn parse_node_runtime(
 }
 
 /// Attaches revision metadata to a parsed body.
-fn document<T>(stored: StoredDocument, body: T) -> ConfigurationDocument<T> {
+pub(super) fn document<T>(stored: StoredDocument, body: T) -> ConfigurationDocument<T> {
     ConfigurationDocument {
         body,
         revision: stored.revision,
@@ -771,9 +820,15 @@ mod instance_tests;
 #[cfg(test)]
 mod job_routing_tests;
 #[cfg(test)]
+mod leases_tests;
+#[cfg(test)]
+mod output_tests;
+#[cfg(test)]
 mod placement_tests;
 #[cfg(test)]
 mod remote_work_tests;
+#[cfg(test)]
+mod requirements_sweep_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

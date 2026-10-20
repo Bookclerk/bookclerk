@@ -127,8 +127,10 @@ impl RemoteCatalog {
     }
 
     /// Sets the consent of every entry of `plugin_key`; an entry that loses
-    /// consent drops its fetched bindings. Answers whether any entry
-    /// changed from or to consented.
+    /// consent, or whose consented grant changes, drops its fetched
+    /// bindings (and, on a grant change, its materialized tree), so its plugin is withdrawn (and held jobs given back)
+    /// until they are fetched again under the new grant. Answers whether
+    /// any entry changed from or to consented, or changed its grant.
     pub fn set_consent(&self, plugin_key: &str, consent: &RemoteConsentState) -> bool {
         let mut changed = false;
         for entry in self
@@ -138,11 +140,17 @@ impl RemoteCatalog {
         {
             let was = matches!(entry.consent, RemoteConsentState::Consented(_));
             let now = matches!(consent, RemoteConsentState::Consented(_));
-            if was != now || (now && entry.consent != *consent) {
+            let regranted = now && entry.consent != *consent;
+            if was != now || regranted {
                 changed = true;
             }
             entry.consent = consent.clone();
-            if !now {
+            if regranted {
+                // Materialized under the old grant, like `reconcile_consent`.
+                entry.root = None;
+                entry.version = None;
+            }
+            if !now || regranted {
                 entry.config = None;
             }
         }
@@ -151,6 +159,16 @@ impl RemoteCatalog {
 
     /// Plugin keys whose every deployed instance here can run now: the
     /// keys a host client may claim jobs for.
+    ///
+    /// Per plugin, not per instance, on purpose: the claim filter the owner
+    /// applies is a set of plugin keys, and a handed job names its plugins,
+    /// not the instance it is pinned to. Admitting a plugin while one of
+    /// its instances is not ready would let a job pinned to that instance
+    /// be claimed and then fail ([`INSTANCE_UNAVAILABLE`]
+    /// spends an attempt). Withholding the plugin instead gives jobs held
+    /// on its ready instances back unspent; they are claimed again once
+    /// every instance is ready (a consented instance that is not ready is
+    /// retried with backoff).
     #[must_use]
     pub fn consented_keys(&self) -> BTreeSet<String> {
         let entries = self.read();
@@ -212,7 +230,10 @@ impl Drop for HostJobBindings {
 }
 
 /// The catalog entry a handed job runs on: its pinned instance, or else
-/// the default instance of its one plugin.
+/// the default instance of its source plugin. The source plugin is the one
+/// the owner named, and must be one of the job's plugins; without it (an
+/// older owner) only a job of exactly one plugin has one. The job's other
+/// plugins are destinations it writes and never select the guest.
 fn job_entry(catalog: &RemoteCatalog, ctx: &HostJobCtx) -> Option<RemoteInstanceEntry> {
     let pinned = ctx
         .job
@@ -226,8 +247,14 @@ fn job_entry(catalog: &RemoteCatalog, ctx: &HostJobCtx) -> Option<RemoteInstance
             .get(instance_id)
             .filter(|entry| ctx.job.plugin_keys.contains(&entry.plugin_key));
     }
-    let [plugin_key] = ctx.job.plugin_keys.as_slice() else {
-        return None;
+    let plugin_key = match ctx.job.source_plugin_key.as_deref() {
+        Some(source) => ctx.job.plugin_keys.iter().find(|key| *key == source)?,
+        None => {
+            let [plugin_key] = ctx.job.plugin_keys.as_slice() else {
+                return None;
+            };
+            plugin_key
+        }
     };
     catalog
         .entries()
@@ -304,4 +331,84 @@ pub fn host_job_bindings(
         open: prepared_open_from_resolved(config_payload, secrets_payload, config.revision),
         credentials,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A grant of plugin `store` approving job types `jobs`.
+    fn grant(jobs: &[&str]) -> serde_json::Value {
+        serde_json::json!({
+            "pluginId": "store",
+            "jobs": jobs,
+            "networkMode": "deny",
+            "domains": [],
+            "bindings": [],
+            "compatibilityFlags": [],
+            "approvedAt": "2026-10-20T00:00:00Z",
+        })
+    }
+
+    /// A consented state with the grant `json` describes.
+    fn consented(json: serde_json::Value) -> RemoteConsentState {
+        RemoteConsentState::Consented(Box::new(serde_json::from_value(json).unwrap()))
+    }
+
+    /// A ready entry of plugin `store` under `consent`.
+    fn ready(consent: RemoteConsentState) -> RemoteInstanceEntry {
+        RemoteInstanceEntry {
+            instance_id: "instance-1".into(),
+            plugin_key: "store".into(),
+            default_instance: true,
+            consent,
+            root: Some(PathBuf::from("/plugins/store")),
+            version: Some(PluginVersion {
+                plugin_key: "store".into(),
+                version: "1.0.0".into(),
+                manifest_id: "store".into(),
+                manifest_toml: String::new(),
+                settings: bookclerk_plugin_abi::SettingsSchema::default(),
+                artifacts: Vec::new(),
+                publisher_verified: false,
+                grant_json: "{}".into(),
+                coordinate: String::new(),
+                installed_at: String::new(),
+                installed_by: String::new(),
+            }),
+            config: Some(RemoteInstanceConfig {
+                revision: 1,
+                config: serde_json::json!({}),
+                secrets: None,
+                secrets_withheld: false,
+            }),
+            problem: None,
+        }
+    }
+
+    /// Narrowing a consented grant drops the bindings fetched under the
+    /// wider one, so the plugin is withdrawn until they are fetched again;
+    /// the same grant again changes nothing.
+    #[test]
+    fn a_changed_grant_drops_the_fetched_bindings() {
+        let wide = grant(&["scan", "acquire"]);
+        let narrow = grant(&["scan"]);
+        let catalog = RemoteCatalog::default();
+        catalog.replace(BTreeMap::from([(
+            "instance-1".to_string(),
+            ready(consented(wide.clone())),
+        )]));
+        assert_eq!(
+            catalog.consented_keys(),
+            BTreeSet::from(["store".to_string()])
+        );
+
+        assert!(!catalog.set_consent("store", &consented(wide)));
+        assert!(catalog.get("instance-1").unwrap().config.is_some());
+
+        assert!(catalog.set_consent("store", &consented(narrow)));
+        let entry = catalog.get("instance-1").unwrap();
+        assert!(entry.config.is_none() && entry.root.is_none() && entry.version.is_none());
+        assert!(catalog.consented_keys().is_empty());
+    }
 }

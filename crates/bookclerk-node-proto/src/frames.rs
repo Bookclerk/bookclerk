@@ -61,8 +61,9 @@ pub enum Body {
         box_key: String,
     },
     /// Owner → host, right after [`Body::Welcome`] when the hello listed
-    /// fences: which leases the owner renewed and which are lost. The host
-    /// aborts lost work; every later frame under a lost fence is refused.
+    /// fences: which leases the owner renewed, which are lost, and which it
+    /// could not check now. The host aborts lost work; every later frame
+    /// under a lost fence is refused.
     Resumed {
         /// Leases renewed for this connection.
         #[serde(default)]
@@ -70,6 +71,17 @@ pub enum Body {
         /// Leases that expired, were taken over, or are no longer trusted.
         #[serde(default)]
         lost: Vec<HeldFence>,
+        /// Leases the owner could not check (a transient read or write
+        /// failure). They are neither renewed nor lost: the host keeps the
+        /// work and renews them as usual, and that `renew` decides.
+        #[serde(default)]
+        unchecked: Vec<HeldFence>,
+        /// The lease, in seconds, the `renewed` fences now run for, counted
+        /// from the host's `hello`. The owner's lease length may have
+        /// changed while the host was away, so the host counts this rather
+        /// than its original grant; absent when nothing was renewed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lease_secs: Option<u64>,
     },
     /// Either side: a request was not served. The connection stays open.
     Error {
@@ -136,6 +148,15 @@ pub enum Body {
         /// consents to every one.
         #[serde(default)]
         plugin_keys: Vec<String>,
+        /// The one plugin of `plugin_keys` whose source guest runs the
+        /// job (the others are destinations it writes); the owner hands a
+        /// host only jobs that name one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_plugin_key: Option<String>,
+        /// The claim resumed a suspended job: no attempt was spent, and the
+        /// job's checkpoint applies.
+        #[serde(default)]
+        resumed: bool,
     },
     /// Owner → host: nothing to claim now.
     #[serde(rename = "none")]
@@ -210,6 +231,10 @@ pub enum Body {
         /// Stable reason (`awaiting_host_consent`, ...), for the log.
         #[serde(default)]
         reason: String,
+        /// The `resumed` flag of the job's `work` frame, so a resumed
+        /// claim is given back resumable.
+        #[serde(default)]
+        resumed: bool,
     },
     /// Host → owner: the deployments that target this host and should run.
     /// Answered with [`Body::Deployments`].
@@ -359,7 +384,9 @@ pub enum Body {
         /// box key and bound to the node, job, fence and upload
         /// (`crate::seal_upload_token`).
         sealed_token: String,
-        /// Seconds the grant stays valid.
+        /// Seconds the token stays valid unless extended: the owner
+        /// extends it while the job's fence is live (each renewal and each
+        /// accepted file).
         expires_in_secs: u64,
     },
     /// Owner → host: a message from the host's `node.<id>` queue. The host
@@ -473,6 +500,20 @@ pub struct WorkJob {
     pub payload: serde_json::Value,
     /// Claims of this job so far, this one included.
     pub attempt: i64,
+    /// For a scan: which titles the owner's library imports. The owner
+    /// writes every row a host returns, so the host scans with the
+    /// owner's settings, never its own. Absent for other kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan_import: Option<ScanImport>,
+}
+
+/// The owner's library import settings a host scan runs with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanImport {
+    /// Import podcast episodes.
+    pub import_episodes: bool,
+    /// Import subscription (Plus) titles.
+    pub import_plus_titles: bool,
 }
 
 /// Most rows one [`Body::ScanResults`] batch may carry.
@@ -508,6 +549,12 @@ pub struct AcquireTarget {
     pub account_id: String,
     /// The owner's library row (JSON), for naming and metadata.
     pub book: serde_json::Value,
+    /// The owner's row for the title's podcast parent (JSON), when the
+    /// title is an episode whose parent is in the owner's library: a
+    /// destination that saves episodes to the parent's folder names them
+    /// from it, as an acquire on the owner would.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<serde_json::Value>,
 }
 
 /// One output destination of the owner node that answered an acquire plan
@@ -534,7 +581,8 @@ pub fn is_destination_id(id: &str) -> bool {
 
 /// True when `key` is a relative storage key: no empty, `.` or `..`
 /// segment, no backslash or control character, not absolute, at most
-/// [`MAX_UPLOAD_KEY_BYTES`].
+/// [`MAX_UPLOAD_KEY_BYTES`], and never a Windows path that leaves the
+/// destination's root (`colon_is_safe`).
 #[must_use]
 pub fn is_storage_key(key: &str) -> bool {
     !key.is_empty()
@@ -542,9 +590,25 @@ pub fn is_storage_key(key: &str) -> bool {
         && !key.starts_with('/')
         && !key.contains('\\')
         && !key.chars().any(char::is_control)
+        && colon_is_safe(key)
         && key
             .split('/')
             .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+}
+
+/// True unless `key` starts with a Windows drive prefix (`C:x`, `C:`):
+/// joined onto a local destination's root on Windows, that names a path on
+/// another drive. It is the only form a relative key can take that leaves
+/// the root there; a `:` anywhere else is an ordinary character of a title
+/// (`Star Wars: X/...`) under the POSIX and S3 naming rules, which keep it.
+/// A Windows local destination refuses `:` itself (NTFS alternate data
+/// streams), whoever planned the key.
+fn colon_is_safe(key: &str) -> bool {
+    let mut bytes = key.bytes();
+    !matches!(
+        (bytes.next(), bytes.next()),
+        (Some(drive), Some(b':')) if drive.is_ascii_alphabetic()
+    )
 }
 
 /// Where one uploaded file is written: a destination and its key there.
@@ -720,6 +784,19 @@ mod tests {
         for bad in ["", "/abs.m4b", "a/../b.m4b", "a//b", "./a", "a\\b", "a\nb"] {
             assert!(!file(bad).is_well_formed(), "{bad:?}");
         }
+        // A drive prefix would leave a Windows root.
+        for bad in ["C:x", "C:", "c:x/a.m4b", "Z:/a.m4b"] {
+            assert!(!file(bad).is_well_formed(), "{bad:?}");
+        }
+        // Any other colon is part of a title name.
+        for good in [
+            "Star Wars: X/Book.m4b",
+            "Author/Book: Subtitle/Book.m4b",
+            "AB:c/d.m4b",
+            "1:x.m4b",
+        ] {
+            assert!(file(good).is_well_formed(), "{good:?}");
+        }
         let mut upper = file("a.m4b");
         upper.sha256 = "0F".repeat(32);
         assert!(!upper.is_well_formed());
@@ -831,11 +908,17 @@ mod tests {
                         kind: "scan".into(),
                         payload: serde_json::json!({"account": "a"}),
                         attempt: 1,
+                        scan_import: Some(ScanImport {
+                            import_episodes: false,
+                            import_plus_titles: true,
+                        }),
                     },
                     fence: 2,
                     lease_secs: 60,
                     sealed_secrets: Some("x".into()),
                     plugin_keys: vec!["store".into()],
+                    source_plugin_key: Some("store".into()),
+                    resumed: false,
                 },
                 "work",
             ),
@@ -855,6 +938,7 @@ mod tests {
                     job_id: job_id(),
                     fence: 2,
                     reason: "awaiting_host_consent".into(),
+                    resumed: false,
                 },
                 "release",
             ),
@@ -906,6 +990,8 @@ mod tests {
                         id: job_id(),
                         fence: 1,
                     }],
+                    unchecked: Vec::new(),
+                    lease_secs: None,
                 },
                 "resumed",
             ),
@@ -946,6 +1032,7 @@ mod tests {
                         plugin_key: "store".into(),
                         account_id: "a".into(),
                         book: serde_json::json!({}),
+                        parent: None,
                     }],
                     destinations: vec![PlanDestination {
                         id: "local".into(),

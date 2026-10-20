@@ -20,9 +20,12 @@ use std::collections::BTreeSet;
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
     leave_cluster_link, list_cluster_links, list_remote_plugin_consents, load_cluster_link,
-    load_cluster_link_keys, revoke_remote_plugin, ClusterLink, NodeSampler, RemotePluginConsent,
+    load_cluster_link_keys, revoke_remote_plugin, ClusterLink, NodeSampler, RemoteApprover,
+    RemotePluginConsent,
 };
-use bookclerk_plugin_host::{approve_remote_request, remote_consent_state, RemoteNarrowing};
+use bookclerk_plugin_host::{
+    approve_remote_request, remote_consent_view, remote_row_consent_state, RemoteNarrowing,
+};
 use clap::Subcommand;
 use serde_json::json;
 
@@ -54,6 +57,12 @@ pub enum ClustersCommand {
         /// a self-signed library without a prompt.
         #[arg(long, requires = "url")]
         fingerprint: Option<String>,
+        /// Anything given after `join` that is not a flag. Taken only to be
+        /// refused with a fixed message: left to the parser, an unexpected
+        /// argument (an invite pasted on the command line) is echoed in its
+        /// error.
+        #[arg(hide = true, num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
+        argv: Vec<std::ffi::OsString>,
     },
     /// Leave an owner cluster: the owner is told (and revokes this node
     /// when it hears), the link stops being dialed and its node keys are
@@ -70,6 +79,10 @@ pub enum ClustersCommand {
         cluster: Option<String>,
     },
     /// Approve an owner plugin's request to run here, optionally narrowed.
+    /// Name the request you reviewed by the digest `clusters consents`
+    /// shows (it covers the version, the grant, the archive URL, the
+    /// archive digest and the payload digest); it is refused when the
+    /// cluster has changed the request since.
     /// Only what the request asks for can be approved; a later version that
     /// asks for more needs approval again.
     Approve {
@@ -78,10 +91,11 @@ pub enum ClustersCommand {
         /// Owner cluster id (default: the only enrolled cluster).
         #[arg(long)]
         cluster: Option<String>,
-        /// The requested version you reviewed (refused when the cluster
-        /// now asks for another).
-        #[arg(long)]
-        version: Option<String>,
+        /// The `request_digest` of the request you reviewed, from
+        /// `clusters consents` (refused when the cluster now asks for
+        /// anything else).
+        #[arg(long = "request", value_name = "DIGEST")]
+        request_digest: String,
         /// Take a domain out of the request. Repeatable.
         #[arg(long = "deny-domain", value_name = "DOMAIN")]
         deny_domains: Vec<String>,
@@ -94,7 +108,8 @@ pub enum ClustersCommand {
         deny_network: bool,
     },
     /// Withdraw an approval: held jobs of the plugin are cancelled and
-    /// given back, and nothing of it is claimed until approved again.
+    /// given back, and nothing of it is claimed until this host's operator
+    /// approves it again (a platform plugin is not approved automatically).
     Revoke {
         /// Canonical plugin key.
         plugin: String,
@@ -104,23 +119,10 @@ pub enum ClustersCommand {
     },
 }
 
-/// JSON for one consent row.
+/// JSON for one consent row ([`remote_consent_view`], the view the
+/// daemon's API answers too).
 fn consent_json(row: &RemotePluginConsent) -> serde_json::Value {
-    let parse = |raw: Option<&str>| {
-        raw.and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-            .unwrap_or(serde_json::Value::Null)
-    };
-    json!({
-        "cluster_id": row.owner_cluster_id,
-        "plugin_key": row.plugin_key,
-        "requested_version": row.requested_version,
-        "requested_grant": parse(Some(&row.requested_grant_json)),
-        "approved_version": row.version,
-        "grant": parse(row.grant_json.as_deref()),
-        "approved_at": row.approved_at,
-        "approved_by": row.approved_by,
-        "state": state(row),
-    })
+    remote_consent_view(row)
 }
 
 /// JSON for one cluster link (no key material).
@@ -166,17 +168,10 @@ async fn announce_leaving(
 const LEAVE_NOTICE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Reads the enrollment link: the first line of stdin, or a prompt on a
-/// terminal.
+/// terminal with echo off.
 fn read_link_from_stdin() -> anyhow::Result<secrecy::SecretString> {
-    use std::io::{IsTerminal, Read};
     // Zeroed on drop; the link lives on only as a secret.
-    let mut text = zeroize::Zeroizing::new(String::new());
-    if std::io::stdin().is_terminal() {
-        eprint!("enrollment link: ");
-        std::io::stdin().read_line(&mut text)?;
-    } else {
-        std::io::stdin().read_to_string(&mut text)?;
-    }
+    let text = crate::secret_input::read_secret_stdin("enrollment link: ")?;
     let link = text
         .split_once('\n')
         .map_or(text.as_str(), |(first, _)| first)
@@ -190,16 +185,40 @@ fn read_link_from_stdin() -> anyhow::Result<secrecy::SecretString> {
 
 /// A row's consent state.
 fn state(row: &RemotePluginConsent) -> &'static str {
-    remote_consent_state(
-        &row.plugin_key,
-        &row.requested_grant_json,
-        row.approved_request_json.as_deref(),
-        row.grant_json.as_deref(),
-    )
-    .as_str()
+    remote_row_consent_state(row).as_str()
 }
 
-/// The cluster a command acts on: the named one, or the only enrolled one.
+/// `text` from an owner, safe to print to a terminal: control characters
+/// (C0 and C1, which can start escape sequences) and bidirectional
+/// formatting characters (which can reorder what the operator reads) are
+/// written as `\u{..}` escapes.
+fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            let bidi = matches!(
+                c,
+                '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+            );
+            if c.is_control() || bidi {
+                c.escape_unicode().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+
+/// The cluster a command acts on: the named one, or the only one this
+/// install is still enrolled in.
+///
+/// A left or revoked link is kept as a record but no longer counts as an
+/// enrollment, so after leaving one cluster and joining another the new one
+/// is the default. A named cluster is taken as given, whatever its state.
+///
+/// # Errors
+///
+/// Returns an error when the links cannot be read, or when no cluster is
+/// named and there is not exactly one active link.
 async fn cluster_id(
     store: &bookclerk_library::LibraryStore,
     named: Option<String>,
@@ -207,7 +226,11 @@ async fn cluster_id(
     if let Some(named) = named {
         return Ok(named.trim().to_string());
     }
-    let links = list_cluster_links(store).await?;
+    let links: Vec<_> = list_cluster_links(store)
+        .await?
+        .into_iter()
+        .filter(ClusterLink::is_active)
+        .collect();
     match links.as_slice() {
         [link] => Ok(link.owner_cluster_id.clone()),
         [] => anyhow::bail!("this install is not enrolled in any cluster"),
@@ -226,6 +249,11 @@ pub async fn run(
     config: &Config,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
+    if matches!(&command, ClustersCommand::Join { argv, .. } if !argv.is_empty()) {
+        anyhow::bail!(
+            "`clusters join` takes no arguments: paste the enrollment link at the prompt or pipe it on stdin"
+        );
+    }
     let plane = crate::registry::open_host(config).await?;
     let store = &plane.store;
     match command {
@@ -236,7 +264,10 @@ pub async fn run(
                 for link in &links {
                     println!(
                         "{} {} node={} {}",
-                        link.owner_cluster_id, link.owner_origin, link.remote_node_id, link.state
+                        printable(&link.owner_cluster_id),
+                        printable(&link.owner_origin),
+                        printable(&link.remote_node_id),
+                        link.state
                     );
                 }
             })
@@ -245,6 +276,7 @@ pub async fn run(
             url: Some(url),
             name,
             fingerprint,
+            ..
         } => {
             let joined = super::clusters_join::join_with_sign_in(
                 store,
@@ -269,7 +301,14 @@ pub async fn run(
                 env!("CARGO_PKG_VERSION"),
             )
             .await
-            .map_err(|err| anyhow::anyhow!("could not join the cluster: {err}"))?;
+            // The error can carry the owner's own text (its error string, or
+            // a node id it answered with), so it is escaped like any other.
+            .map_err(|err| {
+                anyhow::anyhow!(
+                    "could not join the cluster: {}",
+                    printable(&err.to_string())
+                )
+            })?;
             drop(link);
             emit(format, &json!({ "cluster": link_json(&joined) }), || {
                 println!(
@@ -310,12 +349,19 @@ pub async fn run(
                 || {
                     for row in &rows {
                         println!(
-                            "{} {} {} {}",
-                            row.owner_cluster_id,
-                            row.plugin_key,
-                            row.requested_version,
-                            state(row)
+                            "{} {} {} {} request={} artifact={} sha256={} payload={}",
+                            printable(&row.owner_cluster_id),
+                            printable(&row.plugin_key),
+                            printable(&row.requested_version),
+                            state(row),
+                            row.request_digest(),
+                            printable(&row.requested_artifact_url),
+                            printable(&row.requested_artifact_sha256),
+                            printable(&row.requested_artifact_payload_sha256)
                         );
+                        // The capabilities the digest covers, so an approval
+                        // by digest names something the operator saw.
+                        println!("  grant: {}", printable(&row.requested_grant_json));
                     }
                 },
             )
@@ -323,7 +369,7 @@ pub async fn run(
         ClustersCommand::Approve {
             plugin,
             cluster,
-            version,
+            request_digest,
             deny_domains,
             deny_bindings,
             deny_network,
@@ -333,21 +379,21 @@ pub async fn run(
                 store,
                 &cluster,
                 plugin.trim(),
-                version.as_deref().map(str::trim),
+                &request_digest,
                 &RemoteNarrowing {
                     deny_domains: deny_domains.into_iter().collect::<BTreeSet<_>>(),
                     deny_bindings: deny_bindings.into_iter().collect::<BTreeSet<_>>(),
                     deny_network,
                 },
-                CLI_APPROVER,
+                RemoteApprover::Operator(CLI_APPROVER),
             )
             .await?;
             emit(format, &json!({ "consent": consent_json(&row) }), || {
                 println!(
                     "approved {} {} for cluster {} ({})",
-                    row.plugin_key,
-                    row.requested_version,
-                    row.owner_cluster_id,
+                    printable(&row.plugin_key),
+                    printable(&row.requested_version),
+                    printable(&row.owner_cluster_id),
                     state(&row)
                 );
             })
@@ -355,14 +401,32 @@ pub async fn run(
         ClustersCommand::Revoke { plugin, cluster } => {
             let cluster = cluster_id(store, cluster).await?;
             let Some(row) = revoke_remote_plugin(store, &cluster, plugin.trim()).await? else {
-                anyhow::bail!("cluster {cluster} has not asked to run {plugin} here");
+                anyhow::bail!(
+                    "cluster {} has not asked to run {} here",
+                    printable(&cluster),
+                    printable(&plugin)
+                );
             };
             emit(format, &json!({ "consent": consent_json(&row) }), || {
                 println!(
                     "revoked {} for cluster {}",
-                    row.plugin_key, row.owner_cluster_id
+                    printable(&row.plugin_key),
+                    printable(&row.owner_cluster_id)
                 );
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::printable;
+
+    #[test]
+    fn owner_text_cannot_steer_the_terminal() {
+        assert_eq!(printable("plain {\"a\":1}"), "plain {\"a\":1}");
+        assert_eq!(printable("a\u{1b}[2Jb"), "a\\u{1b}[2Jb");
+        assert_eq!(printable("a\u{9b}2Jb"), "a\\u{9b}2Jb");
+        assert_eq!(printable("x\u{202e}y\u{2066}z"), "x\\u{202e}y\\u{2066}z");
     }
 }

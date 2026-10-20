@@ -48,8 +48,8 @@ use bookclerk_library::control_plane::{
 use bookclerk_library::{JobResourceClass, LibraryStore};
 use bookclerk_node_proto::{
     open_secret_update, seal_instance_secrets, seal_secrets, Body, ClaimFilter, Frame, HeldFence,
-    RemoteArtifact, RemoteDeployment, RemoteVersion, SecretEntry, SecretRef, SecretValue, WorkJob,
-    ITEM_JOB, MAX_FRAME_BYTES,
+    RemoteArtifact, RemoteDeployment, RemoteVersion, ScanImport, SecretEntry, SecretRef,
+    SecretValue, WorkJob, ITEM_JOB, MAX_FRAME_BYTES,
 };
 use rand::RngCore as _;
 use zeroize::{Zeroize as _, Zeroizing};
@@ -180,6 +180,7 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
             job_id,
             fence,
             reason,
+            resumed,
         } => {
             tracing::info!(
                 node_id = %host.node_id,
@@ -188,7 +189,7 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                 reason = bounded(&reason),
                 "host node gives a job back"
             );
-            finish_release(library, host, id.clone(), job_id, fence).await
+            finish_release(library, host, id.clone(), job_id, fence, resumed).await
         }
         Body::DeploymentsList {} => deployments(library, host, id.clone()).await,
         Body::InstanceConfigGet { instance_id } => {
@@ -249,7 +250,19 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                         cancel,
                     },
                 )),
-                Ok(RemoteRenew::Lost) => Ok(lost(id.clone(), job_id, fence)),
+                Ok(RemoteRenew::Lost) => {
+                    // No upload under a lost fence can commit; drop what
+                    // they received.
+                    super::uploads::discard_job_uploads(
+                        &host.state,
+                        library,
+                        &host.node_id,
+                        &job_id,
+                        fence,
+                    )
+                    .await;
+                    Ok(lost(id.clone(), job_id, fence))
+                }
                 Err(err) => Err(err),
             }
         }
@@ -413,6 +426,19 @@ fn claim_filter(filter: ClaimFilter) -> Result<JobClaimFilter, ()> {
     })
 }
 
+/// For a scan job, this owner's library import settings: the host scans
+/// with them, since the owner writes every row it returns.
+async fn scan_import(host: &HostContext, kind: bookclerk_library::JobKind) -> Option<ScanImport> {
+    if kind != bookclerk_library::JobKind::Scan {
+        return None;
+    }
+    let cfg = host.state.config.read().await;
+    Some(ScanImport {
+        import_episodes: cfg.library.import_episodes,
+        import_plus_titles: cfg.library.import_plus_titles,
+    })
+}
+
 /// `claim`: the next trusted job, its fence, and its sealed secrets.
 async fn claim(
     library: &LibraryStore,
@@ -433,6 +459,8 @@ async fn claim(
         job,
         secrets,
         plugin_keys,
+        source_plugin_key,
+        resumed,
     }) = claim_remote_job(library, &host.node_id, class, host.settings, filter).await?
     else {
         return Ok(none());
@@ -467,6 +495,7 @@ async fn claim(
         sealed.map(Some)
     };
     drop(secrets);
+    let scan_import = scan_import(host, job.kind).await;
     let work = sealed.ok().map(|sealed_secrets| {
         Frame::new(
             id.clone(),
@@ -477,11 +506,14 @@ async fn claim(
                     kind: job.kind.as_str().into(),
                     payload: serde_json::to_value(&job.payload).unwrap_or_default(),
                     attempt: job.attempt_count,
+                    scan_import,
                 },
                 fence,
                 lease_secs: host.settings.lease_secs,
                 sealed_secrets,
                 plugin_keys: plugin_keys.clone(),
+                source_plugin_key: source_plugin_key.clone(),
+                resumed,
             },
         )
     });
@@ -532,41 +564,79 @@ async fn finish(
     fence: i64,
     outcome: RemoteOutcome<'_>,
 ) -> bookclerk_library::Result<Frame> {
-    Ok(
-        match finish_remote_job(
-            library,
-            &host.node_id,
-            &job_id,
-            fence,
-            host.settings.limits,
-            outcome,
-        )
-        .await?
-        {
-            RemoteFinish::Done => Frame::new(id, Body::Accepted {}),
-            RemoteFinish::Lost => lost(id, job_id, fence),
-            RemoteFinish::Refused(reason) => error(id, "refused", reason),
-        },
+    // A failed run commits none of its open uploads, so they are aborted
+    // and what they received is deleted before the job ends: until then
+    // its permits are held, so no other acquire of the account can be
+    // writing the same titles while the files go.
+    let discarded = matches!(outcome, RemoteOutcome::Fail { .. });
+    if discarded {
+        super::uploads::discard_job_uploads(&host.state, library, &host.node_id, &job_id, fence)
+            .await;
+    }
+    let finished = finish_remote_job(
+        library,
+        &host.node_id,
+        &job_id,
+        fence,
+        host.settings.limits,
+        outcome,
     )
+    .await?;
+    Ok(match finished {
+        RemoteFinish::Done | RemoteFinish::Lost => {
+            // The job ended (or the fence is gone) without these
+            // uploads committing; what they received is deleted.
+            if !discarded {
+                super::uploads::discard_job_uploads(
+                    &host.state,
+                    library,
+                    &host.node_id,
+                    &job_id,
+                    fence,
+                )
+                .await;
+            }
+            if finished == RemoteFinish::Done {
+                Frame::new(id, Body::Accepted {})
+            } else {
+                lost(id, job_id, fence)
+            }
+        }
+        RemoteFinish::Refused(reason) => error(id, "refused", reason),
+    })
 }
 
-/// `release`: the job goes back to pending unspent.
+/// `release`: the job goes back to pending unspent; a resumed claim
+/// (`resumed`, as its `work` frame said) is resumable again.
+///
+/// A released run (a consent revoke, a host shutting down) commits none of
+/// its open uploads, so they are aborted and what they had received is
+/// deleted, as for `fail`: before the job goes back and its permits are
+/// given back, so a replacement run cannot be writing the same titles
+/// while the files go.
 async fn finish_release(
     library: &LibraryStore,
     host: &HostContext,
     id: String,
     job_id: String,
     fence: i64,
+    resumed: bool,
 ) -> bookclerk_library::Result<Frame> {
-    Ok(
-        match release_remote_job(library, &host.node_id, &job_id, fence, host.settings.limits)
-            .await?
-        {
-            RemoteFinish::Done => Frame::new(id, Body::Accepted {}),
-            RemoteFinish::Lost => lost(id, job_id, fence),
-            RemoteFinish::Refused(reason) => error(id, "refused", reason),
-        },
+    super::uploads::discard_job_uploads(&host.state, library, &host.node_id, &job_id, fence).await;
+    let released = release_remote_job(
+        library,
+        &host.node_id,
+        &job_id,
+        fence,
+        resumed,
+        host.settings.limits,
     )
+    .await?;
+    Ok(match released {
+        RemoteFinish::Done => Frame::new(id, Body::Accepted {}),
+        RemoteFinish::Lost => lost(id, job_id, fence),
+        RemoteFinish::Refused(reason) => error(id, "refused", reason),
+    })
 }
 
 /// A version as a host receives it.
@@ -623,6 +693,14 @@ async fn deployments(
         ));
     }
     Ok(frame)
+}
+
+/// True when `now` is the same version, under the same grant, as `then`.
+fn same_version(now: Option<&PluginVersion>, then: Option<&PluginVersion>) -> bool {
+    match (now, then) {
+        (Some(now), Some(then)) => now.version == then.version && now.grant_json == then.grant_json,
+        _ => false,
+    }
 }
 
 /// `instance.config`: `CONFIG` and, for a node trusted with every job,
@@ -685,7 +763,26 @@ async fn instance_config(
             .ok()
             .and_then(|value| value.as_object().map(|object| !object.is_empty()))
             .unwrap_or(true);
-    let trusted = instance.trust == NodeTrust::All;
+    // The node's trust, the deployment or its active version (and so the
+    // grant the bindings were resolved under) may have changed while the
+    // bindings were read: re-read them right before sealing, as the job
+    // secret handoff does, so a node revoked meanwhile, or a grant that no
+    // longer allows secrets, gets none.
+    let current = match remote_instance_for_node(library, &host.node_id, instance_id).await {
+        Ok(current) => current,
+        Err(err) => {
+            secrets.payload.zeroize();
+            return Err(err);
+        }
+    };
+    let Some(current) = current.filter(|current| {
+        current.deployment.deployment_id == instance.deployment.deployment_id
+            && same_version(current.version.as_ref(), Some(version))
+    }) else {
+        secrets.payload.zeroize();
+        return Ok(not_found());
+    };
+    let trusted = instance.trust == NodeTrust::All && current.trust == NodeTrust::All;
     let sealed = if has_secrets && trusted {
         let mut ephemeral = [0u8; 32];
         rand::rngs::OsRng.fill_bytes(&mut ephemeral);
@@ -740,12 +837,56 @@ async fn instance_config(
     Ok(frame)
 }
 
-/// Renews each fence a reconnecting host still holds; the rest are lost.
+/// Gives back a job claimed for a `work` answer that will not reach the
+/// host (its connection was superseded or is closing), so the job is
+/// claimable again at once instead of after its lease expires. Does
+/// nothing for any other answer.
+pub(crate) async fn release_unsent(library: &LibraryStore, host: &HostContext, answer: &Frame) {
+    let Body::Work {
+        job,
+        fence,
+        resumed,
+        ..
+    } = &answer.body
+    else {
+        return;
+    };
+    match release_remote_job(
+        library,
+        &host.node_id,
+        &job.id,
+        *fence,
+        *resumed,
+        host.settings.limits,
+    )
+    .await
+    {
+        Ok(finish) => tracing::info!(
+            node_id = %host.node_id,
+            job_id = %job.id,
+            fence,
+            released = matches!(finish, RemoteFinish::Done),
+            "job claimed on a closing host connection was given back"
+        ),
+        Err(err) => tracing::warn!(
+            node_id = %host.node_id,
+            job_id = %job.id,
+            fence,
+            error = %err,
+            "job claimed on a closing host connection could not be given back; its lease will expire"
+        ),
+    }
+}
+
+/// Renews each fence a reconnecting host still holds.
 ///
-/// Only job fences are served; any other kind is lost. A fence that
-/// expired and was reclaimed while the host was away, or that the node is
-/// no longer trusted with, is lost, and every later frame under it is
-/// refused the same way.
+/// Only job fences are served; any other kind is lost, as is every fence
+/// beyond [`MAX_RESUME_FENCES`]. A fence that expired and was reclaimed
+/// while the host was away, or that the node is no longer trusted with, is
+/// lost, and every later frame under it is refused the same way. A fence
+/// whose renewal failed with an error (a transient database fault) is
+/// listed as unchecked, not lost: the host keeps the work and its next
+/// `renew` decides, while the lease is still the one it held.
 pub(crate) async fn resume(
     library: &LibraryStore,
     host: &HostContext,
@@ -753,32 +894,47 @@ pub(crate) async fn resume(
 ) -> Body {
     let mut renewed = Vec::new();
     let mut lost = Vec::new();
+    let mut unchecked = Vec::new();
     for (index, fence) in held.into_iter().enumerate() {
-        let kept = index < MAX_RESUME_FENCES
-            && fence.kind == ITEM_JOB
-            && matches!(
-                renew_remote_job(
-                    library,
-                    &host.node_id,
-                    &fence.id,
-                    fence.fence,
-                    host.settings,
-                    None
-                )
-                .await,
-                Ok(RemoteRenew::Renewed { .. })
-            );
-        if kept {
-            renewed.push(fence);
-        } else {
+        if index >= MAX_RESUME_FENCES || fence.kind != ITEM_JOB {
             lost.push(fence);
+            continue;
+        }
+        match renew_remote_job(
+            library,
+            &host.node_id,
+            &fence.id,
+            fence.fence,
+            host.settings,
+            None,
+        )
+        .await
+        {
+            Ok(RemoteRenew::Renewed { .. }) => renewed.push(fence),
+            Ok(RemoteRenew::Lost) => lost.push(fence),
+            Err(err) => {
+                tracing::warn!(
+                    node_id = %host.node_id,
+                    job_id = %fence.id,
+                    fence = fence.fence,
+                    error = %err,
+                    "host lease could not be checked on resume"
+                );
+                unchecked.push(fence);
+            }
         }
     }
     tracing::info!(
         node_id = %host.node_id,
         renewed = renewed.len(),
         lost = lost.len(),
+        unchecked = unchecked.len(),
         "host node resumed its leases"
     );
-    Body::Resumed { renewed, lost }
+    Body::Resumed {
+        lease_secs: (!renewed.is_empty()).then_some(host.settings.lease_secs),
+        renewed,
+        lost,
+        unchecked,
+    }
 }

@@ -71,7 +71,7 @@ pub async fn export_libation(opts: LibationExportOptions) -> Result<LibationExpo
     }
 
     let config_path = opts.files_dir.join("config.toml");
-    let config = if config_path.exists() {
+    let mut config = if config_path.exists() {
         Config::from_toml_file(&config_path)?
     } else {
         summary
@@ -79,6 +79,27 @@ pub async fn export_libation(opts: LibationExportOptions) -> Result<LibationExpo
             .push("config.toml missing — exporting default settings".into());
         Config::default()
     };
+
+    let library_db = opts.files_dir.join("library.db");
+    let dest = if library_db.exists() {
+        Some(crate::store::DestStore::open(&opts.files_dir, false).await?)
+    } else {
+        summary
+            .warnings
+            .push("library.db missing — accounts/books empty".into());
+        None
+    };
+
+    // Packaging settings are the `core.output` document once a host has
+    // enrolled; `[output]` in config.toml is only the first-run seed.
+    if let Some(dest) = dest.as_ref() {
+        match bookclerk_library::control_plane::load_output(&dest.store).await {
+            Ok(doc) => doc.body.apply_to(&mut config.output, None),
+            Err(err) => summary.warnings.push(format!(
+                "core.output unavailable — exporting config.toml [output]: {err}"
+            )),
+        }
+    }
 
     // The books directory and Audible bitrate live on plugin instances;
     // export writes Libation defaults for them.
@@ -90,16 +111,6 @@ pub async fn export_libation(opts: LibationExportOptions) -> Result<LibationExpo
             .map_err(|e| MigrateError::Settings(e.to_string()))?;
         std::fs::write(&path, bytes)?;
     }
-
-    let library_db = opts.files_dir.join("library.db");
-    let dest = if library_db.exists() {
-        Some(crate::store::DestStore::open(&opts.files_dir, false).await?)
-    } else {
-        summary
-            .warnings
-            .push("library.db missing — accounts/books empty".into());
-        None
-    };
     if let Some(dest) = dest.as_ref() {
         summary.storefronts = usize::try_from(dest.store.count_identities().await?).unwrap_or(0);
     }

@@ -13,7 +13,7 @@ import {
 } from "@/lib/api";
 import { JoinWizard } from "@/components/JoinWizard";
 import { fetchJoinStatus, joinErrorMessage, leaveLibrary } from "@/lib/join";
-import { useLiveRefresh } from "@/lib/live";
+import { backoffDelay, useLiveRefresh } from "@/lib/live";
 import { cn } from "@/lib/utils";
 
 /** Poll interval while the live socket is down. */
@@ -118,17 +118,41 @@ function GrantFacts({ grant }: { grant: RemoteGrantView }) {
     facts.push(`TCP: ${grant.tcp.map((t) => `${t.host}:${t.ports.join(",")}`).join(", ")}`);
   }
   if (grant.addressCidrs?.length) facts.push(`Addresses: ${grant.addressCidrs.join(", ")}`);
+  if (grant.allowUndeclaredPublicRedirects) {
+    facts.push("Redirects: may follow redirects to public hosts it did not declare");
+  }
   if (grant.jobs?.length) facts.push(`Jobs: ${grant.jobs.join(", ")}`);
+  if (grant.entrypoints?.length) facts.push(`Entrypoints: ${grant.entrypoints.join(", ")}`);
+  if (grant.producers?.length) facts.push(`Sends to queues: ${grant.producers.join(", ")}`);
+  if (grant.consumers?.length) {
+    facts.push(`Consumes: ${grant.consumers.map((c) => JSON.stringify(c)).join(", ")}`);
+  }
+  if (grant.compatibilityFlags?.length) {
+    facts.push(`Compatibility flags: ${grant.compatibilityFlags.join(", ")}`);
+  }
   if (grant.memoryMib) facts.push(`Memory: ${grant.memoryMib} MiB`);
   if (grant.cpuRatePercent) facts.push(`CPU: ${grant.cpuRatePercent}%`);
+  if (grant.cpuMs) facts.push(`CPU time: ${grant.cpuMs} ms per call`);
+  if (grant.subrequests) facts.push(`Subrequests: ${grant.subrequests} per call`);
+  if (grant.extraProcesses) facts.push(`Extra processes: ${grant.extraProcesses}`);
   if (grant.diskMib) facts.push(`Disk: ${grant.diskMib} MiB`);
-  if (facts.length === 0) return null;
   return (
-    <ul className="space-y-0.5 text-xs text-ink/55">
-      {facts.map((fact) => (
-        <li key={fact}>{fact}</li>
-      ))}
-    </ul>
+    <div className="space-y-1 text-xs text-ink/55">
+      {facts.length > 0 ? (
+        <ul className="space-y-0.5">
+          {facts.map((fact) => (
+            <li key={fact}>{fact}</li>
+          ))}
+        </ul>
+      ) : null}
+      {/* Everything Approve grants, so nothing it widens goes unseen. */}
+      <details>
+        <summary className="cursor-pointer">Full request</summary>
+        <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px]">
+          {JSON.stringify(grant, null, 2)}
+        </pre>
+      </details>
+    </div>
   );
 }
 
@@ -151,8 +175,8 @@ function ConsentRow({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // A new request (another version, or more asked for) starts unnarrowed.
-  const requestKey = `${row.requested_version}|${JSON.stringify(requested)}`;
+  // A new request (another version or archive, or more asked for) starts unnarrowed.
+  const requestKey = `${row.request_digest}|${JSON.stringify(requested)}`;
   useEffect(() => {
     setDeniedDomains(new Set());
     setDeniedBindings(new Set());
@@ -178,7 +202,7 @@ function ConsentRow({
         onSessionExpired();
         return;
       }
-      // 409 carries the refusal's reason (a version changed, a domain not asked for).
+      // 409 carries the refusal's reason (the request changed, a domain not asked for).
       setError(err instanceof Error ? err.message : "Request failed");
     } finally {
       setBusy(false);
@@ -200,6 +224,12 @@ function ConsentRow({
           ? ` · approved ${row.approved_version}${row.approved_by ? ` by ${row.approved_by}` : ""}`
           : ""}
       </p>
+      {row.requested_artifact ? (
+        <p className="break-all text-xs text-ink/55">
+          Archive <span className="font-mono">{row.requested_artifact.url}</span> · sha256{" "}
+          <span className="font-mono">{row.requested_artifact.archive_sha256}</span>
+        </p>
+      ) : null}
 
       {row.state !== "consented" ? (
         <div className="grid gap-3 sm:grid-cols-2">
@@ -283,7 +313,7 @@ function ConsentRow({
                 approveClusterConsent({
                   cluster_id: row.cluster_id,
                   plugin_key: row.plugin_key,
-                  version: row.requested_version,
+                  request_digest: row.request_digest,
                   deny_domains: denyNetwork ? [] : [...deniedDomains],
                   deny_bindings: [...deniedBindings],
                   deny_network: denyNetwork,
@@ -339,6 +369,8 @@ export function ClusterConsentsPanel({ onSessionExpired }: ClusterConsentsPanelP
         /* the wizard works without a suggested name */
       });
   }, [joining]);
+  // Failed loads in a row; drives the retry below.
+  const [failures, setFailures] = useState(0);
   const expired = useRef(onSessionExpired);
   useEffect(() => {
     expired.current = onSessionExpired;
@@ -350,19 +382,35 @@ export function ClusterConsentsPanel({ onSessionExpired }: ClusterConsentsPanelP
       setClusters(body.clusters);
       setConsents(body.consents);
       setLoadError(null);
+      setFailures(0);
     } catch (err) {
       if (isApiError(err) && err.status === 401) {
         expired.current();
         return;
       }
       setLoadError(err instanceof Error ? err.message : "Failed to load libraries");
+      setFailures((n) => n + 1);
     }
   }, []);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
-  useLiveRefresh(["consents"], refresh, { pollMs: REFRESH_MS });
+  // Consents, and the links themselves (a join, leave or revoke).
+  // A slow poll while the socket is up too: a change stamped by an owner
+  // node whose clock runs behind does not move the revision the socket
+  // compares.
+  useLiveRefresh(["consents", "clusters"], refresh, {
+    pollMs: REFRESH_MS,
+    openPollMs: 60_000,
+  });
+  // With the socket open nothing polls, so a failed load would sit on its
+  // error until the next consent or cluster change: retry it with backoff.
+  useEffect(() => {
+    if (failures === 0) return;
+    const timer = setTimeout(() => void refresh(), backoffDelay(failures - 1, Math.random()));
+    return () => clearTimeout(timer);
+  }, [failures, refresh]);
 
   const pending = consents.filter((row) => row.state !== "consented");
   const approved = consents.filter((row) => row.state === "consented");

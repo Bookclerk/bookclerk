@@ -37,9 +37,25 @@ pub enum JoinError {
         /// The answer's `error` code.
         error: String,
     },
-    /// The owner's answer or the local write failed.
+    /// The enroll request could not be built.
     #[error("enrollment could not be recorded: {0}")]
     Record(String),
+    /// The owner accepted the link, but its answer did not parse or the
+    /// local write failed. The one-use link is spent and the node keys are
+    /// gone, so this install cannot use the node the owner minted: the
+    /// owner revokes it (named when the answer said which) and issues a new
+    /// link.
+    #[error(
+        "the owner enrolled this host{} but it could not be saved here ({reason}); \
+         the link is spent, so ask the owner to revoke that node and send a new link",
+        node_id.as_deref().map(|id| format!(" as node {id}")).unwrap_or_default()
+    )]
+    Unsaved {
+        /// The node id the owner minted, when its answer named one.
+        node_id: Option<String>,
+        /// What failed.
+        reason: String,
+    },
 }
 
 /// `POST /api/node/v1/enroll` answer.
@@ -100,8 +116,13 @@ pub async fn join_cluster(
         }
         return Err(JoinError::Http { status, error });
     }
-    let enrolled: Enrolled = serde_json::from_slice(&answer)
-        .map_err(|_| JoinError::Record("malformed enroll answer".into()))?;
+    let enrolled: Enrolled = serde_json::from_slice(&answer).map_err(|_| JoinError::Unsaved {
+        node_id: serde_json::from_slice::<serde_json::Value>(&answer)
+            .ok()
+            .and_then(|value| value.get("node_id")?.as_str().map(str::to_string)),
+        reason: "malformed enroll answer".into(),
+    })?;
+    let node_id = enrolled.node_id.clone();
     let recorded = record_cluster_link(
         store,
         &NewClusterLink {
@@ -113,7 +134,10 @@ pub async fn join_cluster(
         &keys,
     )
     .await
-    .map_err(|err| JoinError::Record(err.to_string()))?;
+    .map_err(|err| JoinError::Unsaved {
+        node_id: Some(node_id),
+        reason: err.to_string(),
+    })?;
     tracing::info!(
         cluster_id = %recorded.owner_cluster_id,
         node_id = %recorded.remote_node_id,

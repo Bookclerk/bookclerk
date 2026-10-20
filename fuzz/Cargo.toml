@@ -12,6 +12,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 bookclerk-plugin-abi = { path = "../crates/bookclerk-plugin-abi", features = ["host"] }
 bookclerk-db-exec = { path = "../crates/bookclerk-db-exec" }
+bookclerk-mp4 = { path = "../crates/bookclerk-mp4" }
 sea-orm = { version = "2.0.0", default-features = false }
 
 [workspace]
@@ -27,6 +28,13 @@ bench = false
 [[bin]]
 name = "sql_lower"
 path = "fuzz_targets/sql_lower.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mp4_parse"
+path = "fuzz_targets/mp4_parse.rs"
 test = false
 doc = false
 bench = false
