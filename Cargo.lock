@@ -1749,6 +1749,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-node-client"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "bookclerk-config",
+ "bookclerk-library",
+ "bookclerk-node-proto",
+ "futures",
+ "rand 0.8.7",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite",
+ "tracing",
+ "url",
+ "webpki-roots 1.0.9",
+ "zeroize",
+]
+
+[[package]]
 name = "bookclerk-node-proto"
 version = "0.1.0"
 dependencies = [
@@ -2322,6 +2345,7 @@ dependencies = [
  "bookclerk-integrations",
  "bookclerk-library",
  "bookclerk-media",
+ "bookclerk-node-client",
  "bookclerk-node-proto",
  "bookclerk-plugin-abi",
  "bookclerk-plugin-catalog",

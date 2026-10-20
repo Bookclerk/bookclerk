@@ -78,6 +78,9 @@ pub mod secret_kind {
     /// Ciphertext stays in this table. The configuration document stores the
     /// ref name only.
     pub const PLUGIN_INSTANCE: &str = "plugin_instance";
+    /// On a host node: the private node keys of one owner-cluster link
+    /// (`provider` = owner cluster id, `account_id` = this node's id there).
+    pub const CLUSTER_LINK: &str = "cluster_link";
 }
 
 /// Ownership namespace for `encrypted_secrets.account_type`.

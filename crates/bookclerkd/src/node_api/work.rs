@@ -506,6 +506,7 @@ pub(crate) async fn resume(
         "host node resumed its leases"
     );
     Body::Resumed {
+        lease_secs: (!renewed.is_empty()).then_some(host.settings.lease_secs),
         renewed,
         lost,
         unchecked,

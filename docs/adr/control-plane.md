@@ -869,8 +869,9 @@ Decided 2026-10-14 with the owner. A cluster has two kinds of node:
   database credentials or DEK. Enrollment, the transport policy, and the
   node socket handshake are built (see *Host-node enrollment and
   transport* below), and so is the owner side of the work frames (see
-  *Work frames, sealed secrets, wakes and resume* below); the host client
-  is not (see *Remaining work*). A redeemed
+  *Work frames, sealed secrets, wakes and resume* below), and so is the
+  host client (see *Host client* below; claims stay off with
+  `HOST_MAX_JOBS = 0`). A redeemed
   enrollment link records the node with `nodes.kind = host`.
 
 Who may administer a node is separate from its kind. `nodes.owner_user_id`
@@ -954,8 +955,8 @@ Built in the first H-4 slice:
 
 - Owner-database tables `node_enrollment_links` (only `hash_token(secret)`
   is stored) and `node_credentials` (Ed25519 sign key, X25519 box key,
-  `revoked_at`), and the host-database table `cluster_links` (no client
-  writes it yet). All are canonical SQL-v1 with SeaORM entities.
+  `revoked_at`), and the host-database table `cluster_links` (written by
+  the host client, below). All are canonical SQL-v1 with SeaORM entities.
 - `core.host_enrollment` (`{ "enabled": bool }`), a cluster document that
   defaults to enabled while absent. Only the operator or a verified Owner
   (`ConfigActor::ClusterOwner`, built by `verify_cluster_owner` from the
@@ -1223,6 +1224,100 @@ Built 2026-10-17 (H-4 step 6), over the node socket and the claim above.
   claimed on a closing connection is given back; a superseded session
   ending late leaves the wake catalog enabled; a database error on
   resume reports the fence unchecked.
+
+### Host client
+
+Built 2026-10-18 (H-4 step 7), the Host side of the socket above, in the
+`bookclerk-node-client` crate (so the CLI can reuse it for `clusters
+join`) and `bookclerkd/src/cluster_link.rs`.
+
+- **Joining** (`join_cluster`). The whole link is required: its origin is
+  the one the Host dials and signs from then on. Fresh Ed25519 and X25519
+  keys are generated, the link is redeemed under the transport policy
+  below, and only then are both private keys sealed with the Host's DEK
+  into one `encrypted_secrets` row (`kind = cluster_link`, `provider` =
+  owner cluster id, `account_type = operator`, `account_id` = the minted
+  node id) and the `cluster_links` row written (`active`; a re-enrollment
+  replaces both). A crash between redeem and write loses the keys and
+  needs a new link. The link secret goes once into the request body and
+  is never logged.
+- **Transport** (`OwnerEndpoint`, decision 1). `https` only, except an
+  `http` origin whose host is loopback and resolves only to loopback
+  addresses; a pinned link never falls back to plain HTTP. With the
+  link's SPKI pin the certificate's SubjectPublicKeyInfo must hash to it
+  and must sign the handshake (names and issuers are not consulted, so a
+  self-signed private-network owner works); without one it must chain to
+  the webpki roots and match the name. The upgrade must select
+  `bookclerk-node.v1`.
+- **Handshake.** The hello lists every fence still held. The Host signs
+  only a challenge naming the cluster it enrolled into, and accepts only a
+  welcome naming its own node and cluster with a valid owner box key; the
+  `resumed` answer cancels work under lost fences.
+- **Session.** One writer task behind a 64-frame queue; requests matched
+  to answers by frame id; heartbeats every 15 s from the Host's own
+  `NodeSampler`; pings every 20 s; idle close after 60 s; each `wake`
+  handed to local subscribers, then acked. A wake no subscriber receives
+  is not acked, so the owner keeps the delivery and sends it again after
+  its lease or on the next connection. A heartbeat or claim the owner
+  does not answer within 30 s is retried with the reconnect backoff
+  (a heartbeat never waits longer than its interval); those loops end
+  only with their connection. A close with 4403 marks the
+  link `revoked`, cancels held work, and stops that link for good;
+  anything else reconnects with backoff from 1 s to 60 s plus up to a
+  quarter of jitter, reset after each welcome.
+- **Database swap.** The daemon runs one client per active link of the
+  live library. When a config reload swaps the database, every client is
+  stopped (and awaited, so a node never dials twice) and the new store's
+  active links are started; a link enrolled while the daemon runs is
+  picked up at the next start or swap.
+- **Jobs.** A claim loop runs while job slots are free. Each job runs on
+  its own task, outliving the connection: its secrets are opened with the
+  enrolled box key (a bundle that does not open is failed as
+  `secrets_unopenable`), a renewer extends the lease every third of it
+  (`lost` cancels, `renewed {cancel}` asks the runner to stop), and the
+  result is reported with `complete` or `fail`, waiting up to 10 minutes
+  for a connection. A lease the owner has not confirmed (by `work`, then
+  each `renewed`, counted from when the request was sent) by the time it
+  runs out, connected or not, marks the job lost and cancels it, so it
+  never runs on a lease the owner may have handed elsewhere. A `work`
+  that answers a claim which already timed out is failed at once as
+  `claim_abandoned` under its fence (the protocol has no release frame,
+  so this retries the job like any failure) rather than left to expire.
+  Client shutdown cancels every held job as lost, as revocation does.
+  A lost fence's result is discarded. Write-back
+  (`HostJobCtx::write_back`) accepts only a ref handed with the job,
+  seals the value to the live connection's owner box key with a fresh
+  ephemeral key, and needs the fence still held. The daemon runs jobs
+  through its own `JobTransport` (`TransportRunner`), with the handoff on
+  `JobExecCtx::host`; an acquire is failed as `upload_unavailable` before
+  it runs, since `complete` waits for its upload (step 9).
+- **Claims stay off in the daemon** (`HOST_MAX_JOBS = 0`). Every job a
+  Host is trusted with runs an owner plugin, and a Host runs one only
+  after its own operator approves it (step 8). Until then the daemon
+  connects, heartbeats and resumes, but claims nothing, and subscribes
+  to no wakes, so the owner keeps them unacked for the handler that
+  lands with consent; the
+  handoff on `JobExecCtx::host` is not yet routed to a guest's `SECRETS`
+  binding. Rejected: claiming and failing what cannot run, which would
+  spend owner attempts and starve owner nodes.
+- **Not decided.** How a Host's scan returns its results (book rows) to
+  the owner. The design has no frame or binding for it, and library SQL
+  for owner plugins on a Host is a non-goal.
+- **Tests** (`cluster_link_tests.rs`, owner and Host in one process): a
+  member's Host enrolls over loopback, heartbeats into `node_status`,
+  claims its owner's scan, runs it through the daemon's job transport
+  with the opened token, writes a refreshed token back, completes under
+  the fence, and acks a wake; with tracing and `log` at TRACE no token
+  appears in the logs, plain or base64. A database swap stops the
+  previous store's link and connects the new store's. Against a scripted
+  owner (`client_tests.rs`), an unanswered heartbeat and claim are
+  retried on the same connection, and a wake is acked only once a
+  subscriber received it. A fence held across a dropped
+  connection is resumed and the job completes under it; one reclaimed
+  while the owner was unreachable is lost on reconnect and its run
+  cancelled. A wrong SPKI pin fails the TLS handshake before the link is
+  spent and the socket never opens; an unpinned self-signed owner is
+  refused; the right pin enrolls and connects.
 
 ## Consequences
 
