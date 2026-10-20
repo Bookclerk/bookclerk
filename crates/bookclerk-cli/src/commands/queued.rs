@@ -585,6 +585,7 @@ pub(crate) fn finish(kind: &str, jobs: &[JobRecord]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Planning and admission of queued scans and acquires.
 #[cfg(test)]
 mod tests {
     use bookclerk_config::Config;
@@ -592,6 +593,7 @@ mod tests {
 
     use super::{acquire, resolve_account, resolve_pin, scan, AcquireArgs, ScanArgs};
 
+    /// An in-memory library with the test accounts.
     async fn store() -> LibraryStore {
         let store = LibraryStore::from_connection(
             bookclerk_plugin_database_sqlite::open_memory()
@@ -628,6 +630,7 @@ mod tests {
         jobs
     }
 
+    /// A named account queues one scan of it, deduped against a pending one.
     #[tokio::test]
     async fn a_named_account_queues_exactly_one_scan() {
         let store = store().await;
@@ -671,6 +674,7 @@ mod tests {
         assert_eq!(accounts, vec!["a1", "a2", "a3"]);
     }
 
+    /// Waiting refuses when no node is live, before anything is queued.
     #[tokio::test]
     async fn waiting_needs_a_live_node_and_nothing_is_queued_without_one() {
         let store = store().await;
@@ -691,6 +695,7 @@ mod tests {
         assert!(pending(&store, JobKind::Scan).await.is_empty());
     }
 
+    /// An acquire queues one job per title id, carrying force.
     #[tokio::test]
     async fn an_acquire_queues_one_job_per_title() {
         let store = store().await;
@@ -722,6 +727,7 @@ mod tests {
         );
     }
 
+    /// Pins and account names resolve to one target or fail.
     #[tokio::test]
     async fn pins_and_accounts_resolve_or_fail_closed() {
         let store = store().await;

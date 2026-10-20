@@ -253,10 +253,19 @@ pub async fn post_cluster_scan(
     body: Option<Json<ClusterScanBody>>,
 ) -> Result<Json<serde_json::Value>, Response> {
     let body = body.map(|Json(body)| body).unwrap_or_default();
+    // A blank account names nothing; dropping it would widen the scan to
+    // every account of this node's owner.
+    if body.account.as_deref().is_some_and(|a| a.trim().is_empty()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid", "detail": "the account named is blank" })),
+        )
+            .into_response());
+    }
     let handle = connected_link(&cluster_id)?;
     let answer = handle
         .request(bookclerk_node_proto::Body::ScanRequest {
-            account: body.account.filter(|a| !a.trim().is_empty()),
+            account: body.account,
             plugin_instance_id: body.plugin_instance_id.filter(|i| !i.trim().is_empty()),
         })
         .await;

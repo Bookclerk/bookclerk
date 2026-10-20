@@ -753,6 +753,7 @@ async fn add_book(store: &LibraryStore, account_id: &str, product_id: &str, asin
         .unwrap();
 }
 
+/// An acquire payload naming `account` and `title`.
 fn acquire(account: Option<&str>, title: Option<&str>) -> JobPayload {
     JobPayload {
         account: account.map(str::to_string),
