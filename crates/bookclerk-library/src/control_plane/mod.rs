@@ -24,6 +24,7 @@ mod routing;
 mod schemas;
 mod secret;
 mod semaphore;
+mod trust;
 mod versions;
 
 use std::path::Path;
@@ -119,6 +120,10 @@ pub use semaphore::{
     acquire_permit, acquire_permits, live_permits, release_permits, renew_fenced_lease,
     renew_permits, semaphore_slot_lease_name, PermitAcquire, SemaphorePermit, SemaphoreRequest,
     MAX_SEMAPHORE_LIMIT, SEMAPHORE_LEASE_PREFIX,
+};
+pub use trust::{
+    accounts_owned_by, handoff_routed_job, job_trusted, node_may_claim_job, node_trust, plan_scan,
+    Claimant, NodeTrust, ScanRequester,
 };
 pub use versions::{
     activate_version, add_plugin_version, approve_version_grant, clear_install, list_installs,
@@ -742,3 +747,5 @@ mod placement_tests;
 mod requirements_sweep_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod trust_tests;

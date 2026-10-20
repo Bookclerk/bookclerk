@@ -199,6 +199,7 @@ async fn placement_move_inside_grace_keeps_the_job(store_a: LibraryStore, store_
         &JobClaimRequest {
             resource_class: JobResourceClass::Network,
             node_id: "node-b",
+            claimant: Claimant::Local,
             owner: "worker-b",
             lease_secs: 60,
             limits: JobClaimLimits {
@@ -332,6 +333,7 @@ fn claim_request(node_id: &str) -> JobClaimRequest<'_> {
     JobClaimRequest {
         resource_class: JobResourceClass::Network,
         node_id,
+        claimant: Claimant::Local,
         owner: "worker",
         lease_secs: 60,
         limits: JobClaimLimits {
