@@ -1,5 +1,13 @@
 //! Framing / protocol constant conformance for the guest SDK.
 #![allow(clippy::missing_panics_doc)]
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::unwrap_used
+)]
 
 use bookclerk_plugin_sdk::{methods, MAX_RPC_LINE_BYTES, PRODUCT_API_VERSION, PROTOCOL_NAME};
 

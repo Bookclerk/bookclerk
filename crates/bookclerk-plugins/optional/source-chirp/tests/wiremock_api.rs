@@ -1,5 +1,8 @@
 //! Wiremock fixtures for Chirp GraphQL login, library, and single audiobook.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::unwrap_used)]
+
 use bookclerk_library::configure_master_key;
 use bookclerk_plugin_source_chirp::{
     fetch_title_materials, load_auth_from_db, save_auth_to_db, ChirpAuthFile, ChirpClient,

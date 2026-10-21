@@ -3,6 +3,9 @@
 //! `LibraryStore::confirm_totp_enrollment` / `disable_user_totp` run through
 //! native atomic path (`execute_db_atomic`) when no guest backend is attached.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::unwrap_used)]
+
 use bookclerk_library::{
     build_sealed_record, list_secrets, secret_account_type, secret_kind, upsert_secret,
     LibraryStore, UserRole,

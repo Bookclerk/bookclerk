@@ -1,5 +1,8 @@
 //! Mocked Audible API tests (wiremock) for CI — no live network.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::unwrap_used)]
+
 use audible_rs::api::client::Client;
 use audible_rs::auth::Authenticator;
 use bookclerk_config::AudioQuality;

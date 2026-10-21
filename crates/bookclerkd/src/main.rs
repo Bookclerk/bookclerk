@@ -2,6 +2,13 @@
 
 // Axum `Response` as handler `Err` exceeds Clippy's 128-byte `result_large_err` cap.
 #![allow(clippy::result_large_err)]
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::expect_used
+)]
 
 mod api;
 mod auth;

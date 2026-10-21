@@ -18,6 +18,8 @@
 //! probe.
 
 #![allow(clippy::missing_docs_in_private_items)]
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::expect_used)]
 
 #[path = "native_gateway/channel.rs"]
 mod channel;

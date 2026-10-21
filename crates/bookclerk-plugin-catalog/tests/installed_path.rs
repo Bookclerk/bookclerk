@@ -1,6 +1,9 @@
 //! Installed-plugin path smoke: package a tiny guest archive, install via
 //! static fixture registry, verify receipt + extract layout.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;

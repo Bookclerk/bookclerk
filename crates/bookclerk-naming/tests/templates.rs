@@ -3,6 +3,9 @@
 //! The fixture mirrors `TemplatesTests.Shared.GetLibraryBook()` so the expected
 //! values can be copied directly from the upstream `[DataRow]` attributes.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::unwrap_used)]
+
 use bookclerk_naming::{
     expand_filename, expand_template, BookContext, ChapterContext, ContentKind, Contributor,
     ReplacementRule, Series,

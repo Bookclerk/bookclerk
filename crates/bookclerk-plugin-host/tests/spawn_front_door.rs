@@ -6,6 +6,15 @@
 //! (or the pinned `workerd`) cannot be found, spawn refuses in every isolation
 //! mode instead of falling back to direct native.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::unwrap_used
+)]
+
 use std::path::{Path, PathBuf};
 
 use bookclerk_config::{Config, Isolation, Paths};

@@ -8,6 +8,13 @@
 //! Product narrative: destination sections in `docs/configuration.md`. Style:
 //! `docs/code-documentation.md`.
 
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
+
 /// Bounded scalar reads, ranges, and digest helpers.
 mod bounded;
 /// Error types returned by destination storage backends.

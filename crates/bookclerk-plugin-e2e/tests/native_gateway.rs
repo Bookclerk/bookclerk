@@ -10,6 +10,9 @@
 //! Run with `cargo test -p bookclerk-plugin-e2e --test native_gateway` after
 //! `cargo build -p bookclerk-jail -p bookclerk-workerd` and `cargo ensure-workerd`.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::expect_used)]
+
 #[path = "native_gateway/harness.rs"]
 mod ng_harness;
 

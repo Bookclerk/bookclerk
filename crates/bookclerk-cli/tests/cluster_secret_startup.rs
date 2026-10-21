@@ -1,6 +1,9 @@
 //! Command startup against an enrolled library, through the real `bookclerk`
 //! binary and the jailed workerd sqlite guest.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 mod common;
 
 use std::fs;

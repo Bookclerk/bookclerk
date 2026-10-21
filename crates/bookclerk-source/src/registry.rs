@@ -359,6 +359,7 @@ fn account_needle_matches(needle: &str, accounts: &[SourceAccount]) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unimplemented)] // Lookup stubs never reach these methods.
 mod tests {
     use std::sync::Arc;
 

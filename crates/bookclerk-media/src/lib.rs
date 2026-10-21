@@ -23,6 +23,15 @@
 //! design. They are cheap, take already-parsed input, or are the implementation
 //! the worker itself calls.
 
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::unwrap_used
+)]
+
 mod brand;
 mod chapter_align;
 mod chapters_mp4;

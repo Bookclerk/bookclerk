@@ -5,6 +5,13 @@
 //! content-source plugins; this crate never sees license keys. See
 //! `docs/media.md` for encode/remux details.
 
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
+
 mod convert;
 mod cue;
 mod destinations;

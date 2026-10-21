@@ -31,6 +31,15 @@
 //! See `docs/plugins.md`, `docs/adr/plugin-workers-rpc-workerd.md`, and
 //! `docs/plugin-registry.md`.
 
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::unwrap_used
+)]
+
 #[cfg(test)]
 mod deployment_reconcile_tests;
 #[cfg(test)]

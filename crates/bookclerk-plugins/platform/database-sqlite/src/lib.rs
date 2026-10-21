@@ -5,6 +5,13 @@
 //! after connect. Prefer [`open_store`] from tests; guests speak the DB ABI
 //! through `bookclerk-plugin-sdk`.
 
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::expect_used
+)]
+
 /// Plugin id advertised in describe and `plugin.toml`.
 pub const ID: &str = "sqlite";
 

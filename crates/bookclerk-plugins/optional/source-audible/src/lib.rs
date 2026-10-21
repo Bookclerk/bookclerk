@@ -3,6 +3,14 @@
 //! Thin wrapper over [audible-rs](https://github.com/mkb79/audible-rs) so Bookclerk
 //! keeps stable naming. All credentials live in the `encrypted_secrets` DB table.
 
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::unwrap_used
+)]
+
 mod accounts;
 mod artifacts;
 mod auth;

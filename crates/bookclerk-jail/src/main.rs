@@ -26,6 +26,15 @@
 //! [`bookclerk_sandbox::spawn::run_appcontainer`]) and proxies stdio until the
 //! guest exits, instead of confining itself and `exec`ing.
 
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::unwrap_used
+)]
+
 use std::ffi::OsString;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};

@@ -39,16 +39,14 @@ impl AbsRoot {
         bindings: &Bindings,
     ) -> Result<Arc<Mutex<AbsGuestState>>, PluginError> {
         let mut slot = self.state.lock().await;
-        if slot.is_none() {
+        let state = slot.get_or_insert_with(|| {
             let config = bindings
                 .config
                 .json_value()
                 .unwrap_or_else(|_| Value::Object(Default::default()));
-            *slot = Some(Arc::new(Mutex::new(AbsGuestState::from_config_json(
-                &config,
-            ))));
-        }
-        Ok(slot.as_ref().expect("ABS guest state initialized").clone())
+            Arc::new(Mutex::new(AbsGuestState::from_config_json(&config)))
+        });
+        Ok(state.clone())
     }
 }
 
