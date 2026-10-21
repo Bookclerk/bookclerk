@@ -424,7 +424,15 @@ fn replace_files(files: &[NewFile<'_>]) -> Result<(), JoinError> {
     sync_dirs(&staged);
     for file in &staged {
         if let Some(backup) = &file.backup {
-            let _ = std::fs::remove_file(backup);
+            // A copy left here stops the daemon starting (see
+            // `interrupted_clerk_join`), so say which one.
+            if let Err(err) = std::fs::remove_file(backup) {
+                tracing::warn!(
+                    copy = %backup.display(),
+                    error = %err,
+                    "the clerk join finished but could not delete this copy of the original; delete it before starting the server"
+                );
+            }
         }
     }
     sync_dirs(&staged);
@@ -476,20 +484,29 @@ pub fn interrupted_clerk_join(files_dir: &Path, config_file: &Path) -> Option<St
         bookclerk_library::master_key_path(files_dir),
         config_file.to_path_buf(),
     ];
-    let left: Vec<String> = targets
-        .iter()
-        .map(|target| backup_path(target))
-        .filter(|backup| backup.exists())
-        .map(|backup| backup.display().to_string())
-        .collect();
-    if left.is_empty() {
+    if !targets.iter().any(|target| backup_path(target).exists()) {
         return None;
     }
+    // Every target is listed with what is there, since undoing the join
+    // also means deleting the files the join created (those with no copy).
+    let state: Vec<String> = targets
+        .iter()
+        .map(|target| {
+            let what = if backup_path(target).exists() {
+                "has a copy"
+            } else if target.exists() {
+                "exists with no copy"
+            } else {
+                "absent"
+            };
+            format!("{} ({what})", target.display())
+        })
+        .collect();
     Some(format!(
-        "a clerk join was interrupted while replacing this server's bootstrap files; copies of the originals are still here: {}. \
+        "a clerk join was interrupted while replacing this server's bootstrap files ({CLERK_BACKUP_SUFFIX} copies of the originals are still beside them): {}. \
          If {} is already the joined library's (its [database] names the library's database), the join finished: delete the copies. \
-         Otherwise move each copy back over its file (dropping the {CLERK_BACKUP_SUFFIX} suffix) and delete any of those files that has no copy, then start again",
-        left.join(", "),
+         Otherwise undo it: move each copy back over its file (dropping the {CLERK_BACKUP_SUFFIX} suffix), and delete each file listed as existing with no copy unless it was there before the join, then start again",
+        state.join("; "),
         config_file.display()
     ))
 }
@@ -657,10 +674,23 @@ mod tests {
         let files = tempfile::tempdir().unwrap();
         let config = files.path().join("config.toml");
         assert!(interrupted_clerk_join(files.path(), &config).is_none());
-        let copy = backup_path(&bookclerk_library::master_key_path(files.path()));
-        std::fs::write(&copy, b"old").unwrap();
+        let key = bookclerk_library::master_key_path(files.path());
+        std::fs::write(backup_path(&key), b"old").unwrap();
+        let identity = node_identity_path(files.path());
+        std::fs::write(&identity, b"new").unwrap();
         let problem = interrupted_clerk_join(files.path(), &config).unwrap();
-        assert!(problem.contains(&copy.display().to_string()), "{problem}");
+        assert!(
+            problem.contains(&format!("{} (has a copy)", key.display())),
+            "{problem}"
+        );
+        assert!(
+            problem.contains(&format!("{} (exists with no copy)", identity.display())),
+            "{problem}"
+        );
+        assert!(
+            problem.contains(&format!("{} (absent)", config.display())),
+            "{problem}"
+        );
     }
 
     /// A bootstrap may only name Cloudflare's D1 API over HTTPS.
