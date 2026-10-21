@@ -20,6 +20,13 @@ pub struct Model {
     pub state: String,
     /// RFC 3339 enrollment time.
     pub enrolled_at: String,
+    /// "Share this branch's books with *library*" (1 = on, the default).
+    pub share_books: i64,
+    /// "Include books from my own branches" (1 = on, the default).
+    pub include_branches: i64,
+    /// The owner library's ancestry (JSON list of cluster ids, the owner's
+    /// own first), as it last reported it.
+    pub ancestry_json: String,
 }
 
 /// Declared SeaORM relations (none).

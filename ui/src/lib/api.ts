@@ -2327,6 +2327,10 @@ export interface ClusterLinkView {
   state: string;
   /** RFC 3339 time of the latest enrollment (a re-enrollment resets it). */
   enrolled_at: string;
+  /** "Share this branch's books with <library>" (on by default). */
+  share_books?: boolean;
+  /** "Include books from my own branches" (on by default). */
+  include_branches?: boolean;
 }
 
 /**

@@ -51,6 +51,10 @@ pub(crate) fn routes(
             get(super::get_branches).put(super::put_branches),
         )
         .route(
+            "/api/config/branches/titles/remove",
+            post(super::post_remove_branch_titles),
+        )
+        .route(
             "/api/config/node-invites",
             post(super::super::post_node_invite),
         )
@@ -180,6 +184,11 @@ async fn info_describes_the_library_under_the_transport_policy() {
         .unwrap()
         .unwrap();
     assert_eq!(info["cluster_id"], cluster.cluster_id);
+    assert_eq!(
+        info["ancestry"],
+        json!([cluster.cluster_id]),
+        "a library that is nobody's branch is its own whole ancestry"
+    );
     assert_eq!(info["transport"], "loopback");
     assert_eq!(info["enrollment"], true);
     assert!(info.get("spki_fingerprint").is_none_or(Value::is_null));
@@ -532,4 +541,109 @@ async fn branch_invites_are_never_cached_and_settings_need_an_admin() {
     assert_eq!(status, StatusCode::OK, "{put}");
     let (_, _, info) = call(&operator, "GET", "/api/node/v1/info", None).await;
     assert_eq!(info["enrollment"], false);
+}
+
+/// Settings → Branches lists each branch with its owner, its sharing
+/// settings as it reported them, and counts of the titles it shared; once
+/// it stops sharing (or leaves), the owner removes those entries in bulk.
+#[tokio::test]
+async fn branches_show_their_sharing_and_the_owner_removes_what_a_branch_left() {
+    use bookclerk_library::control_plane::{
+        accept_catalog_batch, begin_catalog, record_node_left, CatalogAccept, CatalogBegin,
+    };
+    use bookclerk_node_proto::{CatalogFile, CatalogMetadata, CatalogTitle};
+
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (state, store, member) = owner(&files).await;
+    let app = routes(&state, UserCaller::User { user_id: member }, LOOPBACK);
+    let v = verifier('s');
+    let code = approve(&app, &v).await;
+    let (status, _, enrolled) = call(
+        &app,
+        "POST",
+        "/api/node/v1/enroll/oauth",
+        Some(redeem(&code, &v, 6)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{enrolled}");
+    let node_id = enrolled["node_id"].as_str().unwrap().to_string();
+
+    let operator = routes(&state, UserCaller::Operator, LOOPBACK);
+    let (_, _, view) = call(&operator, "GET", "/api/config/branches", None).await;
+    let branch = &view["branches"][0];
+    assert_eq!(branch["node_id"], node_id.as_str());
+    assert_eq!(branch["owner_name"], "Riley");
+    assert_eq!(branch["joined"], true);
+    assert!(branch["share_books"].is_null(), "not reported yet");
+
+    let CatalogBegin::Opened(session) = begin_catalog(&store, &node_id, true, false).await.unwrap()
+    else {
+        panic!("a branch opens a catalog session");
+    };
+    let title = CatalogTitle {
+        store: "libro".into(),
+        product_id: "p1".into(),
+        metadata: CatalogMetadata {
+            title: "Title".into(),
+            ..CatalogMetadata::default()
+        },
+        primary_key: "A/p1.m4b".into(),
+        pdf_key: None,
+        files: vec![CatalogFile {
+            key: "A/p1.m4b".into(),
+            size: 1,
+            content_type: None,
+        }],
+    };
+    assert!(matches!(
+        accept_catalog_batch(&store, &node_id, session.fence, "c", true, &[title])
+            .await
+            .unwrap(),
+        CatalogAccept::Accepted { upserted: 1, .. }
+    ));
+    let (_, _, view) = call(&operator, "GET", "/api/config/branches", None).await;
+    let branch = &view["branches"][0];
+    assert_eq!(branch["share_books"], true);
+    assert_eq!(branch["include_branches"], false);
+    assert_eq!(
+        branch["titles"],
+        json!({ "shared": 1, "delivered": 0, "detached": 0 })
+    );
+
+    // A member cannot remove entries; nothing is removed while shared.
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        "/api/config/branches/titles/remove",
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (_, _, removed) = call(
+        &operator,
+        "POST",
+        "/api/config/branches/titles/remove",
+        Some(json!({ "node_id": node_id })),
+    )
+    .await;
+    assert_eq!(removed["removed"], 0);
+
+    assert!(record_node_left(&store, &node_id).await.unwrap());
+    let (_, _, view) = call(&operator, "GET", "/api/config/branches", None).await;
+    let branch = &view["branches"][0];
+    assert_eq!(branch["joined"], false);
+    assert_eq!(
+        branch["titles"],
+        json!({ "shared": 0, "delivered": 0, "detached": 1 })
+    );
+    let (status, _, removed) = call(
+        &operator,
+        "POST",
+        "/api/config/branches/titles/remove",
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{removed}");
+    assert_eq!(removed["removed"], 1);
 }

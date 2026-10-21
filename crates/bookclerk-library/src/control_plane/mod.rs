@@ -8,6 +8,7 @@
 //! See `docs/adr/control-plane.md`.
 
 mod batch;
+mod branch_catalog;
 mod clerks;
 mod cluster_links;
 mod deployments;
@@ -42,12 +43,21 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+pub use branch_catalog::{
+    accept_catalog_batch, begin_catalog, branch_provenance, branch_title_counts,
+    catalog_fence_live, detach_branch_titles, forwardable_branch_titles, grant_catalog_upload,
+    list_branch_titles, pending_deliveries, remove_detached_branch_titles, BranchTitle,
+    BranchTitleCounts, CatalogAccept, CatalogBegin, CatalogSessionOpened, BRANCH_TITLE_DETACHED,
+    BRANCH_TITLE_SHARED, DETACHED_LEFT, DETACHED_STOPPED_SHARING, DETACHED_WITHDRAWN,
+    FULL_CATALOG_PASS_EVERY,
+};
 pub use clerks::{library_contents, owner_nodes_visible_to, remove_owner_node, LibraryContents};
 pub use cluster_links::{
-    decode_spki_pin, leave_cluster_link, list_cluster_links, load_cluster_link,
-    load_cluster_link_keys, mark_cluster_link_revoked, record_cluster_link, set_cluster_link_state,
-    ClusterLink, ClusterLinkKeys, NewClusterLink, CLUSTER_LINK_ACTIVE, CLUSTER_LINK_KEYS_NAME,
-    CLUSTER_LINK_LEFT, CLUSTER_LINK_REVOKED,
+    decode_spki_pin, join_cycle, join_overflows_ancestry, leave_cluster_link, library_ancestry,
+    list_cluster_links, load_cluster_link, load_cluster_link_keys, mark_cluster_link_revoked,
+    record_cluster_link, set_cluster_link_ancestry, set_cluster_link_sharing,
+    set_cluster_link_state, ClusterLink, ClusterLinkKeys, NewClusterLink, CLUSTER_LINK_ACTIVE,
+    CLUSTER_LINK_KEYS_NAME, CLUSTER_LINK_LEFT, CLUSTER_LINK_REVOKED,
 };
 pub use deployments::{
     bounded_observation_detail, delete_plugin_deployment, ensure_plugin_deployment,

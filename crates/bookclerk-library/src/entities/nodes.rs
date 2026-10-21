@@ -48,6 +48,22 @@ pub struct Model {
     pub kind: String,
     /// User who owns this node and may administer it, when one is assigned.
     pub owner_user_id: Option<i64>,
+    /// For a branch (host node): "Share this branch's books with *library*"
+    /// as the branch last reported it (`catalog.begin`); empty until then.
+    pub share_books: Option<i64>,
+    /// For a branch: "Include books from my own branches", as reported.
+    pub include_branches: Option<i64>,
+    /// The branch's catalog fence; `catalog.*` frames under another are
+    /// lost.
+    pub catalog_fence: i64,
+    /// Cursor the branch's catalog sync resumes after.
+    pub catalog_cursor: String,
+    /// RFC 3339 start of the branch's current full catalog pass.
+    pub catalog_pass_started_at: Option<String>,
+    /// RFC 3339 time of the branch's last accepted catalog batch.
+    pub catalog_synced_at: Option<String>,
+    /// RFC 3339 end of the branch's last completed full catalog pass.
+    pub catalog_full_pass_at: Option<String>,
 }
 
 /// Declared SeaORM relations (nodes are addressed by `node_id`).

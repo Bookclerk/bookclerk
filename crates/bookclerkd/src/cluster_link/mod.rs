@@ -43,6 +43,7 @@
 //! held work, and stops that client; the link is not dialed again.
 
 pub mod api;
+pub mod catalog_sync;
 pub mod consent;
 pub mod host_jobs;
 pub mod join;
@@ -609,6 +610,19 @@ async fn start_clients(
                 catalog,
                 platform_payloads: platform_payloads.clone(),
             }
+            .run(link_shutdown.clone()),
+        )));
+        // The link's catalog sync (a branch sharing its books with this
+        // library) stops with its client the same way.
+        let catalog_sync = AbortOnDrop(Some(tokio::spawn(
+            catalog_sync::CatalogSync {
+                library: library.clone(),
+                cluster_id: cluster_id.clone(),
+                handle: handle.clone(),
+                shelf: catalog_sync::DaemonShelf {
+                    state: Arc::clone(state),
+                },
+            }
             .run(link_shutdown),
         )));
         // The client stops on a swap (forwarded from `shutdown`), once its
@@ -646,11 +660,22 @@ async fn start_clients(
             drop(listed);
             let _ = link_stop.send(true);
             // Both exit before a client for a new enrollment can start, so
-            // one cluster never has two consent supervisors.
-            let mut supervisor = supervisor;
-            if let Some(supervisor) = supervisor.0.take() {
-                join_or_abort(supervisor).await;
-            }
+            // one cluster never has two consent supervisors (or two catalog
+            // syncs). They wind down side by side, so the client's exit
+            // waits for the slower of the two only.
+            let (mut supervisor, mut catalog_sync) = (supervisor, catalog_sync);
+            tokio::join!(
+                async {
+                    if let Some(supervisor) = supervisor.0.take() {
+                        join_or_abort(supervisor).await;
+                    }
+                },
+                async {
+                    if let Some(catalog_sync) = catalog_sync.0.take() {
+                        join_or_abort(catalog_sync).await;
+                    }
+                },
+            );
             let mut watcher = watcher;
             if exit != ClientExit::Revoked {
                 if let Some(stopped) = watcher.0.as_mut() {

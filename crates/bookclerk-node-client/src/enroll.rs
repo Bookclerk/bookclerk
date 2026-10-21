@@ -2,7 +2,8 @@
 
 use base64::Engine as _;
 use bookclerk_library::control_plane::{
-    parse_enrollment_token, record_cluster_link, ClusterLink, ClusterLinkKeys, NewClusterLink,
+    join_cycle, join_overflows_ancestry, parse_enrollment_token, record_cluster_link,
+    set_cluster_link_ancestry, ClusterLink, ClusterLinkKeys, NewClusterLink,
 };
 use bookclerk_library::LibraryStore;
 use serde::Deserialize;
@@ -37,9 +38,19 @@ pub enum JoinError {
         /// The answer's `error` code.
         error: String,
     },
-    /// The enroll request could not be built.
+    /// The enroll request could not be built, or the library's `info`
+    /// (its ancestry) could not be read.
     #[error("enrollment could not be recorded: {0}")]
     Record(String),
+    /// The library is this one, or one of its own branches (its ancestry
+    /// names this library): joining it would make a cycle.
+    #[error("that library is this library or one of its branches; joining it would make a loop")]
+    Cycle,
+    /// Joining the library would give this one more ancestors than an
+    /// ancestry can name, so a later join under it could not be checked
+    /// for a loop.
+    #[error("that library sits too deep in its tree of libraries to join under")]
+    AncestryTooDeep,
     /// The library accepted the join (an invite link or a sign-in code),
     /// but its answer did not parse or the local write failed. The one-use
     /// credential is spent and the node keys are gone, so this install
@@ -91,6 +102,88 @@ impl JoinError {
     }
 }
 
+/// Largest `info` answer read.
+const MAX_INFO_BYTES: usize = 64 * 1024;
+
+/// Reads the library's `info` over `endpoint` and refuses a library whose
+/// ancestry names this install's own cluster id (A ← B ← A). Answers its
+/// ancestry, to record on the link.
+///
+/// # Errors
+///
+/// Returns [`JoinError::Cycle`] for a cycle, and [`JoinError`] when the
+/// library cannot be read (fail closed: no join without the check).
+pub async fn check_join_ancestry(
+    store: &LibraryStore,
+    endpoint: &OwnerEndpoint,
+) -> Result<Vec<String>, JoinError> {
+    let (status, body) = endpoint
+        .get_json(bookclerk_node_proto::INFO_PATH, MAX_INFO_BYTES)
+        .await?;
+    if status != 200 {
+        return Err(JoinError::Http {
+            status,
+            error: "info_unavailable".into(),
+        });
+    }
+    let info: bookclerk_node_proto::OwnerInfo = serde_json::from_slice(&body)
+        .map_err(|_| JoinError::Record("malformed library info".into()))?;
+    refuse_cycle(store, &info.ancestry).await?;
+    Ok(info.ancestry)
+}
+
+/// Refuses `ancestry` when it names this install's own cluster id, is
+/// malformed, or would take this library's ancestry past what one can name
+/// ([`join_overflows_ancestry`]).
+///
+/// # Errors
+///
+/// Returns [`JoinError::Cycle`], [`JoinError::AncestryTooDeep`] or
+/// [`JoinError::Record`].
+pub async fn refuse_cycle(store: &LibraryStore, ancestry: &[String]) -> Result<(), JoinError> {
+    if !bookclerk_node_proto::is_ancestry(ancestry) {
+        return Err(JoinError::Record("malformed library ancestry".into()));
+    }
+    match join_cycle(store, ancestry).await {
+        Ok(None) => {}
+        Ok(Some(own)) => {
+            tracing::warn!(cluster_id = %own, "refused to join a library whose ancestry names this one");
+            return Err(JoinError::Cycle);
+        }
+        Err(err) => return Err(JoinError::Record(err.to_string())),
+    }
+    match join_overflows_ancestry(store, ancestry).await {
+        Ok(false) => Ok(()),
+        Ok(true) => {
+            tracing::warn!(
+                depth = ancestry.len(),
+                "refused to join a library too deep to check for a loop"
+            );
+            Err(JoinError::AncestryTooDeep)
+        }
+        Err(err) => Err(JoinError::Record(err.to_string())),
+    }
+}
+
+/// Records the owner's ancestry on `link`, just joined, and on the value
+/// returned. A failure is logged; the next catalog session records it
+/// again.
+pub(crate) async fn record_ancestry(
+    store: &LibraryStore,
+    link: &mut ClusterLink,
+    ancestry: &[String],
+) {
+    match set_cluster_link_ancestry(store, &link.owner_cluster_id, ancestry).await {
+        Ok(true) => link.ancestry = ancestry.to_vec(),
+        Ok(false) => {}
+        Err(err) => tracing::warn!(
+            cluster_id = %link.owner_cluster_id,
+            error = %err,
+            "could not record the library's ancestry"
+        ),
+    }
+}
+
 /// `POST /api/node/v1/enroll` answer.
 #[derive(Deserialize)]
 struct Enrolled {
@@ -125,6 +218,8 @@ pub async fn join_cluster(
         JoinError::Link("the whole link, with the owner origin, is needed".into())
     })?;
     let endpoint = OwnerEndpoint::new(origin, token.spki_pin.as_deref())?;
+    // Before the link is spent: never join this library or one below it.
+    let ancestry = check_join_ancestry(store, &endpoint).await?;
     let keys = ClusterLinkKeys::generate();
     let b64 = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
     let body = Zeroizing::new(
@@ -156,7 +251,7 @@ pub async fn join_cluster(
         reason: "malformed enroll answer".into(),
     })?;
     let node_id = enrolled.node_id.clone();
-    let recorded = record_cluster_link(
+    let mut recorded = record_cluster_link(
         store,
         &NewClusterLink {
             owner_cluster_id: enrolled.cluster_id,
@@ -171,6 +266,7 @@ pub async fn join_cluster(
         node_id: Some(node_id),
         reason: err.to_string(),
     })?;
+    record_ancestry(store, &mut recorded, &ancestry).await;
     tracing::info!(
         cluster_id = %recorded.owner_cluster_id,
         node_id = %recorded.remote_node_id,

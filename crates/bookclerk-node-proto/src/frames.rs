@@ -443,6 +443,90 @@ pub enum Body {
     /// heartbeats, answers [`Body::Accepted`], and closes the connection.
     #[serde(rename = "node.leaving")]
     NodeLeaving {},
+    /// Branch → library: open (or reopen) this branch's catalog sync with
+    /// the link's two settings. The library records them on the branch's
+    /// node row and bumps its catalog fence, so frames under an older
+    /// fence are lost. Answered with [`Body::CatalogSession`] or `error`.
+    #[serde(rename = "catalog.begin")]
+    CatalogBegin {
+        /// "Share this branch's books with *library*".
+        share_books: bool,
+        /// "Include books from my own branches".
+        include_branches: bool,
+    },
+    /// Library → branch: the answer to [`Body::CatalogBegin`].
+    #[serde(rename = "catalog.session")]
+    CatalogSession {
+        /// The catalog fence every later `catalog.*` frame names.
+        fence: i64,
+        /// Resume after this cursor (empty: from the start).
+        #[serde(default)]
+        cursor: String,
+        /// The library's ancestry: its own cluster id, then each library
+        /// above it, up to the root.
+        #[serde(default)]
+        ancestry: Vec<String>,
+        /// The library node's output destination ids, the primary first;
+        /// a catalog upload copies each file to every one under its key.
+        #[serde(default)]
+        destinations: Vec<String>,
+        /// Titles recorded earlier whose files have not arrived yet.
+        #[serde(default)]
+        wanted: Vec<crate::catalog::CatalogRef>,
+    },
+    /// Branch → library: one batch of shared titles (no account or user
+    /// fields; see [`crate::CatalogTitle`]). Answered with
+    /// [`Body::CatalogAccepted`], [`Body::Lost`] (`item = "catalog"`), or
+    /// `error {code: "refused"}`.
+    #[serde(rename = "catalog.sync")]
+    CatalogSync {
+        /// The catalog fence.
+        fence: i64,
+        /// Batch number, from 1, for the logs.
+        batch: u64,
+        /// The cursor after this batch's last title; the library resumes
+        /// after it.
+        cursor: String,
+        /// True for the last batch of a pass. When the library's pass
+        /// from an empty cursor is under way (a resumed pass included),
+        /// titles it did not name are withdrawn; otherwise it changes
+        /// nothing more.
+        #[serde(default)]
+        done: bool,
+        /// The titles; at most [`crate::MAX_CATALOG_BATCH_TITLES`].
+        titles: Vec<crate::catalog::CatalogTitle>,
+    },
+    /// Library → branch: a catalog batch was recorded.
+    #[serde(rename = "catalog.accepted")]
+    CatalogAccepted {
+        /// The batch number.
+        batch: u64,
+        /// Titles recorded.
+        upserted: u64,
+        /// Titles not recorded because this library already holds them
+        /// (no echo back).
+        #[serde(default)]
+        skipped: u64,
+        /// Titles whose files the library wants.
+        #[serde(default)]
+        wanted: Vec<crate::catalog::CatalogRef>,
+    },
+    /// Branch → library: open an upload of one recorded title's files.
+    /// Answered with [`Body::UploadGranted`] (the token sealed for job
+    /// [`crate::CATALOG_ITEM`] under the catalog fence), [`Body::Lost`], or
+    /// `error`.
+    #[serde(rename = "catalog.upload")]
+    CatalogUpload {
+        /// The catalog fence.
+        fence: i64,
+        /// Store id of the title.
+        store: String,
+        /// Product id of the title.
+        product_id: String,
+        /// The title's files, in upload order, each copied to every
+        /// destination of the session under its manifest key.
+        files: Vec<UploadFile>,
+    },
     /// Owner → host: the request with this frame id was applied.
     #[serde(rename = "ok")]
     Accepted {},
@@ -1184,6 +1268,68 @@ mod tests {
                     expires_in_secs: 3600,
                 },
                 "upload.granted",
+            ),
+            (
+                Body::CatalogBegin {
+                    share_books: true,
+                    include_branches: false,
+                },
+                "catalog.begin",
+            ),
+            (
+                Body::CatalogSession {
+                    fence: 3,
+                    cursor: "c".into(),
+                    ancestry: vec!["lib-a".into()],
+                    destinations: vec!["local".into()],
+                    wanted: vec![crate::CatalogRef {
+                        store: "audible".into(),
+                        product_id: "B1".into(),
+                    }],
+                },
+                "catalog.session",
+            ),
+            (
+                Body::CatalogSync {
+                    fence: 3,
+                    batch: 1,
+                    cursor: "c2".into(),
+                    done: true,
+                    titles: vec![crate::CatalogTitle {
+                        store: "audible".into(),
+                        product_id: "B1".into(),
+                        metadata: crate::CatalogMetadata {
+                            title: "T".into(),
+                            ..crate::CatalogMetadata::default()
+                        },
+                        primary_key: "T/T.m4b".into(),
+                        pdf_key: None,
+                        files: vec![crate::CatalogFile {
+                            key: "T/T.m4b".into(),
+                            size: 1,
+                            content_type: None,
+                        }],
+                    }],
+                },
+                "catalog.sync",
+            ),
+            (
+                Body::CatalogAccepted {
+                    batch: 1,
+                    upserted: 1,
+                    skipped: 0,
+                    wanted: Vec::new(),
+                },
+                "catalog.accepted",
+            ),
+            (
+                Body::CatalogUpload {
+                    fence: 3,
+                    store: "audible".into(),
+                    product_id: "B1".into(),
+                    files: Vec::new(),
+                },
+                "catalog.upload",
             ),
         ] {
             let text = Frame::new("4", body.clone()).to_text();

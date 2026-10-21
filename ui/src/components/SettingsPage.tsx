@@ -5,6 +5,7 @@ import type { AppNavProps } from "@/components/AppNav";
 import { AppTopBar } from "@/components/AppTopBar";
 import { ErrorStatePage } from "@/components/ErrorStatePage";
 import { BranchesPanel } from "@/components/BranchesPanel";
+import { canChangeBranchSharing } from "@/lib/join";
 import { ClerksPanel } from "@/components/ClerksPanel";
 import { ClusterConsentsPanel } from "@/components/ClusterConsentsPanel";
 import { NodesPanel } from "@/components/NodesPanel";
@@ -506,6 +507,8 @@ export function SettingsPage({
   const showNodes =
     showOperatorChrome || role === "owner" || role === "administrator" || role === "host";
   const showSignInSettings = role === "operator" || role === "owner";
+  // Settings → Library: the operator, or an Owner (the two sharing settings).
+  const showLibrary = canChangeBranchSharing(role, isImpersonating);
   const canManageUsers = role === "operator" || role === "owner" || role === "administrator";
   const showUserAdmin = canManageUsers;
   const canManageOperator = showOperatorChrome;
@@ -542,17 +545,17 @@ export function SettingsPage({
     }
     if (
       !showOperatorChrome &&
-      (activeTab === "server" ||
-        activeTab === "plugins" ||
-        activeTab === "output" ||
-        activeTab === "clusters")
+      (activeTab === "server" || activeTab === "plugins" || activeTab === "output")
     ) {
+      setActiveTab("account");
+    }
+    if (!showLibrary && activeTab === "clusters") {
       setActiveTab("account");
     }
     if (!showNodes && activeTab === "nodes") {
       setActiveTab("account");
     }
-  }, [showUserAdmin, showSignInSettings, showOperatorChrome, showNodes, activeTab]);
+  }, [showUserAdmin, showSignInSettings, showOperatorChrome, showLibrary, showNodes, activeTab]);
 
   function buildPluginValues(nextSettings: SettingsResponse): Record<string, string> {
     const out: Record<string, string> = {};
@@ -1397,7 +1400,7 @@ export function SettingsPage({
                 Nodes
               </button>
             ) : null}
-            {showOperatorChrome ? (
+            {showLibrary ? (
               <button
                 type="button"
                 role="tab"
@@ -1515,8 +1518,11 @@ export function SettingsPage({
           <OutputSettingsPanel onSessionExpired={onSessionExpired} />
         ) : null}
 
-        {activeTab === "clusters" && showOperatorChrome ? (
-          <ClusterConsentsPanel onSessionExpired={onSessionExpired} />
+        {activeTab === "clusters" && showLibrary ? (
+          <ClusterConsentsPanel
+            onSessionExpired={onSessionExpired}
+            sharingOnly={!showOperatorChrome}
+          />
         ) : null}
 
         {activeTab === "branches" && showSignInSettings ? (

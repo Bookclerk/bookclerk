@@ -11,14 +11,15 @@
 //! file ([`LibraryStore::record_title_file`]; the file is the title's from
 //! then on, whichever title had it before). A host upload claims every key
 //! of its manifest when it is granted ([`LibraryStore::claim_title_file`]),
-//! and only keys no other library title holds; a grant refused part way
-//! gives back what it claimed ([`LibraryStore::release_title_file`]).
+//! and only keys no other library title holds (a Host job's upload of a
+//! book may take over a branch title's keys, as an acquire does); a grant
+//! refused part way gives back what it claimed ([`LibraryStore::release_title_file`]).
 
-use sea_orm::sea_query::{OnConflict, Query};
+use sea_orm::sea_query::{OnConflict, Query, UnionType};
 use sea_orm::{ActiveValue::Set, ColumnTrait, Condition, EntityTrait, QueryFilter};
 
 use super::{now_str, LibraryStore};
-use crate::entities::{books, title_files};
+use crate::entities::{books, branch_titles, title_files};
 use crate::error::{LibraryError, Result};
 
 /// The `writer` of a key an acquire run on this node wrote.
@@ -78,10 +79,14 @@ impl LibraryStore {
     /// `writer` (a host upload id) as its latest writer.
     ///
     /// The claim succeeds when the key is unrecorded, already the title's,
-    /// or recorded for a title no longer in the library; answers false,
-    /// changing nothing, when another library title holds it. Each claim is
-    /// one conditional write, so of two uploads of different titles racing
-    /// for one key only one wins.
+    /// or recorded for a title that holds no key against this claim;
+    /// answers false, changing nothing, when another library title holds
+    /// it. A book holds its keys against every claim. A title a branch
+    /// shares here (`branch_titles`) holds its keys only against another
+    /// branch title's claim (`branch_titles_hold`, a catalog upload): a
+    /// Host job's upload of a book takes them over, as an acquire on this
+    /// node would. Each claim is one conditional write, so of two uploads
+    /// of different titles racing for one key only one wins.
     ///
     /// `expected` is the record the caller read before ([`Self::title_file`];
     /// `None` when unrecorded), which a refused claim's release restores: the
@@ -99,6 +104,7 @@ impl LibraryStore {
         book_uuid: &str,
         writer: &str,
         expected: Option<&TitleFile>,
+        branch_titles_hold: bool,
     ) -> Result<bool> {
         let now = now_str();
         // Only a key read as unrecorded is inserted: a claim expecting a
@@ -124,10 +130,23 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?;
         }
-        let library_titles = Query::select()
+        // A holder is live while its title is in the library: one of its
+        // books, or, against a catalog upload's claim, a title a branch
+        // shares here (whose upload claims keys under the branch title's
+        // id). Only a holder that is neither is stale.
+        let mut library_titles = Query::select()
             .column(books::Column::Uuid)
             .from(books::Entity)
             .to_owned();
+        if branch_titles_hold {
+            library_titles.union(
+                UnionType::Distinct,
+                Query::select()
+                    .column(branch_titles::Column::Uuid)
+                    .from(branch_titles::Entity)
+                    .to_owned(),
+            );
+        }
         let claimed = title_files::Entity::update_many()
             .col_expr(
                 title_files::Column::BookUuid,
