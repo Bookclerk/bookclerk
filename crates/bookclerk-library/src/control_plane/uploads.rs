@@ -64,7 +64,7 @@ pub const UPLOAD_TOKEN_TTL_SECS: i64 = 60 * 60;
 /// Session state: files may still arrive.
 const STATE_OPEN: &str = "open";
 /// Session state: the title was committed.
-const STATE_COMMITTED: &str = "committed";
+pub(super) const STATE_COMMITTED: &str = "committed";
 /// Session state: abandoned (superseded, failed, or its fence lost).
 const STATE_ABORTED: &str = "aborted";
 
@@ -81,6 +81,9 @@ struct Manifest {
     /// Storage key of the title's companion PDF, when one is uploaded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pdf_key: Option<String>,
+    /// For a branch's catalog upload: the title's manifest digest at grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    catalog_digest: Option<String>,
 }
 
 /// In a [`TitleNames::part_patterns`] pattern: one or more characters of a
@@ -310,9 +313,19 @@ pub struct UploadSession {
     pub received: BTreeSet<usize>,
     /// `open`, `committed` or `aborted`.
     pub state: String,
+    /// For a branch's catalog upload ([`Self::is_catalog`]): the title's
+    /// manifest digest at grant.
+    pub catalog_digest: Option<String>,
 }
 
 impl UploadSession {
+    /// True for a branch's catalog upload, bound to the node's catalog
+    /// fence instead of a job's.
+    #[must_use]
+    pub fn is_catalog(&self) -> bool {
+        self.job_id == bookclerk_node_proto::CATALOG_ITEM
+    }
+
     /// True once every declared file was received.
     #[must_use]
     pub fn complete(&self) -> bool {
@@ -462,7 +475,7 @@ async fn job_titles_remaining(
 /// there ([`UploadDestination::admits`]), unique keys per destination,
 /// every destination written, and the primary (and PDF) among the primary
 /// destination's copies. A closing upload (no title) declares none.
-fn manifest_problem(req: &UploadGrantRequest<'_>) -> Option<&'static str> {
+pub(super) fn manifest_problem(req: &UploadGrantRequest<'_>) -> Option<&'static str> {
     if req.book_uuid.is_empty() {
         return (!req.files.is_empty() || req.pdf_key.is_some()).then_some("invalid_manifest");
     }
@@ -534,7 +547,7 @@ const KEY_PROBES_PER_READ: usize = 32;
 /// # Errors
 ///
 /// Returns an error when a read fails.
-async fn claims_another_books_key(
+pub(super) async fn claims_another_books_key(
     store: &LibraryStore,
     book_uuid: &str,
     files: &[UploadFile],
@@ -617,7 +630,9 @@ struct ClaimedKey<'a> {
 /// soon as one is a key another library title holds on that destination
 /// (one its acquire wrote, or another title's upload claimed), so a folder
 /// several titles share never lets one overwrite another's chapter, part or
-/// sidecar files.
+/// sidecar files. A `catalog` upload (a branch title's) is refused keys a
+/// branch title holds as well; a Host job's upload of a book takes those
+/// over, as an acquire on this node would.
 ///
 /// Every key claimed (or possibly claimed, when a write fails) is pushed
 /// onto `claimed` with its prior record, so a grant that is then refused or
@@ -631,6 +646,7 @@ async fn claim_upload_keys<'a>(
     book_uuid: &str,
     upload_id: &str,
     files: &'a [UploadFile],
+    catalog: bool,
     claimed: &mut Vec<ClaimedKey<'a>>,
 ) -> Result<bool> {
     'copies: for copy in files.iter().flat_map(|file| &file.copies) {
@@ -650,6 +666,7 @@ async fn claim_upload_keys<'a>(
                     book_uuid,
                     upload_id,
                     prior.as_ref(),
+                    catalog,
                 )
                 .await?
             {
@@ -707,7 +724,7 @@ async fn undo_grant(store: &LibraryStore, upload_id: &str, claimed: &[ClaimedKey
 
 /// How many keys an upload of `session`'s title was granted: every copy of
 /// every declared file (unique per destination, [`manifest_problem`]).
-fn granted_key_count(session: &UploadSession) -> u64 {
+pub(super) fn granted_key_count(session: &UploadSession) -> u64 {
     session
         .files
         .iter()
@@ -722,7 +739,10 @@ fn granted_key_count(session: &UploadSession) -> u64 {
 /// # Errors
 ///
 /// Returns an error when the read fails.
-async fn upload_holds_its_keys(store: &LibraryStore, session: &UploadSession) -> Result<bool> {
+pub(super) async fn upload_holds_its_keys(
+    store: &LibraryStore,
+    session: &UploadSession,
+) -> Result<bool> {
     if session.book_uuid.is_empty() {
         return Ok(true);
     }
@@ -820,7 +840,6 @@ pub async fn grant_upload(
     if job.kind != JobKind::Acquire {
         return Ok(UploadGrant::Refused("not_an_acquire"));
     }
-    let upload_id = uuid::Uuid::new_v4().hyphenated().to_string();
     if !req.book_uuid.is_empty() {
         let Some(book) = store.get_book_by_uuid(req.book_uuid).await? else {
             return Ok(UploadGrant::Refused("unknown_book"));
@@ -854,6 +873,38 @@ pub async fn grant_upload(
             return Ok(UploadGrant::Refused("key_of_another_book"));
         }
     }
+    open_upload_session(
+        store,
+        node_id,
+        job_id,
+        generation,
+        receiving_node_id,
+        req,
+        None,
+    )
+    .await
+}
+
+/// Inserts an open upload (its token hashed) after an earlier open upload
+/// of the same title under the same job (or catalog) is aborted, and
+/// answers the grant. The caller checked the fence and the title; the
+/// manifest is checked here.
+///
+/// # Errors
+///
+/// Returns an error when a write fails.
+pub(super) async fn open_upload_session(
+    store: &LibraryStore,
+    node_id: &str,
+    job_id: &str,
+    generation: i64,
+    receiving_node_id: &str,
+    req: &UploadGrantRequest<'_>,
+    catalog_digest: Option<&str>,
+) -> Result<UploadGrant> {
+    if let Some(reason) = manifest_problem(req) {
+        return Ok(UploadGrant::Refused(reason));
+    }
     let manifest = serde_json::to_string(&Manifest {
         destinations: if req.book_uuid.is_empty() {
             Vec::new()
@@ -862,8 +913,10 @@ pub async fn grant_upload(
         },
         files: req.files.to_vec(),
         pdf_key: req.pdf_key.map(str::to_string),
+        catalog_digest: catalog_digest.map(str::to_string),
     })
     .map_err(|err| LibraryError::Other(anyhow::anyhow!("upload manifest encode: {err}")))?;
+    let upload_id = uuid::Uuid::new_v4().hyphenated().to_string();
     let token = mint_token();
     let now = Utc::now();
     let expires_at = now + Duration::seconds(UPLOAD_TOKEN_TTL_SECS);
@@ -892,9 +945,19 @@ pub async fn grant_upload(
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
+    let catalog = job_id == bookclerk_node_proto::CATALOG_ITEM;
     let mut claimed = Vec::new();
     if !req.book_uuid.is_empty() {
-        match claim_upload_keys(store, req.book_uuid, &upload_id, req.files, &mut claimed).await {
+        match claim_upload_keys(
+            store,
+            req.book_uuid,
+            &upload_id,
+            req.files,
+            catalog,
+            &mut claimed,
+        )
+        .await
+        {
             Ok(true) => {}
             Ok(false) => {
                 undo_grant(store, &upload_id, &claimed).await;
@@ -912,10 +975,17 @@ pub async fn grant_upload(
     // about to write; a grant of the title made after this one supersedes
     // this one instead (`newer_grant_open`), so two overlapping grants
     // never abort each other.
+    //
+    // A job's grants supersede across nodes: when its lease moves from one
+    // node to another, the new holder's grant replaces the old holder's
+    // still-open upload of the same title. Every branch shares the catalog
+    // item, so a catalog grant supersedes only its own node's uploads.
     let created = stamp(now);
     let ours = (created.as_str(), upload_id.as_str());
     let superseded = match abort_matching(store, job_id, |row| {
-        row.book_uuid == req.book_uuid && (row.created_at.as_str(), row.upload_id.as_str()) < ours
+        (!catalog || row.node_id == node_id)
+            && row.book_uuid == req.book_uuid
+            && (row.created_at.as_str(), row.upload_id.as_str()) < ours
     })
     .await
     {
@@ -925,7 +995,7 @@ pub async fn grant_upload(
             return Err(err);
         }
     };
-    match newer_grant_open(store, job_id, req.book_uuid, ours).await {
+    match newer_grant_open(store, node_id, job_id, req.book_uuid, ours).await {
         Ok(false) => {}
         Ok(true) => {
             undo_grant(store, &upload_id, &claimed).await;
@@ -940,7 +1010,16 @@ pub async fn grant_upload(
     // a key back since (the same title's claims succeed for either); with
     // it aborted now, this grant claims its keys once more.
     if !req.book_uuid.is_empty() && !superseded.is_empty() {
-        match claim_upload_keys(store, req.book_uuid, &upload_id, req.files, &mut claimed).await {
+        match claim_upload_keys(
+            store,
+            req.book_uuid,
+            &upload_id,
+            req.files,
+            catalog,
+            &mut claimed,
+        )
+        .await
+        {
             Ok(true) => {}
             Ok(false) => {
                 tracing::warn!(upload_id = %upload_id, superseded = superseded.len(), "a key was taken by another title while an upload was granted; the superseded uploads' files stay");
@@ -974,19 +1053,29 @@ pub async fn grant_upload(
 /// the one created at `ours` (`(created_at, upload_id)`, compared as
 /// [`grant_upload`] orders grants): that newer grant supersedes it.
 ///
+/// A job's uploads are compared whichever node holds them, since a job's
+/// lease may move between nodes and its newest holder's grant wins. Every
+/// branch shares the catalog item ([`bookclerk_node_proto::CATALOG_ITEM`]),
+/// so for it only `node_id`'s own uploads are compared.
+///
 /// # Errors
 ///
 /// Returns an error when the read fails.
 async fn newer_grant_open(
     store: &LibraryStore,
+    node_id: &str,
     job_id: &str,
     book_uuid: &str,
     ours: (&str, &str),
 ) -> Result<bool> {
-    Ok(node_upload_sessions::Entity::find()
+    let mut query = node_upload_sessions::Entity::find()
         .filter(node_upload_sessions::Column::JobId.eq(job_id))
         .filter(node_upload_sessions::Column::BookUuid.eq(book_uuid))
-        .filter(node_upload_sessions::Column::State.eq(STATE_OPEN))
+        .filter(node_upload_sessions::Column::State.eq(STATE_OPEN));
+    if job_id == bookclerk_node_proto::CATALOG_ITEM {
+        query = query.filter(node_upload_sessions::Column::NodeId.eq(node_id));
+    }
+    Ok(query
         .all(store.db())
         .await
         .map_err(LibraryError::Orm)?
@@ -1013,6 +1102,7 @@ fn session_from_model(row: node_upload_sessions::Model) -> Result<UploadSession>
         files: manifest.files,
         received,
         state: row.state,
+        catalog_digest: manifest.catalog_digest,
     })
 }
 
@@ -1072,6 +1162,14 @@ pub async fn authorize_upload(
 ///
 /// Returns an error when a read fails.
 pub async fn upload_fence_live(store: &LibraryStore, session: &UploadSession) -> Result<bool> {
+    if session.is_catalog() {
+        return super::branch_catalog::catalog_fence_live(
+            store,
+            &session.node_id,
+            session.generation,
+        )
+        .await;
+    }
     let fence = remote_job_fence(&session.node_id, &session.job_id, session.generation);
     let Some(job) = fenced_job(store, &fence).await? else {
         return Ok(false);
@@ -1356,6 +1454,11 @@ pub async fn commit_upload(
         return Ok(UploadCommit::Refused("unknown_upload"));
     };
     if session.state == STATE_COMMITTED {
+        if session.is_catalog() {
+            return Ok(UploadCommit::Committed {
+                job_completed: false,
+            });
+        }
         return already_committed(store, &session.node_id, &session.job_id, limits).await;
     }
     if session.state != STATE_OPEN {
@@ -1363,6 +1466,9 @@ pub async fn commit_upload(
     }
     if !session.complete() {
         return Ok(UploadCommit::Refused("files_missing"));
+    }
+    if session.is_catalog() {
+        return super::branch_catalog::commit_catalog_upload(store, &session).await;
     }
     let fence = remote_job_fence(&session.node_id, &session.job_id, session.generation);
     let Some(job) = fenced_job(store, &fence).await? else {

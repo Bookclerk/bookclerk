@@ -12,6 +12,7 @@ pub mod account_links;
 pub mod accounts;
 pub mod bookclerk_receipts;
 pub mod books;
+pub mod branch_titles;
 pub mod claim_tickets;
 pub mod cluster_identity;
 pub mod cluster_leases;

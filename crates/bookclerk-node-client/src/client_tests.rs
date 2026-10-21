@@ -154,6 +154,9 @@ fn start_configured<R: HostJobRunner>(
         spki_pin: None,
         state: CLUSTER_LINK_ACTIVE.into(),
         enrolled_at: "2026-10-17T00:00:00Z".into(),
+        share_books: true,
+        include_branches: true,
+        ancestry: Vec::new(),
     };
     let (client, handle) = HostClient::new(
         HostClientConfig {

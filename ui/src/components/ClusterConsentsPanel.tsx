@@ -12,7 +12,13 @@ import {
   type RemoteGrantView,
 } from "@/lib/api";
 import { JoinWizard } from "@/components/JoinWizard";
-import { fetchJoinStatus, joinErrorMessage, leaveLibrary } from "@/lib/join";
+import {
+  fetchBranchSharing,
+  fetchJoinStatus,
+  joinErrorMessage,
+  leaveLibrary,
+  setBranchSharing,
+} from "@/lib/join";
 import { backoffDelay, useLiveRefresh } from "@/lib/live";
 import { cn } from "@/lib/utils";
 
@@ -43,7 +49,94 @@ function StateBadge({ state }: { state: RemoteConsentState }) {
   );
 }
 
-function LinkRow({ link, onLeft }: { link: ClusterLinkView; onLeft: () => void }) {
+/** A library's name for the sharing settings: the host of its address. */
+function libraryLabel(origin: string): string {
+  try {
+    return new URL(origin).host || origin;
+  } catch {
+    return origin;
+  }
+}
+
+/**
+ * The two sharing settings of one library this server is a branch of
+ * (branches of branches). Both are on by default.
+ */
+function SharingSettings({ link, onSaved }: { link: ClusterLinkView; onSaved: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const share = link.share_books ?? true;
+  const include = link.include_branches ?? true;
+
+  async function save(nextShare: boolean, nextInclude: boolean) {
+    setBusy(true);
+    setError(null);
+    try {
+      await setBranchSharing(link.cluster_id, nextShare, nextInclude);
+      onSaved();
+    } catch (err) {
+      setError(joinErrorMessage(err, "Could not save."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="w-full space-y-2 pt-1">
+      <label className="flex items-start gap-3 text-sm text-ink">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={share}
+          disabled={busy}
+          onChange={(e) => void save(e.target.checked, include)}
+        />
+        <span>
+          <span className="block font-medium">
+            Share this branch&apos;s books with {libraryLabel(link.owner_origin)}
+          </span>
+          <span className="block text-xs text-ink/55">
+            The library gets each book&apos;s details and files, as its owner&apos;s. No store
+            account or user of this server is sent. When off, nothing new is sent; books the
+            library already has stay there.
+          </span>
+        </span>
+      </label>
+      <label className="flex items-start gap-3 text-sm text-ink">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={include}
+          disabled={busy || !share}
+          onChange={(e) => void save(share, e.target.checked)}
+        />
+        <span>
+          <span className="block font-medium">Include books from my own branches</span>
+          <span className="block text-xs text-ink/55">
+            Books this server&apos;s own branches shared with it are passed on as this
+            branch&apos;s. The library never learns about those branches.
+          </span>
+        </span>
+      </label>
+      {error ? (
+        <p className="text-xs font-medium text-brick" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function LinkRow({
+  link,
+  onLeft,
+  canLeave,
+}: {
+  link: ClusterLinkView;
+  onLeft: () => void;
+  /** Leave library is the operator's; an Owner sees only the sharing settings. */
+  canLeave: boolean;
+}) {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
 
@@ -91,7 +184,7 @@ function LinkRow({ link, onLeft }: { link: ClusterLinkView; onLeft: () => void }
         node <span className="font-mono">{link.node_id}</span> · joined{" "}
         {new Date(link.enrolled_at).toLocaleString()}
       </span>
-      {link.state === "active" ? (
+      {link.state === "active" && canLeave ? (
         <Button
           type="button"
           variant="danger"
@@ -102,6 +195,7 @@ function LinkRow({ link, onLeft }: { link: ClusterLinkView; onLeft: () => void }
           Leave library
         </Button>
       ) : null}
+      {link.state === "active" ? <SharingSettings link={link} onSaved={onLeft} /> : null}
       {note ? (
         <p className="w-full text-xs font-medium text-brick" role="status">
           {note}
@@ -343,6 +437,12 @@ function ConsentRow({
 export interface ClusterConsentsPanelProps {
   /** Called on a 401 so the page can sign out. */
   onSessionExpired: () => void;
+  /**
+   * An Owner (not the operator): only the libraries joined and their two
+   * sharing settings; joining, leaving and plugin requests stay the
+   * operator's.
+   */
+  sharingOnly?: boolean;
 }
 
 /**
@@ -351,9 +451,15 @@ export interface ClusterConsentsPanelProps {
  * Join a library (the sign-in wizard, or a pasted branch invite), and shows
  * each library plugin's request to run here. The operator approves a
  * request (optionally without some domains, bindings, or the network) or
- * revokes it.
+ * revokes it. An Owner sees only the libraries and their sharing settings.
+ *
+ * @param props - See {@link ClusterConsentsPanelProps}.
+ * @returns The panel.
  */
-export function ClusterConsentsPanel({ onSessionExpired }: ClusterConsentsPanelProps) {
+export function ClusterConsentsPanel({
+  onSessionExpired,
+  sharingOnly = false,
+}: ClusterConsentsPanelProps) {
   const [clusters, setClusters] = useState<ClusterLinkView[] | null>(null);
   const [consents, setConsents] = useState<RemoteConsentView[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -378,9 +484,15 @@ export function ClusterConsentsPanel({ onSessionExpired }: ClusterConsentsPanelP
 
   const refresh = useCallback(async () => {
     try {
-      const body = await listClusterConsents();
-      setClusters(body.clusters);
-      setConsents(body.consents);
+      if (sharingOnly) {
+        const body = await fetchBranchSharing();
+        setClusters(body.clusters);
+        setConsents([]);
+      } else {
+        const body = await listClusterConsents();
+        setClusters(body.clusters);
+        setConsents(body.consents);
+      }
       setLoadError(null);
       setFailures(0);
     } catch (err) {
@@ -391,7 +503,7 @@ export function ClusterConsentsPanel({ onSessionExpired }: ClusterConsentsPanelP
       setLoadError(err instanceof Error ? err.message : "Failed to load libraries");
       setFailures((n) => n + 1);
     }
-  }, []);
+  }, [sharingOnly]);
 
   useEffect(() => {
     void refresh();
@@ -419,19 +531,26 @@ export function ClusterConsentsPanel({ onSessionExpired }: ClusterConsentsPanelP
     <section className="space-y-6">
       <div className="space-y-1">
         <h2 className="text-lg font-semibold text-ink">Library</h2>
-        <p className="text-sm text-ink/55">
-          Libraries this server is a branch of. A library's plugin runs here only after you approve
-          what it asks for; you can leave out domains, bindings, or the network, and a later version
-          that asks for more waits for approval again. Revoking stops its jobs here and hands them
-          back to the library.
-        </p>
+        {sharingOnly ? (
+          <p className="text-sm text-ink/55">
+            Libraries this server is a branch of, and what it shares with each. Joining, leaving
+            and approving a library's plugins are done by the server's operator.
+          </p>
+        ) : (
+          <p className="text-sm text-ink/55">
+            Libraries this server is a branch of. A library's plugin runs here only after you
+            approve what it asks for; you can leave out domains, bindings, or the network, and a
+            later version that asks for more waits for approval again. Revoking stops its jobs here
+            and hands them back to the library.
+          </p>
+        )}
       </div>
-      {joinedTo ? (
+      {sharingOnly ? null : joinedTo ? (
         <p className="text-sm font-medium text-ink" role="status">
           Connected to {joinedTo}. Its plugin requests appear below.
         </p>
       ) : null}
-      {joining ? (
+      {sharingOnly ? null : joining ? (
         <div className="space-y-3 rounded-md border border-ink/10 bg-card p-4">
           <h3 className="text-sm font-semibold text-ink">Join a library</h3>
           <JoinWizard
@@ -463,10 +582,16 @@ export function ClusterConsentsPanel({ onSessionExpired }: ClusterConsentsPanelP
           ) : (
             <ul className="divide-y divide-ink/10 bg-card">
               {clusters.map((link) => (
-                <LinkRow key={link.cluster_id} link={link} onLeft={() => void refresh()} />
+                <LinkRow
+                  key={link.cluster_id}
+                  link={link}
+                  onLeft={() => void refresh()}
+                  canLeave={!sharingOnly}
+                />
               ))}
             </ul>
           )}
+          {sharingOnly ? null : (
           <div className="space-y-2">
             <h3 className="text-sm font-semibold text-ink">
               Waiting for you{pending.length ? ` (${pending.length})` : ""}
@@ -486,6 +611,7 @@ export function ClusterConsentsPanel({ onSessionExpired }: ClusterConsentsPanelP
               </ul>
             )}
           </div>
+          )}
           {approved.length ? (
             <div className="space-y-2">
               <h3 className="text-sm font-semibold text-ink">Approved</h3>

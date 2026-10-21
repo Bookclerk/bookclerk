@@ -815,7 +815,14 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         target TEXT NOT NULL DEFAULT '',
         labels_json TEXT NOT NULL DEFAULT '[]',
         kind TEXT NOT NULL DEFAULT 'owner' CHECK (kind IN ('owner', 'host')),
-        owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL
+        owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        share_books INTEGER CHECK (share_books IN (0, 1)),
+        include_branches INTEGER CHECK (include_branches IN (0, 1)),
+        catalog_fence INTEGER NOT NULL DEFAULT 0,
+        catalog_cursor TEXT NOT NULL DEFAULT '',
+        catalog_pass_started_at TEXT,
+        catalog_synced_at TEXT,
+        catalog_full_pass_at TEXT
     )",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_nodes_heartbeat ON nodes(heartbeat_at)"),
@@ -1086,7 +1093,10 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         remote_node_id TEXT NOT NULL,
         spki_pin TEXT,
         state TEXT NOT NULL CHECK (state IN ('active', 'revoked', 'left')),
-        enrolled_at TEXT NOT NULL
+        enrolled_at TEXT NOT NULL,
+        share_books INTEGER NOT NULL DEFAULT 1 CHECK (share_books IN (0, 1)),
+        include_branches INTEGER NOT NULL DEFAULT 1 CHECK (include_branches IN (0, 1)),
+        ancestry_json TEXT NOT NULL DEFAULT '[]'
     )",
     ),
     MigrationOp::Schema(
@@ -1177,5 +1187,42 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         created_at TEXT NOT NULL,
         expires_at TEXT NOT NULL
     )",
+    ),
+    // Branches of branches: on a library, the titles a branch shared with
+    // it. Each row is owned by the user who owns the branch's node, with
+    // provenance `node:<node_id>`; nothing names the branch's own store
+    // accounts, users or branches. One row per (provenance, store, product
+    // id). `delivered_sha256` is the manifest digest whose files reached
+    // this library's destinations; `state = 'detached'` marks a title from
+    // a branch that stopped sharing or left (its files stay).
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS branch_titles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        uuid TEXT NOT NULL UNIQUE,
+        provenance TEXT NOT NULL,
+        node_id TEXT NOT NULL,
+        owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        store TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        authors TEXT,
+        metadata_json TEXT NOT NULL,
+        primary_key TEXT NOT NULL,
+        pdf_key TEXT,
+        manifest_json TEXT NOT NULL,
+        manifest_sha256 TEXT NOT NULL,
+        delivered_sha256 TEXT,
+        state TEXT NOT NULL DEFAULT 'shared' CHECK (state IN ('shared', 'detached')),
+        detached_reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        seen_at TEXT NOT NULL,
+        delivered_at TEXT,
+        detached_at TEXT,
+        UNIQUE(provenance, store, product_id)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_branch_titles_node ON branch_titles(node_id, state)",
     ),
 ];

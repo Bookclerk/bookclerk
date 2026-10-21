@@ -66,6 +66,14 @@ pub(super) fn int_opt(value: Option<i64>) -> DbValue {
     }
 }
 
+/// Text bind, or NULL when absent.
+pub(super) fn text_opt(value: Option<&str>) -> DbValue {
+    match value {
+        Some(value) => DbValue::Text(value.to_string()),
+        None => DbValue::Null(DbType::Text),
+    }
+}
+
 /// Text cell at `index`, or an error when the cell is missing or not text.
 pub(super) fn text_cell(row: &DbRow, index: usize) -> Result<String> {
     match row.values.get(index) {

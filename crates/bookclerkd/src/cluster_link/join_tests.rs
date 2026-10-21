@@ -2,9 +2,10 @@
 //! daemon reads the owner's `info`, starts a sign-in, the owner's user
 //! consents, the callback redeems the code, and the link's client starts
 //! at once (no restart); Leave library tells the owner (`node.leaving`),
-//! which revokes the node. Also the "I have an invite" tab, and a clerk
-//! join (the owner's database is simulated: its config names Postgres
-//! while the store is SQLite, since no Postgres runs in tests).
+//! which revokes the node. Also the "I have an invite" tab, who may
+//! change Settings → Library's sharing settings (the operator or an Owner),
+//! and a clerk join (the owner's database is simulated: its config names
+//! Postgres while the store is SQLite, since no Postgres runs in tests).
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -73,6 +74,12 @@ async fn owner_with(
 
 /// The joining daemon's operator routes (the auth layer is the daemon's).
 fn host_routes(state: &Arc<AppState>) -> axum::Router {
+    host_routes_as(state, UserCaller::Operator)
+}
+
+/// The joining daemon's routes as `caller` reaches them (the sharing
+/// routes read the caller the daemon's auth layer puts in the request).
+fn host_routes_as(state: &Arc<AppState>, caller: UserCaller) -> axum::Router {
     axum::Router::new()
         .route("/api/config/join", get(super::get_join_status))
         .route("/api/config/join/inspect", post(super::post_join_inspect))
@@ -80,6 +87,11 @@ fn host_routes(state: &Arc<AppState>) -> axum::Router {
         .route("/api/config/join/callback", post(super::post_join_callback))
         .route("/api/config/join/invite", post(super::post_join_invite))
         .route("/api/config/join/leave", post(super::post_join_leave))
+        .route(
+            "/api/config/join/sharing",
+            get(super::get_join_sharing).post(super::post_join_sharing),
+        )
+        .layer(axum::Extension(caller))
         .with_state(Arc::clone(state))
 }
 
@@ -244,6 +256,97 @@ async fn a_sign_in_joins_starts_the_client_and_leave_tells_the_owner() {
     let (_, _, status_now) = call(&host, "GET", "/api/config/join", None).await;
     assert_eq!(status_now["fresh"], false);
     assert_eq!(status_now["links"][0]["running"], true);
+    assert_eq!(status_now["links"][0]["share_books"], true);
+    assert_eq!(status_now["links"][0]["include_branches"], true);
+    eventually("the branch to report its sharing settings", || async {
+        load_node(&owner_store, &node_id).await.unwrap().share_books == Some(true)
+    })
+    .await;
+
+    // Settings → Library: the settings reach the library at once.
+    let (status, _, shared) = call(
+        &host,
+        "POST",
+        "/api/config/join/sharing",
+        Some(json!({ "cluster_id": cluster_id, "share_books": false, "include_branches": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{shared}");
+    assert_eq!(shared["cluster"]["share_books"], false);
+    eventually("the library to see sharing off", || async {
+        load_node(&owner_store, &node_id).await.unwrap().share_books == Some(false)
+    })
+    .await;
+    let (status, _, _) = call(
+        &host,
+        "POST",
+        "/api/config/join/sharing",
+        Some(json!({ "cluster_id": "no-such-cluster", "share_books": true, "include_branches": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // An Owner of this branch may change them too, and the change reaches
+    // the running link; an Administrator or a Member may not.
+    let mut users = Vec::new();
+    for role in [UserRole::Owner, UserRole::Administrator, UserRole::Member] {
+        let user = host_store
+            .create_user(role, Some("Sam"), None)
+            .await
+            .unwrap();
+        users.push(user.id);
+    }
+    let (owner_user, admin_user, member_user) = (users[0], users[1], users[2]);
+    for refused in [admin_user, member_user] {
+        let app = host_routes_as(&host_state, UserCaller::User { user_id: refused });
+        let (status, _, _) = call(&app, "GET", "/api/config/join/sharing", None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _, _) = call(
+            &app,
+            "POST",
+            "/api/config/join/sharing",
+            Some(
+                json!({ "cluster_id": cluster_id, "share_books": true, "include_branches": false }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+    let unchanged = load_cluster_link(&host_store, &cluster_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!unchanged.share_books && unchanged.include_branches);
+    let as_owner = host_routes_as(
+        &host_state,
+        UserCaller::User {
+            user_id: owner_user,
+        },
+    );
+    let (status, _, listed) = call(&as_owner, "GET", "/api/config/join/sharing", None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(listed["clusters"][0]["cluster_id"], cluster_id.as_str());
+    assert_eq!(listed["clusters"][0]["share_books"], false);
+    let (status, _, shared) = call(
+        &as_owner,
+        "POST",
+        "/api/config/join/sharing",
+        Some(json!({ "cluster_id": cluster_id, "share_books": true, "include_branches": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{shared}");
+    assert_eq!(shared["cluster"]["share_books"], true);
+    assert_eq!(shared["cluster"]["include_branches"], false);
+    assert!(super::super::is_link_running(&cluster_id));
+    eventually("the library to see the Owner's settings", || async {
+        let node = load_node(&owner_store, &node_id).await.unwrap();
+        node.share_books == Some(true) && node.include_branches == Some(false)
+    })
+    .await;
+    // The operator still may.
+    let (status, _, listed) = call(&host, "GET", "/api/config/join/sharing", None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(listed["clusters"][0]["include_branches"], false);
 
     // Leave library: the owner hears node.leaving and revokes the node.
     let (status, _, left) = call(

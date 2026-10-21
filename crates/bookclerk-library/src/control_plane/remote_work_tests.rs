@@ -78,9 +78,14 @@ async fn link(store: &LibraryStore, user_id: i64, account_id: &str) {
 
 /// Adds the [`HOST`] node, owned by `owner`, with a live credential.
 async fn add_host(store: &LibraryStore, owner: i64) {
+    add_host_node(store, HOST, owner).await;
+}
+
+/// Adds the Host `node_id`, owned by `owner`, with a live credential.
+async fn add_host_node(store: &LibraryStore, node_id: &str, owner: i64) {
     let now = chrono::Utc::now().to_rfc3339();
     nodes::ActiveModel {
-        node_id: Set(HOST.into()),
+        node_id: Set(node_id.into()),
         cluster_id: Set("cluster".into()),
         created_at: Set(now.clone()),
         incarnation: Set("test".into()),
@@ -100,15 +105,16 @@ async fn add_host(store: &LibraryStore, owner: i64) {
         labels_json: Set("[]".into()),
         kind: Set("host".into()),
         owner_user_id: Set(Some(owner)),
+        ..Default::default()
     }
     .insert(store.db())
     .await
     .unwrap();
     node_credentials::ActiveModel {
-        node_id: Set(HOST.into()),
+        node_id: Set(node_id.into()),
         sign_public_key: Set(vec![1; 32]),
         box_public_key: Set(vec![2; 32]),
-        link_id: Set("link".into()),
+        link_id: Set(format!("link-{node_id}")),
         enrolled_at: Set(now),
         revoked_at: Set(None),
         last_connected_at: Set(None),
@@ -1652,6 +1658,64 @@ async fn an_abort_answers_the_files_it_had_received() {
             .unwrap(),
         UploadCommit::Refused("upload_aborted")
     );
+}
+
+/// A job's uploads supersede across nodes: when the job's lease moves
+/// from one Host to another, the new holder's grant of a title replaces
+/// the old holder's still-open upload of it and answers it as superseded.
+#[tokio::test]
+async fn a_moved_lease_supersedes_the_old_hosts_upload() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    const OTHER: &str = "host-riley-2";
+    add_host_node(&w.store, OTHER, w.riley).await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let request = UploadGrantRequest {
+        book_uuid: &book_uuid,
+        primary_key: "Author/Title/Title.m4b",
+        pdf_key: None,
+        files: &files,
+        destinations: &local("Author/Title"),
+    };
+    let UploadGrant::Granted { upload_id, .. } =
+        grant_upload(&w.store, HOST, &job_id, fence, "owner", &request)
+            .await
+            .unwrap()
+    else {
+        panic!("granted");
+    };
+    // The lease moves to the other Host under a new generation.
+    let moved = fence + 1;
+    jobs::Entity::update_many()
+        .col_expr(
+            jobs::Column::LeaseOwner,
+            Expr::value(Some(remote_lease_owner(OTHER))),
+        )
+        .col_expr(jobs::Column::LeaseGeneration, Expr::value(moved))
+        .filter(jobs::Column::Id.eq(&job_id))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    let UploadGrant::Granted {
+        upload_id: again,
+        superseded,
+        ..
+    } = grant_upload(&w.store, OTHER, &job_id, moved, "owner", &request)
+        .await
+        .unwrap()
+    else {
+        panic!("the new holder is granted");
+    };
+    assert_eq!(superseded.len(), 1, "the old Host's upload is superseded");
+    assert_eq!(superseded[0].upload_id, upload_id);
+    assert_ne!(again, upload_id);
+    assert!(
+        !record_upload_file(&w.store, &upload_id, 0).await.unwrap(),
+        "the old Host's upload records no more files"
+    );
+    assert!(record_upload_file(&w.store, &again, 0).await.unwrap());
 }
 
 /// The title Riley's acquire uploads, with its one file declared.
@@ -3833,4 +3897,78 @@ async fn a_lost_fence_upload_commit_answers_lost_before_key_taken() {
             .unwrap(),
         UploadCommit::Lost
     );
+}
+
+/// A Host job's upload of a library book may take over keys a branch's
+/// delivered title holds (as an acquire run on the owner would): the grant
+/// is not refused as another title's key, and the upload commits.
+#[tokio::test]
+async fn a_job_upload_takes_over_a_branch_titles_keys() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let branch = "branch-riley";
+    add_host_node(&w.store, branch, w.riley).await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    let key = files[0].copies[0].key.clone();
+
+    // The branch shares a title at the same key and delivers it.
+    let CatalogBegin::Opened(opened) = begin_catalog(&w.store, branch, true, true).await.unwrap()
+    else {
+        panic!("a catalog session opens");
+    };
+    let shared = bookclerk_node_proto::CatalogTitle {
+        store: "audible".into(),
+        product_id: "b1".into(),
+        metadata: bookclerk_node_proto::CatalogMetadata {
+            title: "Branch title".into(),
+            ..Default::default()
+        },
+        primary_key: key.clone(),
+        pdf_key: None,
+        files: vec![bookclerk_node_proto::CatalogFile {
+            key: key.clone(),
+            size: files[0].size,
+            content_type: None,
+        }],
+    };
+    assert!(matches!(
+        accept_catalog_batch(&w.store, branch, opened.fence, "c", false, &[shared])
+            .await
+            .unwrap(),
+        CatalogAccept::Accepted { upserted: 1, .. }
+    ));
+    let UploadGrant::Granted {
+        upload_id: delivery,
+        ..
+    } = grant_catalog_upload(
+        &w.store,
+        branch,
+        opened.fence,
+        "owner",
+        "audible",
+        "b1",
+        &files,
+        &["local".to_string()],
+    )
+    .await
+    .unwrap()
+    else {
+        panic!("the branch's upload is granted");
+    };
+    assert!(record_upload_file(&w.store, &delivery, 0).await.unwrap());
+    assert_eq!(
+        commit_upload(&w.store, &delivery, None, SETTINGS.limits)
+            .await
+            .unwrap(),
+        UploadCommit::Committed {
+            job_completed: false
+        }
+    );
+
+    // The Host job's upload of the library book at that key.
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    upload_title(&w.store, &job_id, fence, &book_uuid, &files).await;
+    let held = w.store.title_file("local", &key).await.unwrap().unwrap();
+    assert_eq!(held.book_uuid, book_uuid);
 }

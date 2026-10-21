@@ -4,6 +4,9 @@ import {
   answerBranchConsent,
   clerkNodes,
   authorizeParams,
+  branchSharingSummary,
+  canChangeBranchSharing,
+  branchTitlesNote,
   fingerprintGroups,
   formatCountdown,
   isClerkJoined,
@@ -129,6 +132,56 @@ describe("joinErrorMessage", () => {
     const err = new JoinApiError(409, "m", "origin_mismatch", "https://library.example");
     expect(err.origin).toBe("https://library.example");
     expect(err.status).toBe(409);
+  });
+});
+
+describe("branch sharing (branches of branches)", () => {
+  const row = {
+    node_id: "n1",
+    created_at: "2026-10-01T00:00:00Z",
+    owner_user_id: 2,
+    owner_name: "Riley",
+    joined: true,
+    share_books: true as boolean | null,
+    include_branches: true as boolean | null,
+    titles: { shared: 0, delivered: 0, detached: 0 },
+  };
+
+  it("summarises what a branch shares", () => {
+    expect(branchSharingSummary(row)).toBe("Shares its books and its own branches' books");
+    expect(branchSharingSummary({ ...row, include_branches: false })).toBe(
+      "Shares its own books only",
+    );
+    expect(branchSharingSummary({ ...row, share_books: false })).toBe("Does not share its books");
+    expect(branchSharingSummary({ ...row, share_books: null })).toBe("Has not shared books yet");
+    expect(branchSharingSummary({ ...row, joined: false })).toBe("Left this library");
+  });
+
+  it("notes titles, and those from a branch that left", () => {
+    expect(branchTitlesNote(row.titles, true)).toBeNull();
+    expect(branchTitlesNote({ shared: 3, delivered: 2, detached: 1 }, true)).toBe(
+      "3 books shared, 2 arrived · 1 book no longer shared",
+    );
+    expect(branchTitlesNote({ shared: 0, delivered: 0, detached: 2 }, false)).toBe(
+      "2 books from a branch that left",
+    );
+  });
+});
+
+describe("canChangeBranchSharing", () => {
+  it("is the operator or an Owner", () => {
+    expect(canChangeBranchSharing("operator")).toBe(true);
+    expect(canChangeBranchSharing("owner")).toBe(true);
+    // The operator acting as an Owner acts as that Owner.
+    expect(canChangeBranchSharing("owner", true)).toBe(true);
+  });
+
+  it("is nobody else", () => {
+    expect(canChangeBranchSharing("operator", true)).toBe(false);
+    expect(canChangeBranchSharing("administrator")).toBe(false);
+    expect(canChangeBranchSharing("member")).toBe(false);
+    expect(canChangeBranchSharing("host")).toBe(false);
+    expect(canChangeBranchSharing("")).toBe(false);
   });
 });
 

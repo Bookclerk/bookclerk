@@ -29,8 +29,20 @@
 //! - `POST /api/config/join/invite` `{link}`: joins with a pasted branch
 //!   invite; the link is used once and not kept.
 //! - `POST /api/config/join/leave` `{cluster_id}`: Leave library.
+//! - `GET /api/config/join/sharing`: the libraries this install is a
+//!   branch of, with their two sharing settings.
+//! - `POST /api/config/join/sharing` `{cluster_id, share_books,
+//!   include_branches}`: Settings → Library's "Share this branch's books
+//!   with *library*" and "Include books from my own branches"; the
+//!   catalog sync reports them to the library at once.
 //!
-//! All of them are operator-only. Answers carrying a URL with `state` are
+//! Inspect and start refuse a library whose ancestry names this library's
+//! own cluster id (409 `join_cycle`), so a tree of libraries never loops;
+//! a branch's redeem checks it again before the code is spent.
+//!
+//! The sharing routes are for the operator or an Owner (the stored role is
+//! read on every call; anyone else gets 403); all the others are
+//! operator-only. Answers carrying a URL with `state` are
 //! `Cache-Control: no-store`; nothing secret is logged.
 
 use std::sync::Arc;
@@ -38,6 +50,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
+use axum::Extension;
 use axum::Json;
 use bookclerk_config::DatabasePluginKind;
 use bookclerk_library::control_plane::{
@@ -45,8 +58,8 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_node_client::{
     apply_clerk_bootstrap, authorize_join, bootstrap_database_kind, inspect_library,
-    install_problem, join_cluster, redeem_branch_code, redeem_clerk_code, BranchRedeem,
-    InspectedLibrary, JoinError,
+    install_problem, join_cluster, redeem_branch_code, redeem_clerk_code, refuse_cycle,
+    BranchRedeem, InspectedLibrary, JoinError,
 };
 use bookclerk_node_proto::{is_branch_name, ConnectionType, JOIN_CALLBACK_PATH};
 use serde::Deserialize;
@@ -55,7 +68,9 @@ use zeroize::Zeroizing;
 
 use super::api::link_json;
 use crate::api::AppState;
+use crate::auth::UserCaller;
 use crate::node_api::branch::no_store;
+use crate::node_api::branch::require_branch_admin;
 
 /// Where the library sends the browser back after consent: the browser's
 /// own origin when it is a loopback one (`http://127.0.0.1:8787` stays as
@@ -117,6 +132,16 @@ fn join_failed(err: &JoinError) -> Response {
         JoinError::Record(detail) => {
             join_error(StatusCode::BAD_GATEWAY, "join_failed", detail)
         }
+        JoinError::Cycle => join_error(
+            StatusCode::CONFLICT,
+            "join_cycle",
+            "that library is this library or one of its own branches; joining it would make a loop",
+        ),
+        JoinError::AncestryTooDeep => join_error(
+            StatusCode::CONFLICT,
+            "ancestry_too_deep",
+            "that library sits too deep in its tree of libraries; joining it could hide a loop",
+        ),
         // Enrolled on the library but not saved here: the invite is spent,
         // and the message says what the owner has to revoke.
         JoinError::Unsaved { .. } => {
@@ -199,11 +224,19 @@ pub struct InspectBody {
 }
 
 /// `POST /api/config/join/inspect`.
-pub async fn post_join_inspect(Json(body): Json<InspectBody>) -> Response {
-    match inspect_library(&body.address).await {
-        Ok(library) => Json(json!({ "library": library_json(&library) })).into_response(),
-        Err(err) => join_failed(&err),
+pub async fn post_join_inspect(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<InspectBody>,
+) -> Response {
+    let library = match inspect_library(&body.address).await {
+        Ok(library) => library,
+        Err(err) => return join_failed(&err),
+    };
+    let store = state.library_snapshot().await;
+    if let Err(err) = refuse_cycle(&store, &library.info.ancestry).await {
+        return join_failed(&err);
     }
+    Json(json!({ "library": library_json(&library) })).into_response()
 }
 
 /// `POST /api/config/join/start` body.
@@ -236,6 +269,10 @@ pub async fn post_join_start(
         Ok(library) => library,
         Err(err) => return join_failed(&err),
     };
+    let store = state.library_snapshot().await;
+    if let Err(err) = refuse_cycle(&store, &library.info.ancestry).await {
+        return join_failed(&err);
+    }
     if !library.info.enrollment {
         return join_error(
             StatusCode::FORBIDDEN,
@@ -253,7 +290,6 @@ pub async fn post_join_start(
             );
         }
     }
-    let store = state.library_snapshot().await;
     if body.clerk {
         match install_problem(&store).await {
             Ok(None) => {}
@@ -337,9 +373,24 @@ pub struct CallbackBody {
     connection: Option<String>,
 }
 
+/// A sign-in whose redeem the library answered but this install could not
+/// save ([`JoinError::SaveFailed`]): the node the library enrolled for it.
+struct SaveFailedSignIn {
+    /// `hash_token` of the sign-in's `state`; the raw value is not kept.
+    state_hash: String,
+    /// The node id the library minted for it.
+    node_id: String,
+}
+
 /// Serializes sign-in callbacks, so two attempts for one sign-in (a retry
-/// racing the first, or a page loaded twice) never redeem at once.
-static CALLBACKS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// racing the first, or a page loaded twice) never redeem at once. It
+/// holds the latest sign-in whose redeem could not be saved, so its Try
+/// again names that node ([`BranchRedeem::enrolled_node_id`]) when it
+/// then fails for good; kept in memory only, one at a time (a restart or
+/// another sign-in's save failure forgets it, and the retry then reports
+/// its own error).
+static CALLBACKS: tokio::sync::Mutex<Option<SaveFailedSignIn>> =
+    tokio::sync::Mutex::const_new(None);
 
 /// How long a join waits on the library to redeem: longer than one connect
 /// attempt (`bookclerk_node_client` dials each address for up to 10 s) plus
@@ -366,7 +417,7 @@ pub async fn post_join_callback(
     let store = state.library_snapshot().await;
     // A callback waiting on another sign-in's redeem answers as a retry
     // rather than run past the API deadline.
-    let Ok(one_at_a_time) = tokio::time::timeout(CALLBACK_WAIT, CALLBACKS.lock()).await else {
+    let Ok(mut one_at_a_time) = tokio::time::timeout(CALLBACK_WAIT, CALLBACKS.lock()).await else {
         return join_error(
             StatusCode::BAD_GATEWAY,
             "join_retry",
@@ -412,6 +463,11 @@ pub async fn post_join_callback(
         drop(one_at_a_time);
         return answer;
     }
+    let state_hash = bookclerk_library::hash_token(sign_in);
+    let enrolled_node_id = one_at_a_time
+        .as_ref()
+        .filter(|failed| failed.state_hash == state_hash)
+        .map(|failed| failed.node_id.clone());
     let joined = tokio::time::timeout(
         REDEEM_TIMEOUT,
         redeem_branch_code(
@@ -425,6 +481,7 @@ pub async fn post_join_callback(
                 redirect_uri: &taken.join.redirect_uri,
                 branch_name: &taken.join.branch_name,
                 software_version: env!("CARGO_PKG_VERSION"),
+                enrolled_node_id: enrolled_node_id.as_deref(),
             },
             &taken.keys,
         ),
@@ -445,6 +502,16 @@ pub async fn post_join_callback(
             "the library did not answer in time; try again",
         );
     };
+    if let Err(JoinError::SaveFailed { node_id, .. }) = &joined {
+        *one_at_a_time = Some(SaveFailedSignIn {
+            state_hash: state_hash.clone(),
+            node_id: node_id.clone(),
+        });
+    } else if enrolled_node_id.is_some() && !matches!(&joined, Err(err) if err.is_retryable()) {
+        // This sign-in ends here (joined, or failed for good naming the
+        // node); a retryable failure keeps the node for the next retry.
+        *one_at_a_time = None;
+    }
     let link = match joined {
         Ok(link) => link,
         Err(err) if err.is_retryable() => {
@@ -541,6 +608,7 @@ async fn join_as_clerk(
                 redirect_uri: &taken.join.redirect_uri,
                 branch_name: &taken.join.branch_name,
                 software_version: env!("CARGO_PKG_VERSION"),
+                enrolled_node_id: None,
             },
             &taken.keys,
         ),
@@ -773,6 +841,106 @@ pub async fn post_join_leave(
             "not_found",
             "this install is not a branch of that library",
         ),
+        Err(err) => crate::config_authority::events_error(err),
+    }
+}
+
+/// `POST /api/config/join/sharing` body.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SharingBody {
+    /// The library (owner cluster id).
+    cluster_id: String,
+    /// "Share this branch's books with *library*".
+    share_books: bool,
+    /// "Include books from my own branches".
+    include_branches: bool,
+}
+
+/// `GET /api/config/join/sharing`: Settings → Library for the operator or
+/// an Owner: every library this install is a branch of, with its two
+/// sharing settings (`{clusters: [...]}`).
+pub async fn get_join_sharing(
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<UserCaller>,
+) -> Response {
+    if let Err(refused) = require_branch_admin(&state, caller).await {
+        return refused;
+    }
+    let store = state.library_snapshot().await;
+    match list_cluster_links(&store).await {
+        Ok(links) => Json(json!({ "clusters": links.iter().map(link_json).collect::<Vec<_>>() }))
+            .into_response(),
+        Err(err) => crate::config_authority::events_error(err),
+    }
+}
+
+/// `POST /api/config/join/sharing`: Settings → Library's two sharing
+/// settings for one library this install is a branch of. The operator or
+/// an Owner (verified from the stored role); anyone else gets 403.
+pub async fn post_join_sharing(
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<UserCaller>,
+    Json(body): Json<SharingBody>,
+) -> Response {
+    let actor = match require_branch_admin(&state, caller).await {
+        Ok(actor) => actor,
+        Err(refused) => return refused,
+    };
+    let actor = match &actor {
+        bookclerk_library::control_plane::ConfigActor::ClusterOwner(owner) => {
+            format!("user:{}", owner.user_id())
+        }
+        _ => "operator".to_string(),
+    };
+    let store = state.library_snapshot().await;
+    let cluster_id = body.cluster_id.trim();
+    match bookclerk_library::control_plane::set_cluster_link_sharing(
+        &store,
+        cluster_id,
+        body.share_books,
+        body.include_branches,
+    )
+    .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            return join_error(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "this install is not a branch of that library",
+            )
+        }
+        Err(err) => return crate::config_authority::events_error(err),
+    }
+    tracing::info!(
+        %cluster_id,
+        %actor,
+        share_books = body.share_books,
+        include_branches = body.include_branches,
+        "branch sharing settings changed"
+    );
+    let detail = json!({
+        "cluster_id": cluster_id,
+        "share_books": body.share_books,
+        "include_branches": body.include_branches,
+    })
+    .to_string();
+    if let Err(err) = store
+        .insert_security_audit_event(&actor, "branch_sharing_changed", Some(&detail))
+        .await
+    {
+        tracing::warn!(
+            %cluster_id,
+            %actor,
+            error = %err,
+            "could not record the branch sharing change in the security audit log"
+        );
+    }
+    super::catalog_sync::notify_sharing_changed();
+    match bookclerk_library::control_plane::load_cluster_link(&store, cluster_id).await {
+        Ok(Some(link)) => Json(json!({ "cluster": link_json(&link) })).into_response(),
+        Ok(None) => join_error(StatusCode::NOT_FOUND, "not_found", "no such library"),
         Err(err) => crate::config_authority::events_error(err),
     }
 }

@@ -1074,6 +1074,17 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             "/api/config/branches",
             get(crate::node_api::branch::get_branches).put(crate::node_api::branch::put_branches),
         )
+        .route(
+            "/api/config/branches/titles/remove",
+            post(crate::node_api::branch::post_remove_branch_titles),
+        )
+        // Settings → Library's two sharing settings on a branch (operator
+        // or Owner; the handler checks).
+        .route(
+            "/api/config/join/sharing",
+            get(crate::cluster_link::join::get_join_sharing)
+                .post(crate::cluster_link::join::post_join_sharing),
+        )
         // The library lets the operator or an Owner revoke any host and
         // anyone else only the hosts they own.
         .route(

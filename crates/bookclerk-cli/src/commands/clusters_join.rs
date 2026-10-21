@@ -381,6 +381,7 @@ pub async fn join_with_sign_in(
         redirect_uri: &authorization.redirect_uri,
         branch_name: &branch_name,
         software_version: env!("CARGO_PKG_VERSION"),
+        enrolled_node_id: None,
     };
     let keys = &authorization.keys;
     match connection {
@@ -389,10 +390,16 @@ pub async fn join_with_sign_in(
                 eprintln!("The library's user chose to let this install join as a branch.");
             }
             let redeem = &redeem;
-            redeem_with_retries(|| redeem_branch_code(store, redeem, keys))
-                .await
-                .map(Joined::Branch)
-                .map_err(join_failed)
+            redeem_with_retries(|enrolled: Option<String>| async move {
+                let retry = BranchRedeem {
+                    enrolled_node_id: enrolled.as_deref(),
+                    ..*redeem
+                };
+                redeem_branch_code(store, &retry, keys).await
+            })
+            .await
+            .map(Joined::Branch)
+            .map_err(join_failed)
         }
         ConnectionType::Clerk => {
             if !offer_clerk {
@@ -405,7 +412,7 @@ pub async fn join_with_sign_in(
                 anyhow::bail!("cannot join as a clerk: {problem}");
             }
             let redeem = &redeem;
-            let joined = redeem_with_retries(|| redeem_clerk_code(redeem, keys))
+            let joined = redeem_with_retries(|_| redeem_clerk_code(redeem, keys))
                 .await
                 .map_err(join_failed)?;
             // The library holds the node now; the verifier lives only in
@@ -464,22 +471,25 @@ pub async fn join_with_sign_in(
 /// failed local write is retried here: the library answers a repeat of the
 /// same exchange with the same node. A later attempt that fails differently
 /// still reports the first save failure: it names the node the library
-/// enrolled.
+/// enrolled. Each retry after a save failure is given that node's id, for
+/// [`BranchRedeem::enrolled_node_id`].
 ///
 /// # Errors
 ///
 /// Returns the first [`JoinError::SaveFailed`], else the last error.
 async fn redeem_with_retries<T, F, Fut>(mut redeem: F) -> Result<T, JoinError>
 where
-    F: FnMut() -> Fut,
+    F: FnMut(Option<String>) -> Fut,
     Fut: std::future::Future<Output = Result<T, JoinError>>,
 {
     let mut attempt = 1;
     let mut save_failed = None;
+    let mut enrolled: Option<String> = None;
     loop {
-        match redeem().await {
+        match redeem(enrolled.clone()).await {
             Err(err) if err.is_retryable() && attempt < REDEEM_ATTEMPTS => {
-                if matches!(err, JoinError::SaveFailed { .. }) {
+                if let JoinError::SaveFailed { node_id, .. } = &err {
+                    enrolled.get_or_insert_with(|| node_id.clone());
                     save_failed.get_or_insert(err);
                 }
                 attempt += 1;
