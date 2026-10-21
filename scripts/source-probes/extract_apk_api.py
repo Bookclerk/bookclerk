@@ -132,6 +132,11 @@ def read_java(sources: Path) -> list[tuple[Path, str]]:
     return out
 
 
+def host_in(host: str, domain: str) -> bool:
+    """True when `host` is `domain` or one of its subdomains (not `evil<domain>`)."""
+    return host == domain or host.endswith("." + domain)
+
+
 def parse_client_consts(client_rs: Path) -> dict[str, str]:
     """Return every `&str` constant declared in a Rust client file."""
     text = client_rs.read_text(encoding="utf-8")
@@ -223,7 +228,7 @@ def extract_graphicaudio(sources: Path, client: dict[str, str]) -> Extraction:
             for url in JAVA_URL_RE.findall(text):
                 parts = urlsplit(url)
                 host = parts.hostname or ""
-                if host.endswith("graphicaudio.net") and parts.path.strip("/"):
+                if host_in(host, "graphicaudio.net") and parts.path.strip("/"):
                     candidates.add(url.rstrip("/"))
     ex.facts["base_url_candidates"] = sorted(candidates)
     base: str | None = None
@@ -283,7 +288,7 @@ def extract_chirp(sources: Path, client: dict[str, str]) -> Extraction:
                     roots.add(m.group("value").rstrip("/"))
         for url in JAVA_URL_RE.findall(text):
             host = urlsplit(url).hostname or ""
-            if host.endswith("chirpbooks.com") and url.rstrip("/").endswith("/graphql"):
+            if host_in(host, "chirpbooks.com") and url.rstrip("/").endswith("/graphql"):
                 full.add(url.rstrip("/"))
     candidates = full | {r + "/graphql" for r in roots}
     ex.facts["graphql_url_candidates"] = sorted(candidates)
