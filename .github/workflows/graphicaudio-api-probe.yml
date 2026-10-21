@@ -106,7 +106,10 @@ jobs:
             exit 0
           fi
           echo "changed=true" >> "$GITHUB_OUTPUT"
-          python3 scripts/source-probes/check_client_constants.py --sources graphicaudio
+          if ! python3 scripts/source-probes/check_client_constants.py --sources graphicaudio; then
+            printf 'post_failed=true\npost_auth_failed=false\npost_auth_ran=false\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           set +e
           python3 scripts/source-probes/probe_all.py \
             --sources graphicaudio \
@@ -188,10 +191,10 @@ jobs:
           if [[ "$CHANGED" == "true" && "$POST_FAILED" == "false" && "$POST_AUTH_FAILED" == "false" && "$POST_AUTH_RAN" == "true" ]]; then
             outcome="The APK constants were applied and the live probe, including auth, passed against them, so a fix pull request was opened."
             fix_paths="crates/bookclerk-plugins/optional/source-graphicaudio/src/client.rs\nscripts/source-probes/check_client_constants.py"
+          elif [[ "$CHANGED" == "true" && ( "$POST_FAILED" != "false" || "$POST_AUTH_FAILED" != "false" ) ]]; then
+            outcome="The APK constants were applied, but the contract check or live probe failed against them, so no fix pull request was opened; see the post-fix report in the run artifacts."
           elif [[ "$CHANGED" == "true" && "$POST_AUTH_RAN" != "true" ]]; then
             outcome="The APK constants were applied, but auth checks could not run (configure the TEST_GA_* secrets), so no fix pull request was opened."
-          elif [[ "$CHANGED" == "true" ]]; then
-            outcome="The APK constants were applied, but the live probe still failed against them, so no fix pull request was opened; see the post-fix report in the run artifacts."
           elif [[ "$DRIFT" == "true" && "$FIXABLE" != "true" ]]; then
             outcome="The APK does not pin down a single replacement for every drifted constant, so the change needs a person; see the APK report below."
           else
