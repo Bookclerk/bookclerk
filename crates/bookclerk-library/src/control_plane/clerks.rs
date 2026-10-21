@@ -133,8 +133,13 @@ pub async fn owner_nodes_visible_to(
 /// transaction: its `nodes` row (and with it its labels and credentials),
 /// status, event-subscriber registrations, secret handoffs, and plugin
 /// deployments with their observations. Only a node that is not
-/// running may go, and never `this_node`: a running owner node writes its
-/// row back at its next heartbeat. Removing a node does not take back the
+/// running may go, and never `this_node`. The liveness check and the
+/// removal are one step: the node's status row is deleted only if it still
+/// holds the stale heartbeat that was checked, so a heartbeat that lands
+/// in between refuses the removal. A node that was only cut off from the
+/// database for longer than its liveness window can still be removed while
+/// it runs; its next heartbeat writes a status row again, but not its node
+/// row. Removing a node does not take back the
 /// database credentials or DEK it held; rotate those when it is not
 /// trusted any more.
 ///
@@ -184,13 +189,17 @@ pub async fn remove_owner_node(
         ));
     }
     let now_ms = Utc::now().timestamp_millis();
-    if super::load_node_status(store, node_id)
-        .await?
+    let running = || {
+        LibraryError::Conflict(format!(
+            "node {node_id} is running; stop Bookclerk there first"
+        ))
+    };
+    let checked = super::load_node_status(store, node_id).await?;
+    if checked
+        .as_ref()
         .is_some_and(|status| status.is_live(now_ms))
     {
-        return Err(LibraryError::Conflict(format!(
-            "node {node_id} is running; stop Bookclerk there first"
-        )));
+        return Err(running());
     }
     // The node's rows go together. These tables are keyed by node id with
     // no foreign key to `nodes` (only `node_credentials` and
@@ -201,11 +210,18 @@ pub async fn remove_owner_node(
     // history are kept, as the configuration audit trail is. Dropping the
     // transaction on an error rolls it back.
     let txn = store.db().begin().await.map_err(LibraryError::Orm)?;
-    node_status::Entity::delete_many()
-        .filter(node_status::Column::NodeId.eq(node_id))
-        .exec(&txn)
-        .await
-        .map_err(LibraryError::Orm)?;
+    // Compare and delete: the status row goes only while it still holds the
+    // heartbeat checked above, so a node that beat in the meantime stays.
+    let mut stale_status =
+        node_status::Entity::delete_many().filter(node_status::Column::NodeId.eq(node_id));
+    if let Some(status) = &checked {
+        stale_status =
+            stale_status.filter(node_status::Column::HeartbeatMs.eq(status.heartbeat_ms));
+    }
+    let deleted = stale_status.exec(&txn).await.map_err(LibraryError::Orm)?;
+    if checked.is_some() && deleted.rows_affected == 0 {
+        return Err(running());
+    }
     event_subscriber_nodes::Entity::delete_many()
         .filter(event_subscriber_nodes::Column::NodeId.eq(node_id))
         .exec(&txn)
