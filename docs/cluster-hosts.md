@@ -230,6 +230,16 @@ SIGTERM and re-executes the same binary with the same arguments and
 environment; on Unix the PID stays the same) and comes back as an owner node
 of the library. Sign in there with your library account.
 
+The originals of those files are kept (as `<name>.pre-clerk`, with a
+`clerk-join.json` record) until that first start opens the library's
+database. If it cannot (for example the PostgreSQL address only works on the
+library's own machine, or the D1 token has no access to the database), the
+start tries a few more times, then puts this server's own settings, node
+identity and key back and stops: start it again to run as before, and remove
+the clerk under **Settings → Clerks** on the library before joining again.
+If a join or its undoing is cut short (a crash, a power cut), the next start
+finishes undoing it, or refuses with instructions naming each file.
+
 **On the command line:**
 
 ```bash

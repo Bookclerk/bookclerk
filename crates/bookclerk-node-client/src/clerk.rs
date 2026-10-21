@@ -279,8 +279,8 @@ fn back_up(target: &Path, backup: &Path) -> std::io::Result<()> {
         return Err(std::io::Error::new(
             std::io::ErrorKind::AlreadyExists,
             format!(
-                "{} is left from an earlier clerk join that was interrupted: move it back over {} \
-                 (or delete it if that file is right), then try again",
+                "{} is left from an earlier clerk join (pending, or interrupted): start bookclerkd to finish or undo it, \
+                 or follow the instructions it gives; the original of {} is in it",
                 backup.display(),
                 target.display()
             ),
@@ -352,14 +352,15 @@ fn sync_dirs(staged: &[Staged]) {
 /// recoverable step (see [`apply_clerk_bootstrap`]): stages all of them,
 /// backs up the originals, replaces them with
 /// [`bookclerk_config::replace_file`] (atomic per file, on Windows too),
-/// rolls the earlier ones back when a later one fails, and drops the
-/// backups once all are in place.
+/// rolls the earlier ones back when a later one fails, and once all are in
+/// place records the join at `marker`, keeping the backups for the next
+/// start to drop or restore ([`PendingClerkJoin`]).
 ///
 /// # Errors
 ///
 /// Returns [`JoinError::Record`] naming the file that could not be staged,
 /// backed up or replaced, and any file the rollback could not restore.
-fn replace_files(files: &[NewFile<'_>]) -> Result<(), JoinError> {
+fn replace_files(files: &[NewFile<'_>], marker: &Path) -> Result<(), JoinError> {
     let failed = |what: &str, err: &dyn std::fmt::Display| {
         JoinError::Record(format!("could not write the clerk's {what}: {err}"))
     };
@@ -420,20 +421,32 @@ fn replace_files(files: &[NewFile<'_>]) -> Result<(), JoinError> {
             )));
         }
     }
-    // 4. All in place: drop the backups.
-    sync_dirs(&staged);
-    for file in &staged {
-        if let Some(backup) = &file.backup {
-            // A copy left here stops the daemon starting (see
-            // `interrupted_clerk_join`), so say which one.
-            if let Err(err) = std::fs::remove_file(backup) {
-                tracing::warn!(
-                    copy = %backup.display(),
-                    error = %err,
-                    "the clerk join finished but could not delete this copy of the original; delete it before starting the server"
-                );
-            }
-        }
+    // 4. All in place: record the join as applied, so the next start
+    //    either confirms it (the library's database opens) or puts the
+    //    originals back. The copies stay until then.
+    let applied = AppliedJoin {
+        phase: JoinPhase::Applied,
+        files: staged
+            .iter()
+            .map(|file| JoinedFile {
+                target: file.target.clone(),
+                backup: file.backup.clone(),
+            })
+            .collect(),
+    };
+    let recorded = write_join_record(marker, &applied);
+    if let Err(err) = recorded {
+        let not_restored = roll_back(&staged);
+        sync_dirs(&staged);
+        let outcome = if not_restored.is_empty() {
+            "the files already replaced were restored".to_string()
+        } else {
+            format!("could not restore {}", not_restored.join("; "))
+        };
+        return Err(JoinError::Record(format!(
+            "could not record the clerk join at {}: {err}; {outcome}",
+            marker.display()
+        )));
     }
     sync_dirs(&staged);
     Ok(())
@@ -470,6 +483,254 @@ pub fn checked_d1_api_base(api_base: &str) -> Result<String, JoinError> {
     Ok(parsed.to_string().trim_end_matches('/').to_string())
 }
 
+/// The file, in the install's files directory, that records a clerk join
+/// whose files are all in place but whose database has not yet opened.
+const CLERK_JOIN_MARKER: &str = "clerk-join.json";
+
+/// One bootstrap file a clerk join replaced, as [`CLERK_JOIN_MARKER`]
+/// records it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct JoinedFile {
+    /// The file the join wrote.
+    target: PathBuf,
+    /// The copy of the original; `None` when the join created the file.
+    backup: Option<PathBuf>,
+}
+
+/// Where a recorded clerk join stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum JoinPhase {
+    /// Every file is in place; the library's database has not opened yet.
+    Applied,
+    /// The originals are being put back. A start that finds this finishes
+    /// putting them back before anything else.
+    Reverting,
+}
+
+/// What [`CLERK_JOIN_MARKER`] holds: every file the join replaced.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct AppliedJoin {
+    /// Where the join stands.
+    phase: JoinPhase,
+    /// The replaced files, in the order they were written.
+    files: Vec<JoinedFile>,
+}
+
+/// Writes `record` to `marker` atomically and durably.
+fn write_join_record(marker: &Path, record: &AppliedJoin) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec_pretty(record).map_err(std::io::Error::other)?;
+    let tmp = staging_path(marker);
+    write_new_file(&tmp, &bytes, false)?;
+    bookclerk_config::replace_file(&tmp, marker).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })?;
+    sync_dir_of(marker);
+    Ok(())
+}
+
+/// Syncs the directory holding `path` (best effort: not every platform can
+/// open a directory).
+fn sync_dir_of(path: &Path) {
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        if let Ok(dir) = std::fs::File::open(dir) {
+            let _ = dir.sync_all();
+        }
+    }
+}
+
+/// `remove_file` that treats a file already gone as removed.
+fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
+
+/// A clerk join whose files are all in place but whose first start has not
+/// opened the library's database yet, or whose undoing was cut short. The
+/// daemon [`confirm`](Self::confirm)s it once the database opens, or
+/// [`revert`](Self::revert)s it when it cannot, so a join to an unreachable
+/// database does not leave the server unable to start.
+#[derive(Debug)]
+pub struct PendingClerkJoin {
+    /// Where the record is.
+    marker: PathBuf,
+    /// What it records.
+    applied: AppliedJoin,
+}
+
+impl PendingClerkJoin {
+    /// Whether an earlier start began putting the originals back and did not
+    /// finish: the daemon then finishes the [`revert`](Self::revert) before
+    /// anything else, and does not try the library's database again.
+    #[must_use]
+    pub fn reverting(&self) -> bool {
+        self.applied.phase == JoinPhase::Reverting
+    }
+
+    /// The library's database opened: drops the record, then the copies of
+    /// the originals. The record goes first, so a crash part way leaves
+    /// copies with no record, which the next start refuses on with
+    /// [`interrupted_clerk_join`]'s instructions (its `config.toml` is the
+    /// library's, so the copies are to be deleted). A copy that cannot be
+    /// removed is logged, since it stops the next start.
+    pub fn confirm(self) {
+        if let Err(err) = remove_if_present(&self.marker) {
+            tracing::warn!(
+                record = %self.marker.display(),
+                error = %err,
+                "could not delete the clerk join record; delete it before the next start"
+            );
+            return;
+        }
+        sync_dir_of(&self.marker);
+        for file in &self.applied.files {
+            if let Some(backup) = &file.backup {
+                if let Err(err) = remove_if_present(backup) {
+                    tracing::warn!(
+                        copy = %backup.display(),
+                        error = %err,
+                        "the clerk join finished but could not delete this copy of the original; delete it before the next start"
+                    );
+                }
+            }
+        }
+        for file in &self.applied.files {
+            sync_dir_of(&file.target);
+        }
+    }
+
+    /// The library's database did not open: puts every original back,
+    /// removes the files the join created, and drops the record, so the
+    /// next start runs on this install's own bootstrap again. The record is
+    /// first marked [`reverting`](Self::reverting), and every step can run
+    /// again (a copy already moved back is gone, a created file already
+    /// removed is absent), so a revert cut short by a crash or a failed
+    /// rename is finished by the next start instead of leaving a mix.
+    ///
+    /// Before the revert starts, every recorded copy must still exist: a
+    /// copy missing at that point was removed by hand, not moved back, so
+    /// undoing the rest would leave a mix of this install's files and the
+    /// library's.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RevertFailed`] with [`started`](RevertFailed::started)
+    /// false when nothing was changed (a copy is missing, or the record could
+    /// not be marked), so the record still says the join is applied. With
+    /// `started` true it names the files that could not be put back; the
+    /// record stays marked reverting, so the next start finishes the undo
+    /// before anything else.
+    pub fn revert(mut self) -> Result<(), RevertFailed> {
+        if self.applied.phase != JoinPhase::Reverting {
+            let missing: Vec<String> = self
+                .applied
+                .files
+                .iter()
+                .filter_map(|file| file.backup.as_ref())
+                .filter(|backup| !backup.exists())
+                .map(|backup| backup.display().to_string())
+                .collect();
+            if !missing.is_empty() {
+                return Err(RevertFailed {
+                    started: false,
+                    detail: format!(
+                        "the copies of the originals at {} are gone, so the join cannot be undone automatically; put this server's own files back by hand, then delete {}",
+                        missing.join(", "),
+                        self.marker.display()
+                    ),
+                });
+            }
+            self.applied.phase = JoinPhase::Reverting;
+            write_join_record(&self.marker, &self.applied).map_err(|err| RevertFailed {
+                started: false,
+                detail: format!(
+                    "could not mark the clerk join at {} as being undone: {err}",
+                    self.marker.display()
+                ),
+            })?;
+        }
+        let mut failed = Vec::new();
+        for file in self.applied.files.iter().rev() {
+            let restored = match &file.backup {
+                // A copy that is gone was already moved back.
+                Some(backup) if !backup.exists() => Ok(()),
+                Some(backup) => bookclerk_config::replace_file(backup, &file.target),
+                None => remove_if_present(&file.target),
+            };
+            if let Err(err) = restored {
+                failed.push(format!("{}: {err}", file.target.display()));
+            }
+            sync_dir_of(&file.target);
+        }
+        if !failed.is_empty() {
+            return Err(RevertFailed {
+                started: true,
+                detail: failed.join("; "),
+            });
+        }
+        remove_if_present(&self.marker).map_err(|err| RevertFailed {
+            started: true,
+            detail: format!(
+                "the originals are back, but the clerk join record at {} could not be deleted: {err}",
+                self.marker.display()
+            ),
+        })?;
+        sync_dir_of(&self.marker);
+        Ok(())
+    }
+}
+
+/// Why [`PendingClerkJoin::revert`] did not finish.
+#[derive(Debug)]
+pub struct RevertFailed {
+    /// Whether the undo had begun: when true the record is marked
+    /// reverting and the next start finishes it; when false nothing was
+    /// changed and the record still says the join is applied.
+    pub started: bool,
+    /// What went wrong, naming the files involved.
+    pub detail: String,
+}
+
+impl std::fmt::Display for RevertFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.detail)
+    }
+}
+
+/// The bootstrap files a clerk join may replace, in the order it writes
+/// them.
+fn clerk_join_targets(files_dir: &Path, config_file: &Path) -> [PathBuf; 4] {
+    [
+        files_dir.join(CLERK_POSTGRES_URL_FILE),
+        node_identity_path(files_dir),
+        bookclerk_library::master_key_path(files_dir),
+        config_file.to_path_buf(),
+    ]
+}
+
+/// The clerk join this install applied but has not yet started on (or
+/// began undoing), if any. A record that cannot be read, or that names any
+/// file other than this install's own bootstrap files and their copies, is
+/// not used: copies left beside those files then stop the start (see
+/// [`interrupted_clerk_join`]).
+#[must_use]
+pub fn pending_clerk_join(files_dir: &Path, config_file: &Path) -> Option<PendingClerkJoin> {
+    let marker = files_dir.join(CLERK_JOIN_MARKER);
+    let applied: AppliedJoin = serde_json::from_slice(&std::fs::read(&marker).ok()?).ok()?;
+    let targets = clerk_join_targets(files_dir, config_file);
+    let recognised = !applied.files.is_empty()
+        && applied.files.iter().all(|file| {
+            targets.contains(&file.target)
+                && file
+                    .backup
+                    .as_ref()
+                    .is_none_or(|backup| *backup == backup_path(&file.target))
+        });
+    recognised.then_some(PendingClerkJoin { marker, applied })
+}
+
 /// Names the copies an interrupted clerk join left beside this install's
 /// bootstrap files, or `None` when there are none. The daemon refuses to
 /// start while any is there: a process that died while replacing the files
@@ -478,13 +739,10 @@ pub fn checked_d1_api_base(api_base: &str) -> Result<String, JoinError> {
 /// finish or undo the join by hand (see [`apply_clerk_bootstrap`]).
 #[must_use]
 pub fn interrupted_clerk_join(files_dir: &Path, config_file: &Path) -> Option<String> {
-    let targets = [
-        files_dir.join(CLERK_POSTGRES_URL_FILE),
-        node_identity_path(files_dir),
-        bookclerk_library::master_key_path(files_dir),
-        config_file.to_path_buf(),
-    ];
-    if !targets.iter().any(|target| backup_path(target).exists()) {
+    let targets = clerk_join_targets(files_dir, config_file);
+    if !targets.iter().any(|target| backup_path(target).exists())
+        || pending_clerk_join(files_dir, config_file).is_some()
+    {
         return None;
     }
     // Every target is listed with what is there, since undoing the join
@@ -505,9 +763,10 @@ pub fn interrupted_clerk_join(files_dir: &Path, config_file: &Path) -> Option<St
     Some(format!(
         "a clerk join was interrupted while replacing this server's bootstrap files ({CLERK_BACKUP_SUFFIX} copies of the originals are still beside them): {}. \
          If {} is already the joined library's (its [database] names the library's database), the join finished: delete the copies. \
-         Otherwise undo it: move each copy back over its file (dropping the {CLERK_BACKUP_SUFFIX} suffix), and delete each file listed as existing with no copy unless it was there before the join, then start again",
+         Otherwise undo it: move each copy back over its file (dropping the {CLERK_BACKUP_SUFFIX} suffix), and delete each file listed as existing with no copy unless it was there before the join, then delete {} if it is there and start again",
         state.join("; "),
-        config_file.display()
+        config_file.display(),
+        files_dir.join(CLERK_JOIN_MARKER).display()
     ))
 }
 
@@ -531,17 +790,18 @@ pub fn interrupted_clerk_join(files_dir: &Path, config_file: &Path) -> Option<St
 /// already replaced are put back from their copies (a target that did not
 /// exist before is removed), so the install keeps its own bootstrap; the
 /// error names any file that could not be put back. On success the copies
-/// are removed. The caller restarts the daemon afterwards.
+/// stay, and `clerk-join.json` in `files_dir` records the join: the next start drops
+/// them once the library's database opens ([`PendingClerkJoin::confirm`])
+/// and puts the originals back if it does not ([`PendingClerkJoin::revert`]).
+/// The caller restarts the daemon afterwards.
 ///
 /// A process that dies while replacing leaves the files before that point
 /// in the list new and the rest old, with every original still beside its
-/// file as `<name>.pre-clerk`; a later apply refuses to start while a copy
-/// is there, and so does the daemon ([`interrupted_clerk_join`]). If
-/// `config_file` is already new, every file was replaced and
-/// the join is complete: delete the copies. Otherwise moving the copies
-/// back over their files restores the install (a target with no copy did
-/// not exist before and can be deleted). Staged `.<name>.clerk-<hex>` files
-/// left by such a crash are unused and can be deleted.
+/// file as `<name>.pre-clerk` and no record; a later apply refuses while a
+/// copy is there, and so does the daemon ([`interrupted_clerk_join`]), with
+/// instructions to finish the join by hand (when `config_file` is already
+/// new) or undo it. Staged `.<name>.clerk-<hex>` files left by such a crash
+/// are unused and can be deleted.
 ///
 /// # Errors
 ///
@@ -633,7 +893,7 @@ pub fn apply_clerk_bootstrap(
         bytes: config_text.as_bytes(),
         private: false,
     });
-    replace_files(&files)?;
+    replace_files(&files, &files_dir.join(CLERK_JOIN_MARKER))?;
     if password.is_none() {
         bookclerk_library::warn_unwrapped_master_key(&bookclerk_library::master_key_path(
             files_dir,
@@ -691,6 +951,101 @@ mod tests {
             problem.contains(&format!("{} (absent)", config.display())),
             "{problem}"
         );
+    }
+
+    /// A revert stopped part way is marked as such, and finishing it later
+    /// puts every original back.
+    #[test]
+    fn a_revert_cut_short_is_finished_by_the_next_one() {
+        let files = tempfile::tempdir().unwrap();
+        let config = files.path().join("config.toml");
+        let key = bookclerk_library::master_key_path(files.path());
+        std::fs::write(&config, "[daemon]\n").unwrap();
+        std::fs::write(&key, b"original key").unwrap();
+        apply_clerk_bootstrap(
+            files.path(),
+            &config,
+            &bootstrap(ClerkDatabase::D1 {
+                account_id: "acct".into(),
+                database_id: "db-uuid".into(),
+                api_base: "https://api.cloudflare.com/client/v4".into(),
+            }),
+            None,
+        )
+        .unwrap();
+        // The node identity the join created cannot be removed: a directory
+        // stands in its place.
+        let identity = node_identity_path(files.path());
+        std::fs::remove_file(&identity).unwrap();
+        std::fs::create_dir(&identity).unwrap();
+        std::fs::write(identity.join("x"), b"x").unwrap();
+        assert!(pending_clerk_join(files.path(), &config)
+            .unwrap()
+            .revert()
+            .is_err());
+        let pending = pending_clerk_join(files.path(), &config).unwrap();
+        assert!(pending.reverting());
+        // Already restored files stay restored.
+        assert_eq!(std::fs::read(&key).unwrap(), b"original key");
+        std::fs::remove_dir_all(&identity).unwrap();
+        pending.revert().unwrap();
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), "[daemon]\n");
+        assert_eq!(std::fs::read(&key).unwrap(), b"original key");
+        assert!(pending_clerk_join(files.path(), &config).is_none());
+        assert!(interrupted_clerk_join(files.path(), &config).is_none());
+    }
+
+    /// A copy removed by hand before the undo began stops the undo, so the
+    /// start never runs on a mix of this install's files and the library's.
+    #[test]
+    fn a_missing_copy_stops_the_undo_before_it_starts() {
+        let files = tempfile::tempdir().unwrap();
+        let config = files.path().join("config.toml");
+        let key = bookclerk_library::master_key_path(files.path());
+        std::fs::write(&config, "[daemon]\n").unwrap();
+        std::fs::write(&key, b"original key").unwrap();
+        apply_clerk_bootstrap(
+            files.path(),
+            &config,
+            &bootstrap(ClerkDatabase::D1 {
+                account_id: "acct".into(),
+                database_id: "db-uuid".into(),
+                api_base: "https://api.cloudflare.com/client/v4".into(),
+            }),
+            None,
+        )
+        .unwrap();
+        let joined_config = std::fs::read_to_string(&config).unwrap();
+        std::fs::remove_file(backup_path(&key)).unwrap();
+        let failed = pending_clerk_join(files.path(), &config)
+            .unwrap()
+            .revert()
+            .unwrap_err();
+        assert!(!failed.started);
+        let pending = pending_clerk_join(files.path(), &config).unwrap();
+        assert!(!pending.reverting());
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), joined_config);
+    }
+
+    /// A record naming any file but this install's bootstrap files is not
+    /// used, so a start never renames or deletes other paths for it.
+    #[test]
+    fn a_record_naming_other_files_is_not_used() {
+        let files = tempfile::tempdir().unwrap();
+        let config = files.path().join("config.toml");
+        let elsewhere = files.path().join("elsewhere.txt");
+        write_join_record(
+            &files.path().join(CLERK_JOIN_MARKER),
+            &AppliedJoin {
+                phase: JoinPhase::Applied,
+                files: vec![JoinedFile {
+                    target: elsewhere,
+                    backup: None,
+                }],
+            },
+        )
+        .unwrap();
+        assert!(pending_clerk_join(files.path(), &config).is_none());
     }
 
     /// A bootstrap may only name Cloudflare's D1 API over HTTPS.
@@ -755,13 +1110,54 @@ mod tests {
             bookclerk_library::control_plane::load_or_create_node_identity(files.path()).unwrap();
         assert_eq!(identity.node_id, "0b5c3d52-6f1e-4f39-9a3c-1b7f0a2c9e11");
         assert_eq!(identity.cluster_id.as_deref(), Some("cluster-1"));
-        // The copy of the replaced config.toml and the staged files are gone.
+        // The join is recorded as pending, which is not an interrupted one;
+        // confirming it drops the copies and the record.
+        assert!(interrupted_clerk_join(files.path(), &config).is_none());
+        pending_clerk_join(files.path(), &config).unwrap().confirm();
+        assert!(pending_clerk_join(files.path(), &config).is_none());
         for entry in std::fs::read_dir(files.path()).unwrap() {
             let name = entry.unwrap().file_name().to_string_lossy().into_owned();
             assert!(
-                !name.ends_with(CLERK_BACKUP_SUFFIX) && !name.contains(".clerk-"),
+                !name.ends_with(CLERK_BACKUP_SUFFIX)
+                    && !name.contains(".clerk-")
+                    && name != CLERK_JOIN_MARKER,
                 "{name}"
             );
+        }
+    }
+
+    /// A join whose database does not open is undone: the originals come
+    /// back and the files the join created are removed.
+    #[test]
+    fn reverting_a_pending_join_puts_the_install_back() {
+        let files = tempfile::tempdir().unwrap();
+        let config = files.path().join("config.toml");
+        let key = bookclerk_library::master_key_path(files.path());
+        std::fs::write(&config, "[daemon]\n").unwrap();
+        std::fs::write(&key, b"original key").unwrap();
+        apply_clerk_bootstrap(
+            files.path(),
+            &config,
+            &bootstrap(ClerkDatabase::D1 {
+                account_id: "acct".into(),
+                database_id: "db-uuid".into(),
+                api_base: "https://api.cloudflare.com/client/v4".into(),
+            }),
+            None,
+        )
+        .unwrap();
+        pending_clerk_join(files.path(), &config)
+            .unwrap()
+            .revert()
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), "[daemon]\n");
+        assert_eq!(std::fs::read(&key).unwrap(), b"original key");
+        assert!(!node_identity_path(files.path()).exists());
+        assert!(pending_clerk_join(files.path(), &config).is_none());
+        assert!(interrupted_clerk_join(files.path(), &config).is_none());
+        for entry in std::fs::read_dir(files.path()).unwrap() {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            assert!(!name.ends_with(CLERK_BACKUP_SUFFIX), "{name}");
         }
     }
 
