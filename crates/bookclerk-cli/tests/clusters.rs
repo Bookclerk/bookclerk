@@ -428,12 +428,28 @@ impl PtyJoin {
         };
 
         let mut child = {
+            use std::os::unix::process::CommandExt as _;
+
             let mut command = common::bookclerk_command(files_dir.path());
             command
                 .args(["--format", "json", "clusters", "join"])
                 .stdin(Stdio::from(slave))
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
+            // SAFETY: only async-signal-safe calls between fork and exec.
+            // The command leads a new session whose controlling terminal is
+            // the pty (its stdin by now), so a Ctrl+C typed on the master
+            // reaches it as SIGINT the way it would from a real terminal.
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setsid() < 0
+                        || libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY as _, 0) != 0
+                    {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
             command.spawn().expect("spawn bookclerk")
             // The command (and its copy of the slave) is dropped here.
         };
@@ -527,24 +543,23 @@ fn join_on_a_terminal_does_not_echo_the_link() {
     assert!(echo_on, "echo is back on after the command");
 }
 
-/// An interrupt at the prompt (SIGINT, as Ctrl+C sends) still restores the
+/// An interrupt at the prompt (Ctrl+C, so SIGINT) still restores the
 /// terminal's echo, and the command dies of that signal as it would
 /// without the handler.
 #[cfg(unix)]
 #[test]
-#[allow(unsafe_code)]
 fn an_interrupt_at_the_prompt_restores_echo() {
     use std::os::unix::process::ExitStatusExt as _;
 
     let mut join = PtyJoin::start();
-    // Half a link typed, then Ctrl+C.
+    // Half a link typed, then Ctrl+C. Both go through the terminal's input
+    // in order, so the half link is taken in with echo still off before
+    // the interrupt restores it (a signal sent with `kill` could overtake
+    // input the terminal had not processed yet, which would then be echoed).
     let secret = "bcn1-half-typed-secret";
     join.master
-        .write_all(format!("https://owner.example/enroll#{secret}").as_bytes())
+        .write_all(format!("https://owner.example/enroll#{secret}\x03").as_bytes())
         .unwrap();
-    let pid = libc::pid_t::try_from(join.child.id()).unwrap();
-    // SAFETY: signals our own, still running (not yet waited) child.
-    assert_eq!(unsafe { libc::kill(pid, libc::SIGINT) }, 0);
     let (status, err, echo_on, shown) = join.finish();
     assert_eq!(status.signal(), Some(libc::SIGINT), "{status:?}: {err}");
     assert!(echo_on, "echo is back on after the interrupt");
