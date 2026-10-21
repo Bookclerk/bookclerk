@@ -785,16 +785,24 @@ pub const AUTHORIZED_LINK_CREATED_BY: &str = "oauth:";
 /// request, so it only has to outlive a retry.
 const AUTHORIZED_LINK_TTL: Duration = Duration::minutes(10);
 
-/// The link a branch sign-in redeems through: its id and secret are derived
-/// from the authorization code and the PKCE verifier, so a retry of the
-/// same exchange (same code, verifier and keys) finds the same link and
+/// The link a branch or clerk sign-in redeems through: its id and secret are
+/// derived from the authorization code and the PKCE verifier, so a retry of
+/// the same exchange (same code, verifier and keys) finds the same link and
 /// answers from its receipt, and a wrong verifier can never redeem it.
+///
+/// The secret also binds the node kind the code was approved for, so a link
+/// recorded for one kind never redeems as the other, even when the first
+/// redeem failed and left the link unredeemed.
 ///
 /// The id is `hex(SHA-256("bookclerk-branch-link-v1\0" || code))[..32]`; the
 /// secret is base64url `SHA-256("bookclerk-branch-secret-v1\0" || code ||
-/// "\0" || verifier)`.
+/// "\0" || verifier || "\0" || kind)`.
 #[must_use]
-pub fn authorized_enrollment_link(code: &str, verifier: &str) -> (String, EnrollmentSecret) {
+pub fn authorized_enrollment_link(
+    code: &str,
+    verifier: &str,
+    kind: super::NodeKind,
+) -> (String, EnrollmentSecret) {
     let mut id = Sha256::new();
     id.update(b"bookclerk-branch-link-v1\0");
     id.update(code.as_bytes());
@@ -804,6 +812,8 @@ pub fn authorized_enrollment_link(code: &str, verifier: &str) -> (String, Enroll
     secret.update(code.as_bytes());
     secret.update([0]);
     secret.update(verifier.as_bytes());
+    secret.update([0]);
+    secret.update(kind.as_str().as_bytes());
     let secret = Zeroizing::new(secret.finalize().to_vec());
     (
         link_id,
@@ -975,6 +985,28 @@ fn validate_public_keys(sign_public_key: &[u8], box_public_key: &[u8]) -> Result
     Ok(())
 }
 
+/// Checks what a redeem would refuse as malformed before anything is
+/// written: its keys (canonical Curve25519 points) and `software_version`. A
+/// sign-in's redeem runs this before it spends its code, so a malformed
+/// request leaves the code for a corrected retry.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] for malformed keys or a version that is
+/// too long or holds control characters.
+pub fn check_redeem_request(req: &RedeemRequest) -> Result<()> {
+    validate_public_keys(&req.sign_public_key, &req.box_public_key)?;
+    let software_version = req.software_version.trim();
+    if software_version.len() > MAX_SOFTWARE_VERSION_BYTES
+        || software_version.chars().any(char::is_control)
+    {
+        return Err(LibraryError::Invalid(
+            "software_version must be at most 64 bytes without control characters".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Redeems a link: one canonical batch marks it redeemed, inserts a host
 /// `nodes` row owned by the link's user, inserts its `node_credentials`,
 /// and records a receipt.
@@ -995,21 +1027,34 @@ pub async fn redeem_enrollment_link(
     store: &LibraryStore,
     req: &RedeemRequest,
 ) -> Result<EnrolledNode> {
-    validate_public_keys(&req.sign_public_key, &req.box_public_key)?;
+    redeem_enrollment_link_as(store, req, super::NodeKind::Host).await
+}
+
+/// [`redeem_enrollment_link`] for a node of `kind`: the same canonical
+/// batch, recording `kind` on the `nodes` row.
+///
+/// A [`super::NodeKind::Owner`] node (a clerk, which joined with a sign-in
+/// an Owner approved as such) shares the library's database, so it gets no
+/// `node_credentials` row: it never dials the node socket. The kind is part
+/// of the request hash, so a retry of a branch redeem as a clerk (or the
+/// other way round) is refused as a spent link.
+///
+/// # Errors
+///
+/// As [`redeem_enrollment_link`].
+pub async fn redeem_enrollment_link_as(
+    store: &LibraryStore,
+    req: &RedeemRequest,
+    kind: super::NodeKind,
+) -> Result<EnrolledNode> {
+    check_redeem_request(req)?;
     let software_version = req.software_version.trim();
-    if software_version.len() > MAX_SOFTWARE_VERSION_BYTES
-        || software_version.chars().any(char::is_control)
-    {
-        return Err(LibraryError::Invalid(
-            "software_version must be at most 64 bytes without control characters".into(),
-        ));
-    }
     if !is_link_id(&req.link_id) || !is_base64url(req.secret.expose()) {
         return Err(redeem_refused());
     }
     let token_hash = hash_token(req.secret.expose());
     let operation_id = format!("{REDEEM_KIND}:{}", req.link_id);
-    let request_hash = redeem_hash(req, &token_hash);
+    let request_hash = redeem_hash(req, &token_hash, kind);
     if let Some(done) = redeem_replay(store, &operation_id, &request_hash).await? {
         return Ok(done);
     }
@@ -1068,7 +1113,7 @@ pub async fn redeem_enrollment_link(
                         node_id, cluster_id, created_at, incarnation, heartbeat_at,
                         software_version, schema_state, compatible, target, labels_json,
                         kind, owner_user_id
-                     ) SELECT ?, ?, ?, '', ?, ?, '', 0, '', '[]', 'host', for_user_id
+                     ) SELECT ?, ?, ?, '', ?, ?, '', 0, '', '[]', ?, for_user_id
                          FROM node_enrollment_links
                         WHERE link_id = ? AND redeemed_node_id = ?",
                     vec![
@@ -1077,6 +1122,7 @@ pub async fn redeem_enrollment_link(
                         text(&now_text),
                         text(&now_text),
                         text(software_version),
+                        text(kind.as_str()),
                         text(&req.link_id),
                         text(&node_id),
                     ],
@@ -1086,7 +1132,7 @@ pub async fn redeem_enrollment_link(
                         node_id, sign_public_key, box_public_key, link_id, enrolled_at
                      ) SELECT ?, ?, ?, link_id, ?
                          FROM node_enrollment_links
-                        WHERE link_id = ? AND redeemed_node_id = ?",
+                        WHERE link_id = ? AND redeemed_node_id = ? AND ? = 'host'",
                     vec![
                         text(&node_id),
                         bookclerk_plugin_abi::DbValue::Bytes(req.sign_public_key.clone()),
@@ -1094,6 +1140,7 @@ pub async fn redeem_enrollment_link(
                         text(&now_text),
                         text(&req.link_id),
                         text(&node_id),
+                        text(kind.as_str()),
                     ],
                 ),
                 exec(
@@ -1128,7 +1175,8 @@ pub async fn redeem_enrollment_link(
             link_id = %req.link_id,
             node_id = %node_id,
             owner_user_id = link.for_user_id,
-            "host node enrolled"
+            kind = kind.as_str(),
+            "node enrolled"
         );
         return Ok(EnrolledNode {
             cluster_id,
@@ -1145,8 +1193,9 @@ pub async fn redeem_enrollment_link(
     Err(redeem_refused())
 }
 
-/// Request hash of a redeem: the link, the secret's hash, and both keys.
-fn redeem_hash(req: &RedeemRequest, token_hash: &str) -> String {
+/// Request hash of a redeem: the link, the secret's hash, both keys, and
+/// (for anything but a host node) the node kind.
+fn redeem_hash(req: &RedeemRequest, token_hash: &str, kind: super::NodeKind) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"bookclerk-enroll-node-v1\0");
     hasher.update(req.link_id.as_bytes());
@@ -1155,6 +1204,10 @@ fn redeem_hash(req: &RedeemRequest, token_hash: &str) -> String {
     hasher.update([0]);
     hasher.update(&req.sign_public_key);
     hasher.update(&req.box_public_key);
+    if kind != super::NodeKind::Host {
+        hasher.update([0]);
+        hasher.update(kind.as_str().as_bytes());
+    }
     hex::encode(hasher.finalize())
 }
 

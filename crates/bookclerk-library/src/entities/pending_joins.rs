@@ -24,6 +24,8 @@ pub struct Model {
     pub branch_name: String,
     /// Redirect URI the authorization was requested with.
     pub redirect_uri: String,
+    /// 1 when the operator offered to join as a clerk.
+    pub allow_clerk: i64,
     /// RFC 3339 creation time.
     pub created_at: String,
     /// RFC 3339 time after which the row is refused and purged.

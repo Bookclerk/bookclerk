@@ -26,11 +26,10 @@ use bookclerk_library::control_plane::{
 use bookclerk_library::LibraryStore;
 use bookclerk_node_proto::{
     canonical_origin, is_branch_name, is_branch_redirect_uri, is_library_name, pkce_challenge,
-    Body, OAuthEnrollRequest, OwnerInfo, AUTHORIZE_PATH, BRANCH_CLIENT_ID, BRANCH_SCOPE,
-    ENROLL_OAUTH_PATH, INFO_PATH,
+    Body, ConnectionType, OAuthEnrollAnswer, OAuthEnrollRequest, OwnerInfo, AUTHORIZE_PATH,
+    BRANCH_CLIENT_ID, BRANCH_SCOPE, CLERK_OFFER_PARAM, ENROLL_OAUTH_PATH, INFO_PATH,
 };
 use rand::RngCore as _;
-use serde::Deserialize;
 use tokio::sync::watch;
 use zeroize::Zeroizing;
 
@@ -173,6 +172,23 @@ pub fn authorize_branch(
     redirect_uri: &str,
     branch_name: &str,
 ) -> Result<BranchAuthorization, JoinError> {
+    authorize_join(library, redirect_uri, branch_name, false)
+}
+
+/// [`authorize_branch`], optionally offering to join as a clerk
+/// (`offer_clerk`, [`CLERK_OFFER_PARAM`]): the consent page then lets an
+/// Owner of the library choose a clerk instead of a branch. Offer it only
+/// for an install that holds no library data of its own.
+///
+/// # Errors
+///
+/// As [`authorize_branch`].
+pub fn authorize_join(
+    library: &InspectedLibrary,
+    redirect_uri: &str,
+    branch_name: &str,
+    offer_clerk: bool,
+) -> Result<BranchAuthorization, JoinError> {
     if !is_branch_redirect_uri(redirect_uri) {
         return Err(JoinError::Link(
             "this install's address must be loopback or https to sign in".into(),
@@ -197,6 +213,9 @@ pub fn authorize_branch(
         .append_pair("code_challenge_method", "S256")
         .append_pair("state", &state)
         .append_pair("branch_name", branch_name);
+    if offer_clerk {
+        url.query_pairs_mut().append_pair(CLERK_OFFER_PARAM, "1");
+    }
     Ok(BranchAuthorization {
         authorize_url: url.into(),
         state,
@@ -230,15 +249,6 @@ pub struct BranchRedeem<'a> {
     /// ancestry check that now fails for good answers
     /// [`JoinError::Unsaved`] naming that node, for its owner to revoke.
     pub enrolled_node_id: Option<&'a str>,
-}
-
-/// `POST /api/node/v1/enroll/oauth` answer.
-#[derive(Deserialize)]
-struct Enrolled {
-    /// Owner cluster id.
-    cluster_id: String,
-    /// The node id minted for this host.
-    node_id: String,
 }
 
 /// The answer's `error` code, as a [`JoinError`].
@@ -289,51 +299,18 @@ pub async fn redeem_branch_code(
     redeem: &BranchRedeem<'_>,
     keys: &ClusterLinkKeys,
 ) -> Result<ClusterLink, JoinError> {
-    let endpoint = OwnerEndpoint::new(redeem.origin, redeem.spki_pin)?;
-    // An answer (or an error string from the library) that echoes either
-    // value is redacted wherever it is logged.
-    bookclerk_config::register_secret(redeem.code);
-    bookclerk_config::register_secret(redeem.verifier);
-    // Checked again before the code is spent: the library's ancestry may
-    // have changed since the operator started. On a retry of an exchange
-    // the library already redeemed, a check that fails for good (a cycle,
-    // or a refusal a repeat gets again) leaves that node enrolled there:
-    // the error names it.
-    let ancestry = crate::enroll::check_join_ancestry(store, &endpoint)
-        .await
-        .map_err(|err| ancestry_error(err, redeem.enrolled_node_id))?;
-    let b64 = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
-    let body = Zeroizing::new(
-        serde_json::to_vec(&OAuthEnrollRequest {
-            code: redeem.code.to_string(),
-            code_verifier: redeem.verifier.to_string(),
-            redirect_uri: redeem.redirect_uri.to_string(),
-            sign_pk: b64(&keys.sign_public_key()),
-            box_pk: b64(&keys.box_public_key()),
-            branch_name: redeem.branch_name.to_string(),
-            software_version: redeem.software_version.to_string(),
-        })
-        .map_err(|err| JoinError::Record(err.to_string()))?,
-    );
-    let (status, answer) = endpoint.post_json(ENROLL_OAUTH_PATH, &body).await?;
-    drop(body);
-    if status != 200 {
-        return Err(http_error(status, &answer));
-    }
-    // From here the library has enrolled a node: a failure names it, so the
-    // operator knows which node to have revoked there.
-    let enrolled: Enrolled = serde_json::from_slice(&answer).map_err(|_| JoinError::Unsaved {
-        node_id: serde_json::from_slice::<serde_json::Value>(&answer)
-            .ok()
-            .and_then(|value| value.get("node_id")?.as_str().map(str::to_string)),
-        reason: "malformed enroll answer".into(),
-    })?;
-    if enrolled.cluster_id != redeem.cluster_id {
-        return Err(JoinError::Unsaved {
-            node_id: Some(enrolled.node_id),
-            reason: "the library answered for another cluster".into(),
-        });
-    }
+    // Checked before the code is spent: the library's ancestry may have
+    // changed since the operator started. On a retry of an exchange the
+    // library already redeemed, a check that fails for good (a cycle, or a
+    // refusal a repeat gets again) leaves that node enrolled there: the
+    // error names it.
+    let ancestry = crate::enroll::check_join_ancestry(
+        store,
+        &OwnerEndpoint::new(redeem.origin, redeem.spki_pin)?,
+    )
+    .await
+    .map_err(|err| ancestry_error(err, redeem.enrolled_node_id))?;
+    let (endpoint, enrolled) = post_redeem(redeem, keys, ConnectionType::Branch).await?;
     let node_id = enrolled.node_id.clone();
     let mut recorded = record_cluster_link(
         store,
@@ -371,6 +348,75 @@ pub async fn redeem_branch_code(
         "joined the library as a branch"
     );
     Ok(recorded)
+}
+
+/// Sends the code, the verifier and the public keys to `POST
+/// /api/node/v1/enroll/oauth` for `connection`, and checks the answer is
+/// for the cluster the library reported and that connection type.
+///
+/// The code and verifier are registered for redaction first, so an answer
+/// (or an error string from the library) that echoes either is redacted
+/// wherever it is logged; the caller unregisters them once it is done.
+///
+/// # Errors
+///
+/// Returns [`JoinError`] when the library is unreachable or refuses. Once
+/// the library has enrolled a node, a malformed answer, or one for another
+/// cluster or connection type, gives [`JoinError::Unsaved`] naming that
+/// node.
+pub(crate) async fn post_redeem(
+    redeem: &BranchRedeem<'_>,
+    keys: &ClusterLinkKeys,
+    connection: ConnectionType,
+) -> Result<(OwnerEndpoint, OAuthEnrollAnswer), JoinError> {
+    let endpoint = OwnerEndpoint::new(redeem.origin, redeem.spki_pin)?;
+    bookclerk_config::register_secret(redeem.code);
+    bookclerk_config::register_secret(redeem.verifier);
+    let b64 = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+    let body = Zeroizing::new(
+        serde_json::to_vec(&OAuthEnrollRequest {
+            code: redeem.code.to_string(),
+            code_verifier: redeem.verifier.to_string(),
+            redirect_uri: redeem.redirect_uri.to_string(),
+            sign_pk: b64(&keys.sign_public_key()),
+            box_pk: b64(&keys.box_public_key()),
+            branch_name: redeem.branch_name.to_string(),
+            software_version: redeem.software_version.to_string(),
+            connection,
+        })
+        .map_err(|err| JoinError::Record(err.to_string()))?,
+    );
+    let (status, answer) = endpoint.post_json(ENROLL_OAUTH_PATH, &body).await?;
+    drop(body);
+    if status != 200 {
+        return Err(http_error(status, &answer));
+    }
+    // From here the library has enrolled a node: a failure names it, so the
+    // operator knows which node to have removed there.
+    let enrolled: OAuthEnrollAnswer =
+        serde_json::from_slice(&answer).map_err(|_| JoinError::Unsaved {
+            node_id: serde_json::from_slice::<serde_json::Value>(&answer)
+                .ok()
+                .and_then(|value| value.get("node_id")?.as_str().map(str::to_string)),
+            reason: "malformed enroll answer".into(),
+        })?;
+    if enrolled.cluster_id != redeem.cluster_id {
+        return Err(JoinError::Unsaved {
+            node_id: Some(enrolled.node_id),
+            reason: "the library answered for another cluster".into(),
+        });
+    }
+    if enrolled.connection != connection {
+        return Err(JoinError::Unsaved {
+            reason: format!(
+                "the library recorded this install as a {}, not a {}",
+                enrolled.connection.as_str(),
+                connection.as_str()
+            ),
+            node_id: Some(enrolled.node_id),
+        });
+    }
+    Ok((endpoint, enrolled))
 }
 
 /// A runner that claims nothing (the leaving connection runs no job).
@@ -521,5 +567,14 @@ mod tests {
         assert!(!format!("{auth:?}").contains(auth.verifier.as_str()));
         assert!(authorize_branch(&library, "http://192.168.1.2/join/callback", "den").is_err());
         assert!(authorize_branch(&library, "https://h.example/join/callback", "").is_err());
+        assert!(!auth.authorize_url.contains(CLERK_OFFER_PARAM));
+        let offered =
+            authorize_join(&library, "http://localhost:8787/join/callback", "den", true).unwrap();
+        let pairs: std::collections::BTreeMap<_, _> = url::Url::parse(&offered.authorize_url)
+            .unwrap()
+            .query_pairs()
+            .into_owned()
+            .collect();
+        assert_eq!(pairs[CLERK_OFFER_PARAM], "1");
     }
 }

@@ -9,6 +9,7 @@
 
 mod batch;
 mod branch_catalog;
+mod clerks;
 mod cluster_links;
 mod deployments;
 mod documents;
@@ -50,6 +51,7 @@ pub use branch_catalog::{
     BRANCH_TITLE_SHARED, DETACHED_LEFT, DETACHED_STOPPED_SHARING, DETACHED_WITHDRAWN,
     FULL_CATALOG_PASS_EVERY,
 };
+pub use clerks::{library_contents, owner_nodes_visible_to, remove_owner_node, LibraryContents};
 pub use cluster_links::{
     decode_spki_pin, join_cycle, join_overflows_ancestry, leave_cluster_link, library_ancestry,
     list_cluster_links, load_cluster_link, load_cluster_link_keys, mark_cluster_link_revoked,
@@ -72,21 +74,21 @@ pub use documents::{
     PLUGIN_INSTANCE_SCOPE_TYPE,
 };
 pub use enrollment::{
-    authorized_enrollment_link, format_enrollment_token, list_enrollment_links,
-    load_host_enrollment, load_node_credential, mint_enrollment_link, parse_enrollment_token,
-    record_authorized_enrollment_link, record_node_connected, record_node_left,
-    redeem_enrollment_link, revoke_enrollment_link, revoke_node_credential,
-    set_host_enrollment_enabled, verify_cluster_owner, EnrolledNode, EnrollmentActor,
-    EnrollmentLink, EnrollmentSecret, EnrollmentToken, HostEnrollmentSettings,
+    authorized_enrollment_link, check_redeem_request, format_enrollment_token,
+    list_enrollment_links, load_host_enrollment, load_node_credential, mint_enrollment_link,
+    parse_enrollment_token, record_authorized_enrollment_link, record_node_connected,
+    record_node_left, redeem_enrollment_link, redeem_enrollment_link_as, revoke_enrollment_link,
+    revoke_node_credential, set_host_enrollment_enabled, verify_cluster_owner, EnrolledNode,
+    EnrollmentActor, EnrollmentLink, EnrollmentSecret, EnrollmentToken, HostEnrollmentSettings,
     HostEnrollmentSettingsV1, MintedLink, NodeCredential, RedeemRequest,
     AUTHORIZED_LINK_CREATED_BY, DEFAULT_LINK_TTL, ENROLLMENT_TOKEN_PREFIX,
     HOST_ENROLLMENT_NAMESPACE, HOST_ENROLLMENT_SCHEMA_VERSION, MAX_LINK_LABEL_BYTES, MAX_LINK_TTL,
     MIN_LINK_TTL, NODE_PUBLIC_KEY_LEN,
 };
 pub use identity::{
-    current_process_incarnation, list_node_ids, list_nodes, load_node,
-    load_or_create_node_identity, node_identity_path, node_target, NodeIdentity, NodeKind,
-    NodeRecord, NODE_IDENTITY_FILE,
+    current_process_incarnation, encode_node_identity_file, install_node_identity, list_node_ids,
+    list_nodes, load_node, load_or_create_node_identity, node_identity_path, node_target,
+    NodeIdentity, NodeKind, NodeRecord, NODE_IDENTITY_FILE,
 };
 pub use instance_config::{
     import_instance_config_if_absent, load_instance_config, parse_setting_text,

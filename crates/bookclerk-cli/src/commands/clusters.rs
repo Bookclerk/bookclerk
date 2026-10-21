@@ -13,7 +13,9 @@
 //!
 //! `join --url <owner>` joins by signing in to the owner library in a
 //! browser (an OAuth code with PKCE, sent back to a loopback listener this
-//! command opens). Without `--url`, `join` reads an enrollment link (a
+//! command opens). `--as clerk` offers to join as a clerk instead of a
+//! branch (an owner node sharing the library's database; only an empty
+//! install, and only when the library's Owner chooses it). Without `--url`, `join` reads an enrollment link (a
 //! branch invite) from stdin or a prompt, never from argv: the link carries
 //! a single-use secret. A running daemon dials a newly joined cluster
 //! within a few seconds, and stops a left one's client as quickly. `leave`
@@ -37,6 +39,15 @@ use crate::format_out::{emit, OutputFormat};
 
 /// Audit identity of approvals made with the CLI.
 const CLI_APPROVER: &str = "cli";
+
+/// `clusters join --as`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum JoinAs {
+    /// A branch (host node) with its own database.
+    Branch,
+    /// A clerk (owner node) sharing the library's database and key.
+    Clerk,
+}
 
 #[derive(Debug, Subcommand)]
 /// `bookclerk clusters` verbs.
@@ -62,6 +73,12 @@ pub enum ClustersCommand {
         /// self-signed library without a prompt.
         #[arg(long, requires = "url")]
         fingerprint: Option<String>,
+        /// How to join: `branch` (default; keeps this install's own
+        /// database) or `clerk` (shares the library's database and key;
+        /// only an empty install, and only when an Owner of the library
+        /// chooses it after a fresh second factor).
+        #[arg(long = "as", value_enum, default_value_t = JoinAs::Branch)]
+        join_as: JoinAs,
         /// Anything given after `join` that is not a flag. Taken only to be
         /// refused with a fixed message: left to the parser, an unexpected
         /// argument (an invite pasted on the command line) is echoed in its
@@ -299,23 +316,58 @@ pub async fn run(
             url: Some(url),
             name,
             fingerprint,
+            join_as,
             ..
         } => {
             let joined = super::clusters_join::join_with_sign_in(
                 store,
+                config,
                 &url,
                 name.as_deref(),
                 fingerprint.as_deref(),
+                join_as == JoinAs::Clerk,
             )
             .await?;
-            emit(format, &json!({ "cluster": link_json(&joined) }), || {
-                println!(
-                    "joined library {} at {} as node {}; a running daemon connects within a few seconds",
-                    joined.owner_cluster_id, joined.owner_origin, joined.remote_node_id
-                );
-            })
+            match joined {
+                super::clusters_join::Joined::Branch(joined) => emit(
+                    format,
+                    &json!({ "cluster": link_json(&joined), "connection": "branch" }),
+                    || {
+                        println!(
+                            "joined library {} at {} as node {}; a running daemon connects within a few seconds",
+                            joined.owner_cluster_id, joined.owner_origin, joined.remote_node_id
+                        );
+                    },
+                ),
+                super::clusters_join::Joined::Clerk {
+                    cluster_id,
+                    node_id,
+                    applied,
+                } => emit(
+                    format,
+                    &json!({
+                        "connection": "clerk",
+                        "cluster_id": cluster_id,
+                        "node_id": node_id,
+                        "database": applied.database.as_str(),
+                        "master_key_wrapped": applied.wrapped,
+                        "restart_required": true,
+                    }),
+                    || {
+                        println!(
+                            "joined library {cluster_id} as clerk node {node_id} ({} database); restart bookclerkd to start as an owner node of the library",
+                            applied.database.as_str()
+                        );
+                    },
+                ),
+            }
         }
-        ClustersCommand::Join { url: None, .. } => {
+        ClustersCommand::Join {
+            url: None, join_as, ..
+        } => {
+            if join_as == JoinAs::Clerk {
+                anyhow::bail!("a clerk joins with a sign-in: pass --url <library>");
+            }
             use secrecy::ExposeSecret as _;
             let link = read_link_from_stdin()?;
             let joined = bookclerk_node_client::join_cluster(
@@ -573,7 +625,37 @@ async fn wait_for_remote_jobs(
 
 #[cfg(test)]
 mod tests {
-    use super::printable;
+    use super::*;
+    use clap::Parser as _;
+
+    #[derive(clap::Parser)]
+    struct Wrapper {
+        #[command(subcommand)]
+        command: ClustersCommand,
+    }
+
+    fn join_as(args: &[&str]) -> Result<JoinAs, clap::Error> {
+        let parsed = Wrapper::try_parse_from(["clusters"].iter().chain(args))?;
+        match parsed.command {
+            ClustersCommand::Join { join_as, .. } => Ok(join_as),
+            other => panic!("not a join: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn join_is_a_branch_unless_asked_for_a_clerk() {
+        let url = ["join", "--url", "https://library.example"];
+        assert_eq!(join_as(&url).unwrap(), JoinAs::Branch);
+        assert_eq!(
+            join_as(&[&url[..], &["--as", "clerk"]].concat()).unwrap(),
+            JoinAs::Clerk
+        );
+        assert_eq!(
+            join_as(&[&url[..], &["--as", "branch"]].concat()).unwrap(),
+            JoinAs::Branch
+        );
+        assert!(join_as(&[&url[..], &["--as", "peer"]].concat()).is_err());
+    }
 
     #[test]
     fn owner_text_cannot_steer_the_terminal() {

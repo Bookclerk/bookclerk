@@ -6,11 +6,14 @@ its own operator, that joins a library to do work for it: it runs the
 library's scans and acquires on its own machine and sends the results back.
 A branch never holds the library's database credentials or DEK, and it runs
 one of the library's plugins only after its own operator approves it.
+A **clerk** is the other way to join: an empty install that shares the
+library's database and keys and serves the same library (see
+[Clerks](#clerks)).
 
 The web UI says *library* and *branch*. The code, the API and the CLI keep
 the older names: a library is an **owner cluster** (`clusters`), its own
-daemons are **owner nodes**, and a branch is a **host node** (`nodes`,
-`kind = host`). A branch invite is an **enrollment link**, and "Let new
+daemons are **owner nodes** (a clerk is one, `kind = owner`), and a branch
+is a **host node** (`nodes`, `kind = host`). A branch invite is an **enrollment link**, and "Let new
 branches join" is `core.host_enrollment`.
 
 This page is the operator's guide to both sides. The design record is
@@ -173,6 +176,89 @@ command line within 5 seconds.
 From then on the daemon connects to the library, heartbeats every 15 s, and
 reconnects with backoff (1 s up to 60 s) whenever the connection drops,
 resuming any job it still holds.
+
+## Clerks
+
+A clerk is a second (or third) server for the **same** library: an owner
+node that opens the library's database with the library's key, serves the
+web UI, plans jobs, and can take over maintenance leases when another owner
+node goes down. A branch keeps its own database; a clerk has none of its
+own.
+
+**Who can add one.** Only an **Owner** of the library. When an Owner signs
+in from the Join wizard, the consent page asks "How should it join?" with
+**Join as a branch** (the default) and **Join as a clerk of this library**.
+Everyone else sees the branch page only. Clerk is shown but disabled, with
+the reason, when:
+
+- the library's database is the default SQLite file (only PostgreSQL or
+  Cloudflare D1 can be opened by more than one server);
+- the joining server did not offer it (it is not empty, below);
+- the Owner has neither an authenticator app nor a passkey.
+
+**On the joining server.** The Join wizard shows **Offer to join as a
+clerk** only on an empty install: no users, store accounts, books or joined
+libraries of its own, and no `BOOKCLERK_DATABASE_*` or `BOOKCLERK_D1_*`
+environment override of the database settings (`BOOKCLERK_D1_API_TOKEN` is
+not one: it stays this server's own). Ticking it asks you to confirm that the server's own
+database settings and keys are replaced. The daemon checks again when the
+sign-in starts and when it comes back. For a D1 library, set this server's
+own `BOOKCLERK_D1_API_TOKEN` (the token is never sent between servers), and
+install the library's database plugin (`postgres` or `d1`) first.
+
+**Approving.** Choosing clerk needs a fresh second factor on the consent
+page: the 6-digit code from your authenticator app, or your passkey. The
+code the library issues is bound to the choice, so a code approved for a
+branch can never be redeemed as a clerk. Consent and redeem need TLS (or
+loopback with both ends on one machine), as for a branch.
+
+**What is handed over.** In its redeem answer the library sends the
+`[database]` connection and the data-encryption key, sealed to the joining
+daemon's own X25519 node key. It never sends the passphrase-wrapped
+`master.key` file, the browser never sees either, and neither is logged.
+The joining daemon writes them as its own bootstrap:
+
+- `config.toml` `[database]` (a PostgreSQL URL goes into
+  `database-postgres.url`, mode `0600`, named by `url_file`; never into the
+  TOML);
+- `node-identity.json` with the node id the library recorded;
+- `master.key`, wrapped with this server's own `BOOKCLERK_AUTH_PASSWORD`
+  (or `[auth].password`) when set, unwrapped otherwise.
+
+Then `bookclerkd` restarts itself cleanly (it stops its listeners as on
+SIGTERM and re-executes the same binary with the same arguments and
+environment; on Unix the PID stays the same) and comes back as an owner node
+of the library. Sign in there with your library account.
+
+The originals of those files are kept (as `<name>.pre-clerk`, with a
+`clerk-join.json` record) until that first start opens the library's
+database. If it cannot (for example the PostgreSQL address only works on the
+library's own machine, or the D1 token has no access to the database), the
+start tries a few more times, then puts this server's own settings, node
+identity and key back and stops: start it again to run as before, and remove
+the clerk under **Settings → Clerks** on the library before joining again.
+If a join or its undoing is cut short (a crash, a power cut), the next start
+finishes undoing it, or refuses with instructions naming each file.
+
+**On the command line:**
+
+```bash
+bookclerk clusters join --url https://library.example --as clerk
+```
+
+`--as` is `branch` by default. With `--as clerk` the CLI writes the same
+bootstrap files and asks you to restart `bookclerkd`.
+
+**Listing and removing.** **Settings → Clerks** on the library (operator or
+Owner) lists every owner node, this server first, whoever approved it
+(`GET /api/config/clerks`; another user sees only the ones they own). A clerk that is not
+running can be removed there (`DELETE /api/config/nodes/{node_id}`); stop
+Bookclerk on it first. Removing it does not take back the database
+credentials or key it held: rotate them if it is no longer trusted.
+
+**Audit events:** `clerk_authorize`, `clerk_authorize_refused`,
+`clerk_enroll_refused` and `clerk_enrolled` on the library; `clerk_joined`
+on the joining server; `owner_node_removed` when one is removed.
 
 ## Consent: what the library may run here
 
@@ -394,7 +480,7 @@ operator-auth layers, and every request first passes the transport policy.
 | --- | --- |
 | `GET info` | The library: `{cluster_id, library_name, origin, transport, enrollment, spki_fingerprint?, software_version, ancestry}` |
 | `POST enroll` | Redeem an invite: `{link_id, secret, sign_pk, box_pk, software_version}` → `{cluster_id, node_id}` |
-| `POST enroll/oauth` | Redeem an approved sign-in: `{code, code_verifier, redirect_uri, sign_pk, box_pk, branch_name, software_version}` → `{cluster_id, node_id}` |
+| `POST enroll/oauth` | Redeem an approved sign-in: `{code, code_verifier, redirect_uri, sign_pk, box_pk, branch_name, software_version, connection?}` → `{cluster_id, node_id}`; for `connection: "clerk"` also `{connection, bootstrap}` (sealed to `box_pk`) |
 | `GET connect` | The node socket (WebSocket, subprotocol `bookclerk-node.v1`) |
 | `GET artifacts/{sha256}` | An owner plugin archive, for a request signed `Authorization: Bookclerk-Node <node_id> <issued_at> <sig>` |
 | `PUT uploads/{id}/files/{n}`, `POST uploads/{id}/commit` | Uploads (above) |
@@ -472,8 +558,6 @@ topic names only (`library`, `jobs`, `deliveries`, `nodes`, `config`,
 
 ## Not built yet
 
-- The "clerk" connection type (a peer sharing the library's database) is
-  later work.
 - The sharing settings are set in Settings → Library (the operator or an
   Owner); there is no CLI command for them yet.
 - The library's name is the host of its public origin; there is no

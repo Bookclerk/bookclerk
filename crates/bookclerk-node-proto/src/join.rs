@@ -19,6 +19,8 @@
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 
+use crate::clerk::ConnectionType;
+
 /// The built-in public OAuth client a joining branch signs in through. It
 /// is never stored in the owner's clients table.
 pub const BRANCH_CLIENT_ID: &str = "bookclerk-branch";
@@ -101,6 +103,10 @@ pub struct OAuthEnrollRequest {
     /// The joining install's Bookclerk version.
     #[serde(default)]
     pub software_version: String,
+    /// The connection type the code was approved for. It must match the
+    /// one bound to the code at consent; left out for a branch.
+    #[serde(default, skip_serializing_if = "ConnectionType::is_branch")]
+    pub connection: ConnectionType,
 }
 
 impl std::fmt::Debug for OAuthEnrollRequest {
@@ -108,7 +114,35 @@ impl std::fmt::Debug for OAuthEnrollRequest {
         f.debug_struct("OAuthEnrollRequest")
             .field("redirect_uri", &self.redirect_uri)
             .field("branch_name", &self.branch_name)
+            .field("connection", &self.connection)
             .finish_non_exhaustive()
+    }
+}
+
+/// `POST /api/node/v1/enroll/oauth` answer.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OAuthEnrollAnswer {
+    /// The library's cluster id.
+    pub cluster_id: String,
+    /// The node id recorded for the joining install.
+    pub node_id: String,
+    /// The connection type recorded (`branch` when left out).
+    #[serde(default, skip_serializing_if = "ConnectionType::is_branch")]
+    pub connection: ConnectionType,
+    /// For a clerk: the [`crate::ClerkBootstrap`] sealed to the node's box
+    /// key ([`crate::seal_clerk_bootstrap`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap: Option<String>,
+}
+
+impl std::fmt::Debug for OAuthEnrollAnswer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthEnrollAnswer")
+            .field("cluster_id", &self.cluster_id)
+            .field("node_id", &self.node_id)
+            .field("connection", &self.connection)
+            .field("bootstrap", &self.bootstrap.as_ref().map(|_| "<sealed>"))
+            .finish()
     }
 }
 
@@ -210,7 +244,12 @@ mod tests {
             box_pk: "b".into(),
             branch_name: "den".into(),
             software_version: "1".into(),
+            connection: ConnectionType::Branch,
         };
+        // A branch request stays the shape older libraries accept.
+        assert!(!serde_json::to_string(&request)
+            .unwrap()
+            .contains("connection"));
         let printed = format!("{request:?}");
         assert!(!printed.contains("the-code") && !printed.contains("the-verifier"));
         assert!(is_branch_name("den"));

@@ -48,13 +48,16 @@
 //! A host that leaves sends [`Body::NodeLeaving`]; the owner revokes the
 //! node at once. Joining with a sign-in instead of a link is the OAuth
 //! code + PKCE flow of the built-in client [`BRANCH_CLIENT_ID`] ([`OwnerInfo`],
-//! [`OAuthEnrollRequest`]).
+//! [`OAuthEnrollRequest`]). An Owner of the library may instead let the
+//! install join as a clerk (an owner node, [`ConnectionType::Clerk`]): its
+//! redeem answer carries a [`ClerkBootstrap`] sealed to the node's box key.
 //!
 //! This crate is pure: no I/O, no clock, no randomness. The daemon (owner)
 //! and the host client share it so both sides sign and check the same
 //! bytes.
 
 mod catalog;
+mod clerk;
 mod frames;
 mod join;
 mod keys;
@@ -66,6 +69,11 @@ pub use catalog::{
     CatalogRef, CatalogTitle, CATALOG_ITEM, MAX_ANCESTRY, MAX_CATALOG_BATCH_TITLES,
     MAX_CATALOG_CURSOR_BYTES, MAX_CATALOG_TITLE_BYTES, MAX_CATALOG_WANTED,
 };
+pub use clerk::{
+    clerk_bootstrap_aad, open_clerk_bootstrap, seal_clerk_bootstrap, ClerkBootstrap, ClerkDatabase,
+    ConnectionType, CLERK_BOOTSTRAP_AAD_DOMAIN, CLERK_BOOTSTRAP_VERSION, CLERK_GRANTED_SCOPE,
+    CLERK_OFFER_PARAM, DEK_LEN,
+};
 pub use ed25519_dalek::SigningKey;
 pub use frames::{
     is_destination_id, is_storage_key, AcquireTarget, Body, ClaimFilter, FileCopy, Frame,
@@ -75,9 +83,9 @@ pub use frames::{
     MAX_UPLOAD_COPIES, MAX_UPLOAD_FILES, MAX_UPLOAD_FILE_BYTES, MAX_UPLOAD_KEY_BYTES,
 };
 pub use join::{
-    is_branch_name, is_branch_redirect_uri, is_library_name, pkce_challenge, OAuthEnrollRequest,
-    OwnerInfo, AUTHORIZE_PATH, BRANCH_CLIENT_ID, BRANCH_CODE_TTL_SECS, BRANCH_SCOPE,
-    ENROLL_OAUTH_PATH, INFO_PATH, JOIN_CALLBACK_PATH, MAX_BRANCH_NAME_BYTES,
+    is_branch_name, is_branch_redirect_uri, is_library_name, pkce_challenge, OAuthEnrollAnswer,
+    OAuthEnrollRequest, OwnerInfo, AUTHORIZE_PATH, BRANCH_CLIENT_ID, BRANCH_CODE_TTL_SECS,
+    BRANCH_SCOPE, ENROLL_OAUTH_PATH, INFO_PATH, JOIN_CALLBACK_PATH, MAX_BRANCH_NAME_BYTES,
     MAX_LIBRARY_NAME_BYTES,
 };
 pub use keys::{

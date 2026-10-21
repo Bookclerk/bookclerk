@@ -1,4 +1,5 @@
-//! Atomic same-directory file replace for `config.toml`.
+//! Atomic same-directory file replace for `config.toml` and the other
+//! bootstrap files written beside it (`node-identity.json`, `master.key`).
 //!
 //! `std::fs::rename` replaces an existing destination on Unix and on Windows.
 //! Rust's Windows implementation uses `MoveFileExW`, with a
@@ -15,12 +16,16 @@
 
 use std::path::Path;
 
-/// Replace `to` with `from`.
+/// Replace `to` with `from`, both in the same directory. `to` may already
+/// exist; on Windows this goes through `MoveFileExW` with
+/// `MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH` (see the module
+/// docs). The moved file keeps its own permissions, so a `0600` staging file
+/// lands as a `0600` target.
 ///
 /// # Errors
 ///
 /// Returns an I/O error when the platform replace operation fails.
-pub(crate) fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
+pub fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
     #[cfg(not(windows))]
     {
         std::fs::rename(from, to)
