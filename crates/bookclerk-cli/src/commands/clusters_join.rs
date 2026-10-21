@@ -11,16 +11,25 @@
 //!    code with the PKCE verifier only this process holds, and record the
 //!    link. A running daemon starts the link's client within a few seconds.
 //!
-//! The verifier, `state`, code and node keys never go on argv or into a
-//! log.
+//! With `--as clerk` the sign-in also offers to join as a clerk (an owner
+//! node that shares the library's database and DEK; only an empty install
+//! may). When the library's Owner chooses clerk, the sealed bootstrap is
+//! opened with the node key and written as this install's own bootstrap
+//! ([`bookclerk_node_client::apply_clerk_bootstrap`]); `bookclerkd` then
+//! starts on it as an owner node at its next start.
+//!
+//! The verifier, `state`, code, node keys and bootstrap never go on argv or
+//! into a log.
 
 use std::time::{Duration, Instant};
 
+use bookclerk_config::DatabasePluginKind;
 use bookclerk_node_client::{
-    authorize_branch, inspect_library, redeem_branch_code, BranchRedeem, InspectedLibrary,
-    JoinError,
+    apply_clerk_bootstrap, authorize_join, bootstrap_database_kind, database_guest_installed,
+    inspect_library, install_problem, redeem_branch_code, redeem_clerk_code, AppliedClerk,
+    BranchRedeem, InspectedLibrary, JoinError,
 };
-use bookclerk_node_proto::JOIN_CALLBACK_PATH;
+use bookclerk_node_proto::{ConnectionType, JOIN_CALLBACK_PATH};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
 use zeroize::Zeroizing;
@@ -38,12 +47,16 @@ pub struct Callback {
     pub code: Zeroizing<String>,
     /// The library's `error`, when it denied.
     pub error: Option<String>,
+    /// The connection type the library's user chose (`clerk`), when not a
+    /// branch.
+    pub connection: Option<String>,
 }
 
 impl std::fmt::Debug for Callback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Callback")
             .field("error", &self.error)
+            .field("connection", &self.connection)
             .finish_non_exhaustive()
     }
 }
@@ -134,11 +147,13 @@ pub async fn wait_for_callback(
         let mut code = None;
         let mut came_back = None;
         let mut error = None;
+        let mut connection = None;
         for (name, value) in url::form_urlencoded::parse(query.as_bytes()) {
             match name.as_ref() {
                 "code" => code = Some(Zeroizing::new(value.into_owned())),
                 "state" => came_back = Some(value.into_owned()),
                 "error" => error = Some(value.into_owned()),
+                "connection" => connection = Some(value.into_owned()),
                 _ => {}
             }
         }
@@ -161,6 +176,7 @@ pub async fn wait_for_callback(
         return Ok(Callback {
             code: code.unwrap_or_default(),
             error,
+            connection,
         });
     }
 }
@@ -232,19 +248,80 @@ fn confirm_fingerprint(library: &InspectedLibrary, given: Option<&str>) -> anyho
     }
 }
 
-/// Runs `clusters join --url`.
+/// How `clusters join --url` ended.
+#[derive(Debug)]
+pub enum Joined {
+    /// A branch: the link is recorded and a running daemon dials it.
+    Branch(bookclerk_library::control_plane::ClusterLink),
+    /// A clerk: the library's bootstrap is written; `bookclerkd` starts on
+    /// it as an owner node at its next start.
+    Clerk {
+        /// The library's cluster id.
+        cluster_id: String,
+        /// The owner node id the library recorded.
+        node_id: String,
+        /// What was written.
+        applied: AppliedClerk,
+    },
+}
+
+/// Refuses a clerk join while `bookclerkd` runs on this install: applying
+/// the bootstrap rewrites `config.toml` and `master.key` under it. Running
+/// means this install's node (its `node-identity.json`) heartbeated within
+/// the live window, the signal the library uses before removing an owner
+/// node. An install whose daemon never ran has no identity file yet.
+///
+/// # Errors
+///
+/// Returns an error saying to stop `bookclerkd` while it runs, and the
+/// read error.
+async fn refuse_while_daemon_runs(
+    store: &bookclerk_library::LibraryStore,
+    config: &bookclerk_config::Config,
+) -> anyhow::Result<()> {
+    let files_dir = &config.paths().files_dir;
+    if !bookclerk_library::control_plane::node_identity_path(files_dir).is_file() {
+        return Ok(());
+    }
+    let node = bookclerk_library::control_plane::load_or_create_node_identity(files_dir)?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    if bookclerk_library::control_plane::load_node_status(store, &node.node_id)
+        .await?
+        .is_some_and(|status| status.is_live(now_ms))
+    {
+        anyhow::bail!(
+            "bookclerkd is running on this install (node {}): stop bookclerkd first, then join as a clerk",
+            node.node_id
+        );
+    }
+    Ok(())
+}
+
+/// Runs `clusters join --url`, as a branch, or offering a clerk when
+/// `offer_clerk` (the library's Owner then chooses).
 ///
 /// # Errors
 ///
 /// Returns an error when the library cannot be read or refuses, the
-/// fingerprint is not confirmed, the sign-in does not come back, or the
-/// link cannot be recorded.
+/// fingerprint is not confirmed, the sign-in does not come back, a clerk
+/// join is not possible here, or the link or bootstrap cannot be written.
 pub async fn join_with_sign_in(
     store: &bookclerk_library::LibraryStore,
+    config: &bookclerk_config::Config,
     address: &str,
     branch_name: Option<&str>,
     fingerprint: Option<&str>,
-) -> anyhow::Result<bookclerk_library::control_plane::ClusterLink> {
+    offer_clerk: bool,
+) -> anyhow::Result<Joined> {
+    if offer_clerk {
+        if let Some(problem) = install_problem(store)
+            .await
+            .map_err(|err| anyhow::anyhow!("{err}"))?
+        {
+            anyhow::bail!("cannot join as a clerk: {problem}");
+        }
+        refuse_while_daemon_runs(store, config).await?;
+    }
     let library = inspect_library(address).await.map_err(|err| {
         anyhow::anyhow!(
             "could not read the library: {}",
@@ -262,8 +339,14 @@ pub async fn join_with_sign_in(
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .map_or_else(default_branch_name, str::to_string);
-    let authorization = authorize_branch(&library, &redirect_uri, &branch_name)
+    let authorization = authorize_join(&library, &redirect_uri, &branch_name, offer_clerk)
         .map_err(|err| anyhow::anyhow!("{err}"))?;
+    if offer_clerk {
+        eprintln!(
+            "Joining as a clerk replaces this install's own (empty) library with {}'s.",
+            library.info.library_name
+        );
+    }
     eprintln!(
         "Sign in to {} to let \"{branch_name}\" join it:\n\n  {}\n",
         super::clusters::printable(&library.info.library_name),
@@ -284,6 +367,11 @@ pub async fn join_with_sign_in(
     if callback.code.is_empty() {
         anyhow::bail!("the sign-in came back without a code");
     }
+    let connection = match callback.connection.as_deref() {
+        None => ConnectionType::Branch,
+        Some(raw) => ConnectionType::parse(raw)
+            .ok_or_else(|| anyhow::anyhow!("the sign-in came back with an unknown connection"))?,
+    };
     let redeem = BranchRedeem {
         origin: &library.origin,
         spki_pin: library.spki_pin.as_deref(),
@@ -294,15 +382,102 @@ pub async fn join_with_sign_in(
         branch_name: &branch_name,
         software_version: env!("CARGO_PKG_VERSION"),
     };
-    // The verifier and keys live only in this process, so a lost answer or
-    // a failed local write is retried here: the library answers a repeat of
-    // the same exchange with the same node. A later attempt that fails
-    // differently still reports the first save failure: it names the node
-    // the library enrolled.
+    let keys = &authorization.keys;
+    match connection {
+        ConnectionType::Branch => {
+            if offer_clerk {
+                eprintln!("The library's user chose to let this install join as a branch.");
+            }
+            let redeem = &redeem;
+            redeem_with_retries(|| redeem_branch_code(store, redeem, keys))
+                .await
+                .map(Joined::Branch)
+                .map_err(join_failed)
+        }
+        ConnectionType::Clerk => {
+            if !offer_clerk {
+                anyhow::bail!("the library answered for a clerk, which this join did not offer");
+            }
+            if let Some(problem) = install_problem(store)
+                .await
+                .map_err(|err| anyhow::anyhow!("{err}"))?
+            {
+                anyhow::bail!("cannot join as a clerk: {problem}");
+            }
+            let redeem = &redeem;
+            let joined = redeem_with_retries(|| redeem_clerk_code(redeem, keys))
+                .await
+                .map_err(join_failed)?;
+            // The library holds the node now; the verifier lives only in
+            // this process, so a failure from here names the node for the
+            // operator to have removed there.
+            let kind = bootstrap_database_kind(&joined.bootstrap.database);
+            if !database_guest_installed(config, kind) {
+                anyhow::bail!(
+                    "the library's database is {}, and its database plugin is not installed here; install it (cargo stage-plugins --optional), ask the library's owner to remove node {}, and join again",
+                    kind.as_str(),
+                    joined.node_id
+                );
+            }
+            if kind == DatabasePluginKind::D1 && bookclerk_config::resolve_d1_api_token().is_err() {
+                anyhow::bail!(
+                    "the library's database is Cloudflare D1: set BOOKCLERK_D1_API_TOKEN here (the token is never sent between servers), ask the library's owner to remove node {}, and join again",
+                    joined.node_id
+                );
+            }
+            // Checked again: a daemon started during the sign-in would run
+            // on files rewritten under it.
+            refuse_while_daemon_runs(store, config).await.map_err(|err| {
+                anyhow::anyhow!(
+                    "{err}; the library holds this install as node {}: ask its owner to remove it if you do not join again",
+                    joined.node_id
+                )
+            })?;
+            let password = config.auth_password().map(Zeroizing::new);
+            let applied = apply_clerk_bootstrap(
+                &config.paths().files_dir,
+                &config.paths().config_file,
+                &joined.bootstrap,
+                password.as_ref().map(|p| p.as_str()),
+            )
+            // The library holds the node now: name it, so the operator can
+            // have that clerk removed there before joining again.
+            .map_err(|err| {
+                join_failed(JoinError::Unsaved {
+                    node_id: Some(joined.node_id.clone()),
+                    reason: err.to_string(),
+                })
+            })?;
+            Ok(Joined::Clerk {
+                cluster_id: joined.cluster_id,
+                node_id: joined.node_id,
+                applied,
+            })
+        }
+    }
+}
+
+/// Redeems a sign-in with `redeem`, again while it fails for a reason a
+/// repeat of the same exchange can fix, up to [`REDEEM_ATTEMPTS`] times.
+///
+/// The verifier and keys live only in this process, so a lost answer or a
+/// failed local write is retried here: the library answers a repeat of the
+/// same exchange with the same node. A later attempt that fails differently
+/// still reports the first save failure: it names the node the library
+/// enrolled.
+///
+/// # Errors
+///
+/// Returns the first [`JoinError::SaveFailed`], else the last error.
+async fn redeem_with_retries<T, F, Fut>(mut redeem: F) -> Result<T, JoinError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, JoinError>>,
+{
     let mut attempt = 1;
     let mut save_failed = None;
-    let joined = loop {
-        match redeem_branch_code(store, &redeem, &authorization.keys).await {
+    loop {
+        match redeem().await {
             Err(err) if err.is_retryable() && attempt < REDEEM_ATTEMPTS => {
                 if matches!(err, JoinError::SaveFailed { .. }) {
                     save_failed.get_or_insert(err);
@@ -310,21 +485,24 @@ pub async fn join_with_sign_in(
                 attempt += 1;
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
-            Ok(link) => break Ok(link),
-            Err(err) => break Err(save_failed.unwrap_or(err)),
+            Ok(joined) => return Ok(joined),
+            Err(err) => return Err(save_failed.unwrap_or(err)),
         }
+    }
+}
+
+/// The error a failed join reports, with what to do about a node the
+/// library enrolled but this install could not save.
+fn join_failed(err: JoinError) -> anyhow::Error {
+    let hint = if matches!(err, JoinError::SaveFailed { .. }) {
+        "; ask the library's owner to remove that node, then join again"
+    } else {
+        ""
     };
-    joined.map_err(|err| {
-        let hint = if matches!(err, JoinError::SaveFailed { .. }) {
-            "; ask the library's owner to remove that node, then join again"
-        } else {
-            ""
-        };
-        anyhow::anyhow!(
-            "could not join the library: {}{hint}",
-            super::clusters::printable(&err.to_string())
-        )
-    })
+    anyhow::anyhow!(
+        "could not join the library: {}{hint}",
+        super::clusters::printable(&err.to_string())
+    )
 }
 
 /// How many times a join redeems its sign-in when the library's answer is
@@ -381,6 +559,7 @@ mod tests {
         let callback = waiting.await.unwrap().unwrap();
         assert_eq!(callback.code.as_str(), "the-code");
         assert_eq!(callback.error, None);
+        assert_eq!(callback.connection, None);
         assert!(!format!("{callback:?}").contains("the-code"));
     }
 

@@ -1162,7 +1162,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // Join a library: on a joining host, one sign-in in progress. The PKCE
     // verifier and node keys are sealed in `encrypted_secrets` (`kind =
     // cluster_join`); only the hash of `state` is stored here. Rows live
-    // ten minutes.
+    // ten minutes. `allow_clerk` records that the operator offered to join
+    // as a clerk (the install was empty when the sign-in started).
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS pending_joins (
         state_hash TEXT PRIMARY KEY NOT NULL,
@@ -1172,6 +1173,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         library_name TEXT NOT NULL,
         branch_name TEXT NOT NULL,
         redirect_uri TEXT NOT NULL,
+        allow_clerk INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         expires_at TEXT NOT NULL
     )",
