@@ -45,7 +45,8 @@ use super::batch::{self, exec, request, text, text_opt};
 use super::enrollment::load_node_credential;
 use super::trust::accounts_owned_by;
 use super::uploads::{
-    open_upload_session, UploadDestination, UploadGrant, UploadGrantRequest, UploadSession,
+    claims_another_books_key, granted_key_count, open_upload_session, upload_holds_its_keys,
+    UploadDestination, UploadGrant, UploadGrantRequest, UploadSession,
 };
 use crate::entities::{books, branch_titles, nodes, users};
 use crate::error::{LibraryError, Result};
@@ -597,8 +598,12 @@ pub async fn pending_deliveries(
 /// Granted only while the fence is live, for a title the branch shares,
 /// when every file is copied to each of `destinations` (this node's, the
 /// primary first) under its manifest key, the files are exactly the
-/// recorded manifest, and no key is one another title here already uses
-/// (`key_in_use`).
+/// recorded manifest, no key is one another title here already uses
+/// (`key_in_use`: the other title's audio, PDF or primary stem;
+/// `key_of_another_book`: any of a library book's keys or their
+/// sidecars), and no key lies in a folder holding another title's audio
+/// (`folder_of_another_book`). The keys are then claimed for this upload
+/// in `title_files`, refused when another title holds one there.
 ///
 /// # Errors
 ///
@@ -653,15 +658,27 @@ pub async fn grant_catalog_upload(
     if keys_in_use(store, &row.uuid, &row.primary_key, &keys).await? {
         return Ok(UploadGrant::Refused("key_in_use"));
     }
+    // Any declared key, not only the primary's stem: a sidecar such as
+    // another title's cover, `.cue`, chapter JSON or metadata file, or that
+    // title's audio or PDF itself, even where no `title_files` record says
+    // who wrote it.
+    if claims_another_books_key(store, &row.uuid, files).await? {
+        return Ok(UploadGrant::Refused("key_of_another_book"));
+    }
     // The branch's own keys are the title's scope on every destination:
     // the folders they lie in, each key checked against the recorded
     // manifest above (and claimed for this upload when it opens).
     let title_folders: Vec<String> = declared
         .keys()
-        .map(|key| key.rsplit_once('/').map_or("", |(dir, _)| dir).to_string())
+        .map(|key| key_folder(key).to_string())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
+    // A folder another title's audio lies in is that title's: a branch
+    // writes nothing there, whatever the file is named.
+    if folders_of_another_title(store, &row.uuid, &title_folders).await? {
+        return Ok(UploadGrant::Refused("folder_of_another_book"));
+    }
     let scoped: Vec<UploadDestination> = destinations
         .iter()
         .map(|id| UploadDestination {
@@ -701,15 +718,90 @@ fn stem_pattern(primary: &str) -> String {
     } else {
         format!("{dir}/{stem}")
     };
-    let mut pattern = String::with_capacity(base.len() + 2);
-    for c in base.chars() {
-        if matches!(c, '%' | '_' | '\\') {
-            pattern.push('\\');
-        }
-        pattern.push(c);
-    }
+    let mut pattern = like_escaped(&base);
     pattern.push_str(".%");
     pattern
+}
+
+/// `text` with the `LIKE` wildcards (`%`, `_`) and the escape character
+/// itself escaped with `\`, for a pattern matched with that escape.
+fn like_escaped(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len() + 2);
+    for c in text.chars() {
+        if matches!(c, '%' | '_' | '\\') {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    escaped
+}
+
+/// The folder `key` lies in (everything before its last `/`); `""` for a
+/// key at the top of the outputs.
+fn key_folder(key: &str) -> &str {
+    key.rsplit_once('/').map_or("", |(dir, _)| dir)
+}
+
+/// The condition that `column` (a storage key) lies directly in `folder`,
+/// not in a folder below it: `folder/%` but not `folder/%/%`, or, for the
+/// top of the outputs (`""`), no `/` at all.
+fn directly_in<C: ColumnTrait>(column: C, folder: &str) -> Condition {
+    if folder.is_empty() {
+        return Condition::all().add(column.not_like("%/%"));
+    }
+    let base = like_escaped(folder);
+    Condition::all()
+        .add(column.like(LikeExpr::new(format!("{base}/%")).escape('\\')))
+        .add(column.not_like(LikeExpr::new(format!("{base}/%/%")).escape('\\')))
+}
+
+/// Folder probes per read of [`folders_of_another_title`], keeping each
+/// read's binds well under the smallest guest bind cap.
+const FOLDER_PROBES_PER_READ: usize = 32;
+
+/// True when one of `folders` holds the primary audio of another title in
+/// this library: one of its books (whatever its owner), or a title another
+/// branch (or this one, under another product) shares here (`uuid` is the
+/// title being granted; any state counts, since a detached title's files
+/// stay). A catalog upload writes into a folder no other title lives in,
+/// so no declared name, however chosen, can replace that title's files,
+/// recorded in `title_files` or not.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+async fn folders_of_another_title(
+    store: &LibraryStore,
+    uuid: &str,
+    folders: &[String],
+) -> Result<bool> {
+    for chunk in folders.chunks(FOLDER_PROBES_PER_READ) {
+        let books_here = chunk.iter().fold(Condition::any(), |any, folder| {
+            any.add(directly_in(books::Column::StorageKey, folder))
+        });
+        let books = books::Entity::find()
+            .filter(books::Column::StorageKey.is_not_null())
+            .filter(books_here)
+            .count(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        if books > 0 {
+            return Ok(true);
+        }
+        let titles_here = chunk.iter().fold(Condition::any(), |any, folder| {
+            any.add(directly_in(branch_titles::Column::PrimaryKey, folder))
+        });
+        let titles = branch_titles::Entity::find()
+            .filter(branch_titles::Column::Uuid.ne(uuid))
+            .filter(titles_here)
+            .count(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        if titles > 0 {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// True when a catalog title's files would land on a key another title
@@ -754,8 +846,10 @@ async fn keys_in_use(
 /// Commits a catalog upload whose every file arrived: records the
 /// delivered manifest on the title. One batch, each statement gated on the
 /// upload being open, the catalog fence still being the node's and its
-/// sharing on, its credential live, and the title's manifest unchanged
-/// since the grant.
+/// sharing on, its credential live, the upload still holding every key it
+/// was granted (`title_files`; a key another title took since is refused
+/// as `key_taken`), and the title's manifest unchanged since the grant. A
+/// concurrent identical commit that landed first answers committed.
 ///
 /// # Errors
 ///
@@ -774,7 +868,19 @@ pub(super) async fn commit_catalog_upload(
     let Some(digest) = session.catalog_digest.as_deref() else {
         return Ok(UploadCommit::Refused("unknown_title"));
     };
+    // A key another title (or an acquire) took since the grant is not
+    // recorded for this one; the batch re-checks this in its gate. Checked
+    // only once the fence is known live, so a lost fence answers `Lost`.
+    if !upload_holds_its_keys(store, session).await? {
+        return Ok(UploadCommit::Refused("key_taken"));
+    }
     let now = stamp();
+    // The title still holds every key it was granted: each is recorded
+    // for it with this upload as its latest writer (the keys are unique,
+    // so the count says all of them). Gated in the same statement, so a
+    // key taken between the check above and the batch is never recorded
+    // as delivered.
+    let granted_keys = granted_key_count(session);
     let statements = vec![
         exec(
             "UPDATE node_upload_sessions SET state = 'committed', committed_at = ? \
@@ -782,13 +888,17 @@ pub(super) async fn commit_catalog_upload(
                 AND EXISTS (SELECT 1 FROM nodes WHERE node_id = ? AND catalog_fence = ? \
                              AND share_books = 1) \
                 AND EXISTS (SELECT 1 FROM node_credentials \
-                             WHERE node_id = ? AND revoked_at IS NULL)",
+                             WHERE node_id = ? AND revoked_at IS NULL) \
+                AND (SELECT COUNT(*) FROM title_files WHERE book_uuid = ? AND writer = ?) = ?",
             vec![
                 text(&now),
                 text(&session.upload_id),
                 text(&session.node_id),
                 batch::int(session.generation),
                 text(&session.node_id),
+                text(&session.book_uuid),
+                text(&session.upload_id),
+                batch::int(i64::try_from(granted_keys).unwrap_or(i64::MAX)),
             ],
         ),
         exec(
@@ -816,7 +926,24 @@ pub(super) async fn commit_catalog_upload(
     )
     .await?;
     if batch::rows_affected(&reply, 0) != 1 {
-        return Ok(UploadCommit::Lost);
+        // A concurrent identical commit may have landed in between; as for
+        // a job's upload, it answers committed. Otherwise the fence first,
+        // as before the batch: a lost fence is `Lost`.
+        let again = super::uploads::load_upload(store, &session.upload_id).await?;
+        return match again {
+            Some(row) if row.state == super::uploads::STATE_COMMITTED => {
+                Ok(UploadCommit::Committed {
+                    job_completed: false,
+                })
+            }
+            Some(row)
+                if catalog_fence_live(store, &row.node_id, row.generation).await?
+                    && !upload_holds_its_keys(store, &row).await? =>
+            {
+                Ok(UploadCommit::Refused("key_taken"))
+            }
+            _ => Ok(UploadCommit::Lost),
+        };
     }
     tracing::info!(
         node_id = %session.node_id,

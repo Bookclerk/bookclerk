@@ -64,7 +64,7 @@ pub const UPLOAD_TOKEN_TTL_SECS: i64 = 60 * 60;
 /// Session state: files may still arrive.
 const STATE_OPEN: &str = "open";
 /// Session state: the title was committed.
-const STATE_COMMITTED: &str = "committed";
+pub(super) const STATE_COMMITTED: &str = "committed";
 /// Session state: abandoned (superseded, failed, or its fence lost).
 const STATE_ABORTED: &str = "aborted";
 
@@ -547,7 +547,7 @@ const KEY_PROBES_PER_READ: usize = 32;
 /// # Errors
 ///
 /// Returns an error when a read fails.
-async fn claims_another_books_key(
+pub(super) async fn claims_another_books_key(
     store: &LibraryStore,
     book_uuid: &str,
     files: &[UploadFile],
@@ -720,7 +720,7 @@ async fn undo_grant(store: &LibraryStore, upload_id: &str, claimed: &[ClaimedKey
 
 /// How many keys an upload of `session`'s title was granted: every copy of
 /// every declared file (unique per destination, [`manifest_problem`]).
-fn granted_key_count(session: &UploadSession) -> u64 {
+pub(super) fn granted_key_count(session: &UploadSession) -> u64 {
     session
         .files
         .iter()
@@ -735,7 +735,10 @@ fn granted_key_count(session: &UploadSession) -> u64 {
 /// # Errors
 ///
 /// Returns an error when the read fails.
-async fn upload_holds_its_keys(store: &LibraryStore, session: &UploadSession) -> Result<bool> {
+pub(super) async fn upload_holds_its_keys(
+    store: &LibraryStore,
+    session: &UploadSession,
+) -> Result<bool> {
     if session.book_uuid.is_empty() {
         return Ok(true);
     }
@@ -958,10 +961,16 @@ pub(super) async fn open_upload_session(
     // about to write; a grant of the title made after this one supersedes
     // this one instead (`newer_grant_open`), so two overlapping grants
     // never abort each other.
+    //
+    // A job's grants supersede across nodes: when its lease moves from one
+    // node to another, the new holder's grant replaces the old holder's
+    // still-open upload of the same title. Every branch shares the catalog
+    // item, so a catalog grant supersedes only its own node's uploads.
     let created = stamp(now);
     let ours = (created.as_str(), upload_id.as_str());
+    let catalog = job_id == bookclerk_node_proto::CATALOG_ITEM;
     let superseded = match abort_matching(store, job_id, |row| {
-        row.node_id == node_id
+        (!catalog || row.node_id == node_id)
             && row.book_uuid == req.book_uuid
             && (row.created_at.as_str(), row.upload_id.as_str()) < ours
     })
@@ -1018,10 +1027,14 @@ pub(super) async fn open_upload_session(
     })
 }
 
-/// True when an open upload of `book_uuid` that `node_id` holds in
-/// `job_id` (a job, or every branch's shared catalog item) was granted
-/// after the one created at `ours` (`(created_at, upload_id)`, compared as
+/// True when an open upload of `book_uuid` in `job_id` was granted after
+/// the one created at `ours` (`(created_at, upload_id)`, compared as
 /// [`grant_upload`] orders grants): that newer grant supersedes it.
+///
+/// A job's uploads are compared whichever node holds them, since a job's
+/// lease may move between nodes and its newest holder's grant wins. Every
+/// branch shares the catalog item ([`bookclerk_node_proto::CATALOG_ITEM`]),
+/// so for it only `node_id`'s own uploads are compared.
 ///
 /// # Errors
 ///
@@ -1033,11 +1046,14 @@ async fn newer_grant_open(
     book_uuid: &str,
     ours: (&str, &str),
 ) -> Result<bool> {
-    Ok(node_upload_sessions::Entity::find()
-        .filter(node_upload_sessions::Column::NodeId.eq(node_id))
+    let mut query = node_upload_sessions::Entity::find()
         .filter(node_upload_sessions::Column::JobId.eq(job_id))
         .filter(node_upload_sessions::Column::BookUuid.eq(book_uuid))
-        .filter(node_upload_sessions::Column::State.eq(STATE_OPEN))
+        .filter(node_upload_sessions::Column::State.eq(STATE_OPEN));
+    if job_id == bookclerk_node_proto::CATALOG_ITEM {
+        query = query.filter(node_upload_sessions::Column::NodeId.eq(node_id));
+    }
+    Ok(query
         .all(store.db())
         .await
         .map_err(LibraryError::Orm)?

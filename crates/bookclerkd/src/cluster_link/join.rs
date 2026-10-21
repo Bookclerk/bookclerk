@@ -332,9 +332,24 @@ pub struct CallbackBody {
     error: Option<String>,
 }
 
+/// A sign-in whose redeem the library answered but this install could not
+/// save ([`JoinError::SaveFailed`]): the node the library enrolled for it.
+struct SaveFailedSignIn {
+    /// `hash_token` of the sign-in's `state`; the raw value is not kept.
+    state_hash: String,
+    /// The node id the library minted for it.
+    node_id: String,
+}
+
 /// Serializes sign-in callbacks, so two attempts for one sign-in (a retry
-/// racing the first, or a page loaded twice) never redeem at once.
-static CALLBACKS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// racing the first, or a page loaded twice) never redeem at once. It
+/// holds the latest sign-in whose redeem could not be saved, so its Try
+/// again names that node ([`BranchRedeem::enrolled_node_id`]) when it
+/// then fails for good; kept in memory only, one at a time (a restart or
+/// another sign-in's save failure forgets it, and the retry then reports
+/// its own error).
+static CALLBACKS: tokio::sync::Mutex<Option<SaveFailedSignIn>> =
+    tokio::sync::Mutex::const_new(None);
 
 /// How long a join waits on the library to redeem: longer than one connect
 /// attempt (`bookclerk_node_client` dials each address for up to 10 s) plus
@@ -361,7 +376,7 @@ pub async fn post_join_callback(
     let store = state.library_snapshot().await;
     // A callback waiting on another sign-in's redeem answers as a retry
     // rather than run past the API deadline.
-    let Ok(one_at_a_time) = tokio::time::timeout(CALLBACK_WAIT, CALLBACKS.lock()).await else {
+    let Ok(mut one_at_a_time) = tokio::time::timeout(CALLBACK_WAIT, CALLBACKS.lock()).await else {
         return join_error(
             StatusCode::BAD_GATEWAY,
             "join_retry",
@@ -395,6 +410,11 @@ pub async fn post_join_callback(
     if code.trim().is_empty() {
         return join_error(StatusCode::BAD_REQUEST, "invalid_request", "no code");
     }
+    let state_hash = bookclerk_library::hash_token(sign_in);
+    let enrolled_node_id = one_at_a_time
+        .as_ref()
+        .filter(|failed| failed.state_hash == state_hash)
+        .map(|failed| failed.node_id.clone());
     let joined = tokio::time::timeout(
         REDEEM_TIMEOUT,
         redeem_branch_code(
@@ -408,6 +428,7 @@ pub async fn post_join_callback(
                 redirect_uri: &taken.join.redirect_uri,
                 branch_name: &taken.join.branch_name,
                 software_version: env!("CARGO_PKG_VERSION"),
+                enrolled_node_id: enrolled_node_id.as_deref(),
             },
             &taken.keys,
         ),
@@ -428,6 +449,16 @@ pub async fn post_join_callback(
             "the library did not answer in time; try again",
         );
     };
+    if let Err(JoinError::SaveFailed { node_id, .. }) = &joined {
+        *one_at_a_time = Some(SaveFailedSignIn {
+            state_hash: state_hash.clone(),
+            node_id: node_id.clone(),
+        });
+    } else if enrolled_node_id.is_some() && !matches!(&joined, Err(err) if err.is_retryable()) {
+        // This sign-in ends here (joined, or failed for good naming the
+        // node); a retryable failure keeps the node for the next retry.
+        *one_at_a_time = None;
+    }
     let link = match joined {
         Ok(link) => link,
         Err(err) if err.is_retryable() => {

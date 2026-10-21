@@ -821,3 +821,297 @@ async fn a_catalog_upload_never_overwrites_another_titles_files() {
         UploadGrant::Refused("key_in_use")
     ));
 }
+
+/// Adds a book of `product` to the library under `account`, acquired with
+/// its audio at `key`; answers its uuid.
+async fn acquired_book(store: &LibraryStore, account: &str, product: &str, key: &str) -> String {
+    store
+        .upsert_account(PLUGIN, account, "us", None, true, "test")
+        .await
+        .unwrap();
+    let book = store
+        .scope(PLUGIN, "store")
+        .upsert_book(&NewBook {
+            uuid: None,
+            product_id: product.into(),
+            plugin_key: PLUGIN.into(),
+            source: "store".into(),
+            account_id: account.into(),
+            asin: None,
+            isbn: None,
+            marketplace: "us".into(),
+            title: format!("Title {product}"),
+            authors: None,
+            narrators: None,
+            series: None,
+            series_index: None,
+            series_asin: None,
+            purchased_at: None,
+            publisher: None,
+            length_minutes: None,
+            is_abridged: false,
+            content_kind: "book".into(),
+            categories: None,
+            subtitle: None,
+            published_at: None,
+        })
+        .await
+        .unwrap();
+    store
+        .set_acquire_status(
+            &book.uuid,
+            account,
+            crate::models::AcquireStatus::Acquired,
+            Some(key),
+            None,
+        )
+        .await
+        .unwrap();
+    book.uuid
+}
+
+/// A shared title of `product` whose primary audio is `primary`, with
+/// `extra` keys declared beside it, each one byte.
+fn title_with(product: &str, primary: &str, extra: &[&str]) -> CatalogTitle {
+    CatalogTitle {
+        primary_key: primary.into(),
+        files: std::iter::once(primary)
+            .chain(extra.iter().copied())
+            .map(|key| CatalogFile {
+                key: key.into(),
+                size: 1,
+                content_type: None,
+            })
+            .collect(),
+        ..title(product, 1)
+    }
+}
+
+/// The upload files of `keys`, each one byte copied to `local`.
+fn local_files(keys: &[&str]) -> Vec<UploadFile> {
+    keys.iter()
+        .map(|key| UploadFile {
+            copies: vec![FileCopy {
+                destination: "local".into(),
+                key: (*key).into(),
+            }],
+            size: 1,
+            sha256: "ab".repeat(32),
+            content_type: None,
+        })
+        .collect()
+}
+
+/// Grants [`BRANCH`]'s upload of `product` with `keys` onto `local`.
+async fn grant_local(
+    store: &LibraryStore,
+    fence: i64,
+    product: &str,
+    keys: &[&str],
+) -> UploadGrant {
+    grant_catalog_upload(
+        store,
+        BRANCH,
+        fence,
+        "owner-node",
+        "audible",
+        product,
+        &local_files(keys),
+        &["local".to_string()],
+    )
+    .await
+    .unwrap()
+}
+
+/// A branch cannot declare files in another title's folder: neither a
+/// sidecar of a library book (its cover, `.cue`, chapter or metadata JSON,
+/// none recorded in `title_files`), nor any other name in a folder that
+/// holds a library book's audio or another shared title's audio.
+#[tokio::test]
+async fn a_catalog_upload_never_writes_into_another_titles_folder() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _member) = world(dir.path()).await;
+    acquired_book(
+        &store,
+        "someone-else",
+        "other",
+        "Other Author/Other Book/Other Book.m4b",
+    )
+    .await;
+    let sidecars = [
+        "Other Author/Other Book/Other Book.jpg",
+        "Other Author/Other Book/Other Book.cue",
+        "Other Author/Other Book/Other Book.chapters.json",
+        "Other Author/Other Book/Other Book.bookclerk-meta.json",
+    ];
+    let mut titles: Vec<CatalogTitle> = sidecars
+        .iter()
+        .enumerate()
+        .map(|(index, key)| {
+            title_with(
+                &format!("side{index}"),
+                &format!("Mine/side{index}/side{index}.m4b"),
+                &[key],
+            )
+        })
+        .collect();
+    titles.push(title_with(
+        "neighbour",
+        "Mine/neighbour/neighbour.m4b",
+        &["Other Author/Other Book/notes.txt"],
+    ));
+    titles.push(title_with("first", "Shared/first/first.m4b", &[]));
+    titles.push(title_with(
+        "second",
+        "Mine/second/second.m4b",
+        &["Shared/first/extra.txt"],
+    ));
+    titles.push(title_with(
+        "free",
+        "Mine/free/free.m4b",
+        &["Mine/free/free.jpg"],
+    ));
+    let session = open(&store, true, true).await;
+    accepted(&store, session.fence, "c", false, &titles).await;
+
+    for (index, key) in sidecars.iter().enumerate() {
+        let primary = format!("Mine/side{index}/side{index}.m4b");
+        assert!(
+            matches!(
+                grant_local(
+                    &store,
+                    session.fence,
+                    &format!("side{index}"),
+                    &[&primary, key]
+                )
+                .await,
+                UploadGrant::Refused("key_of_another_book")
+            ),
+            "{key} is the library book's sidecar"
+        );
+    }
+    assert!(matches!(
+        grant_local(
+            &store,
+            session.fence,
+            "neighbour",
+            &[
+                "Mine/neighbour/neighbour.m4b",
+                "Other Author/Other Book/notes.txt"
+            ],
+        )
+        .await,
+        UploadGrant::Refused("folder_of_another_book")
+    ));
+    assert!(matches!(
+        grant_local(&store, session.fence, "first", &["Shared/first/first.m4b"]).await,
+        UploadGrant::Granted { .. }
+    ));
+    assert!(matches!(
+        grant_local(
+            &store,
+            session.fence,
+            "second",
+            &["Mine/second/second.m4b", "Shared/first/extra.txt"],
+        )
+        .await,
+        UploadGrant::Refused("folder_of_another_book")
+    ));
+    assert!(matches!(
+        grant_local(
+            &store,
+            session.fence,
+            "free",
+            &["Mine/free/free.m4b", "Mine/free/free.jpg"],
+        )
+        .await,
+        UploadGrant::Granted { .. }
+    ));
+}
+
+/// A key a shared title's upload claimed is that title's: a job upload of
+/// a library book cannot claim it (the branch title is live, though it is
+/// no `books` row), and a catalog upload whose key an acquire took since
+/// its grant is refused at commit.
+#[tokio::test]
+async fn a_shared_titles_keys_stay_its_own() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _member) = world(dir.path()).await;
+    let book = acquired_book(&store, "someone-else", "own", "Own/own/own.m4b").await;
+    let session = open(&store, true, true).await;
+    accepted(&store, session.fence, "c", false, &[title("p1", 1)]).await;
+    let key = "Author/p1/p1.m4b";
+    let UploadGrant::Granted { upload_id, .. } =
+        grant_local(&store, session.fence, "p1", &[key]).await
+    else {
+        panic!("expected a grant");
+    };
+    let held = store.title_file("local", key).await.unwrap();
+    assert_eq!(
+        held.as_ref().map(|held| held.writer.as_str()),
+        Some(upload_id.as_str())
+    );
+    assert!(
+        !store
+            .claim_title_file("local", key, &book, "job-upload", held.as_ref())
+            .await
+            .unwrap(),
+        "another title's upload cannot take the shared title's key"
+    );
+    assert_eq!(store.title_file("local", key).await.unwrap(), held);
+
+    // An acquire run here writes the key anyway; the catalog upload no
+    // longer holds it and is refused at commit.
+    assert!(record_upload_file(&store, &upload_id, 0).await.unwrap());
+    store.record_title_file("local", key, &book).await.unwrap();
+    let limits = JobClaimLimits {
+        class: 1,
+        plugin_instance: 1,
+    };
+    assert_eq!(
+        commit_upload(&store, &upload_id, None, limits)
+            .await
+            .unwrap(),
+        UploadCommit::Refused("key_taken")
+    );
+    assert!(!list_branch_titles(&store, None, 10).await.unwrap()[0].delivered);
+}
+
+/// A catalog commit overtaken by an identical commit that landed first
+/// answers committed, not lost.
+#[tokio::test]
+async fn a_duplicate_catalog_commit_answers_committed() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _member) = world(dir.path()).await;
+    let session = open(&store, true, true).await;
+    accepted(&store, session.fence, "c", false, &[title("p1", 1)]).await;
+    let UploadGrant::Granted { upload_id, .. } =
+        grant_local(&store, session.fence, "p1", &["Author/p1/p1.m4b"]).await
+    else {
+        panic!("expected a grant");
+    };
+    assert!(record_upload_file(&store, &upload_id, 0).await.unwrap());
+    // Read while still open, as a racing commit would have read it.
+    let stale = load_upload(&store, &upload_id).await.unwrap().unwrap();
+    let limits = JobClaimLimits {
+        class: 1,
+        plugin_instance: 1,
+    };
+    assert_eq!(
+        commit_upload(&store, &upload_id, None, limits)
+            .await
+            .unwrap(),
+        UploadCommit::Committed {
+            job_completed: false
+        }
+    );
+    assert_eq!(
+        commit_catalog_upload(&store, &stale).await.unwrap(),
+        UploadCommit::Committed {
+            job_completed: false
+        }
+    );
+}

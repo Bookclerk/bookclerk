@@ -14,11 +14,11 @@
 //! and only keys no other library title holds; a grant refused part way
 //! gives back what it claimed ([`LibraryStore::release_title_file`]).
 
-use sea_orm::sea_query::{OnConflict, Query};
+use sea_orm::sea_query::{OnConflict, Query, UnionType};
 use sea_orm::{ActiveValue::Set, ColumnTrait, Condition, EntityTrait, QueryFilter};
 
 use super::{now_str, LibraryStore};
-use crate::entities::{books, title_files};
+use crate::entities::{books, branch_titles, title_files};
 use crate::error::{LibraryError, Result};
 
 /// The `writer` of a key an acquire run on this node wrote.
@@ -78,10 +78,11 @@ impl LibraryStore {
     /// `writer` (a host upload id) as its latest writer.
     ///
     /// The claim succeeds when the key is unrecorded, already the title's,
-    /// or recorded for a title no longer in the library; answers false,
-    /// changing nothing, when another library title holds it. Each claim is
-    /// one conditional write, so of two uploads of different titles racing
-    /// for one key only one wins.
+    /// or recorded for a title no longer in the library (neither a book nor
+    /// a title a branch shares here, `branch_titles`); answers false,
+    /// changing nothing, when another library title holds it. Each claim
+    /// is one conditional write, so of two uploads of different titles
+    /// racing for one key only one wins.
     ///
     /// `expected` is the record the caller read before ([`Self::title_file`];
     /// `None` when unrecorded), which a refused claim's release restores: the
@@ -124,9 +125,19 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?;
         }
+        // A holder is live while its title is in the library: one of its
+        // books, or a title a branch shares here (whose upload claims keys
+        // under the branch title's id). Only a holder in neither is stale.
         let library_titles = Query::select()
             .column(books::Column::Uuid)
             .from(books::Entity)
+            .union(
+                UnionType::Distinct,
+                Query::select()
+                    .column(branch_titles::Column::Uuid)
+                    .from(branch_titles::Entity)
+                    .to_owned(),
+            )
             .to_owned();
         let claimed = title_files::Entity::update_many()
             .col_expr(

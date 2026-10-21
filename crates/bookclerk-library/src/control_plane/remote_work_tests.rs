@@ -78,9 +78,14 @@ async fn link(store: &LibraryStore, user_id: i64, account_id: &str) {
 
 /// Adds the [`HOST`] node, owned by `owner`, with a live credential.
 async fn add_host(store: &LibraryStore, owner: i64) {
+    add_host_node(store, HOST, owner).await;
+}
+
+/// Adds the Host `node_id`, owned by `owner`, with a live credential.
+async fn add_host_node(store: &LibraryStore, node_id: &str, owner: i64) {
     let now = chrono::Utc::now().to_rfc3339();
     nodes::ActiveModel {
-        node_id: Set(HOST.into()),
+        node_id: Set(node_id.into()),
         cluster_id: Set("cluster".into()),
         created_at: Set(now.clone()),
         incarnation: Set("test".into()),
@@ -106,10 +111,10 @@ async fn add_host(store: &LibraryStore, owner: i64) {
     .await
     .unwrap();
     node_credentials::ActiveModel {
-        node_id: Set(HOST.into()),
+        node_id: Set(node_id.into()),
         sign_public_key: Set(vec![1; 32]),
         box_public_key: Set(vec![2; 32]),
-        link_id: Set("link".into()),
+        link_id: Set(format!("link-{node_id}")),
         enrolled_at: Set(now),
         revoked_at: Set(None),
         last_connected_at: Set(None),
@@ -1653,6 +1658,64 @@ async fn an_abort_answers_the_files_it_had_received() {
             .unwrap(),
         UploadCommit::Refused("upload_aborted")
     );
+}
+
+/// A job's uploads supersede across nodes: when the job's lease moves
+/// from one Host to another, the new holder's grant of a title replaces
+/// the old holder's still-open upload of it and answers it as superseded.
+#[tokio::test]
+async fn a_moved_lease_supersedes_the_old_hosts_upload() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    const OTHER: &str = "host-riley-2";
+    add_host_node(&w.store, OTHER, w.riley).await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let request = UploadGrantRequest {
+        book_uuid: &book_uuid,
+        primary_key: "Author/Title/Title.m4b",
+        pdf_key: None,
+        files: &files,
+        destinations: &local("Author/Title"),
+    };
+    let UploadGrant::Granted { upload_id, .. } =
+        grant_upload(&w.store, HOST, &job_id, fence, "owner", &request)
+            .await
+            .unwrap()
+    else {
+        panic!("granted");
+    };
+    // The lease moves to the other Host under a new generation.
+    let moved = fence + 1;
+    jobs::Entity::update_many()
+        .col_expr(
+            jobs::Column::LeaseOwner,
+            Expr::value(Some(remote_lease_owner(OTHER))),
+        )
+        .col_expr(jobs::Column::LeaseGeneration, Expr::value(moved))
+        .filter(jobs::Column::Id.eq(&job_id))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    let UploadGrant::Granted {
+        upload_id: again,
+        superseded,
+        ..
+    } = grant_upload(&w.store, OTHER, &job_id, moved, "owner", &request)
+        .await
+        .unwrap()
+    else {
+        panic!("the new holder is granted");
+    };
+    assert_eq!(superseded.len(), 1, "the old Host's upload is superseded");
+    assert_eq!(superseded[0].upload_id, upload_id);
+    assert_ne!(again, upload_id);
+    assert!(
+        !record_upload_file(&w.store, &upload_id, 0).await.unwrap(),
+        "the old Host's upload records no more files"
+    );
+    assert!(record_upload_file(&w.store, &again, 0).await.unwrap());
 }
 
 /// The title Riley's acquire uploads, with its one file declared.

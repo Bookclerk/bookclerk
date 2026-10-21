@@ -293,6 +293,7 @@ pub async fn join_with_sign_in(
         redirect_uri: &authorization.redirect_uri,
         branch_name: &branch_name,
         software_version: env!("CARGO_PKG_VERSION"),
+        enrolled_node_id: None,
     };
     // The verifier and keys live only in this process, so a lost answer or
     // a failed local write is retried here: the library answers a repeat of
@@ -301,10 +302,16 @@ pub async fn join_with_sign_in(
     // the library enrolled.
     let mut attempt = 1;
     let mut save_failed = None;
+    let mut enrolled: Option<String> = None;
     let joined = loop {
-        match redeem_branch_code(store, &redeem, &authorization.keys).await {
+        let retry = BranchRedeem {
+            enrolled_node_id: enrolled.as_deref(),
+            ..redeem
+        };
+        match redeem_branch_code(store, &retry, &authorization.keys).await {
             Err(err) if err.is_retryable() && attempt < REDEEM_ATTEMPTS => {
-                if matches!(err, JoinError::SaveFailed { .. }) {
+                if let JoinError::SaveFailed { node_id, .. } = &err {
+                    enrolled.get_or_insert_with(|| node_id.clone());
                     save_failed.get_or_insert(err);
                 }
                 attempt += 1;

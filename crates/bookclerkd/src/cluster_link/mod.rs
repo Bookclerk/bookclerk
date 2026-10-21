@@ -661,15 +661,21 @@ async fn start_clients(
             let _ = link_stop.send(true);
             // Both exit before a client for a new enrollment can start, so
             // one cluster never has two consent supervisors (or two catalog
-            // syncs).
-            let mut supervisor = supervisor;
-            if let Some(supervisor) = supervisor.0.take() {
-                join_or_abort(supervisor).await;
-            }
-            let mut catalog_sync = catalog_sync;
-            if let Some(catalog_sync) = catalog_sync.0.take() {
-                join_or_abort(catalog_sync).await;
-            }
+            // syncs). They wind down side by side, so the client's exit
+            // waits for the slower of the two only.
+            let (mut supervisor, mut catalog_sync) = (supervisor, catalog_sync);
+            tokio::join!(
+                async {
+                    if let Some(supervisor) = supervisor.0.take() {
+                        join_or_abort(supervisor).await;
+                    }
+                },
+                async {
+                    if let Some(catalog_sync) = catalog_sync.0.take() {
+                        join_or_abort(catalog_sync).await;
+                    }
+                },
+            );
             let mut watcher = watcher;
             if exit != ClientExit::Revoked {
                 if let Some(stopped) = watcher.0.as_mut() {

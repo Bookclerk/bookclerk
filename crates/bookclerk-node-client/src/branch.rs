@@ -224,6 +224,12 @@ pub struct BranchRedeem<'a> {
     pub branch_name: &'a str,
     /// This install's version.
     pub software_version: &'a str,
+    /// The node the library enrolled on an earlier attempt of this same
+    /// exchange that could not be saved here ([`JoinError::SaveFailed`]),
+    /// when this is a retry of it. The code is already spent then, so an
+    /// ancestry check that now fails for good answers
+    /// [`JoinError::Unsaved`] naming that node, for its owner to revoke.
+    pub enrolled_node_id: Option<&'a str>,
 }
 
 /// `POST /api/node/v1/enroll/oauth` answer.
@@ -247,6 +253,22 @@ fn http_error(status: u16, body: &[u8]) -> JoinError {
     JoinError::Http { status, error }
 }
 
+/// The error a redeem answers when its ancestry check fails with `err`.
+/// On a retry of an exchange the library already redeemed (`enrolled`
+/// names the node it enrolled), a failure a repeat gets again (a cycle, a
+/// refusal) becomes [`JoinError::Unsaved`] naming that node, so the
+/// operator knows what to have revoked; a retryable one stays as it is,
+/// for the next retry.
+fn ancestry_error(err: JoinError, enrolled: Option<&str>) -> JoinError {
+    match enrolled {
+        Some(node_id) if !err.is_retryable() => JoinError::Unsaved {
+            node_id: Some(node_id.to_string()),
+            reason: err.to_string(),
+        },
+        _ => err,
+    }
+}
+
 /// Redeems an approved sign-in: the library runs the same redeem as for a
 /// link (one node, a receipt, idempotent retries), then this install seals
 /// `keys` and records the link. The code and verifier go once in the
@@ -260,7 +282,8 @@ fn http_error(status: u16, body: &[u8]) -> JoinError {
 /// revoked there, as does a link this install refuses to record. A failed
 /// database or disk write gives [`JoinError::SaveFailed`] (redeeming the
 /// same code again with the same verifier and keys gets the same node, so
-/// that one can be retried).
+/// that one can be retried, naming that node in
+/// [`BranchRedeem::enrolled_node_id`]).
 pub async fn redeem_branch_code(
     store: &LibraryStore,
     redeem: &BranchRedeem<'_>,
@@ -272,8 +295,13 @@ pub async fn redeem_branch_code(
     bookclerk_config::register_secret(redeem.code);
     bookclerk_config::register_secret(redeem.verifier);
     // Checked again before the code is spent: the library's ancestry may
-    // have changed since the operator started.
-    let ancestry = crate::enroll::check_join_ancestry(store, &endpoint).await?;
+    // have changed since the operator started. On a retry of an exchange
+    // the library already redeemed, a check that fails for good (a cycle,
+    // or a refusal a repeat gets again) leaves that node enrolled there:
+    // the error names it.
+    let ancestry = crate::enroll::check_join_ancestry(store, &endpoint)
+        .await
+        .map_err(|err| ancestry_error(err, redeem.enrolled_node_id))?;
     let b64 = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
     let body = Zeroizing::new(
         serde_json::to_vec(&OAuthEnrollRequest {
@@ -413,6 +441,37 @@ fn uuid_like() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A retry whose ancestry check now fails for good names the node the
+    /// library enrolled on the attempt that could not be saved; a first
+    /// attempt, or a failure a retry can fix, keeps its own error.
+    #[test]
+    fn a_retry_refused_by_its_ancestry_names_the_enrolled_node() {
+        assert!(matches!(
+            ancestry_error(JoinError::Cycle, Some("node-1")),
+            JoinError::Unsaved { node_id: Some(ref id), .. } if id == "node-1"
+        ));
+        let forbidden = || JoinError::Http {
+            status: 403,
+            error: "info_unavailable".into(),
+        };
+        assert!(matches!(
+            ancestry_error(forbidden(), Some("node-1")),
+            JoinError::Unsaved { node_id: Some(ref id), .. } if id == "node-1"
+        ));
+        assert!(matches!(
+            ancestry_error(JoinError::Cycle, None),
+            JoinError::Cycle
+        ));
+        let busy = JoinError::Http {
+            status: 503,
+            error: "info_unavailable".into(),
+        };
+        assert!(matches!(
+            ancestry_error(busy, Some("node-1")),
+            JoinError::Http { status: 503, .. }
+        ));
+    }
 
     #[test]
     fn addresses_default_to_https() {
