@@ -297,22 +297,43 @@ def probe_graphicaudio(report: Report) -> None:
     )
     if not token:
         return
-    status, _, body = http(
-        products_url,
-        headers={"Authorization": str(token)},
-    )
-    data = json_or_text(body)
-    ok = status == 200 and isinstance(data, list)
-    report.add(
-        Check(
-            "graphicaudio",
-            "auth_products",
-            ok,
-            f"count={len(data) if isinstance(data, list) else 'n/a'}",
-            status,
-            needs_auth=True,
+    try:
+        status, _, body = http(
+            products_url,
+            headers={"Authorization": str(token)},
         )
-    )
+        data = json_or_text(body)
+        ok = status == 200 and isinstance(data, list)
+        report.add(
+            Check(
+                "graphicaudio",
+                "auth_products",
+                ok,
+                f"count={len(data) if isinstance(data, list) else 'n/a'}",
+                status,
+                needs_auth=True,
+            )
+        )
+    finally:
+        # The login above registered a device activation, and accounts have a
+        # limited number of them. Release it so scheduled probes never use one
+        # up (the client's default download route, the web player, needs none).
+        status, _, body = http(
+            base + consts["REMOVE_PATH"],
+            method="POST",
+            headers={"Authorization": str(token)},
+            form={"client_id": device},
+        )
+        report.add(
+            Check(
+                "graphicaudio",
+                "auth_release_device",
+                200 <= status < 300,
+                "device activation released" if 200 <= status < 300 else str(json_or_text(body))[:200],
+                status,
+                needs_auth=True,
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
