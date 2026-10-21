@@ -821,7 +821,7 @@ pub fn apply_clerk_bootstrap(
     } else {
         Config::default()
     };
-    let mut url: Option<(PathBuf, Zeroizing<String>)> = None;
+    let mut url: Option<Zeroizing<String>> = None;
     let database = match &bootstrap.database {
         ClerkDatabase::Postgres { url: secret } => {
             let text = Zeroizing::new(
@@ -838,8 +838,8 @@ pub fn apply_clerk_bootstrap(
                 .map_err(|err| record("database URL file", &err))?;
             cfg.database.plugin = DatabasePluginKind::Postgres.as_str().into();
             cfg.database.postgres.url = None;
-            cfg.database.postgres.url_file = Some(url_file.clone());
-            url = Some((url_file, text));
+            cfg.database.postgres.url_file = Some(url_file);
+            url = Some(text);
             DatabasePluginKind::Postgres
         }
         ClerkDatabase::D1 {
@@ -866,10 +866,13 @@ pub fn apply_clerk_bootstrap(
         .to_toml_string()
         .map_err(|err| record("config.toml", &err))?;
     let mut files = Vec::with_capacity(4);
-    if let Some((url_file, text)) = &url {
+    if let Some(text) = &url {
+        // Recorded in the caller's form, as the other targets are, so the
+        // next start's `clerk_join_targets` names the same path; only the
+        // config holds the absolute one.
         files.push(NewFile {
             what: "database URL file",
-            target: url_file.clone(),
+            target: files_dir.join(CLERK_POSTGRES_URL_FILE),
             bytes: text.as_bytes(),
             private: true,
         });
