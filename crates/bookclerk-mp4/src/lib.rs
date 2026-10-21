@@ -14,6 +14,15 @@
 //! hook removes the copy without moving the boundary — see `docs/media.md` for
 //! why the boundary is where it is.
 
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::unwrap_used
+)]
+
 pub mod boxutil;
 pub mod edit;
 /// [`Mp4Error`] and the crate [`Result`] alias.

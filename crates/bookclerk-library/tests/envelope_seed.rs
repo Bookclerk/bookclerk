@@ -9,6 +9,9 @@
 //!   cargo test -p bookclerk-library --test envelope_seed -- --ignored --nocapture
 //! ```
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::unwrap_used)]
+
 use std::path::PathBuf;
 use std::time::Instant;
 

@@ -6,6 +6,14 @@
 //! that stops at the handoff, which is the failure mode that matters.
 
 #![cfg(unix)]
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::unwrap_used
+)]
 #![allow(unsafe_code)] // CommandExt::pre_exec + dup2 for E4 inherited-link proof.
 
 use std::path::Path;

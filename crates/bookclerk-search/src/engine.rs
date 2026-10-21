@@ -319,7 +319,7 @@ impl SearchEngine {
         // never gets a zero limit (which panics) while still returning all
         // matches for large libraries.
         let top = if limit == 0 {
-            let n = searcher.num_docs() as usize;
+            let n = usize::try_from(searcher.num_docs()).unwrap_or(usize::MAX);
             if n == 0 {
                 return Ok(Vec::new());
             }

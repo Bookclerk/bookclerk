@@ -16,6 +16,9 @@
 //! VmHWM reading fails the test. The external-path command is
 //! `cargo test -p bookclerk-workerd --test conformance external_native_behind_workerd_budget -- --ignored --nocapture --test-threads=1`.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::fs::File;
 use std::path::Path;
 use std::time::Instant;

@@ -2,6 +2,13 @@
 //!
 //! See `docs/plugin-registry.md`.
 
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::expect_used,
+    clippy::unwrap_used
+)]
+
 mod adapters;
 mod catalog;
 mod coordinate;

@@ -8,6 +8,9 @@
 //! acquire then overlays Audible chapter trees (and related tags) onto plain
 //! audio that lacks Audible brand intro/outro.
 
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+
 mod enrich;
 /// Enrichment error type and [`Result`] alias for Audnexus / catalog lookups.
 mod error;

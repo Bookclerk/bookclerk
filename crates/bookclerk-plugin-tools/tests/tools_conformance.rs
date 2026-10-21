@@ -1,5 +1,8 @@
 //! Author-tools conformance against shared fixtures.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::expect_used)]
+
 use std::path::PathBuf;
 use std::process::Command;
 

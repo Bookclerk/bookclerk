@@ -11,6 +11,9 @@
 //! Reported throughput is over payload bytes, on a warm page cache; compare runs
 //! on one machine rather than across machines.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::cast_possible_truncation, clippy::expect_used)]
+
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 

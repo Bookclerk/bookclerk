@@ -1,5 +1,8 @@
 //! Wiremock fixtures for GraphicAudio login, products, links, Magento ZIP, Browser Player.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::unwrap_used)]
+
 use std::io::{Cursor, Write};
 
 use bookclerk_library::configure_master_key;

@@ -3,6 +3,15 @@
 //! Binds `127.0.0.1:0`, spawns a child of this binary that connects back, and
 //! completes a four-byte echo. Used by `tests/windows_loopback.rs`.
 
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::unwrap_used
+)]
+
 fn main() {
     let code = match run() {
         Ok(()) => 0,

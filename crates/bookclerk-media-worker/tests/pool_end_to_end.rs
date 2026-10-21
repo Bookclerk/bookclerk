@@ -5,6 +5,15 @@
 //! permit accounting, process spawn, and reply parsing — so a regression
 //! anywhere in that chain shows up here.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::unwrap_used
+)]
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;

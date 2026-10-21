@@ -1,6 +1,9 @@
 //! `bookclerk plugins install|approve|versions|rollback|remove` install and
 //! move cluster versions without touching this host's plugin tree.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 mod common;
 
 use std::path::{Path, PathBuf};

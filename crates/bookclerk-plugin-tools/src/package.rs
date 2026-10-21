@@ -612,7 +612,7 @@ fn sha256_file(path: &Path) -> Result<String> {
 }
 
 #[cfg(all(test, unix))]
-#[allow(clippy::missing_panics_doc)]
+#[allow(clippy::missing_panics_doc, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::io::Write;

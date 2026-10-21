@@ -7,6 +7,15 @@
 //!
 //! See `docs/plugins.md` for jail / workerd isolation requirements.
 
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::unwrap_used
+)]
+
 pub mod bridge_http;
 pub mod bridge_stdio;
 pub mod config;

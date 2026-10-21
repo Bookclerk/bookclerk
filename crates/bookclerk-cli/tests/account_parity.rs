@@ -2,6 +2,9 @@
 //! what `bookclerk library` sees, and a second plugin that shares the
 //! storefront alias owns neither the row nor the credentials.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 mod common;
 
 use bookclerk_library::{secret_account_type, secret_kind, LibraryStore};

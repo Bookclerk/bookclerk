@@ -9,6 +9,13 @@
 //! Product narrative: `docs/configuration.md`, `docs/diagnostics.md`. Style:
 //! `docs/code-documentation.md`.
 
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::expect_used
+)]
+
 mod atomic_replace;
 mod cookie_flags;
 mod database;

@@ -5,6 +5,9 @@
 //! connections, proving plugin-owned DDL, cross-binding isolation, reserved
 //! table denial, and retry-token replay inside the binding.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::expect_used)]
+
 use bookclerk_library::{apply_plugin_migrations, prove_plugin_migration_sequence};
 use bookclerk_plugin_abi::{
     DbCapabilities, DbPlanStatementKind, DbResultSelection, DbValue, ExecuteReply, ExecuteRequest,

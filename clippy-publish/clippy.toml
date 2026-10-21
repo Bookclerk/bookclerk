@@ -1,3 +1,7 @@
 # Used by the publish-crate Clippy step (CLIPPY_CONF_DIR=clippy-publish).
 # Extends section lints to private items for the ABI/manifest/SDK trio.
 check-private-items = true
+
+# Tests may unwrap/expect; production code states its invariant or propagates.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
