@@ -209,8 +209,8 @@ jobs:
         id: app
         if: >
           always()
-          && steps.probe.outputs.drift == 'true'
-          && steps.probe.outputs.report == 'true'
+          && ((steps.probe.outputs.drift == 'true' && steps.probe.outputs.report == 'true')
+              || steps.probe.outputs.exit_code == '2')
           && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -228,9 +228,13 @@ jobs:
           SMOKE_SKIPPED: ${{ steps.smoke.outputs.skipped }}
           SMOKE_EXIT: ${{ steps.smoke.outputs.exit_code }}
           CHANGED: ${{ steps.apply.outputs.changed }}
+          PROBE_EXIT: ${{ steps.probe.outputs.exit_code }}
         run: |
           set -euo pipefail
-          if [[ "$CHANGED" == "true" ]]; then
+          if [[ "$PROBE_EXIT" == "2" ]]; then
+            summary="The Libro.fm APK probe failed hard: the Android APK could not be downloaded, decompiled or parsed (see the run log), so drift could not be checked."
+            echo "fix_paths=" >> "$GITHUB_OUTPUT"
+          elif [[ "$CHANGED" == "true" ]]; then
             # The fixer rewrites constants only; schema drift (and constants the
             # APK gave no value for) stays for a person, so the PR then must not
             # close the issue.

@@ -152,7 +152,8 @@ jobs:
           && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
           && (steps.smoke.outputs.failed == 'true'
               || steps.smoke.outputs.auth_failed == 'true'
-              || steps.apk.outputs.drift == 'true')
+              || steps.apk.outputs.drift == 'true'
+              || steps.apk.outputs.exit_code == '2')
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ secrets.AUTOMATION_APP_CLIENT_ID }}
@@ -169,6 +170,7 @@ jobs:
           AUTH_FAILED: ${{ steps.smoke.outputs.auth_failed }}
           DRIFT: ${{ steps.apk.outputs.drift }}
           FIXABLE: ${{ steps.apk.outputs.fixable }}
+          APK_EXIT: ${{ steps.apk.outputs.exit_code }}
           CHANGED: ${{ steps.fix.outputs.changed }}
           POST_FAILED: ${{ steps.fix.outputs.post_failed }}
           POST_AUTH_FAILED: ${{ steps.fix.outputs.post_auth_failed }}
@@ -181,6 +183,9 @@ jobs:
           fi
           if [[ "$AUTH_FAILED" == "true" ]]; then
             found="$found auth API checks failed;"
+          fi
+          if [[ "$APK_EXIT" == "2" ]]; then
+            found="$found the Android APK could not be downloaded, decompiled or parsed (see the run log);"
           fi
           if [[ "$DRIFT" == "true" ]]; then
             found="$found the Android APK no longer matches \`source-chirp/src/client.rs\`;"
