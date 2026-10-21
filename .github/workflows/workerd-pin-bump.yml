@@ -162,12 +162,18 @@ jobs:
             packages/plugin-sdk-python/src/bookclerk_plugin_sdk/workerd-pin.json
             packages/plugin-sdk-python/src/bookclerk_plugin_sdk/bridge/
 
+      # Runs even when the branch was already up to date (operation `none`),
+      # so a run whose earlier `gh pr merge --auto` failed gets another try.
+      # Enabling auto-merge again on a PR that already has it is a no-op.
       - name: Enable auto-merge
-        if: >
-          steps.select.outputs.bump == 'true'
-          && steps.cpr.outputs.pull-request-number
-          && steps.cpr.outputs.pull-request-operation != 'none'
+        if: steps.select.outputs.bump == 'true'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
-          PR_NUMBER: ${{ steps.cpr.outputs.pull-request-number }}
-        run: gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --squash
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --head deps/workerd-pin --state open --json number --jq '.[0].number // empty')"
+          if [[ -z "$pr" ]]; then
+            echo "No open workerd pin pull request."
+            exit 0
+          fi
+          gh pr merge "$pr" --repo "$GITHUB_REPOSITORY" --auto --squash

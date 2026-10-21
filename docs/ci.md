@@ -432,7 +432,8 @@ App as [Dependabot auto-merge](#dependabot-auto-merge) instead of
 The probes share `.github/actions/api-drift-report`: one open issue per source
 (found by a hidden `<!-- api-drift:<source> -->` marker and updated in place,
 with a comment per new detection), and, when the probe's fixer produced
-verified changes, a pull request on a fixed branch that closes it. Each
+verified changes, a draft pull request on a fixed branch that closes it (a
+maintainer marks it ready after CI and review). Each
 workflow's own `GITHUB_TOKEN` stays read-only, and each job mints the App token
 only when it has something to write, scoped to the permissions that step needs.
 Commits are made through the API (`sign-commits`), so they are signed and

@@ -170,6 +170,9 @@ runs:
         token: ${{ inputs.token }}
         # Commit through the API so the commit is signed and attributed to the App.
         sign-commits: true
+        # Fixes come from heuristics over decompiled code, so they open as
+        # drafts; a maintainer marks one ready after CI and review.
+        draft: true
         add-paths: ${{ inputs.fix-paths }}
         commit-message: ${{ inputs.commit-message }}
         branch: api-drift/${{ inputs.source }}
