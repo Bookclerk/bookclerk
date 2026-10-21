@@ -188,7 +188,7 @@ async fn main() -> anyhow::Result<()> {
                             "the library's database did not open after joining as a clerk (see the log), and undoing the join stopped part way ({failed}); the next start finishes undoing it"
                         ),
                         Err(failed) => anyhow::anyhow!(
-                            "the library's database did not open after joining as a clerk (see the log), and the join could not be undone ({failed}); the next start tries the library's database again"
+                            "the library's database did not open after joining as a clerk (see the log), and the join could not be undone ({failed}); if it is left as it is, the next start tries the library's database again"
                         ),
                     });
                 }

@@ -629,14 +629,15 @@ impl PendingClerkJoin {
                 .files
                 .iter()
                 .filter_map(|file| file.backup.as_ref())
-                .filter(|backup| !backup.exists())
+                // A copy that cannot be checked counts as missing.
+                .filter(|backup| !backup.try_exists().unwrap_or(false))
                 .map(|backup| backup.display().to_string())
                 .collect();
             if !missing.is_empty() {
                 return Err(RevertFailed {
                     started: false,
                     detail: format!(
-                        "the copies of the originals at {} are gone, so the join cannot be undone automatically; put this server's own files back by hand, then delete {}",
+                        "the copies of the originals at {} are gone or cannot be read, so the join cannot be undone automatically; move each remaining `.pre-clerk` copy back over its file, put the missing originals back by hand, then delete {}",
                         missing.join(", "),
                         self.marker.display()
                     ),
@@ -654,9 +655,13 @@ impl PendingClerkJoin {
         let mut failed = Vec::new();
         for file in self.applied.files.iter().rev() {
             let restored = match &file.backup {
-                // A copy that is gone was already moved back.
-                Some(backup) if !backup.exists() => Ok(()),
-                Some(backup) => bookclerk_config::replace_file(backup, &file.target),
+                // A copy that is gone was already moved back; one that
+                // cannot be checked is a failure, not a restore.
+                Some(backup) => match backup.try_exists() {
+                    Ok(false) => Ok(()),
+                    Ok(true) => bookclerk_config::replace_file(backup, &file.target),
+                    Err(err) => Err(err),
+                },
                 None => remove_if_present(&file.target),
             };
             if let Err(err) = restored {
@@ -719,14 +724,17 @@ fn clerk_join_targets(files_dir: &Path, config_file: &Path) -> [PathBuf; 4] {
 pub fn pending_clerk_join(files_dir: &Path, config_file: &Path) -> Option<PendingClerkJoin> {
     let marker = files_dir.join(CLERK_JOIN_MARKER);
     let applied: AppliedJoin = serde_json::from_slice(&std::fs::read(&marker).ok()?).ok()?;
-    let targets = clerk_join_targets(files_dir, config_file);
+    // Compared as absolute paths, so a record written with another spelling
+    // of the same files (relative or not) is still recognised.
+    let absolute = |path: &Path| std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let targets = clerk_join_targets(files_dir, config_file).map(|target| absolute(&target));
     let recognised = !applied.files.is_empty()
         && applied.files.iter().all(|file| {
-            targets.contains(&file.target)
+            targets.contains(&absolute(&file.target))
                 && file
                     .backup
                     .as_ref()
-                    .is_none_or(|backup| *backup == backup_path(&file.target))
+                    .is_none_or(|backup| absolute(backup) == absolute(&backup_path(&file.target)))
         });
     recognised.then_some(PendingClerkJoin { marker, applied })
 }
@@ -740,7 +748,9 @@ pub fn pending_clerk_join(files_dir: &Path, config_file: &Path) -> Option<Pendin
 #[must_use]
 pub fn interrupted_clerk_join(files_dir: &Path, config_file: &Path) -> Option<String> {
     let targets = clerk_join_targets(files_dir, config_file);
-    if !targets.iter().any(|target| backup_path(target).exists())
+    if !targets
+        .iter()
+        .any(|target| backup_path(target).try_exists().unwrap_or(true))
         || pending_clerk_join(files_dir, config_file).is_some()
     {
         return None;

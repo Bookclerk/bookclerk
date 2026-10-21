@@ -219,7 +219,9 @@ pub async fn remove_owner_node(
             stale_status.filter(node_status::Column::HeartbeatMs.eq(status.heartbeat_ms));
     }
     let deleted = stale_status.exec(&txn).await.map_err(LibraryError::Orm)?;
-    if checked.is_some() && deleted.rows_affected == 0 {
+    // With a checked row it must be the one deleted; with none, a row that
+    // appeared since is a first heartbeat, so the node is starting.
+    if deleted.rows_affected != u64::from(checked.is_some()) {
         return Err(running());
     }
     event_subscriber_nodes::Entity::delete_many()
