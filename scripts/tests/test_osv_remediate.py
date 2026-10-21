@@ -108,6 +108,11 @@ class RangeTest(unittest.TestCase):
         self.assertTrue(osv.is_affected(vuln, "npm", "pkg", V("9.0.0")))
         self.assertIsNone(osv.smallest_fix(vuln, "npm", "pkg", V("9.0.0")))
 
+    def test_limit_event_bounds_range(self) -> None:
+        vuln = _vuln("X", "pkg", "npm", [{"introduced": "1.0.0"}, {"limit": "2.0.0"}])
+        self.assertTrue(osv.is_affected(vuln, "npm", "pkg", V("1.9.9")))
+        self.assertFalse(osv.is_affected(vuln, "npm", "pkg", V("2.0.0")))
+
     def test_smallest_fix_per_branch(self) -> None:
         vuln = _vuln(
             "X",

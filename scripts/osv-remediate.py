@@ -419,6 +419,15 @@ def is_affected(
         if isinstance(versions, list) and version.text in versions:
             return True
     for events in _ranges(vuln, ecosystem, name):
+        # OSV evaluation: a range with `limit` events covers only versions
+        # below at least one limit.
+        limits = [
+            limit
+            for event in events
+            if "limit" in event and (limit := Version.parse(event["limit"])) is not None
+        ]
+        if limits and not any(version < limit for limit in limits):
+            continue
         for start, end, inclusive in _intervals(events):
             if start is not None and version < start:
                 continue
