@@ -10,8 +10,9 @@
 # the pull request lists only the bumps it applied (advisory ids are public
 # once the fix lands). Unfixed alerts stay in Security -> Code scanning.
 #
-# The pull request is ready for review, not auto-merged: a bump can pull in a
-# release newer than the Dependabot cooldown, so a maintainer approves it.
+# The pull request opens as a draft (marked ready once CI Gate is green, as
+# AGENTS.md requires) and is never auto-merged: a bump can pull in a release
+# newer than the Dependabot cooldown, so a maintainer approves it.
 # See docs/ci.md#automation-app.
 
 name: OSV remediation
@@ -102,6 +103,7 @@ jobs:
 
             Lockfile-only updates within existing version requirements.
           branch: deps/osv-remediation
+          draft: true
           delete-branch: true
           title: "build(deps): bump dependencies flagged by OSV"
           body-path: ${{ runner.temp }}/osv-remediation.md

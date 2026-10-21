@@ -173,6 +173,19 @@ class PlanTest(unittest.TestCase):
         ]
         self.assertEqual(osv.alerts_from_api(raw), [osv.Alert("A", "Cargo.lock")])
 
+    def test_cve_rule_matches_through_alias(self) -> None:
+        cve = {
+            "id": "CVE-2026-1",
+            "aliases": ["RUSTSEC-2026-0346"],
+            "affected": [
+                {"package": {"ecosystem": "GIT", "name": "github.com/rustls/rustls"}}
+            ],
+        }
+        merged = osv.merge_aliases(cve, [RUSTLS])
+        self.assertEqual(merged["id"], "CVE-2026-1")
+        self.assertTrue(osv.is_affected(merged, "crates.io", "rustls", V("0.23.45")))
+        self.assertFalse(osv.is_affected(cve, "crates.io", "rustls", V("0.23.45")))
+
     def test_plan_matches_only_affected_versions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()

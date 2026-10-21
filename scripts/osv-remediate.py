@@ -2,9 +2,10 @@
 """Bump locked dependencies that open OSV code-scanning alerts flag.
 
 Reads the repository's open code-scanning alerts from the OSV-Scanner tool,
-looks each advisory up on api.osv.dev, and, for every Cargo.lock or
-package-lock.json entry it names, tries the smallest lockfile-only update
-that leaves no locked version of that package inside an affected range:
+looks each advisory (and its aliases) up on api.osv.dev, and, for every
+Cargo.lock or package-lock.json entry it names, tries the smallest
+lockfile-only update that leaves no locked version of that package inside an
+affected range:
 
 - Cargo: `cargo update --package <name>@<locked> --precise <fixed>`, then,
   if that is refused (for example the fix is not semver-compatible with a
@@ -50,6 +51,8 @@ HTTP_TIMEOUT_S = 30
 # Upper bound on alert pages read (100 alerts each), so a runaway listing
 # cannot keep the job paging forever.
 MAX_ALERT_PAGES = 20
+# Upper bound on alias records fetched per advisory.
+MAX_ALIASES = 10
 
 # OSV ecosystem name for each lockfile basename this script can update.
 LOCKFILE_ECOSYSTEMS = {
@@ -260,6 +263,59 @@ def fetch_vuln(vuln_id: str) -> dict[str, object] | None:
             return None
         raise
     return body if isinstance(body, dict) else None
+
+
+def merge_aliases(
+    primary: dict[str, object], aliases: list[dict[str, object]]
+) -> dict[str, object]:
+    """Combines a record's `affected` entries with those of its aliases.
+
+    OSV-Scanner groups aliases into one SARIF rule, and the rule id can be a
+    CVE whose record names a Git repository rather than the `crates.io` or
+    `npm` package; the ecosystem entries live on the GHSA or RUSTSEC alias.
+
+    Args:
+        primary: The record the alert's rule id resolved to.
+        aliases: Records of its aliases.
+
+    Returns:
+        A copy of `primary` whose `affected` list also holds every alias's
+        entries.
+    """
+    affected: list[object] = []
+    for record in (primary, *aliases):
+        entries = record.get("affected")
+        if isinstance(entries, list):
+            affected.extend(entries)
+    return {**primary, "affected": affected}
+
+
+def fetch_vuln_with_aliases(vuln_id: str) -> dict[str, object] | None:
+    """Looks an advisory up on api.osv.dev and folds in its aliases' records.
+
+    Args:
+        vuln_id: The advisory id the alert names.
+
+    Returns:
+        The merged record (see `merge_aliases`), or None when OSV does not
+        know the id.
+
+    Raises:
+        urllib.error.URLError: OSV could not be reached.
+    """
+    primary = fetch_vuln(vuln_id)
+    if primary is None:
+        return None
+    raw_aliases = primary.get("aliases")
+    alias_ids = [
+        alias
+        for alias in (raw_aliases if isinstance(raw_aliases, list) else [])
+        if isinstance(alias, str) and alias != vuln_id
+    ][:MAX_ALIASES]
+    records = [
+        record for alias in alias_ids if (record := fetch_vuln(alias)) is not None
+    ]
+    return merge_aliases(primary, records)
 
 
 def _affected_entries(
@@ -668,7 +724,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         alerts = fetch_alerts(args.repo, token, args.ref)
         vulns = {
-            vuln_id: fetch_vuln(vuln_id)
+            vuln_id: fetch_vuln_with_aliases(vuln_id)
             for vuln_id in sorted({a.vuln_id for a in alerts})
         }
     except (urllib.error.URLError, TypeError, ValueError) as err:

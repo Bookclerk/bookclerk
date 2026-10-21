@@ -474,8 +474,9 @@ major version, or a change upstream, stays an open alert for a maintainer.
 Scan results are not public, so the run keeps them private: its log prints
 counts only (command output is discarded, because a failed attempt would name
 a vulnerable package), and the pull request lists only the bumps it applied
-with their advisory ids. The pull request is not auto-merged; it can take a
-release newer than the Dependabot cooldown, so a maintainer approves it.
+with their advisory ids. The pull request opens as a draft and is not
+auto-merged: it can take a release newer than the Dependabot cooldown, so a
+maintainer approves it.
 
 Dependabot does not cover this: it raises alerts and security updates only for
 advisories GitHub has reviewed, and RustSec advisories often stay unreviewed,
