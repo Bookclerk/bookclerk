@@ -1954,9 +1954,11 @@ it: a tree, A ← B ← C.
 - **Cycles.** `GET /api/node/v1/info` returns `ancestry`: the library's own
   cluster id, then each active link's owner and the ancestry it reported
   (`cluster_links.ancestry_json`, refreshed on every catalog session), at
-  most 64 ids. Inspect, start and both redeems refuse a parent whose
-  ancestry contains the joining install's own cluster id (`409
-  join_cycle`), so A ← B ← A and A ← B ← C ← A are refused. A clerk shares
+  most 64 ids. Inspect, start, and the invite and branch sign-in redeems
+  refuse a parent whose ancestry contains the joining install's own cluster
+  id (`409 join_cycle`), so A ← B ← A and A ← B ← C ← A are refused, and
+  one whose ancestry together with the joining install's would pass 64 ids
+  (`409 ancestry_too_deep`) rather than cutting the list short. A clerk shares
   its library's database and so reports the same ancestry: the same tree
   node.
 - **Stop sharing or leave.** New titles stop; delivered files stay in A's

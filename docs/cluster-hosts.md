@@ -454,8 +454,10 @@ owner removes the entries (**Remove**, or `POST
 **No loops.** `GET /api/node/v1/info` reports the library's ancestry (its
 own cluster id and every library above it). Joining refuses a library
 whose ancestry contains the joining install's own cluster id (`409
-join_cycle`), so neither A ← B ← A nor A ← B ← C ← A can be made. A clerk
-shares its library's database, so it is the same point in the tree.
+join_cycle`), so neither A ← B ← A nor A ← B ← C ← A can be made. A tree
+holds at most 64 libraries along one path: a join that would take the
+joining install's ancestry past that is refused (`409 ancestry_too_deep`).
+A clerk shares its library's database, so it is the same point in the tree.
 
 ## Leaving
 
