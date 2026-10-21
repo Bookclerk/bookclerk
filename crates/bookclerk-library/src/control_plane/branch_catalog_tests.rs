@@ -909,9 +909,20 @@ async fn grant_local(
     product: &str,
     keys: &[&str],
 ) -> UploadGrant {
+    grant_branch_local(store, BRANCH, fence, product, keys).await
+}
+
+/// Grants `branch`'s upload of `product` with `keys` onto `local`.
+async fn grant_branch_local(
+    store: &LibraryStore,
+    branch: &str,
+    fence: i64,
+    product: &str,
+    keys: &[&str],
+) -> UploadGrant {
     grant_catalog_upload(
         store,
-        BRANCH,
+        branch,
         fence,
         "owner-node",
         "audible",
@@ -923,15 +934,64 @@ async fn grant_local(
     .unwrap()
 }
 
+/// Grants, receives and commits `branch`'s upload of `product` with
+/// `keys` onto `local`: the title is delivered.
+async fn deliver_local(
+    store: &LibraryStore,
+    branch: &str,
+    fence: i64,
+    product: &str,
+    keys: &[&str],
+) {
+    let UploadGrant::Granted { upload_id, .. } =
+        grant_branch_local(store, branch, fence, product, keys).await
+    else {
+        panic!("expected {product} granted");
+    };
+    for index in 0..keys.len() {
+        assert!(record_upload_file(store, &upload_id, index).await.unwrap());
+    }
+    let limits = JobClaimLimits {
+        class: 1,
+        plugin_instance: 1,
+    };
+    assert_eq!(
+        commit_upload(store, &upload_id, None, limits)
+            .await
+            .unwrap(),
+        UploadCommit::Committed {
+            job_completed: false
+        }
+    );
+}
+
+/// Opens `branch`'s catalog session and records `titles` as shared by it.
+async fn open_branch(store: &LibraryStore, branch: &str, titles: &[CatalogTitle]) -> i64 {
+    let opened = match begin_catalog(store, branch, true, true).await.unwrap() {
+        CatalogBegin::Opened(opened) => opened,
+        other => panic!("expected a session: {other:?}"),
+    };
+    match accept_catalog_batch(store, branch, opened.fence, "c", false, titles)
+        .await
+        .unwrap()
+    {
+        CatalogAccept::Accepted { .. } => {}
+        other => panic!("expected the batch accepted: {other:?}"),
+    }
+    opened.fence
+}
+
 /// A branch cannot declare files in another title's folder: neither a
 /// sidecar of a library book (its cover, `.cue`, chapter or metadata JSON,
-/// none recorded in `title_files`), nor any other name in a folder that
-/// holds a library book's audio or another shared title's audio.
+/// none recorded in `title_files`), nor any other name in, or in a folder
+/// below, a folder that holds a library book's audio or another branch's
+/// delivered title's audio.
 #[tokio::test]
 async fn a_catalog_upload_never_writes_into_another_titles_folder() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
-    let (store, _member) = world(dir.path()).await;
+    let (store, member) = world(dir.path()).await;
+    add_node(&store, "branch-c", "host", Some(member)).await;
     acquired_book(
         &store,
         "someone-else",
@@ -961,7 +1021,11 @@ async fn a_catalog_upload_never_writes_into_another_titles_folder() {
         "Mine/neighbour/neighbour.m4b",
         &["Other Author/Other Book/notes.txt"],
     ));
-    titles.push(title_with("first", "Shared/first/first.m4b", &[]));
+    titles.push(title_with(
+        "deep",
+        "Mine/deep/deep.m4b",
+        &["Other Author/Other Book/sub/x"],
+    ));
     titles.push(title_with(
         "second",
         "Mine/second/second.m4b",
@@ -972,6 +1036,21 @@ async fn a_catalog_upload_never_writes_into_another_titles_folder() {
         "Mine/free/free.m4b",
         &["Mine/free/free.jpg"],
     ));
+    // Another branch's title, delivered.
+    let other = open_branch(
+        &store,
+        "branch-c",
+        &[title_with("first", "Shared/first/first.m4b", &[])],
+    )
+    .await;
+    deliver_local(
+        &store,
+        "branch-c",
+        other,
+        "first",
+        &["Shared/first/first.m4b"],
+    )
+    .await;
     let session = open(&store, true, true).await;
     accepted(&store, session.fence, "c", false, &titles).await;
 
@@ -1005,8 +1084,14 @@ async fn a_catalog_upload_never_writes_into_another_titles_folder() {
         UploadGrant::Refused("folder_of_another_book")
     ));
     assert!(matches!(
-        grant_local(&store, session.fence, "first", &["Shared/first/first.m4b"]).await,
-        UploadGrant::Granted { .. }
+        grant_local(
+            &store,
+            session.fence,
+            "deep",
+            &["Mine/deep/deep.m4b", "Other Author/Other Book/sub/x"],
+        )
+        .await,
+        UploadGrant::Refused("folder_of_another_book")
     ));
     assert!(matches!(
         grant_local(
@@ -1030,10 +1115,10 @@ async fn a_catalog_upload_never_writes_into_another_titles_folder() {
     ));
 }
 
-/// A key a shared title's upload claimed is that title's: a job upload of
-/// a library book cannot claim it (the branch title is live, though it is
-/// no `books` row), and a catalog upload whose key an acquire took since
-/// its grant is refused at commit.
+/// A key a shared title's upload claimed is that title's against another
+/// branch title's upload; a job upload of a library book takes it over (as
+/// an acquire run here would), and a catalog upload whose key was taken
+/// since its grant is refused at commit.
 #[tokio::test]
 async fn a_shared_titles_keys_stay_its_own() {
     let _lock = master_key_test_lock_async().await;
@@ -1055,11 +1140,30 @@ async fn a_shared_titles_keys_stay_its_own() {
     );
     assert!(
         !store
-            .claim_title_file("local", key, &book, "job-upload", held.as_ref())
+            .claim_title_file(
+                "local",
+                key,
+                "another-branch-title",
+                "catalog-upload",
+                held.as_ref(),
+                true
+            )
             .await
             .unwrap(),
-        "another title's upload cannot take the shared title's key"
+        "another branch title's upload cannot take the shared title's key"
     );
+    assert_eq!(store.title_file("local", key).await.unwrap(), held);
+    assert!(
+        store
+            .claim_title_file("local", key, &book, "job-upload", held.as_ref(), false)
+            .await
+            .unwrap(),
+        "a job upload of a library book takes the shared title's key over"
+    );
+    store
+        .release_title_file("local", key, "job-upload", held.as_ref())
+        .await
+        .unwrap();
     assert_eq!(store.title_file("local", key).await.unwrap(), held);
 
     // An acquire run here writes the key anyway; the catalog upload no
@@ -1077,6 +1181,71 @@ async fn a_shared_titles_keys_stay_its_own() {
         UploadCommit::Refused("key_taken")
     );
     assert!(!list_branch_titles(&store, None, 10).await.unwrap()[0].delivered);
+}
+
+/// A branch may lay several of its own titles out in one folder (a flat
+/// `{Author}/{Title}.m4b` template, podcast episodes saved together), and
+/// another branch's declared title whose files never arrived holds no
+/// folder; once delivered, it does.
+#[tokio::test]
+async fn shared_folders_hold_only_against_other_branches_delivered_titles() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, member) = world(dir.path()).await;
+    add_node(&store, "branch-c", "host", Some(member)).await;
+    let other = open_branch(
+        &store,
+        "branch-c",
+        &[
+            title_with("theirs", "Theirs/theirs.m4b", &[]),
+            title_with("late", "Late/late.m4b", &[]),
+        ],
+    )
+    .await;
+    let session = open(&store, true, true).await;
+    accepted(
+        &store,
+        session.fence,
+        "c",
+        false,
+        &[
+            title_with("one", "Flat/one.m4b", &["Flat/one.jpg"]),
+            title_with("two", "Flat/two.m4b", &["Flat/two.jpg"]),
+            title_with("near", "Theirs/near.m4b", &[]),
+            title_with("later", "Late/later.m4b", &[]),
+        ],
+    )
+    .await;
+    deliver_local(
+        &store,
+        BRANCH,
+        session.fence,
+        "one",
+        &["Flat/one.m4b", "Flat/one.jpg"],
+    )
+    .await;
+    deliver_local(
+        &store,
+        BRANCH,
+        session.fence,
+        "two",
+        &["Flat/two.m4b", "Flat/two.jpg"],
+    )
+    .await;
+    deliver_local(&store, BRANCH, session.fence, "near", &["Theirs/near.m4b"]).await;
+
+    // This branch's delivered title now holds its folder against
+    // branch-c; and once branch-c's title is delivered in a folder, that
+    // folder is no longer free to this branch.
+    assert!(matches!(
+        grant_branch_local(&store, "branch-c", other, "theirs", &["Theirs/theirs.m4b"]).await,
+        UploadGrant::Refused("folder_of_another_book")
+    ));
+    deliver_local(&store, "branch-c", other, "late", &["Late/late.m4b"]).await;
+    assert!(matches!(
+        grant_local(&store, session.fence, "later", &["Late/later.m4b"]).await,
+        UploadGrant::Refused("folder_of_another_book")
+    ));
 }
 
 /// A catalog commit overtaken by an identical commit that landed first

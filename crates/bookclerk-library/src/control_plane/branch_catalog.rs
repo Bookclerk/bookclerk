@@ -574,6 +574,9 @@ pub async fn pending_deliveries(
     node_id: &str,
     limit: usize,
 ) -> Result<Vec<CatalogRef>> {
+    // A title whose upload is refused for good (`key_in_use`,
+    // `key_of_another_book`, `folder_of_another_book`) is still asked for
+    // on every session: no per-title refusal is recorded to skip it by.
     let rows = branch_titles::Entity::find()
         .filter(branch_titles::Column::NodeId.eq(node_id))
         .filter(branch_titles::Column::State.eq(BRANCH_TITLE_SHARED))
@@ -601,8 +604,9 @@ pub async fn pending_deliveries(
 /// recorded manifest, no key is one another title here already uses
 /// (`key_in_use`: the other title's audio, PDF or primary stem;
 /// `key_of_another_book`: any of a library book's keys or their
-/// sidecars), and no key lies in a folder holding another title's audio
-/// (`folder_of_another_book`). The keys are then claimed for this upload
+/// sidecars), and no key lies in or below a folder holding another title's
+/// audio (`folder_of_another_book`: a library book's, or another branch's
+/// delivered title's). The keys are then claimed for this upload
 /// in `title_files`, refused when another title holds one there.
 ///
 /// # Errors
@@ -675,8 +679,8 @@ pub async fn grant_catalog_upload(
         .into_iter()
         .collect();
     // A folder another title's audio lies in is that title's: a branch
-    // writes nothing there, whatever the file is named.
-    if folders_of_another_title(store, &row.uuid, &title_folders).await? {
+    // writes nothing there or below it, whatever the file is named.
+    if folders_of_another_title(store, &row.uuid, node_id, &title_folders).await? {
         return Ok(UploadGrant::Refused("folder_of_another_book"));
     }
     let scoped: Vec<UploadDestination> = destinations
@@ -707,7 +711,9 @@ pub async fn grant_catalog_upload(
 }
 
 /// A `LIKE` pattern for keys beside `primary` sharing its stem
-/// (`dir/stem.%`), wildcards in the key escaped with `\`.
+/// (`dir/stem.%`), wildcards in the key escaped with `\`. `LIKE` compares
+/// case-sensitively on Postgres, so there a stem differing only in case
+/// does not match.
 fn stem_pattern(primary: &str) -> String {
     let (dir, name) = primary
         .rsplit_once('/')
@@ -759,13 +765,44 @@ fn directly_in<C: ColumnTrait>(column: C, folder: &str) -> Condition {
 /// read's binds well under the smallest guest bind cap.
 const FOLDER_PROBES_PER_READ: usize = 32;
 
-/// True when one of `folders` holds the primary audio of another title in
-/// this library: one of its books (whatever its owner), or a title another
-/// branch (or this one, under another product) shares here (`uuid` is the
-/// title being granted; any state counts, since a detached title's files
-/// stay). A catalog upload writes into a folder no other title lives in,
-/// so no declared name, however chosen, can replace that title's files,
+/// The folders a catalog title's `folders` (the folders its keys lie in)
+/// are probed for another title's audio at: each folder itself (the top of
+/// the outputs, `""`, included), and every non-empty folder above it
+/// (`A/Book/Extras` → `A/Book/Extras`, `A/Book`, `A`), each once.
+fn folder_probes(folders: &[String]) -> BTreeSet<&str> {
+    let mut probes = BTreeSet::new();
+    for folder in folders {
+        probes.insert(folder.as_str());
+        let mut above = folder.as_str();
+        while let Some((parent, _)) = above.rsplit_once('/') {
+            if !parent.is_empty() {
+                probes.insert(parent);
+            }
+            above = parent;
+        }
+    }
+    probes
+}
+
+/// True when one of `folders`, or a folder above one of them, directly
+/// holds the primary audio of another title in this library: one of its
+/// books (whatever its owner, in any state), or a title another branch
+/// shares here whose files were delivered (`uuid` is the title being
+/// granted; a detached title counts, since its files stay). A catalog
+/// upload writes into no folder another title lives in, nor below one, so
+/// no declared name, however chosen, can replace that title's files,
 /// recorded in `title_files` or not.
+///
+/// `node_id`'s own titles never hold a folder against it: a branch may
+/// lay several of its titles out in one folder (a flat
+/// `{Author}/{Title}.m4b` template, or podcast episodes saved together),
+/// and the key checks keep their files apart. Another branch's title holds
+/// a folder only once delivered, so a declared title whose files never
+/// arrive (one refused here, say) squats no folder.
+///
+/// The folder match is `LIKE`, which compares case-sensitively on
+/// Postgres (and case-insensitively for ASCII on SQLite): on Postgres a
+/// folder differing from another title's only in case is not that title's.
 ///
 /// # Errors
 ///
@@ -773,9 +810,11 @@ const FOLDER_PROBES_PER_READ: usize = 32;
 async fn folders_of_another_title(
     store: &LibraryStore,
     uuid: &str,
+    node_id: &str,
     folders: &[String],
 ) -> Result<bool> {
-    for chunk in folders.chunks(FOLDER_PROBES_PER_READ) {
+    let probes: Vec<&str> = folder_probes(folders).into_iter().collect();
+    for chunk in probes.chunks(FOLDER_PROBES_PER_READ) {
         let books_here = chunk.iter().fold(Condition::any(), |any, folder| {
             any.add(directly_in(books::Column::StorageKey, folder))
         });
@@ -793,6 +832,8 @@ async fn folders_of_another_title(
         });
         let titles = branch_titles::Entity::find()
             .filter(branch_titles::Column::Uuid.ne(uuid))
+            .filter(branch_titles::Column::NodeId.ne(node_id))
+            .filter(branch_titles::Column::DeliveredSha256.is_not_null())
             .filter(titles_here)
             .count(store.db())
             .await

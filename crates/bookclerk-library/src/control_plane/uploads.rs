@@ -630,7 +630,9 @@ struct ClaimedKey<'a> {
 /// soon as one is a key another library title holds on that destination
 /// (one its acquire wrote, or another title's upload claimed), so a folder
 /// several titles share never lets one overwrite another's chapter, part or
-/// sidecar files.
+/// sidecar files. A `catalog` upload (a branch title's) is refused keys a
+/// branch title holds as well; a Host job's upload of a book takes those
+/// over, as an acquire on this node would.
 ///
 /// Every key claimed (or possibly claimed, when a write fails) is pushed
 /// onto `claimed` with its prior record, so a grant that is then refused or
@@ -644,6 +646,7 @@ async fn claim_upload_keys<'a>(
     book_uuid: &str,
     upload_id: &str,
     files: &'a [UploadFile],
+    catalog: bool,
     claimed: &mut Vec<ClaimedKey<'a>>,
 ) -> Result<bool> {
     'copies: for copy in files.iter().flat_map(|file| &file.copies) {
@@ -663,6 +666,7 @@ async fn claim_upload_keys<'a>(
                     book_uuid,
                     upload_id,
                     prior.as_ref(),
+                    catalog,
                 )
                 .await?
             {
@@ -941,9 +945,19 @@ pub(super) async fn open_upload_session(
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
+    let catalog = job_id == bookclerk_node_proto::CATALOG_ITEM;
     let mut claimed = Vec::new();
     if !req.book_uuid.is_empty() {
-        match claim_upload_keys(store, req.book_uuid, &upload_id, req.files, &mut claimed).await {
+        match claim_upload_keys(
+            store,
+            req.book_uuid,
+            &upload_id,
+            req.files,
+            catalog,
+            &mut claimed,
+        )
+        .await
+        {
             Ok(true) => {}
             Ok(false) => {
                 undo_grant(store, &upload_id, &claimed).await;
@@ -968,7 +982,6 @@ pub(super) async fn open_upload_session(
     // item, so a catalog grant supersedes only its own node's uploads.
     let created = stamp(now);
     let ours = (created.as_str(), upload_id.as_str());
-    let catalog = job_id == bookclerk_node_proto::CATALOG_ITEM;
     let superseded = match abort_matching(store, job_id, |row| {
         (!catalog || row.node_id == node_id)
             && row.book_uuid == req.book_uuid
@@ -997,7 +1010,16 @@ pub(super) async fn open_upload_session(
     // a key back since (the same title's claims succeed for either); with
     // it aborted now, this grant claims its keys once more.
     if !req.book_uuid.is_empty() && !superseded.is_empty() {
-        match claim_upload_keys(store, req.book_uuid, &upload_id, req.files, &mut claimed).await {
+        match claim_upload_keys(
+            store,
+            req.book_uuid,
+            &upload_id,
+            req.files,
+            catalog,
+            &mut claimed,
+        )
+        .await
+        {
             Ok(true) => {}
             Ok(false) => {
                 tracing::warn!(upload_id = %upload_id, superseded = superseded.len(), "a key was taken by another title while an upload was granted; the superseded uploads' files stay");
