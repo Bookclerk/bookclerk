@@ -114,6 +114,7 @@ jobs:
           "$PY" scripts/tests/test_ci_contract.py
           "$PY" scripts/tests/test_plugin_publisher.py
           "$PY" scripts/tests/test_envelope.py
+          "$PY" scripts/tests/test_source_apk_probe.py
 
       - name: Database plugin isolation
         run: python3 scripts/tests/test_db_plugin_isolation.py -q

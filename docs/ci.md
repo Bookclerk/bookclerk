@@ -410,6 +410,55 @@ has fallen behind `main` until it is rebased. Either:
   also relaxes the rule for human PRs until the queue replaces it; or
 - leave it on and comment `@dependabot rebase` on PRs that fall behind.
 
+## Automation App
+
+Scheduled workflows that open pull requests or file issues use the same GitHub
+App as [Dependabot auto-merge](#dependabot-auto-merge) instead of
+`GITHUB_TOKEN`:
+
+- The organization does not allow GitHub Actions to create or approve pull
+  requests, so `GITHUB_TOKEN` cannot open them.
+- Pushes and pull requests made with `GITHUB_TOKEN` do not start workflow
+  runs, so their required checks would never report. App-token pushes start
+  CI like any other contributor's.
+
+| Workflow | Writes |
+| --- | --- |
+| `workerd-pin-bump.yml` | `deps/workerd-pin` branch, pull request, auto-merge |
+| `librofm-apk-probe.yml` | `api-drift` issue; `api-drift/librofm` branch and pull request |
+| `graphicaudio-api-probe.yml` | `api-drift` issue; `api-drift/graphicaudio` branch and pull request |
+| `chirp-api-probe.yml` | `api-drift` issue; `api-drift/chirp` branch and pull request |
+
+The probes share `.github/actions/api-drift-report`: one open issue per source
+(found by a hidden `<!-- api-drift:<source> -->` marker and updated in place,
+with a comment per new detection), and, when the probe's fixer produced
+verified changes, a pull request on a fixed branch that closes it. Each
+workflow's own `GITHUB_TOKEN` stays read-only, and each job mints the App token
+only when it has something to write, scoped to the permissions that step needs.
+Commits are made through the API (`sign-commits`), so they are signed and
+attributed to the App.
+
+### Setup
+
+1. Give the App these repository permissions, then accept the new
+   permissions on its installation (an installation keeps its old
+   permissions until they are accepted):
+   - **Contents: read and write** (push branches)
+   - **Pull requests: read and write** (open, update and auto-merge PRs)
+   - **Issues: read and write** (file and update drift issues, add labels)
+   - **Metadata: read** (always granted)
+
+   **Workflows** is not needed: none of these pull requests touch
+   `.github/workflows/`.
+2. Add two **Actions** secrets (Settings → Secrets and variables → Actions).
+   Scheduled runs do not receive the Dependabot copies:
+   - `AUTOMATION_APP_CLIENT_ID`: the App's client ID.
+   - `AUTOMATION_APP_PRIVATE_KEY`: a private key generated for the App.
+
+Pull requests the App opens are not authored by a person, so rulesets that
+require approval for such changes still need a maintainer's approval before
+the merge queue takes them.
+
 ## Expected PR feedback (when `SELECTIVE_CI=1`)
 
 | Change | Jobs after `plan` | Notes |

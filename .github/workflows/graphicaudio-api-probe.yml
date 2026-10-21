@@ -1,7 +1,15 @@
 name: GraphicAudio API probe
 
-# Public endpoint + constant contract smoke for GraphicAudio. Auth checks run
-# only when TEST_GA_* secrets are set; missing secrets do not fail the job.
+# Reverse-engineered GraphicAudio API: constant contract, live smoke (public always;
+# auth only when TEST_GA_* secrets are set, missing secrets do not fail the
+# job), and an Android APK extract (`com.efsharp.graphicaudio`) diffed against
+# `source-graphicaudio/src/client.rs`.
+#
+# On scheduled/manual runs, APK drift or a failed probe files or updates an
+# `api-drift` issue. When the APK pins down replacement constants, they are
+# applied, the probe re-runs against them with auth, and if it passes the fix
+# goes up as a pull request that closes the issue (see
+# .github/actions/api-drift-report).
 
 on:
   schedule:
@@ -10,23 +18,28 @@ on:
   push:
     paths:
       - "scripts/source-probes/**"
+      - "scripts/librofm-apk-probe/extract_libro_api.py"
+      - ".github/actions/api-drift-report/**"
       - ".github/workflows/graphicaudio-api-probe.yml"
       - "crates/bookclerk-plugins/optional/source-graphicaudio/src/client.rs"
       - "crates/bookclerk-plugins/optional/source-graphicaudio/src/magento.rs"
   pull_request:
     paths:
       - "scripts/source-probes/**"
+      - "scripts/librofm-apk-probe/extract_libro_api.py"
+      - ".github/actions/api-drift-report/**"
       - ".github/workflows/graphicaudio-api-probe.yml"
       - "crates/bookclerk-plugins/optional/source-graphicaudio/src/client.rs"
       - "crates/bookclerk-plugins/optional/source-graphicaudio/src/magento.rs"
 
+# Issues, branches and pull requests are written with the automation App
+# token, not GITHUB_TOKEN.
 permissions:
   contents: read
-  issues: write
 
 jobs:
   probe:
-    name: contract / live smoke
+    name: contract / live smoke / APK / PR
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -40,125 +53,210 @@ jobs:
           TEST_GA_EMAIL: ${{ secrets.TEST_GA_EMAIL }}
           TEST_GA_PASSWORD: ${{ secrets.TEST_GA_PASSWORD }}
         run: |
-          mkdir -p artifacts/graphicaudio-api-probe
           set +e
           python3 scripts/source-probes/probe_all.py \
             --sources graphicaudio \
             --out "$GITHUB_WORKSPACE/artifacts/graphicaudio-api-probe"
+          set -e
+          python3 scripts/source-probes/report_outputs.py \
+            artifacts/graphicaudio-api-probe/report.json >> "$GITHUB_OUTPUT"
+
+      - name: Install Java (jadx)
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Extract API surface from the Android APK
+        id: apk
+        continue-on-error: true
+        run: |
+          set +e
+          python3 scripts/source-probes/extract_apk_api.py \
+            --source graphicaudio \
+            --workdir "$RUNNER_TEMP/graphicaudio-apk-probe" \
+            --out-dir "$GITHUB_WORKSPACE/artifacts/graphicaudio-apk-probe" \
+            --no-fail-on-drift
           code=$?
           set -e
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
-          if [[ -f artifacts/graphicaudio-api-probe/report.json ]]; then
-            echo "report=true" >> "$GITHUB_OUTPUT"
-            python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
-          r = json.load(open("artifacts/graphicaudio-api-probe/report.json"))
-          checks = r.get("checks") or []
-          # Auth skips are OK when secrets are unset — only non-auth failures fail CI.
-          failed = [
-              c for c in checks
-              if not c.get("ok") and not c.get("skipped") and not c.get("needs_auth")
-          ]
-          auth_failed = [
-              c for c in checks
-              if c.get("needs_auth") and not c.get("ok") and not c.get("skipped")
-          ]
-          auth_ran = any(c.get("needs_auth") and not c.get("skipped") for c in checks)
-          print("failed=true" if failed else "failed=false")
-          print("auth_failed=true" if auth_failed else "auth_failed=false")
-          print("auth_ran=true" if auth_ran else "auth_ran=false")
-          PY
+          report=artifacts/graphicaudio-apk-probe/report.json
+          if [[ -f "$report" ]]; then
+            python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print("drift=" + ("true" if r["has_blocking_drift"] else "false")); print("fixable=" + ("true" if r["fully_fixable"] else "false"))' "$report" >> "$GITHUB_OUTPUT"
           else
-            echo "report=false" >> "$GITHUB_OUTPUT"
-            echo "failed=true" >> "$GITHUB_OUTPUT"
-            echo "auth_failed=false" >> "$GITHUB_OUTPUT"
-            echo "auth_ran=false" >> "$GITHUB_OUTPUT"
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+            echo "fixable=false" >> "$GITHUB_OUTPUT"
           fi
-          exit 0
+          exit "$code"
 
-      - name: Upload probe reports (JSON/Markdown only — no media)
-        if: always() && steps.smoke.outputs.report == 'true'
+      - name: Apply APK constants and re-probe
+        id: fix
+        if: >
+          always()
+          && steps.apk.outputs.fixable == 'true'
+          && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          TEST_GA_EMAIL: ${{ secrets.TEST_GA_EMAIL }}
+          TEST_GA_PASSWORD: ${{ secrets.TEST_GA_PASSWORD }}
+        run: |
+          set -euo pipefail
+          python3 scripts/source-probes/apply_apk_updates.py --source graphicaudio
+          if git diff --quiet -- crates/bookclerk-plugins/optional/source-graphicaudio/src/client.rs scripts/source-probes/check_client_constants.py; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          python3 scripts/source-probes/check_client_constants.py --sources graphicaudio
+          set +e
+          python3 scripts/source-probes/probe_all.py \
+            --sources graphicaudio \
+            --out "$GITHUB_WORKSPACE/artifacts/graphicaudio-api-probe/post-fix"
+          set -e
+          python3 scripts/source-probes/report_outputs.py \
+            artifacts/graphicaudio-api-probe/post-fix/report.json | sed 's/^/post_/' >> "$GITHUB_OUTPUT"
+
+      - name: Upload probe reports (JSON/Markdown only — no APK / media)
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: graphicaudio-api-probe
           path: |
-            artifacts/graphicaudio-api-probe/report.json
-            artifacts/graphicaudio-api-probe/report.md
+            artifacts/graphicaudio-api-probe/**/report.json
+            artifacts/graphicaudio-api-probe/**/report.md
+            artifacts/graphicaudio-apk-probe/report.json
+            artifacts/graphicaudio-apk-probe/report.md
           if-no-files-found: warn
 
       - name: Summarize probe
-        if: always() && steps.smoke.outputs.report == 'true'
+        if: always()
+        env:
+          AUTH_RAN: ${{ steps.smoke.outputs.auth_ran }}
         run: |
-          echo "## GraphicAudio API probe" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          if [[ "${{ steps.smoke.outputs.auth_ran }}" != "true" ]]; then
-            echo "_Auth smoke skipped (no TEST_GA_* secrets) — public endpoints only._" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-          fi
-          cat artifacts/graphicaudio-api-probe/report.md >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## GraphicAudio API probe"
+            echo ""
+            if [[ "$AUTH_RAN" != "true" ]]; then
+              echo "_Auth smoke skipped (no TEST_GA_* secrets) — public endpoints only._"
+              echo ""
+            fi
+            cat artifacts/graphicaudio-api-probe/report.md 2>/dev/null || echo "(no probe report)"
+            echo ""
+            cat artifacts/graphicaudio-apk-probe/report.md 2>/dev/null || echo "(no APK report)"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Open issue on public probe failure
+      - name: Mint automation App token
+        id: app
         if: >
           always()
           && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-          && steps.smoke.outputs.failed == 'true'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+          && (steps.smoke.outputs.failed == 'true'
+              || steps.smoke.outputs.auth_failed == 'true'
+              || steps.apk.outputs.drift == 'true')
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
-          script: |
-            const fs = require('fs');
-            const marker = '<!-- graphicaudio-api-probe-fail -->';
-            const report = fs.existsSync('artifacts/graphicaudio-api-probe/report.md')
-              ? fs.readFileSync('artifacts/graphicaudio-api-probe/report.md', 'utf8')
-              : '(no report.md)';
-            const title = 'GraphicAudio API probe failed (public endpoints)';
-            const body = [
-              marker,
-              '',
-              'Scheduled/manual GraphicAudio reverse-API probe failed on **public** checks.',
-              '',
-              '<details><summary>Probe report</summary>',
-              '',
-              report,
-              '',
-              '</details>',
-              '',
-              `Workflow: ${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
-            ].join('\n');
-            const issues = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'graphicaudio-api-drift',
-              per_page: 20,
-            });
-            const existing = issues.data.find(i => (i.body || '').includes(marker));
-            if (existing) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: existing.number,
-                body,
-              });
-            } else {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title,
-                body,
-                labels: ['graphicaudio-api-drift'],
-              });
-            }
+          client-id: ${{ secrets.AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+
+      - name: Describe drift outcome
+        id: outcome
+        if: always() && steps.app.outcome == 'success'
+        env:
+          FAILED: ${{ steps.smoke.outputs.failed }}
+          AUTH_FAILED: ${{ steps.smoke.outputs.auth_failed }}
+          DRIFT: ${{ steps.apk.outputs.drift }}
+          FIXABLE: ${{ steps.apk.outputs.fixable }}
+          CHANGED: ${{ steps.fix.outputs.changed }}
+          POST_FAILED: ${{ steps.fix.outputs.post_failed }}
+          POST_AUTH_FAILED: ${{ steps.fix.outputs.post_auth_failed }}
+          POST_AUTH_RAN: ${{ steps.fix.outputs.post_auth_ran }}
+        run: |
+          set -euo pipefail
+          found="The scheduled GraphicAudio probe found:"
+          if [[ "$FAILED" == "true" ]]; then
+            found="$found public API checks failed;"
+          fi
+          if [[ "$AUTH_FAILED" == "true" ]]; then
+            found="$found auth API checks failed;"
+          fi
+          if [[ "$DRIFT" == "true" ]]; then
+            found="$found the Android APK no longer matches \`source-graphicaudio/src/client.rs\`;"
+          fi
+          fix_paths=""
+          if [[ "$CHANGED" == "true" && "$POST_FAILED" == "false" && "$POST_AUTH_FAILED" == "false" && "$POST_AUTH_RAN" == "true" ]]; then
+            outcome="The APK constants were applied and the live probe, including auth, passed against them, so a fix pull request was opened."
+            fix_paths="crates/bookclerk-plugins/optional/source-graphicaudio/src/client.rs\nscripts/source-probes/check_client_constants.py"
+          elif [[ "$CHANGED" == "true" && "$POST_AUTH_RAN" != "true" ]]; then
+            outcome="The APK constants were applied, but auth checks could not run (configure the TEST_GA_* secrets), so no fix pull request was opened."
+          elif [[ "$CHANGED" == "true" ]]; then
+            outcome="The APK constants were applied, but the live probe still failed against them, so no fix pull request was opened; see the post-fix report in the run artifacts."
+          elif [[ "$DRIFT" == "true" && "$FIXABLE" != "true" ]]; then
+            outcome="The APK does not pin down a single replacement for every drifted constant, so the change needs a person; see the APK report below."
+          else
+            outcome="The APK offers no constant change that would fix this, so it needs a person; see the reports below."
+          fi
+          {
+            echo "summary<<SUMMARY_EOF"
+            echo "${found%;}."
+            echo ""
+            echo "$outcome"
+            echo "SUMMARY_EOF"
+            echo "fix_paths<<PATHS_EOF"
+            if [[ -n "$fix_paths" ]]; then
+              printf '%b\n' "$fix_paths"
+            fi
+            echo "PATHS_EOF"
+          } >> "$GITHUB_OUTPUT"
+          {
+            cat artifacts/graphicaudio-api-probe/report.md 2>/dev/null || echo "(no probe report)"
+            echo ""
+            cat artifacts/graphicaudio-apk-probe/report.md 2>/dev/null || echo "(no APK report)"
+          } > "$RUNNER_TEMP/graphicaudio-drift-report.md"
+
+      - name: File drift issue and open fix PR
+        if: always() && steps.outcome.outcome == 'success'
+        uses: ./.github/actions/api-drift-report
+        with:
+          token: ${{ steps.app.outputs.token }}
+          source: graphicaudio
+          source-name: GraphicAudio
+          summary: ${{ steps.outcome.outputs.summary }}
+          report-path: ${{ runner.temp }}/graphicaudio-drift-report.md
+          legacy-marker: "<!-- graphicaudio-api-probe-fail -->"
+          fix-paths: ${{ steps.outcome.outputs.fix_paths }}
+          commit-message: |
+            chore(graphicaudio): sync API constants from the GraphicAudio Android APK
+
+            Generated by graphicaudio-api-probe.yml after APK API drift and a passing
+            live probe (public and auth) against the new constants.
+          pr-title: "chore(graphicaudio): sync API constants from GraphicAudio Android APK"
+          pr-notes: |
+            Only constants the APK pins down unambiguously are rewritten
+            (`scripts/source-probes/apply_apk_updates.py`); the probe contract in
+            `check_client_constants.py` follows. GraphQL documents, request
+            fields and response structs are **not** auto-applied.
+
+      - name: Fail on hard APK probe error
+        if: always() && steps.apk.outputs.exit_code == '2'
+        run: |
+          echo "GraphicAudio APK probe failed hard (download/decompile/parse)."
+          exit 1
 
       - name: Fail job when public (or auth, if secrets set) probe failed
         if: >
           always()
           && (steps.smoke.outputs.failed == 'true'
               || steps.smoke.outputs.auth_failed == 'true')
+        env:
+          FAILED: ${{ steps.smoke.outputs.failed }}
+          AUTH_FAILED: ${{ steps.smoke.outputs.auth_failed }}
         run: |
-          if [[ "${{ steps.smoke.outputs.failed }}" == "true" ]]; then
+          if [[ "$FAILED" == "true" ]]; then
             echo "GraphicAudio public API probe failed."
           fi
-          if [[ "${{ steps.smoke.outputs.auth_failed }}" == "true" ]]; then
+          if [[ "$AUTH_FAILED" == "true" ]]; then
             echo "GraphicAudio auth API probe failed (secrets were set)."
           fi
           exit 1

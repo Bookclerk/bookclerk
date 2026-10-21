@@ -96,7 +96,8 @@ Verified live:
 | `users/metadata/by_isbn` | 200 | 404 |
 
 Constant auto-PRs run only when auth smoke **passes** after APK API drift.
-If secrets are missing on drift, CI opens an issue instead of a PR.
+Drift always files (or updates) an issue; if secrets are missing or the smoke
+fails, the issue says so and no PR is opened.
 
 ### When live smoke runs (CI)
 
@@ -149,8 +150,9 @@ exit `2` = hard failure / missing auth credentials.
    media). Live smoke uses `--no-media-download`.
 2. **Only if APK API drifted** (or `force_live_smoke`): public catalog smoke +
    auth live-smoke (API JSON only — no CDN media artifact)
-3. On blocking constant drift (schedule/manual): open a constants PR only if
-   auth smoke passed; otherwise open an issue (missing secrets or smoke failure)
+3. On blocking constant drift (schedule/manual): file or update the
+   `api-drift` issue, and when auth smoke passed, open the constants PR that
+   closes it (automation App token; see `docs/ci.md#automation-app`)
 
 Wiremock tests bind to the path constants, so constant bumps do not require
 hand-editing fixtures.
