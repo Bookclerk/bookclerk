@@ -474,6 +474,38 @@ async fn login_verify(
     issue_portal_session(&state, &library, &user, &headers, "totp_login").await
 }
 
+/// Checks `code` against `user`'s confirmed authenticator secret: the
+/// step-up a clerk join asks for on the consent page. False when the user
+/// has no confirmed TOTP or the code is wrong.
+///
+/// # Errors
+///
+/// Returns 500 when the secret cannot be read or decoded.
+pub(crate) async fn verify_user_totp(
+    library: &LibraryStore,
+    user: &bookclerk_library::UserRecord,
+    code: &str,
+) -> Result<bool, StatusCode> {
+    if !user.totp_enabled {
+        return Ok(false);
+    }
+    let Some(secret) = load_totp_secret(library, user.id, TOTP_PRIMARY).await? else {
+        return Ok(false);
+    };
+    let secret = zeroize::Zeroizing::new(secret);
+    let totp = totp_from_secret(&secret, &totp_account_label(user))?;
+    Ok(totp.check_current(code.trim()).is_some())
+}
+
+/// A current code for `secret_b32` (tests that step up with TOTP).
+#[cfg(test)]
+pub(crate) fn current_test_code(secret_b32: &str) -> String {
+    totp_from_secret(secret_b32, "test")
+        .expect("totp")
+        .generate_current()
+        .to_string()
+}
+
 /// Current MFA policy (`require_second_factor`).
 async fn get_mfa_policy(State(state): State<Arc<AppState>>) -> Json<Value> {
     let required = require_second_factor(&state).await;

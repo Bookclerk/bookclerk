@@ -62,6 +62,9 @@ pub struct NewPendingJoin {
     pub branch_name: String,
     /// Redirect URI of the authorization request.
     pub redirect_uri: String,
+    /// True when the operator offered to join as a clerk (the install was
+    /// empty); the callback may then apply a clerk bootstrap.
+    pub allow_clerk: bool,
 }
 
 /// A pending join as stored (no secrets).
@@ -79,6 +82,8 @@ pub struct PendingJoin {
     pub branch_name: String,
     /// Redirect URI.
     pub redirect_uri: String,
+    /// True when the operator offered to join as a clerk.
+    pub allow_clerk: bool,
     /// RFC 3339 expiry.
     pub expires_at: String,
 }
@@ -92,6 +97,7 @@ impl From<pending_joins::Model> for PendingJoin {
             library_name: row.library_name,
             branch_name: row.branch_name,
             redirect_uri: row.redirect_uri,
+            allow_clerk: row.allow_clerk != 0,
             expires_at: row.expires_at,
         }
     }
@@ -187,6 +193,7 @@ pub async fn create_pending_join(
         library_name: Set(join.library_name.trim().to_string()),
         branch_name: Set(join.branch_name.trim().to_string()),
         redirect_uri: Set(join.redirect_uri.clone()),
+        allow_clerk: Set(i64::from(join.allow_clerk)),
         created_at: Set(stamp(now)),
         expires_at: Set(stamp(now + ttl)),
     };
@@ -376,6 +383,7 @@ mod tests {
             library_name: "owner.example".into(),
             branch_name: "den".into(),
             redirect_uri: "http://localhost:8787/join/callback".into(),
+            allow_clerk: false,
         }
     }
 

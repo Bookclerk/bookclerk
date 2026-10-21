@@ -662,6 +662,216 @@ async fn redeem_refuses_keys_that_are_not_prime_order_points() {
     assert!(!record_node_connected(&store, "no-such-node").await.unwrap());
 }
 
+#[tokio::test]
+async fn a_clerk_redeem_records_an_owner_node_with_no_socket_credential() {
+    let _guard = master_key_test_lock_async().await;
+    let (store, dir) = cluster().await;
+    let this_node = load_or_create_node_identity(dir.path()).unwrap().node_id;
+    let owner = user(&store, UserRole::Owner, "Morgan").await;
+    let member = user(&store, UserRole::Member, "Riley").await;
+    let minted = mint_enrollment_link(&store, &operator(), owner, "rack", None)
+        .await
+        .unwrap();
+    let req = redeem_request(&minted, 7);
+    let enrolled = redeem_enrollment_link_as(&store, &req, NodeKind::Owner)
+        .await
+        .unwrap();
+    let node = load_node(&store, &enrolled.node_id).await.unwrap();
+    assert_eq!(node.kind, NodeKind::Owner);
+    assert!(load_node_credential(&store, &enrolled.node_id)
+        .await
+        .unwrap()
+        .is_none());
+    // The kind is part of the request: a retry as a host is refused.
+    let again = redeem_enrollment_link_as(&store, &req, NodeKind::Owner)
+        .await
+        .unwrap();
+    assert!(again.replayed);
+    assert_forbidden(
+        &redeem_enrollment_link_as(&store, &req, NodeKind::Host)
+            .await
+            .unwrap_err(),
+    );
+
+    // Removal: a member who does not own it does not see it; this node and
+    // a running node stay; then an Owner removes it.
+    let as_member = EnrollmentActor::User { user_id: member };
+    assert!(matches!(
+        remove_owner_node(&store, &as_member, &enrolled.node_id, &this_node)
+            .await
+            .unwrap_err(),
+        LibraryError::NotFound(_)
+    ));
+    let as_owner = EnrollmentActor::User { user_id: owner };
+    assert!(matches!(
+        remove_owner_node(&store, &as_owner, &this_node, &this_node)
+            .await
+            .unwrap_err(),
+        LibraryError::Invalid(_)
+    ));
+    let beat = NodeSampler::new(dir.path()).sample();
+    record_node_heartbeat(&store, &enrolled.node_id, &beat)
+        .await
+        .unwrap();
+    assert!(matches!(
+        remove_owner_node(&store, &as_owner, &enrolled.node_id, &this_node)
+            .await
+            .unwrap_err(),
+        LibraryError::Conflict(_)
+    ));
+    store
+        .db()
+        .execute_unprepared(&format!(
+            "UPDATE node_status SET heartbeat_ms = 0 WHERE node_id = '{}'",
+            enrolled.node_id
+        ))
+        .await
+        .unwrap();
+    // Rows keyed by node id with no foreign key to `nodes`: the removed
+    // node's go with it, this node's stay.
+    let config_operator = ConfigActor::Operator {
+        id: "operator".into(),
+    };
+    let instance = create_plugin_instance(
+        &store,
+        &config_operator,
+        "path:file:///tmp/clerk-removal#removal",
+        "",
+    )
+    .await
+    .unwrap();
+    let mut deployments = Vec::new();
+    for node in [&enrolled.node_id, &this_node] {
+        deployments.push(
+            ensure_plugin_deployment(
+                &store,
+                &config_operator,
+                &instance.id,
+                node,
+                DesiredState::Absent,
+            )
+            .await
+            .unwrap()
+            .deployment_id,
+        );
+    }
+    let mut seed = Vec::new();
+    for node in [&enrolled.node_id, &this_node] {
+        seed.push(format!(
+            "INSERT INTO event_subscriber_nodes (node_id, plugin_id, subscriptions_json, heartbeat_at) \
+             VALUES ('{node}', 'p', '[]', '2026-01-01T00:00:00Z')"
+        ));
+    }
+    // Observations: each node of the removed node's deployment, and the
+    // removed node of this node's.
+    for (deployment, node) in [
+        (&deployments[0], &enrolled.node_id),
+        (&deployments[0], &this_node),
+        (&deployments[1], &enrolled.node_id),
+        (&deployments[1], &this_node),
+    ] {
+        seed.push(format!(
+            "INSERT INTO plugin_deployment_observations \
+             (deployment_id, node_id, incarnation, status, detail, observed_at) \
+             VALUES ('{deployment}', '{node}', 'i', 'retired', '', '2026-01-01T00:00:00Z')"
+        ));
+    }
+    for sql in seed {
+        store.db().execute_unprepared(&sql).await.unwrap();
+    }
+    remove_owner_node(&store, &as_owner, &enrolled.node_id, &this_node)
+        .await
+        .unwrap();
+    assert!(matches!(
+        load_node(&store, &enrolled.node_id).await.unwrap_err(),
+        LibraryError::NotFound(_)
+    ));
+    assert!(load_node_status(&store, &enrolled.node_id)
+        .await
+        .unwrap()
+        .is_none());
+    let count = |sql: String| {
+        let store = store.clone();
+        async move {
+            store
+                .db()
+                .query_one_raw(sea_orm::Statement::from_string(
+                    store.db().get_database_backend(),
+                    sql,
+                ))
+                .await
+                .unwrap()
+                .unwrap()
+                .try_get_by_index::<i64>(0)
+                .unwrap()
+        }
+    };
+    for (table, column) in [
+        ("event_subscriber_nodes", "node_id"),
+        ("plugin_deployments", "node_id"),
+        ("plugin_deployment_observations", "node_id"),
+        ("plugin_deployment_observations", "deployment_id"),
+    ] {
+        let gone = if column == "node_id" {
+            enrolled.node_id.clone()
+        } else {
+            deployments[0].clone()
+        };
+        assert_eq!(
+            count(format!(
+                "SELECT COUNT(*) FROM {table} WHERE {column} = '{gone}'"
+            ))
+            .await,
+            0,
+            "{table}.{column}"
+        );
+    }
+    assert_eq!(
+        count(format!(
+            "SELECT COUNT(*) FROM event_subscriber_nodes WHERE node_id = '{this_node}'"
+        ))
+        .await,
+        1
+    );
+    assert_eq!(
+        count(format!(
+            "SELECT COUNT(*) FROM plugin_deployment_observations WHERE deployment_id = '{}' AND node_id = '{this_node}'",
+            deployments[1]
+        ))
+        .await,
+        1
+    );
+
+    // A branch (host node) is revoked, not removed.
+    let minted = mint_enrollment_link(&store, &operator(), owner, "desk", None)
+        .await
+        .unwrap();
+    let branch = redeem_enrollment_link(&store, &redeem_request(&minted, 9))
+        .await
+        .unwrap();
+    assert!(matches!(
+        remove_owner_node(&store, &operator(), &branch.node_id, &this_node)
+            .await
+            .unwrap_err(),
+        LibraryError::Invalid(_)
+    ));
+}
+
+#[tokio::test]
+async fn library_contents_counts_what_an_install_holds() {
+    let _guard = master_key_test_lock_async().await;
+    let (store, _dir) = cluster().await;
+    let empty = library_contents(&store).await.unwrap();
+    assert!(empty.is_empty(), "{empty:?}");
+    assert!(empty.reasons().is_empty());
+    user(&store, UserRole::Member, "Riley").await;
+    user(&store, UserRole::Owner, "Morgan").await;
+    let held = library_contents(&store).await.unwrap();
+    assert!(!held.is_empty());
+    assert_eq!(held.users, 2);
+    assert_eq!(held.reasons(), ["2 users"]);
+}
+
 /// Parsing a link registers its secret for redaction, so a joining host
 /// that never minted it still scrubs it from logs and diagnostics.
 #[test]

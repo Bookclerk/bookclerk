@@ -29,6 +29,7 @@ mod profile;
 /// Builds the daemon source / integration registry for [`AppState`].
 mod registry;
 mod requirements_sweep;
+mod restart;
 mod scheduler;
 mod totp;
 mod tray_companion;
@@ -72,6 +73,10 @@ struct Args {
     #[arg(long, env = "BOOKCLERK_DAEMON_LISTEN")]
     listen: Option<String>,
 }
+
+/// How many more times the first start after a clerk join tries the
+/// library's database before undoing the join.
+const CLERK_JOIN_OPEN_RETRIES: u32 = 3;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -119,8 +124,77 @@ async fn main() -> anyhow::Result<()> {
 
     let paths = config.paths().clone();
     paths.ensure_dirs()?;
+    // Before the node identity, master key or database is opened: a
+    // half-applied clerk join would pair a database with the wrong node
+    // identity or key.
+    if let Some(problem) =
+        bookclerk_node_client::interrupted_clerk_join(&paths.files_dir, &paths.config_file)
+    {
+        anyhow::bail!(problem);
+    }
+    // A clerk join applied before this start is confirmed once the
+    // library's database opens, and undone if it does not; one whose undoing
+    // was cut short is finished first.
+    let mut pending_join =
+        bookclerk_node_client::pending_clerk_join(&paths.files_dir, &paths.config_file);
+    if let Some(join) = pending_join.take_if(|join| join.reverting()) {
+        return match join.revert() {
+            Ok(()) => Err(anyhow::anyhow!(
+                "finished undoing an earlier clerk join: this server's own settings, node identity and key are back; start it again to run on them"
+            )),
+            Err(failed) => Err(anyhow::anyhow!(
+                "could not finish undoing an earlier clerk join ({failed}); fix that and start again"
+            )),
+        };
+    }
     bookclerk_plugin_host::retry_abandoned_acl_journals(&paths.files_dir);
 
+    let opened = match pending_join {
+        None => bookclerk_plugin_host::open_host_control_plane(&config).await?,
+        Some(join) => {
+            // A database that is only slow to come up (a restarting
+            // PostgreSQL, a DNS or network blip) gets a few tries before the
+            // join is undone.
+            let mut tries = 0u32;
+            let opened = loop {
+                match bookclerk_plugin_host::open_host_control_plane(&config).await {
+                    Ok(opened) => break Ok(opened),
+                    Err(err) if tries < CLERK_JOIN_OPEN_RETRIES => {
+                        tries += 1;
+                        tracing::warn!(
+                            attempt = tries,
+                            error = %err,
+                            "the library's database did not open after joining as a clerk; trying again"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(5 * u64::from(tries)))
+                            .await;
+                    }
+                    Err(err) => break Err(err),
+                }
+            };
+            match opened {
+                Ok(opened) => {
+                    join.confirm();
+                    tracing::info!("the library's database opened; the clerk join is complete");
+                    opened
+                }
+                Err(err) => {
+                    tracing::error!(error = %err, "the library's database did not open after joining as a clerk; undoing the join");
+                    return Err(match join.revert() {
+                        Ok(()) => anyhow::anyhow!(
+                            "the library's database did not open after joining as a clerk (see the log), so the join was undone: this server's own settings, node identity and key are back. Start it again to run on them, and have the clerk removed in the library's Settings, Clerks"
+                        ),
+                        Err(failed) if failed.started => anyhow::anyhow!(
+                            "the library's database did not open after joining as a clerk (see the log), and undoing the join stopped part way ({failed}); the next start finishes undoing it"
+                        ),
+                        Err(failed) => anyhow::anyhow!(
+                            "the library's database did not open after joining as a clerk (see the log), and the join could not be undone ({failed}); if it is left as it is, the next start tries the library's database again"
+                        ),
+                    });
+                }
+            }
+        }
+    };
     let bookclerk_plugin_host::HostControlPlane {
         config,
         database_registry,
@@ -129,7 +203,7 @@ async fn main() -> anyhow::Result<()> {
         enrolled,
         present,
         ..
-    } = bookclerk_plugin_host::open_host_control_plane(&config).await?;
+    } = opened;
     tracing::info!(
         node_id = %control_plane.node.node_id,
         cluster_id = %control_plane.cluster_id,
@@ -220,6 +294,9 @@ async fn main() -> anyhow::Result<()> {
 
         let listeners = loop {
             if process_shutdown.load(Ordering::SeqCst) {
+                if restart::is_requested() {
+                    restart::reexec()?;
+                }
                 return Ok(());
             }
 
@@ -300,6 +377,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Best-effort stop of integration watchers on process exit.
     state.integrations.read().await.stop_all().await;
+    if restart::is_requested() {
+        // New bootstrap files (a clerk join): start again on them.
+        restart::reexec()?;
+    }
     Ok(())
 }
 
@@ -308,6 +389,9 @@ async fn serve_shutdown(listen_reload: Arc<Notify>, process_shutdown: Arc<Atomic
     let process = shutdown_signal();
     tokio::select! {
         () = process => {
+            process_shutdown.store(true, Ordering::SeqCst);
+        }
+        () = restart::requested() => {
             process_shutdown.store(true, Ordering::SeqCst);
         }
         () = listen_reload.notified() => {}

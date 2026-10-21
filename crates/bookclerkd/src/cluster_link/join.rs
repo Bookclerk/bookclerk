@@ -8,15 +8,24 @@
 //!   `GET /api/node/v1/info` from this daemon (never from the browser)
 //!   under the transport policy; a self-signed library's fingerprint comes
 //!   back for the operator to confirm.
-//! - `POST /api/config/join/start` `{address, fingerprint?, branch_name?}`:
-//!   reads the library again, checks the confirmed fingerprint, makes the
-//!   PKCE verifier, `state` and node keys, keeps them sealed in a pending
-//!   join (10 minutes), and answers the authorize URL to send the browser
-//!   to. The redirect URI is this install's own `/join/callback`.
-//! - `POST /api/config/join/callback` `{code, state}`: the browser came
-//!   back. The daemon matches `state` to its pending join, redeems the
-//!   code with the verifier only it holds, records the link, and starts
-//!   its client at once.
+//! - `POST /api/config/join/start` `{address, fingerprint?, branch_name?,
+//!   clerk?}`: reads the library again, checks the confirmed fingerprint,
+//!   makes the PKCE verifier, `state` and node keys, keeps them sealed in a
+//!   pending join (10 minutes), and answers the authorize URL to send the
+//!   browser to. The redirect URI is this install's own `/join/callback`.
+//!   With `clerk: true` the sign-in also offers to join as a clerk; only an
+//!   empty install may ([`bookclerk_node_client::install_problem`]).
+//! - `POST /api/config/join/callback` `{code, state, connection?}`: the
+//!   browser came back. The daemon matches `state` to its pending join and
+//!   redeems the code with the verifier only it holds. As a branch it
+//!   records the link and starts its client at once. As a clerk (only for
+//!   a pending join that offered it, and only while the install is still
+//!   empty) it opens the sealed bootstrap with the node key, checks the
+//!   library's database guest is installed here, writes the bootstrap as
+//!   this install's own (`[database]`, `master.key` wrapped with this
+//!   install's password, `node-identity.json`), answers, and restarts on it
+//!   ([`crate::restart`]): this install is then an owner node of the
+//!   library.
 //! - `POST /api/config/join/invite` `{link}`: joins with a pasted branch
 //!   invite; the link is used once and not kept.
 //! - `POST /api/config/join/leave` `{cluster_id}`: Leave library.
@@ -30,14 +39,16 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use bookclerk_config::DatabasePluginKind;
 use bookclerk_library::control_plane::{
     create_pending_join, finish_pending_join, list_cluster_links, open_pending_join, NewPendingJoin,
 };
 use bookclerk_node_client::{
-    authorize_branch, inspect_library, join_cluster, redeem_branch_code, BranchRedeem,
+    apply_clerk_bootstrap, authorize_join, bootstrap_database_kind, inspect_library,
+    install_problem, join_cluster, redeem_branch_code, redeem_clerk_code, BranchRedeem,
     InspectedLibrary, JoinError,
 };
-use bookclerk_node_proto::{is_branch_name, JOIN_CALLBACK_PATH};
+use bookclerk_node_proto::{is_branch_name, ConnectionType, JOIN_CALLBACK_PATH};
 use serde::Deserialize;
 use serde_json::json;
 use zeroize::Zeroizing;
@@ -154,9 +165,15 @@ pub async fn get_join_status(State(state): State<Arc<AppState>>) -> Response {
     };
     let owners = library.count_owners().await.unwrap_or(1);
     let admins = library.count_administrators().await.unwrap_or(1);
+    let clerk_problem = match install_problem(&library).await {
+        Ok(problem) => problem,
+        Err(err) => return join_failed(&err),
+    };
     Json(json!({
         "fresh": owners == 0 && admins == 0 && links.is_empty(),
         "has_owner": owners > 0 || admins > 0,
+        "clerk_eligible": clerk_problem.is_none(),
+        "clerk_problem": clerk_problem,
         "default_branch_name": default_branch_name(),
         "links": links
             .iter()
@@ -201,6 +218,10 @@ pub struct StartBody {
     /// The name to join as (default: this machine's name).
     #[serde(default)]
     branch_name: Option<String>,
+    /// Offer to join as a clerk (an owner node that shares the library's
+    /// database): only an empty install may, and its data is replaced.
+    #[serde(default)]
+    clerk: bool,
 }
 
 /// `POST /api/config/join/start`.
@@ -232,6 +253,14 @@ pub async fn post_join_start(
             );
         }
     }
+    let store = state.library_snapshot().await;
+    if body.clerk {
+        match install_problem(&store).await {
+            Ok(None) => {}
+            Ok(Some(problem)) => return join_error(StatusCode::CONFLICT, "not_empty", &problem),
+            Err(err) => return join_failed(&err),
+        }
+    }
     let branch_name = body
         .branch_name
         .as_deref()
@@ -245,11 +274,10 @@ pub async fn post_join_start(
             callback_origin(&cfg, &headers).trim_end_matches('/')
         )
     };
-    let authorization = match authorize_branch(&library, &redirect_uri, &branch_name) {
+    let authorization = match authorize_join(&library, &redirect_uri, &branch_name, body.clerk) {
         Ok(authorization) => authorization,
         Err(err) => return join_failed(&err),
     };
-    let store = state.library_snapshot().await;
     let pending = NewPendingJoin {
         owner_origin: library.origin.clone(),
         spki_pin: library.spki_pin.clone(),
@@ -257,6 +285,7 @@ pub async fn post_join_start(
         library_name: library.info.library_name.clone(),
         branch_name: branch_name.clone(),
         redirect_uri: authorization.redirect_uri.clone(),
+        allow_clerk: body.clerk,
     };
     if let Err(err) = create_pending_join(
         &store,
@@ -273,6 +302,7 @@ pub async fn post_join_start(
     tracing::info!(
         origin = %library.origin,
         cluster_id = %library.info.cluster_id,
+        clerk_offered = body.clerk,
         "branch sign-in started"
     );
     no_store(
@@ -280,6 +310,7 @@ pub async fn post_join_start(
             "authorize_url": authorization.authorize_url,
             "library": library_json(&library),
             "branch_name": branch_name,
+            "clerk_offered": body.clerk,
             "expires_in_secs": bookclerk_library::control_plane::PENDING_JOIN_TTL.as_secs(),
         }))
         .into_response(),
@@ -299,6 +330,11 @@ pub struct CallbackBody {
     /// The library's `error` (`access_denied`), when it sent one.
     #[serde(default)]
     error: Option<String>,
+    /// The connection type the library's user chose (`clerk`; a branch
+    /// when left out). The code is bound to it, so a changed value only
+    /// fails the redeem.
+    #[serde(default)]
+    connection: Option<String>,
 }
 
 /// Serializes sign-in callbacks, so two attempts for one sign-in (a retry
@@ -347,11 +383,7 @@ pub async fn post_join_callback(
             "this sign-in is unknown, already used, or took longer than 10 minutes; start again",
         );
     };
-    let finish = || async {
-        if let Err(err) = finish_pending_join(&store, sign_in).await {
-            tracing::warn!(error = %err, "could not delete a finished sign-in; it expires on its own");
-        }
-    };
+    let finish = || end_sign_in(&store, sign_in);
     if let Some(error) = body.error.as_deref() {
         finish().await;
         let detail = if error == "access_denied" {
@@ -363,6 +395,22 @@ pub async fn post_join_callback(
     }
     if code.trim().is_empty() {
         return join_error(StatusCode::BAD_REQUEST, "invalid_request", "no code");
+    }
+    let connection = match body.connection.as_deref().map(ConnectionType::parse) {
+        None => ConnectionType::Branch,
+        Some(Some(connection)) => connection,
+        Some(None) => {
+            return join_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "connection must be branch or clerk",
+            )
+        }
+    };
+    if connection == ConnectionType::Clerk {
+        let answer = join_as_clerk(&state, &store, sign_in, taken, code.trim()).await;
+        drop(one_at_a_time);
+        return answer;
     }
     let joined = tokio::time::timeout(
         REDEEM_TIMEOUT,
@@ -418,6 +466,197 @@ pub async fn post_join_callback(
         "cluster": link_json(&link),
         "library_name": taken.join.library_name,
         "running": running,
+    }))
+    .into_response()
+}
+
+/// Ends the pending sign-in for `sign_in` once its outcome is final.
+async fn end_sign_in(store: &bookclerk_library::LibraryStore, sign_in: &str) {
+    if let Err(err) = finish_pending_join(store, sign_in).await {
+        tracing::warn!(error = %err, "could not delete a finished sign-in; it expires on its own");
+    }
+}
+
+/// True when the guest for `kind` is installed here, so the daemon can
+/// open the library's database after the restart
+/// ([`bookclerk_node_client::database_guest_installed`]; tests may assume
+/// it).
+fn database_guest_installed(cfg: &bookclerk_config::Config, kind: DatabasePluginKind) -> bool {
+    #[cfg(test)]
+    if tests::ASSUME_DATABASE_GUESTS.load(std::sync::atomic::Ordering::SeqCst) {
+        return true;
+    }
+    bookclerk_node_client::database_guest_installed(cfg, kind)
+}
+
+/// The callback for a clerk: redeem as a clerk, open the sealed bootstrap,
+/// write it as this install's own, and restart on it. The caller holds the
+/// callback lock. Like a branch's, the pending sign-in is kept when the
+/// redeem fails for a reason a retry can fix (502 `join_retry`), and ended
+/// on success, refusal, or anything else. It is also kept when this server
+/// lacks the database guest or D1 token the bootstrap needs (409
+/// `database_guest_missing`, `d1_token_missing`), so Try again works once
+/// that is fixed.
+async fn join_as_clerk(
+    state: &Arc<AppState>,
+    store: &bookclerk_library::LibraryStore,
+    sign_in: &str,
+    taken: bookclerk_library::control_plane::TakenJoin,
+    code: &str,
+) -> Response {
+    if !taken.join.allow_clerk {
+        end_sign_in(store, sign_in).await;
+        return join_error(
+            StatusCode::BAD_REQUEST,
+            "clerk_not_offered",
+            "this sign-in did not offer to join as a clerk; start again and choose to join as a clerk",
+        );
+    }
+    // Checked again here: nothing may have been added since the start.
+    match install_problem(store).await {
+        Ok(None) => {}
+        Ok(Some(problem)) => {
+            end_sign_in(store, sign_in).await;
+            return join_error(StatusCode::CONFLICT, "not_empty", &problem);
+        }
+        // A read failure here: the code is not spent yet, so a retry can
+        // finish the join.
+        Err(err) => {
+            return join_error(
+                StatusCode::BAD_GATEWAY,
+                "join_retry",
+                &format!("{err}; try again"),
+            )
+        }
+    }
+    let joined = tokio::time::timeout(
+        REDEEM_TIMEOUT,
+        redeem_clerk_code(
+            &BranchRedeem {
+                origin: &taken.join.owner_origin,
+                spki_pin: taken.join.spki_pin.as_deref(),
+                cluster_id: &taken.join.owner_cluster_id,
+                code,
+                verifier: &taken.verifier,
+                redirect_uri: &taken.join.redirect_uri,
+                branch_name: &taken.join.branch_name,
+                software_version: env!("CARGO_PKG_VERSION"),
+            },
+            &taken.keys,
+        ),
+    )
+    .await;
+    // The redeem registered both for redaction, as a branch's does.
+    bookclerk_config::unregister_secret(code);
+    bookclerk_config::unregister_secret(taken.verifier.as_str());
+    drop(taken.verifier);
+    drop(taken.keys);
+    let Ok(joined) = joined else {
+        return join_error(
+            StatusCode::BAD_GATEWAY,
+            "join_retry",
+            "the library did not answer in time; try again",
+        );
+    };
+    let joined = match joined {
+        Ok(joined) => joined,
+        // A repeat of the same exchange gets the same node and a freshly
+        // sealed bootstrap.
+        Err(err) if err.is_retryable() => {
+            return join_error(
+                StatusCode::BAD_GATEWAY,
+                "join_retry",
+                &format!("{err}; try again"),
+            )
+        }
+        Err(err) => {
+            end_sign_in(store, sign_in).await;
+            return join_failed(&err);
+        }
+    };
+    // The library holds the node now. What it needs here is checked while
+    // the sign-in is still pending: once the operator fixes it, Try again
+    // repeats the same exchange, and the library answers it with the same
+    // node and a freshly sealed bootstrap, so no orphan node is left.
+    let cfg = state.config.read().await.clone();
+    let kind = bootstrap_database_kind(&joined.bootstrap.database);
+    if !database_guest_installed(&cfg, kind) {
+        return join_error(
+            StatusCode::CONFLICT,
+            "database_guest_missing",
+            &format!(
+                "the library's database is {}, and its database plugin is not installed on this server; install it, then try again within 10 minutes (the library holds this server as node {})",
+                kind.as_str(),
+                joined.node_id
+            ),
+        );
+    }
+    if kind == DatabasePluginKind::D1 && bookclerk_config::resolve_d1_api_token().is_err() {
+        return join_error(
+            StatusCode::CONFLICT,
+            "d1_token_missing",
+            &format!(
+                "the library's database is Cloudflare D1: set BOOKCLERK_D1_API_TOKEN for this server and restart it (the token is never sent between servers), then try again within 10 minutes (the library holds this server as node {})",
+                joined.node_id
+            ),
+        );
+    }
+    // The bootstrap is in hand and can be used here: what follows does not
+    // redeem again.
+    end_sign_in(store, sign_in).await;
+    let files_dir = cfg.paths().files_dir.clone();
+    let config_file = cfg.paths().config_file.clone();
+    let password = cfg.auth_password().map(Zeroizing::new);
+    let applied = apply_clerk_bootstrap(
+        &files_dir,
+        &config_file,
+        &joined.bootstrap,
+        password.as_ref().map(|p| p.as_str()),
+    );
+    drop(joined.bootstrap);
+    let applied = match applied {
+        Ok(applied) => applied,
+        // The library holds the node now: name it, so the operator can
+        // have that clerk removed there before joining again.
+        Err(err) => {
+            return join_failed(&JoinError::Unsaved {
+                node_id: Some(joined.node_id.clone()),
+                reason: err.to_string(),
+            })
+        }
+    };
+    let _ = store
+        .insert_security_audit_event(
+            "operator",
+            "clerk_joined",
+            Some(
+                &json!({
+                    "cluster_id": joined.cluster_id,
+                    "node_id": joined.node_id,
+                    "database": applied.database.as_str(),
+                })
+                .to_string(),
+            ),
+        )
+        .await;
+    tracing::info!(
+        cluster_id = %joined.cluster_id,
+        node_id = %joined.node_id,
+        "joined the library as a clerk; restarting as an owner node"
+    );
+    // Answer first; the restart waits for in-flight requests.
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        crate::restart::request("clerk_join");
+    });
+    Json(json!({
+        "connection": "clerk",
+        "cluster_id": joined.cluster_id,
+        "node_id": joined.node_id,
+        "library_name": taken.join.library_name,
+        "database": applied.database.as_str(),
+        "master_key_wrapped": applied.wrapped,
+        "restarting": true,
     }))
     .into_response()
 }
