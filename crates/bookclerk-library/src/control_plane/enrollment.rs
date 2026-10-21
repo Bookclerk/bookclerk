@@ -23,7 +23,9 @@
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use rand::RngCore;
 use sea_orm::sea_query::Expr;
-use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{
+    ActiveValue::Set, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -886,7 +888,8 @@ pub async fn record_authorized_enrollment_link(
 /// at once and drops its live status, so it stops counting as a node
 /// without waiting for missed heartbeats, and tells every node so the
 /// connection is closed wherever it is held. Answers false when the node
-/// has no unrevoked credential.
+/// has no unrevoked credential; for one already revoked, the cleanup is
+/// still finished, so a retried leave completes one that failed part way.
 ///
 /// # Errors
 ///
@@ -902,22 +905,34 @@ pub async fn record_node_left(store: &LibraryStore, node_id: &str) -> Result<boo
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
-    // Titles it shared stop being shared; their files stay here. Detaching
-    // is idempotent and runs before the already-revoked check, so a leave
-    // whose detach failed after the revoke is finished by its retry.
-    super::branch_catalog::detach_branch_titles(store, node_id, super::DETACHED_LEFT).await?;
-    if updated.rows_affected != 1 {
-        return Ok(false);
+    let revoked_now = updated.rows_affected == 1;
+    if !revoked_now {
+        // Already revoked (a retried leave whose cleanup failed part way)
+        // or never enrolled: only the first finishes the cleanup below.
+        let known = node_credentials::Entity::find()
+            .filter(node_credentials::Column::NodeId.eq(node_id))
+            .count(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        if known == 0 {
+            return Ok(false);
+        }
     }
+    // Each step below is idempotent, so a leave whose cleanup failed after
+    // the revoke is finished by its retry. Titles it shared stop being
+    // shared; their files stay here.
+    super::branch_catalog::detach_branch_titles(store, node_id, super::DETACHED_LEFT).await?;
     crate::entities::node_status::Entity::delete_many()
         .filter(crate::entities::node_status::Column::NodeId.eq(node_id))
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
-    let _ = store
-        .insert_security_audit_event(&format!("node:{node_id}"), "node_left", None)
-        .await;
-    tracing::info!(node_id, "host node left the cluster");
+    if revoked_now {
+        let _ = store
+            .insert_security_audit_event(&format!("node:{node_id}"), "node_left", None)
+            .await;
+        tracing::info!(node_id, "host node left the cluster");
+    }
     notify_all_nodes(
         store,
         NodeMessage::NodeRevoked {
@@ -925,7 +940,7 @@ pub async fn record_node_left(store: &LibraryStore, node_id: &str) -> Result<boo
         },
     )
     .await;
-    Ok(true)
+    Ok(revoked_now)
 }
 
 /// What a host submits to redeem a link.

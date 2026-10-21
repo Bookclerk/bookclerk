@@ -388,6 +388,20 @@ async fn stopping_sharing_or_leaving_marks_the_titles_and_the_owner_removes_them
         .unwrap());
     let rows = list_branch_titles(&store, None, 10).await.unwrap();
     assert_eq!(rows[0].detached_reason.as_deref(), Some(DETACHED_LEFT));
+    // A retried leave finds the credential revoked and redoes only the
+    // idempotent cleanup; an unknown node is still answered false.
+    assert!(!super::super::record_node_left(&store, BRANCH)
+        .await
+        .unwrap());
+    assert!(!super::super::record_node_left(&store, "no-such-node")
+        .await
+        .unwrap());
+    assert_eq!(
+        list_branch_titles(&store, None, 10).await.unwrap()[0]
+            .detached_reason
+            .as_deref(),
+        Some(DETACHED_LEFT)
+    );
     assert_eq!(
         begin_catalog(&store, BRANCH, true, true).await.unwrap(),
         CatalogBegin::Refused("not_a_branch")
