@@ -1,0 +1,113 @@
+# Bump locked dependencies that open OSV code-scanning alerts flag.
+#
+# Runs after each full OSV scan of main (push, schedule or manual run of
+# osv-scanner.yml). Reads the open OSV-Scanner alerts with the automation App
+# token, then `scripts/osv-remediate.py` tries lockfile-only updates
+# (Cargo.lock, package-lock.json) that move each flagged package out of its
+# advisory's affected ranges. Manifests are never edited.
+#
+# Alert details are not public: this workflow's log prints counts only, and
+# the pull request lists only the bumps it applied (advisory ids are public
+# once the fix lands). Unfixed alerts stay in Security -> Code scanning.
+#
+# The pull request is ready for review, not auto-merged: a bump can pull in a
+# release newer than the Dependabot cooldown, so a maintainer approves it.
+# See docs/ci.md#automation-app.
+
+name: OSV remediation
+
+on:
+  workflow_run:
+    workflows: ["OSV-Scanner"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+# Alerts are read and the branch and PR written with the automation App token.
+permissions:
+  contents: read
+
+concurrency:
+  group: osv-remediation
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  remediate:
+    name: bump flagged dependencies
+    # Only full scans of main: PR and merge-group scans report diffs, not the
+    # alerts on main. The event check also matters for safety: `branches`
+    # matches the triggering run's head branch name, which a fork PR can also
+    # call `main`. Either way the job checks out main, never PR code.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       contains(fromJSON('["push", "schedule", "workflow_dispatch"]'), github.event.workflow_run.event))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+
+      - name: Mint alert-read token
+        id: read
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          permission-security-events: read
+
+      - name: Apply lockfile bumps
+        id: bump
+        env:
+          ALERTS_TOKEN: ${{ steps.read.outputs.token }}
+        run: |
+          python3 scripts/osv-remediate.py \
+            --ref refs/heads/main \
+            --summary "$RUNNER_TEMP/osv-remediation.md" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Mint pull-request token
+        if: steps.bump.outputs.changed == 'true'
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Create or update pull request
+        if: steps.bump.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ steps.app.outputs.token }}
+          # Commit through the API so the commit is signed and attributed to the App.
+          sign-commits: true
+          commit-message: |
+            build(deps): bump dependencies flagged by OSV
+
+            Lockfile-only updates within existing version requirements.
+          branch: deps/osv-remediation
+          delete-branch: true
+          title: "build(deps): bump dependencies flagged by OSV"
+          body-path: ${{ runner.temp }}/osv-remediation.md
+          labels: |
+            dependencies
+          # Git pathspecs: `*` also matches `/`, so these cover nested lockfiles.
+          add-paths: |
+            *Cargo.lock
+            *package-lock.json

@@ -428,6 +428,7 @@ App as [Dependabot auto-merge](#dependabot-auto-merge) instead of
 | `librofm-apk-probe.yml` | `api-drift` issue; `api-drift/librofm` branch and pull request |
 | `graphicaudio-api-probe.yml` | `api-drift` issue; `api-drift/graphicaudio` branch and pull request |
 | `chirp-api-probe.yml` | `api-drift` issue; `api-drift/chirp` branch and pull request |
+| `osv-remediate.yml` | reads OSV code-scanning alerts; `deps/osv-remediation` branch and pull request |
 
 The probes share `.github/actions/api-drift-report`: one open issue per source
 (found by a hidden `<!-- api-drift:<source> -->` marker and updated in place,
@@ -447,6 +448,8 @@ attributed to the App.
    - **Contents: read and write** (push branches)
    - **Pull requests: read and write** (open, update and auto-merge PRs)
    - **Issues: read and write** (file and update drift issues, add labels)
+   - **Code scanning alerts: read** (`osv-remediate.yml` reads the OSV
+     alerts on `main`)
    - **Metadata: read** (always granted)
 
    **Workflows** is not needed: none of these pull requests touch
@@ -455,6 +458,29 @@ attributed to the App.
    Scheduled runs do not receive the Dependabot copies:
    - `AUTOMATION_APP_CLIENT_ID`: the App's client ID.
    - `AUTOMATION_APP_PRIVATE_KEY`: a private key generated for the App.
+
+### OSV remediation
+
+`osv-remediate.yml` runs after every full OSV scan of `main` (push, schedule
+or manual run) and on demand. It reads the open OSV-Scanner alerts in
+Security → Code scanning, looks each advisory up on api.osv.dev, and
+`scripts/osv-remediate.py` tries lockfile-only updates (`cargo update
+--precise`, then the newest compatible release; `npm update
+--package-lock-only --ignore-scripts`) until no locked version of the package
+is inside the advisory's affected ranges. An attempt that does not clear the
+advisory is rolled back. Manifests are never edited, so a fix that needs a new
+major version, or a change upstream, stays an open alert for a maintainer.
+
+Scan results are not public, so the run keeps them private: its log prints
+counts only (command output is discarded, because a failed attempt would name
+a vulnerable package), and the pull request lists only the bumps it applied
+with their advisory ids. The pull request is not auto-merged; it can take a
+release newer than the Dependabot cooldown, so a maintainer approves it.
+
+Dependabot does not cover this: it raises alerts and security updates only for
+advisories GitHub has reviewed, and RustSec advisories often stay unreviewed,
+while its version updates wait out the cooldown and never touch transitive-only
+crates.
 
 Pull requests the App opens are not authored by a person, so rulesets that
 require approval for such changes still need a maintainer's approval before
