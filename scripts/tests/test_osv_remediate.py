@@ -286,6 +286,14 @@ class ApplyTest(unittest.TestCase):
         )
         self.assertIsNone(osv._replacement(target, before, before))
 
+    def test_consolidation_onto_existing_fix_accepted(self) -> None:
+        target = osv.Target(
+            "Cargo.lock", "crates.io", "rustls", V("0.23.45"), {"R": RUSTLS}
+        )
+        before = [V("0.23.45"), V("0.23.46")]
+        self.assertEqual(osv._replacement(target, before, [V("0.23.46")]), V("0.23.46"))
+        self.assertIsNone(osv._replacement(target, before, []))
+
     def test_alert_token_not_passed_to_children(self) -> None:
         os.environ["ALERTS_TOKEN"] = "secret"
         try:

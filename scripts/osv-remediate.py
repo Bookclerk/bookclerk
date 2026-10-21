@@ -587,20 +587,28 @@ def _replacement(
         after: Locked versions of the package after the update.
 
     Returns:
-        The smallest newly locked version, when `target.locked` is gone and
-        no newly locked version is affected by the target's advisories;
-        otherwise None.
+        When `target.locked` is gone and no newly locked version is affected
+        by the target's advisories: the smallest newly locked version, or,
+        when the update only consolidated dependents onto a version that was
+        already locked, the smallest unaffected locked version above the old
+        one. Otherwise None.
     """
+
+    def affected(version: Version) -> bool:
+        return any(
+            is_affected(vuln, target.ecosystem, target.name, version)
+            for vuln in target.vulns.values()
+        )
+
     if target.locked in after:
         return None
     added = sorted(set(after) - set(before))
-    if not added:
+    if any(affected(version) for version in added):
         return None
-    for version in added:
-        for vuln in target.vulns.values():
-            if is_affected(vuln, target.ecosystem, target.name, version):
-                return None
-    return added[0]
+    if added:
+        return added[0]
+    survivors = sorted(v for v in after if v > target.locked and not affected(v))
+    return survivors[0] if survivors else None
 
 
 def _child_env() -> dict[str, str]:
