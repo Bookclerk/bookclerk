@@ -35,7 +35,7 @@ use bookclerk_node_proto::{
 };
 use bookclerk_plugin_abi::{DbValue, TypedDbStatement};
 use chrono::Utc;
-use sea_orm::sea_query::{Expr, LikeExpr};
+use sea_orm::sea_query::{Expr, LikeExpr, Query};
 use sea_orm::{
     ColumnTrait, Condition, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect,
 };
@@ -48,7 +48,7 @@ use super::uploads::{
     claims_another_books_key, granted_key_count, open_upload_session, upload_holds_its_keys,
     UploadDestination, UploadGrant, UploadGrantRequest, UploadSession,
 };
-use crate::entities::{books, branch_titles, nodes, users};
+use crate::entities::{books, branch_titles, nodes, title_files, users};
 use crate::error::{LibraryError, Result};
 use crate::models::UserStatus;
 use crate::store::LibraryStore;
@@ -788,7 +788,9 @@ fn folder_probes(folders: &[String]) -> BTreeSet<&str> {
 /// holds the primary audio of another title in this library: one of its
 /// books (whatever its owner, in any state), or a title another branch
 /// shares here whose files were delivered (`uuid` is the title being
-/// granted; a detached title counts, since its files stay). A catalog
+/// granted; a detached title counts, since its files stay), or any file
+/// key `title_files` records there for such a title (a book, or another
+/// branch's title, even one whose upload is only granted). A catalog
 /// upload writes into no folder another title lives in, nor below one, so
 /// no declared name, however chosen, can replace that title's files,
 /// recorded in `title_files` or not.
@@ -797,8 +799,9 @@ fn folder_probes(folders: &[String]) -> BTreeSet<&str> {
 /// lay several of its titles out in one folder (a flat
 /// `{Author}/{Title}.m4b` template, or podcast episodes saved together),
 /// and the key checks keep their files apart. Another branch's title holds
-/// a folder only once delivered, so a declared title whose files never
-/// arrive (one refused here, say) squats no folder.
+/// a folder only once one of its uploads claimed a key there or it was
+/// delivered, so a declared title whose files never arrive (one refused
+/// here, say) squats no folder.
 ///
 /// The folder match is `LIKE`, which compares case-sensitively on
 /// Postgres (and case-insensitively for ASCII on SQLite): on Postgres a
@@ -839,6 +842,40 @@ async fn folders_of_another_title(
             .await
             .map_err(LibraryError::Orm)?;
         if titles > 0 {
+            return Ok(true);
+        }
+        // Any file another live title wrote or was granted there holds the
+        // folder too, so of two titles reaching one folder before either
+        // is delivered, whoever claims a key in it first keeps it.
+        let files_here = chunk.iter().fold(Condition::any(), |any, folder| {
+            any.add(directly_in(title_files::Column::StorageKey, folder))
+        });
+        let other_titles = Condition::any()
+            .add(
+                title_files::Column::BookUuid.in_subquery(
+                    Query::select()
+                        .column(books::Column::Uuid)
+                        .from(books::Entity)
+                        .to_owned(),
+                ),
+            )
+            .add(
+                title_files::Column::BookUuid.in_subquery(
+                    Query::select()
+                        .column(branch_titles::Column::Uuid)
+                        .from(branch_titles::Entity)
+                        .and_where(branch_titles::Column::NodeId.ne(node_id))
+                        .to_owned(),
+                ),
+            );
+        let files = title_files::Entity::find()
+            .filter(title_files::Column::BookUuid.ne(uuid))
+            .filter(other_titles)
+            .filter(files_here)
+            .count(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        if files > 0 {
             return Ok(true);
         }
     }

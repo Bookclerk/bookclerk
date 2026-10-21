@@ -1248,6 +1248,45 @@ async fn shared_folders_hold_only_against_other_branches_delivered_titles() {
     ));
 }
 
+/// Of two branches reaching one folder before either delivered there, the
+/// first to write holds it: one branch's extra file in the folder another
+/// branch's undelivered title declares keeps that title out, and the
+/// other way round.
+#[tokio::test]
+async fn the_first_branch_to_write_a_folder_holds_it() {
+    let _lock = master_key_test_lock_async().await;
+    for a_first in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, member) = world(dir.path()).await;
+        add_node(&store, "branch-c", "host", Some(member)).await;
+        let a_keys = ["Mine/x.m4b", "BAuthor/BBook/evil.mp3"];
+        let b_keys = ["BAuthor/BBook/BBook.m4b"];
+        let b = open_branch(&store, "branch-c", &[title_with("bbook", b_keys[0], &[])]).await;
+        let a = open(&store, true, true).await.fence;
+        accepted(
+            &store,
+            a,
+            "c",
+            false,
+            &[title_with("x", a_keys[0], &a_keys[1..])],
+        )
+        .await;
+        if a_first {
+            deliver_local(&store, BRANCH, a, "x", &a_keys).await;
+            assert!(matches!(
+                grant_branch_local(&store, "branch-c", b, "bbook", &b_keys).await,
+                UploadGrant::Refused("folder_of_another_book")
+            ));
+        } else {
+            deliver_local(&store, "branch-c", b, "bbook", &b_keys).await;
+            assert!(matches!(
+                grant_local(&store, a, "x", &a_keys).await,
+                UploadGrant::Refused("folder_of_another_book")
+            ));
+        }
+    }
+}
+
 /// A catalog commit overtaken by an identical commit that landed first
 /// answers committed, not lost.
 #[tokio::test]
