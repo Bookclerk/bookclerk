@@ -902,6 +902,10 @@ pub async fn record_node_left(store: &LibraryStore, node_id: &str) -> Result<boo
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
+    // Titles it shared stop being shared; their files stay here. Detaching
+    // is idempotent and runs before the already-revoked check, so a leave
+    // whose detach failed after the revoke is finished by its retry.
+    super::branch_catalog::detach_branch_titles(store, node_id, super::DETACHED_LEFT).await?;
     if updated.rows_affected != 1 {
         return Ok(false);
     }
@@ -910,8 +914,6 @@ pub async fn record_node_left(store: &LibraryStore, node_id: &str) -> Result<boo
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
-    // Titles it shared stop being shared; their files stay here.
-    super::branch_catalog::detach_branch_titles(store, node_id, super::DETACHED_LEFT).await?;
     let _ = store
         .insert_security_audit_event(&format!("node:{node_id}"), "node_left", None)
         .await;

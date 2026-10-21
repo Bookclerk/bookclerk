@@ -168,9 +168,13 @@ export interface BranchTitleCounts {
 
 /** One branch of this library, as Settings → Branches lists it. */
 export interface BranchRowView {
+  /** The node id this library gave the branch when it joined. */
   node_id: string;
+  /** When the branch joined (RFC 3339, UTC). */
   created_at: string;
+  /** The user of this library who owns the branch; `null` when none is recorded. */
   owner_user_id: number | null;
+  /** That owner's display name; `null` when the owner is unknown. */
   owner_name: string | null;
   /** False once it left or was removed. */
   joined: boolean;
@@ -193,6 +197,7 @@ export interface BranchSettingsView {
   enrollment: boolean;
   /** The certificate fingerprint a joining install confirms (self-signed transport only). */
   spki_fingerprint: string | null;
+  /** Each branch of this library, with its reported sharing settings and title counts. */
   branches?: BranchRowView[];
 }
 
