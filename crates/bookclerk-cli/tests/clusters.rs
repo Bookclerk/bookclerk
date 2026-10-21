@@ -4,6 +4,9 @@
 //! link), and `join` refusing a link that is not one, or one on the
 //! command line, and reading it from a terminal without echo.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 mod common;
 
 use std::io::Write as _;
