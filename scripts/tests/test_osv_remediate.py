@@ -293,6 +293,26 @@ class ApplyTest(unittest.TestCase):
         finally:
             del os.environ["ALERTS_TOKEN"]
 
+    def test_resolved_counts_alerts_not_targets(self) -> None:
+        old = osv.Target(
+            "Cargo.lock", "crates.io", "rustls", V("0.21.12"), {"A": RUSTLS}
+        )
+        new = osv.Target(
+            "Cargo.lock",
+            "crates.io",
+            "rustls",
+            V("0.23.45"),
+            {"A": RUSTLS, "B": RUSTLS},
+        )
+        alerts = [
+            osv.Alert("A", "Cargo.lock"),
+            osv.Alert("B", "Cargo.lock"),
+            osv.Alert("C", "Cargo.lock"),
+        ]
+        # A spans both lines and only one was fixed; B's only target was fixed; C matched nothing.
+        self.assertEqual(osv.resolved_alerts(alerts, [old, new], [new]), 1)
+        self.assertEqual(osv.resolved_alerts(alerts, [old, new], [old, new]), 2)
+
     def test_summary_lists_only_fixes(self) -> None:
         target = osv.Target(
             "Cargo.lock",

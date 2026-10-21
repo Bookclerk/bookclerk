@@ -704,6 +704,36 @@ def render_summary(fixed: list[tuple[Target, Version]]) -> str:
     return "\n".join(lines)
 
 
+def resolved_alerts(
+    alerts: list[Alert], targets: list[Target], fixed: list[Target]
+) -> int:
+    """Counts the alerts every one of whose matched packages was fixed.
+
+    One alert can match several locked versions (several targets), and one
+    target can carry several alerts, so alerts are counted per (advisory,
+    lockfile), not per target.
+
+    Args:
+        alerts: Open alerts.
+        targets: Planned targets.
+        fixed: The targets whose update succeeded.
+
+    Returns:
+        How many alerts matched at least one target and had all of them fixed.
+    """
+    fixed_keys = {(t.lockfile, t.name, t.locked) for t in fixed}
+    count = 0
+    for alert in alerts:
+        matched = [
+            (t.lockfile, t.name, t.locked)
+            for t in targets
+            if t.lockfile == alert.lockfile and alert.vuln_id in t.vulns
+        ]
+        if matched and all(key in fixed_keys for key in matched):
+            count += 1
+    return count
+
+
 def main(argv: list[str] | None = None) -> int:
     """Runs the remediation.
 
@@ -748,12 +778,14 @@ def main(argv: list[str] | None = None) -> int:
             fixed.append((target, new))
 
     # Counts only: alert details belong in the Security tab, not a public log.
-    remaining = unmatched + len(targets) - len(fixed)
+    resolved = resolved_alerts(alerts, targets, [target for target, _ in fixed])
     print(
-        f"open OSV alerts: {len(alerts)}; packages bumped: {len(fixed)}; alerts left for a maintainer: {remaining}"
+        f"open OSV alerts: {len(alerts)}; packages bumped: {len(fixed)}; "
+        f"alerts left for a maintainer: {len(alerts) - resolved} "
+        f"({unmatched} with no updatable package)"
     )
-    if fixed:
-        args.summary.write_text(render_summary(fixed), encoding="utf-8")
+    # Always written: with no bumps the PR step closes any earlier PR.
+    args.summary.write_text(render_summary(fixed), encoding="utf-8")
     if args.github_output is not None:
         with args.github_output.open("a", encoding="utf-8") as out:
             out.write(f"changed={'true' if fixed else 'false'}\n")

@@ -469,7 +469,8 @@ Security → Code scanning, looks each advisory up on api.osv.dev, and
 --package-lock-only --ignore-scripts`) until no locked version of the package
 is inside the advisory's affected ranges. An attempt that does not clear the
 advisory is rolled back. Manifests are never edited, so a fix that needs a new
-major version, or a change upstream, stays an open alert for a maintainer.
+major version, or a change upstream, stays an open alert for a maintainer. A run
+that has nothing left to bump closes an earlier remediation pull request.
 
 Scan results are not public, so the run keeps them private: its log prints
 counts only (command output is discarded, because a failed attempt would name
