@@ -9,13 +9,14 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import ModuleType
 
 ROOT = Path(__file__).resolve().parents[2]
 PROBES = ROOT / "scripts" / "source-probes"
 sys.path.insert(0, str(PROBES))
 
 
-def _load(name: str, path: Path):
+def _load(name: str, path: Path) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise RuntimeError(path)

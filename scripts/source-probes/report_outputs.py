@@ -4,7 +4,7 @@
 Writes `failed`, `auth_failed` and `auth_ran` as `key=true|false` lines on
 stdout (append them to `$GITHUB_OUTPUT`). Auth checks that were skipped for
 missing secrets count neither as failed nor as run; a missing report counts
-as a public failure.
+as a public failure, as does an unreadable or malformed one.
 """
 
 from __future__ import annotations
@@ -16,9 +16,14 @@ from pathlib import Path
 
 def outputs(report_path: Path) -> dict[str, bool]:
     """Summarize one report into the three step outputs."""
-    if not report_path.exists():
-        return {"failed": True, "auth_failed": False, "auth_ran": False}
-    checks = json.loads(report_path.read_text(encoding="utf-8")).get("checks") or []
+    unusable = {"failed": True, "auth_failed": False, "auth_ran": False}
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return unusable
+    if not isinstance(report, dict):
+        return unusable
+    checks = report.get("checks") or []
     ran = [c for c in checks if not c.get("skipped")]
     return {
         "failed": any(not c.get("ok") and not c.get("needs_auth") for c in ran),

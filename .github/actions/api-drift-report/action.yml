@@ -93,9 +93,14 @@ runs:
           const marker = `<!-- api-drift:${source} -->`;
           const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
           const reportPath = process.env.DRIFT_REPORT_PATH;
-          const report = fs.existsSync(reportPath)
+          let report = fs.existsSync(reportPath)
             ? fs.readFileSync(reportPath, 'utf8')
             : `(no report at \`${reportPath}\`)`;
+          // Issue bodies are capped at 65,536 characters; the run keeps the full report.
+          const maxReport = 60000;
+          if (report.length > maxReport) {
+            report = `${report.slice(0, maxReport)}\n\n_(truncated; full report in the run artifacts: ${runUrl})_`;
+          }
           const title = `${name} API drift detected`;
           const body = [
             marker,
