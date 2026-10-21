@@ -4,7 +4,8 @@
 Writes `failed`, `auth_failed` and `auth_ran` as `key=true|false` lines on
 stdout (append them to `$GITHUB_OUTPUT`). Auth checks that were skipped for
 missing secrets count neither as failed nor as run; a missing report counts
-as a public failure, as does an unreadable or malformed one.
+as a public failure, as does an unreadable or malformed one (including
+a `checks` value that is not a non-empty list of objects).
 """
 
 from __future__ import annotations
@@ -23,7 +24,11 @@ def outputs(report_path: Path) -> dict[str, bool]:
         return unusable
     if not isinstance(report, dict):
         return unusable
-    checks = report.get("checks") or []
+    checks = report.get("checks")
+    # A probe run always records checks; an empty or mis-shaped list means the
+    # report itself is broken, which must still file the failure issue.
+    if not isinstance(checks, list) or not checks or not all(isinstance(c, dict) for c in checks):
+        return unusable
     ran = [c for c in checks if not c.get("skipped")]
     return {
         "failed": any(not c.get("ok") and not c.get("needs_auth") for c in ran),

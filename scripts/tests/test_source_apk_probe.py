@@ -28,6 +28,7 @@ def _load(name: str, path: Path) -> ModuleType:
 
 extract = _load("extract_apk_api", PROBES / "extract_apk_api.py")
 apply_mod = _load("apply_apk_updates", PROBES / "apply_apk_updates.py")
+outputs_mod = _load("report_outputs", PROBES / "report_outputs.py")
 
 OKHTTP_UTIL = 'public final class Util {\n    public static final String userAgent = "okhttp/{ver}";\n}\n'
 
@@ -200,6 +201,31 @@ class ApplyUpdates(unittest.TestCase):
             self.assertEqual(apply_mod.main(["--source", "chirp", "--report", str(report)]), 2)
             report.write_text(json.dumps({"suggested": {"USER_AGENT_VALUE": 'a"b'}}), encoding="utf-8")
             self.assertEqual(apply_mod.main(["--source", "chirp", "--report", str(report)]), 2)
+
+
+class ReportOutputs(unittest.TestCase):
+    def _outputs(self, report: object) -> dict[str, bool]:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.json"
+            path.write_text(json.dumps(report), encoding="utf-8")
+            return outputs_mod.outputs(path)
+
+    def test_malformed_checks_count_as_failed(self) -> None:
+        for checks in ("x", {}, [], [None], {"a": 1}):
+            self.assertTrue(self._outputs({"checks": checks})["failed"], checks)
+        self.assertTrue(self._outputs({})["failed"])
+
+    def test_auth_failure_is_separate_from_public_failure(self) -> None:
+        got = self._outputs(
+            {
+                "checks": [
+                    {"ok": True},
+                    {"ok": False, "needs_auth": True},
+                    {"ok": False, "needs_auth": True, "skipped": True},
+                ]
+            }
+        )
+        self.assertEqual(got, {"failed": False, "auth_failed": True, "auth_ran": True})
 
 
 if __name__ == "__main__":
