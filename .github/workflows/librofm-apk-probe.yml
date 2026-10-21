@@ -231,7 +231,24 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$CHANGED" == "true" ]]; then
-            summary="The Android APK no longer matches \`source-libro/src/client.rs\`. Auth live smoke passed against the extracted constants, so a fix pull request was opened."
+            # The fixer rewrites constants only; schema drift (and constants the
+            # APK gave no value for) stays for a person, so the PR then must not
+            # close the issue.
+            complete="$(python3 - artifacts/librofm-apk-probe/report.json <<'PY'
+          import json, sys
+          fixable = {"DEFAULT_BASE_URL", "OAUTH_TOKEN_PATH", "LIBRARY_PATH", "DOWNLOAD_MANIFEST_PATH",
+                     "PACKAGED_M4B_PATH", "APP_VER", "USER_AGENT_VALUE"}
+          drifts = json.load(open(sys.argv[1])).get("drifts") or []
+          blocking = [d for d in drifts if d.get("severity") == "error"]
+          print("true" if all(d.get("field") in fixable and d.get("apk") is not None for d in blocking) else "false")
+          PY
+          )"
+            echo "closes_issue=$complete" >> "$GITHUB_OUTPUT"
+            if [[ "$complete" == "true" ]]; then
+              summary="The Android APK no longer matches \`source-libro/src/client.rs\`. Auth live smoke passed against the extracted constants, so a fix pull request was opened."
+            else
+              summary="The Android APK no longer matches \`source-libro/src/client.rs\`. Auth live smoke passed against the extracted constants, so a pull request with the constant changes was opened; the remaining drift (see the report) needs a manual change."
+            fi
             echo "fix_paths=crates/bookclerk-plugins/optional/source-libro/src/client.rs" >> "$GITHUB_OUTPUT"
           elif [[ "$LIVE_RUN" == "true" && "$SMOKE_SKIPPED" == "true" ]]; then
             summary="The Android APK no longer matches \`source-libro/src/client.rs\`. Auth live smoke was skipped because the \`TEST_LIBRO_*\` secrets are not configured (\`TEST_LIBRO_EMAIL\` or \`TEST_LIBRO_USER\` plus \`TEST_LIBRO_PASSWORD\`), so no fix pull request was opened."
@@ -263,6 +280,7 @@ jobs:
           report-path: artifacts/librofm-apk-probe/report.md
           legacy-marker: "<!-- librofm-apk-probe-smoke-fail -->"
           fix-paths: ${{ steps.outcome.outputs.fix_paths }}
+          closes-issue: ${{ steps.outcome.outputs.closes_issue }}
           commit-message: |
             chore(libro): sync mobile API constants from Android APK probe
 
