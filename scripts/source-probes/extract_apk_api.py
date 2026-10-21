@@ -221,18 +221,23 @@ def extract_graphicaudio(sources: Path, client: dict[str, str]) -> Extraction:
     # Base URL: graphicaudio.net URLs in files that configure Retrofit, plus
     # BuildConfig string fields. The `/access` API base is the one that hosts
     # the Retrofit interfaces; the storefront root is Magento (web, untracked).
+    # The client's base still being an app literal anywhere counts as a match.
     current_base = client.get("DEFAULT_BASE_URL")
+    all_urls: set[str] = set()
     candidates: set[str] = set()
     for path, text in files:
-        if "baseUrl(" in text or path.name == "BuildConfig.java":
-            for url in JAVA_URL_RE.findall(text):
-                parts = urlsplit(url)
-                host = parts.hostname or ""
-                if host_in(host, "graphicaudio.net") and parts.path.strip("/"):
-                    candidates.add(url.rstrip("/"))
+        configures = "baseUrl(" in text or path.name == "BuildConfig.java"
+        for url in JAVA_URL_RE.findall(text):
+            parts = urlsplit(url)
+            if not host_in(parts.hostname or "", "graphicaudio.net"):
+                continue
+            all_urls.add(url)
+            if configures and parts.path.strip("/"):
+                candidates.add(url.rstrip("/"))
+    ex.facts["graphicaudio_urls"] = sorted(all_urls)
     ex.facts["base_url_candidates"] = sorted(candidates)
     base: str | None = None
-    if current_base and current_base.rstrip("/") in candidates:
+    if current_base and current_base.rstrip("/") in {u.rstrip("/") for u in all_urls}:
         base = current_base.rstrip("/")
     elif len(candidates) == 1:
         base = next(iter(candidates))
@@ -484,6 +489,9 @@ def main(argv: list[str] | None = None) -> int:
             render_markdown(args.source, spec, meta, client, ex, drifts) + "\n", encoding="utf-8"
         )
         log(f"Wrote {out_dir / 'report.md'}")
+        for key, value in sorted(ex.facts.items()):
+            shown = value[:40] if isinstance(value, list) else value
+            log(f"{key}: {json.dumps(shown)}")
         if blocking:
             log(f"Detected {len(blocking)} tracked drift(s):")
             for d in blocking:
