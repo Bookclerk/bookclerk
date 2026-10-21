@@ -348,7 +348,8 @@ struct PreparedCatalogBatch {
     /// The batch's operation id.
     operation_id: String,
     /// The cursor move first, then one statement per recorded title, then
-    /// (on the last batch of a pass) the withdrawal and the pass's end.
+    /// one per title skipped as held here (marking its row seen), then (on
+    /// the last batch of a pass) the withdrawal and the pass's end.
     statements: Vec<TypedDbStatement>,
     /// Title statements in `statements` (after the cursor move).
     titles: usize,
@@ -419,9 +420,24 @@ async fn prepare_catalog_batch(
     )];
     let mut skipped = 0u64;
     let mut wanted = Vec::new();
+    // A title skipped as held here is still one the branch named: any row
+    // recorded for it earlier is marked seen, so the pass's end does not
+    // withdraw it as gone from the branch.
+    let mut held_seen = Vec::new();
     for title in titles {
         if held_here(store, &owned, title).await? {
             skipped += 1;
+            held_seen.push(gated(
+                "UPDATE branch_titles SET seen_at = ? \
+                  WHERE provenance = ? AND store = ? AND product_id = ? \
+                    AND state = 'shared'",
+                vec![
+                    text(&now),
+                    text(&provenance),
+                    text(&title.store),
+                    text(&title.product_id),
+                ],
+            ));
             continue;
         }
         let digest = title.manifest_digest();
@@ -497,6 +513,7 @@ async fn prepare_catalog_batch(
         }
     }
     let titles = statements.len() - 1;
+    statements.extend(held_seen);
     let withdraw = match row.catalog_pass_started_at.as_deref().filter(|_| done) {
         Some(started) => {
             statements.push(gated(

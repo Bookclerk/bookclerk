@@ -488,7 +488,10 @@ pub async fn set_cluster_link_ancestry(
 /// cluster id, then for each active link the owner's cluster id and the
 /// ancestry that owner reported, without repeats, at most
 /// [`bookclerk_node_proto::MAX_ANCESTRY`] ids. Empty when this install has
-/// no cluster identity yet.
+/// no cluster identity yet. A join that would take it past that limit is
+/// refused ([`join_overflows_ancestry`]); should a library above grow its
+/// ancestry later, the list is cut at exactly the limit, which in turn
+/// refuses every join under it.
 ///
 /// A clerk shares its library's database, so it reports the same ancestry:
 /// it is the same node of the tree.
@@ -519,6 +522,32 @@ pub async fn library_ancestry(store: &LibraryStore) -> Result<Vec<String>> {
         }
     }
     Ok(out)
+}
+
+/// True when joining a library that reports `parent_ancestry` would give
+/// this library more ancestors (itself and every library above it) than
+/// [`bookclerk_node_proto::MAX_ANCESTRY`]: [`library_ancestry`] would then
+/// leave the farthest out, and a library joining this one later could no
+/// longer be checked for a loop through them. An ancestry cut at that
+/// limit by the library itself always holds exactly the limit, so this
+/// refuses it too. Such a join is refused rather than cut short.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub async fn join_overflows_ancestry(
+    store: &LibraryStore,
+    parent_ancestry: &[String],
+) -> Result<bool> {
+    let own = library_ancestry(store).await?;
+    // An install without a cluster identity yet gets one as it joins.
+    let unnamed = usize::from(own.is_empty());
+    let ids: std::collections::BTreeSet<&str> = own
+        .iter()
+        .chain(parent_ancestry)
+        .map(String::as_str)
+        .collect();
+    Ok(ids.len() + unnamed > bookclerk_node_proto::MAX_ANCESTRY)
 }
 
 /// This library's own cluster id when `parent_ancestry` names it: joining

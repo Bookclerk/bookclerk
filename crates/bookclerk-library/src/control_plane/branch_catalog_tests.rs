@@ -242,11 +242,9 @@ async fn only_a_trusted_branch_may_share() {
     );
 }
 
-#[tokio::test]
-async fn a_title_the_library_holds_for_that_user_is_not_echoed_back() {
-    let _lock = master_key_test_lock_async().await;
-    let dir = tempfile::tempdir().unwrap();
-    let (store, member) = world(dir.path()).await;
+/// Records `product` as a book of this library on an account `member`
+/// owns, so a branch of theirs naming it is not echoed back.
+async fn hold_for(store: &LibraryStore, member: i64, product: &str) {
     store
         .upsert_account(PLUGIN, "riley-acct", "us", None, true, "audible")
         .await
@@ -263,14 +261,14 @@ async fn a_title_the_library_holds_for_that_user_is_not_echoed_back() {
         .scope(PLUGIN, "audible")
         .upsert_book(&NewBook {
             uuid: None,
-            product_id: "mine".into(),
+            product_id: product.into(),
             plugin_key: PLUGIN.into(),
             source: "audible".into(),
             account_id: "riley-acct".into(),
             asin: None,
             isbn: None,
             marketplace: "us".into(),
-            title: "Mine".into(),
+            title: product.into(),
             authors: None,
             narrators: None,
             series: None,
@@ -287,6 +285,14 @@ async fn a_title_the_library_holds_for_that_user_is_not_echoed_back() {
         })
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn a_title_the_library_holds_for_that_user_is_not_echoed_back() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, member) = world(dir.path()).await;
+    hold_for(&store, member, "mine").await;
     let session = open(&store, true, true).await;
     let (upserted, skipped, wanted) = accepted(
         &store,
@@ -301,6 +307,42 @@ async fn a_title_the_library_holds_for_that_user_is_not_echoed_back() {
     let rows = list_branch_titles(&store, None, 10).await.unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].product_id, "theirs");
+}
+
+/// A title a full pass skips because the library now holds it for the
+/// branch's owner is still one the branch names: its row is not
+/// withdrawn as if the branch had dropped it.
+#[tokio::test]
+async fn a_full_pass_does_not_withdraw_a_title_it_skips_as_held_here() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, member) = world(dir.path()).await;
+    let first = open(&store, true, true).await;
+    accepted(
+        &store,
+        first.fence,
+        "c",
+        true,
+        &[title("held", 1), title("gone", 1)],
+    )
+    .await;
+    hold_for(&store, member, "held").await;
+    // A new pass from the start names "held" again (skipped as held
+    // here) but no longer "gone".
+    let second = open(&store, true, false).await;
+    assert_eq!(second.cursor, "");
+    let (upserted, skipped, _) =
+        accepted(&store, second.fence, "c", true, &[title("held", 1)]).await;
+    assert_eq!((upserted, skipped), (0, 1));
+    let rows = list_branch_titles(&store, None, 10).await.unwrap();
+    let state = |product: &str| {
+        rows.iter()
+            .find(|row| row.product_id == product)
+            .map(|row| row.state.clone())
+            .unwrap()
+    };
+    assert_eq!(state("held"), BRANCH_TITLE_SHARED);
+    assert_eq!(state("gone"), BRANCH_TITLE_DETACHED);
 }
 
 #[tokio::test]
@@ -686,6 +728,57 @@ async fn ancestry_lists_this_library_then_every_parent_and_refuses_cycles() {
     // A left link no longer counts.
     leave_cluster_link(&store, "parent", None).await.unwrap();
     assert_eq!(library_ancestry(&store).await.unwrap(), vec![own]);
+}
+
+/// A join that would leave this library more ancestors than an ancestry
+/// can name is refused, not cut short: the farthest ancestor would drop
+/// out of what this library reports, and a loop through it could form.
+#[tokio::test]
+async fn a_join_past_the_ancestry_limit_is_refused() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_in(dir.path()).await;
+    let chain = |len: usize| -> Vec<String> { (0..len).map(|at| format!("lib{at}")).collect() };
+    let limit = bookclerk_node_proto::MAX_ANCESTRY;
+    // Without a cluster identity yet, the one this install gets counts.
+    assert!(!join_overflows_ancestry(&store, &chain(limit - 1))
+        .await
+        .unwrap());
+    assert!(join_overflows_ancestry(&store, &chain(limit))
+        .await
+        .unwrap());
+    super::super::align_cluster_root(&store, dir.path(), None)
+        .await
+        .unwrap();
+    assert!(!join_overflows_ancestry(&store, &chain(limit - 1))
+        .await
+        .unwrap());
+    // A parent at the limit (perhaps already cut there) leaves no room.
+    assert!(join_overflows_ancestry(&store, &chain(limit))
+        .await
+        .unwrap());
+    // Another parent's ancestry counts too; one already named does not.
+    record_cluster_link(
+        &store,
+        &NewClusterLink {
+            owner_cluster_id: "other".into(),
+            owner_origin: "https://other.example".into(),
+            remote_node_id: "node-1".into(),
+            spki_pin: None,
+        },
+        &ClusterLinkKeys::generate(),
+    )
+    .await
+    .unwrap();
+    set_cluster_link_ancestry(&store, "other", &["other".into(), "lib0".into()])
+        .await
+        .unwrap();
+    assert!(join_overflows_ancestry(&store, &chain(limit - 1))
+        .await
+        .unwrap());
+    assert!(!join_overflows_ancestry(&store, &chain(limit - 2))
+        .await
+        .unwrap());
 }
 
 /// A branch's files never land on a key another title here uses: one of

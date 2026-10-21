@@ -191,6 +191,17 @@ fn is_sibling(rest: &str, stem: &str) -> bool {
             .is_some_and(|after| after.starts_with('.'))
 }
 
+/// A destination listing that failed: the title it was for may be fine,
+/// so a pass does not treat it as gone ([`CatalogSync::sync_once`]).
+#[derive(Debug)]
+struct ListingFailed(String);
+
+impl std::fmt::Display for ListingFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "listing {:?}", self.0)
+    }
+}
+
 /// The files of an own book on `shelf`: the primary file, the PDF, and
 /// every file beside the primary named `<its stem>.*` (cover,
 /// cue, chapter sidecars). Temp files and metadata sidecars are skipped.
@@ -209,7 +220,7 @@ async fn own_files(
     let listed = shelf
         .list(&prefix)
         .await
-        .with_context(|| format!("listing {prefix:?}"))?;
+        .with_context(|| ListingFailed(prefix.clone()))?;
     let mut files = BTreeMap::new();
     for object in listed {
         let Some(rest) = object.key.strip_prefix(&prefix) else {
@@ -420,6 +431,12 @@ impl<S: BranchShelf> CatalogSync<S> {
         let mut batch_bytes = 0usize;
         let mut batch_no = 0u64;
         let mut cursor = session.cursor.clone();
+        // Set once a title's files could not be listed: the cursor stays
+        // before it (the titles after it are still sent) and the pass does
+        // not end, so the library withdraws nothing it did not see and the
+        // next pass tries that title again. A title that is not shareable
+        // as it stands is skipped for good, and withdrawn if shared before.
+        let mut unlisted = false;
         for entry in pending {
             match self.title(shelf.as_ref(), entry).await {
                 Ok(title) if title.problem().is_none() => {
@@ -449,24 +466,35 @@ impl<S: BranchShelf> CatalogSync<S> {
                     problem = title.problem().unwrap_or_default(),
                     "a title is not shareable as it stands; skipped"
                 ),
+                Err(err) if err.downcast_ref::<ListingFailed>().is_some() => {
+                    tracing::warn!(
+                        product_id = %entry.reference.product_id,
+                        error = %err,
+                        "a title's files could not be listed; the next pass tries it again"
+                    );
+                    unlisted = true;
+                }
                 Err(err) => tracing::warn!(
                     product_id = %entry.reference.product_id,
                     error = %err,
-                    "a title's files could not be listed; skipped"
+                    "a title is not shareable as it stands; skipped"
                 ),
             }
-            cursor.clone_from(&entry.order);
+            if !unlisted {
+                cursor.clone_from(&entry.order);
+            }
         }
         // Every pass ends with a last batch (even an empty one) marked
         // done, carrying the advanced cursor: a pass from the start that
         // was cut off and resumed then still ends, and the library
         // withdraws what it did not name. On a pass that is not one from
-        // the start, `done` changes nothing more on the library.
+        // the start, `done` changes nothing more on the library. A pass
+        // that could not list a title is not done: it resumes before it.
         batch_no += 1;
         report.sent += batch.len() as u64;
         let accepted = self
             .handle
-            .catalog_sync(session.fence, batch_no, &cursor, true, batch)
+            .catalog_sync(session.fence, batch_no, &cursor, !unlisted, batch)
             .await
             .map_err(|err| call_error("catalog.sync", &err))?;
         report.upserted += accepted.upserted;

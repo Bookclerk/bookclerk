@@ -126,6 +126,11 @@ fn join_failed(err: &JoinError) -> Response {
             "join_cycle",
             "that library is this library or one of its own branches; joining it would make a loop",
         ),
+        JoinError::AncestryTooDeep => join_error(
+            StatusCode::CONFLICT,
+            "ancestry_too_deep",
+            "that library sits too deep in its tree of libraries; joining it could hide a loop",
+        ),
         // Enrolled on the library but not saved here: the invite is spent,
         // and the message says what the owner has to revoke.
         JoinError::Unsaved { .. } => {

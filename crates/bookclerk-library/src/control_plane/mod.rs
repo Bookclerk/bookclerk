@@ -51,11 +51,11 @@ pub use branch_catalog::{
     FULL_CATALOG_PASS_EVERY,
 };
 pub use cluster_links::{
-    decode_spki_pin, join_cycle, leave_cluster_link, library_ancestry, list_cluster_links,
-    load_cluster_link, load_cluster_link_keys, mark_cluster_link_revoked, record_cluster_link,
-    set_cluster_link_ancestry, set_cluster_link_sharing, set_cluster_link_state, ClusterLink,
-    ClusterLinkKeys, NewClusterLink, CLUSTER_LINK_ACTIVE, CLUSTER_LINK_KEYS_NAME,
-    CLUSTER_LINK_LEFT, CLUSTER_LINK_REVOKED,
+    decode_spki_pin, join_cycle, join_overflows_ancestry, leave_cluster_link, library_ancestry,
+    list_cluster_links, load_cluster_link, load_cluster_link_keys, mark_cluster_link_revoked,
+    record_cluster_link, set_cluster_link_ancestry, set_cluster_link_sharing,
+    set_cluster_link_state, ClusterLink, ClusterLinkKeys, NewClusterLink, CLUSTER_LINK_ACTIVE,
+    CLUSTER_LINK_KEYS_NAME, CLUSTER_LINK_LEFT, CLUSTER_LINK_REVOKED,
 };
 pub use deployments::{
     bounded_observation_detail, delete_plugin_deployment, ensure_plugin_deployment,

@@ -498,3 +498,163 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
         "B no longer passes C's title on"
     );
 }
+
+/// A local destination whose listing of one folder fails while `fail`
+/// names it.
+#[derive(Clone)]
+struct FlakyList {
+    /// The destination itself.
+    inner: bookclerk_storage::LocalFsBackend,
+    /// The prefix whose listing fails, if any.
+    fail: Arc<std::sync::Mutex<Option<String>>>,
+}
+
+#[async_trait::async_trait]
+impl StorageBackend for FlakyList {
+    fn name(&self) -> &'static str {
+        "flaky-list"
+    }
+
+    fn clone_box(&self) -> Box<dyn StorageBackend> {
+        Box::new(self.clone())
+    }
+
+    async fn put(
+        &self,
+        key: &str,
+        data: bytes::Bytes,
+        meta: bookclerk_storage::ObjectMeta,
+    ) -> bookclerk_storage::Result<()> {
+        self.inner.put(key, data, meta).await
+    }
+
+    async fn get(&self, key: &str) -> bookclerk_storage::Result<bytes::Bytes> {
+        self.inner.get(key).await
+    }
+
+    async fn exists(&self, key: &str) -> bookclerk_storage::Result<bool> {
+        self.inner.exists(key).await
+    }
+
+    async fn list(
+        &self,
+        prefix: &str,
+    ) -> bookclerk_storage::Result<Vec<bookclerk_storage::ObjectInfo>> {
+        if self.fail.lock().unwrap().as_deref() == Some(prefix) {
+            return Err(bookclerk_storage::StorageError::Io(std::io::Error::other(
+                "the destination is briefly unreachable",
+            )));
+        }
+        self.inner.list(prefix).await
+    }
+
+    async fn probe(&self, key: &str) -> bookclerk_storage::Result<bookclerk_storage::ObjectProbe> {
+        self.inner.probe(key).await
+    }
+
+    async fn copy(&self, from: &str, to: &str) -> bookclerk_storage::Result<()> {
+        self.inner.copy(from, to).await
+    }
+
+    async fn delete(&self, key: &str) -> bookclerk_storage::Result<()> {
+        self.inner.delete(key).await
+    }
+
+    async fn list_page(
+        &self,
+        prefix: &str,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> bookclerk_storage::Result<bookclerk_storage::ListPage> {
+        self.inner.list_page(prefix, cursor, limit).await
+    }
+
+    async fn get_stream(
+        &self,
+        key: &str,
+        range: Option<bookclerk_storage::ByteRange>,
+    ) -> bookclerk_storage::Result<(
+        bookclerk_storage::ObjectProbe,
+        std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+    )> {
+        self.inner.get_stream(key, range).await
+    }
+
+    async fn put_stream(
+        &self,
+        key: &str,
+        body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        meta: bookclerk_storage::ObjectMeta,
+    ) -> bookclerk_storage::Result<bookclerk_storage::PutStreamResult> {
+        self.inner.put_stream(key, body, meta).await
+    }
+}
+
+impl BranchShelf for FlakyList {
+    async fn primary(&self) -> Option<Box<dyn StorageBackend>> {
+        Some(self.clone_box())
+    }
+}
+
+/// A title whose files cannot be listed for a moment is not taken as gone:
+/// the titles after it are still sent, but the pass from the start does
+/// not end, so the library withdraws nothing, and the next pass tries
+/// that title again.
+#[tokio::test]
+async fn a_title_that_cannot_be_listed_now_is_not_withdrawn() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let a_files = tempfile::tempdir().unwrap();
+    let (a_state, a) = crate::node_api::tests::test_state(&a_files).await;
+    let a_addr = serve(crate::api::router(Arc::clone(&a_state), None)).await;
+    let a_origin = public_origin(&a_state, &format!("http://127.0.0.1:{}", a_addr.port())).await;
+    let (riley, _token) = owner_account(&a, b"riley-token-v1").await;
+    let a_out = tempfile::tempdir().unwrap();
+    crate::node_api::uploads::set_test_destination(a_files.path(), a_out.path());
+
+    let b_files = tempfile::tempdir().unwrap();
+    let b = host_store(b_files.path()).await;
+    let b_out = tempfile::tempdir().unwrap();
+    own_book(&b, b_out.path(), "libro", "b-store-acct", "b1").await;
+    own_book(&b, b_out.path(), "libro", "b-store-acct", "b2").await;
+    let b_link = join(&a, &b, riley, &a_origin, None).await.unwrap();
+    let (b_handle, _b_stop) = start(&b, &b_link).await;
+    let fail = Arc::new(std::sync::Mutex::new(None));
+    let b_sync = CatalogSync {
+        library: b.clone(),
+        cluster_id: b_link.owner_cluster_id.clone(),
+        handle: b_handle,
+        shelf: FlakyList {
+            inner: bookclerk_storage::LocalFsBackend::new(b_out.path().to_path_buf()).unwrap(),
+            fail: Arc::clone(&fail),
+        },
+    };
+    let report = b_sync.sync_once().await.unwrap();
+    assert_eq!((report.sent, report.upserted), (2, 2));
+
+    // A new pass from the start ("Include books from my own branches"
+    // turned off) cannot list b1's folder: b2 still goes, b1 stays shared.
+    set_cluster_link_sharing(&b, &b_link.owner_cluster_id, true, false)
+        .await
+        .unwrap();
+    *fail.lock().unwrap() = Some("Author/b1/".into());
+    let report = b_sync.sync_once().await.unwrap();
+    assert_eq!(report.sent, 1);
+    for product in ["b1", "b2"] {
+        assert_eq!(
+            title_state(&a, product).await,
+            (BRANCH_TITLE_SHARED.into(), None),
+            "{product}"
+        );
+    }
+    // The pass did not end and its cursor stayed before b1 (the first
+    // title): the next pass tries it again and ends, after which nothing
+    // is resent.
+    *fail.lock().unwrap() = None;
+    let report = b_sync.sync_once().await.unwrap();
+    assert_eq!(report.sent, 2, "the pass resumed before b1");
+    assert_eq!(
+        title_state(&a, "b1").await,
+        (BRANCH_TITLE_SHARED.into(), None)
+    );
+    assert_eq!(b_sync.sync_once().await.unwrap().sent, 0);
+}

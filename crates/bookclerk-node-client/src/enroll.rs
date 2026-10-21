@@ -2,8 +2,8 @@
 
 use base64::Engine as _;
 use bookclerk_library::control_plane::{
-    join_cycle, parse_enrollment_token, record_cluster_link, set_cluster_link_ancestry,
-    ClusterLink, ClusterLinkKeys, NewClusterLink,
+    join_cycle, join_overflows_ancestry, parse_enrollment_token, record_cluster_link,
+    set_cluster_link_ancestry, ClusterLink, ClusterLinkKeys, NewClusterLink,
 };
 use bookclerk_library::LibraryStore;
 use serde::Deserialize;
@@ -46,6 +46,11 @@ pub enum JoinError {
     /// names this library): joining it would make a cycle.
     #[error("that library is this library or one of its branches; joining it would make a loop")]
     Cycle,
+    /// Joining the library would give this one more ancestors than an
+    /// ancestry can name, so a later join under it could not be checked
+    /// for a loop.
+    #[error("that library sits too deep in its tree of libraries to join under")]
+    AncestryTooDeep,
     /// The library accepted the join (an invite link or a sign-in code),
     /// but its answer did not parse or the local write failed. The one-use
     /// credential is spent and the node keys are gone, so this install
@@ -127,21 +132,34 @@ pub async fn check_join_ancestry(
     Ok(info.ancestry)
 }
 
-/// Refuses `ancestry` when it names this install's own cluster id, or is
-/// malformed.
+/// Refuses `ancestry` when it names this install's own cluster id, is
+/// malformed, or would take this library's ancestry past what one can name
+/// ([`join_overflows_ancestry`]).
 ///
 /// # Errors
 ///
-/// Returns [`JoinError::Cycle`] or [`JoinError::Record`].
+/// Returns [`JoinError::Cycle`], [`JoinError::AncestryTooDeep`] or
+/// [`JoinError::Record`].
 pub async fn refuse_cycle(store: &LibraryStore, ancestry: &[String]) -> Result<(), JoinError> {
     if !bookclerk_node_proto::is_ancestry(ancestry) {
         return Err(JoinError::Record("malformed library ancestry".into()));
     }
     match join_cycle(store, ancestry).await {
-        Ok(None) => Ok(()),
+        Ok(None) => {}
         Ok(Some(own)) => {
             tracing::warn!(cluster_id = %own, "refused to join a library whose ancestry names this one");
-            Err(JoinError::Cycle)
+            return Err(JoinError::Cycle);
+        }
+        Err(err) => return Err(JoinError::Record(err.to_string())),
+    }
+    match join_overflows_ancestry(store, ancestry).await {
+        Ok(false) => Ok(()),
+        Ok(true) => {
+            tracing::warn!(
+                depth = ancestry.len(),
+                "refused to join a library too deep to check for a loop"
+            );
+            Err(JoinError::AncestryTooDeep)
         }
         Err(err) => Err(JoinError::Record(err.to_string())),
     }
