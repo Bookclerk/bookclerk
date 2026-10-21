@@ -4,8 +4,13 @@ import { AccountSettingsPanel } from "@/components/AccountSettingsPanel";
 import type { AppNavProps } from "@/components/AppNav";
 import { AppTopBar } from "@/components/AppTopBar";
 import { ErrorStatePage } from "@/components/ErrorStatePage";
+import { BranchesPanel } from "@/components/BranchesPanel";
+import { canChangeBranchSharing } from "@/lib/join";
+import { ClerksPanel } from "@/components/ClerksPanel";
+import { ClusterConsentsPanel } from "@/components/ClusterConsentsPanel";
 import { NodesPanel } from "@/components/NodesPanel";
 import { OidcSettingsPanel } from "@/components/OidcSettingsPanel";
+import { OutputSettingsPanel } from "@/components/OutputSettingsPanel";
 import { PlacementBadge, PlacementPanel } from "@/components/PlacementPanel";
 import { UserManagementPanel } from "@/components/UserManagementPanel";
 import {
@@ -61,7 +66,18 @@ const DEFAULT_DAEMON_PORT = "8787";
 
 type ListenExposure = "localhost" | "all" | "custom";
 type ListenRow = { host: string; port: string };
-type SettingsTab = "account" | "users" | "signin" | "server" | "plugins" | "nodes";
+/** A Settings section. `clusters` is shown as "Library" (this server as a branch). */
+export type SettingsTab =
+  | "account"
+  | "users"
+  | "signin"
+  | "server"
+  | "plugins"
+  | "output"
+  | "nodes"
+  | "branches"
+  | "clerks"
+  | "clusters";
 
 const ISOLATION_OPTIONS = [
   ["required", "Required"],
@@ -393,6 +409,7 @@ export function SettingsPage({
   nav,
   role,
   session,
+  initialTab,
 }: {
   onLogout: () => void;
   onSessionExpired: () => void;
@@ -400,6 +417,8 @@ export function SettingsPage({
   nav: AppNavProps;
   role?: AuthRole;
   session?: AuthSession | null;
+  /** Section to open first (default: Account). */
+  initialTab?: SettingsTab;
 }) {
   const [settings, setSettings] = useState<SettingsResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -488,6 +507,8 @@ export function SettingsPage({
   const showNodes =
     showOperatorChrome || role === "owner" || role === "administrator" || role === "host";
   const showSignInSettings = role === "operator" || role === "owner";
+  // Settings → Library: the operator, or an Owner (the two sharing settings).
+  const showLibrary = canChangeBranchSharing(role, isImpersonating);
   const canManageUsers = role === "operator" || role === "owner" || role === "administrator";
   const showUserAdmin = canManageUsers;
   const canManageOperator = showOperatorChrome;
@@ -499,7 +520,7 @@ export function SettingsPage({
   const currentUserId = session?.user?.id;
 
   function resolveDefaultTab(): SettingsTab {
-    return "account";
+    return initialTab ?? "account";
   }
 
   const [activeTab, setActiveTab] = useState<SettingsTab>("account");
@@ -516,16 +537,25 @@ export function SettingsPage({
     if (!showUserAdmin && activeTab === "users") {
       setActiveTab("account");
     }
-    if (!showSignInSettings && activeTab === "signin") {
+    if (
+      !showSignInSettings &&
+      (activeTab === "signin" || activeTab === "branches" || activeTab === "clerks")
+    ) {
       setActiveTab("account");
     }
-    if (!showOperatorChrome && (activeTab === "server" || activeTab === "plugins")) {
+    if (
+      !showOperatorChrome &&
+      (activeTab === "server" || activeTab === "plugins" || activeTab === "output")
+    ) {
+      setActiveTab("account");
+    }
+    if (!showLibrary && activeTab === "clusters") {
       setActiveTab("account");
     }
     if (!showNodes && activeTab === "nodes") {
       setActiveTab("account");
     }
-  }, [showUserAdmin, showSignInSettings, showOperatorChrome, showNodes, activeTab]);
+  }, [showUserAdmin, showSignInSettings, showOperatorChrome, showLibrary, showNodes, activeTab]);
 
   function buildPluginValues(nextSettings: SettingsResponse): Record<string, string> {
     const out: Record<string, string> = {};
@@ -1248,7 +1278,7 @@ export function SettingsPage({
             <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">Settings</h1>
             <p className="text-sm text-ink/60">
               {showOperatorChrome
-                ? "Account, users, sign-in providers, daemon, and plugin knobs for this server."
+                ? "Account, users, sign-in providers, daemon, output packaging, and plugin knobs for this server."
                 : showSignInSettings
                   ? "Account security, user management, and sign-in providers."
                   : showUserAdmin
@@ -1338,6 +1368,20 @@ export function SettingsPage({
                 >
                   Plugins
                 </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === "output"}
+                  className={cn(
+                    "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                    activeTab === "output"
+                      ? "bg-ink text-paper shadow-sm"
+                      : "text-ink/60 hover:text-ink",
+                  )}
+                  onClick={() => setActiveTab("output")}
+                >
+                  Output
+                </button>
               </>
             ) : null}
             {showNodes ? (
@@ -1354,6 +1398,54 @@ export function SettingsPage({
                 onClick={() => setActiveTab("nodes")}
               >
                 Nodes
+              </button>
+            ) : null}
+            {showLibrary ? (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "clusters"}
+                className={cn(
+                  "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                  activeTab === "clusters"
+                    ? "bg-ink text-paper shadow-sm"
+                    : "text-ink/60 hover:text-ink",
+                )}
+                onClick={() => setActiveTab("clusters")}
+              >
+                Library
+              </button>
+            ) : null}
+            {showSignInSettings ? (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "branches"}
+                className={cn(
+                  "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                  activeTab === "branches"
+                    ? "bg-ink text-paper shadow-sm"
+                    : "text-ink/60 hover:text-ink",
+                )}
+                onClick={() => setActiveTab("branches")}
+              >
+                Branches
+              </button>
+            ) : null}
+            {showSignInSettings ? (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "clerks"}
+                className={cn(
+                  "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                  activeTab === "clerks"
+                    ? "bg-ink text-paper shadow-sm"
+                    : "text-ink/60 hover:text-ink",
+                )}
+                onClick={() => setActiveTab("clerks")}
+              >
+                Clerks
               </button>
             ) : null}
           </div>
@@ -1420,6 +1512,28 @@ export function SettingsPage({
 
         {activeTab === "nodes" && showNodes ? (
           <NodesPanel onSessionExpired={onSessionExpired} />
+        ) : null}
+
+        {activeTab === "output" && showOperatorChrome ? (
+          <OutputSettingsPanel onSessionExpired={onSessionExpired} />
+        ) : null}
+
+        {activeTab === "clusters" && showLibrary ? (
+          <ClusterConsentsPanel
+            onSessionExpired={onSessionExpired}
+            sharingOnly={!showOperatorChrome}
+          />
+        ) : null}
+
+        {activeTab === "branches" && showSignInSettings ? (
+          <BranchesPanel
+            onSessionExpired={onSessionExpired}
+            canAddOwn={role !== "operator" && Boolean(session?.user)}
+          />
+        ) : null}
+
+        {activeTab === "clerks" && showSignInSettings ? (
+          <ClerksPanel onSessionExpired={onSessionExpired} />
         ) : null}
 
         {(activeTab === "server" || activeTab === "plugins") && showOperatorChrome ? (

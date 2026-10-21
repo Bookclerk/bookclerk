@@ -24,8 +24,9 @@ HTTP control plane (default `127.0.0.1:8787`):
 | `POST /api/auth/elevate` | owner + password / passkey / OIDC step-up | Short-lived elevated operator session |
 | `GET` / `POST` / `PATCH` `/api/users…` | provisioner | List/create/patch users; remint claim tickets |
 | `GET` / `POST` `/api/plugins/{id}/consent` | operator | Plugin grant status / approve (widen or narrow; host-capped) |
-| `GET` / `PATCH` `/api/settings` | operator | Daemon, library, plugins, confinement knobs. `events.*` is compare-and-swap against the database |
+| `GET` / `PATCH` `/api/settings` | operator | Daemon, library, plugins, confinement knobs. `events.*` and `output.*` are compare-and-swap against the database (one authority per request) |
 | `GET` / `PUT /api/config/domains/core.events` | operator | Authoritative `[events]` document and revision |
+| `GET` / `PUT /api/config/domains/core.output` | operator | Authoritative shared `[output]` document and revision (`{expected_revision, document}`) |
 | `GET` / `PUT /api/auth/mfa-policy` | owner or operator | Host `require_second_factor` (password login must use TOTP or a passkey) |
 | `GET /api/status` (also `/status`) | yes | Status snapshot |
 | `POST /api/library/scan` (also `/scan`) | yes | Queue scan (`Content-Type: application/json`); `409` if already pending/running, `429` if the queue is full |
@@ -109,9 +110,18 @@ for players, the WebAuthn relying
 party for passkeys, and the base for invite magic links.
 Cookie-authenticated `POST` / `PATCH` / `DELETE` under `/api/*` require
 a matching `Origin` (or `Referer`) host; login / redeem / password paths are
-exempt. Example nginx:
+exempt. The web UI's live socket (`GET /api/live`) and, in `proxy` mode,
+the host-node socket (`GET /api/node/v1/connect`) are WebSockets, so the
+proxy must forward the upgrade. The live socket also requires `Origin` to
+equal `public_origin` exactly; without a working socket the UI falls back
+to polling. Example nginx:
 
 ```nginx
+map $http_upgrade $connection_upgrade {
+  default upgrade;
+  ''      close;
+}
+
 server {
   listen 443 ssl http2;
   server_name bookclerk.example.com;
@@ -123,6 +133,9 @@ server {
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_read_timeout 120s;   # sockets ping every 20 s
   }
 }
 ```
@@ -167,6 +180,30 @@ bookclerk daemon jobs
 bookclerk daemon scan [--account <id>]
 bookclerk daemon acquire [--asin <id>] [--account <id>]
 ```
+
+### Host nodes
+
+A Bookclerk install can join another cluster as a host node and run its
+scans and acquires (full guide: [Libraries and branches](cluster-hosts.md)).
+The web UI calls this a *branch*: on the host, **Settings → Library → Join
+a library** (or the first-start welcome screen) joins with a sign-in on the
+owner, and the connection starts without a restart. On the command line:
+
+```bash
+bookclerk clusters join --url https://owner.example  # sign in in a browser (loopback callback)
+bookclerk clusters join            # or paste a branch invite at the prompt, or pipe it on stdin
+bookclerk clusters consents        # what the owner asks to run here
+bookclerk clusters approve <plugin_key> --request <digest> [--deny-domain …] [--deny-binding …]
+bookclerk clusters revoke <plugin_key>
+bookclerk clusters leave           # tells the owner (which revokes the node), deletes the node keys
+```
+
+The host's daemon needs `bookclerk-workerd` and the pinned `workerd` beside
+it like any plugin host, and outbound HTTPS to the owner's
+`public_origin`. It keeps its own database and `master.key`; it never sees
+the owner's. On the owner, `bookclerk nodes list` shows the host
+(`kind = host`) with its heartbeats, and `bookclerk nodes revoke <node_id>`
+disconnects it for good.
 
 ## systemd
 

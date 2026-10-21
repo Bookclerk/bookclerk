@@ -11,11 +11,21 @@ import {
   type ClusterStatusResponse,
   type ConfigNodeView,
 } from "@/lib/api";
+import { useLiveRefresh } from "@/lib/live";
 import { age, cores, ownerName, size } from "@/lib/nodeFormat";
 import { cn, pageWidthClass } from "@/lib/utils";
 
-/** How often the page re-reads cluster status (nodes report every 15 s). */
+/**
+ * How often the page re-reads cluster status while the live socket is
+ * down (nodes report every 15 s).
+ */
 const REFRESH_MS = 15_000;
+
+/**
+ * Re-read while the socket is up too: a node that stops heartbeating
+ * changes no row, it just ages out of `live`.
+ */
+const OPEN_REFRESH_MS = 60_000;
 
 /** One headline figure. */
 function Stat({ label, value, detail }: { label: string; value: string; detail?: string }) {
@@ -110,9 +120,11 @@ export function StatusPage({
 
   useEffect(() => {
     void refresh();
-    const timer = window.setInterval(() => void refresh(), REFRESH_MS);
-    return () => window.clearInterval(timer);
   }, [refresh]);
+  useLiveRefresh(["nodes", "jobs", "deliveries"], refresh, {
+    pollMs: REFRESH_MS,
+    openPollMs: OPEN_REFRESH_MS,
+  });
 
   async function onSignOut() {
     await signOut(role);

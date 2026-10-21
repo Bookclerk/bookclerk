@@ -8,21 +8,31 @@ import {
   authMe,
   endElevate,
   fetchPreferences,
+  logout,
   stopImpersonate,
   type AppView,
   type AuthRole,
   type AuthSession,
 } from "@/lib/api";
 import {
+  dismissWelcome,
+  fetchJoinStatus,
+  rememberApproveReturn,
+  takeApproveReturn,
+  welcomeDismissed,
+} from "@/lib/join";
+import {
   dropTicketUnlessInvitePath,
   isAppPath,
   isInvitePath,
+  joinPage,
   normalizeAppView,
   resolveView,
   syncUrlToView,
   viewFromPath,
 } from "@/lib/routes";
 import { showStatusNav } from "@/lib/nav";
+import type { SettingsTab } from "@/components/SettingsPage";
 
 const AccountsPage = lazy(() =>
   import("@/components/AccountsPage").then((m) => ({ default: m.AccountsPage })),
@@ -47,6 +57,25 @@ const StatusPage = lazy(() =>
 const WishlistPage = lazy(() =>
   import("@/components/WishlistPage").then((m) => ({ default: m.WishlistPage })),
 );
+const JoinApprovePage = lazy(() =>
+  import("@/components/JoinApprovePage").then((m) => ({ default: m.JoinApprovePage })),
+);
+const JoinCallbackPage = lazy(() =>
+  import("@/components/JoinCallbackPage").then((m) => ({ default: m.JoinCallbackPage })),
+);
+const WelcomeScreen = lazy(() =>
+  import("@/components/WelcomeScreen").then((m) => ({ default: m.WelcomeScreen })),
+);
+
+/**
+ * Before the session check: an SSO sign-in started on the consent page
+ * comes back to `/`; send it back to the consent page.
+ */
+function restoreApproveReturn(): void {
+  if (window.location.pathname !== "/") return;
+  const back = takeApproveReturn();
+  if (back) window.history.replaceState(null, "", back);
+}
 
 type AuthState = "loading" | "anon" | "authed";
 
@@ -98,6 +127,13 @@ export default function App() {
   const [auth, setAuth] = useState<AuthState>("loading");
   const [session, setSession] = useState<AuthSession | null>(null);
   const { setPreference: setThemePreference } = useTheme();
+  // Join a library pages own their URL until they hand over to the app.
+  const [join, setJoin] = useState(() => {
+    restoreApproveReturn();
+    return joinPage(window.location.pathname);
+  });
+  const [welcome, setWelcome] = useState<{ defaultBranchName: string } | null>(null);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | undefined>();
   const [view, setView] = useState<AppView>(
     () => viewFromPath(window.location.pathname) ?? "discover",
   );
@@ -111,7 +147,11 @@ export default function App() {
       try {
         const me = await authMe();
         if (cancelled) return;
-        if (me.authenticated) {
+        if (me.authenticated && joinPage() != null) {
+          if (joinPage() === "approve") takeApproveReturn();
+          setSession(me);
+          setAuth("authed");
+        } else if (me.authenticated) {
           const fromInvite = isInvitePath();
           const next = resolveView(
             fromInvite ? "/" : window.location.pathname,
@@ -169,12 +209,62 @@ export default function App() {
     return () => window.removeEventListener("popstate", onPopState);
   }, [knownPath, auth, session?.default_view]);
 
-  function navigate(next: AppView) {
+  // Back/forward and other view changes leave Settings on its default
+  // section next time.
+  useEffect(() => {
+    if (view !== "settings") setSettingsTab(undefined);
+  }, [view]);
+
+  function navigate(next: AppView, tab?: SettingsTab) {
+    // A requested Settings section applies only to the navigation that
+    // asked for it; Settings otherwise opens on its default section.
+    setSettingsTab(next === "settings" ? tab : undefined);
     setView(next);
     syncUrlToView(next, "push");
   }
 
+  // A fresh install's operator first chooses: start a new library, or join
+  // one (the welcome screen).
+  useEffect(() => {
+    if (auth !== "authed" || join != null) return;
+    if (session?.role !== "operator" || session.impersonating || welcomeDismissed()) return;
+    let cancelled = false;
+    void fetchJoinStatus()
+      .then((status) => {
+        if (!cancelled && status.fresh) {
+          setWelcome({ defaultBranchName: status.default_branch_name });
+        }
+      })
+      .catch(() => {
+        /* no welcome screen: the app works as before */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [auth, join, session?.role, session?.impersonating]);
+
+  // Signing in on the consent page with SSO leaves the SPA and comes back
+  // to `/`: remember where to return.
+  useEffect(() => {
+    if (auth === "anon" && join === "approve") {
+      rememberApproveReturn(`${window.location.pathname}${window.location.search}`);
+    }
+  }, [auth, join]);
+
+  /** Leaves a Join page or the welcome screen for a Settings section. */
+  function openSettings(tab: SettingsTab) {
+    setJoin(null);
+    setWelcome(null);
+    navigate("settings", tab);
+  }
+
   function onLoginSuccess(next: AuthSession) {
+    if (joinPage() != null) {
+      if (joinPage() === "approve") takeApproveReturn();
+      setSession(next);
+      setAuth("authed");
+      return;
+    }
     const fromInvite = isInvitePath();
     const resolved = resolveView(
       fromInvite ? "/" : window.location.pathname,
@@ -233,6 +323,8 @@ export default function App() {
     return <LoginPage onSuccess={onLoginSuccess} />;
   }
 
+  // Before any join page: a consent needs an enrolled second factor, and
+  // the address (with its query) is kept, so the join resumes after enrolling.
   if (needsSecondFactorEnrollment(session)) {
     return (
       <PageSuspense>
@@ -240,6 +332,42 @@ export default function App() {
           role={session.role}
           onEnrolled={refreshSession}
           onLoggedOut={onLogout}
+        />
+      </PageSuspense>
+    );
+  }
+
+  if (join === "approve") {
+    return (
+      <PageSuspense>
+        <JoinApprovePage
+          onSignOut={async () => {
+            await logout().catch(() => undefined);
+            onLogout();
+          }}
+        />
+      </PageSuspense>
+    );
+  }
+
+  if (join === "callback") {
+    return (
+      <PageSuspense>
+        <JoinCallbackPage onOpenLibrary={() => openSettings("clusters")} />
+      </PageSuspense>
+    );
+  }
+
+  if (welcome) {
+    return (
+      <PageSuspense>
+        <WelcomeScreen
+          defaultBranchName={welcome.defaultBranchName}
+          onStartNew={() => {
+            dismissWelcome();
+            openSettings("users");
+          }}
+          onJoined={() => openSettings("clusters")}
         />
       </PageSuspense>
     );
@@ -265,6 +393,8 @@ export default function App() {
   } else if (view === "settings") {
     page = (
       <SettingsPage
+        key={settingsTab ?? "settings"}
+        initialTab={settingsTab}
         onLogout={onLogout}
         onSessionExpired={onLogout}
         onSessionChange={refreshSession}

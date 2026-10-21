@@ -24,9 +24,13 @@ REPO = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
 
 from ci_plan.execute import (  # noqa: E402
+    BUILD_ONLY_JOBS,
+    NEXTEST_RUN,
     SCHEMA_VERSION,
+    Command,
     Context,
     ExecError,
+    build_only_command,
     execution_mode,
     gate,
     job_outputs,
@@ -82,6 +86,7 @@ def artifact(p, mode: str = "selective") -> dict:
         "checkout_sha": "c",
         "selective_ci": "1",
         "mode": mode,
+        "build_only": False,
         "predicted": plan_to_dict(p),
         "execution": plan_to_dict(p),
     }
@@ -172,7 +177,7 @@ class ScenarioTests(unittest.TestCase):
     def test_cli_only_binary_package_uses_tests_target_selection(self) -> None:
         p = plan("crates/bookclerk-cli/src/main.rs")
         self.assertEqual(p.lint_packages(), ["bookclerk-cli"])
-        self.assertEqual(check_argv(p, "rust_test"), [["cargo", "test", "-p", "bookclerk-cli", "--tests"]])
+        self.assertEqual(check_argv(p, "rust_test"), [[*NEXTEST_RUN, "--no-fail-fast", "-p", "bookclerk-cli"]])
         self.assertNotIn("--lib", sum(check_argv(p, "rust_test"), []))
         self.assertFalse(p.selected("doctest"))
         self.assertFalse(p.selected("postgres"))
@@ -294,7 +299,7 @@ class ScenarioTests(unittest.TestCase):
         p = plan("crates/bookclerk-plugin-host/tests/guest_jail.rs")
         self.assertEqual(p.lint_packages(), ["bookclerk-plugin-host"])
         self.assertFalse(p.packages["bookclerk-plugin-host"].compiled)
-        self.assertEqual(check_argv(p, "rust_test"), [["cargo", "test", "-p", "bookclerk-plugin-host", "--tests"]])
+        self.assertEqual(check_argv(p, "rust_test"), [[*NEXTEST_RUN, "--no-fail-fast", "-p", "bookclerk-plugin-host"]])
         self.assertFalse(p.selected("doctest"))
         self.assertFalse(p.selected("postgres"))
         self.assertFalse(p.selected("native_gateway"))
@@ -490,11 +495,24 @@ class FullSuiteTests(unittest.TestCase):
         p = plan("Cargo.lock")
         self.assertEqual(
             check_argv(p, "rust_test")[0],
-            ["cargo", "test", "--workspace", "--exclude", E2E_PACKAGE, "--tests"],
+            [
+                *NEXTEST_RUN,
+                "--no-fail-fast",
+                "--workspace",
+                "--exclude",
+                E2E_PACKAGE,
+                "-E",
+                "not (binary_id(bookclerk-plugin-catalog::plugin_mutation_lock))",
+            ],
+        )
+        # The custom-harness target nextest cannot list still runs.
+        self.assertIn(
+            ["cargo", "test", "-p", "bookclerk-plugin-catalog", "--test", "plugin_mutation_lock"],
+            check_argv(p, "rust_test"),
         )
         self.assertIn(["cargo", "build", "-p", "bookclerk-mp4", "--examples"], check_argv(p, "rust_test"))
         self.assertIn(
-            ["cargo", "test", "-p", "bookclerk-plugin-database-sqlite", "--features", "host-helpers", "--tests"],
+            [*NEXTEST_RUN, "--no-fail-fast", "-p", "bookclerk-plugin-database-sqlite", "--features", "host-helpers"],
             check_argv(p, "rust_test"),
         )
         self.assertEqual(check_argv(p, "release")[0], ["cargo", "build-app", "--release", "--platform"])
@@ -973,7 +991,8 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(out["mode"], "selective")
         self.assertEqual(out["job_check"], "true")
         self.assertEqual(out["job_postgres"], "false")
-        self.assertEqual(out["check_e2e"], "false")
+        self.assertEqual(out["job_test"], "true")
+        self.assertEqual(out["job_e2e"], "false")
         self.assertEqual(out["release_mode"], "affected")
         self.assertEqual(out["check_needs_node"], "false")
         self.assertEqual(
@@ -1320,6 +1339,108 @@ class EnvelopeTests(unittest.TestCase):
         self.assertTrue(p.full_suite)
         self.assertTrue(p.selected("envelope"))
         self.assertTrue(p.jobs["envelope"])
+
+
+class RunnerLayoutTests(unittest.TestCase):
+    """Test runner, retries, build-only main pushes and docs-only paths."""
+
+    def test_merge_group_retries_once_and_fails_fast(self) -> None:
+        p = plan("crates/bookclerk-cli/src/main.rs")
+        for event, merge_group in (("merge_group", True), ("pull_request", False), ("push", False)):
+            with self.subTest(event=event):
+                art = dict(artifact(p), event=event)
+                argv = [c.argv for key, c in planned_commands(art, "rust_test", CTX) if not key][0]
+                self.assertEqual(argv[:3], ["cargo", "nextest", "run"])
+                self.assertEqual("--retries" in argv, merge_group)
+                self.assertEqual("--fail-fast" in argv, merge_group)
+                self.assertEqual("--no-fail-fast" in argv, not merge_group)
+                if merge_group:
+                    self.assertEqual(argv[argv.index("--retries") + 1], "1")
+
+    def test_custom_harness_target_runs_with_cargo_test(self) -> None:
+        p = plan("crates/bookclerk-plugin-catalog/src/extract.rs")
+        argv = check_argv(p, "rust_test")
+        nextest = next(a for a in argv if a[:2] == ["cargo", "nextest"])
+        self.assertIn("binary_id(bookclerk-plugin-catalog::plugin_mutation_lock)", nextest[nextest.index("-E") + 1])
+        self.assertIn(["cargo", "test", "-p", "bookclerk-plugin-catalog", "--test", "plugin_mutation_lock"], argv)
+        other = check_argv(plan("crates/bookclerk-cli/src/main.rs"), "rust_test")
+        self.assertNotIn("-E", other[0])
+        self.assertEqual(len(other), 1)
+
+    def build_only_artifact(self) -> dict:
+        return resolve(
+            base=None,
+            head=None,
+            selective_ci="1",
+            run_id="9",
+            checkout_sha="abc",
+            event="push",
+            force_full=True,
+            build_only=True,
+            paths=["Cargo.lock"],
+            metadata=META,
+            workspace=REPO,
+        )
+
+    def test_build_only_runs_only_cache_saving_jobs(self) -> None:
+        art = self.build_only_artifact()
+        self.assertTrue(art["build_only"])
+        validate(art, run_id="9", checkout_sha="abc")
+        on = {job for job, run in plan_from_dict(art["execution"]).jobs.items() if run}
+        self.assertEqual(on, set(BUILD_ONLY_JOBS))
+        out = job_outputs(art)
+        self.assertEqual(out["job_e2e"], "false")
+        self.assertEqual(out["job_postgres"], "false")
+        needs = {"plan": {"result": "success"}}
+        for job in JOB_CHECKS:
+            needs[job] = {"result": "success" if job in BUILD_ONLY_JOBS else "skipped"}
+        self.assertEqual(gate(art, needs), [])
+
+    def test_build_only_compiles_and_runs_nothing(self) -> None:
+        art = self.build_only_artifact()
+        execution = plan_from_dict(art["execution"])
+        for check in execution.checks:
+            for key, cmd in planned_commands(art, check, CTX):
+                with self.subTest(check=check, argv=cmd.argv):
+                    self.assertEqual(cmd.argv[0], "cargo", cmd.argv)
+                    self.assertNotIn("nextest", cmd.argv)
+                    self.assertNotIn("fmt", cmd.argv[:2])
+                    self.assertNotIn("--doc", cmd.argv)
+                    if cmd.argv[1] == "test":
+                        self.assertEqual(cmd.argv.count("--no-run"), 1)
+                        self.assertNotIn("--", cmd.argv)
+                    if key:
+                        self.assertTrue(key.startswith(("build-", "ensure_workerd-")), key)
+        tests = [c.argv for key, c in planned_commands(art, "rust_test", CTX) if not key]
+        self.assertEqual(
+            tests[0], ["cargo", "test", "--tests", "--workspace", "--exclude", E2E_PACKAGE, "--no-run"]
+        )
+        self.assertIn(["cargo", "build-app", "--release", "--platform"], [c.argv for _, c in planned_commands(art, "release", CTX)])
+
+    def test_build_only_keeps_bench_compiles(self) -> None:
+        bench = ["cargo", "bench", "-p", "bookclerk-naming", "--benches", "--no-run"]
+        kept = build_only_command(Command("bench targets build", bench))
+        self.assertIsNotNone(kept)
+        assert kept is not None
+        self.assertEqual(kept.argv, bench)
+        self.assertIsNone(build_only_command(Command("bench run", bench[:-1])))
+
+    def test_pull_request_and_merge_group_are_never_build_only(self) -> None:
+        art = artifact(plan("crates/bookclerk-cli/src/main.rs"))
+        self.assertFalse(art["build_only"])
+        argv = check_argv(plan("crates/bookclerk-cli/src/main.rs"), "rust_test")[0]
+        self.assertNotIn("--no-run", argv)
+
+    def test_prose_and_plan_job_tests_select_nothing(self) -> None:
+        p = plan(
+            "README.md",
+            "AGENTS.md",
+            "config/config.example.toml",
+            "scripts/tests/test_ci_plan.py",
+            "scripts/tests/ci_plan_fixtures/workspace_metadata.json",
+        )
+        self.assertFalse(p.full_suite, p.reasons)
+        self.assertEqual(p.checks, {})
 
 
 if __name__ == "__main__":

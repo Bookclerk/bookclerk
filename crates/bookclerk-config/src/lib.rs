@@ -44,6 +44,7 @@ mod plugins;
 mod redact;
 mod settings;
 
+pub use atomic_replace::replace_file;
 pub use cookie_flags::{cookie_secure_suffix, oidc_transaction_cookie_flags, session_cookie_flags};
 pub use database::{
     resolve_d1_api_token, resolve_postgres_url, DatabaseConfig, DatabaseD1Config,
@@ -103,10 +104,12 @@ pub use plugins::{
 pub use redact::{
     contains_registered_secret, is_sensitive_field, is_upload_identifying_field,
     redact_field_value, redact_str, register_secret, register_secrets, register_secrets_from_env,
-    sanitize_for_remote_upload, secrets_registry_test_lock, truncate_upload_message, REDACTED,
+    sanitize_for_remote_upload, secrets_registry_test_lock, truncate_upload_message,
+    unregister_secret, REDACTED,
 };
 pub use settings::{
-    AudioQuality, AuthConfig, Config, DaemonAuthConfig, DaemonConfig, DiagnosticsConfig,
-    DiscoveryConfig, LibraryConfig, ProcessEnvGuard, TRAY_HANDOFF_TTL_SECS_DEFAULT,
-    TRAY_HANDOFF_TTL_SECS_MAX, TRAY_HANDOFF_TTL_SECS_MIN,
+    read_node_api_spki_pin, AudioQuality, AuthConfig, Config, DaemonAuthConfig, DaemonConfig,
+    DiagnosticsConfig, DiscoveryConfig, LibraryConfig, NodeApiConfig, NodeApiMode, ProcessEnvGuard,
+    LETS_ENCRYPT_DIRECTORY, NODE_API_ACME_DIR, NODE_API_SELF_SIGNED_DIR, NODE_API_SPKI_PIN_FILE,
+    TRAY_HANDOFF_TTL_SECS_DEFAULT, TRAY_HANDOFF_TTL_SECS_MAX, TRAY_HANDOFF_TTL_SECS_MIN,
 };

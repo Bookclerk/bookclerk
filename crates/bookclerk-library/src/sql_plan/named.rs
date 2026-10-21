@@ -2014,12 +2014,32 @@ fn plan_enqueue_job(
 ) -> AtomicPlan {
     let run_after = run_after.unwrap_or(now);
     let dedup = match kind {
-        "scan" => format!("scan:account={}", json_account_from_payload(payload_json)),
-        "acquire" => format!(
-            "acquire:title={}:account={}",
-            json_title_from_payload(payload_json),
-            json_account_from_payload(payload_json)
-        ),
+        "scan" => match json_instance_from_payload(payload_json) {
+            Some(instance) => format!(
+                "scan:account={}:instance={instance}",
+                json_account_from_payload(payload_json)
+            ),
+            None => format!("scan:account={}", json_account_from_payload(payload_json)),
+        },
+        "acquire" => {
+            // Mirrors `JobKind::dedup_key`: a forced or PDF-only acquire is
+            // different work from a plain one.
+            let mut key = format!(
+                "acquire:title={}:account={}",
+                json_title_from_payload(payload_json),
+                json_account_from_payload(payload_json)
+            );
+            if json_force_from_payload(payload_json) == 1 {
+                key.push_str(":force=1");
+            }
+            if json_flag_from_payload(payload_json, "pdf_only") {
+                key.push_str(":pdf=1");
+            }
+            match json_instance_from_payload(payload_json) {
+                Some(instance) => format!("{key}:instance={instance}"),
+                None => key,
+            }
+        }
         "listen_sync" => "listen_sync".into(),
         "integration_scan" => format!(
             "integration_scan:id={}:force={}",
@@ -2110,6 +2130,7 @@ fn plan_claim_next_job(
                        AND cancel_requested = 0 \
                        AND json_valid(payload) = 1 \
                        AND IFNULL(json_extract(payload, '$.v') || '', '') = '1' \
+                       AND json_extract(payload, '$.requires') IS NULL \
                        AND kind IN ('scan', 'acquire', 'listen_sync', 'integration_scan') \
                        AND resource_class IN ('network', 'media', 'transcription', 'indexing') \
                      ORDER BY priority DESC, created_at ASC LIMIT 1\
@@ -2702,6 +2723,18 @@ fn json_account_from_payload(payload_json: &str) -> String {
         .unwrap_or_else(|| "all".into())
 }
 
+/// Best-effort pinned plugin instance id from a job payload JSON string.
+fn json_instance_from_payload(payload_json: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(payload_json)
+        .ok()
+        .and_then(|v| {
+            v.get("plugin_instance_id")
+                .and_then(|a| a.as_str())
+                .map(str::to_string)
+        })
+        .filter(|s| !s.is_empty())
+}
+
 /// Best-effort title filter from a job payload JSON string.
 fn json_title_from_payload(payload_json: &str) -> String {
     serde_json::from_str::<serde_json::Value>(payload_json)
@@ -2719,6 +2752,15 @@ fn json_force_from_payload(payload_json: &str) -> u8 {
             .and_then(|v| v.get("force").and_then(JsonValue::as_bool))
             .unwrap_or(false),
     )
+}
+
+/// Best-effort boolean `field` of a job payload JSON string (`false` when
+/// absent or not a boolean).
+fn json_flag_from_payload(payload_json: &str, field: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(payload_json)
+        .ok()
+        .and_then(|v| v.get(field).and_then(JsonValue::as_bool))
+        .unwrap_or(false)
 }
 
 /// Best-effort integration id from a job payload JSON string.
@@ -4029,6 +4071,33 @@ mod tests {
     }
 
     #[test]
+    fn unrouted_claim_skips_a_job_that_requires_instances() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        seed_pending_job(
+            &conn,
+            "routed",
+            "acquire",
+            r#"{"v":1,"requires":["7d1f0f7e-4a8c-4d55-9d43-0b3a1b6f0c11"]}"#,
+            10,
+        );
+        seed_pending_job(&conn, "free", "scan", r#"{"v":1}"#, 0);
+        let result = run_plan(
+            &conn,
+            &plan_claim_next_job("network", "worker-1", 60, "2024-06-01T00:00:00Z"),
+        );
+        assert_eq!(result.status, atomic_status::OK);
+        let claimed: String = conn
+            .query_row("SELECT id FROM jobs WHERE state = 'running'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(claimed, "free");
+        let (state, ..) = claim_row(&conn, "routed");
+        assert_eq!(state, "pending");
+    }
+
+    #[test]
     fn claim_marks_unknown_kind_and_unsupported_version() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn);
@@ -4118,6 +4187,48 @@ mod tests {
             ),
         );
         assert_eq!(again.status, atomic_status::DUPLICATE);
+    }
+
+    /// The SQL dedup key of an acquire matches `JobKind::dedup_key`: a
+    /// forced or PDF-only acquire is not absorbed by a plain one, and each
+    /// payload's plan key is the ORM's.
+    #[test]
+    fn enqueue_keeps_forced_and_pdf_acquires_distinct() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        let payloads = [
+            r#"{"v":1,"account":"a1","title":"B0X"}"#,
+            r#"{"v":1,"account":"a1","title":"B0X","force":true}"#,
+            r#"{"v":1,"account":"a1","title":"B0X","pdf_only":true}"#,
+            r#"{"v":1,"account":"a1","title":"B0X","force":true,"pdf_only":true}"#,
+        ];
+        for (i, payload) in payloads.iter().enumerate() {
+            let now = format!("2024-06-01T00:00:{:02}Z", 2 * i);
+            let first = run_plan(
+                &conn,
+                &plan_enqueue_job("acquire", payload, 0, 3, 8, None, &now),
+            );
+            assert_eq!(first.status, atomic_status::OK, "{payload}");
+            let later = format!("2024-06-01T00:00:{:02}Z", 2 * i + 1);
+            let again = run_plan(
+                &conn,
+                &plan_enqueue_job("acquire", payload, 0, 3, 8, None, &later),
+            );
+            assert_eq!(again.status, atomic_status::DUPLICATE, "{payload}");
+            let parsed: crate::models::JobPayload = serde_json::from_str(payload).unwrap();
+            let stored: String = conn
+                .query_row(
+                    "SELECT dedup_key FROM jobs WHERE payload = ?1",
+                    [payload],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                stored,
+                crate::models::JobKind::Acquire.dedup_key(&parsed),
+                "{payload}"
+            );
+        }
     }
 
     fn confirm_totp_params(user_id: i64) -> DbAtomicParams {

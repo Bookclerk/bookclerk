@@ -2,29 +2,63 @@
 //!
 //! Bootstrap material (database target, `master.key`, `node-identity.json`) is
 //! read before these rows exist. After enrollment, `core.events` is the
-//! authority for `[events]`. Other `config.toml` sections stay transitional.
+//! authority for `[events]` and `core.output` for the shared `[output]`
+//! table. Other `config.toml` sections stay transitional.
 //!
 //! See `docs/adr/control-plane.md`.
 
 mod batch;
+mod branch_catalog;
+mod clerks;
+mod cluster_links;
 mod deployments;
 mod documents;
+mod enrollment;
 mod identity;
 mod instance_config;
 mod instances;
+mod job_routing;
+mod leases;
+mod live;
 mod node_queue;
 mod node_status;
+mod output;
 mod ownership;
+mod pending_joins;
 mod placement;
+mod remote_catalog;
+mod remote_consents;
+mod remote_results;
+mod remote_work;
+mod requirements_sweep;
 mod routing;
 mod schemas;
 mod secret;
+mod semaphore;
+mod trust;
+mod uploads;
 mod versions;
 
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+pub use branch_catalog::{
+    accept_catalog_batch, begin_catalog, branch_provenance, branch_title_counts,
+    catalog_fence_live, detach_branch_titles, forwardable_branch_titles, grant_catalog_upload,
+    list_branch_titles, pending_deliveries, remove_detached_branch_titles, BranchTitle,
+    BranchTitleCounts, CatalogAccept, CatalogBegin, CatalogSessionOpened, BRANCH_TITLE_DETACHED,
+    BRANCH_TITLE_SHARED, DETACHED_LEFT, DETACHED_STOPPED_SHARING, DETACHED_WITHDRAWN,
+    FULL_CATALOG_PASS_EVERY,
+};
+pub use clerks::{library_contents, owner_nodes_visible_to, remove_owner_node, LibraryContents};
+pub use cluster_links::{
+    decode_spki_pin, join_cycle, join_overflows_ancestry, leave_cluster_link, library_ancestry,
+    list_cluster_links, load_cluster_link, load_cluster_link_keys, mark_cluster_link_revoked,
+    record_cluster_link, set_cluster_link_ancestry, set_cluster_link_sharing,
+    set_cluster_link_state, ClusterLink, ClusterLinkKeys, NewClusterLink, CLUSTER_LINK_ACTIVE,
+    CLUSTER_LINK_KEYS_NAME, CLUSTER_LINK_LEFT, CLUSTER_LINK_REVOKED,
+};
 pub use deployments::{
     bounded_observation_detail, delete_plugin_deployment, ensure_plugin_deployment,
     instance_has_deployment, list_all_deployments, list_deployments_for_instance,
@@ -35,13 +69,26 @@ pub use deployments::{
 };
 pub use documents::{
     audit_count, change_count, ConfigActor, DocumentKey, ReplaceOutcome, StoredDocument,
-    VerifiedNodeOwner, CLUSTER_SCOPE_ID, CLUSTER_SCOPE_TYPE, MAX_CONFIGURATION_DOCUMENT_BYTES,
-    NODE_SCOPE_TYPE, PLUGIN_INSTANCE_CONFIG_NAMESPACE, PLUGIN_INSTANCE_SCOPE_TYPE,
+    VerifiedClusterOwner, VerifiedNodeOwner, CLUSTER_SCOPE_ID, CLUSTER_SCOPE_TYPE,
+    MAX_CONFIGURATION_DOCUMENT_BYTES, NODE_SCOPE_TYPE, PLUGIN_INSTANCE_CONFIG_NAMESPACE,
+    PLUGIN_INSTANCE_SCOPE_TYPE,
+};
+pub use enrollment::{
+    authorized_enrollment_link, check_redeem_request, format_enrollment_token,
+    list_enrollment_links, load_host_enrollment, load_node_credential, mint_enrollment_link,
+    parse_enrollment_token, record_authorized_enrollment_link, record_node_connected,
+    record_node_left, redeem_enrollment_link, redeem_enrollment_link_as, revoke_enrollment_link,
+    revoke_node_credential, set_host_enrollment_enabled, verify_cluster_owner, EnrolledNode,
+    EnrollmentActor, EnrollmentLink, EnrollmentSecret, EnrollmentToken, HostEnrollmentSettings,
+    HostEnrollmentSettingsV1, MintedLink, NodeCredential, RedeemRequest,
+    AUTHORIZED_LINK_CREATED_BY, DEFAULT_LINK_TTL, ENROLLMENT_TOKEN_PREFIX,
+    HOST_ENROLLMENT_NAMESPACE, HOST_ENROLLMENT_SCHEMA_VERSION, MAX_LINK_LABEL_BYTES, MAX_LINK_TTL,
+    MIN_LINK_TTL, NODE_PUBLIC_KEY_LEN,
 };
 pub use identity::{
-    current_process_incarnation, list_node_ids, list_nodes, load_node,
-    load_or_create_node_identity, node_identity_path, node_target, NodeIdentity, NodeKind,
-    NodeRecord, NODE_IDENTITY_FILE,
+    current_process_incarnation, encode_node_identity_file, install_node_identity, list_node_ids,
+    list_nodes, load_node, load_or_create_node_identity, node_identity_path, node_target,
+    NodeIdentity, NodeKind, NodeRecord, NODE_IDENTITY_FILE,
 };
 pub use instance_config::{
     import_instance_config_if_absent, load_instance_config, parse_setting_text,
@@ -52,10 +99,25 @@ pub use instance_config::{
     MAX_INSTANCE_SETTINGS, MAX_INSTANCE_SETTING_BYTES, PLUGIN_INSTANCE_CONFIG_SCHEMA_VERSION,
 };
 pub use instances::{
-    create_plugin_instance, default_instance_for_key, delete_plugin_instance,
-    ensure_plugin_instance, find_plugin_instance_by_key, list_all_plugin_instances,
-    list_plugin_instances_for_key, load_plugin_instance, PluginInstance, PluginInstanceId,
+    create_node_local_instance, create_plugin_instance, default_instance_for_key,
+    delete_plugin_instance, ensure_plugin_instance, find_plugin_instance_by_key,
+    list_all_plugin_instances, list_plugin_instances_for_key, load_plugin_instance, PluginInstance,
+    PluginInstanceId,
 };
+pub use job_routing::{
+    account_semaphore, claim_routed_job, class_semaphore, common_deployment_nodes,
+    instance_semaphore, job_permit_holder_prefix, job_plugin_keys, job_semaphores,
+    job_source_plugin_key, node_can_run_job, resolve_job_requirements, JobClaimFilter,
+    JobClaimLimits, JobClaimRequest, RoutedJobClaim, ACCOUNT_SEMAPHORE_LIMIT,
+    ROUTED_CLAIM_CANDIDATES,
+};
+pub use leases::{
+    acquire_lease, acquire_lease_on, list_leases, load_lease, load_lease_on, release_lease,
+    release_lease_on, renew_lease, renew_lease_on, ClusterLease, LeaseFence, SingletonDuty,
+    EVENT_RETENTION_LEASE, JOB_RETENTION_LEASE, KV_EXPIRY_LEASE, MIGRATION_LEASE,
+    SESSION_EXPIRY_LEASE,
+};
+pub use live::{changed_topics, live_revisions, LiveRevision, LiveRevisions, LiveTopic};
 pub use node_queue::{
     is_node_consumer_id, is_valid_node_id, node_consumer_id, node_queue_name, publish_node_message,
     publish_to_all_nodes, NodeMessage, NODE_CONSUMER_PREFIX,
@@ -66,16 +128,48 @@ pub use node_status::{
     NodeSampler, NodeStatus, AVAILABILITY_FULL_PPM, AVAILABILITY_TAU, DEFAULT_GUEST_CPU_MILLICORES,
     DEFAULT_GUEST_MEMORY_BYTES, NODE_HEARTBEAT_INTERVAL, NODE_LIVE_INTERVALS,
 };
+pub use output::{
+    import_output_if_absent, is_output_setting_key, load_output, overlay_output,
+    portable_output_seed, replace_output, OutputReplace, OutputSettingsV1,
+    MAX_OUTPUT_REPLACEMENT_RULES, MAX_OUTPUT_TEMPLATE_BYTES, OUTPUT_NAMESPACE,
+    OUTPUT_SCHEMA_VERSION, OUTPUT_SETTING_ALIASES, OUTPUT_SETTING_KEYS,
+};
 pub use ownership::{nodes_owned_by, set_node_owner, verify_node_owner};
+pub use pending_joins::{
+    create_pending_join, finish_pending_join, open_pending_join, purge_expired_pending_joins,
+    take_pending_join, NewPendingJoin, PendingJoin, TakenJoin, MAX_JOIN_NAME_BYTES,
+    PENDING_JOIN_TTL,
+};
 pub use placement::undeploy_instance;
 pub use placement::{
-    acquire_lease, delete_plugin_placement, effective_node_labels, ensure_hand_managed,
-    labels_satisfy, list_plugin_placements, live_node_ids, load_lease, load_plugin_placement,
-    plan_placement, put_plugin_placement, release_lease, schedule_placements, set_node_labels,
-    validate_constraint, validate_label, validate_node_label, ClusterLease, NodeCandidate,
-    PlacementPlan, PlacementSpec, PlacementWrite, PluginPlacement, Replicas, ScheduleReport,
-    MAX_NODE_LABELS, MAX_PLACEMENT_CONSTRAINTS, MAX_REPLICAS, NODE_LABEL, SCHEDULER_LEASE,
-    SCHEDULER_LEASE_TTL, TARGET_LABEL,
+    delete_plugin_placement, effective_node_labels, ensure_hand_managed, labels_satisfy,
+    list_plugin_placements, live_node_ids, load_plugin_placement, plan_placement,
+    put_plugin_placement, schedule_placements, set_node_labels, validate_constraint,
+    validate_label, validate_node_label, NodeCandidate, PlacementPlan, PlacementSpec,
+    PlacementWrite, PluginPlacement, Replicas, ScheduleReport, MAX_NODE_LABELS,
+    MAX_PLACEMENT_CONSTRAINTS, MAX_REPLICAS, NODE_LABEL, SCHEDULER_LEASE, SCHEDULER_LEASE_TTL,
+    TARGET_LABEL,
+};
+pub use remote_catalog::{
+    artifact_served_to_node, record_remote_observation, remote_deployments_for_node,
+    remote_instance_for_node, RemoteDeploymentEntry, RemoteInstance, RemoteObservation,
+};
+pub use remote_consents::{
+    approve_remote_plugin, approved_remote_payload_digests, list_remote_plugin_consents,
+    load_remote_plugin_consent, record_remote_plugin_request, remote_request_digest,
+    revoke_remote_plugin, RemoteApproval, RemoteApprover, RemoteArtifactRef, RemotePluginConsent,
+    REMOTE_CONSENT_PLATFORM,
+};
+pub use remote_results::{accept_scan_results, ScanAccept, MAX_SCAN_RESULT_ROWS};
+pub use remote_work::{
+    claim_remote_job, finish_remote_job, job_secret_refs, live_remote_job, release_remote_job,
+    remote_job_fence, remote_lease_owner, renew_remote_job, write_back_job_secret, JobSecret,
+    JobSecretRef, RemoteClaimSettings, RemoteFinish, RemoteJobClaim, RemoteOutcome, RemoteRenew,
+    WriteBack, MAX_WRITE_BACK_BYTES, REMOTE_LEASE_OWNER_PREFIX, SECRETS_UNAVAILABLE,
+};
+pub use requirements_sweep::{
+    sweep_job_requirements, RequirementsSweepReport, REQUIREMENTS_GRACE, REQUIREMENTS_SWEEP_LEASE,
+    REQUIREMENTS_SWEEP_LEASE_TTL, UNROUTABLE_ERROR_KIND,
 };
 pub use routing::{rank_nodes, route_ranks, RouteRank, ROUTE_DEFER_PER_RANK};
 pub use schemas::{
@@ -84,6 +178,23 @@ pub use schemas::{
     SchemaPinChange, SchemaPinOutcome,
 };
 pub use secret::{align_cluster_root, load_cluster_row, ClusterSecret};
+pub use semaphore::{
+    acquire_permit, acquire_permits, live_permits, permits_held_by, release_permits,
+    renew_fenced_lease, renew_permits, semaphore_slot_lease_name, PermitAcquire, SemaphorePermit,
+    SemaphoreRequest, MAX_SEMAPHORE_LIMIT, SEMAPHORE_LEASE_PREFIX,
+};
+pub use trust::{
+    accounts_owned_by, book_matches_title, claimant_may_run, handoff_routed_job, job_item_accounts,
+    job_trusted, node_may_claim_job, node_trust, plan_acquire, plan_scan, remote_node_may_view_job,
+    remote_node_requester, AccountKey, Claimant, NodeTrust, ScanRequester,
+};
+pub use uploads::{
+    abort_job_uploads, abort_upload, authorize_upload, commit_upload, extend_job_uploads,
+    grant_upload, job_titles, load_upload, names_book, record_upload_file, upload_fence_live,
+    upload_owns_key, TitleNames, UploadCommit, UploadDestination, UploadFinish, UploadGrant,
+    UploadGrantRequest, UploadSession, UPLOAD_NAME_WILDCARD, UPLOAD_NUMBER_WILDCARD,
+    UPLOAD_TOKEN_TTL_SECS,
+};
 pub use versions::{
     activate_version, add_plugin_version, approve_version_grant, clear_install, list_installs,
     list_versions, load_active_version, load_artifact_blob, load_install, load_version,
@@ -291,29 +402,36 @@ pub struct ControlPlaneSession {
     pub cluster_id: String,
     /// Authoritative `[events]` document.
     pub events: ConfigurationDocument<EventsSettingsV1>,
+    /// Authoritative shared `[output]` document.
+    pub output: ConfigurationDocument<OutputSettingsV1>,
     /// This node's runtime document. Other nodes' documents are not included.
     pub node_runtime: ConfigurationDocument<NodeRuntimeSettingsV1>,
 }
 
-/// Enrolls this files directory and imports `[events]` when the domain is absent.
+/// Enrolls this files directory and imports `[events]` and `[output]` when
+/// their documents are absent.
 ///
-/// After this returns, callers must treat [`ControlPlaneSession::events`] as
-/// authority. A later TOML load or environment override must not replace it
-/// without a compare-and-swap write.
+/// `seed` is the effective `config.toml` plus environment configuration; only
+/// its `events` and `output` tables are read, and only for a document that
+/// does not exist yet. After this returns, callers must treat
+/// [`ControlPlaneSession::events`] and [`ControlPlaneSession::output`] as
+/// authority (see [`overlay_core_documents`]). A later TOML load or
+/// environment override must not replace them without a compare-and-swap
+/// write.
 ///
 /// `scratch_dir` is [`bookclerk_config::Config::download_cache_dir`]: the
 /// heartbeat records the byte size of its `acquire` and `acquire-pdf` trees.
 ///
 /// # Errors
 ///
-/// Returns an error when the secret root, cluster binding, schema, or events
+/// Returns an error when the secret root, cluster binding, schema, or a core
 /// document cannot be established.
 pub async fn bootstrap_control_plane(
     store: &LibraryStore,
     files_dir: &Path,
     scratch_dir: &Path,
     password: Option<&str>,
-    events_seed: &bookclerk_config::EventsConfig,
+    seed: &bookclerk_config::Config,
 ) -> Result<ControlPlaneSession> {
     let _identity = identity::load_or_create_node_identity(files_dir)?;
     let secret = align_cluster_root(store, files_dir, password).await?;
@@ -341,8 +459,15 @@ pub async fn bootstrap_control_plane(
     let events = import_events_if_absent(
         store,
         &ConfigActor::Bootstrap,
-        events_seed,
+        &seed.events,
         "bootstrap-core-events",
+    )
+    .await?;
+    let output = import_output_if_absent(
+        store,
+        &ConfigActor::Bootstrap,
+        &output::portable_output_seed(&seed.output, files_dir),
+        "bootstrap-core-output",
     )
     .await?;
     let node_runtime = import_node_runtime_if_absent(
@@ -357,8 +482,18 @@ pub async fn bootstrap_control_plane(
         node,
         cluster_id: secret.cluster_id,
         events,
+        output,
         node_runtime,
     })
+}
+
+/// Copies every authoritative cluster document in `session` onto `config`.
+pub fn overlay_core_documents(
+    config: &mut bookclerk_config::Config,
+    session: &ControlPlaneSession,
+) {
+    overlay_events(config, &session.events, &session.cluster_id);
+    overlay_output(config, &session.output, &session.cluster_id);
 }
 
 /// Copies the authoritative events document onto `config` for `cluster_id`.
@@ -674,7 +809,7 @@ fn parse_node_runtime(
 }
 
 /// Attaches revision metadata to a parsed body.
-fn document<T>(stored: StoredDocument, body: T) -> ConfigurationDocument<T> {
+pub(super) fn document<T>(stored: StoredDocument, body: T) -> ConfigurationDocument<T> {
     ConfigurationDocument {
         body,
         revision: stored.revision,
@@ -693,8 +828,22 @@ fn invalid_events(detail: &str) -> LibraryError {
 }
 
 #[cfg(test)]
+mod enrollment_tests;
+#[cfg(test)]
 mod instance_tests;
+#[cfg(test)]
+mod job_routing_tests;
+#[cfg(test)]
+mod leases_tests;
+#[cfg(test)]
+mod output_tests;
 #[cfg(test)]
 mod placement_tests;
 #[cfg(test)]
+mod remote_work_tests;
+#[cfg(test)]
+mod requirements_sweep_tests;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod trust_tests;

@@ -71,6 +71,11 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--head")
     r.add_argument("--paths", nargs="*", help="Explicit changed paths (local dry runs)")
     r.add_argument("--force-full", action="store_true")
+    r.add_argument(
+        "--build-only",
+        action="store_true",
+        help="Compile every check's targets (cache warming) but run no tests",
+    )
     r.add_argument("--selective", default=os.environ.get("SELECTIVE_CI", "0"))
     r.add_argument("--event", default=os.environ.get("GITHUB_EVENT_NAME", "local"))
     r.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID", "local"))
@@ -98,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
                 checkout_sha=git_head(WORKSPACE),
                 event=args.event,
                 force_full=args.force_full,
+                build_only=args.build_only,
                 workspace=WORKSPACE,
                 paths=args.paths,
             )
@@ -106,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
             outputs = job_outputs(artifact)
             write_github_output(outputs)
             write_step_summary(artifact_summary(artifact))
-            print(f"wrote {args.plan} (mode={artifact['mode']})")
+            print(f"wrote {args.plan} (mode={artifact['mode']}, build_only={artifact['build_only']})")
             for k, v in outputs.items():
                 print(f"  {k}={v}")
             return 0

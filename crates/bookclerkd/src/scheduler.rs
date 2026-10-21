@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use bookclerk_library::control_plane::ScanRequester;
 use bookclerk_library::JobTrigger;
 use tracing::{info, warn};
 
@@ -34,7 +35,15 @@ fn spawn_scan_loop(state: Arc<AppState>) {
             info!(?sleep_for, "scheduler sleeping until next scan");
             tokio::time::sleep(sleep_for).await;
 
-            match enqueue_scan(state.clone(), None, None, JobTrigger::Scheduler).await {
+            match enqueue_scan(
+                state.clone(),
+                ScanRequester::Operator,
+                None,
+                None,
+                JobTrigger::Scheduler,
+            )
+            .await
+            {
                 Ok(admit) => info!(?admit, "scheduled scan enqueued"),
                 Err(err) => warn!(error = %err, "scheduled scan enqueue failed"),
             }
@@ -44,7 +53,13 @@ fn spawn_scan_loop(state: Arc<AppState>) {
                 cfg.library.auto_acquire
             };
             if auto {
-                match enqueue_acquire(state.clone(), None, None, None, JobTrigger::Scheduler).await
+                match enqueue_acquire(
+                    state.clone(),
+                    ScanRequester::Operator,
+                    crate::jobs::AcquireAsk::default(),
+                    JobTrigger::Scheduler,
+                )
+                .await
                 {
                     Ok(admit) => info!(?admit, "scheduled auto-acquire enqueued"),
                     Err(err) => warn!(error = %err, "scheduled auto-acquire enqueue failed"),

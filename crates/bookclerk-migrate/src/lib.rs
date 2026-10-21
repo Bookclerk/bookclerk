@@ -121,6 +121,9 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
     // --- Settings.json → config.toml ---
     let mut config = Config::default();
     let mut plugin_settings = ClassicPluginSettings::default();
+    // True once the imported settings replace this destination's config;
+    // a refused overwrite (no `--force`) must not seed `core.output` either.
+    let mut config_accepted = false;
     if let Some(settings_path) = &source.settings_json {
         let patch = load_settings_json(settings_path)?;
         plugin_settings = apply_settings_json(&mut config, &patch);
@@ -134,6 +137,7 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
                 ));
             } else {
                 config.write_toml_file(&dest)?;
+                config_accepted = true;
             }
         }
     } else {
@@ -147,7 +151,12 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
         .clone()
         .unwrap_or_else(|| opts.dest_files_dir.join("Audiobooks"));
 
-    let dest = if source.accounts_settings.is_some() || source.library_db.is_some() {
+    // A settings-only import still opens the destination so the imported
+    // packaging settings can seed `core.output` and the plugin instances.
+    let dest = if source.accounts_settings.is_some()
+        || source.library_db.is_some()
+        || (summary.settings_imported && !opts.dry_run)
+    {
         Some(store::DestStore::open(&opts.dest_files_dir, opts.dry_run).await?)
     } else {
         None
@@ -164,11 +173,39 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
                 cfg.paths = Some(bookclerk_config::Paths::from_files_dir(
                     opts.dest_files_dir.clone(),
                 ));
-                if let Err(err) = bookclerk_plugin_host::enroll_node(&cfg, &dest_store.store).await
-                {
-                    summary.warnings.push(format!(
+                // The imported Settings.json packaging seeds `core.output`
+                // when this database has no output document yet, unless the
+                // config overwrite was refused. The scratch directory is
+                // host-local and stays this host's.
+                if config_accepted {
+                    let in_progress = cfg.output.in_progress.clone();
+                    cfg.output = config.output.clone();
+                    cfg.output.in_progress = in_progress;
+                }
+                match bookclerk_plugin_host::enroll_node(&cfg, &dest_store.store).await {
+                    Ok(enrolled) => {
+                        // Bootstrap seeds the portable form (CDM path relative
+                        // to the files directory); compare against the same.
+                        // Bootstrap imports a seed leniently (an out-of-range
+                        // field becomes its default), so compare the same form.
+                        let (seeded, _) =
+                            bookclerk_library::control_plane::OutputSettingsV1::from_seed_lenient(
+                                &bookclerk_library::control_plane::portable_output_seed(
+                                    &cfg.output,
+                                    &opts.dest_files_dir,
+                                ),
+                            );
+                        if config_accepted && seeded != enrolled.session.output.body {
+                            summary.warnings.push(format!(
+                                "core.output already exists (revision {}); imported packaging \
+                                 settings were not applied — use `bookclerk config set output.*`",
+                                enrolled.session.output.revision
+                            ));
+                        }
+                    }
+                    Err(err) => summary.warnings.push(format!(
                         "plugin enrollment failed; instance settings may not be written: {err}"
-                    ));
+                    )),
                 }
             }
             if let Some(local_key) = opts.local_plugin_key.as_deref() {

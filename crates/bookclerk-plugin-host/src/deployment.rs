@@ -323,7 +323,9 @@ pub async fn reconcile_local_deployments(
 }
 
 /// Removes cached version digests no present deployment on this node
-/// still runs (after [`crate::VERSION_CACHE_GRACE`]).
+/// still runs and no owner approval still covers (after
+/// [`crate::VERSION_CACHE_GRACE`]). A digest list that cannot be read
+/// sweeps nothing.
 async fn sweep_unreferenced_versions(
     store: &LibraryStore,
     config: &Config,
@@ -333,7 +335,17 @@ async fn sweep_unreferenced_versions(
     if !crate::version_cache_root(&files_dir).is_dir() {
         return;
     }
-    let mut keep = std::collections::BTreeSet::new();
+    // Owner trees have no local deployment row; the operator's approvals
+    // keep them while they are consented.
+    let mut keep = match bookclerk_library::control_plane::approved_remote_payload_digests(store)
+        .await
+    {
+        Ok(digests) => digests,
+        Err(err) => {
+            tracing::warn!(error = %err, "owner approvals unreadable; skipping the version cache sweep");
+            return;
+        }
+    };
     for instance_id in present {
         let Ok(id) = bookclerk_library::control_plane::PluginInstanceId::parse(instance_id) else {
             continue;

@@ -26,6 +26,8 @@ bookclerk-acquire.workspace = true
 bookclerk-library.workspace = true
 bookclerk-media.workspace = true
 bookclerk-migrate.workspace = true
+bookclerk-node-client.workspace = true
+bookclerk-node-proto.workspace = true
 bookclerk-naming.workspace = true
 bookclerk-search.workspace = true
 bookclerk-source.workspace = true
@@ -47,7 +49,19 @@ toml.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 ureq.workspace = true
+url.workspace = true
 secrecy.workspace = true
+zeroize.workspace = true
+
+# Reading a secret from a terminal with echo off (`secret_input`).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_Console",
+] }
 
 [dev-dependencies]
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }

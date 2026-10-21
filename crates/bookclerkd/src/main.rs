@@ -12,6 +12,7 @@
 
 mod api;
 mod auth;
+mod cluster_link;
 mod config_authority;
 mod csrf;
 mod event_worker;
@@ -20,6 +21,9 @@ mod http_error;
 mod job_handler;
 mod job_worker;
 mod jobs;
+mod live;
+mod maintenance;
+mod node_api;
 mod node_queue;
 mod oidc;
 mod oidc_rp;
@@ -31,11 +35,12 @@ mod plugin_installs;
 mod profile;
 /// Builds the daemon source / integration registry for [`AppState`].
 mod registry;
+mod requirements_sweep;
+mod restart;
 mod scheduler;
 mod totp;
 mod tray_companion;
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -75,6 +80,10 @@ struct Args {
     #[arg(long, env = "BOOKCLERK_DAEMON_LISTEN")]
     listen: Option<String>,
 }
+
+/// How many more times the first start after a clerk join tries the
+/// library's database before undoing the join.
+const CLERK_JOIN_OPEN_RETRIES: u32 = 3;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -122,8 +131,77 @@ async fn main() -> anyhow::Result<()> {
 
     let paths = config.paths().clone();
     paths.ensure_dirs()?;
+    // Before the node identity, master key or database is opened: a
+    // half-applied clerk join would pair a database with the wrong node
+    // identity or key.
+    if let Some(problem) =
+        bookclerk_node_client::interrupted_clerk_join(&paths.files_dir, &paths.config_file)
+    {
+        anyhow::bail!(problem);
+    }
+    // A clerk join applied before this start is confirmed once the
+    // library's database opens, and undone if it does not; one whose undoing
+    // was cut short is finished first.
+    let mut pending_join =
+        bookclerk_node_client::pending_clerk_join(&paths.files_dir, &paths.config_file);
+    if let Some(join) = pending_join.take_if(|join| join.reverting()) {
+        return match join.revert() {
+            Ok(()) => Err(anyhow::anyhow!(
+                "finished undoing an earlier clerk join: this server's own settings, node identity and key are back; start it again to run on them"
+            )),
+            Err(failed) => Err(anyhow::anyhow!(
+                "could not finish undoing an earlier clerk join ({failed}); fix that and start again"
+            )),
+        };
+    }
     bookclerk_plugin_host::retry_abandoned_acl_journals(&paths.files_dir);
 
+    let opened = match pending_join {
+        None => bookclerk_plugin_host::open_host_control_plane(&config).await?,
+        Some(join) => {
+            // A database that is only slow to come up (a restarting
+            // PostgreSQL, a DNS or network blip) gets a few tries before the
+            // join is undone.
+            let mut tries = 0u32;
+            let opened = loop {
+                match bookclerk_plugin_host::open_host_control_plane(&config).await {
+                    Ok(opened) => break Ok(opened),
+                    Err(err) if tries < CLERK_JOIN_OPEN_RETRIES => {
+                        tries += 1;
+                        tracing::warn!(
+                            attempt = tries,
+                            error = %err,
+                            "the library's database did not open after joining as a clerk; trying again"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(5 * u64::from(tries)))
+                            .await;
+                    }
+                    Err(err) => break Err(err),
+                }
+            };
+            match opened {
+                Ok(opened) => {
+                    join.confirm();
+                    tracing::info!("the library's database opened; the clerk join is complete");
+                    opened
+                }
+                Err(err) => {
+                    tracing::error!(error = %err, "the library's database did not open after joining as a clerk; undoing the join");
+                    return Err(match join.revert() {
+                        Ok(()) => anyhow::anyhow!(
+                            "the library's database did not open after joining as a clerk (see the log), so the join was undone: this server's own settings, node identity and key are back. Start it again to run on them, and have the clerk removed in the library's Settings, Clerks"
+                        ),
+                        Err(failed) if failed.started => anyhow::anyhow!(
+                            "the library's database did not open after joining as a clerk (see the log), and undoing the join stopped part way ({failed}); the next start finishes undoing it"
+                        ),
+                        Err(failed) => anyhow::anyhow!(
+                            "the library's database did not open after joining as a clerk (see the log), and the join could not be undone ({failed}); if it is left as it is, the next start tries the library's database again"
+                        ),
+                    });
+                }
+            }
+        }
+    };
     let bookclerk_plugin_host::HostControlPlane {
         config,
         database_registry,
@@ -132,14 +210,15 @@ async fn main() -> anyhow::Result<()> {
         enrolled,
         present,
         ..
-    } = bookclerk_plugin_host::open_host_control_plane(&config).await?;
+    } = opened;
     tracing::info!(
         node_id = %control_plane.node.node_id,
         cluster_id = %control_plane.cluster_id,
         events_revision = control_plane.events.revision,
+        output_revision = control_plane.output.revision,
         enrolled = enrolled.len(),
         present = present.len(),
-        "enrolled control plane; core.events and plugin deployments are database-authoritative"
+        "enrolled control plane; core.events, core.output, and plugin deployments are database-authoritative"
     );
     // Guests are the deployment reconciler's: the registries start empty and
     // the first reconcile pass below brings every present deployment up
@@ -176,6 +255,8 @@ async fn main() -> anyhow::Result<()> {
         tray: RwLock::new(None),
         tray_handoff: Mutex::new(None),
         deployment_runtime: std::sync::OnceLock::new(),
+        node_api_tls_bound: std::sync::OnceLock::new(),
+        library_swaps: tokio::sync::watch::Sender::new(0),
     });
 
     bookclerk_plugin_host::spawn_grant_watcher(paths.files_dir.clone());
@@ -191,12 +272,27 @@ async fn main() -> anyhow::Result<()> {
     config_authority::spawn_config_reconciler(state.clone());
     config_authority::spawn_deployment_reconciler(state.clone());
     heartbeat::spawn_heartbeat(state.clone());
+    // This install as a host node of the owner clusters it enrolled into.
+    cluster_link::spawn_cluster_links(state.clone());
     placement::spawn_placement_scheduler(state.clone());
+    maintenance::spawn_maintenance(state.clone());
+    requirements_sweep::spawn_requirements_sweep(state.clone());
     spawn_scheduler(state.clone());
     spawn_config_reload_signals(state.clone());
 
     let ui_dist = resolve_ui_dist();
     let app = router(state.clone(), ui_dist);
+    // The node API's TLS listener (acme / self_signed). Until it serves a
+    // certificate the node API stays unmounted on every listener.
+    let node_api_gate = {
+        let cfg = config.read().await.clone();
+        let files_dir = cfg.paths().files_dir.clone();
+        // The listener serves the web app too: `public_origin` names it, and
+        // a branch's owner signs in there.
+        node_api::tls::start_with(&state, &cfg, &files_dir, Some(app.clone()))
+            .await
+            .gate
+    };
 
     loop {
         if process_shutdown.load(Ordering::SeqCst) {
@@ -205,6 +301,9 @@ async fn main() -> anyhow::Result<()> {
 
         let listeners = loop {
             if process_shutdown.load(Ordering::SeqCst) {
+                if restart::is_requested() {
+                    restart::reexec()?;
+                }
                 return Ok(());
             }
 
@@ -255,16 +354,17 @@ async fn main() -> anyhow::Result<()> {
 
         let mut set = tokio::task::JoinSet::new();
         for listener in listeners {
-            let app = app.clone();
+            // The node API's transport policy needs both ends of each
+            // connection: the accepted socket's local address, which stays
+            // loopback for a same-machine client on a wildcard bind.
+            let app = app.clone().layer(axum::Extension(node_api_gate.clone()));
+            let app = node_api::transport::ConnAddrsMakeService::new(app);
             let reload = listen_reload.clone();
             let shutdown_flag = process_shutdown.clone();
             set.spawn(async move {
-                axum::serve(
-                    listener,
-                    app.into_make_service_with_connect_info::<SocketAddr>(),
-                )
-                .with_graceful_shutdown(serve_shutdown(reload, shutdown_flag))
-                .await
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(serve_shutdown(reload, shutdown_flag))
+                    .await
             });
         }
 
@@ -284,6 +384,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Best-effort stop of integration watchers on process exit.
     state.integrations.read().await.stop_all().await;
+    if restart::is_requested() {
+        // New bootstrap files (a clerk join): start again on them.
+        restart::reexec()?;
+    }
     Ok(())
 }
 
@@ -292,6 +396,9 @@ async fn serve_shutdown(listen_reload: Arc<Notify>, process_shutdown: Arc<Atomic
     let process = shutdown_signal();
     tokio::select! {
         () = process => {
+            process_shutdown.store(true, Ordering::SeqCst);
+        }
+        () = restart::requested() => {
             process_shutdown.store(true, Ordering::SeqCst);
         }
         () = listen_reload.notified() => {}

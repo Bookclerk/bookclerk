@@ -78,6 +78,14 @@ pub mod secret_kind {
     /// Ciphertext stays in this table. The configuration document stores the
     /// ref name only.
     pub const PLUGIN_INSTANCE: &str = "plugin_instance";
+    /// On a host node: the private node keys of one owner-cluster link
+    /// (`provider` = owner cluster id, `account_id` = this node's id there).
+    pub const CLUSTER_LINK: &str = "cluster_link";
+    /// On a host joining a library: the PKCE verifier and node keys of one
+    /// sign-in in progress (`provider` = owner cluster id, `account_id` =
+    /// the pending join's state hash). Deleted when the join completes or
+    /// expires.
+    pub const CLUSTER_JOIN: &str = "cluster_join";
 }
 
 /// Ownership namespace for `encrypted_secrets.account_type`.
@@ -707,6 +715,18 @@ pub async fn upsert_secret_on<C: ConnectionTrait>(
         &record.name,
     ));
     Ok(())
+}
+
+/// Drops the cached plaintext of `record`'s row, for a caller that rewrote
+/// the row without [`upsert_secret_on`] (for example in a host batch).
+pub(crate) fn forget_cached_secret(record: &EncryptedSecretRecord) {
+    cache_invalidate_key(&cache_key_parts(
+        &record.kind,
+        record.provider.as_deref(),
+        &record.account_type,
+        record.account_id.as_deref(),
+        &record.name,
+    ));
 }
 
 /// Fetch a single secret by its composite key. Returns `None` if not found.

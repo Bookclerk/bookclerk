@@ -1,6 +1,7 @@
 //! Node ownership: which user may administer a node.
 //!
-//! An operator assigns a node to a user (`nodes.owner_user_id`). That user
+//! An operator assigns a node to a user (`nodes.owner_user_id`), or the
+//! user enrolls a host node of their own (see `enrollment`). That user
 //! may then change the node's `node.runtime` document (budgets, drain,
 //! display name) without operator authority, through a
 //! [`ConfigActor::NodeOwner`] that only [`verify_node_owner`] builds.
@@ -52,16 +53,16 @@ pub async fn verify_node_owner(
 
 /// Assigns `node_id` to `owner` (a user id), or clears its owner.
 ///
-/// The owner must be an active user whose role may administer owned nodes
-/// (Host, Administrator, or Owner); anyone else could not use the node
-/// routes, so the assignment would grant nothing.
+/// The owner must be an active user. Any role may own a node: owning one
+/// lets the user administer it, while the work the node is trusted with
+/// still follows the user's role.
 ///
 /// # Errors
 ///
 /// Returns [`LibraryError::Forbidden`] unless the actor is an operator,
 /// [`LibraryError::NotFound`] when the node or user is unknown,
-/// [`LibraryError::Invalid`] when the user is disabled or their role cannot
-/// administer nodes, and the write error when the update fails.
+/// [`LibraryError::Invalid`] when the user is disabled, and the write error
+/// when the update fails.
 pub async fn set_node_owner(
     store: &LibraryStore,
     actor: &ConfigActor,
@@ -81,12 +82,6 @@ pub async fn set_node_owner(
         if user.status != UserStatus::Active {
             return Err(LibraryError::Invalid(format!(
                 "user {user_id} is disabled and cannot own a node"
-            )));
-        }
-        if !user.role.can_administer_owned_nodes() {
-            return Err(LibraryError::Invalid(format!(
-                "user {user_id} is a {}; only a host, administrator, or owner can own a node",
-                user.role
             )));
         }
     }

@@ -150,6 +150,30 @@ Branded daemon HTML (invite / 404) cannot read that row and only queries
     plugin enablement with branded consent dialog (widen or narrow grants;
     host-capped workerd/disk limits; workerd domain allowlists), isolation +
     jail resource knobs
+  - **Library** (operator or elevated): the libraries this server is a
+    branch of (owner clusters it joined as a host node), with **Join a
+    library** (address, fingerprint for a self-signed library, then a
+    sign-in on the library; or "I have an invite") and **Leave library**,
+    and each library plugin's request to run here, with a deny checkbox per
+    requested domain and binding, a deny-network switch, Approve (for the
+    request shown, archive included) and Revoke. A refused approval shows the daemon's reason.
+  - **Branches** (operator or Owner): "Let new branches join", the address
+    to join, and the self-signed fingerprint a joining operator checks.
+    Branch invites are minted with **Add a branch** in User management (and
+    each user's own menu), shown once. A fresh install's operator first sees
+    a welcome screen: Start a new library, or Join a library. See
+    [Libraries and branches](cluster-hosts.md).
+
+**Live updates.** The SPA holds one WebSocket, `GET /api/live`
+(subprotocol `bookclerk-live.v1`), that names topics whose data changed
+(`library`, `jobs`, `deliveries`, `nodes`, `config`, `consents`, `clusters`,
+`users`); Status, Library, Settings → Nodes, User Management and Settings →
+Library re-read their routes when told. The socket carries topic names only, requires an
+exact `Origin` match and a signed-in session, and is scoped to the caller's
+role. While it is down, panels poll on their old timers and the client
+reconnects with backoff (1 s to 30 s). The Vite dev server proxies it
+(`/api/live` with `ws: true`). Details:
+[Libraries and branches](cluster-hosts.md#the-live-socket-apilive).
 
 A future **plugin browser** (install/configure third-party plugins from a
 catalog) is sketched in [plugin-registry.md](plugin-registry.md); enablement and

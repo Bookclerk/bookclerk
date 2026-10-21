@@ -251,10 +251,18 @@ pub async fn ensure_plugin_deployment(
 ) -> Result<PluginDeployment> {
     authorize_create(actor, desired)?;
     validate_node_id(node_id)?;
-    if load_plugin_instance(store, instance_id).await?.is_none() {
+    let Some(instance) = load_plugin_instance(store, instance_id).await? else {
         return Err(LibraryError::NotFound(format!(
             "plugin instance {instance_id}"
         )));
+    };
+    // H-2: a node-local instance runs only on the node that owns it.
+    if let Some(owner) = instance.owner_node_id.as_deref() {
+        if owner != node_id {
+            return Err(invalid(&format!(
+                "plugin instance {instance_id} is local to node {owner}"
+            )));
+        }
     }
     if let Some(existing) = find_deployment_pair(store, instance_id, node_id).await? {
         return Ok(existing);
@@ -903,7 +911,8 @@ fn authorize_create(actor: &ConfigActor, desired: DesiredState) -> Result<()> {
         ConfigActor::Scheduler => desired.is_scheduled(),
         ConfigActor::Administrator { .. }
         | ConfigActor::Member { .. }
-        | ConfigActor::NodeOwner(_) => false,
+        | ConfigActor::NodeOwner(_)
+        | ConfigActor::ClusterOwner(_) => false,
     };
     if allowed {
         Ok(())
@@ -920,7 +929,8 @@ fn authorize_replace(actor: &ConfigActor, desired: DesiredState) -> Result<()> {
         ConfigActor::Bootstrap
         | ConfigActor::Administrator { .. }
         | ConfigActor::Member { .. }
-        | ConfigActor::NodeOwner(_) => false,
+        | ConfigActor::NodeOwner(_)
+        | ConfigActor::ClusterOwner(_) => false,
     };
     if allowed {
         Ok(())
@@ -940,12 +950,13 @@ fn unauthorized_state(actor: &ConfigActor, desired: DesiredState) -> LibraryErro
         }
         ConfigActor::Administrator { .. }
         | ConfigActor::Member { .. }
-        | ConfigActor::NodeOwner(_) => unauthorized(),
+        | ConfigActor::NodeOwner(_)
+        | ConfigActor::ClusterOwner(_) => unauthorized(),
     }
 }
 
 /// Rejects an empty or oversized node id.
-fn validate_node_id(node_id: &str) -> Result<()> {
+pub(super) fn validate_node_id(node_id: &str) -> Result<()> {
     if node_id.is_empty() || node_id.len() > 128 || node_id.contains('\u{0000}') {
         return Err(invalid("node id must be 1..=128 characters"));
     }

@@ -17,6 +17,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::Json;
 use bookclerk_config::{register_secret, session_cookie_flags};
 use bookclerk_integrations::{portal_identity_from_headers, session_for_identity};
+use bookclerk_library::control_plane::ScanRequester;
 use bookclerk_library::{
     classify_session_client, hash_password, hash_token, portal_prefs_key, user_prefs_key,
     verify_password, LibraryError, PortalIdentity, SessionClientInfo, UserRole, UserStatus,
@@ -78,7 +79,7 @@ fn resolve_client_ip_key(
 }
 
 /// Whether the peer IP matches a trusted-proxy entry (exact address or CIDR).
-fn peer_is_trusted(peer: IpAddr, trusted_proxies: &[String]) -> bool {
+pub(crate) fn peer_is_trusted(peer: IpAddr, trusted_proxies: &[String]) -> bool {
     trusted_proxies.iter().any(|entry| {
         let entry = entry.trim();
         if entry.is_empty() {
@@ -1232,23 +1233,39 @@ pub async fn require_operator_or_owner_auth(
 pub enum NodeAdminCaller {
     /// Operator token or session, or auth disabled: every node.
     Operator,
-    /// A portal user whose role administers the nodes it owns (Host,
-    /// Administrator, Owner). Sees and edits only those nodes.
+    /// A portal user who owns nodes, or whose role (Host, Administrator,
+    /// Owner) reaches node administration. Sees and edits only owned nodes.
     NodeOwner {
         /// Calling user.
         user_id: i64,
     },
 }
 
-/// True when a session role may administer the nodes its user owns.
-fn role_administers_owned_nodes(role: &str) -> bool {
-    UserRole::parse(role).is_some_and(UserRole::can_administer_owned_nodes)
+/// True when a user may use the node administration routes: their role
+/// always may (Host, Administrator, Owner), or they own at least one node.
+/// A lookup failure fails closed.
+async fn user_administers_nodes(
+    library: &bookclerk_library::LibraryStore,
+    role: &str,
+    user_id: i64,
+) -> bool {
+    if UserRole::parse(role).is_some_and(UserRole::can_administer_owned_nodes) {
+        return true;
+    }
+    matches!(
+        timeout(
+            AUTH_DB_TIMEOUT,
+            bookclerk_library::control_plane::nodes_owned_by(library, user_id),
+        )
+        .await,
+        Ok(Ok(nodes)) if !nodes.is_empty()
+    )
 }
 
 /// Operator token/session **or** a portal user who may administer the nodes
 /// they own. Puts a [`NodeAdminCaller`] in the request extensions; handlers
 /// scope what they read and write by it. Impersonating a user acts as that
-/// user. Members are refused.
+/// user. A Member who owns no node is refused.
 pub async fn require_operator_or_node_owner_auth(
     State(state): State<Arc<AppState>>,
     mut req: Request,
@@ -1263,7 +1280,7 @@ pub async fn require_operator_or_node_owner_auth(
         if let Some(target_id) = op.impersonating_user_id {
             let library = state.library_snapshot().await;
             let (role, _, _, _) = impersonation_caller_identity(&library, target_id).await;
-            if !role_administers_owned_nodes(&role) {
+            if !user_administers_nodes(&library, &role, target_id).await {
                 return Err(StatusCode::FORBIDDEN);
             }
             if let Some(denied) =
@@ -1288,7 +1305,7 @@ pub async fn require_operator_or_node_owner_auth(
         let Some(user_id) = identity.user_id else {
             return Err(StatusCode::FORBIDDEN);
         };
-        if !role_administers_owned_nodes(&role) {
+        if !user_administers_nodes(&library, &role, user_id).await {
             return Err(StatusCode::FORBIDDEN);
         }
         if let Some(denied) =
@@ -1303,17 +1320,105 @@ pub async fn require_operator_or_node_owner_auth(
     Err(StatusCode::UNAUTHORIZED)
 }
 
+/// Who is calling a route that acts for a user (host enrollment links).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserCaller {
+    /// Operator token or session, or auth disabled.
+    Operator,
+    /// A signed-in portal user (or the user an operator impersonates). The
+    /// library reads the user's role and status before acting.
+    User {
+        /// Calling user.
+        user_id: i64,
+    },
+}
+
+/// Operator token/session **or** any signed-in portal user with a user
+/// account. Puts a [`UserCaller`] in the request extensions; handlers pass it
+/// to the library, which decides from the stored role what the user may do.
+/// Impersonating a user acts as that user.
+pub async fn require_operator_or_user_auth(
+    State(state): State<Arc<AppState>>,
+    mut req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    match resolve_user_caller(&state, req.headers(), req.uri().path()).await {
+        Ok(caller) => {
+            req.extensions_mut().insert(caller);
+            Ok(next.run(req).await)
+        }
+        Err(UserCallerRefusal::Status(status)) => Err(status),
+        Err(UserCallerRefusal::Response(denied)) => Ok(denied),
+    }
+}
+
+/// Why [`resolve_user_caller`] admitted nobody.
+pub enum UserCallerRefusal {
+    /// Answer with this status (401 signed out, 403 no user account).
+    Status(StatusCode),
+    /// Answer with this response (a pending second-factor enrollment).
+    Response(Response),
+}
+
+/// The [`UserCaller`] `headers` authenticate for `path`, exactly as
+/// [`require_operator_or_user_auth`] admits it. Long-lived connections
+/// (the SPA's `/api/live` socket) call it again while they stay open, so
+/// a signed-out or revoked session loses the socket.
+///
+/// # Errors
+///
+/// Returns the refusal the middleware would answer with.
+pub async fn resolve_user_caller(
+    state: &AppState,
+    headers: &HeaderMap,
+    path: &str,
+) -> Result<UserCaller, UserCallerRefusal> {
+    let auth = state.auth_snapshot().await;
+    if !auth.enabled {
+        return Ok(UserCaller::Operator);
+    }
+    if let Some(op) = resolve_operator_session(state, &auth, headers).await {
+        if let Some(target_id) = op.impersonating_user_id {
+            let library = state.library_snapshot().await;
+            if let Some(denied) =
+                reject_if_enrollment_required(state, &library, target_id, path).await
+            {
+                return Err(UserCallerRefusal::Response(denied));
+            }
+            return Ok(UserCaller::User { user_id: target_id });
+        }
+        return Ok(UserCaller::Operator);
+    }
+    if authorize_operator_bearer_only(&auth, headers) {
+        return Ok(UserCaller::Operator);
+    }
+    let library = state.library_snapshot().await;
+    if let Some(identity) = timed_portal_identity_from_headers(&library, headers).await {
+        let Some(user_id) = identity.user_id else {
+            return Err(UserCallerRefusal::Status(StatusCode::FORBIDDEN));
+        };
+        if let Some(denied) = reject_if_enrollment_required(state, &library, user_id, path).await {
+            return Err(UserCallerRefusal::Response(denied));
+        }
+        return Ok(UserCaller::User { user_id });
+    }
+    Err(UserCallerRefusal::Status(StatusCode::UNAUTHORIZED))
+}
+
 /// Operator token/session **or** an active Administrator user portal session.
 ///
 /// Used for scan / acquire / jobs. Full control-plane settings stay on
-/// [`require_operator_auth`] until Phase 2 elevation.
+/// [`require_operator_auth`] until Phase 2 elevation. Records who asked as a
+/// [`ScanRequester`] request extension for the scan planner; a handler that
+/// finds none refuses.
 pub async fn require_operator_or_administrator_auth(
     State(state): State<Arc<AppState>>,
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
     let auth = state.auth_snapshot().await;
     if !auth.enabled {
+        req.extensions_mut().insert(ScanRequester::Operator);
         return Ok(next.run(req).await);
     }
     if let Some(op) = resolve_operator_session(&state, &auth, req.headers()).await {
@@ -1329,13 +1434,16 @@ pub async fn require_operator_or_administrator_auth(
                 {
                     return Ok(denied);
                 }
+                req.extensions_mut().insert(ScanRequester::User(target_id));
                 return Ok(next.run(req).await);
             }
             return Err(StatusCode::FORBIDDEN);
         }
+        req.extensions_mut().insert(ScanRequester::Operator);
         return Ok(next.run(req).await);
     }
     if authorize_operator_bearer_only(&auth, req.headers()) {
+        req.extensions_mut().insert(ScanRequester::Operator);
         return Ok(next.run(req).await);
     }
     let library = state.library_snapshot().await;
@@ -1348,6 +1456,11 @@ pub async fn require_operator_or_administrator_auth(
                 {
                     return Ok(denied);
                 }
+                // The scan planner re-reads this user's role. A portal
+                // identity without a user resolves as a Member and is
+                // refused above; were one let through, it would carry no
+                // requester and the handler would refuse it.
+                req.extensions_mut().insert(ScanRequester::User(user_id));
             }
             return Ok(next.run(req).await);
         }
@@ -3808,6 +3921,8 @@ pub(crate) mod tests {
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
+            node_api_tls_bound: std::sync::OnceLock::new(),
+            library_swaps: tokio::sync::watch::Sender::new(0),
         });
         if seed_users {
             // Seed owner (with password for elevate) + member for elevate/impersonate.
@@ -4363,6 +4478,8 @@ pub(crate) mod tests {
                 tray: RwLock::new(None),
                 tray_handoff: Mutex::new(None),
                 deployment_runtime: std::sync::OnceLock::new(),
+                node_api_tls_bound: std::sync::OnceLock::new(),
+                library_swaps: tokio::sync::watch::Sender::new(0),
             });
             let app = crate::api::router(state.clone(), None);
             (state, app, library)

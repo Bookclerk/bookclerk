@@ -14,6 +14,8 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api/portal": "http://127.0.0.1:8787",
+      // The live socket: the daemon checks Origin against this dev host.
+      "/api/live": { target: "ws://127.0.0.1:8787", ws: true },
       "/api": "http://127.0.0.1:8787",
       "/invite": "http://127.0.0.1:8787",
       "/health": "http://127.0.0.1:8787",

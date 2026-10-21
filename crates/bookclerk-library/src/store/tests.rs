@@ -1873,6 +1873,17 @@ async fn enqueue_dedupes_active_scan_and_acquire() {
         .await
         .unwrap();
     assert!(matches!(acq_other, EnqueueOutcome::Created { .. }));
+    // A pinned acquire of the same title is different work, and so is a
+    // pin to another instance.
+    for instance in ["instance-a", "instance-b"] {
+        let mut spec = acquire_spec(Some("B00TEST"), None, 32);
+        spec.payload.plugin_instance_id = Some(instance.into());
+        let pinned = store.enqueue_job(spec).await.unwrap();
+        assert!(
+            matches!(pinned, EnqueueOutcome::Created { .. }),
+            "{instance}: {pinned:?}"
+        );
+    }
 
     let listen = store
         .enqueue_job(EnqueueJobSpec {
@@ -3531,6 +3542,7 @@ async fn dispatch_retry_keeps_frozen_snapshot_when_catalog_changes() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dispatch_snapshot_cas_two_stores_agree() {
+    let _barrier_owner = super::event_outbox::own_snapshot_claim_barrier().await;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("lib.db");
     let db1 = bookclerk_plugin_database_sqlite::open(&path).await.unwrap();
@@ -3613,6 +3625,7 @@ async fn dispatch_snapshot_cas_two_stores_agree() {
 
 #[tokio::test]
 async fn unrelated_dispatch_does_not_wait_on_snapshot_cas_barrier() {
+    let _barrier_owner = super::event_outbox::own_snapshot_claim_barrier().await;
     let store = test_store().await;
     let created = persist_outbox_event(
         &store,

@@ -91,7 +91,9 @@ enabled = true
     .unwrap();
 }
 
-pub fn run_bookclerk(files: &Path, args: &[&str], extra: &[(&str, &str)]) -> std::process::Output {
+/// A `bookclerk` command isolated to `files`, with no inherited
+/// configuration from the environment.
+pub fn bookclerk_command(files: &Path) -> Command {
     let mut cmd = Command::new(bookclerk_bin());
     cmd.env("BOOKCLERK_FILES_DIR", files)
         .env_remove("BOOKCLERK_PLUGIN_DIRS")
@@ -102,8 +104,13 @@ pub fn run_bookclerk(files: &Path, args: &[&str], extra: &[(&str, &str)]) -> std
         .env_remove("BOOKCLERK_EVENTS_RETENTION_DAYS")
         .env_remove("BOOKCLERK_EVENTS_DEAD_LETTER_RETENTION_DAYS")
         .env_remove("BOOKCLERK_EVENTS_CONCURRENCY")
-        .env_remove("BOOKCLERK_OPERATOR_TOKEN")
-        .args(args);
+        .env_remove("BOOKCLERK_OPERATOR_TOKEN");
+    cmd
+}
+
+pub fn run_bookclerk(files: &Path, args: &[&str], extra: &[(&str, &str)]) -> std::process::Output {
+    let mut cmd = bookclerk_command(files);
+    cmd.args(args);
     for (key, value) in extra {
         cmd.env(key, value);
     }

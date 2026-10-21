@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use bookclerk_acquire::{acquire_book_indexed, AcquireRequest, MatchStorageOptions};
 use bookclerk_config::BadBookAction;
+use bookclerk_library::control_plane::ScanRequester;
 use bookclerk_library::{
     is_downloadable, AcquireStatus, BookRecord, EnqueueJobSpec, EnqueueOutcome, JobKind,
     JobPayload, JobTrigger,
@@ -70,20 +71,185 @@ fn enqueue_spec(
     }
 }
 
+/// Admission refused a job that no node could ever claim.
+///
+/// The job's required plugin instances share no node where all of them are
+/// deployed to run, so the row would wait forever. Callers report it as a
+/// conflict the operator fixes by deploying the instances to a common node,
+/// not as a server failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobUnroutable(pub String);
+
+impl std::fmt::Display for JobUnroutable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for JobUnroutable {}
+
+/// Types a requirement-resolution failure for admission callers.
+///
+/// [`bookclerk_library::LibraryError::Conflict`] from
+/// `resolve_job_requirements` means no common deployment node and becomes
+/// [`JobUnroutable`]; every other error passes through unchanged.
+pub(crate) fn requirements_error(err: bookclerk_library::LibraryError) -> anyhow::Error {
+    match err {
+        bookclerk_library::LibraryError::Conflict(message) => JobUnroutable(message).into(),
+        other => other.into(),
+    }
+}
+
+/// Takes a shared [`AppState::job_runtime`] permit, so a database swap
+/// cannot interleave with admission, waiting at most 15 seconds.
+async fn admission_permit(
+    state: &AppState,
+) -> anyhow::Result<tokio::sync::RwLockReadGuard<'_, ()>> {
+    tokio::time::timeout(Duration::from_secs(15), state.job_runtime.read())
+        .await
+        .map_err(|_| anyhow::anyhow!("job admission paused (database reload in progress)"))
+}
+
 /// Writes a job row and wakes the worker when a new row is created.
 ///
-/// Takes a shared [`AppState::job_runtime`] permit so a database swap cannot
-/// interleave with admission.
+/// Holds an [`admission_permit`] for the write.
 async fn admit(state: &AppState, spec: EnqueueJobSpec) -> anyhow::Result<AdmitJob> {
-    let _permit = tokio::time::timeout(Duration::from_secs(15), state.job_runtime.read())
-        .await
-        .map_err(|_| anyhow::anyhow!("job admission paused (database reload in progress)"))?;
+    let _permit = admission_permit(state).await?;
     let library = state.library_snapshot().await;
+    admit_into(state, &library, spec).await
+}
+
+/// [`admit`] into `library`. The caller holds an [`admission_permit`] and
+/// took `library` under it, so the store cannot be swapped underneath.
+async fn admit_into(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+    mut spec: EnqueueJobSpec,
+) -> anyhow::Result<AdmitJob> {
+    if spec.payload.requires.is_empty() {
+        let bound = if spec.kind == JobKind::Acquire {
+            // Discovered keys plus instance keys, like the sweep: a node
+            // without the `local` plugin installed must not admit an
+            // acquire as claimable everywhere.
+            sweep_node_bound_output_keys(state, library).await?
+        } else {
+            std::collections::BTreeSet::new()
+        };
+        spec.payload.requires = bookclerk_library::control_plane::resolve_job_requirements(
+            library,
+            spec.kind,
+            &spec.payload,
+            &bound,
+        )
+        .await
+        .map_err(requirements_error)?;
+    }
     let outcome = library.enqueue_job(spec).await?;
     if matches!(outcome, EnqueueOutcome::Created { .. }) {
         state.job_notify.notify_one();
     }
     Ok(outcome.into())
+}
+
+/// Plugin keys of the outputs that live on one node's disk.
+///
+/// Today that is the verified first-party `local` destination. An acquire
+/// writes to every deployed one, so it is routed to a node running them
+/// (see `control_plane::resolve_job_requirements`).
+async fn node_bound_output_keys(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+) -> anyhow::Result<std::collections::BTreeSet<String>> {
+    let config = state.config.read().await.clone();
+    if config.paths.is_none() {
+        // A config that was not loaded from disk has no plugin directories.
+        return Ok(std::collections::BTreeSet::new());
+    }
+    node_bound_output_keys_from(bookclerk_plugin_host::discover_plugins(&config), library).await
+}
+
+/// Node-bound output keys from a discovery result.
+///
+/// A failed discovery (an unrelated plugin with a duplicate alias, a missing
+/// binary, an I/O error) must not admit an acquire that any node may claim:
+/// that node would skip `local` outputs it does not run. Instead every
+/// instance whose key names the first-party `local` destination is treated
+/// as node-bound. Without discovery the install's provenance cannot be
+/// checked, so this may route more than the verified path would, which only
+/// narrows the nodes that can claim the acquire; on a single node that runs
+/// its outputs nothing changes.
+///
+/// # Errors
+///
+/// Returns an error when discovery failed and the instance list cannot be
+/// read.
+async fn node_bound_output_keys_from(
+    discovered: bookclerk_plugin_host::Result<Vec<bookclerk_plugin_host::DiscoveredPlugin>>,
+    library: &bookclerk_library::LibraryStore,
+) -> anyhow::Result<std::collections::BTreeSet<String>> {
+    match discovered {
+        Ok(plugins) => Ok(plugins
+            .iter()
+            .filter(|plugin| bookclerk_plugin_host::is_first_party_local_output(plugin))
+            .map(|plugin| plugin.plugin_key().to_string())
+            .collect()),
+        Err(err) => {
+            warn!(
+                error = %err,
+                "plugin discovery failed; routing acquire by the instances' `local` plugin keys"
+            );
+            local_output_keys_from_instances(library).await
+        }
+    }
+}
+
+/// Plugin keys of the instances whose key names the first-party `local`
+/// destination, read from the cluster's instance list.
+///
+/// This does not depend on what is installed on this node, so it is the
+/// fallback when discovery fails and the floor of what the requirements
+/// sweep treats as node-bound.
+///
+/// # Errors
+///
+/// Returns an error when the instance list cannot be read.
+async fn local_output_keys_from_instances(
+    library: &bookclerk_library::LibraryStore,
+) -> anyhow::Result<std::collections::BTreeSet<String>> {
+    let instances = bookclerk_library::control_plane::list_all_plugin_instances(library).await?;
+    Ok(instances
+        .into_iter()
+        .filter(|instance| {
+            bookclerk_plugin_catalog::PluginKey::parse(&instance.plugin_key)
+                .is_ok_and(|key| bookclerk_plugin_host::is_first_party_local_output_key(&key))
+        })
+        .map(|instance| instance.plugin_key)
+        .collect())
+}
+
+/// Node-bound output keys for acquire admission and the cluster-wide
+/// requirements sweep.
+///
+/// Admission and the sweep must agree, or an acquire admitted on a node
+/// without the `local` plugin would be claimable by any node until the next
+/// sweep. The sweep runs on whichever node holds its lease, and it drops recorded
+/// requirements that its keys no longer cover, so a sweeping node that
+/// lacks the `local` plugin, or whose discovery failed, must not read as
+/// "no node-bound outputs". The result is this node's discovered keys
+/// ([`node_bound_output_keys`]) plus every instance key that names the
+/// first-party `local` destination, whatever is installed here.
+///
+/// # Errors
+///
+/// Returns an error when the instance list cannot be read; the caller skips
+/// the sweep pass rather than sweeping with a partial set.
+pub(crate) async fn sweep_node_bound_output_keys(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+) -> anyhow::Result<std::collections::BTreeSet<String>> {
+    let mut keys = node_bound_output_keys(state, library).await?;
+    keys.extend(local_output_keys_from_instances(library).await?);
+    Ok(keys)
 }
 
 /// True when the fence asked to stop or the row is flagged cancelled.
@@ -110,57 +276,134 @@ async fn queue_limits(state: &AppState) -> (i64, i64) {
     )
 }
 
-/// Admit a library scan. Does not spawn a per-request task.
+/// Admit a library scan through the scan planner. Does not spawn a
+/// per-request task.
 ///
-/// `plugin_instance_id` pins the scan to one deployed instance; otherwise
-/// every plugin is scanned once through its default instance.
+/// `control_plane::plan_scan` decides what `requester` may scan: operator
+/// authority, an Owner or an Administrator scanning every account gets one
+/// job per scan-enabled account (so each can go to any node trusted with
+/// it); any other user only scans accounts they own. `plugin_instance_id`
+/// pins every planned job to one deployed instance.
+///
+/// # Returns
+///
+/// One admission outcome per planned job, in plan order. Empty when the
+/// requester owns nothing to scan.
+///
+/// # Errors
+///
+/// Fails with a wrapped [`bookclerk_library::LibraryError::Forbidden`] when
+/// the requester may not scan what was asked, and with the read or write
+/// error otherwise. Jobs admitted before a failure stay admitted.
 pub async fn enqueue_scan(
     state: Arc<AppState>,
+    requester: ScanRequester,
     account: Option<String>,
     plugin_instance_id: Option<String>,
     trigger: JobTrigger,
-) -> anyhow::Result<AdmitJob> {
+) -> anyhow::Result<Vec<AdmitJob>> {
     let (max_pending, max_attempts) = queue_limits(&state).await;
-    admit(
-        &state,
-        enqueue_spec(
-            JobKind::Scan,
-            account,
-            None,
-            plugin_instance_id,
-            trigger,
-            max_pending,
-            max_attempts,
-        ),
+    // Plan and admit against one store under one permit: a database reload
+    // between them would enqueue account ids read from the old database
+    // into the new one.
+    let _permit = admission_permit(&state).await?;
+    let library = state.library_snapshot().await;
+    let plan = bookclerk_library::control_plane::plan_scan(
+        &library,
+        requester,
+        account.as_deref(),
+        plugin_instance_id.as_deref(),
     )
-    .await
+    .await?;
+    let mut admitted = Vec::with_capacity(plan.len());
+    for payload in plan {
+        admitted.push(
+            admit_into(
+                &state,
+                &library,
+                enqueue_spec(
+                    JobKind::Scan,
+                    payload.account,
+                    None,
+                    payload.plugin_instance_id,
+                    trigger,
+                    max_pending,
+                    max_attempts,
+                ),
+            )
+            .await?,
+        );
+    }
+    Ok(admitted)
 }
 
-/// Admit acquire for pending titles (optional title / account filter).
+/// What one acquire request asks for.
+#[derive(Debug, Clone, Default)]
+pub struct AcquireAsk {
+    /// Title ids (uuid, ASIN, ISBN, product id); each becomes its own job.
+    /// Empty acquires every pending title in scope.
+    pub titles: Vec<String>,
+    /// Limit to one store account.
+    pub account: Option<String>,
+    /// Pin every fetch to one deployed instance of the book's plugin;
+    /// otherwise the plugin's default instance is used.
+    pub plugin_instance_id: Option<String>,
+    /// Re-download titles already acquired.
+    pub force: bool,
+    /// Fetch only each title's companion PDF.
+    pub pdf_only: bool,
+}
+
+/// Admit acquire jobs through the acquire planner.
 ///
-/// `plugin_instance_id` pins every fetch to one deployed instance of the
-/// book's plugin; otherwise the plugin's default instance is used.
+/// `control_plane::plan_acquire` decides what `requester` may acquire and
+/// splits the request: one job per title id, and for a user who is not an
+/// Owner or Administrator one job per account they own.
+///
+/// # Returns
+///
+/// One admission outcome per planned job, in plan order. Empty when the
+/// requester owns nothing to acquire.
+///
+/// # Errors
+///
+/// Fails with a wrapped [`bookclerk_library::LibraryError::Forbidden`] when
+/// the requester may not acquire what was asked, and with the read or write
+/// error otherwise. Jobs admitted before a failure stay admitted.
 pub async fn enqueue_acquire(
     state: Arc<AppState>,
-    title: Option<String>,
-    account: Option<String>,
-    plugin_instance_id: Option<String>,
+    requester: ScanRequester,
+    ask: AcquireAsk,
     trigger: JobTrigger,
-) -> anyhow::Result<AdmitJob> {
+) -> anyhow::Result<Vec<AdmitJob>> {
     let (max_pending, max_attempts) = queue_limits(&state).await;
-    admit(
-        &state,
-        enqueue_spec(
+    // Plan and admit against one store under one permit, as scans do.
+    let _permit = admission_permit(&state).await?;
+    let library = state.library_snapshot().await;
+    let plan = bookclerk_library::control_plane::plan_acquire(
+        &library,
+        requester,
+        ask.account.as_deref(),
+        &ask.titles,
+        ask.plugin_instance_id.as_deref(),
+    )
+    .await?;
+    let mut admitted = Vec::with_capacity(plan.len());
+    for payload in plan {
+        let mut spec = enqueue_spec(
             JobKind::Acquire,
-            account,
-            title,
-            plugin_instance_id,
+            payload.account,
+            payload.title,
+            payload.plugin_instance_id,
             trigger,
             max_pending,
             max_attempts,
-        ),
-    )
-    .await
+        );
+        spec.payload.force = ask.force;
+        spec.payload.pdf_only = ask.pdf_only;
+        admitted.push(admit_into(&state, &library, spec).await?);
+    }
+    Ok(admitted)
 }
 
 /// Admit a listening-progress sync.
@@ -478,17 +721,28 @@ pub async fn run_scan(
     Ok(message)
 }
 
+/// The flags of one acquire job.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AcquireMode {
+    /// Re-download titles already acquired.
+    pub force: bool,
+    /// Fetch only each title's companion PDF.
+    pub pdf_only: bool,
+}
+
 /// Acquire pending titles synchronously.
 ///
 /// When `ctx` is set, progress is fenced and cancel is checked between titles.
 ///
 /// `plugin_instance_id` pins every fetch to that deployed instance of the
-/// book's plugin; otherwise the plugin's default instance is used.
+/// book's plugin; otherwise the plugin's default instance is used. `mode`
+/// carries the job's `force` and `pdf_only` flags.
 pub async fn run_acquire(
     state: &AppState,
     title: Option<&str>,
     account: Option<&str>,
     plugin_instance_id: Option<&str>,
+    mode: AcquireMode,
     ctx: Option<&JobExecCtx>,
 ) -> anyhow::Result<String> {
     let started = std::time::Instant::now();
@@ -539,7 +793,14 @@ pub async fn run_acquire(
             })
         })
         .filter(|b| {
-            acquire_job_includes_book(b, options.download_pdf, cfg.library.download_episodes)
+            if mode.pdf_only {
+                mode.force || b.pdf_status != AcquireStatus::Acquired
+            } else if mode.force {
+                is_downloadable(&b.content_kind)
+                    && (cfg.library.download_episodes || b.content_kind != "episode")
+            } else {
+                acquire_job_includes_book(b, options.download_pdf, cfg.library.download_episodes)
+            }
         })
         .collect();
     // A pinned instance serves its own plugin's books only; the rest are
@@ -609,7 +870,7 @@ pub async fn run_acquire(
             options: options.clone(),
             files_dir: paths.files_dir.clone(),
             cache_dir: cfg.download_cache_dir(),
-            force: false,
+            force: mode.force,
             write_destinations: None,
             job_id: ctx.map(|c| c.fence.job_id.clone()),
             temp_quota_bytes: Some(cfg.jobs.temp_quota_bytes),
@@ -617,15 +878,25 @@ pub async fn run_acquire(
         let mut attempts = 0u32;
         loop {
             attempts += 1;
-            match acquire_book_indexed(
-                &library,
-                &destinations,
-                req.clone(),
-                Some(&mut index),
-                content_source.as_ref(),
-            )
-            .await
-            {
+            let result = if mode.pdf_only {
+                bookclerk_acquire::acquire_pdf_only(
+                    &library,
+                    &destinations,
+                    &req,
+                    content_source.as_ref(),
+                )
+                .await
+            } else {
+                acquire_book_indexed(
+                    &library,
+                    &destinations,
+                    req.clone(),
+                    Some(&mut index),
+                    content_source.as_ref(),
+                )
+                .await
+            };
+            match result {
                 Ok(result) if result.matched_existing => {
                     info!(asin = %result.asin, key = %result.storage_key, "matched existing");
                     notify_integrations(state).await;
@@ -773,7 +1044,7 @@ pub async fn run_listen_sync(state: &AppState, ctx: Option<&JobExecCtx>) -> anyh
 /// Already-acquired audio is still included when companion PDF download is
 /// enabled and the PDF is not stored, so a later job can resume the sidecar
 /// through [`bookclerk_acquire::acquire_book_indexed`].
-fn acquire_job_includes_book(
+pub(crate) fn acquire_job_includes_book(
     book: &BookRecord,
     download_pdf: bool,
     download_episodes: bool,
@@ -930,6 +1201,57 @@ mod tests {
         )
         .await;
         assert!(!acquire_job_includes_book(&book, true, true));
+    }
+
+    /// A failed plugin discovery still routes an acquire to the node that runs
+    /// the `local` output, instead of admitting it for any node to claim.
+    #[tokio::test]
+    async fn discovery_failure_still_routes_acquire_to_local_outputs() {
+        use bookclerk_library::control_plane::{
+            create_plugin_instance, ensure_plugin_deployment, resolve_job_requirements,
+            ConfigActor, DesiredState,
+        };
+
+        const LOCAL: &str = "platform:bookclerk/bookclerk-plugin-destination-local";
+        const S3: &str = "platform:bookclerk/bookclerk-plugin-destination-s3";
+        const LOOKALIKE: &str = "path:file:///tmp/out#bookclerk-plugin-destination-local";
+        let store = test_store().await;
+        let operator = ConfigActor::Operator {
+            id: "operator".into(),
+        };
+        let mut local = None;
+        for key in [LOCAL, S3, LOOKALIKE] {
+            let instance = create_plugin_instance(&store, &operator, key, "")
+                .await
+                .unwrap();
+            ensure_plugin_deployment(
+                &store,
+                &ConfigActor::Bootstrap,
+                &instance.id,
+                "node-a",
+                DesiredState::Present,
+            )
+            .await
+            .unwrap();
+            if key == LOCAL {
+                local = Some(instance.id);
+            }
+        }
+
+        let failed = Err(bookclerk_plugin_host::PluginError::message(
+            "duplicate plugin alias `echo`",
+        ));
+        let bound = node_bound_output_keys_from(failed, &store).await.unwrap();
+        assert_eq!(bound, std::collections::BTreeSet::from([LOCAL.to_string()]));
+
+        let payload = JobPayload {
+            title: Some("one book".into()),
+            ..Default::default()
+        };
+        let requires = resolve_job_requirements(&store, JobKind::Acquire, &payload, &bound)
+            .await
+            .unwrap();
+        assert_eq!(requires, vec![local.unwrap().to_string()]);
     }
 
     #[test]

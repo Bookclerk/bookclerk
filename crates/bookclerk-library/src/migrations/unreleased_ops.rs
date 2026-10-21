@@ -626,6 +626,20 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE INDEX IF NOT EXISTS idx_job_temp_paths_job ON job_temp_paths(job_id)",
     ),
     MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS job_secret_handoffs (
+        job_id TEXT NOT NULL,
+        lease_generation INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        node_id TEXT NOT NULL,
+        handed_at TEXT NOT NULL,
+        PRIMARY KEY (job_id, lease_generation, kind, provider, account_id, name),
+        FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
+    )",
+    ),
+    MigrationOp::Schema(
         r"CREATE UNIQUE INDEX IF NOT EXISTS idx_job_temp_paths_job_path
         ON job_temp_paths(job_id, path)",
     ),
@@ -801,7 +815,14 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         target TEXT NOT NULL DEFAULT '',
         labels_json TEXT NOT NULL DEFAULT '[]',
         kind TEXT NOT NULL DEFAULT 'owner' CHECK (kind IN ('owner', 'host')),
-        owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL
+        owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        share_books INTEGER CHECK (share_books IN (0, 1)),
+        include_branches INTEGER CHECK (include_branches IN (0, 1)),
+        catalog_fence INTEGER NOT NULL DEFAULT 0,
+        catalog_cursor TEXT NOT NULL DEFAULT '',
+        catalog_pass_started_at TEXT,
+        catalog_synced_at TEXT,
+        catalog_full_pass_at TEXT
     )",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_nodes_heartbeat ON nodes(heartbeat_at)"),
@@ -881,7 +902,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         plugin_key TEXT NOT NULL,
         display_name TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL,
-        created_by TEXT NOT NULL
+        created_by TEXT NOT NULL,
+        owner_node_id TEXT
     )",
     ),
     // Settings schema a host pinned from the installed manifest. Writes from
@@ -1027,15 +1049,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         online_since_ms INTEGER NOT NULL
     )",
     ),
-    MigrationOp::Schema(
-        r"CREATE TABLE IF NOT EXISTS cluster_leases (
-        name TEXT PRIMARY KEY NOT NULL,
-        holder TEXT NOT NULL,
-        token INTEGER NOT NULL,
-        expires_at_ms INTEGER NOT NULL,
-        renewed_at TEXT NOT NULL
-    )",
-    ),
+    MigrationOp::Schema(super::CLUSTER_LEASES_DDL),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS plugin_artifacts (
         sha256 TEXT PRIMARY KEY NOT NULL,
@@ -1043,5 +1057,172 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         size INTEGER NOT NULL,
         created_at TEXT NOT NULL
     )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS node_enrollment_links (
+        link_id TEXT PRIMARY KEY NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        for_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        label TEXT NOT NULL DEFAULT '',
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        redeemed_at TEXT,
+        redeemed_node_id TEXT,
+        revoked_at TEXT
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_node_enrollment_links_user ON node_enrollment_links(for_user_id)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS node_credentials (
+        node_id TEXT PRIMARY KEY NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
+        sign_public_key BLOB NOT NULL,
+        box_public_key BLOB NOT NULL,
+        link_id TEXT NOT NULL UNIQUE,
+        enrolled_at TEXT NOT NULL,
+        revoked_at TEXT,
+        last_connected_at TEXT
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS cluster_links (
+        owner_cluster_id TEXT PRIMARY KEY NOT NULL,
+        owner_origin TEXT NOT NULL,
+        remote_node_id TEXT NOT NULL,
+        spki_pin TEXT,
+        state TEXT NOT NULL CHECK (state IN ('active', 'revoked', 'left')),
+        enrolled_at TEXT NOT NULL,
+        share_books INTEGER NOT NULL DEFAULT 1 CHECK (share_books IN (0, 1)),
+        include_branches INTEGER NOT NULL DEFAULT 1 CHECK (include_branches IN (0, 1)),
+        ancestry_json TEXT NOT NULL DEFAULT '[]'
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS remote_plugin_consents (
+        owner_cluster_id TEXT NOT NULL,
+        plugin_key TEXT NOT NULL,
+        requested_version TEXT NOT NULL,
+        requested_grant_json TEXT NOT NULL,
+        requested_artifact_url TEXT NOT NULL,
+        requested_artifact_sha256 TEXT NOT NULL,
+        requested_artifact_payload_sha256 TEXT NOT NULL,
+        version TEXT,
+        approved_request_json TEXT,
+        approved_artifact_url TEXT,
+        approved_artifact_sha256 TEXT,
+        approved_artifact_payload_sha256 TEXT,
+        grant_json TEXT,
+        approved_at TEXT,
+        approved_by TEXT,
+        revoked_at TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (owner_cluster_id, plugin_key)
+    )",
+    ),
+    // H-4 step 9: one title's streamed upload from a host node. Only the
+    // token's hash is stored; nothing of the files is.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS node_upload_sessions (
+        upload_id TEXT PRIMARY KEY NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        node_id TEXT NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
+        job_id TEXT NOT NULL,
+        lease_generation INTEGER NOT NULL,
+        receiving_node_id TEXT NOT NULL,
+        book_uuid TEXT NOT NULL,
+        primary_key TEXT NOT NULL,
+        manifest_json TEXT NOT NULL,
+        received_json TEXT NOT NULL DEFAULT '[]',
+        state TEXT NOT NULL CHECK (state IN ('open', 'committed', 'aborted')),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        committed_at TEXT
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_node_upload_sessions_job ON node_upload_sessions(job_id)",
+    ),
+    // Every file key a title's acquire or host upload wrote, per output
+    // destination, so an upload is never granted another title's file in a
+    // folder titles share. `writer` is the host upload id that claimed the
+    // key last, or `acquire` for an acquire run on the node itself.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS title_files (
+        destination TEXT NOT NULL,
+        storage_key TEXT NOT NULL,
+        book_uuid TEXT NOT NULL,
+        writer TEXT NOT NULL,
+        written_at TEXT NOT NULL,
+        PRIMARY KEY (destination, storage_key)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_title_files_book ON title_files(book_uuid)",
+    ),
+    // The live socket's revision reads take each table's newest change
+    // stamp every couple of seconds; an index makes that a lookup.
+    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_updated ON books(updated_at)"),
+    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_jobs_updated ON jobs(updated_at)"),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_event_deliveries_updated ON event_deliveries(updated_at)",
+    ),
+    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_users_updated ON users(updated_at)"),
+    // Join a library: on a joining host, one sign-in in progress. The PKCE
+    // verifier and node keys are sealed in `encrypted_secrets` (`kind =
+    // cluster_join`); only the hash of `state` is stored here. Rows live
+    // ten minutes. `allow_clerk` records that the operator offered to join
+    // as a clerk (the install was empty when the sign-in started).
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS pending_joins (
+        state_hash TEXT PRIMARY KEY NOT NULL,
+        owner_origin TEXT NOT NULL,
+        spki_pin TEXT,
+        owner_cluster_id TEXT NOT NULL,
+        library_name TEXT NOT NULL,
+        branch_name TEXT NOT NULL,
+        redirect_uri TEXT NOT NULL,
+        allow_clerk INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+    )",
+    ),
+    // Branches of branches: on a library, the titles a branch shared with
+    // it. Each row is owned by the user who owns the branch's node, with
+    // provenance `node:<node_id>`; nothing names the branch's own store
+    // accounts, users or branches. One row per (provenance, store, product
+    // id). `delivered_sha256` is the manifest digest whose files reached
+    // this library's destinations; `state = 'detached'` marks a title from
+    // a branch that stopped sharing or left (its files stay).
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS branch_titles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        uuid TEXT NOT NULL UNIQUE,
+        provenance TEXT NOT NULL,
+        node_id TEXT NOT NULL,
+        owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        store TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        authors TEXT,
+        metadata_json TEXT NOT NULL,
+        primary_key TEXT NOT NULL,
+        pdf_key TEXT,
+        manifest_json TEXT NOT NULL,
+        manifest_sha256 TEXT NOT NULL,
+        delivered_sha256 TEXT,
+        state TEXT NOT NULL DEFAULT 'shared' CHECK (state IN ('shared', 'detached')),
+        detached_reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        seen_at TEXT NOT NULL,
+        delivered_at TEXT,
+        detached_at TEXT,
+        UNIQUE(provenance, store, product_id)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_branch_titles_node ON branch_titles(node_id, state)",
     ),
 ];

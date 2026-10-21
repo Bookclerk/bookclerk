@@ -14,11 +14,18 @@ import {
   type NodeCapabilities,
   type NodeStatusView,
 } from "@/lib/api";
+import { useLiveRefresh } from "@/lib/live";
 import { age, cores, ownerName, size } from "@/lib/nodeFormat";
 import { cn } from "@/lib/utils";
 
-/** How often the panel re-reads heartbeats (nodes report every 15 s). */
+/**
+ * How often the panel re-reads heartbeats while the live socket is down
+ * (nodes report every 15 s).
+ */
 const REFRESH_MS = 15_000;
+
+/** Re-read while the socket is up too, so a node that went quiet ages out. */
+const OPEN_REFRESH_MS = 60_000;
 
 /** Splits `nas, zone=eu` into trimmed, non-empty labels. */
 function parseLabels(text: string): string[] {
@@ -358,9 +365,6 @@ interface NodesPanelProps {
   onSessionExpired: () => void;
 }
 
-/** Roles whose owner may administer a node; mirrors `UserRole::can_administer_owned_nodes`. */
-const NODE_OWNER_ROLES = new Set(["host", "administrator", "owner"]);
-
 /**
  * Cluster nodes as their heartbeats report them, with each node's budget
  * and drain switch. The scheduler places plugins by this headroom, and
@@ -396,20 +400,17 @@ export function NodesPanel({ onSessionExpired }: NodesPanelProps) {
 
   useEffect(() => {
     void refresh();
-    const timer = window.setInterval(() => void refresh(), REFRESH_MS);
-    return () => window.clearInterval(timer);
   }, [refresh]);
+  useLiveRefresh(["nodes"], refresh, { pollMs: REFRESH_MS, openPollMs: OPEN_REFRESH_MS });
 
-  // Only an operator assigns owners. It picks from active users whose role
-  // may administer a node; the API refuses anyone else.
+  // Only an operator assigns owners. Any active user may own a node (trust
+  // still follows the user's role); the API refuses a disabled user.
   const canAssignOwner = capabilities?.can_assign_owner ?? false;
   useEffect(() => {
     if (!canAssignOwner) return;
     listUsers()
       .then((all) =>
-        setUsers(
-          all.filter((user) => user.status === "active" && NODE_OWNER_ROLES.has(user.role)),
-        ),
+        setUsers(all.filter((user) => user.status === "active")),
       )
       .catch(() => setUsers([]));
   }, [canAssignOwner]);

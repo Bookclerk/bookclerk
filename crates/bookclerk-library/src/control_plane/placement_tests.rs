@@ -3,7 +3,6 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use bookclerk_config::EventsConfig;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 use super::identity::{register_and_heartbeat, NodeObservation};
@@ -123,7 +122,7 @@ async fn the_scheduler_places_moves_and_scales_replicas_across_two_connections()
         dir.path(),
         &dir.path().join("cache"),
         None,
-        &EventsConfig::default(),
+        &bookclerk_config::Config::default(),
     )
     .await
     .unwrap();
@@ -357,7 +356,7 @@ async fn a_version_without_an_artifact_for_a_node_target_skips_that_node() {
         dir.path(),
         &dir.path().join("cache"),
         None,
-        &EventsConfig::default(),
+        &bookclerk_config::Config::default(),
     )
     .await
     .unwrap();
@@ -479,7 +478,7 @@ async fn placement_follows_heartbeat_headroom_availability_and_drains() {
         dir.path(),
         &dir.path().join("cache"),
         None,
-        &EventsConfig::default(),
+        &bookclerk_config::Config::default(),
     )
     .await
     .unwrap();
@@ -638,7 +637,7 @@ async fn deliveries_route_to_the_live_node_with_the_most_room() {
         dir.path(),
         &dir.path().join("cache"),
         None,
-        &EventsConfig::default(),
+        &bookclerk_config::Config::default(),
     )
     .await
     .unwrap();
@@ -713,7 +712,7 @@ async fn a_node_owner_edits_only_its_own_node_runtime() {
         dir.path(),
         &dir.path().join("cache"),
         None,
-        &EventsConfig::default(),
+        &bookclerk_config::Config::default(),
     )
     .await
     .unwrap();
@@ -742,16 +741,22 @@ async fn a_node_owner_edits_only_its_own_node_runtime() {
         .await
         .unwrap_err();
     assert!(matches!(unknown, LibraryError::NotFound(_)), "{unknown}");
-    // A Member cannot use the node routes and a disabled user cannot sign
-    // in, so neither may be made an owner.
+    // Owning a node needs no role: a Member may own one (trust still
+    // follows the role). A disabled user cannot sign in, so it may not.
     let member = store
         .create_user(crate::UserRole::Member, Some("Member"), None)
         .await
         .unwrap();
-    let not_admin = set_node_owner(&store, &operator(), &mine, Some(member.id))
+    let member_owned = set_node_owner(&store, &operator(), "node-other", Some(member.id))
         .await
-        .unwrap_err();
-    assert!(matches!(not_admin, LibraryError::Invalid(_)), "{not_admin}");
+        .unwrap();
+    assert_eq!(member_owned.owner_user_id, Some(member.id));
+    verify_node_owner(&store, member.id, "node-other")
+        .await
+        .unwrap();
+    set_node_owner(&store, &operator(), "node-other", None)
+        .await
+        .unwrap();
     let gone = store
         .create_user(crate::UserRole::Host, Some("Gone"), None)
         .await
@@ -842,7 +847,7 @@ async fn two_live_nodes(store: &LibraryStore, dir: &std::path::Path) -> String {
         dir,
         &dir.join("cache"),
         None,
-        &EventsConfig::default(),
+        &bookclerk_config::Config::default(),
     )
     .await
     .unwrap();

@@ -17,9 +17,11 @@ use axum::Router;
 use bookclerk_acquire::sidecar_key;
 use bookclerk_config::{Config, ListenAddrs};
 use bookclerk_integrations::{portal_spa_router, IntegrationRegistry, PortalState};
+use bookclerk_library::control_plane::ScanRequester;
 use bookclerk_library::{
-    hash_token, AcquireStatus, BookRecord, ClaimTicketRecord, JobRecord, JobTrigger, LibraryStore,
-    NewTitleRequest, NewTitleRequestSource, QueueWisher, RequestStatus, TitleRequestRecord,
+    hash_token, AcquireStatus, BookRecord, ClaimTicketRecord, JobRecord, JobTrigger, LibraryError,
+    LibraryStore, NewTitleRequest, NewTitleRequestSource, QueueWisher, RequestStatus,
+    TitleRequestRecord,
 };
 use bookclerk_plugin_host::{
     consent_request, consent_summary, cores_to_percent, effective_cpu_cores, format_cpu_cores,
@@ -98,6 +100,14 @@ pub struct AppState {
     pub tray_handoff: Mutex<Option<TrayHandoffTicket>>,
     /// Guest sessions for deployed instances. One map for the process lifetime.
     pub deployment_runtime: OnceLock<Arc<bookclerk_plugin_host::LiveDeploymentRuntime>>,
+    /// Where the node API's TLS listener is bound, once it is. That listener
+    /// is bound at startup and outlives config reloads, so a reload that
+    /// turns auth off is checked against it as well as the new config.
+    pub node_api_tls_bound: OnceLock<std::net::SocketAddr>,
+    /// Counts database swaps: bumped after [`Self::library`] is replaced so
+    /// the cluster-link supervisor restarts its host clients on the new
+    /// store.
+    pub library_swaps: tokio::sync::watch::Sender<u64>,
 }
 
 /// In-process tray Open Bookclerk ticket: hash of a one-time code plus expiry.
@@ -374,6 +384,11 @@ struct SettingsUpdate {
 struct PatchSettingsRequest {
     /// Key/value pairs to validate, persist, and reload.
     settings: Vec<SettingsUpdate>,
+    /// `core.output` document revision the client read (`output_revision` in
+    /// `GET /api/settings`). When set and stale, an `output.*` update is
+    /// rejected with 409.
+    #[serde(default)]
+    expected_output_revision: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -452,7 +467,8 @@ struct PluginSettingsGroup {
 #[derive(Debug, Serialize)]
 /// Settings page payload: file values, effective runtime, and plugin groups.
 struct SettingsResponse {
-    /// Values as written in config.toml (and env overlays).
+    /// Values as written in config.toml (and env overlays), plus `output.*`
+    /// from the `core.output` database document.
     settings: std::collections::BTreeMap<String, String>,
     /// Runtime-effective values after the last successful reload (auth, plugins).
     effective: std::collections::BTreeMap<String, String>,
@@ -463,6 +479,12 @@ struct SettingsResponse {
     /// Optional global per-jail CPU ceiling in cores (from `[plugins.jail]`).
     #[serde(skip_serializing_if = "Option::is_none")]
     jail_cpu_cores: Option<f64>,
+    /// Revision of the `core.output` document the `output.*` values in
+    /// `settings` were read from; send it back as `expected_output_revision`.
+    /// `effective["output.revision"]` is the revision this host has applied,
+    /// which lags the document until the host's next wakeup.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_revision: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -755,6 +777,16 @@ pub struct AcquireRequestBody {
     pub account: Option<String>,
     /// When set, fetch through this deployed plugin instance.
     pub plugin_instance_id: Option<String>,
+    /// More title ids; each (with the single filter above) becomes its own
+    /// job.
+    #[serde(default)]
+    pub titles: Vec<String>,
+    /// Re-download titles already acquired.
+    #[serde(default)]
+    pub force: bool,
+    /// Fetch only each title's companion PDF.
+    #[serde(default)]
+    pub pdf_only: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -869,6 +901,11 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
                 .put(crate::config_authority::put_events_domain),
         )
         .route(
+            "/api/config/domains/core.output",
+            get(crate::config_authority::get_output_domain)
+                .put(crate::config_authority::put_output_domain),
+        )
+        .route(
             "/api/config/plugin-instances",
             get(crate::config_authority::get_plugin_instances)
                 .post(crate::config_authority::post_plugin_instance),
@@ -917,6 +954,51 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             "/api/config/plugins/{key}/versions/{version}/approve",
             post(crate::plugin_installs::approve_plugin_version),
         )
+        .route(
+            "/api/config/cluster-consents",
+            get(crate::cluster_link::api::get_cluster_consents),
+        )
+        .route(
+            "/api/config/clusters/{cluster_id}/scan",
+            post(crate::cluster_link::api::post_cluster_scan),
+        )
+        .route(
+            "/api/config/clusters/{cluster_id}/jobs",
+            post(crate::cluster_link::api::post_cluster_jobs),
+        )
+        .route(
+            "/api/config/cluster-consents/approve",
+            post(crate::cluster_link::api::post_cluster_consent_approve),
+        )
+        .route(
+            "/api/config/cluster-consents/revoke",
+            post(crate::cluster_link::api::post_cluster_consent_revoke),
+        )
+        // Join a library / Leave library (the welcome screen and wizard).
+        .route(
+            "/api/config/join",
+            get(crate::cluster_link::join::get_join_status),
+        )
+        .route(
+            "/api/config/join/inspect",
+            post(crate::cluster_link::join::post_join_inspect),
+        )
+        .route(
+            "/api/config/join/start",
+            post(crate::cluster_link::join::post_join_start),
+        )
+        .route(
+            "/api/config/join/callback",
+            post(crate::cluster_link::join::post_join_callback),
+        )
+        .route(
+            "/api/config/join/invite",
+            post(crate::cluster_link::join::post_join_invite),
+        )
+        .route(
+            "/api/config/join/leave",
+            post(crate::cluster_link::join::post_join_leave),
+        )
         .route("/api/settings", get(get_settings).patch(patch_settings))
         .route(
             "/api/plugins/{id}/consent",
@@ -936,9 +1018,19 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         .with_state(state.clone());
 
     // Node administration: operators see and edit every node; a user who
-    // owns nodes (Host, Administrator, Owner) sees and edits only those.
+    // owns nodes (Host, Administrator, Owner) sees and edits only those. An
+    // Owner also sees and removes every owner node (the clerks).
     let node_admin = Router::new()
         .route("/api/config/nodes", get(crate::config_authority::get_nodes))
+        .route(
+            "/api/config/nodes/{node_id}",
+            delete(crate::config_authority::delete_owner_node),
+        )
+        // Settings → Clerks: every owner node for the operator or an Owner.
+        .route(
+            "/api/config/clerks",
+            get(crate::config_authority::get_clerks),
+        )
         .route(
             "/api/config/nodes/{node_id}/runtime",
             put(crate::config_authority::put_node_runtime),
@@ -950,6 +1042,64 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_operator_or_node_owner_auth,
+        ))
+        .with_state(state.clone());
+
+    // Host enrollment links: any signed-in user acts for themselves; the
+    // library lets the operator or an Owner act for others.
+    let user_scoped = Router::new()
+        .route(
+            "/api/config/node-invites",
+            get(crate::node_api::get_node_invites).post(crate::node_api::post_node_invite),
+        )
+        .route(
+            "/api/config/node-invites/{id}",
+            delete(crate::node_api::delete_node_invite),
+        )
+        // A branch's sign-in consent ("Let <branch> join <library> as
+        // yours?"): a signed-in user, never the operator alone.
+        .route(
+            "/api/auth/branch-consent",
+            get(crate::node_api::branch::get_branch_consent)
+                .post(crate::node_api::branch::post_branch_consent),
+        )
+        // A clerk consent's fresh passkey step (an Owner with a passkey).
+        .route(
+            "/api/auth/branch-consent/step-up",
+            post(crate::node_api::branch::post_branch_consent_step_up),
+        )
+        // Settings → Branches: the library's join settings (operator or
+        // Owner; the handler checks).
+        .route(
+            "/api/config/branches",
+            get(crate::node_api::branch::get_branches).put(crate::node_api::branch::put_branches),
+        )
+        .route(
+            "/api/config/branches/titles/remove",
+            post(crate::node_api::branch::post_remove_branch_titles),
+        )
+        // Settings → Library's two sharing settings on a branch (operator
+        // or Owner; the handler checks).
+        .route(
+            "/api/config/join/sharing",
+            get(crate::cluster_link::join::get_join_sharing)
+                .post(crate::cluster_link::join::post_join_sharing),
+        )
+        // The library lets the operator or an Owner revoke any host and
+        // anyone else only the hosts they own.
+        .route(
+            "/api/config/node-credentials/{node_id}",
+            delete(crate::node_api::delete_node_credential),
+        )
+        // Any user reads the switch; the handler lets only the operator or
+        // an active Owner change it.
+        .route(
+            "/api/config/host-enrollment",
+            get(crate::node_api::get_host_enrollment).put(crate::node_api::put_host_enrollment),
+        )
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_operator_or_user_auth,
         ))
         .with_state(state.clone());
 
@@ -1011,6 +1161,8 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         )
         .route("/api/auth/tray-handoff", get(auth::tray_handoff))
         .route("/api/auth/me", get(auth::me))
+        // The SPA's live socket checks Origin and the caller itself.
+        .route(crate::live::LIVE_PATH, get(crate::live::get_live))
         .route("/api/auth/elevate", post(auth::elevate))
         .route("/api/auth/bootstrap", post(auth::bootstrap))
         .route(
@@ -1031,8 +1183,12 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             post(auth::reset_user_password),
         )
         .merge(operator_or_admin)
+        // Host-node enrollment and socket: never behind the cookie/auth
+        // layers; the transport policy runs first.
+        .merge(crate::node_api::node_router(state.clone()))
         .merge(operator_only)
         .merge(node_admin)
+        .merge(user_scoped)
         .merge(shared)
         .with_state(state.clone());
 
@@ -1081,6 +1237,10 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
                 // The Status page. `/status` stays the legacy JSON route.
                 "/cluster",
                 "/settings",
+                // Join a library: the owner's consent page and the
+                // joining install's callback.
+                "/join/approve",
+                "/join/callback",
             ];
             for path in SPA_DOC_PATHS {
                 app = app.route_service(path, ServeFile::new(index.clone()));
@@ -1194,11 +1354,17 @@ async fn html_document_no_cache(req: Request, next: Next) -> Response {
 }
 
 /// Enforces per-path API deadlines and returns 504 when a `/api/` handler overruns its budget.
-async fn api_timeout_middleware(req: Request, next: Next) -> Response {
+pub(crate) async fn api_timeout_middleware(req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
     let method = req.method().to_string();
     // Keep `/health` free of the API timeout so liveness probes stay cheap.
     if path == "/health" || !path.starts_with("/api/") {
+        return next.run(req).await;
+    }
+    // A host's streamed upload runs as long as its file takes; the handler
+    // watches the job's fence instead. Only those PUTs: the commit is an
+    // ordinary bounded request and keeps the normal deadline.
+    if is_streamed_upload(req.method(), &path) {
         return next.run(req).await;
     }
     // Multi-store purchase / Audnexus detail work is intentionally slower than
@@ -1220,7 +1386,19 @@ async fn api_timeout_middleware(req: Request, next: Next) -> Response {
     }
 }
 
-/// Selects the request deadline in seconds for a control-plane path (8s default; longer for discover).
+/// True for a host's streamed file upload, `PUT
+/// /api/node/v1/uploads/{upload_id}/files/{index}`, the one request that
+/// runs without the API deadline ([`api_timeout_middleware`]).
+fn is_streamed_upload(method: &axum::http::Method, path: &str) -> bool {
+    *method == axum::http::Method::PUT
+        && path
+            .strip_prefix(bookclerk_node_proto::UPLOADS_PATH)
+            .and_then(|rest| rest.split_once('/'))
+            .is_some_and(|(_, rest)| rest.starts_with("files/"))
+}
+
+/// Selects the request deadline in seconds for a control-plane path (8s default; longer for discover
+/// and joining or leaving a library).
 fn api_timeout_for_path(path: &str) -> Duration {
     match path {
         "/api/discover/purchase-hints"
@@ -1231,6 +1409,20 @@ fn api_timeout_for_path(path: &str) -> Duration {
         "/api/discover/recommendations" => Duration::from_secs(20),
         // Parallel store searches (~7s each) + optional page enrich (~3.5s).
         "/api/discover/search" => Duration::from_secs(16),
+        // Leave library waits for the library to hear `node.leaving`
+        // (`cluster_link::LEAVE_NOTICE_TIMEOUT`, through a fresh connection
+        // when no client runs) before it records the leave.
+        "/api/config/join/leave" => Duration::from_secs(30),
+        // A join redeems with the library (at most
+        // `cluster_link::join::REDEEM_TIMEOUT`), then waits for the new
+        // link's client (`cluster_link::start_link_now`).
+        // Their own bounded waits add up to 29 s; the rest is margin for the
+        // database round trips around them.
+        "/api/config/join/callback" | "/api/config/join/invite" => Duration::from_secs(45),
+        // Reading a library dials it (connect and request timeouts in
+        // `bookclerk_node_client::endpoint`), so an unreachable one is
+        // answered as `unreachable` rather than cut off.
+        "/api/config/join/inspect" | "/api/config/join/start" => Duration::from_secs(45),
         _ => Duration::from_secs(8),
     }
 }
@@ -1450,6 +1642,17 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
     // Defense in depth: never publish a non-loopback listen with auth disabled
     // in the *runtime* object (validate_daemon_listen already checked config).
     validate_daemon_listen_against_auth(&new_cfg, candidate_auth.enabled)?;
+    // The node API's TLS listener stays bound from startup whatever the new
+    // config says, and it serves the web app too.
+    if !candidate_auth.enabled {
+        if let Some(bound) = state.node_api_tls_bound.get() {
+            if !bound.ip().is_loopback() {
+                anyhow::bail!(
+                    "daemon.auth.enabled=false is unsafe while the node API's TLS listener is bound beyond loopback ({bound}); restart the daemon to close it"
+                );
+            }
+        }
+    }
 
     let token_changed = candidate_auth.enabled != old_auth_enabled
         || (candidate_auth.enabled && candidate_auth.token != old_token);
@@ -1459,6 +1662,7 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
     // error here leaves library, auth, and the media pool on the previous
     // runtime.
     let fresh = crate::config_authority::load_events_publication(&library_for_auth).await?;
+    let fresh_output = crate::config_authority::load_output_publication(&library_for_auth).await?;
 
     // Fail closed before publishing when the new listen set cannot bind at all
     // (ports we already hold are skipped — those need a post-rebind rollback).
@@ -1504,8 +1708,21 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
                 &fresh,
                 db_plugin_changed,
             );
+            crate::config_authority::finish_reload_output(
+                &config,
+                &mut new_cfg,
+                &fresh_output,
+                db_plugin_changed,
+            );
             *config = new_cfg.clone();
         }
+    }
+
+    if db_plugin_changed {
+        // Host clients hold the previous store's links and keys; the
+        // cluster-link supervisor stops them and dials the new store's
+        // active links.
+        state.library_swaps.send_modify(|swaps| *swaps += 1);
     }
 
     bookclerk_plugin_host::reconcile_host_overlay_authority(&new_cfg);
@@ -1553,7 +1770,13 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
     Ok(detail)
 }
 
-/// Validate listen against the effective runtime auth flag (not only TOML).
+/// Validate listen, and the node API's TLS listener (which serves the web
+/// app too), against the effective runtime auth flag (not only TOML).
+///
+/// # Errors
+///
+/// Returns an error when `daemon.listen` does not parse or is empty, or when
+/// auth is off and either listener is reachable beyond loopback.
 pub fn validate_daemon_listen_against_auth(
     config: &Config,
     auth_enabled: bool,
@@ -1572,6 +1795,24 @@ pub fn validate_daemon_listen_against_auth(
                 anyhow::bail!(
                     "daemon.auth.enabled=false is unsafe when listen is not loopback ({})",
                     config.daemon.listen.join_comma()
+                );
+            }
+        }
+        // The node API's own TLS listener serves the whole web app too (a
+        // branch's owner signs in there), so it is held to the same rule.
+        let node_api = &config.daemon.node_api;
+        if matches!(
+            node_api.mode,
+            bookclerk_config::NodeApiMode::Acme | bookclerk_config::NodeApiMode::SelfSigned
+        ) {
+            if let Some(tls) = node_api
+                .tls_listen
+                .as_deref()
+                .and_then(|addr| addr.trim().parse::<std::net::SocketAddr>().ok())
+                .filter(|addr| !addr.ip().is_loopback())
+            {
+                anyhow::bail!(
+                    "daemon.auth.enabled=false is unsafe when daemon.node_api.tls_listen is not loopback ({tls}): that listener serves the web app too"
                 );
             }
         }
@@ -1687,6 +1928,28 @@ pub async fn revert_listen_after_bind_failure(state: &AppState) -> bool {
     true
 }
 
+/// Which store owns a Settings key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum SettingsAuthority {
+    /// `config.toml` (bootstrap and still-transitional tables).
+    File,
+    /// The `core.events` cluster document.
+    Events,
+    /// The `core.output` cluster document.
+    Output,
+}
+
+/// Authority that owns `key`.
+fn settings_authority(key: &str) -> SettingsAuthority {
+    if key.starts_with("events.") {
+        SettingsAuthority::Events
+    } else if bookclerk_library::control_plane::is_output_setting_key(key) {
+        SettingsAuthority::Output
+    } else {
+        SettingsAuthority::File
+    }
+}
+
 /// True when `key` is a Settings-editable dotted path (global knobs or `kind.id.field`).
 fn allowed_setting_key(key: &str) -> bool {
     if matches!(
@@ -1713,6 +1976,9 @@ fn allowed_setting_key(key: &str) -> bool {
             | "plugins.jail.cpu_cores"
             | "plugins.jail.extra_processes"
     ) {
+        return true;
+    }
+    if bookclerk_library::control_plane::OUTPUT_SETTING_KEYS.contains(&key) {
         return true;
     }
 
@@ -1847,6 +2113,18 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
             }
         }
         _ => Ok(value.trim().to_string()),
+    }
+}
+
+/// Adds every `core.output` key to a Settings map.
+fn insert_output_settings(
+    settings: &mut std::collections::BTreeMap<String, String>,
+    body: &bookclerk_library::control_plane::OutputSettingsV1,
+) {
+    for key in bookclerk_library::control_plane::OUTPUT_SETTING_KEYS {
+        if let Some(value) = body.get(key) {
+            settings.insert((*key).to_string(), value);
+        }
     }
 }
 
@@ -2941,7 +3219,19 @@ async fn get_settings(
         .map(|host| host.node_id)
         .unwrap_or_default();
     let auth = state.auth_snapshot().await;
-    let settings = current_settings_snapshot(&cfg);
+    let mut settings = current_settings_snapshot(&cfg);
+    // `output.*` comes from the `core.output` document itself, so a relative
+    // `widevine_cdm` reads back as stored rather than resolved for this host.
+    let output_revision = match bookclerk_library::control_plane::load_output(&library).await {
+        Ok(doc) => {
+            insert_output_settings(&mut settings, &doc.body);
+            Some(doc.revision)
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "core.output unavailable for settings");
+            None
+        }
+    };
     let mut effective = settings.clone();
     effective.insert("daemon.auth.enabled".into(), auth.enabled.to_string());
     effective.insert("daemon.listen".into(), cfg.daemon.listen.join_comma());
@@ -2966,6 +3256,9 @@ async fn get_settings(
     if let Some(revision) = cfg.events_revision {
         effective.insert("events.revision".into(), revision.to_string());
     }
+    if let Some(revision) = cfg.output_revision {
+        effective.insert("output.revision".into(), revision.to_string());
+    }
     Ok(Json(SettingsResponse {
         settings,
         effective,
@@ -2976,6 +3269,7 @@ async fn get_settings(
             .jail
             .cpu_rate_percent
             .map(|n| effective_cpu_cores(Some(percent_to_cores(n)))),
+        output_revision,
     }))
 }
 
@@ -2990,6 +3284,7 @@ async fn patch_settings(
             .map_err(IntoResponse::into_response);
     }
 
+    let body_expected_output_revision = body.expected_output_revision;
     let updates: Vec<(String, String)> = body
         .settings
         .into_iter()
@@ -3102,30 +3397,34 @@ async fn patch_settings(
 
     let mut normalized_pairs = Vec::<(String, String)>::new();
     let mut events_updates = Vec::<(String, String)>::new();
+    let mut output_updates = Vec::<(String, String)>::new();
     for (key, value) in &updates {
         if key.starts_with("database.") && key.ends_with(".enabled") {
             // Exclusive enablement is applied via `apply_database_enable_updates`.
             continue;
         }
-        if key.starts_with("events.") {
-            events_updates.push((key.clone(), value.clone()));
-            continue;
+        match settings_authority(key) {
+            SettingsAuthority::Events => events_updates.push((key.clone(), value.clone())),
+            SettingsAuthority::Output => output_updates.push((key.clone(), value.clone())),
+            SettingsAuthority::File => normalized_pairs.push((key.clone(), value.clone())),
         }
-        normalized_pairs.push((key.clone(), value.clone()));
     }
 
-    // `core.events` and file-backed keys are different authorities. A later
-    // TOML or reload failure must not leave the events commit behind, so this
-    // spike rejects a mixed request before either side is written.
-    let touches_events = updates.iter().any(|(key, _)| key.starts_with("events."));
-    let touches_file = updates.iter().any(|(key, _)| !key.starts_with("events."));
-    if touches_events && touches_file {
-        tracing::warn!("rejected settings update that mixes core.events with file-backed keys");
+    // `core.events`, `core.output`, and file-backed keys are different
+    // authorities, each committed separately. A later failure on one must not
+    // leave a commit on another behind, so a mixed request is rejected before
+    // any side is written.
+    let authorities: std::collections::HashSet<SettingsAuthority> = updates
+        .iter()
+        .map(|(key, _)| settings_authority(key))
+        .collect();
+    if authorities.len() > 1 {
+        tracing::warn!("rejected settings update that mixes configuration authorities");
         return Err((
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "error": "mixed_configuration_authorities",
-                "message": "send core.events and file-backed settings in separate requests",
+                "message": "send core.events, core.output, and file-backed settings in separate requests",
             })),
         )
             .into_response());
@@ -3133,6 +3432,14 @@ async fn patch_settings(
     let _reload_guard = state.reload_lock.lock().await;
     if !events_updates.is_empty() {
         crate::config_authority::commit_events_settings(&state, &events_updates).await?;
+    }
+    if !output_updates.is_empty() {
+        crate::config_authority::commit_output_settings(
+            &state,
+            &output_updates,
+            body_expected_output_revision,
+        )
+        .await?;
     }
     if normalized_pairs.is_empty() && enabling.is_empty() {
         drop(_reload_guard);
@@ -3401,39 +3708,232 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
     }))
 }
 
-/// Enqueues a library scan job and returns the accepted job id.
+/// Plans and enqueues a library scan; returns the accepted job ids.
+///
+/// The scan planner splits a scan of every account into one job per
+/// scan-enabled account for operators, Owners and Administrators, and
+/// limits anyone else to the accounts they own. `job_id` is the first
+/// accepted (or already queued) job and `job_ids` lists every one.
 async fn trigger_scan(
     State(state): State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
     body: Option<Json<ScanRequest>>,
-) -> impl IntoResponse {
+) -> Response {
+    let Some(axum::Extension(requester)) = requester else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ActionResponse {
+                ok: false,
+                message: "scan requester unknown".into(),
+                job_id: String::new(),
+                error: Some("forbidden".into()),
+            }),
+        )
+            .into_response();
+    };
     let body = body.map(|Json(b)| b);
     let account = body.as_ref().and_then(|b| b.account.clone());
     let instance = body.and_then(|b| b.plugin_instance_id);
-    match enqueue_scan(state, account, instance, JobTrigger::Api).await {
-        Ok(admit) => admit_response("scan", admit),
-        Err(err) => enqueue_error_response(err),
+    match enqueue_scan(state, requester, account, instance, JobTrigger::Api).await {
+        Ok(admits) => plan_response("scan", admits),
+        Err(err) => match err.downcast_ref::<LibraryError>() {
+            Some(LibraryError::Forbidden(message)) => (
+                StatusCode::FORBIDDEN,
+                Json(ActionResponse {
+                    ok: false,
+                    message: message.clone(),
+                    job_id: String::new(),
+                    error: Some("forbidden".into()),
+                }),
+            )
+                .into_response(),
+            Some(LibraryError::Invalid(message)) => (
+                StatusCode::BAD_REQUEST,
+                Json(ActionResponse {
+                    ok: false,
+                    message: message.clone(),
+                    job_id: String::new(),
+                    error: Some("invalid".into()),
+                }),
+            )
+                .into_response(),
+            _ => enqueue_error_response(err),
+        },
     }
 }
 
-/// Enqueues an acquire job, optionally filtered by title id and account.
+#[derive(Debug, Serialize)]
+/// Result of a planned scan or acquire: [`ActionResponse`] plus every job id.
+struct ScanPlanResponse {
+    /// True when at least one job was accepted.
+    ok: bool,
+    /// Operator-facing status text.
+    message: String,
+    /// First accepted (or, when none was, already queued) job id.
+    job_id: String,
+    /// Every accepted or already-queued job id, in plan order.
+    job_ids: Vec<String>,
+    /// Machine slug when nothing was accepted (`conflict`, `queue_full`,
+    /// `nothing_to_scan`, `nothing_to_acquire`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// Folds the admissions of one planned scan or acquire into one response.
+///
+/// The body is always a [`ScanPlanResponse`], so `job_ids` is present
+/// whatever the job count. A single planned job keeps the status and
+/// message of any other admission. Several answer 200 when any was
+/// accepted, otherwise 409 when all were already queued and 429 when the
+/// queue was full; an empty plan is 422 `nothing_to_scan` /
+/// `nothing_to_acquire`.
+fn plan_response(kind: &str, admits: Vec<AdmitJob>) -> Response {
+    if let [admit] = admits.as_slice() {
+        let (status, message, job_id, error) = match admit {
+            AdmitJob::Created(id) => (
+                StatusCode::OK,
+                format!("{kind} job {id} accepted"),
+                id.clone(),
+                None,
+            ),
+            AdmitJob::Duplicate(id) => (
+                StatusCode::CONFLICT,
+                format!("{kind} already pending or running"),
+                id.clone(),
+                Some("conflict"),
+            ),
+            AdmitJob::QueueFull => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "job queue is full".to_string(),
+                String::new(),
+                Some("queue_full"),
+            ),
+        };
+        let job_ids = if job_id.is_empty() {
+            Vec::new()
+        } else {
+            vec![job_id.clone()]
+        };
+        return (
+            status,
+            Json(ScanPlanResponse {
+                ok: status == StatusCode::OK,
+                message,
+                job_id,
+                job_ids,
+                error: error.map(str::to_string),
+            }),
+        )
+            .into_response();
+    }
+    // Ids stay in plan order, whatever each admission's outcome.
+    let mut job_ids = Vec::new();
+    let (mut created, mut duplicates, mut full) = (0usize, 0usize, 0usize);
+    for admit in admits {
+        match admit {
+            AdmitJob::Created(id) => {
+                created += 1;
+                job_ids.push(id);
+            }
+            AdmitJob::Duplicate(id) => {
+                duplicates += 1;
+                job_ids.push(id);
+            }
+            AdmitJob::QueueFull => full += 1,
+        }
+    }
+    let nothing = format!("nothing_to_{kind}");
+    let (status, error) = if created > 0 {
+        (StatusCode::OK, None)
+    } else if job_ids.is_empty() && full == 0 {
+        (StatusCode::UNPROCESSABLE_ENTITY, Some(nothing.as_str()))
+    } else if full == 0 {
+        (StatusCode::CONFLICT, Some("conflict"))
+    } else {
+        (StatusCode::TOO_MANY_REQUESTS, Some("queue_full"))
+    };
+    let message = if error == Some(nothing.as_str()) {
+        if kind == "scan" {
+            "no scan-enabled store account to scan".to_string()
+        } else {
+            "no store account of yours to acquire from".to_string()
+        }
+    } else {
+        format!(
+            "{kind} planned: {created} accepted, {duplicates} already pending or running, {full} not admitted (queue full)"
+        )
+    };
+    (
+        status,
+        Json(ScanPlanResponse {
+            ok: created > 0,
+            message,
+            job_id: job_ids.first().cloned().unwrap_or_default(),
+            job_ids,
+            error: error.map(str::to_string),
+        }),
+    )
+        .into_response()
+}
+
+/// Plans and enqueues acquire jobs; returns the accepted job ids.
+///
+/// The acquire planner makes one job per title id, and limits a user who is
+/// not an Owner or Administrator to the accounts they own (one job per
+/// account when no title or account is named). `job_id` is the first
+/// accepted (or already queued) job and `job_ids` lists every one.
 async fn trigger_acquire(
     State(state): State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
     body: Option<Json<AcquireRequestBody>>,
-) -> impl IntoResponse {
+) -> Response {
+    let Some(axum::Extension(requester)) = requester else {
+        return planner_error_response(None, "acquire requester unknown");
+    };
     let body = body.map(|Json(b)| b).unwrap_or_default();
-    let title_filter = body.uuid.or(body.asin).or(body.isbn).or(body.product_id);
-    match enqueue_acquire(
-        state,
-        title_filter,
-        body.account,
-        body.plugin_instance_id,
-        JobTrigger::Api,
-    )
-    .await
-    {
-        Ok(admit) => admit_response("acquire", admit),
-        Err(err) => enqueue_error_response(err),
+    let mut titles: Vec<String> = body
+        .uuid
+        .or(body.asin)
+        .or(body.isbn)
+        .or(body.product_id)
+        .into_iter()
+        .collect();
+    titles.extend(body.titles);
+    let ask = crate::jobs::AcquireAsk {
+        titles,
+        account: body.account,
+        plugin_instance_id: body.plugin_instance_id,
+        force: body.force,
+        pdf_only: body.pdf_only,
+    };
+    match enqueue_acquire(state, requester, ask, JobTrigger::Api).await {
+        Ok(admits) => plan_response("acquire", admits),
+        Err(err) => match err.downcast_ref::<LibraryError>() {
+            Some(LibraryError::Forbidden(message)) => planner_error_response(None, message),
+            Some(LibraryError::Invalid(message)) => {
+                planner_error_response(Some(StatusCode::BAD_REQUEST), message)
+            }
+            _ => enqueue_error_response(err),
+        },
     }
+}
+
+/// A planner refusal: 403 `forbidden` by default, or `status` with `invalid`.
+fn planner_error_response(status: Option<StatusCode>, message: &str) -> Response {
+    let (status, slug) = match status {
+        Some(status) => (status, "invalid"),
+        None => (StatusCode::FORBIDDEN, "forbidden"),
+    };
+    (
+        status,
+        Json(ActionResponse {
+            ok: false,
+            message: message.to_string(),
+            job_id: String::new(),
+            error: Some(slug.into()),
+        }),
+    )
+        .into_response()
 }
 
 /// Maps a durable job row onto the control-plane `JobInfo` JSON.
@@ -3489,19 +3989,21 @@ fn admit_response(kind: &str, admit: AdmitJob) -> Response {
     }
 }
 
-/// Returns HTTP 503 when admission is paused, otherwise 500.
+/// Maps an admission error onto an HTTP response with `ActionResponse`.
+///
+/// A job no node could claim ([`crate::jobs::JobUnroutable`]) is HTTP 409
+/// `unroutable` and logged as a warning; paused admission is HTTP 503
+/// `admission_paused`; anything else is HTTP 500 `internal_error`.
 fn enqueue_error_response(err: anyhow::Error) -> Response {
-    tracing::error!(error = %err, "job enqueue failed");
-    let paused = err.to_string().contains("admission paused");
-    let status = if paused {
-        StatusCode::SERVICE_UNAVAILABLE
+    let (status, error) = if err.downcast_ref::<crate::jobs::JobUnroutable>().is_some() {
+        tracing::warn!(error = %err, "job refused: no node can run it");
+        (StatusCode::CONFLICT, "unroutable")
+    } else if err.to_string().contains("admission paused") {
+        tracing::warn!(error = %err, "job enqueue paused");
+        (StatusCode::SERVICE_UNAVAILABLE, "admission_paused")
     } else {
-        StatusCode::INTERNAL_SERVER_ERROR
-    };
-    let error = if paused {
-        "admission_paused"
-    } else {
-        "internal_error"
+        tracing::error!(error = %err, "job enqueue failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
     };
     (
         status,
@@ -5155,6 +5657,86 @@ mod tests {
     };
     use bookclerk_config::{Config, ListenAddrs};
 
+    /// Only a streamed file PUT runs without the API deadline; the
+    /// commit and every other upload request keep it.
+    #[test]
+    fn only_streamed_upload_puts_skip_the_api_deadline() {
+        use super::is_streamed_upload;
+        use axum::http::Method;
+        assert!(is_streamed_upload(
+            &Method::PUT,
+            "/api/node/v1/uploads/u-1/files/0"
+        ));
+        assert!(!is_streamed_upload(
+            &Method::POST,
+            "/api/node/v1/uploads/u-1/commit"
+        ));
+        assert!(!is_streamed_upload(
+            &Method::PUT,
+            "/api/node/v1/uploads/u-1/commit"
+        ));
+        assert!(!is_streamed_upload(
+            &Method::POST,
+            "/api/node/v1/uploads/u-1/files/0"
+        ));
+        assert!(!is_streamed_upload(&Method::PUT, "/api/library/upload"));
+    }
+
+    /// An acquire whose `local` outputs share no node is a 409 `unroutable`
+    /// refusal, not a 500; other admission failures keep their codes.
+    #[tokio::test]
+    async fn unroutable_acquire_is_conflict_not_internal_error() {
+        use axum::http::StatusCode;
+        use bookclerk_library::control_plane::{
+            create_plugin_instance, ensure_plugin_deployment, resolve_job_requirements,
+            ConfigActor, DesiredState,
+        };
+        use bookclerk_library::{JobKind, JobPayload, LibraryStore};
+
+        const LOCAL: &str = "platform:bookclerk/bookclerk-plugin-destination-local";
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        );
+        let operator = ConfigActor::Operator {
+            id: "operator".into(),
+        };
+        for (name, node) in [("", "node-a"), ("second", "node-b")] {
+            let instance = create_plugin_instance(&store, &operator, LOCAL, name)
+                .await
+                .unwrap();
+            ensure_plugin_deployment(
+                &store,
+                &ConfigActor::Bootstrap,
+                &instance.id,
+                node,
+                DesiredState::Present,
+            )
+            .await
+            .unwrap();
+        }
+        let bound = std::collections::BTreeSet::from([LOCAL.to_string()]);
+        let err =
+            resolve_job_requirements(&store, JobKind::Acquire, &JobPayload::default(), &bound)
+                .await
+                .expect_err("no node runs both outputs");
+
+        let response = super::enqueue_error_response(crate::jobs::requirements_error(err));
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"], "unroutable", "{body}");
+        assert_eq!(body["ok"], false, "{body}");
+
+        let other = super::enqueue_error_response(crate::jobs::requirements_error(
+            bookclerk_library::LibraryError::Invalid("bad row".into()),
+        ));
+        assert_eq!(other.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
     #[test]
     fn invite_link_error_classifies_missing_invalid_expired_redeemed() {
         use chrono::{Duration, Utc};
@@ -5429,6 +6011,25 @@ mod tests {
         cfg.daemon.listen = ListenAddrs::parse_list("127.0.0.1:8787").unwrap();
         cfg.daemon.auth.enabled = false;
         assert!(validate_daemon_listen(&cfg).is_ok());
+        assert!(validate_daemon_listen_against_auth(&cfg, false).is_ok());
+    }
+
+    /// The node API's TLS listener serves the web app, so with auth off it
+    /// must be loopback too; with auth on any address is fine.
+    #[test]
+    fn listen_validation_covers_the_node_api_tls_listener() {
+        let mut cfg = Config::default();
+        cfg.daemon.listen = ListenAddrs::parse_list("127.0.0.1:8787").unwrap();
+        cfg.daemon.node_api.mode = bookclerk_config::NodeApiMode::SelfSigned;
+        cfg.daemon.node_api.tls_listen = Some("0.0.0.0:8443".into());
+        assert!(validate_daemon_listen_against_auth(&cfg, true).is_ok());
+        let err = validate_daemon_listen_against_auth(&cfg, false).unwrap_err();
+        assert!(err.to_string().contains("tls_listen"), "{err}");
+        cfg.daemon.node_api.tls_listen = Some("127.0.0.1:8443".into());
+        assert!(validate_daemon_listen_against_auth(&cfg, false).is_ok());
+        // Without a TLS listener of its own the address is not served.
+        cfg.daemon.node_api.mode = bookclerk_config::NodeApiMode::Proxy;
+        cfg.daemon.node_api.tls_listen = Some("0.0.0.0:8443".into());
         assert!(validate_daemon_listen_against_auth(&cfg, false).is_ok());
     }
 
@@ -6045,6 +6646,8 @@ mode = "deny"
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
+            node_api_tls_bound: std::sync::OnceLock::new(),
+            library_swaps: tokio::sync::watch::Sender::new(0),
         });
 
         let app = Router::new()
@@ -6144,6 +6747,8 @@ mode = "deny"
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
+            node_api_tls_bound: std::sync::OnceLock::new(),
+            library_swaps: tokio::sync::watch::Sender::new(0),
         });
 
         let app = Router::new()
@@ -6151,6 +6756,7 @@ mode = "deny"
             .route("/api/library/acquire", post(super::trigger_acquire))
             .route("/api/jobs", get(super::list_jobs))
             .route("/api/jobs/{id}/cancel", post(super::cancel_job))
+            .layer(axum::Extension(super::ScanRequester::Operator))
             .with_state(state);
 
         let first = app
@@ -6239,6 +6845,149 @@ mode = "deny"
     }
 
     #[tokio::test]
+    async fn scan_all_is_planned_per_account_and_needs_a_requester() {
+        use std::sync::Arc;
+
+        use axum::body::Body;
+        use axum::http::{header, Request, StatusCode};
+        use axum::routing::post;
+        use axum::Router;
+        use bookclerk_integrations::IntegrationRegistry;
+        use bookclerk_library::LibraryStore;
+        use bookclerk_plugin_host::{DatabaseRegistry, DestinationRegistry};
+        use bookclerk_source::SourceRegistry;
+        use http_body_util::BodyExt;
+        use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
+        use tower::ServiceExt;
+
+        use crate::api::AppState;
+        use crate::auth::OperatorAuthState;
+
+        let library = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .expect("sqlite memory"),
+        );
+        for (account, scan) in [("a1", true), ("a2", true), ("a3", false)] {
+            library
+                .upsert_account("pk", account, "us", None, scan, "test")
+                .await
+                .unwrap();
+        }
+        let member = library
+            .create_user(bookclerk_library::UserRole::Member, Some("Riley"), None)
+            .await
+            .unwrap()
+            .id;
+        let mut cfg = Config::default();
+        cfg.daemon.auth.enabled = false;
+        cfg.jobs.max_pending = 8;
+        let state = Arc::new(AppState {
+            config: Arc::new(RwLock::new(cfg)),
+            library: Arc::new(RwLock::new(library)),
+            database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
+            job_notify: Arc::new(Notify::new()),
+            job_runtime: Arc::new(RwLock::new(())),
+            work_lock: Mutex::new(()),
+            discover_gate: Arc::new(Semaphore::new(1)),
+            integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
+            sources: Arc::new(RwLock::new(SourceRegistry::new())),
+            destinations: Arc::new(RwLock::new(DestinationRegistry::default())),
+            auth: Arc::new(RwLock::new(Arc::new(OperatorAuthState::new(
+                String::new(),
+                12,
+                false,
+                5,
+                30,
+            )))),
+            reload_lock: Mutex::new(()),
+            listen_reload: Arc::new(Notify::new()),
+            last_bound_listen: RwLock::new(None),
+            tray: RwLock::new(None),
+            tray_handoff: Mutex::new(None),
+            deployment_runtime: std::sync::OnceLock::new(),
+            node_api_tls_bound: std::sync::OnceLock::new(),
+            library_swaps: tokio::sync::watch::Sender::new(0),
+        });
+        let scan = || {
+            Request::builder()
+                .method("POST")
+                .uri("/api/library/scan")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{}"))
+                .unwrap()
+        };
+
+        // Without the auth layer's requester the handler refuses.
+        let bare = Router::new()
+            .route("/api/library/scan", post(super::trigger_scan))
+            .with_state(state.clone());
+        let refused = bare.oneshot(scan()).await.unwrap();
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+        let app = Router::new()
+            .route("/api/library/scan", post(super::trigger_scan))
+            .route("/api/library/acquire", post(super::trigger_acquire))
+            .layer(axum::Extension(super::ScanRequester::Operator))
+            .with_state(state.clone());
+        let acquire = |body: serde_json::Value| {
+            Request::builder()
+                .method("POST")
+                .uri("/api/library/acquire")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        };
+        // Each named title is its own acquire job.
+        let titles = app
+            .clone()
+            .oneshot(acquire(serde_json::json!({ "titles": ["T1", "T2", "t1"] })))
+            .await
+            .unwrap();
+        assert_eq!(titles.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&titles.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["job_ids"].as_array().unwrap().len(), 2, "{body}");
+        // A Member may not acquire an account that is not theirs, and owning
+        // nothing has nothing to acquire.
+        let as_member = Router::new()
+            .route("/api/library/acquire", post(super::trigger_acquire))
+            .layer(axum::Extension(super::ScanRequester::User(member)))
+            .with_state(state.clone());
+        let refused = as_member
+            .clone()
+            .oneshot(acquire(serde_json::json!({ "account": "a1" })))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        let nothing = as_member
+            .oneshot(acquire(serde_json::json!({})))
+            .await
+            .unwrap();
+        assert_eq!(nothing.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body: serde_json::Value =
+            serde_json::from_slice(&nothing.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["error"], "nothing_to_acquire");
+
+        let first = app.clone().oneshot(scan()).await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&first.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        let ids = body["job_ids"].as_array().unwrap().clone();
+        assert_eq!(ids.len(), 2, "one job per scan-enabled account: {body}");
+        assert_eq!(body["job_id"], ids[0]);
+
+        let again = app.oneshot(scan()).await.unwrap();
+        assert_eq!(again.status(), StatusCode::CONFLICT);
+        let body: serde_json::Value =
+            serde_json::from_slice(&again.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(body["error"], "conflict");
+        assert_eq!(body["job_ids"].as_array().unwrap(), &ids);
+    }
+
+    #[tokio::test]
     async fn mixed_settings_request_does_not_commit_events() {
         let _dek = crate::auth::tests::process_dek_lock().await;
         use axum::extract::State;
@@ -6263,7 +7012,7 @@ mode = "deny"
         bookclerk_library::apply_host_schema(&db).await.unwrap();
         let store = LibraryStore::from_connection(db);
         let scratch = dir.path().join("cache");
-        let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg.events)
+        let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg)
             .await
             .unwrap();
         overlay_events(&mut cfg, &session.events, &session.cluster_id);
@@ -6294,6 +7043,7 @@ mode = "deny"
                         value: "false".into(),
                     },
                 ],
+                expected_output_revision: None,
             }),
         )
         .await
@@ -6346,7 +7096,7 @@ mode = "deny"
         bookclerk_library::apply_host_schema(&db).await.unwrap();
         let store = LibraryStore::from_connection(db);
         let scratch = dir.path().join("cache");
-        let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg.events)
+        let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg)
             .await
             .unwrap();
         overlay_events(&mut cfg, &session.events, &session.cluster_id);
@@ -6366,6 +7116,7 @@ mode = "deny"
                     key: "events.retention_days".into(),
                     value: requested.to_string(),
                 }],
+                expected_output_revision: None,
             }),
         )
         .await
@@ -6382,6 +7133,216 @@ mode = "deny"
         let live = state.config.read().await;
         assert_eq!(live.events.retention_days, requested);
         assert_eq!(live.events_revision, Some(loaded.revision));
+    }
+
+    #[tokio::test]
+    async fn output_settings_patch_commits_and_rejects_mixed_or_invalid_requests() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        use axum::extract::State;
+        use axum::http::StatusCode;
+        use axum::Json;
+        use bookclerk_library::control_plane::{
+            audit_count, bootstrap_control_plane, load_output, overlay_core_documents,
+            OUTPUT_NAMESPACE,
+        };
+        use bookclerk_library::LibraryStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        // The TOML seed: imported once, then ignored.
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[daemon]\nlisten = \"127.0.0.1:8787\"\n\n[daemon.auth]\nenabled = true\n\n\
+             [output]\nwidevine = true\nnaming_profile = \"classic\"\n",
+        )
+        .unwrap();
+        let mut cfg = bookclerk_config::Config::load(Some(dir.path().to_path_buf()), None).unwrap();
+        let db = bookclerk_plugin_database_sqlite::open(&dir.path().join("library.db"))
+            .await
+            .unwrap();
+        bookclerk_library::apply_host_schema(&db).await.unwrap();
+        let store = LibraryStore::from_connection(db);
+        let scratch = dir.path().join("cache");
+        let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg)
+            .await
+            .unwrap();
+        assert!(session.output.body.widevine);
+        overlay_core_documents(&mut cfg, &session);
+        let state = std::sync::Arc::new(crate::config_authority::control_plane_test_state(
+            store.clone(),
+            cfg,
+        ));
+        let patch = |settings: Vec<(&str, &str)>| {
+            super::patch_settings(
+                State(state.clone()),
+                Json(super::PatchSettingsRequest {
+                    settings: settings
+                        .into_iter()
+                        .map(|(key, value)| super::SettingsUpdate {
+                            key: key.into(),
+                            value: value.into(),
+                        })
+                        .collect(),
+                    expected_output_revision: None,
+                }),
+            )
+        };
+
+        let shown = super::get_settings(State(state.clone())).await.unwrap();
+        assert_eq!(
+            shown
+                .0
+                .settings
+                .get("output.naming_profile")
+                .map(String::as_str),
+            Some("classic")
+        );
+        assert_eq!(
+            shown.0.effective.get("output.revision").map(String::as_str),
+            Some("1")
+        );
+
+        let ok = patch(vec![
+            ("output.format", "single_mp3"),
+            ("output.multi_destination", "refetch_all"),
+        ])
+        .await
+        .expect("output-only patch");
+        assert_eq!(
+            ok.0.settings.get("output.format").map(String::as_str),
+            Some("single_mp3")
+        );
+        let loaded = load_output(&store).await.unwrap();
+        assert_eq!(loaded.revision, session.output.revision + 1);
+        assert_eq!(
+            loaded.body.format,
+            bookclerk_config::OutputFormat::SingleMp3
+        );
+        {
+            let live = state.config.read().await;
+            assert_eq!(
+                live.output.format,
+                bookclerk_config::OutputFormat::SingleMp3
+            );
+            assert_eq!(
+                live.output.multi_destination,
+                bookclerk_config::MultiDestinationMode::RefetchAll
+            );
+            assert_eq!(live.output_revision, Some(loaded.revision));
+        }
+        let audits = audit_count(&store, OUTPUT_NAMESPACE).await.unwrap();
+
+        // A client that read an older revision gets 409 and writes nothing.
+        let stale = super::patch_settings(
+            State(state.clone()),
+            Json(super::PatchSettingsRequest {
+                settings: vec![super::SettingsUpdate {
+                    key: "output.create_cue".into(),
+                    value: "true".into(),
+                }],
+                expected_output_revision: Some(session.output.revision),
+            }),
+        )
+        .await
+        .expect_err("stale expected revision");
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        assert_eq!(load_output(&store).await.unwrap(), loaded);
+        assert_eq!(audit_count(&store, OUTPUT_NAMESPACE).await.unwrap(), audits);
+
+        let mixed = patch(vec![
+            ("output.create_cue", "true"),
+            ("library.auto_acquire", "true"),
+        ])
+        .await
+        .expect_err("mixed authorities");
+        assert_eq!(mixed.status(), StatusCode::BAD_REQUEST);
+        let invalid = patch(vec![("output.cover_size", "huge")])
+            .await
+            .expect_err("invalid value");
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(load_output(&store).await.unwrap(), loaded);
+        assert_eq!(audit_count(&store, OUTPUT_NAMESPACE).await.unwrap(), audits);
+    }
+
+    #[tokio::test]
+    async fn output_settings_revision_tracks_the_document_not_the_applied_runtime() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        use axum::extract::State;
+        use axum::Json;
+        use bookclerk_library::control_plane::{
+            bootstrap_control_plane, load_output, overlay_core_documents, replace_output,
+            ConfigActor, OutputReplace,
+        };
+        use bookclerk_library::LibraryStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[daemon]\nlisten = \"127.0.0.1:8787\"\n\n[daemon.auth]\nenabled = true\n",
+        )
+        .unwrap();
+        let mut cfg = bookclerk_config::Config::load(Some(dir.path().to_path_buf()), None).unwrap();
+        let db = bookclerk_plugin_database_sqlite::open(&dir.path().join("library.db"))
+            .await
+            .unwrap();
+        bookclerk_library::apply_host_schema(&db).await.unwrap();
+        let store = LibraryStore::from_connection(db);
+        let scratch = dir.path().join("cache");
+        let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg)
+            .await
+            .unwrap();
+        overlay_core_documents(&mut cfg, &session);
+        let state = std::sync::Arc::new(crate::config_authority::control_plane_test_state(
+            store.clone(),
+            cfg,
+        ));
+
+        // Another host commits a new revision; this host has not applied it.
+        let mut body = session.output.body.clone();
+        body.set("output.create_cue", "true").unwrap();
+        let written = match replace_output(
+            &store,
+            &ConfigActor::Operator { id: "peer".into() },
+            session.output.revision,
+            &body,
+            "peer-write",
+        )
+        .await
+        .unwrap()
+        {
+            OutputReplace::Applied(doc) => doc,
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+
+        let shown = super::get_settings(State(state.clone())).await.unwrap().0;
+        assert_eq!(
+            shown.settings.get("output.create_cue").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(shown.output_revision, Some(written.revision));
+        assert_eq!(
+            shown.effective.get("output.revision").map(String::as_str),
+            Some(session.output.revision.to_string()).as_deref()
+        );
+
+        // The document revision the panel echoes back is accepted.
+        let saved = super::patch_settings(
+            State(state.clone()),
+            Json(super::PatchSettingsRequest {
+                settings: vec![super::SettingsUpdate {
+                    key: "output.download_pdf".into(),
+                    value: (!written.body.download_pdf).to_string(),
+                }],
+                expected_output_revision: shown.output_revision,
+            }),
+        )
+        .await
+        .expect("document revision is current")
+        .0;
+        let loaded = load_output(&store).await.unwrap();
+        assert_eq!(loaded.revision, written.revision + 1);
+        assert_eq!(saved.output_revision, Some(loaded.revision));
+        assert_ne!(loaded.body.download_pdf, written.body.download_pdf);
+        assert!(loaded.body.create_cue);
     }
 
     #[tokio::test]
@@ -6449,7 +7410,7 @@ mode = "deny"
         bookclerk_library::apply_host_schema(&db).await.unwrap();
         let store = LibraryStore::from_connection(db);
         let scratch = dir.path().join("cache");
-        let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg.events)
+        let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg)
             .await
             .unwrap();
         overlay_events(&mut cfg, &session.events, &session.cluster_id);
@@ -6568,6 +7529,8 @@ mode = "deny"
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
+            node_api_tls_bound: std::sync::OnceLock::new(),
+            library_swaps: tokio::sync::watch::Sender::new(0),
         });
 
         let page = super::list_books(

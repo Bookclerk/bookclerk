@@ -7,6 +7,10 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use bookclerk_library::control_plane::{
+    claim_routed_job, release_permits, renew_permits, Claimant, JobClaimLimits, JobClaimRequest,
+    RoutedJobClaim, SemaphorePermit,
+};
 use bookclerk_library::{JobRecord, JobResourceClass, JobState, LibraryError, LibraryStore};
 use tokio::time::MissedTickBehavior;
 use tracing::{info, warn};
@@ -40,7 +44,6 @@ pub async fn reconcile_on_startup(state: &AppState) -> anyhow::Result<()> {
     let reclaimed = library.reclaim_expired_leases().await?;
     let orphans = library.reconcile_orphaned_acquire_rows().await?;
     let cfg = state.config.read().await.clone();
-    let pruned = library.prune_terminal_jobs(cfg.jobs.retention_days).await?;
     let cache = cfg.download_cache_dir();
     let swept = sweep_orphan_temp_dirs(&library, &cache).await?;
     let stale_before = (chrono::Utc::now()
@@ -51,7 +54,7 @@ pub async fn reconcile_on_startup(state: &AppState) -> anyhow::Result<()> {
         .await?;
     info!(
         reclaimed,
-        orphans, pruned, swept, scans, "job queue reconciled at startup"
+        orphans, swept, scans, "job queue reconciled at startup"
     );
     Ok(())
 }
@@ -149,7 +152,6 @@ fn spawn_network_worker(state: Arc<AppState>, index: u32) {
                 warn!(error = %err, "lease reclaim failed");
             }
             let cfg = state.config.read().await.clone();
-            let _ = library.prune_terminal_jobs(cfg.jobs.retention_days).await;
             match library
                 .storage_scan_reclaim_terminal_page(scan_reclaim_after.as_deref(), 32)
                 .await
@@ -157,9 +159,34 @@ fn spawn_network_worker(state: Arc<AppState>, index: u32) {
                 Ok((_removed, next)) => scan_reclaim_after = next,
                 Err(err) => warn!(error = %err, "storage scan terminal reclaim failed"),
             }
-            match claim_with_replay(&library, &owner, cfg.jobs.lease_seconds).await {
-                Ok(Some(job)) => {
-                    run_claimed_job(state.clone(), &owner, job, cfg.jobs.lease_seconds).await;
+            // Without a node identity only jobs with no requirements are claimable.
+            let node_id = cfg
+                .paths
+                .as_ref()
+                .and_then(|paths| crate::node_queue::node_id(&paths.files_dir))
+                .unwrap_or_default();
+            let claim = JobClaimRequest {
+                resource_class: JobResourceClass::Network,
+                node_id: &node_id,
+                // This worker holds the library database: an owner node.
+                claimant: Claimant::Local,
+                owner: &owner,
+                lease_secs: cfg.jobs.lease_seconds,
+                limits: JobClaimLimits {
+                    class: cfg.jobs.concurrency.network.max(1),
+                    plugin_instance: cfg.jobs.concurrency.plugin_instance.max(1),
+                },
+                filter: None,
+            };
+            match claim_with_replay(&library, &claim).await {
+                Ok(Some(claimed)) => {
+                    run_claimed_job(
+                        state.clone(),
+                        claimed.job,
+                        claimed.permits,
+                        cfg.jobs.lease_seconds,
+                    )
+                    .await;
                     drop(permit);
                 }
                 Ok(None) => {
@@ -179,20 +206,23 @@ fn spawn_network_worker(state: Arc<AppState>, index: u32) {
     });
 }
 
-/// Claims the next network job, retrying a lost RPC with the same operation id.
+/// Claims the next network job this node can run, under the cluster
+/// semaphores, retrying an unavailable database.
 ///
-/// Replay is bounded so an unreachable database cannot hold the
-/// [`AppState::job_runtime`] read permit forever. After the budget the error
-/// is returned, the caller drops the permit, and an ambiguously claimed row
-/// expires for reclaim. A later loop iteration uses a new operation id.
+/// The routed claim only claims a job this node meets the requirements of
+/// and takes the job's cluster permits first (see
+/// `control_plane::claim_routed_job`). Its claim is a single CAS on the
+/// row's lease generation, so a replay after a lost response cannot claim
+/// the same row twice; a row it did claim before the response was lost
+/// stays unexecuted and expires for reclaim, and that attempt's permits
+/// expire with it. Replay is bounded so an unreachable database cannot hold
+/// the [`AppState::job_runtime`] read permit forever.
 async fn claim_with_replay(
     library: &LibraryStore,
-    owner: &str,
-    lease_secs: u64,
-) -> Result<Option<JobRecord>, LibraryError> {
-    let operation_id = Uuid::new_v4().to_string();
+    claim: &JobClaimRequest<'_>,
+) -> Result<Option<RoutedJobClaim>, LibraryError> {
     replay_until(
-        || library.claim_next_job(JobResourceClass::Network, owner, lease_secs, &operation_id),
+        || claim_routed_job(library, claim),
         Instant::now() + CLAIM_REPLAY_BUDGET,
         CLAIM_REPLAY_DELAY,
     )
@@ -200,14 +230,14 @@ async fn claim_with_replay(
 }
 
 /// Retries `claim` on [`LibraryError::Unavailable`] until `deadline`.
-async fn replay_until<F, Fut>(
+async fn replay_until<T, F, Fut>(
     mut claim: F,
     deadline: Instant,
     retry_delay: Duration,
-) -> Result<Option<JobRecord>, LibraryError>
+) -> Result<Option<T>, LibraryError>
 where
     F: FnMut() -> Fut,
-    Fut: Future<Output = Result<Option<JobRecord>, LibraryError>>,
+    Fut: Future<Output = Result<Option<T>, LibraryError>>,
 {
     loop {
         match claim().await {
@@ -293,8 +323,33 @@ fn classify_handler_failure(local_cancel: bool, operator_cancel: bool) -> Handle
     }
 }
 
-/// Heartbeats the lease while the handler runs, then completes or fails the row.
-async fn run_claimed_job(state: Arc<AppState>, _owner: &str, job: JobRecord, lease_secs: u64) {
+/// Runs a routed claim, then gives its cluster semaphore permits back.
+///
+/// The permits are released after the row is finalized (or the fence was
+/// found lost), so another node never runs past the limit while this one is
+/// still writing. A release that fails leaves the permits to expire.
+async fn run_claimed_job(
+    state: Arc<AppState>,
+    job: JobRecord,
+    permits: Vec<SemaphorePermit>,
+    lease_secs: u64,
+) {
+    let job_id = job.id.clone();
+    run_fenced_job(state.clone(), job, permits.clone(), lease_secs).await;
+    let library = state.library_snapshot().await;
+    if let Err(err) = release_permits(&library, &permits).await {
+        warn!(job_id = %job_id, error = %err, "releasing job semaphore permits failed; they expire with the lease");
+    }
+}
+
+/// Heartbeats the lease (and renews the job's cluster permits) while the
+/// handler runs, then completes or fails the row.
+async fn run_fenced_job(
+    state: Arc<AppState>,
+    job: JobRecord,
+    permits: Vec<SemaphorePermit>,
+    lease_secs: u64,
+) {
     let Some(fence) = job.fence() else {
         warn!(job_id = %job.id, "claimed job missing lease owner; skipping");
         return;
@@ -307,6 +362,8 @@ async fn run_claimed_job(state: Arc<AppState>, _owner: &str, job: JobRecord, lea
         lease_expires_at: job.lease_expires_at,
         checkpoint: job.payload.checkpoint.clone(),
         invocation_sequence: job.payload.invocation_sequence.unwrap_or(1).max(1),
+        host: None,
+        host_bindings: None,
     };
     if job.state == JobState::Cancelled || job.cancel_requested {
         ctx.request_cancel();
@@ -335,8 +392,13 @@ async fn run_claimed_job(state: Arc<AppState>, _owner: &str, job: JobRecord, lea
                         );
                     }
                 }
-                let classified =
-                    classify_heartbeat(library.heartbeat_job(&fence, lease_secs, None).await);
+                // A taken-over permit is a lost fence just like a lost lease:
+                // another node may now be running under that slot.
+                let renewed = match library.heartbeat_job(&fence, lease_secs, None).await {
+                    Ok(true) => renew_permits(&library, &permits, lease).await,
+                    other => other,
+                };
+                let classified = classify_heartbeat(renewed);
                 if let HeartbeatTick::Transient(err) = &classified {
                     warn!(
                         job_id = %fence.job_id,
@@ -702,7 +764,7 @@ mod tests {
             let runtime = runtime.clone();
             tokio::spawn(async move {
                 let _permit = runtime.read().await;
-                replay_until(
+                replay_until::<JobRecord, _, _>(
                     || async { Err(LibraryError::Unavailable("plugin down".into())) },
                     Instant::now() + Duration::from_millis(80),
                     Duration::from_millis(10),

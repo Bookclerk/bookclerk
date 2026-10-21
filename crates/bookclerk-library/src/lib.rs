@@ -79,15 +79,17 @@ pub use host_schema::{
     apply_host_schema, apply_host_schema_with_batch, apply_host_schema_with_batch_opts,
     apply_host_schema_with_options, current_schema_state, current_schema_state_in,
     current_schema_version, ensure_restore_target_is_replaceable, migrate_host_schema_to,
-    migrate_host_schema_to_with_batch, require_schema_migrations, SchemaApplyOptions, SchemaBatch,
+    migrate_host_schema_to_with_batch, require_schema_migrations, schema_state_compatible,
+    SchemaApplyOptions, SchemaBatch, MIGRATION_LEASE_TTL, MIGRATION_LEASE_WAIT,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use in_process_atomic::InProcessSqliteAtomic;
 pub use master_key::{
-    configure_master_key, configure_master_key_with, discard_minted_master_key, inspect_master_key,
-    master_key_fingerprint, master_key_path, require_master_key, resolve_master_key_detailed,
-    uncache_master_key, wrap_master_key, MasterKey, MasterKeyFormat, MasterKeyResolution,
-    AUTH_PASSWORD_ENV as MASTER_KEY_AUTH_PASSWORD_ENV,
+    configure_master_key, configure_master_key_with, discard_minted_master_key,
+    encode_master_key_file, inspect_master_key, install_master_key, master_key_fingerprint,
+    master_key_path, prepare_master_key_dir, require_master_key, resolve_master_key_detailed,
+    uncache_master_key, warn_unwrapped_master_key, wrap_master_key, MasterKey, MasterKeyFormat,
+    MasterKeyResolution, AUTH_PASSWORD_ENV as MASTER_KEY_AUTH_PASSWORD_ENV,
 };
 pub use migrations::{
     apply_plugin_migrations, binding_bootstrap_type_env, history_from_execute_reply,
@@ -96,8 +98,8 @@ pub use migrations::{
     plugin_history_session_matches, plugin_journal_has_entry, plugin_journal_select_request,
     prove_plugin_migration_sequence, require_history_prefix, sql_string_literal,
     PluginMigrationHistory, PluginMigrationSequence, ProvenPluginMigration,
-    BOOKCLERK_SCHEMA_NAMESPACE, MAX_PLUGIN_MIGRATION_APPLY_ATTEMPTS, SCHEMA_MIGRATIONS_DDL,
-    SCHEMA_VERSION,
+    BOOKCLERK_SCHEMA_NAMESPACE, CLUSTER_LEASES_DDL, MAX_PLUGIN_MIGRATION_APPLY_ATTEMPTS,
+    SCHEMA_MIGRATIONS_DDL, SCHEMA_VERSION,
 };
 pub use models::{
     catalog_subscribers_for_event, collapse_live_subscriber_nodes, content_kind_from_classic,
@@ -108,17 +110,17 @@ pub use models::{
     AccountRecord, AcquireStatus, BookRecord, ClaimTicketRecord, DomainEventRecord,
     EmbeddingRecord, EnqueueJobSpec, EnqueueOutcome, EventCatalogSubscription, EventDeliveryFence,
     EventDeliveryMetrics, EventDeliveryRecord, EventSubscriber, EventSubscriberCatalogRecord,
-    EventSubscriberNodeRecord, EventWakeGrant, GlobalQueueEntry, JobFence, JobKind, JobPayload,
-    JobRecord, JobResourceClass, JobState, JobTempPath, JobTrigger, ListeningProgressRecord,
-    OidcClientRecord, OperatorSessionRecord, PendingWakeProgress, PortalIdentity,
-    PortalSessionRecord, PublishDomainEventOutcome, PublishDomainEventSpec, QueueWisher,
-    RequestStatus, SecurityAuditEvent, StoredPasskey, TitleRequestRecord, TitleRequestSourceRecord,
-    UserIntegrationHint, UserInviteRecord, UserListeningHint, UserPreferences, UserPresenceExtras,
-    UserRecord, UserRole, UserSsoPicture, UserStatus, WishlistPurchaseHint, WishlistStoreEdition,
-    WorkRecord, CORE_EVENTS_QUEUE, EVENT_DELIVERY_MAX_ATTEMPTS, EVENT_RESOURCE_CLASS_NETWORK,
-    EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS, JOB_PAYLOAD_VERSION, MAX_QUEUE_NAME_LEN,
-    MAX_QUEUE_WISHERS, NODE_QUEUE_PREFIX, OPERATOR_PREFS_KEY, QUEUE_CONTENT_TYPE_BYTES,
-    QUEUE_CONTENT_TYPE_JSON, QUEUE_CONTENT_TYPE_TEXT,
+    EventSubscriberNodeRecord, EventWakeGrant, GlobalQueueEntry, JobClaimCursor, JobClaimPage,
+    JobFence, JobKind, JobPayload, JobRecord, JobResourceClass, JobState, JobTempPath, JobTrigger,
+    ListeningProgressRecord, OidcClientRecord, OperatorSessionRecord, PendingWakeProgress,
+    PortalIdentity, PortalSessionRecord, PublishDomainEventOutcome, PublishDomainEventSpec,
+    QueueWisher, RequestStatus, SecurityAuditEvent, StoredPasskey, TitleRequestRecord,
+    TitleRequestSourceRecord, UserIntegrationHint, UserInviteRecord, UserListeningHint,
+    UserPreferences, UserPresenceExtras, UserRecord, UserRole, UserSsoPicture, UserStatus,
+    WishlistPurchaseHint, WishlistStoreEdition, WorkRecord, CORE_EVENTS_QUEUE,
+    EVENT_DELIVERY_MAX_ATTEMPTS, EVENT_RESOURCE_CLASS_NETWORK, EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS,
+    JOB_PAYLOAD_VERSION, MAX_QUEUE_NAME_LEN, MAX_QUEUE_WISHERS, NODE_QUEUE_PREFIX,
+    OPERATOR_PREFS_KEY, QUEUE_CONTENT_TYPE_BYTES, QUEUE_CONTENT_TYPE_JSON, QUEUE_CONTENT_TYPE_TEXT,
 };
 pub use operator_token::{
     read_or_create_operator_token, resolve_operator_token, rotate_operator_token,
@@ -148,14 +150,14 @@ pub use sql_plan::{
     wake_page_for_max_binds, AtomicSession, CompiledAtomic,
 };
 pub use store::{
-    event_outbox::{deliver_after_for, prepare_publish_domain_event},
+    event_outbox::{deliver_after_for, prepare_publish_domain_event, EventPruneStep},
     fallback_work_key, inject_dispatch_page_failures,
     plugin_databases::PluginDatabaseRecord,
     plugin_kv::{KvEntry, KvListPage, KvPutOutcome, KvWriteSpec, KV_LIST_DEFAULT_LIMIT},
     prefer_enrichment_source, set_dispatch_chunk_for_test, wishlist_identities_match, BookPage,
     CatalogEnrichmentFields, LibraryStore, NewBook, NewListeningProgress, NewTitleRequest,
-    NewTitleRequestSource, NewWork, SavedFilterRecord, UserBookFields, WishlistIdentity,
-    BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT,
+    NewTitleRequestSource, NewWork, SavedFilterRecord, TitleFile, UserBookFields, WishlistIdentity,
+    ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT,
 };
 pub use text::{
     decode_html_entities, decode_html_entities_cow, decode_html_entities_in_place,
