@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Seal or open the OSV remediation bundle that jobs of one run pass along.
+# The fuzz-crash triage in cflite-batch.yml seals crash bundles the same way
+# with its own key (FUZZ_CRASH_BUNDLE_KEY).
 #
 # The OSV remediation workflow tests a lockfile bump with the full CI suite
 # before anything about it is public. Artifacts of a public repository can be
@@ -47,7 +49,7 @@ if [[ $# -ne 3 ]] || [[ "$1" != seal && "$1" != open ]]; then
   exit 1
 fi
 if [[ -z "${BUNDLE_KEY:-}" ]]; then
-  echo "osv-remediation-bundle: BUNDLE_KEY is empty (is OSV_REMEDIATION_BUNDLE_KEY set?)" >&2
+  echo "osv-remediation-bundle: BUNDLE_KEY is empty (is the caller's bundle key secret set?)" >&2
   exit 1
 fi
 

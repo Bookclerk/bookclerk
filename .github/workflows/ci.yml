@@ -157,6 +157,7 @@ jobs:
           "$PY" scripts/tests/test_envelope.py
           "$PY" scripts/tests/test_source_apk_probe.py
           "$PY" scripts/tests/test_osv_remediate.py
+          "$PY" scripts/tests/test_fuzz_crash_triage.py
 
       - name: Database plugin isolation
         run: python3 scripts/tests/test_db_plugin_isolation.py -q
