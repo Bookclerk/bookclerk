@@ -373,7 +373,7 @@ class FileFindingsTest(unittest.TestCase):
 
 
 class _Api(http.server.BaseHTTPRequestHandler):
-    """Canned REST API: a draft release only, issues in every state, and
+    """Canned REST API: drafts before a published release, issues in every state, and
     advisories split across two cursor pages linked by a ``Link`` header."""
 
     posts: ClassVar[list[tuple[str, dict[str, Any]]]] = []
@@ -394,8 +394,11 @@ class _Api(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         assert self.headers["Authorization"] == "Bearer tok"
         base = f"http://127.0.0.1:{self.server.server_port}"
-        if self.path.startswith("/repos/o/r/releases"):
-            self._send(200, [{"tag_name": "v0.9.0", "draft": True}])
+        if self.path.startswith("/repos/o/r/releases?per_page=100&page=2"):
+            self._send(200, [{"tag_name": "v0.8.0", "draft": False}])
+        elif self.path.startswith("/repos/o/r/releases"):
+            link = f'<{base}/repos/o/r/releases?per_page=100&page=2>; rel="next"'
+            self._send(200, [{"tag_name": "v0.9.0", "draft": True}], link)
         elif self.path.startswith("/repos/o/r/issues"):
             assert "state=all" in self.path and "labels=fuzz-crash" in self.path
             self._send(
@@ -432,7 +435,8 @@ class GitHubClientTest(unittest.TestCase):
         thread.start()
         try:
             gh = triage.GitHub("o/r", "tok", f"http://127.0.0.1:{server.server_port}")
-            self.assertIsNone(gh.latest_release_tag())
+            # The only published release sits behind a page of drafts.
+            self.assertEqual(gh.latest_release_tag(), "v0.8.0")
             issues, advisories = gh.known_signatures()
             self.assertEqual(issues, {"1" * 64, "3" * 64})
             self.assertEqual(advisories, {"2" * 64, "6" * 64})

@@ -919,8 +919,7 @@ class GitHub:
         Returns:
             The tag, or None when the repository has no published release.
         """
-        _, releases, _ = self.request("GET", f"/repos/{self.repo}/releases?per_page=20")
-        for release in releases or []:
+        for release in self.paginate(f"/repos/{self.repo}/releases"):
             if not release.get("draft"):
                 return str(release["tag_name"])
         return None
