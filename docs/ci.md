@@ -304,7 +304,7 @@ ride beside each binary.
 | Workflow | When | What |
 | --- | --- | --- |
 | `cflite-pr.yml` | PRs touching `fuzz/`, the fuzzed crates, or the ClusterFuzzLite config | 10 min, AddressSanitizer, code-change mode; fails on a new crash |
-| `cflite-batch.yml` | daily + `workflow_dispatch` | 45 min batch fuzzing split across targets, then corpus pruning and a coverage report (kept as Actions artifacts) |
+| `cflite-batch.yml` | daily + `workflow_dispatch` | 45 min batch fuzzing split across targets, private [crash triage](#fuzz-crash-triage), then corpus pruning and a coverage report (kept as Actions artifacts) |
 
 A crash found by the scheduled run is handled as a security report: fix
 first, then land the minimized input as `fuzz/corpus/<target>/regression_*`
@@ -314,9 +314,74 @@ Build config lives in `.clusterfuzzlite/` (`Dockerfile`, `build.sh`,
 `project.yaml`). To add a target: a `[[bin]]` in `fuzz/Cargo.toml`, a seed
 directory under `fuzz/corpus/`, a `test_input` route in
 `scripts/ci_plan/relations.toml`, a replay test in the owning crate, the
-crate on `cflite-pr.yml`'s path filter, and a row above. `build.sh`
+crate on `cflite-pr.yml`'s path filter, a row above, and an entry in
+`fuzz/boundaries.toml` ([triage](#fuzz-crash-triage)). `build.sh`
 packages every target `cargo fuzz list` reports. Reproduce locally with
 `cargo +nightly fuzz run <target>` from `fuzz/` (needs `capnp` on `PATH`).
+
+#### Fuzz-crash triage
+
+Job logs and artifacts of this public repository are readable by anyone, and
+the stock ClusterFuzzLite `run_fuzzers` action prints each crash's stack and
+libFuzzer output (small crashing inputs included) to the log and uploads the
+reproducer as an artifact. The scheduled workflow therefore never uses it:
+
+1. `batch`, `prune` and `coverage` run the same pinned run-fuzzers image
+   through `.github/actions/cflite-private-run`, which runs
+   `scripts/fuzz-crash-triage.py run`: the image's own mode, with its output
+   in a private log and its crash upload disabled. Corpus and coverage
+   artifacts are unchanged, so PR fuzzing is too. The log shows a crash count.
+   Timeout inputs are kept (`REPORT_TIMEOUTS`) so triage sees them. Every
+   scheduled build sets `bad-build-check: false`, because that check runs
+   each target briefly and prints its output to the log.
+2. When `batch` kept crashes, it seals them with its log
+   (`FUZZ_CRASH_BUNDLE_KEY`, `scripts/osv-remediation-bundle.sh`) as the
+   `fuzz-crashes-<sanitizer>` artifact (7 days).
+3. `triage` rebuilds the fuzzers from the same commit and runs
+   `fuzz-crash-triage.py reproduce` in the same image: each crash is re-run
+   (dropped unless it reproduces), minimized with `-minimize_crash`,
+   classified (sanitizer error, panic, stack overflow, out of memory,
+   timeout, leak, or a failed oracle: a panic raised from code under
+   `fuzz/`) and deduplicated by target, kind and the top three frames of the
+   code under test (a crash with no usable frames, such as a wall-clock
+   timeout, is keyed by its input instead, so unrelated ones stay apart).
+   The output is sealed as `fuzz-triage-<sanitizer>` (90 days).
+4. `fuzz-crash-triage.py file`, with the [automation App](#automation-app)
+   token, files each signature not already on record (a hidden
+   `<!-- fuzz-crash-signature: … -->` marker in an open `fuzz-crash` issue
+   or in any repository advisory):
+   - **Draft security advisory** when a release is published (prereleases
+     count, drafts do not) and the crash is not an oracle failure. The draft
+     is private: it carries the stack, the reproducer (base64, up to 4 KiB)
+     and a reproduce command; affected packages are the target's artifacts
+     from `fuzz/boundaries.toml`, with a proposed range `<= <newest tag>`
+     that a maintainer confirms (the crash reproduced on `main`, not on the
+     release). Default severity: high for memory-safety errors (and anything
+     unrecognized; the advisory asks for the fix in a temporary private
+     fork, which a maintainer starts, since that needs the Administration
+     permission the App does not have), medium for a
+     denial of service in host code, low inside a guest or for a leak. A
+     maintainer reviews and publishes.
+   - **Issue** otherwise. Before the first release no shipped artifact can be
+     affected, so a crash gets an issue that names only its signature and the
+     sealed bundle (no target or class that would point at unfixed code). A
+     failed oracle (a panic raised from `fuzz/fuzz_targets/` or
+     `fuzz/oracles/`) is a bug rather than a vulnerability, so its issue also
+     names the target and boundary. An issue closed as completed does not
+     suppress a later identical crash (a regression); one closed as not
+     planned or duplicate does.
+
+`fuzz/boundaries.toml` maps every target to its crate, who controls its input,
+whether it runs host-side, and which shipped artifacts contain it;
+`scripts/tests/test_fuzz_crash_triage.py` fails when a target in
+`fuzz/Cargo.toml` or in the table above lacks an entry, so adding a target
+means adding one there too.
+To read a bundle, download the artifact and run
+`BUNDLE_KEY=<passphrase> scripts/osv-remediation-bundle.sh open sealed.bin <dir>`.
+A new sanitizer needs a matrix entry in both jobs; a new
+run-fuzzers image digest must be bumped in the action and in `triage`
+together, and re-tested, because the wrapper patches one method of the
+image's Python package (it refuses to fuzz when that method is missing).
 
 The scheduled **workerd pin bump** job (`.github/workflows/workerd-pin-bump.yml`)
 also compiles `bookclerk-workerd` / `bookclerk-plugin-abi`, so it installs
@@ -464,6 +529,7 @@ App as [Dependabot auto-merge](#dependabot-auto-merge) instead of
 | `graphicaudio-api-probe.yml` | `api-drift` issue; `api-drift/graphicaudio` branch and pull request |
 | `chirp-api-probe.yml` | `api-drift` issue; `api-drift/chirp` branch and pull request |
 | `osv-remediate.yml` | reads OSV code-scanning alerts; `deps/osv-remediation` branch, pull request, auto-merge |
+| `cflite-batch.yml` | `fuzz-crash` issues; draft repository security advisories once a release exists ([triage](#fuzz-crash-triage)) |
 
 The probes share `.github/actions/api-drift-report`: one open issue per source
 (found by a hidden `<!-- api-drift:<source> -->` marker and updated in place,
@@ -485,6 +551,8 @@ attributed to the App.
    - **Issues: read and write** (file and update drift issues, add labels)
    - **Code scanning alerts: read** (`osv-remediate.yml` reads the OSV
      alerts on `main`)
+   - **Repository security advisories: read and write**
+     (`cflite-batch.yml` files draft advisories and dedupes against them)
    - **Metadata: read** (always granted)
 
    **Workflows** is not needed: none of these pull requests touch
@@ -497,6 +565,10 @@ attributed to the App.
    `OSV_REMEDIATION_BUNDLE_KEY`: a random passphrase (for example
    `openssl rand -base64 32`). It only encrypts the bump while CI tests it;
    rotating it affects nothing but a run already in progress.
+4. For `cflite-batch.yml`, add `FUZZ_CRASH_BUNDLE_KEY`, generated the same
+   way and kept by maintainers: it seals crash bundles that are read after
+   the run. Without it a run that finds a crash fails before uploading
+   anything.
 
 ### OSV remediation
 
