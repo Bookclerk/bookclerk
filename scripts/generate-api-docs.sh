@@ -195,7 +195,7 @@ fi
 
 if [[ "${SKIP_PYTHON:-0}" != "1" ]] && [[ "$DO_PYTHON" -eq 1 ]]; then
   echo "==> pdoc (bookclerk-plugin-sdk)"
-  VENV="${ROOT}/.tmp/api-docs-venv"
+  VENV="${ROOT}/target/api-docs-venv"
   # pdoc and its dependencies at the versions pinned in uv.lock (the lockfile
   # the dependency scans read); a no-op when the venv is already in sync. The
   # SDK itself is documented from its source tree, not built.

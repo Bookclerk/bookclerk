@@ -7,17 +7,16 @@
 #   git config --global gpg.format ssh
 #   git config --global user.signingkey "key::ssh-ed25519 AAAA…"
 #   git config --global commit.gpgsign true
-# Cursor/VS Code copies ~/.gitconfig into the container.
+# The editor's Dev Containers support copies ~/.gitconfig into the container.
 #
 # This script only:
-#   1. Refuses to touch Cursor Cloud HSM wiring
-#   2. Ensures an SSH agent socket is available (private key stays on the host)
-#   3. Writes project-local (.git/config) tweaks so Dev Container expectations
-#      stay in-repo and never rewrite Cloud's global HSM gitconfig
-#   4. Optionally applies GIT_* / GIT_SSH_SIGNING_PUBKEY when set
+#   1. Ensures an SSH agent socket is available (private key stays on the host)
+#   2. Writes project-local (.git/config) tweaks so Dev Container expectations
+#      stay in-repo and never rewrite the global gitconfig
+#   3. Optionally applies GIT_* / GIT_SSH_SIGNING_PUBKEY when set
 #
-# Cloud Agent Builds never run this (Dev Container postStart only). The shared
-# Dockerfile and .cursor/cloud-agent-install.sh do not call git config.
+# Runs as the Dev Container postStart command only; the Dockerfile does not
+# call git config.
 set -euo pipefail
 
 log() { printf 'devcontainer git-signing: %s\n' "$*"; }
@@ -31,16 +30,6 @@ expand_path() {
     printf '%s\n' "${p}"
   fi
 }
-
-# --- Cloud / HSM isolation -------------------------------------------------
-if [[ "$(git config --global --get gpg.ssh.program 2>/dev/null || true)" == *cursor-git-ssh-keygen* ]]; then
-  log "Cursor HSM gpg.ssh.program present; refusing to modify git config"
-  exit 0
-fi
-if [[ -x /root/.cursor/bin/cursor-git-ssh-keygen && "${HOME:-}" == /root ]]; then
-  log "Cloud Agent home detected; refusing to modify git config"
-  exit 0
-fi
 
 BOOKCLERK_GIT_DIR="${HOME}/.config/bookclerk"
 BOOKCLERK_ENV="${BOOKCLERK_GIT_DIR}/agent.env"

@@ -4,21 +4,9 @@ Bookclerk’s Dev Container gives a controlled Linux build environment (Debian
 Bookworm + Rust + OpenSSL headers + Node) so local hosts without `libssl-dev`
 (or with mismatched toolchains) can still compile.
 
-The same Dockerfile is shared with Cursor Cloud Agents
-([`.devcontainer/Dockerfile`](../.devcontainer/Dockerfile), referenced from
-[`.cursor/environment.json`](../.cursor/environment.json)). The image must
-**not** set `WORKDIR /workspace` or bake `CARGO_*` / `TMPDIR` under
-`/workspace` — Cursor clones the repo there at runtime; workspace cache paths
-are set by Dev Container `remoteEnv` or
-[`.cursor/cloud-agent-install.sh`](../.cursor/cloud-agent-install.sh).
-
-When **Environment Builds** are enabled in the Cursor dashboard, new agents
-boot only from a **healthy SYSTEM/RECURRING** build of the default branch.
-Agent-triggered draft builds never become that baseline. If Builds is on and
-the Builds tab shows `no_healthy_builds` (or only failed SYSTEM / draft-only
-successes), disable Builds until a green default-branch SYSTEM build exists —
-otherwise new agents fall into a long cold install and can appear stuck
-without a usable checkout/branch.
+The image is [`.devcontainer/Dockerfile`](../.devcontainer/Dockerfile). It must
+**not** set `WORKDIR` or bake `CARGO_*` paths under the workspace; workspace
+cache paths are set by the Dev Container `remoteEnv`.
 
 The workspace is **bind-mounted**. Cargo writes into the repo’s `target/` and
 `.cargo-home/` (registry/git), and Vite into `ui/dist/`. `target/debug` and
@@ -63,48 +51,38 @@ BOOKCLERK_UI_DIST="$PWD/ui/dist" \
 Windows/macOS hosts can build here but cannot execute the resulting ELF binaries
 natively.
 
-## Open in Cursor / VS Code
+## Open in your editor
 
-1. Install the **Dev Containers** extension (Cursor: same Marketplace id as VS Code).
+1. Install your editor's **Dev Containers** support.
 2. Command Palette → **Dev Containers: Reopen in Container**.
 3. Wait for the image build and `postCreateCommand` (`cargo fetch`, `ui` `npm ci`).
 
-Definition: [`.devcontainer/`](../.devcontainer/).
+Definition: [`.devcontainer/`](../.devcontainer/). The container config sets
+the rust-analyzer options the project expects (`rust-analyzer.check.command =
+"clippy"`, `cargo.allFeatures = false`) and recommends extensions; the repo
+commits only [`.vscode/extensions.json`](../.vscode/extensions.json), never
+editor settings.
 
-## Host Cursor without a container
+## Building on the host without a container
 
-Local host terminals and local Cursor share default `~/.cargo` (do **not** export
-`CARGO_HOME` in `.vscode/settings.json`). Workspace `target/`, `.tmp/`, and
+Local host terminals use the default `~/.cargo`. Workspace `target/` and
 `BookclerkFiles/` come from [`.cargo/config.toml`](../.cargo/config.toml)
-relative values, which Cargo discovers in every environment.
+relative values, which Cargo discovers in every environment. To match the
+editor setup outside the container, set rust-analyzer's check command to
+`clippy` in your own settings, and add `target/debug` to `PATH` if you want to
+run host binaries without `cargo run`.
 
-Workspace `.cargo-home/` is **Dev Container / Cloud `CARGO_HOME`** so the
-registry survives image rebuilds when `$HOME` is inside the container (not the
-bind mount). Cloud Agents clone to `/workspace`; they do not honor a custom
-`workspaceFolder` under `$HOME`.
-
-| Mechanism | What it covers |
-| --- | --- |
-| [`.cargo/config.toml`](../.cargo/config.toml) | `target/`, `.tmp/`, `BookclerkFiles/` (host, IDE, container) |
-| Dev Container `remoteEnv` / [cloud-agent-install.sh](../.cursor/cloud-agent-install.sh) | `CARGO_HOME=<workspace>/.cargo-home` on the bind mount |
-| [`scripts/workspace-env.sh`](../scripts/workspace-env.sh) | Optional source / Cloud install helper (sets workspace `CARGO_HOME`) |
-| [`scripts/rustup-argv0-wrapper.sh`](../scripts/rustup-argv0-wrapper.sh) | Host `~/.local/bin` cargo/rustup shims: Cursor argv0 + `~/` expansion only |
-| [`.vscode/settings.json`](../.vscode/settings.json) | **bookclerk** terminal profile prepends `target/debug` to `PATH` (no `CARGO_HOME`) |
-
-Cursor may interpolate `${workspaceFolder}` in `terminal.integrated.env` as
-`~/…`. Cargo and GNU `config.guess` do not expand tilde, which yields
-`$PWD/~/Projects/…/target` and `cannot create a temporary directory in ~/…/.tmp`.
-Do **not** set `CARGO_TARGET_DIR`, `TMPDIR`, or `CARGO_HOME` there.
-
-`.cargo/config.toml` cannot set `CARGO_HOME` for Cargo’s own registry — that
-variable is read before project config. Local IDE/host leave it unset;
-containers export an absolute workspace path via `remoteEnv`.
+Workspace `.cargo-home/` is the Dev Container's `CARGO_HOME`, so the registry
+survives image rebuilds when `$HOME` is inside the container (not the bind
+mount). `.cargo/config.toml` cannot set `CARGO_HOME` for Cargo's own registry
+(that variable is read before project config), so the container exports an
+absolute workspace path via `remoteEnv`.
 
 ## What is installed
 
 | Piece | Notes |
 | --- | --- |
-| `rust:1.85-bookworm` | Shared with Cloud Agents; `rust-toolchain.toml` selects `stable` + rustfmt/clippy |
+| `rust:1.85-bookworm` | `rust-toolchain.toml` selects `stable` + rustfmt/clippy |
 | `pkg-config` + `libssl-dev` | Fixes the local OpenSSL / `openssl-sys` failure mode |
 | `capnproto` | Compiles `schema/plugin.capnp` (plugin ABI native RPC) |
 | `libdbus-1-dev` + `xdg-utils` | Linux tray (`ksni` / zbus) and `xdg-open` for “Open Bookclerk” |
@@ -117,10 +95,7 @@ containers export an absolute workspace path via `remoteEnv`.
 ## SSH commit signing (Dev Container)
 
 **Typical setup is ordinary host `git config`** — not environment variables.
-Cursor/VS Code copies your host `~/.gitconfig` into the Dev Container. Cloud
-Agent Builds never run the Dev Container `postStart` helper and use a different
-home directory (`/root`) plus Cursor’s HSM wiring, so Dev Container overlays
-cannot clobber Cloud signing.
+Dev Containers support copies your host `~/.gitconfig` into the container.
 
 ### Host (authoritative)
 
@@ -139,13 +114,13 @@ git config --global commit.gpgsign true
 Then reopen the Dev Container. [`git-signing.sh`](../.devcontainer/git-signing.sh)
 only ensures `SSH_AUTH_SOCK` reaches a usable agent (`ssh-add -l` succeeds) and
 applies project-local (`.git/config`) tweaks when needed (e.g. host
-`user.signingkey` path missing in the container). It never rewrites Cloud’s
-global HSM gitconfig.
+`user.signingkey` path missing in the container). It never rewrites the global
+gitconfig.
 
 ### Optional env overrides
 
 `remoteEnv` still forwards these from the host when set (empty = ignored). They
-are applied with `git config --local` (repo `.git/config`), not Cloud global:
+are applied with `git config --local` (repo `.git/config`), not globally:
 
 | Host env var | Purpose |
 | --- | --- |
@@ -157,13 +132,11 @@ are applied with `git config --local` (repo `.git/config`), not Cloud global:
 
 | Source | How the agent reaches the container |
 | --- | --- |
-| Default `devcontainer.json` | Cursor/VS Code SSH-agent forwarder when it works |
+| Default `devcontainer.json` | The editor's SSH-agent forwarder when it works |
 | Linux desktop config | Bind-mounts host `${SSH_AUTH_SOCK}` → `/run/host-services/ssh-auth.sock` |
 | macOS Docker Desktop (optional) | Magic `/run/host-services/ssh-auth.sock` — mount if the IDE forwarder is empty |
 
-Cloud Agents keep Cursor HSM (`gpg.ssh.program=cursor-git-ssh-keygen`); the
-helper refuses to modify config when that is present. Do not put private keys
-in the image, `remoteEnv`, or the repo.
+Do not put private keys in the image, `remoteEnv`, or the repo.
 
 ## Common commands (in the container)
 

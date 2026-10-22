@@ -1,9 +1,9 @@
 //! Unix-domain listeners that stay under `sockaddr_un` limits.
 //!
-//! Cargo sets `TMPDIR` to workspace `.tmp` (see `.cargo/config.toml`).
-//! On GitHub Actions that prefix is already ~42 bytes
-//! (`/home/runner/work/bookclerk/bookclerk/.tmp`). Plugin scratch plus a
-//! workerd leaf used to overflow Linux's 108-byte `sun_path`.
+//! A host's temp or plugin-state directory can sit under a long prefix (a
+//! checkout under `/home/runner/work/bookclerk/bookclerk/` on GitHub Actions is
+//! already ~38 bytes). Plugin scratch plus a workerd leaf used to overflow
+//! Linux's 108-byte `sun_path`.
 //!
 //! Linux GRANTED (workerd ↔ launcher) stays `unix-abstract:` — workerd is a
 //! child of this launcher, not a sibling guest. Other Unix: bind a pathname
