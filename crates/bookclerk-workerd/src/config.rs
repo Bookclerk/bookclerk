@@ -1849,7 +1849,7 @@ runtime = "workerd"
 entrypoints = ["cli"]
 
 [workerd]
-compatibility_date = "2026-09-30"
+compatibility_date = "2099-12-31"
 main_module = "index.js"
 modules_dir = "modules"
 entrypoint = "default"
@@ -1877,7 +1877,7 @@ mode = "deny"
             "workerd config should run at the pin:\n{capnp}"
         );
         assert!(
-            !capnp.contains("2026-09-30"),
+            !capnp.contains("2099-12-31"),
             "requested date must not be passed to workerd:\n{capnp}"
         );
     }

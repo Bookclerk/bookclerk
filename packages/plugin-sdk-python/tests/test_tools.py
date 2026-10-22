@@ -880,7 +880,7 @@ def test_materialize_falls_back_when_compatibility_date_is_newer_than_pin(
             "runtime": "workerd",
             "entrypoints": ["cli"],
             "workerd": {
-                "compatibility_date": "2026-09-30",
+                "compatibility_date": "2099-12-31",
                 "main_module": "index.js",
                 "modules_dir": "modules",
                 "entrypoint": "default",
@@ -892,7 +892,7 @@ def test_materialize_falls_back_when_compatibility_date_is_newer_than_pin(
     )
     text = generated.config_path.read_text(encoding="utf-8")
     assert f'compatibilityDate = "{WORKERD_PIN_COMPAT_DATE}"' in text
-    assert "2026-09-30" not in text
+    assert "2099-12-31" not in text
     assert "Falling back" in capsys.readouterr().err
 
 
