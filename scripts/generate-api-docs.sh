@@ -17,7 +17,7 @@
 #   --rust-package <name>   Include this Cargo package in rustdoc
 #   --typescript-sdk        TypeDoc for packages/plugin-sdk
 #   --ui                    TypeDoc for ui/
-#   --python                pdoc for packages/plugin-sdk-python
+#   --python                pdoc for packages/plugin-sdk-python (needs uv)
 #   --all                   All backends (workspace rustdoc)
 #   --check                 Write to a temp dir; do not dirty docs/api/
 #
@@ -196,14 +196,14 @@ fi
 if [[ "${SKIP_PYTHON:-0}" != "1" ]] && [[ "$DO_PYTHON" -eq 1 ]]; then
   echo "==> pdoc (bookclerk-plugin-sdk)"
   VENV="${ROOT}/.tmp/api-docs-venv"
-  if [[ ! -x "$VENV/bin/pdoc" ]]; then
-    "$PYTHON" -m venv "$VENV"
-    "$VENV/bin/pip" -q install -U pip
-    "$VENV/bin/pip" -q install -e "packages/plugin-sdk-python[docs]"
-  fi
+  # pdoc and its dependencies at the versions pinned in uv.lock (the lockfile
+  # the dependency scans read); a no-op when the venv is already in sync. The
+  # SDK itself is documented from its source tree, not built.
+  UV_PROJECT_ENVIRONMENT="$VENV" uv sync --quiet --no-install-project \
+    --project packages/plugin-sdk-python --locked --extra docs --python "$PYTHON"
   rm -rf "$PY_OUT"
   mkdir -p "$PY_OUT"
-  "$VENV/bin/pdoc" \
+  PYTHONPATH="$ROOT/packages/plugin-sdk-python/src" "$VENV/bin/pdoc" \
     -o "$PY_OUT" \
     --docformat google \
     bookclerk_plugin_sdk
