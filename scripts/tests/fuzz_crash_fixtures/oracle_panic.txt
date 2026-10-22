@@ -1,0 +1,91 @@
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 1484698738
+INFO: Loaded 1 modules   (370 inline 8-bit counters): 370 [0x55eb81583ec0, 0x55eb81584032), 
+INFO: Loaded 1 PC tables (370 PCs): 370 [0x55eb81584038,0x55eb81585758), 
+/out/sample_target: Running 1 inputs 1 time(s) each.
+Running: /crashes/artifacts/sample_target/address/crash-c53d2f1a9a8499bcb477be56c31caa5c76ae60f5
+
+thread '<unnamed>' (19) panicked at fuzz_targets/sample_target.rs:7:17:
+index out of bounds: the len is 0 but the index is 4
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/5d8fec0669a64607db9ccbf663e7c23125bf4748/library/std/src/panicking.rs:676:5
+   1: core::panicking::panic_fmt
+             at /rustc/5d8fec0669a64607db9ccbf663e7c23125bf4748/library/core/src/panicking.rs:80:14
+   2: core::panicking::panic_bounds_check
+             at /rustc/5d8fec0669a64607db9ccbf663e7c23125bf4748/library/core/src/panicking.rs:271:5
+   3: <usize as core::slice::index::SliceIndex<[u8]>>::index
+             at /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/index.rs:238:10
+   4: <[u8] as core::ops::index::Index<usize>>::index
+             at /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/index.rs:19:15
+   5: <alloc::vec::Vec<u8> as core::ops::index::Index<usize>>::index
+             at /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:4047:9
+   6: sample_target::parse
+             at /src/bookclerk/fuzz/fuzz_targets/sample_target.rs:7:17
+   7: rust_fuzzer_test_input
+             at /rust/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.13/src/lib.rs:276:60
+   8: libfuzzer_sys::test_input_wrap::{closure#0}
+             at /rust/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.13/src/lib.rs:62:9
+   9: std::panicking::catch_unwind::do_call::<libfuzzer_sys::test_input_wrap::{closure#0}, i32>
+             at /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:573:43
+  10: __rust_try
+  11: std::panicking::catch_unwind::<i32, libfuzzer_sys::test_input_wrap::{closure#0}>
+             at /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:541:19
+  12: std::panic::catch_unwind::<libfuzzer_sys::test_input_wrap::{closure#0}, i32>
+             at /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panic.rs:359:14
+  13: LLVMFuzzerTestOneInput
+             at /rust/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.13/src/lib.rs:60:22
+  14: ExecuteCallback
+             at /src/llvm-project/compiler-rt/lib/fuzzer/FuzzerLoop.cpp:619:13
+  15: RunOneTest
+             at /src/llvm-project/compiler-rt/lib/fuzzer/FuzzerDriver.cpp:329:6
+  16: FuzzerDriver
+             at /src/llvm-project/compiler-rt/lib/fuzzer/FuzzerDriver.cpp:865:9
+  17: main
+             at /src/llvm-project/compiler-rt/lib/fuzzer/FuzzerMain.cpp:20:10
+  18: __libc_start_main
+  19: _start
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+AddressSanitizer:DEADLYSIGNAL
+=================================================================
+==19==ERROR: AddressSanitizer: ABRT on unknown address 0x000000000013 (pc 0x7f58eb95c00b bp 0x7ffd850ab2a0 sp 0x7ffd850ab050 T0)
+SCARINESS: 10 (signal)
+    #0 0x7f58eb95c00b in raise (/lib/x86_64-linux-gnu/libc.so.6+0x4300b) (BuildId: 5792732f783158c66fb4f3756458ca24e46e827d)
+    #1 0x7f58eb93b858 in abort (/lib/x86_64-linux-gnu/libc.so.6+0x22858) (BuildId: 5792732f783158c66fb4f3756458ca24e46e827d)
+    #2 0x55eb813cce39 in std::sys::pal::unix::abort_internal /rustc/5d8fec0669a64607db9ccbf663e7c23125bf4748/library/std/src/sys/pal/unix/mod.rs:300:14
+    #3 0x55eb813cce08 in std::process::abort /rustc/5d8fec0669a64607db9ccbf663e7c23125bf4748/library/std/src/process.rs:2639:5
+    #4 0x55eb813c7b14 in libfuzzer_sys::initialize::{closure#0} /rust/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.13/src/lib.rs:94:9
+    #5 0x55eb81514621 in <alloc::boxed::Box<dyn for<'a, 'b> core::ops::function::Fn<(&'a std::panic::PanicHookInfo<'b>,), Output = ()> + core::marker::Sync + core::marker::Send> as core::ops::function::Fn<(&std::panic::PanicHookInfo,)>>::call /rustc/5d8fec0669a64607db9ccbf663e7c23125bf4748/library/alloc/src/boxed.rs:2482:9
+    #6 0x55eb81514621 in std::panicking::panic_with_hook /rustc/5d8fec0669a64607db9ccbf663e7c23125bf4748/library/std/src/panicking.rs:819:13
+    #7 0x55eb81503821 in std::panicking::panic_handler::{closure#0} /rustc/5d8fec0669a64607db9ccbf663e7c23125bf4748/library/std/src/panicking.rs:685:13
+    #8 0x55eb814fcbe8 in std::sys::backtrace::__rust_end_short_backtrace::<std::panicking::panic_handler::{closure#0}, !> /rustc/5d8fec0669a64607db9ccbf663e7c23125bf4748/library/std/src/sys/backtrace.rs:182:18
+    #9 0x55eb81503d5c in __rustc::rust_begin_unwind /rustc/5d8fec0669a64607db9ccbf663e7c23125bf4748/library/std/src/panicking.rs:676:5
+    #10 0x55eb813cd43b in core::panicking::panic_fmt /rustc/5d8fec0669a64607db9ccbf663e7c23125bf4748/library/core/src/panicking.rs:80:14
+    #11 0x55eb813cd28b in core::panicking::panic_bounds_check /rustc/5d8fec0669a64607db9ccbf663e7c23125bf4748/library/core/src/panicking.rs:271:5
+    #12 0x55eb81493150 in <usize as core::slice::index::SliceIndex<[u8]>>::index /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/index.rs:238:10
+    #13 0x55eb81493150 in <[u8] as core::ops::index::Index<usize>>::index /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/index.rs:19:15
+    #14 0x55eb81493150 in <alloc::vec::Vec<u8> as core::ops::index::Index<usize>>::index /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:4047:9
+    #15 0x55eb81493150 in sample_target::parse /src/bookclerk/fuzz/fuzz_targets/sample_target.rs:7:17
+    #16 0x55eb81494bec in rust_fuzzer_test_input /rust/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.13/src/lib.rs:276:60
+    #17 0x55eb814958c4 in libfuzzer_sys::test_input_wrap::{closure#0} /rust/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.13/src/lib.rs:62:9
+    #18 0x55eb814958c4 in std::panicking::catch_unwind::do_call::<libfuzzer_sys::test_input_wrap::{closure#0}, i32> /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:573:43
+    #19 0x55eb814962a8 in __rust_try libfuzzer_sys.19e91800051edf2f-cgu.0
+    #20 0x55eb814951fd in std::panicking::catch_unwind::<i32, libfuzzer_sys::test_input_wrap::{closure#0}> /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:541:19
+    #21 0x55eb814951fd in std::panic::catch_unwind::<libfuzzer_sys::test_input_wrap::{closure#0}, i32> /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panic.rs:359:14
+    #22 0x55eb814951fd in LLVMFuzzerTestOneInput /rust/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.13/src/lib.rs:60:22
+    #23 0x55eb814b1d5d in fuzzer::Fuzzer::ExecuteCallback(unsigned char const*, unsigned long) /src/llvm-project/compiler-rt/lib/fuzzer/FuzzerLoop.cpp:619:13
+    #24 0x55eb8149cc12 in fuzzer::RunOneTest(fuzzer::Fuzzer*, char const*, unsigned long) /src/llvm-project/compiler-rt/lib/fuzzer/FuzzerDriver.cpp:329:6
+    #25 0x55eb814a2ae0 in fuzzer::FuzzerDriver(int*, char***, int (*)(unsigned char const*, unsigned long)) /src/llvm-project/compiler-rt/lib/fuzzer/FuzzerDriver.cpp:865:9
+    #26 0x55eb814cd252 in main /src/llvm-project/compiler-rt/lib/fuzzer/FuzzerMain.cpp:20:10
+    #27 0x7f58eb93d082 in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x24082) (BuildId: 5792732f783158c66fb4f3756458ca24e46e827d)
+    #28 0x55eb813ce72d in _start (/out/sample_target+0x1d72d)
+
+DEDUP_TOKEN: raise--abort--std::sys::pal::unix::abort_internal
+==19==Register values:
+rax = 0x0000000000000000  rbx = 0x00007f58eb9184c0  rcx = 0x00007f58eb95c00b  rdx = 0x0000000000000000  
+rdi = 0x0000000000000002  rsi = 0x00007ffd850ab050  rbp = 0x00007ffd850ab2a0  rsp = 0x00007ffd850ab050  
+ r8 = 0x0000000000000000   r9 = 0x00007ffd850ab050  r10 = 0x0000000000000008  r11 = 0x0000000000000246  
+r12 = 0x0000000000000000  r13 = 0x000055eb81aee5a0  r14 = 0x000055eb81519a20  r15 = 0x0000000000000001  
+AddressSanitizer can not provide additional info.
+SUMMARY: AddressSanitizer: ABRT (/lib/x86_64-linux-gnu/libc.so.6+0x4300b) (BuildId: 5792732f783158c66fb4f3756458ca24e46e827d) in raise
+==19==ABORTING

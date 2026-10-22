@@ -1,0 +1,89 @@
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 1675251516
+INFO: Loaded 1 modules   (370 inline 8-bit counters): 370 [0x55e417664e80, 0x55e417664ff2), 
+INFO: Loaded 1 PC tables (370 PCs): 370 [0x55e417664ff8,0x55e417666718), 
+/out/sample_target: Running 1 inputs 1 time(s) each.
+Running: /c/oob.bin
+=================================================================
+==1==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x7b7c6e1e00f6 at pc 0x55e41757425e bp 0x7fff76ad8050 sp 0x7fff76ad8048
+READ of size 1 at 0x7b7c6e1e00f6 thread T0
+SCARINESS: 12 (1-byte-read-heap-buffer-overflow)
+    #0 0x55e41757425d in core::ptr::read_volatile::<u8> /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:2159:9
+    #1 0x55e41757425d in sample_target::read_past /src/bookclerk/fuzz/fuzz_targets/sample_target.rs:8:25
+    #2 0x55e4175742cb in sample_target::_::__libfuzzer_sys_run /src/bookclerk/fuzz/fuzz_targets/sample_target.rs:12:51
+    #3 0x55e417575d1c in rust_fuzzer_test_input /rust/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.13/src/lib.rs:276:60
+    #4 0x55e4175769f4 in libfuzzer_sys::test_input_wrap::{closure#0} /rust/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.13/src/lib.rs:62:9
+    #5 0x55e4175769f4 in std::panicking::catch_unwind::do_call::<libfuzzer_sys::test_input_wrap::{closure#0}, i32> /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:573:43
+    #6 0x55e4175773d8 in __rust_try libfuzzer_sys.19e91800051edf2f-cgu.0
+    #7 0x55e41757632d in std::panicking::catch_unwind::<i32, libfuzzer_sys::test_input_wrap::{closure#0}> /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:541:19
+    #8 0x55e41757632d in std::panic::catch_unwind::<libfuzzer_sys::test_input_wrap::{closure#0}, i32> /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panic.rs:359:14
+    #9 0x55e41757632d in LLVMFuzzerTestOneInput /rust/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.13/src/lib.rs:60:22
+    #10 0x55e417592e8d in fuzzer::Fuzzer::ExecuteCallback(unsigned char const*, unsigned long) /src/llvm-project/compiler-rt/lib/fuzzer/FuzzerLoop.cpp:619:13
+    #11 0x55e41757dd42 in fuzzer::RunOneTest(fuzzer::Fuzzer*, char const*, unsigned long) /src/llvm-project/compiler-rt/lib/fuzzer/FuzzerDriver.cpp:329:6
+    #12 0x55e417583c10 in fuzzer::FuzzerDriver(int*, char***, int (*)(unsigned char const*, unsigned long)) /src/llvm-project/compiler-rt/lib/fuzzer/FuzzerDriver.cpp:865:9
+    #13 0x55e4175ae382 in main /src/llvm-project/compiler-rt/lib/fuzzer/FuzzerMain.cpp:20:10
+    #14 0x7f5c6f113082 in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x24082) (BuildId: 5792732f783158c66fb4f3756458ca24e46e827d)
+    #15 0x55e4174af72d in _start (/out/sample_target+0x1d72d)
+
+DEDUP_TOKEN: core::ptr::read_volatile::<u8>--sample_target::read_past--sample_target::_::__libfuzzer_sys_run
+0x7b7c6e1e00f6 is located 2 bytes after 4-byte region [0x7b7c6e1e00f0,0x7b7c6e1e00f4)
+allocated by thread T0 here:
+    #0 0x55e417545232 in calloc (/out/sample_target+0xb3232)
+    #1 0x55e417574040 in alloc::alloc::alloc_zeroed /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/alloc.rs:323:9
+    #2 0x55e417574040 in <alloc::alloc::Global>::alloc_impl_runtime /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/alloc.rs:335:43
+    #3 0x55e417574040 in <alloc::alloc::Global>::alloc_impl /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/alloc.rs:457:9
+    #4 0x55e417574040 in <alloc::alloc::Global as core::alloc::Allocator>::allocate_zeroed /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/alloc.rs:581:14
+    #5 0x55e417574040 in <alloc::raw_vec::RawVecInner>::try_allocate_in /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:487:40
+    #6 0x55e417574040 in <alloc::raw_vec::RawVecInner>::with_capacity_zeroed_in /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:610:15
+    #7 0x55e417574040 in <alloc::raw_vec::RawVec<u8>>::with_capacity_zeroed_in /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:231:20
+    #8 0x55e417574040 in <u8 as alloc::vec::spec_from_elem::SpecFromElem>::from_elem::<alloc::alloc::Global> /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/vec/spec_from_elem.rs:52:31
+    #9 0x55e417574040 in alloc::vec::from_elem::<u8> /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:3886:5
+    #10 0x55e417574040 in sample_target::read_past /src/bookclerk/fuzz/fuzz_targets/sample_target.rs:6:38
+    #11 0x55e4175742cb in sample_target::_::__libfuzzer_sys_run /src/bookclerk/fuzz/fuzz_targets/sample_target.rs:12:51
+    #12 0x55e417575d1c in rust_fuzzer_test_input /rust/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.13/src/lib.rs:276:60
+    #13 0x55e4175769f4 in libfuzzer_sys::test_input_wrap::{closure#0} /rust/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.13/src/lib.rs:62:9
+    #14 0x55e4175769f4 in std::panicking::catch_unwind::do_call::<libfuzzer_sys::test_input_wrap::{closure#0}, i32> /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:573:43
+    #15 0x55e4175773d8 in __rust_try libfuzzer_sys.19e91800051edf2f-cgu.0
+    #16 0x55e41757632d in std::panicking::catch_unwind::<i32, libfuzzer_sys::test_input_wrap::{closure#0}> /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:541:19
+    #17 0x55e41757632d in std::panic::catch_unwind::<libfuzzer_sys::test_input_wrap::{closure#0}, i32> /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panic.rs:359:14
+    #18 0x55e41757632d in LLVMFuzzerTestOneInput /rust/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.13/src/lib.rs:60:22
+    #19 0x55e417592e8d in fuzzer::Fuzzer::ExecuteCallback(unsigned char const*, unsigned long) /src/llvm-project/compiler-rt/lib/fuzzer/FuzzerLoop.cpp:619:13
+    #20 0x55e41757dd42 in fuzzer::RunOneTest(fuzzer::Fuzzer*, char const*, unsigned long) /src/llvm-project/compiler-rt/lib/fuzzer/FuzzerDriver.cpp:329:6
+    #21 0x55e417583c10 in fuzzer::FuzzerDriver(int*, char***, int (*)(unsigned char const*, unsigned long)) /src/llvm-project/compiler-rt/lib/fuzzer/FuzzerDriver.cpp:865:9
+    #22 0x55e4175ae382 in main /src/llvm-project/compiler-rt/lib/fuzzer/FuzzerMain.cpp:20:10
+    #23 0x7f5c6f113082 in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x24082) (BuildId: 5792732f783158c66fb4f3756458ca24e46e827d)
+
+DEDUP_TOKEN: __interceptor_calloc--alloc::alloc::alloc_zeroed--<alloc::alloc::Global>::alloc_impl_runtime
+SUMMARY: AddressSanitizer: heap-buffer-overflow /rust/rustup/toolchains/nightly-2026-10-17-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:2159:9 in core::ptr::read_volatile::<u8>
+Shadow bytes around the buggy address:
+  0x7b7c6e1dfe00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7b7c6e1dfe80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7b7c6e1dff00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7b7c6e1dff80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7b7c6e1e0000: fa fa 00 00 fa fa 00 00 fa fa 00 fa fa fa 00 fa
+=>0x7b7c6e1e0080: fa fa 00 fa fa fa 03 fa fa fa 03 fa fa fa[04]fa
+  0x7b7c6e1e0100: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x7b7c6e1e0180: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x7b7c6e1e0200: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x7b7c6e1e0280: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x7b7c6e1e0300: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+Shadow byte legend (one shadow byte represents 8 application bytes):
+  Addressable:           00
+  Partially addressable: 01 02 03 04 05 06 07 
+  Heap left redzone:       fa
+  Freed heap region:       fd
+  Stack left redzone:      f1
+  Stack mid redzone:       f2
+  Stack right redzone:     f3
+  Stack after return:      f5
+  Stack use after scope:   f8
+  Global redzone:          f9
+  Global init order:       f6
+  Poisoned by user:        f7
+  Container overflow:      fc
+  Array cookie:            ac
+  Intra object redzone:    bb
+  ASan internal:           fe
+  Left alloca redzone:     ca
+  Right alloca redzone:    cb
+==1==ABORTING

@@ -1,0 +1,79 @@
+# Which untrusted-input boundary each fuzz target exercises, for crash triage.
+#
+# `scripts/fuzz-crash-triage.py file` reads this to give a crash from the
+# scheduled fuzzing run its default severity and the shipped artifacts a
+# draft advisory names. It extends the boundary table in docs/ci.md#fuzzing
+# with what triage needs; every `[[bin]]` in fuzz/Cargo.toml and every target
+# in that table needs an entry here too (scripts/tests/test_fuzz_crash_triage.py).
+# A target missing here is triaged as high severity against the host binaries.
+#
+# Per target:
+#   crate      - crate that owns the boundary code
+#   boundary   - what crosses it, as in the docs table
+#   input_from - who controls the bytes: guest, store, plugin package, peer
+#   side       - "host" when the code runs in a host process or confined host
+#                helper (a crash there stops something the operator runs),
+#                "guest" when it only runs inside a plugin guest
+#   artifacts  - keys of [artifacts.*] that ship the crate
+
+# Shipped artifacts a crash can affect. `ecosystem` and `package` go into the
+# advisory's affected-package entry; neither is on a public registry yet.
+[artifacts.bookclerk]
+# Host binaries (bookclerkd, bookclerk, bookclerk-media-worker, bookclerk-jail,
+# bookclerk-workerd) and the platform guests, released together.
+ecosystem = "other"
+package = "bookclerk"
+
+[artifacts.rust-sdk]
+# The Rust plugin SDK third-party plugins build against.
+ecosystem = "other"
+package = "bookclerk-plugin-sdk"
+
+[targets.sql_parse]
+crate = "bookclerk-plugin-abi"
+boundary = "SQL-v1 lexer, packer, grammar and TEXT admission"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk", "rust-sdk"]
+
+[targets.sql_lower]
+crate = "bookclerk-db-exec"
+boundary = "Adapter lowering of canonical SQL"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.mp4_parse]
+crate = "bookclerk-mp4"
+boundary = "ISO-BMFF parse and remux of store downloads"
+input_from = "store"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.granted_http]
+crate = "bookclerk-workerd"
+boundary = "Granted reverse channel: request head, body framing, chunked bodies, query string"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.egress_policy]
+crate = "bookclerk-plugin-manifest"
+boundary = "Guest egress allowlist (EgressPolicy JSON wire form)"
+input_from = "plugin package"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.plugin_manifest]
+crate = "bookclerk-plugin-manifest"
+boundary = "plugin.toml parse, validation, derived egress and consent"
+input_from = "plugin package"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.abi_decode]
+crate = "bookclerk-plugin-abi"
+boundary = "Generated Cap'n Proto read_* codecs and the database envelope decoders"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk", "rust-sdk"]
