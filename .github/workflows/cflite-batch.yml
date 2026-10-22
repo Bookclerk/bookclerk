@@ -149,6 +149,7 @@ jobs:
           mkdir -p "$triage"
           scripts/osv-remediation-bundle.sh open "$RUNNER_TEMP/fuzz-crashes-sealed/sealed.bin" "$crashes"
           # Output goes to files in $triage; the script prints counts only.
+          # stderr (a traceback could name a crash path) stays private too.
           docker run --rm \
             -v "$GITHUB_WORKSPACE/build-out:/out" \
             -v "$GITHUB_WORKSPACE/scripts:/scripts:ro" \
@@ -156,7 +157,8 @@ jobs:
             -v "$triage:/triage" \
             --entrypoint python3 "$RUNNER_IMAGE" \
             /scripts/fuzz-crash-triage.py reproduce \
-            --build-out /out --artifacts /crashes/artifacts --out /triage
+            --build-out /out --artifacts /crashes/artifacts --out /triage \
+            2> "$triage/reproduce.stderr"
           cp "$crashes/batch.log" "$triage/batch.log"
 
       - name: Seal triage output
