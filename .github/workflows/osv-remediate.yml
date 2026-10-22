@@ -74,8 +74,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          count="$(gh pr list --repo "$GITHUB_REPOSITORY" --head deps/osv-remediation \
-            --base main --state open --json number --jq length)"
+          # `owner:branch` and the head-repository check count only the
+          # branch `publish` pushes here: a fork PR from a branch of the same
+          # name must not hold off remediation.
+          count="$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&base=main&head=$GITHUB_REPOSITORY_OWNER:deps/osv-remediation" \
+            --jq "[.[] | select(.head.repo.full_name == \"$GITHUB_REPOSITORY\")] | length")"
           if [[ "$count" -gt 0 ]]; then
             echo "::notice::a remediation pull request is open; skipping this run"
             echo "open=true" >> "$GITHUB_OUTPUT"

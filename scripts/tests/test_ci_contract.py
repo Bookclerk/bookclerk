@@ -354,8 +354,10 @@ class OsvRemediationWorkflowTest(unittest.TestCase):
         # The branch `pending` looks for is the one `publish` creates.
         find = next(s["run"] for s in self.jobs["pending"]["steps"] if s.get("id") == "find")
         cpr = next(s for s in self.jobs["publish"]["steps"] if s.get("id") == "cpr")
-        self.assertIn(f"--head {cpr['with']['branch']} ", find)
-        self.assertIn(f"--base {cpr['with']['base']} ", find)
+        self.assertIn(f"&base={cpr['with']['base']}&", find)
+        # Same-repository branch only; a fork PR from a same-named branch never counts.
+        self.assertIn(f"&head=$GITHUB_REPOSITORY_OWNER:{cpr['with']['branch']}\"", find)
+        self.assertIn('select(.head.repo.full_name == \\"$GITHUB_REPOSITORY\\")', find)
         self.assertEqual(self.jobs["pending"]["permissions"], {"pull-requests": "read"})
 
     def test_publish_needs_a_verified_bump(self) -> None:
