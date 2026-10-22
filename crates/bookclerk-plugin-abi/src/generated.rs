@@ -4782,3 +4782,392 @@ pub fn read_kv_list_reply(
         plugin_capnp::kv_list_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
     }
 }
+
+/// Number of root structs [`read_any_message`] can decode; selectors are
+/// `0..READ_ANY_COUNT` in schema order.
+pub const READ_ANY_COUNT: u8 = 82;
+
+/// Decodes `bytes` as an unpacked single-segment Cap'n Proto message whose
+/// root is the struct `selector` names, through that struct's `read_*`
+/// codec, and drops the result.
+///
+/// Harness entry point for the `abi_decode` fuzz target and its corpus
+/// replay: every generated decoder runs with a traversal budget derived
+/// from the input size and a fixed nesting limit, so a small buffer cannot
+/// expand into a large graph.
+///
+/// # Errors
+///
+/// Returns the Cap'n Proto error the framing or the codec reports, or a
+/// failure for a selector at or past [`READ_ANY_COUNT`].
+pub fn read_any_message(selector: u8, bytes: &[u8]) -> capnp::Result<()> {
+    let words = (bytes.len() / 8).saturating_add(16);
+    let mut opts = capnp::message::ReaderOptions::new();
+    opts.traversal_limit_in_words(Some(words));
+    opts.nesting_limit(32);
+    let reader = capnp::serialize::read_message(&mut std::io::Cursor::new(bytes), opts)?;
+    match selector {
+        0 => {
+            let _ = read_event_consumer_spec(
+                reader.get_root::<plugin_capnp::event_consumer_spec::Reader<'_>>()?,
+            )?;
+        }
+        1 => {
+            let _ = read_plugin_capabilities(
+                reader.get_root::<plugin_capnp::plugin_capabilities::Reader<'_>>()?,
+            )?;
+        }
+        2 => {
+            let _ = read_brand(reader.get_root::<plugin_capnp::brand::Reader<'_>>()?)?;
+        }
+        3 => {
+            let _ =
+                read_config_option(reader.get_root::<plugin_capnp::config_option::Reader<'_>>()?)?;
+        }
+        4 => {
+            let _ = read_config_option_value(
+                reader.get_root::<plugin_capnp::config_option_value::Reader<'_>>()?,
+            )?;
+        }
+        5 => {
+            let _ = read_cli_schema(reader.get_root::<plugin_capnp::cli_schema::Reader<'_>>()?)?;
+        }
+        6 => {
+            let _ = read_cli_command_spec(
+                reader.get_root::<plugin_capnp::cli_command_spec::Reader<'_>>()?,
+            )?;
+        }
+        7 => {
+            let _ =
+                read_cli_arg_spec(reader.get_root::<plugin_capnp::cli_arg_spec::Reader<'_>>()?)?;
+        }
+        8 => {
+            let _ = read_cli_arg(reader.get_root::<plugin_capnp::cli_arg::Reader<'_>>()?)?;
+        }
+        9 => {
+            let _ = read_cli_invoke_params(
+                reader.get_root::<plugin_capnp::cli_invoke_params::Reader<'_>>()?,
+            )?;
+        }
+        10 => {
+            let _ = read_cli_invoke_result(
+                reader.get_root::<plugin_capnp::cli_invoke_result::Reader<'_>>()?,
+            )?;
+        }
+        11 => {
+            let _ = read_cli_schema_reply(
+                reader.get_root::<plugin_capnp::cli_schema_reply::Reader<'_>>()?,
+            )?;
+        }
+        12 => {
+            let _ = read_cli_invoke_reply(
+                reader.get_root::<plugin_capnp::cli_invoke_reply::Reader<'_>>()?,
+            )?;
+        }
+        13 => {
+            let _ = read_database_adapter_config(
+                reader.get_root::<plugin_capnp::database_adapter_config::Reader<'_>>()?,
+            )?;
+        }
+        14 => {
+            let _ = read_diagnose_result(
+                reader.get_root::<plugin_capnp::diagnose_result::Reader<'_>>()?,
+            )?;
+        }
+        15 => {
+            let _ = read_diagnose_reply(
+                reader.get_root::<plugin_capnp::diagnose_reply::Reader<'_>>()?,
+            )?;
+        }
+        16 => {
+            let _ = read_source_account(
+                reader.get_root::<plugin_capnp::source_account::Reader<'_>>()?,
+            )?;
+        }
+        17 => {
+            let _ =
+                read_login_params(reader.get_root::<plugin_capnp::login_params::Reader<'_>>()?)?;
+        }
+        18 => {
+            let _ =
+                read_login_result(reader.get_root::<plugin_capnp::login_result::Reader<'_>>()?)?;
+        }
+        19 => {
+            let _ = read_login_start_result(
+                reader.get_root::<plugin_capnp::login_start_result::Reader<'_>>()?,
+            )?;
+        }
+        20 => {
+            let _ = read_login_complete_params(
+                reader.get_root::<plugin_capnp::login_complete_params::Reader<'_>>()?,
+            )?;
+        }
+        21 => {
+            let _ = read_login_reply(reader.get_root::<plugin_capnp::login_reply::Reader<'_>>()?)?;
+        }
+        22 => {
+            let _ = read_login_start_reply(
+                reader.get_root::<plugin_capnp::login_start_reply::Reader<'_>>()?,
+            )?;
+        }
+        23 => {
+            let _ = read_account_credential(
+                reader.get_root::<plugin_capnp::account_credential::Reader<'_>>()?,
+            )?;
+        }
+        24 => {
+            let _ = read_scan_params(reader.get_root::<plugin_capnp::scan_params::Reader<'_>>()?)?;
+        }
+        25 => {
+            let _ = read_scan_book(reader.get_root::<plugin_capnp::scan_book::Reader<'_>>()?)?;
+        }
+        26 => {
+            let _ =
+                read_scan_summary(reader.get_root::<plugin_capnp::scan_summary::Reader<'_>>()?)?;
+        }
+        27 => {
+            let _ = read_scan_reply(reader.get_root::<plugin_capnp::scan_reply::Reader<'_>>()?)?;
+        }
+        28 => {
+            let _ =
+                read_fetch_options(reader.get_root::<plugin_capnp::fetch_options::Reader<'_>>()?)?;
+        }
+        29 => {
+            let _ = read_fetch_title_params(
+                reader.get_root::<plugin_capnp::fetch_title_params::Reader<'_>>()?,
+            )?;
+        }
+        30 => {
+            let _ = read_plain_part(reader.get_root::<plugin_capnp::plain_part::Reader<'_>>()?)?;
+        }
+        31 => {
+            let _ = read_chapter_marker(
+                reader.get_root::<plugin_capnp::chapter_marker::Reader<'_>>()?,
+            )?;
+        }
+        32 => {
+            let _ = read_plain_fetch(reader.get_root::<plugin_capnp::plain_fetch::Reader<'_>>()?)?;
+        }
+        33 => {
+            let _ = read_fetch_title_reply(
+                reader.get_root::<plugin_capnp::fetch_title_reply::Reader<'_>>()?,
+            )?;
+        }
+        34 => {
+            let _ = read_source_accounts(
+                reader.get_root::<plugin_capnp::source_accounts::Reader<'_>>()?,
+            )?;
+        }
+        35 => {
+            let _ = read_source_accounts_reply(
+                reader.get_root::<plugin_capnp::source_accounts_reply::Reader<'_>>()?,
+            )?;
+        }
+        36 => {
+            let _ = read_search_catalog_params(
+                reader.get_root::<plugin_capnp::search_catalog_params::Reader<'_>>()?,
+            )?;
+        }
+        37 => {
+            let _ = read_expand_candidates_params(
+                reader.get_root::<plugin_capnp::expand_candidates_params::Reader<'_>>()?,
+            )?;
+        }
+        38 => {
+            let _ = read_purchase_hint_params(
+                reader.get_root::<plugin_capnp::purchase_hint_params::Reader<'_>>()?,
+            )?;
+        }
+        39 => {
+            let _ = read_list_deals_params(
+                reader.get_root::<plugin_capnp::list_deals_params::Reader<'_>>()?,
+            )?;
+        }
+        40 => {
+            let _ = read_catalog_detail_params(
+                reader.get_root::<plugin_capnp::catalog_detail_params::Reader<'_>>()?,
+            )?;
+        }
+        41 => {
+            let _ = read_catalog_hit(reader.get_root::<plugin_capnp::catalog_hit::Reader<'_>>()?)?;
+        }
+        42 => {
+            let _ =
+                read_catalog_hits(reader.get_root::<plugin_capnp::catalog_hits::Reader<'_>>()?)?;
+        }
+        43 => {
+            let _ = read_catalog_hits_reply(
+                reader.get_root::<plugin_capnp::catalog_hits_reply::Reader<'_>>()?,
+            )?;
+        }
+        44 => {
+            let _ = read_catalog_detail(
+                reader.get_root::<plugin_capnp::catalog_detail::Reader<'_>>()?,
+            )?;
+        }
+        45 => {
+            let _ = read_catalog_detail_reply(
+                reader.get_root::<plugin_capnp::catalog_detail_reply::Reader<'_>>()?,
+            )?;
+        }
+        46 => {
+            let _ =
+                read_purchase_hint(reader.get_root::<plugin_capnp::purchase_hint::Reader<'_>>()?)?;
+        }
+        47 => {
+            let _ = read_purchase_hint_result(
+                reader.get_root::<plugin_capnp::purchase_hint_result::Reader<'_>>()?,
+            )?;
+        }
+        48 => {
+            let _ = read_purchase_hint_reply(
+                reader.get_root::<plugin_capnp::purchase_hint_reply::Reader<'_>>()?,
+            )?;
+        }
+        49 => {
+            let _ = read_scan_library_params(
+                reader.get_root::<plugin_capnp::scan_library_params::Reader<'_>>()?,
+            )?;
+        }
+        50 => {
+            let _ = read_authenticate_user_params(
+                reader.get_root::<plugin_capnp::authenticate_user_params::Reader<'_>>()?,
+            )?;
+        }
+        51 => {
+            let _ =
+                read_external_user(reader.get_root::<plugin_capnp::external_user::Reader<'_>>()?)?;
+        }
+        52 => {
+            let _ = read_external_user_reply(
+                reader.get_root::<plugin_capnp::external_user_reply::Reader<'_>>()?,
+            )?;
+        }
+        53 => {
+            let _ = read_event_poll_result(
+                reader.get_root::<plugin_capnp::event_poll_result::Reader<'_>>()?,
+            )?;
+        }
+        54 => {
+            let _ = read_event_poll_reply(
+                reader.get_root::<plugin_capnp::event_poll_reply::Reader<'_>>()?,
+            )?;
+        }
+        55 => {
+            let _ = read_listening_progress(
+                reader.get_root::<plugin_capnp::listening_progress::Reader<'_>>()?,
+            )?;
+        }
+        56 => {
+            let _ = read_sync_listening_result(
+                reader.get_root::<plugin_capnp::sync_listening_result::Reader<'_>>()?,
+            )?;
+        }
+        57 => {
+            let _ = read_sync_listening_reply(
+                reader.get_root::<plugin_capnp::sync_listening_reply::Reader<'_>>()?,
+            )?;
+        }
+        58 => {
+            let _ =
+                read_plugin_event(reader.get_root::<plugin_capnp::plugin_event::Reader<'_>>()?)?;
+        }
+        59 => {
+            let _ = read_publish_ok(reader.get_root::<plugin_capnp::publish_ok::Reader<'_>>()?)?;
+        }
+        60 => {
+            let _ =
+                read_publish_reply(reader.get_root::<plugin_capnp::publish_reply::Reader<'_>>()?)?;
+        }
+        61 => {
+            let _ = read_invocation(reader.get_root::<plugin_capnp::invocation::Reader<'_>>()?)?;
+        }
+        62 => {
+            let _ =
+                read_queue_message(reader.get_root::<plugin_capnp::queue_message::Reader<'_>>()?)?;
+        }
+        63 => {
+            let _ = read_queue_batch(reader.get_root::<plugin_capnp::queue_batch::Reader<'_>>()?)?;
+        }
+        64 => {
+            let _ = read_queue_retry(reader.get_root::<plugin_capnp::queue_retry::Reader<'_>>()?)?;
+        }
+        65 => {
+            let _ =
+                read_queue_result(reader.get_root::<plugin_capnp::queue_result::Reader<'_>>()?)?;
+        }
+        66 => {
+            let _ = read_queue_batch_ok(
+                reader.get_root::<plugin_capnp::queue_batch_ok::Reader<'_>>()?,
+            )?;
+        }
+        67 => {
+            let _ = read_queue_batch_reply(
+                reader.get_root::<plugin_capnp::queue_batch_reply::Reader<'_>>()?,
+            )?;
+        }
+        68 => {
+            let _ = read_queue_send_message(
+                reader.get_root::<plugin_capnp::queue_send_message::Reader<'_>>()?,
+            )?;
+        }
+        69 => {
+            let _ =
+                read_queue_send_ok(reader.get_root::<plugin_capnp::queue_send_ok::Reader<'_>>()?)?;
+        }
+        70 => {
+            let _ = read_queue_send_reply(
+                reader.get_root::<plugin_capnp::queue_send_reply::Reader<'_>>()?,
+            )?;
+        }
+        71 => {
+            let _ = read_kv_put_options(
+                reader.get_root::<plugin_capnp::kv_put_options::Reader<'_>>()?,
+            )?;
+        }
+        72 => {
+            let _ = read_kv_get_ok(reader.get_root::<plugin_capnp::kv_get_ok::Reader<'_>>()?)?;
+        }
+        73 => {
+            let _ =
+                read_kv_get_reply(reader.get_root::<plugin_capnp::kv_get_reply::Reader<'_>>()?)?;
+        }
+        74 => {
+            let _ = read_kv_put_ok(reader.get_root::<plugin_capnp::kv_put_ok::Reader<'_>>()?)?;
+        }
+        75 => {
+            let _ =
+                read_kv_delete_ok(reader.get_root::<plugin_capnp::kv_delete_ok::Reader<'_>>()?)?;
+        }
+        76 => {
+            let _ =
+                read_kv_put_reply(reader.get_root::<plugin_capnp::kv_put_reply::Reader<'_>>()?)?;
+        }
+        77 => {
+            let _ = read_kv_delete_reply(
+                reader.get_root::<plugin_capnp::kv_delete_reply::Reader<'_>>()?,
+            )?;
+        }
+        78 => {
+            let _ = read_kv_list_options(
+                reader.get_root::<plugin_capnp::kv_list_options::Reader<'_>>()?,
+            )?;
+        }
+        79 => {
+            let _ = read_kv_list_key(reader.get_root::<plugin_capnp::kv_list_key::Reader<'_>>()?)?;
+        }
+        80 => {
+            let _ = read_kv_list_ok(reader.get_root::<plugin_capnp::kv_list_ok::Reader<'_>>()?)?;
+        }
+        81 => {
+            let _ =
+                read_kv_list_reply(reader.get_root::<plugin_capnp::kv_list_reply::Reader<'_>>()?)?;
+        }
+        _ => {
+            return Err(capnp::Error::failed(format!(
+                "unknown read_any selector {selector}"
+            )))
+        }
+    }
+    Ok(())
+}

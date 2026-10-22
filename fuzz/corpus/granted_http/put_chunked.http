@@ -1,0 +1,12 @@
+PUT /put?key=out%2Fbook.m4b HTTP/1.1
+Authorization: Bearer grant-1
+Content-Type: audio/mp4
+Transfer-Encoding: chunked
+
+5;ext=1
+hello
+A
+0123456789
+0
+X-Trailer: 1
+

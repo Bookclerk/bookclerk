@@ -1,0 +1,1 @@
+{"mode":"outbound","domains":["127.0.0.1","10.0.0.1"],"tcp":[{"host":"10.0.0.1","ports":[5432]}],"maxRedirects":5,"allowUndeclaredPublicRedirects":true}

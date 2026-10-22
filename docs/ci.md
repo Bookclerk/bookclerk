@@ -149,7 +149,9 @@ Each changed path (renames contribute old and new paths) is classified:
 | Declared `test_guests` executable changed | Launching package's tests re-run (no propagation) |
 | `ui/`, `packages/plugin-sdk*/`, ABI scripts | UI, SDK ABI and API-doc checks |
 | `docs/**` | Nothing beyond the plan job's always-on lint tests |
-| Root `Cargo.toml` / `Cargo.lock`, toolchain, `.cargo/`, workflows, the planner, `fuzz/`, unknown or unclassified paths, planner errors | **Full suite** |
+| Root `Cargo.toml` / `Cargo.lock`, toolchain, `.cargo/`, workflows, the planner, `fuzz/Cargo.*`, unknown or unclassified paths, planner errors | **Full suite** |
+| `fuzz/corpus/<target>/**` | Owning crate's tests (declared `test_input`; an undeclared corpus is unclassified) |
+| `fuzz/fuzz_targets/**`, `fuzz/dictionaries/**` | Nothing here; the ClusterFuzzLite workflows select themselves by path |
 
 A planner error still uses that normal full plan when metadata, relations, and
 the guest inventory are available (an unavailable diff is the usual case).
@@ -266,22 +268,55 @@ sqlite/postgres differential).
 ### Fuzzing
 
 Coverage-guided fuzzing runs on [ClusterFuzzLite](https://google.github.io/clusterfuzzlite/)
-over the `cargo-fuzz` targets in `fuzz/` (`sql_parse`, `sql_lower`,
-`mp4_parse`). Seed corpora are checked in under `fuzz/corpus/<target>/` and
-replayed by ordinary tests in PR CI (`bookclerk-db-exec/tests/fuzz_corpus.rs`,
-`bookclerk-mp4/tests/fuzz_corpus.rs`), so a fixed crash stays fixed without a
-nightly toolchain.
+over the `cargo-fuzz` targets in `fuzz/`. Every untrusted-input boundary
+ships a target, a seed corpus and a replay test
+([ADR](adr/untrusted-input-fuzzing.md)); this table is the boundary list, and
+a pull request that adds or widens a boundary extends it.
+
+| Target | Boundary | Oracle beyond "no panic" |
+| --- | --- | --- |
+| `sql_parse` | SQL-v1 lexer, packer, grammar and TEXT admission (`bookclerk-plugin-abi`) | — |
+| `sql_lower` | Adapter lowering of canonical SQL (`bookclerk-db-exec`) | Quoted strings and comments survive lowering verbatim except documented rewrites |
+| `mp4_parse` | ISO-BMFF parse and remux of store downloads (`bookclerk-mp4`) | — |
+| `granted_http` | Granted reverse channel: request head, body framing, chunked bodies, query string (`bookclerk-workerd::granted_http`) | Split-invariant chunked decoding; agrees with an `httparse` reference decoder; the route body reader (framing dispatch, byte cap, end of stream) is split-invariant and yields what the declared framing promises |
+| `egress_policy` | Guest egress allowlist (`bookclerk-plugin-manifest::EgressPolicy`, JSON wire form; the workerd `egress.js` gate is a separate implementation, see #335 below) | Deny allows nothing; loopback/private/metadata need a CIDR in every spelling (trailing dot, fullwidth digits, legacy `127.1` / hex / octal IPv4); `*.suffix` never matches `xsuffix`; percent-encoded hosts never match; JSON round trip |
+| `plugin_manifest` | `plugin.toml` parse, validation, derived egress and consent (`bookclerk-plugin-manifest`) | `format_manifest` round trip; a deny manifest yields a deny policy |
+| `abi_decode` | Every generated Cap'n Proto `read_*` codec (`read_any_message`) and the database envelope decoders (`bookclerk-plugin-abi`) | Traversal budget derived from input size |
+
+Still to add (tracked in the fuzzing ADR's follow-ups): guest-SQL
+authorization against a SQLite authorizer oracle, the plugin mux, Cap'n
+Proto `read(write(v)) == v` round trips, a full RPC session against a
+scripted guest, the workerd `egress.js` gate checked against `EgressPolicy`
+(#335), Audible CENC/DASH parsing, package extraction, naming paths,
+node frames, media chapter math, backup import.
+
+Seed corpora are checked in under `fuzz/corpus/<target>/` and replayed by
+ordinary tests in PR CI (`tests/fuzz_corpus.rs` in the owning crate), so a
+fixed crash stays fixed without a nightly toolchain. The planner routes a
+corpus change to that crate's tests only (`relations.toml` `test_input`);
+`scripts/tests/test_ci_contract.py` fails when a target lacks a corpus, a
+planner route or a replay test, or when a fuzzed crate is missing from the
+PR workflow's path filter. `fuzz/dictionaries/<target>.dict` and
+`<target>.options` (libFuzzer INI with a `[libfuzzer]` section whose `max_len`
+matches the target's early-return cap)
+ride beside each binary.
 
 | Workflow | When | What |
 | --- | --- | --- |
 | `cflite-pr.yml` | PRs touching `fuzz/`, the fuzzed crates, or the ClusterFuzzLite config | 10 min, AddressSanitizer, code-change mode; fails on a new crash |
-| `cflite-batch.yml` | weekly + `workflow_dispatch` | 30 min batch fuzzing, then corpus pruning and a coverage report (kept as Actions artifacts) |
+| `cflite-batch.yml` | daily + `workflow_dispatch` | 45 min batch fuzzing split across targets, then corpus pruning and a coverage report (kept as Actions artifacts) |
+
+A crash found by the scheduled run is handled as a security report: fix
+first, then land the minimized input as `fuzz/corpus/<target>/regression_*`
+in the fixing pull request.
 
 Build config lives in `.clusterfuzzlite/` (`Dockerfile`, `build.sh`,
-`project.yaml`). To add a target, add a `[[bin]]` to `fuzz/Cargo.toml` and a
-seed directory under `fuzz/corpus/`; `build.sh` packages every target that
-`cargo fuzz list` reports. Reproduce locally with
-`cargo +nightly fuzz run <target>` from `fuzz/`.
+`project.yaml`). To add a target: a `[[bin]]` in `fuzz/Cargo.toml`, a seed
+directory under `fuzz/corpus/`, a `test_input` route in
+`scripts/ci_plan/relations.toml`, a replay test in the owning crate, the
+crate on `cflite-pr.yml`'s path filter, and a row above. `build.sh`
+packages every target `cargo fuzz list` reports. Reproduce locally with
+`cargo +nightly fuzz run <target>` from `fuzz/` (needs `capnp` on `PATH`).
 
 The scheduled **workerd pin bump** job (`.github/workflows/workerd-pin-bump.yml`)
 also compiles `bookclerk-workerd` / `bookclerk-plugin-abi`, so it installs

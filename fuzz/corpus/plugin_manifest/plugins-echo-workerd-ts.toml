@@ -1,0 +1,47 @@
+api_version = 3
+id = "echo_workerd_ts"
+name = "Echo Integration (workerd TypeScript)"
+version = "1.0.0"
+runtime = "workerd"
+entrypoints = ["cli"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+compatibility_flags = []
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+# Host-clamped; subrequests enforced in egress (local workerd has no Cap'n Proto cpuMs/subRequests).
+cpu_ms = 30000
+subrequests = 50
+
+[[modules]]
+name = "index.js"
+path = "index.js"
+type = "js"
+
+[capabilities.network]
+mode = "deny"
+
+# Isolated plugin-owned databases (Workers-style named bindings).
+[vars]
+
+[[databases]]
+binding = "DB"
+
+[[events.consumers]]
+type = "book_acquired"
+schema_versions = [1]
+supports_suspend = true
+
+# Plugin-owned queues on the outbox: `queue(batch)` consumes `echo`; the
+# `ECHO_OUT` binding sends to `echo.out` (absent when the host grants no outbox).
+[[queues.consumers]]
+queue = "echo"
+max_retries = 2
+
+[[queues.producers]]
+queue = "echo.out"
+binding = "ECHO_OUT"

@@ -37,6 +37,7 @@ Start here if you are new:
 | [ADR: SQL database contract](adr/sql-database-contract.md) | SQL-only backends; host-resolved canonical SQL + proofs; adapter-owned lowering |
 | [ADR: Schema versioning](adr/schema-versioning.md) | Frozen schema integers, checksums, backups, fail-closed, last-reversible CLI |
 | [ADR: Control plane](adr/control-plane.md) | Bootstrap boundary, stable host id, database-backed `[events]` (spike for #192; not production HA) |
+| [ADR: Untrusted-input fuzzing](adr/untrusted-input-fuzzing.md) | Every host-guest, store, package and node boundary ships a fuzz target with an invariant oracle; crashes are security reports |
 | [Plugin registry](plugin-registry.md) | crates.io taxonomy, native vs workerd archives, catalog roadmap |
 | [Packaging](packaging.md) | `cargo package-*` aliases, platform bundles, release CI |
 | [Source candidates](source-candidates.md) | Research notes for stores not yet implemented |

@@ -1,0 +1,36 @@
+api_version = 3
+id = "libro"
+name = "Libro.fm"
+version = "0.1.0"
+logo = "https://www.google.com/s2/favicons?domain=libro.fm&sz=128"
+runtime = "native"
+command = "./bookclerk-plugin-source-libro"
+entrypoints = ["storefront"]
+
+[capabilities.network]
+mode = "outbound"
+tcp = [
+    { host = "*.libro.fm", ports = [443] },
+]
+# Native TCP via the SDK HTTP client. Covers, API, and other libro.fm
+# hosts match the wildcard. Off-site CDN CONNECT destinations still need
+# a TCP grant (operator additions). Fetch `domains` are workerd-only.
+
+[vars]
+
+[[settings]]
+key = "container"
+label = "Container"
+type = "enum"
+values = [{ id = "m4b", label = "M4B" }, { id = "zip", label = "ZIP (MP3 parts)" }]
+default = "m4b"
+
+[[settings]]
+key = "base_url"
+label = "Base URL"
+type = "string"
+description = "Override the Libro.fm API origin (testing only)."
+
+[secrets]
+
+[work_fs]
