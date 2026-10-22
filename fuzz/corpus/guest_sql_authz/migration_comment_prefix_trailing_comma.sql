@@ -1,0 +1,1 @@
+4/* idempotent */ CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY NOT NULL, body TEXT NOT NULL, )

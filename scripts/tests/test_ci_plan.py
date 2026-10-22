@@ -509,6 +509,18 @@ class FullSuiteTests(unittest.TestCase):
         # A corpus nobody replays is unclassified.
         self.assert_full(plan("fuzz/corpus/brand_new_target/x.bin"))
 
+    def test_shared_fuzz_oracle_tests_in_the_owning_crate_only(self) -> None:
+        for path, package in (
+            ("fuzz/oracles/guest_sql_authz.rs", "bookclerk-library"),
+            ("fuzz/oracles/mux_peer.rs", "bookclerk-plugin-sdk"),
+        ):
+            with self.subTest(path=path):
+                p = plan(path)
+                self.assertFalse(p.full_suite, p.reasons)
+                self.assertEqual(p.test_packages(), [package])
+        # An oracle no replay test includes is unclassified.
+        self.assert_full(plan("fuzz/oracles/brand_new_target.rs"))
+
     def test_unknown_and_unclassified(self) -> None:
         for path in ("brand-new-tooling/foo.sh", "third_party/audible-rs/src/lib.rs", "packages/brand-new-sdk/src/index.ts", ".github/actions/x/action.yml", "scripts/ad-hoc-helper.sh", "crates/does-not-exist-yet/Cargo.toml", "assets/other.png"):
             with self.subTest(path=path):

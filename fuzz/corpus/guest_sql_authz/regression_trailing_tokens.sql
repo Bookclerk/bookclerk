@@ -1,0 +1,1 @@
+2SELECT 1 d FROM host_secrets

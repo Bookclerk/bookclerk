@@ -1,4 +1,5 @@
-//! Replays the checked-in `sql_parse` and `abi_decode` fuzz corpora in PR CI
+//! Replays the checked-in `sql_parse`, `abi_decode` and `abi_roundtrip` fuzz
+//! corpora in PR CI
 //! (no libFuzzer required), so an input that once crashed a decoder stays
 //! fixed (`docs/adr/untrusted-input-fuzzing.md`).
 // Test code: a failed assertion or a missing corpus file is the test failing,
@@ -99,4 +100,27 @@ fn read_any_message_covers_every_selector() {
         &empty_root
     )
     .is_err());
+}
+
+/// Mirrors `fuzz/fuzz_targets/abi_roundtrip.rs`: a value any generated codec
+/// decodes must survive `write_*` then `read_*` unchanged.
+#[test]
+fn fuzz_corpus_abi_roundtrip_is_identity() {
+    use bookclerk_plugin_abi::{roundtrip_any_message, RoundTripFailure, READ_ANY_COUNT};
+
+    let mut decoded = 0;
+    for path in corpus_files("abi_roundtrip") {
+        let data = std::fs::read(&path).expect("read");
+        let Some((&selector, bytes)) = data.split_first() else {
+            continue;
+        };
+        match roundtrip_any_message(selector % READ_ANY_COUNT, bytes) {
+            Ok(()) => decoded += 1,
+            Err(RoundTripFailure::Rejected(_)) => {}
+            Err(RoundTripFailure::Codec(why)) => {
+                panic!("{}: selector {selector}: {why}", path.display())
+            }
+        }
+    }
+    assert!(decoded > 0, "no abi_roundtrip seed decoded");
 }

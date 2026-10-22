@@ -318,6 +318,24 @@ fn skip_sql_atom(sql: &str, start: usize) -> usize {
     if sql
         .as_bytes()
         .get(i)
+        .is_some_and(|b| *b == b'-' || *b == b'+')
+    {
+        // A unary sign on a non-numeric atom (`-?`, `-(expr)`, `-col`) signs
+        // the whole atom that follows; stopping after the sign would leave
+        // that atom outside the GLOB wrap (found by the guest_sql_authz fuzz
+        // target).
+        let after_sign = skip_trivia_idx(sql, i + 1);
+        if !sql
+            .as_bytes()
+            .get(after_sign)
+            .is_some_and(|b| b.is_ascii_digit() || *b == b'.')
+        {
+            return skip_sql_atom(sql, after_sign);
+        }
+    }
+    if sql
+        .as_bytes()
+        .get(i)
         .is_some_and(|b| b.is_ascii_digit() || *b == b'-' || *b == b'+')
     {
         let start = i;
@@ -2800,6 +2818,17 @@ mod tests {
         );
         assert!(glob_na.contains("GLOB "), "{glob_na}");
         assert!(!glob_na.contains(" LIKE "), "{glob_na}");
+        // A signed pattern atom is wrapped whole, never split after the sign.
+        for (sql, wrapped) in [
+            ("SELECT 1 FROM t WHERE a LIKE -?", "((-?),"),
+            ("SELECT 1 FROM t WHERE a LIKE -(?)", "((-(?)),"),
+            ("SELECT 1 FROM t WHERE a LIKE - b || ?", "((- b || ?),"),
+            ("SELECT 1 FROM t WHERE a LIKE -1", "((-1),"),
+        ] {
+            let signed = lower_canonical_sql(DatabaseBackend::Sqlite, sql);
+            assert!(signed.contains(wrapped), "{sql}: {signed}");
+            assert!(!signed.contains("(-),"), "{sql}: {signed}");
+        }
         let hex = rewrite_canonical_ddl_types_for_postgres(
             "CREATE TABLE t (payload BLOB DEFAULT X'deadbeef')",
         );

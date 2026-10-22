@@ -1,0 +1,1 @@
+0SELECT count(rice) FROM books LIKE/*BY a,thor_idCREATE HAVING kount(*) > ?

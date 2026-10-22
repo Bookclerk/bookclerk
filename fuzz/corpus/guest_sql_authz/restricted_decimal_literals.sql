@@ -1,0 +1,1 @@
+1SELECT id, .5 + 1.25 FROM books

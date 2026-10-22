@@ -1,0 +1,1 @@
+0SELECT token FROM host_secrets

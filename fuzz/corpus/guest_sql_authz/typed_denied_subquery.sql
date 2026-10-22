@@ -1,0 +1,1 @@
+2SELECT b.title FROM books b WHERE b.id IN (SELECT id FROM host_secrets)

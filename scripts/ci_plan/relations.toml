@@ -48,7 +48,22 @@ paths = ["scripts/check-db-plugin-isolation.py"]
 # here is unclassified and runs the full suite.
 [[test_input]]
 package = "bookclerk-plugin-abi"
-paths = ["fuzz/corpus/sql_parse/**", "fuzz/corpus/abi_decode/**"]
+paths = [
+    "fuzz/corpus/sql_parse/**",
+    "fuzz/corpus/abi_decode/**",
+    "fuzz/corpus/abi_roundtrip/**",
+]
+
+# The guest SQL authorizer oracle is shared by the fuzz target and the
+# bookclerk-library replay test through `#[path]`.
+[[test_input]]
+package = "bookclerk-library"
+paths = ["fuzz/corpus/guest_sql_authz/**", "fuzz/oracles/guest_sql_authz.rs"]
+
+# The mux peer oracle is shared the same way with the plugin-sdk replay test.
+[[test_input]]
+package = "bookclerk-plugin-sdk"
+paths = ["fuzz/corpus/mux_peer/**", "fuzz/oracles/mux_peer.rs"]
 
 [[test_input]]
 package = "bookclerk-db-exec"

@@ -1,0 +1,1 @@
+4DROP TABLE IF EXISTS bookclerk_receipts
