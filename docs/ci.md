@@ -527,8 +527,16 @@ A bump is published only once it is known to pass:
    pass.
 
 A bump that fails verification publishes nothing: the run fails and the
-alerts stay in Security → Code scanning for a maintainer. A run that has
-nothing left to bump closes an earlier remediation pull request.
+alerts stay in Security → Code scanning for a maintainer. A run with nothing
+to bump publishes nothing either.
+
+While a remediation pull request is open, later runs stop at the `pending`
+job and change nothing. Rebuilding `deps/osv-remediation` on every push to
+`main` would restart the pull request's checks and drop it from the merge
+queue, and the queue already tests it against the latest `main`. Once it
+merges or is closed, the next full scan of `main` starts a fresh run. To
+replace an open remediation pull request that failed its checks, close it and
+run the workflow manually.
 
 Scan results are not public, so the run keeps them private: its log prints
 counts only (command output is discarded, because a failed attempt would name
