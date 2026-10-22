@@ -47,6 +47,11 @@ RUN mkdir -p /etc/apt/keyrings \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# uv installs the Python plugin SDK's dev/docs tools from its uv.lock (the
+# `python_sdk` CI check and `generate-api-docs.sh --python`). Same version as
+# CI's setup-uv step.
+COPY --from=ghcr.io/astral-sh/uv:0.11.32 /uv /uvx /usr/local/bin/
+
 # rust-toolchain.toml (stable + rustfmt/clippy) is honored on first cargo use;
 # install components up front so the first `cargo check` is faster.
 RUN rustup component add rustfmt clippy

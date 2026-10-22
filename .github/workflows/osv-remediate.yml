@@ -4,7 +4,7 @@
 # Runs after each full OSV scan of main (push, schedule or manual run of
 # osv-scanner.yml). Reads the open OSV-Scanner alerts with the automation App
 # token, then `scripts/osv-remediate.py` tries lockfile-only updates
-# (Cargo.lock, package-lock.json) that move each flagged package out of its
+# (Cargo.lock, package-lock.json, uv.lock) that move each flagged package out of its
 # advisory's affected ranges. Manifests are never edited.
 #
 # Nothing about a bump is public until it is known to land:
@@ -108,6 +108,14 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
+
+      # The Python SDK's uv.lock is updated with `uv lock`. No cache: the
+      # bump is not public yet.
+      - name: Install uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.11.32"
+          enable-cache: false
 
       - name: Mint alert-read token
         id: read
@@ -229,6 +237,7 @@ jobs:
           add-paths: |
             *Cargo.lock
             *package-lock.json
+            *uv.lock
 
       # The full suite already passed on this bump, so the PR opens ready and
       # goes straight to the merge queue once its required checks pass.

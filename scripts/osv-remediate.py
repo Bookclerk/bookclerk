@@ -3,7 +3,7 @@
 
 Reads the repository's open code-scanning alerts from the OSV-Scanner tool,
 looks each advisory (and its aliases) up on api.osv.dev, and, for every
-Cargo.lock or package-lock.json entry it names, tries the smallest
+Cargo.lock, package-lock.json or uv.lock entry it names, tries the smallest
 lockfile-only update that leaves no locked version of that package inside an
 affected range:
 
@@ -12,6 +12,15 @@ affected range:
   manifest requirement), `cargo update --package <name>@<locked>` to the
   newest compatible release.
 - npm: `npm update <name> --package-lock-only --ignore-scripts`.
+- uv (PyPI): `uv lock --upgrade-package <name>==<fixed>`, then
+  `uv lock --upgrade-package <name>` to the newest release the project's
+  requirements allow, both with `--no-build` so no package code runs.
+
+Versions are compared as semver. An advisory whose ranges for a package hold
+a version that is not semver-shaped (PEP 440 `2.0a1`, `1.2.post1`, `1!2.0`)
+is not acted on for that package, and neither is a locked version of that
+shape: the alert stays with maintainers rather than being judged on a
+partial range.
 
 Manifests are never edited, so only fixes reachable within the existing
 version requirements are applied. An attempt that does not clear the
@@ -58,7 +67,9 @@ MAX_ALIASES = 10
 LOCKFILE_ECOSYSTEMS = {
     "Cargo.lock": "crates.io",
     "package-lock.json": "npm",
+    "uv.lock": "PyPI",
 }
+
 
 _SEMVER = re.compile(
     r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$"
@@ -143,7 +154,7 @@ class Target:
 
     Attributes:
         lockfile: Repository-relative lockfile path.
-        ecosystem: OSV ecosystem name (`crates.io` or `npm`).
+        ecosystem: OSV ecosystem name (`crates.io`, `npm` or `PyPI`).
         name: Package name as the lockfile records it.
         locked: Version currently locked.
         vulns: Advisories (id to OSV record) that affect `locked`.
@@ -318,6 +329,26 @@ def fetch_vuln_with_aliases(vuln_id: str) -> dict[str, object] | None:
     return merge_aliases(primary, records)
 
 
+def package_key(ecosystem: str, name: str) -> str:
+    """Returns the name OSV matching compares for a package.
+
+    PyPI names are case-insensitive and treat runs of `-`, `_` and `.` alike
+    (PEP 503), and advisories often keep a project's display spelling
+    (`PyYAML`) while uv.lock records the normalized one (`pyyaml`). Other
+    ecosystems compare names exactly.
+
+    Args:
+        ecosystem: OSV ecosystem name.
+        name: Package name as an advisory or lockfile spells it.
+
+    Returns:
+        The comparable name.
+    """
+    if ecosystem == "PyPI":
+        return re.sub(r"[-_.]+", "-", name).lower()
+    return name
+
+
 def _affected_entries(
     vuln: dict[str, object], ecosystem: str, name: str
 ) -> list[dict[str, object]]:
@@ -331,7 +362,8 @@ def _affected_entries(
         if (
             isinstance(package, dict)
             and package.get("ecosystem") == ecosystem
-            and package.get("name") == name
+            and isinstance(package.get("name"), str)
+            and package_key(ecosystem, package["name"]) == package_key(ecosystem, name)
         ):
             entries.append(entry)
     return entries
@@ -340,6 +372,37 @@ def _affected_entries(
 def _mentions(vuln: dict[str, object], ecosystem: str, name: str) -> bool:
     """Reports whether `vuln` lists this package as affected at all."""
     return bool(_affected_entries(vuln, ecosystem, name))
+
+
+def ranges_parse(vuln: dict[str, object], ecosystem: str, name: str) -> bool:
+    """Reports whether every range event `vuln` gives for a package is comparable.
+
+    `_intervals` skips events it cannot parse, which would silently drop the
+    start or end of an affected range and misjudge which versions are safe.
+
+    Args:
+        vuln: The OSV record.
+        ecosystem: OSV ecosystem name.
+        name: Package name.
+
+    Returns:
+        False when an `introduced`, `fixed`, `last_affected` or `limit` event
+        (other than `introduced: 0` and the unbounded `limit: *`) is not
+        semver-shaped.
+    """
+    for events in _ranges(vuln, ecosystem, name):
+        for event in events:
+            for kind in ("introduced", "fixed", "last_affected", "limit"):
+                raw = event.get(kind)
+                if (
+                    raw is None
+                    or (kind == "introduced" and raw == "0")
+                    or (kind == "limit" and raw == "*")
+                ):
+                    continue
+                if not isinstance(raw, str) or Version.parse(raw) is None:
+                    return False
+    return True
 
 
 def _ranges(
@@ -465,11 +528,13 @@ def locked_versions(lockfile: Path) -> dict[str, list[Version]]:
     """Reads the locked versions of every package in a lockfile.
 
     Args:
-        lockfile: A Cargo.lock or package-lock.json (lockfile v2/v3).
+        lockfile: A Cargo.lock, package-lock.json (lockfile v2/v3) or
+            uv.lock.
 
     Returns:
         Package name to locked versions (a crate can be locked at several
-        semver-incompatible versions at once).
+        semver-incompatible versions at once). uv.lock names are PEP 503
+        normalized, and only packages from a package index are read.
 
     Raises:
         ValueError: The lockfile kind is not supported.
@@ -496,6 +561,17 @@ def locked_versions(lockfile: Path) -> dict[str, list[Version]]:
             if not isinstance(name, str):
                 name = key.rsplit("node_modules/", 1)[-1]
             add(name, meta.get("version"))
+    elif lockfile.name == "uv.lock":
+        data = tomllib.loads(lockfile.read_text(encoding="utf-8"))
+        for package in data.get("package", []):
+            if not isinstance(package, dict) or not isinstance(package.get("name"), str):
+                continue
+            # Only index packages are the PyPI releases advisories describe; a
+            # git, URL or working-tree source with the same name is not.
+            source = package.get("source")
+            if not isinstance(source, dict) or "registry" not in source:
+                continue
+            add(package_key("PyPI", package["name"]), package.get("version"))
     else:
         raise ValueError(f"unsupported lockfile: {lockfile.name}")
     for versions in found.values():
@@ -517,8 +593,8 @@ def plan_targets(
 
     Returns:
         The targets to update, and how many alerts matched no updatable
-        package (unknown advisory, unsupported lockfile, missing file, or no
-        affected locked version).
+        package (unknown advisory, unsupported lockfile, missing file,
+        ranges that are not semver-shaped, or no affected locked version).
     """
     targets: dict[tuple[str, str, Version], Target] = {}
     unmatched = 0
@@ -539,7 +615,9 @@ def plan_targets(
             lock_cache[alert.lockfile] = locked_versions(path)
         matched = False
         for name, versions in lock_cache[alert.lockfile].items():
-            if not _mentions(vuln, ecosystem, name):
+            if not _mentions(vuln, ecosystem, name) or not ranges_parse(
+                vuln, ecosystem, name
+            ):
                 continue
             for version in versions:
                 if is_affected(vuln, ecosystem, name, version):
@@ -661,7 +739,7 @@ def apply_target(target: Target, root: Path) -> Version | None:
         attempts.append(
             ["cargo", "update", "--manifest-path", manifest, "--package", spec]
         )
-    else:
+    elif target.ecosystem == "npm":
         attempts.append(
             [
                 "npm",
@@ -673,6 +751,16 @@ def apply_target(target: Target, root: Path) -> Version | None:
                 "--no-fund",
             ]
         )
+    elif target.ecosystem == "PyPI":
+        # `uv lock` re-resolves only the named package and keeps every other
+        # pin; it reads pyproject.toml beside the lockfile and never edits it.
+        # `--no-build` is uv's `--ignore-scripts`: resolving must not build an
+        # sdist (run its setup code) before CI has seen the bump. A release
+        # that only ships as an sdist fails the attempt instead.
+        uv_lock = ["uv", "lock", "--no-build", "--upgrade-package"]
+        if fixes:
+            attempts.append([*uv_lock, f"{target.name}=={max(fixes)}"])
+        attempts.append([*uv_lock, target.name])
     locked_before = locked_versions(path).get(target.name, [])
     for cmd in attempts:
         if _run(cmd, workdir):

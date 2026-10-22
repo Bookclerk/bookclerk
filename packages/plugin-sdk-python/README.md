@@ -94,11 +94,27 @@ main_module = "plugin.py"
 
 See [`examples/plugins-echo-workerd-python`](../../examples/plugins-echo-workerd-python/).
 
+## Developing the SDK
+
+`uv.lock` pins the `dev` and `docs` extras (the SDK itself has no runtime
+dependencies); CI installs from it and the dependency scans read it. CI does
+not build the SDK (its build backend is not in the lockfile) and imports it
+from `src/` instead:
+
+```bash
+uv sync --project packages/plugin-sdk-python --locked --all-extras --no-install-project
+PYTHONPATH=packages/plugin-sdk-python/src \
+  uv run --project packages/plugin-sdk-python --no-sync pytest packages/plugin-sdk-python/tests
+```
+
+After changing dependencies in `pyproject.toml`, run `uv lock` in
+`packages/plugin-sdk-python` and commit the updated `uv.lock`.
+
 ## API docs
 
 Public APIs use [Google-style docstrings](https://google.github.io/styleguide/pyguide.html#38-comments-and-docstrings).
-Generate HTML with pdoc:
+Generate HTML with pdoc (installed from `uv.lock`):
 
 ```bash
-pip install -e "packages/plugin-sdk-python[docs]"
+./scripts/generate-api-docs.sh --python
 ```
