@@ -30,6 +30,12 @@ use bookclerk_plugin_abi::{
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::granted_http::{
+    body_framing, declared_content_length_over_cap, parse_request_head, query_param,
+    transfer_encoding_is_chunked, BodyFraming, ChunkedDecoder, HeadParse, RequestHead,
+    MAX_CHUNK_LINE_BYTES,
+};
+
 /// Largest `/events/publish` request body: a base64 payload at
 /// [`MAX_EVENT_PAYLOAD_BYTES`] plus the envelope fields.
 pub const MAX_EVENT_PUBLISH_BODY_BYTES: u32 = MAX_EVENT_PAYLOAD_BYTES * 2 + 8 * 1024;
@@ -1291,261 +1297,176 @@ pub(crate) async fn pump_http_body<S: AsyncRead + Unpin>(
     prefix: Vec<u8>,
     body_tx: &mpsc::Sender<Vec<u8>>,
 ) -> Result<()> {
-    let chunked = headers
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("transfer-encoding"))
-        .map(|(_, v)| v.to_ascii_lowercase().contains("chunked"))
-        .unwrap_or(false);
-    if chunked {
-        let mut buf = prefix;
-        loop {
-            let size = loop {
-                if let Some(pos) = buf.windows(2).position(|w| w == b"\r\n") {
-                    let line = buf.drain(..pos).collect::<Vec<_>>();
-                    buf.drain(..2);
-                    let line = std::str::from_utf8(&line).unwrap_or("0");
-                    break usize::from_str_radix(line.trim(), 16).unwrap_or(0);
+    match body_framing(headers)? {
+        BodyFraming::Chunked => {
+            let mut decoder = ChunkedDecoder::new();
+            let mut buf = prefix;
+            let mut out = Vec::new();
+            loop {
+                let progress = decoder.decode(&buf, &mut out)?;
+                buf.drain(..progress.consumed);
+                if !out.is_empty() {
+                    body_tx
+                        .send(std::mem::take(&mut out))
+                        .await
+                        .context("granted put body closed")?;
                 }
-                let mut tmp = [0u8; 64];
-                let n = stream.read(&mut tmp).await?;
-                if n == 0 {
-                    bail!("truncated chunked body");
+                if progress.done {
+                    return Ok(());
                 }
-                buf.extend_from_slice(&tmp[..n]);
-            };
-            if size == 0 {
-                return Ok(());
-            }
-            while buf.len() < size {
-                let mut tmp = vec![0u8; (size - buf.len()).min(64 * 1024)];
+                let mut tmp = [0u8; 64 * 1024];
                 let n = stream.read(&mut tmp).await?;
                 if n == 0 {
                     bail!("truncated chunked body");
                 }
                 buf.extend_from_slice(&tmp[..n]);
             }
-            let chunk: Vec<u8> = buf.drain(..size.min(buf.len())).collect();
-            if !chunk.is_empty() {
+        }
+        BodyFraming::Length(len) => {
+            if prefix.len() > len {
+                bail!("body exceeded Content-Length");
+            }
+            let mut remaining = len.saturating_sub(prefix.len());
+            if !prefix.is_empty() {
                 body_tx
-                    .send(chunk)
+                    .send(prefix)
                     .await
                     .context("granted put body closed")?;
             }
-            while buf.len() < 2 {
-                let mut tmp = [0u8; 2];
-                let n = stream.read(&mut tmp).await?;
+            let mut buf = vec![0u8; 64 * 1024];
+            while remaining > 0 {
+                let want = remaining.min(buf.len());
+                let n = stream.read(&mut buf[..want]).await?;
                 if n == 0 {
-                    bail!("truncated chunked body");
+                    bail!("early EOF before Content-Length");
                 }
-                buf.extend_from_slice(&tmp[..n]);
+                remaining -= n;
+                body_tx
+                    .send(buf[..n].to_vec())
+                    .await
+                    .context("granted put body closed")?;
             }
-            if buf.len() >= 2 {
-                buf.drain(..2);
+            Ok(())
+        }
+        BodyFraming::UntilEof => {
+            if !prefix.is_empty() {
+                body_tx
+                    .send(prefix)
+                    .await
+                    .context("granted put body closed")?;
+            }
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                let n = stream.read(&mut buf).await?;
+                if n == 0 {
+                    return Ok(());
+                }
+                body_tx
+                    .send(buf[..n].to_vec())
+                    .await
+                    .context("granted put body closed")?;
             }
         }
     }
-    if let Some(len) = headers
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
-        .and_then(|(_, v)| v.parse::<usize>().ok())
-    {
-        if prefix.len() > len {
-            bail!("body exceeded Content-Length");
-        }
-        let mut remaining = len.saturating_sub(prefix.len());
-        if !prefix.is_empty() {
-            body_tx
-                .send(prefix)
-                .await
-                .context("granted put body closed")?;
-        }
-        let mut buf = vec![0u8; 64 * 1024];
-        while remaining > 0 {
-            let want = remaining.min(buf.len());
-            let n = stream.read(&mut buf[..want]).await?;
-            if n == 0 {
-                bail!("early EOF before Content-Length");
-            }
-            remaining -= n;
-            body_tx
-                .send(buf[..n].to_vec())
-                .await
-                .context("granted put body closed")?;
-        }
-        return Ok(());
-    }
-    if !prefix.is_empty() {
-        body_tx
-            .send(prefix)
-            .await
-            .context("granted put body closed")?;
-    }
-    let mut buf = vec![0u8; 64 * 1024];
-    loop {
-        let n = stream.read(&mut buf).await?;
-        if n == 0 {
-            break;
-        }
-        body_tx
-            .send(buf[..n].to_vec())
-            .await
-            .context("granted put body closed")?;
-    }
-    Ok(())
 }
 
+/// Reads the request head, returning it with whatever body bytes arrived in
+/// the same reads.
 async fn read_request_head<S: AsyncRead + Unpin>(
     stream: &mut S,
 ) -> Result<(String, String, Vec<(String, String)>, Vec<u8>)> {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 1024];
     loop {
+        match parse_request_head(&buf)? {
+            HeadParse::Complete { head, consumed } => {
+                let RequestHead {
+                    method,
+                    path,
+                    headers,
+                } = head;
+                return Ok((method, path, headers, buf[consumed..].to_vec()));
+            }
+            HeadParse::Incomplete => {}
+        }
         let n = stream.read(&mut tmp).await?;
         if n == 0 {
-            break;
+            bail!("eof before request headers");
         }
         buf.extend_from_slice(&tmp[..n]);
-        if let Some(idx) = buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4) {
-            let head = std::str::from_utf8(&buf[..idx]).context("request headers")?;
-            let mut lines = head.split("\r\n");
-            let req = lines.next().unwrap_or("");
-            let mut parts = req.split_whitespace();
-            let method = parts.next().unwrap_or("GET").to_string();
-            let path = parts.next().unwrap_or("/").to_string();
-            let mut headers = Vec::new();
-            for line in lines {
-                if line.is_empty() {
-                    continue;
-                }
-                if let Some((k, v)) = line.split_once(':') {
-                    headers.push((k.trim().to_string(), v.trim().to_string()));
-                }
-            }
-            return Ok((method, path, headers, buf[idx..].to_vec()));
-        }
-        if buf.len() > 64 * 1024 {
-            bail!("request headers too large");
-        }
     }
-    bail!("eof before request headers")
 }
 
+/// Reads a whole request body of at most `max_bytes` decoded bytes.
+///
+/// Chunked bodies are decoded, and the cap applies to the decoded body as
+/// well as to the bytes buffered while decoding it. Errors whose message
+/// starts with `payload_too_large` map to HTTP 413 at the call sites.
 async fn read_content<S: AsyncRead + Unpin>(
     stream: &mut S,
     headers: &[(String, String)],
     mut prefix: Vec<u8>,
     max_bytes: u32,
 ) -> Result<Vec<u8>> {
-    let cap = max_bytes as usize;
-    if let Some(len) = headers
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
-        .and_then(|(_, v)| v.parse::<usize>().ok())
-    {
-        if len > cap {
-            bail!("payload_too_large: Content-Length {len} exceeds {cap}");
-        }
-        while prefix.len() < len {
-            let mut tmp = vec![0u8; (len - prefix.len()).min(64 * 1024)];
-            let n = stream.read(&mut tmp).await?;
-            if n == 0 {
-                break;
+    let cap = usize::try_from(max_bytes).unwrap_or(usize::MAX);
+    match body_framing(headers)? {
+        BodyFraming::Length(len) => {
+            if len > cap {
+                bail!("payload_too_large: Content-Length {len} exceeds {cap}");
             }
-            prefix.extend_from_slice(&tmp[..n]);
+            while prefix.len() < len {
+                let mut tmp = vec![0u8; (len - prefix.len()).min(64 * 1024)];
+                let n = stream.read(&mut tmp).await?;
+                if n == 0 {
+                    break;
+                }
+                prefix.extend_from_slice(&tmp[..n]);
+                if prefix.len() > cap {
+                    bail!("payload_too_large: body exceeded {cap}");
+                }
+            }
+            prefix.truncate(len);
+            Ok(prefix)
+        }
+        BodyFraming::Chunked => {
+            let mut decoder = ChunkedDecoder::new();
+            let mut buf = prefix;
+            let mut body = Vec::new();
+            loop {
+                let progress = decoder.decode(&buf, &mut body)?;
+                buf.drain(..progress.consumed);
+                if body.len() > cap || buf.len() > cap.saturating_add(MAX_CHUNK_LINE_BYTES) {
+                    bail!("payload_too_large: body exceeded {cap}");
+                }
+                if progress.done {
+                    return Ok(body);
+                }
+                let mut tmp = [0u8; 64 * 1024];
+                let n = stream.read(&mut tmp).await?;
+                if n == 0 {
+                    bail!("truncated chunked body");
+                }
+                buf.extend_from_slice(&tmp[..n]);
+            }
+        }
+        BodyFraming::UntilEof => {
+            while prefix.len() <= cap {
+                let mut tmp = [0u8; 64 * 1024];
+                let n = stream.read(&mut tmp).await?;
+                if n == 0 {
+                    break;
+                }
+                prefix.extend_from_slice(&tmp[..n]);
+                if prefix.len() > cap {
+                    bail!("payload_too_large: body exceeded {cap}");
+                }
+            }
             if prefix.len() > cap {
                 bail!("payload_too_large: body exceeded {cap}");
             }
-        }
-        prefix.truncate(len);
-        return Ok(prefix);
-    }
-    let chunked = transfer_encoding_is_chunked(headers);
-    if chunked {
-        let mut body = Vec::new();
-        if !prefix.is_empty() {
-            body.extend_from_slice(&prefix);
-        }
-        // Remaining chunk-encoded bytes after the header prefix are not fully
-        // parsed here; count whatever was already buffered then read until EOF
-        // with a hard cap so a guest cannot grow an unbounded Vec.
-        loop {
-            if body.len() > cap {
-                bail!("payload_too_large: body exceeded {cap}");
-            }
-            let mut tmp = [0u8; 64 * 1024];
-            let n = stream.read(&mut tmp).await?;
-            if n == 0 {
-                break;
-            }
-            body.extend_from_slice(&tmp[..n]);
-        }
-        if body.len() > cap {
-            bail!("payload_too_large: body exceeded {cap}");
-        }
-        return Ok(body);
-    }
-    while prefix.len() <= cap {
-        let mut tmp = [0u8; 64 * 1024];
-        let n = stream.read(&mut tmp).await?;
-        if n == 0 {
-            break;
-        }
-        prefix.extend_from_slice(&tmp[..n]);
-        if prefix.len() > cap {
-            bail!("payload_too_large: body exceeded {cap}");
+            Ok(prefix)
         }
     }
-    if prefix.len() > cap {
-        bail!("payload_too_large: body exceeded {cap}");
-    }
-    Ok(prefix)
-}
-
-fn transfer_encoding_is_chunked(headers: &[(String, String)]) -> bool {
-    headers
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("transfer-encoding"))
-        .map(|(_, v)| v.to_ascii_lowercase().contains("chunked"))
-        .unwrap_or(false)
-}
-
-fn declared_content_length_over_cap(headers: &[(String, String)], cap: u32) -> bool {
-    headers
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
-        .and_then(|(_, v)| v.parse::<usize>().ok())
-        .is_some_and(|len| len > cap as usize)
-}
-
-fn query_param(query: &str, name: &str) -> Option<String> {
-    for pair in query.split('&') {
-        let Some((k, v)) = pair.split_once('=') else {
-            continue;
-        };
-        if k == name {
-            return Some(percent_decode(v));
-        }
-    }
-    None
-}
-
-fn percent_decode(s: &str) -> String {
-    let mut out = Vec::with_capacity(s.len());
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hex = &s[i + 1..i + 3];
-            if let Ok(b) = u8::from_str_radix(hex, 16) {
-                out.push(b);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 async fn write_status<S: AsyncWrite + Unpin>(

@@ -277,6 +277,57 @@ class WorkflowContractTests(unittest.TestCase):
                     found.add((data["package"]["name"], test["name"]))
         self.assertEqual(found, set(CUSTOM_HARNESS_TESTS))
 
+    def test_fuzz_targets_are_wired_end_to_end(self) -> None:
+        """Every fuzz target has a seed corpus, a planner route and a replay test,
+        and every fuzzed crate is on the ClusterFuzzLite PR path filter
+        (docs/adr/untrusted-input-fuzzing.md)."""
+        fuzz = tomllib.loads((REPO / "fuzz" / "Cargo.toml").read_text(encoding="utf-8"))
+        targets = sorted(b["name"] for b in fuzz.get("bin", []))
+        self.assertTrue(targets)
+        relations = tomllib.loads(
+            (REPO / "scripts" / "ci_plan" / "relations.toml").read_text(encoding="utf-8")
+        )
+        corpus_owner: dict[str, str] = {}
+        for ti in relations.get("test_input", []):
+            for pattern in ti["paths"]:
+                if pattern.startswith("fuzz/corpus/"):
+                    corpus_owner[pattern.split("/")[2]] = ti["package"]
+        packages = {
+            tomllib.loads(m.read_text(encoding="utf-8"))["package"]["name"]: m.parent
+            for m in (REPO / "crates").glob("**/Cargo.toml")
+            if "target" not in m.parts and "node_modules" not in m.parts
+        }
+        for target in targets:
+            with self.subTest(target=target):
+                corpus = REPO / "fuzz" / "corpus" / target
+                self.assertTrue(
+                    any(p.is_file() for p in corpus.iterdir()) if corpus.is_dir() else False,
+                    f"fuzz/corpus/{target}/ needs at least one seed",
+                )
+                owner = corpus_owner.get(target)
+                self.assertIsNotNone(owner, f"relations.toml has no test_input for fuzz/corpus/{target}/**")
+                replay = packages[owner] / "tests" / "fuzz_corpus.rs"
+                self.assertTrue(replay.is_file(), f"{owner} has no tests/fuzz_corpus.rs")
+                self.assertIn(target, replay.read_text(encoding="utf-8"), f"{replay} does not replay {target}")
+        for name in (REPO / "fuzz" / "dictionaries").iterdir():
+            with self.subTest(dictionary=name.name):
+                self.assertIn(name.stem, targets, f"{name.name} names no fuzz target")
+                self.assertIn(name.suffix, {".dict", ".options"})
+        pr = yaml.safe_load(
+            (REPO / ".github" / "workflows" / "cflite-pr.yml").read_text(encoding="utf-8")
+        )
+        on = pr.get("on") or pr.get(True)
+        filter_paths = set(on["pull_request"]["paths"])
+        for name, dep in fuzz["dependencies"].items():
+            if isinstance(dep, dict) and "path" in dep:
+                crate_dir = Path(dep["path"]).name
+                with self.subTest(dependency=name):
+                    self.assertIn(
+                        f"crates/{crate_dir}/**",
+                        filter_paths,
+                        f"cflite-pr.yml must fuzz on changes to crates/{crate_dir}",
+                    )
+
     def test_actions_are_pinned(self) -> None:
         for name, job in self.jobs.items():
             for step in job.get("steps", []):

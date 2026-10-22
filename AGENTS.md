@@ -48,6 +48,22 @@ Types:
   function.
 - Run `cargo fmt` before committing rather than formatting by hand.
 
+Untrusted input ([ADR](docs/adr/untrusted-input-fuzzing.md)):
+
+- Every boundary that parses, decodes or authorizes bytes the host did not
+  produce (guest RPC and HTTP, store downloads and metadata, plugin packages
+  and archives, node-to-node frames, confined-helper replies) ships with a
+  `cargo-fuzz` target in `fuzz/`, a seed corpus in `fuzz/corpus/<target>/`
+  and a replay test in the owning crate, in the same pull request that adds
+  or widens the boundary. Targets assert the boundary's invariant against an
+  independent oracle where one exists, not only "no panic". The boundary
+  list lives in [`docs/ci.md`](docs/ci.md#fuzzing); keep it current.
+- Write boundary parsing sans-IO (a function over a byte slice or a state
+  machine fed by one) so the fuzzer and the unit tests drive the same code
+  the server does.
+- A crash from scheduled fuzzing is a security report: fix it first and land
+  the minimized input as `fuzz/corpus/<target>/regression_*` with the fix.
+
 ### Before every push
 
 - `cargo fmt --all -- --check` and
@@ -98,6 +114,8 @@ and review the change against them:
 - Does it change anything the scope does not cover? Unexplained changes are
   findings.
 - Does it break behavior outside its files? That is in scope.
+- Does it add or widen an untrusted-input boundary without a fuzz target,
+  seed corpus and replay test? That is a finding inside the scope.
 
 Findings that are substantially different from the pull request's intent
 (pre-existing problems, other features, redesigns, "while you're here"

@@ -1,0 +1,4 @@
+GET /open?key=books%2Fa%20b.m4b HTTP/1.1
+Authorization: Bearer grant-1
+Host: granted
+

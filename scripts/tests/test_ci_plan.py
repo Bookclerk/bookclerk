@@ -482,9 +482,32 @@ class FullSuiteTests(unittest.TestCase):
         self.assertEqual(p.params("postgres")["steps"], list(RELATIONS.postgres_steps))
 
     def test_global_paths(self) -> None:
-        for path in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".github/workflows/ci.yml", "scripts/ci-plan.py", "scripts/ci-exec.py", "scripts/ci_plan/relations.toml", "fuzz/fuzz_targets/sql_parse.rs"):
+        for path in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".github/workflows/ci.yml", "scripts/ci-plan.py", "scripts/ci-exec.py", "scripts/ci_plan/relations.toml", "fuzz/Cargo.toml", "fuzz/Cargo.lock"):
             with self.subTest(path=path):
                 self.assert_full(plan(path))
+
+    def test_fuzz_targets_and_dictionaries_select_nothing(self) -> None:
+        for path in ("fuzz/fuzz_targets/sql_parse.rs", "fuzz/dictionaries/sql_parse.dict", "fuzz/fuzz_targets/granted_http.options"):
+            with self.subTest(path=path):
+                p = plan(path)
+                self.assertFalse(p.full_suite, p.reasons)
+                self.assertEqual(p.test_packages(), [])
+                self.assertFalse(p.selected("rust_test"))
+
+    def test_fuzz_corpus_replays_in_the_owning_crate_only(self) -> None:
+        for path, package in (
+            ("fuzz/corpus/mp4_parse/regression_x.m4b", "bookclerk-mp4"),
+            ("fuzz/corpus/sql_lower/regression_x.sql", "bookclerk-db-exec"),
+            ("fuzz/corpus/sql_parse/x.sql", "bookclerk-plugin-abi"),
+            ("fuzz/corpus/granted_http/x.http", "bookclerk-workerd"),
+            ("fuzz/corpus/egress_policy/x.bin", "bookclerk-plugin-manifest"),
+        ):
+            with self.subTest(path=path):
+                p = plan(path)
+                self.assertFalse(p.full_suite, p.reasons)
+                self.assertEqual(p.test_packages(), [package])
+        # A corpus nobody replays is unclassified.
+        self.assert_full(plan("fuzz/corpus/brand_new_target/x.bin"))
 
     def test_unknown_and_unclassified(self) -> None:
         for path in ("brand-new-tooling/foo.sh", "third_party/audible-rs/src/lib.rs", "packages/brand-new-sdk/src/index.ts", ".github/actions/x/action.yml", "scripts/ad-hoc-helper.sh", "crates/does-not-exist-yet/Cargo.toml", "assets/other.png"):

@@ -43,6 +43,29 @@ package = "bookclerk-library"
 # every event (scripts/tests/test_db_plugin_isolation.py).
 paths = ["scripts/check-db-plugin-isolation.py"]
 
+# Fuzz seed corpora, replayed by the owning crate's `tests/fuzz_corpus.rs`
+# (docs/adr/untrusted-input-fuzzing.md). A corpus directory with no entry
+# here is unclassified and runs the full suite.
+[[test_input]]
+package = "bookclerk-plugin-abi"
+paths = ["fuzz/corpus/sql_parse/**", "fuzz/corpus/abi_decode/**"]
+
+[[test_input]]
+package = "bookclerk-db-exec"
+paths = ["fuzz/corpus/sql_lower/**"]
+
+[[test_input]]
+package = "bookclerk-mp4"
+paths = ["fuzz/corpus/mp4_parse/**"]
+
+[[test_input]]
+package = "bookclerk-workerd"
+paths = ["fuzz/corpus/granted_http/**"]
+
+[[test_input]]
+package = "bookclerk-plugin-manifest"
+paths = ["fuzz/corpus/egress_policy/**", "fuzz/corpus/plugin_manifest/**"]
+
 [[test_input]]
 package = "bookclerk-cli"
 paths = ["crates/bookclerk-plugins/platform/database-sqlite/plugin.toml"]

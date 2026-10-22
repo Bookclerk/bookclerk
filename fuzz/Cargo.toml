@@ -1,5 +1,5 @@
 [package]
-name = "bookclerk-sql-fuzz"
+name = "bookclerk-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
@@ -8,11 +8,19 @@ license = "GPL-3.0-or-later"
 [package.metadata]
 cargo-fuzz = true
 
+# Every `path =` dependency here is a fuzzed crate: the ClusterFuzzLite PR
+# workflow's path filter must list it (scripts/tests/test_ci_contract.py).
 [dependencies]
 libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+httparse = "1"
+serde_json = "1"
+capnp = "0.27"
 bookclerk-plugin-abi = { path = "../crates/bookclerk-plugin-abi", features = ["host"] }
+bookclerk-plugin-manifest = { path = "../crates/bookclerk-plugin-manifest" }
 bookclerk-db-exec = { path = "../crates/bookclerk-db-exec" }
 bookclerk-mp4 = { path = "../crates/bookclerk-mp4" }
+bookclerk-workerd = { path = "../crates/bookclerk-workerd" }
 sea-orm = { version = "2.0.0", default-features = false }
 
 [workspace]
@@ -35,6 +43,34 @@ bench = false
 [[bin]]
 name = "mp4_parse"
 path = "fuzz_targets/mp4_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "granted_http"
+path = "fuzz_targets/granted_http.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "egress_policy"
+path = "fuzz_targets/egress_policy.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "plugin_manifest"
+path = "fuzz_targets/plugin_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "abi_decode"
+path = "fuzz_targets/abi_decode.rs"
 test = false
 doc = false
 bench = false

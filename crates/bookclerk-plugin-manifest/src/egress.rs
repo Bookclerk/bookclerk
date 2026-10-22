@@ -288,6 +288,7 @@ impl EgressPolicy {
     /// `true` when mode is outbound and the host matches an allowlist entry.
     #[must_use]
     pub fn allows_initial(&self, host: &str) -> bool {
+        let host = unbracketed(host);
         match self.mode {
             NetworkMode::Deny => false,
             NetworkMode::Outbound => {
@@ -341,6 +342,7 @@ impl EgressPolicy {
     /// Raw TCP `connect` to `host:port`. Fetch domain grants do not apply.
     #[must_use]
     pub fn allows_tcp(&self, host: &str, port: u16) -> bool {
+        let host = unbracketed(host);
         if self.mode == NetworkMode::Deny {
             return false;
         }
@@ -368,6 +370,7 @@ impl EgressPolicy {
     /// in which case only public destinations (plus explicit CIDRs) pass.
     #[must_use]
     pub fn allows_redirect(&self, host: &str, hop_index: u32) -> bool {
+        let host = unbracketed(host);
         match self.mode {
             NetworkMode::Deny => false,
             NetworkMode::Outbound => {
@@ -612,6 +615,17 @@ pub fn host_matches(host: &str, pattern: &str) -> bool {
     host_matches_normalized(&host, &pattern)
 }
 
+/// `host` without URL-form IPv6 brackets (`[::1]` → `::1`), so an address a
+/// URL parser hands over in brackets is judged as the address it is rather
+/// than as an unknown hostname (which the undeclared-public-redirect path
+/// would otherwise let through).
+fn unbracketed(host: &str) -> &str {
+    let host = host.trim();
+    host.strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(host)
+}
+
 /// Exact or `*.suffix` match on already-normalized host and pattern strings.
 fn host_matches_normalized(host: &str, pattern: &str) -> bool {
     // `host` and policy `domains` are already IDNA-normalized by callers
@@ -627,6 +641,37 @@ fn host_matches_normalized(host: &str, pattern: &str) -> bool {
 #[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bracketed_ipv6_is_judged_as_an_address() {
+        // Found by the `egress_policy` corpus oracle: `url.hostname` hands IPv6
+        // over in brackets, and an unknown hostname passed the undeclared-public
+        // redirect path.
+        let policy = EgressPolicy {
+            mode: NetworkMode::Outbound,
+            domains: vec!["api.example.com".into()],
+            max_redirects: 5,
+            allow_undeclared_public_redirects: true,
+            ..EgressPolicy::deny()
+        };
+        for host in [
+            "[::1]",
+            "::1",
+            "[fe80::1]",
+            "[::ffff:127.0.0.1]",
+            "[fd00::1]",
+        ] {
+            assert!(!policy.allows_redirect(host, 0), "{host}");
+            assert!(!policy.allows_initial(host), "{host}");
+            assert!(!policy.allows_tcp(host, 443), "{host}");
+        }
+        assert!(policy.allows_redirect("[2606:4700::1111]", 0));
+        let granted = EgressPolicy {
+            address_cidrs: vec!["::1/128".into()],
+            ..policy
+        };
+        assert!(granted.allows_redirect("[::1]", 0));
+    }
 
     #[test]
     fn wildcard_and_redirect_policy() {

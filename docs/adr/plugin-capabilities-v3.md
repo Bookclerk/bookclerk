@@ -136,6 +136,10 @@ payloads for several storefront / integration surfaces, and a reverse
   (`scripts/check-plugin-architecture.sh`).
 - Docs: this ADR is the v3 decision record; [`plugins.md`](../plugins.md)
   is the author/operator handbook.
+- Every surface a guest can reach with bytes of its own (typed Cap'n Proto
+  replies, the granted HTTP channel, the socket proxy and mux, guest SQL)
+  is fuzzed per [Untrusted-input fuzzing](untrusted-input-fuzzing.md); a
+  new entrypoint family or channel adds its target in the same change.
 
 ## Non-goals
 

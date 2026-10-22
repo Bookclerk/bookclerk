@@ -44,6 +44,16 @@ FULL_SUITE_PATH_PREFIXES = (
     "fuzz/",
 )
 
+# Fuzz inputs the main workflow never compiles: targets and dictionaries only
+# build under the ClusterFuzzLite workflows, which select themselves by path;
+# seed corpora are replayed by the owning crate's tests, declared as
+# `test_input` in relations.toml (an undeclared corpus stays a full suite).
+FUZZ_SELF_SELECTING_PREFIXES = (
+    "fuzz/fuzz_targets/",
+    "fuzz/dictionaries/",
+)
+FUZZ_CORPUS_PREFIX = "fuzz/corpus/"
+
 # Crates documented/linted as the public plugin authoring surface.
 PUBLISH_CRATES = frozenset(
     {
@@ -644,7 +654,12 @@ def build_plan(
     changed_pkgs: set[str] = set()
 
     for path in plan.changed_paths:
-        if path in FULL_SUITE_PATHS or any(path.startswith(p) for p in FULL_SUITE_PATH_PREFIXES):
+        fuzz_input = path.startswith(FUZZ_CORPUS_PREFIX) or path.startswith(
+            FUZZ_SELF_SELECTING_PREFIXES
+        )
+        if not fuzz_input and (
+            path in FULL_SUITE_PATHS or any(path.startswith(p) for p in FULL_SUITE_PATH_PREFIXES)
+        ):
             plan.mark_full(f"global path {path}")
             continue
         top = _top_level(path)
@@ -705,6 +720,8 @@ def build_plan(
             surf.abi.append(path)
             classified = True
         if path.startswith(DOCS_PREFIX) or path in DOC_FILES or path.startswith(PLAN_JOB_TEST_PREFIX):
+            classified = True
+        if path.startswith(FUZZ_SELF_SELECTING_PREFIXES):
             classified = True
         if pkg is None and path.startswith("examples/plugins-"):
             guest_dir = "/".join(path.split("/")[:2])

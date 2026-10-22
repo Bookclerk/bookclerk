@@ -122,6 +122,9 @@ contract must be **identical** across runtimes.
 - Catalog script archives ship `plugin.toml` + `modules/` only.
 - Native publishers still build per-arch when they need native capabilities.
 - CI must fail on ABI schema drift vs generated SDK outputs.
+- Every byte a guest can send the host (Cap'n Proto replies, the granted
+  HTTP channel, CONNECT handshakes, mux frames) crosses a fuzzed boundary
+  per [Untrusted-input fuzzing](untrusted-input-fuzzing.md).
 - CI requires the pinned `workerd` binary for the workerd contract suite; the job
   fails if the workerd adapter cannot start (`BOOKCLERK_SKIP_WORKERD=1` is
   local native-only).
