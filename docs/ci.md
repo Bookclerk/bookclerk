@@ -279,14 +279,15 @@ a pull request that adds or widens a boundary extends it.
 | `sql_lower` | Adapter lowering of canonical SQL (`bookclerk-db-exec`) | Quoted strings and comments survive lowering verbatim except documented rewrites |
 | `mp4_parse` | ISO-BMFF parse and remux of store downloads (`bookclerk-mp4`) | — |
 | `granted_http` | Granted reverse channel: request head, body framing, chunked bodies, query string (`bookclerk-workerd::granted_http`) | Split-invariant chunked decoding; agrees with an `httparse` reference decoder; the route body reader (framing dispatch, byte cap, end of stream) is split-invariant and yields what the declared framing promises |
-| `egress_policy` | Guest egress allowlist (`bookclerk-plugin-manifest::EgressPolicy`, JSON wire form) | Deny allows nothing; loopback/private/metadata need a CIDR in every spelling (trailing dot, fullwidth digits, legacy `127.1` / hex / octal IPv4); `*.suffix` never matches `xsuffix`; percent-encoded hosts never match; JSON round trip |
+| `egress_policy` | Guest egress allowlist (`bookclerk-plugin-manifest::EgressPolicy`, JSON wire form; the workerd `egress.js` gate is a separate implementation, see #335 below) | Deny allows nothing; loopback/private/metadata need a CIDR in every spelling (trailing dot, fullwidth digits, legacy `127.1` / hex / octal IPv4); `*.suffix` never matches `xsuffix`; percent-encoded hosts never match; JSON round trip |
 | `plugin_manifest` | `plugin.toml` parse, validation, derived egress and consent (`bookclerk-plugin-manifest`) | `format_manifest` round trip; a deny manifest yields a deny policy |
 | `abi_decode` | Every generated Cap'n Proto `read_*` codec (`read_any_message`) and the database envelope decoders (`bookclerk-plugin-abi`) | Traversal budget derived from input size |
 
 Still to add (tracked in the fuzzing ADR's follow-ups): guest-SQL
 authorization against a SQLite authorizer oracle, the plugin mux, Cap'n
 Proto `read(write(v)) == v` round trips, a full RPC session against a
-scripted guest, Audible CENC/DASH parsing, package extraction, naming paths,
+scripted guest, the workerd `egress.js` gate checked against `EgressPolicy`
+(#335), Audible CENC/DASH parsing, package extraction, naming paths,
 node frames, media chapter math, backup import.
 
 Seed corpora are checked in under `fuzz/corpus/<target>/` and replayed by

@@ -32,13 +32,14 @@ fuzz_target!(|data: &[u8]| {
         .expect("parse() validated; validate() must agree");
     let _ = manifest.primary_family();
 
-    if let Ok(formatted) = format_manifest(&manifest) {
-        let reparsed = parse(&formatted).expect("canonical format must parse");
-        assert_eq!(
-            reparsed, manifest,
-            "format/parse round trip changed the manifest"
-        );
-    }
+    // A manifest that parsed and validated must format, or the round-trip
+    // oracle below is skipped exactly where the formatter regressed.
+    let formatted = format_manifest(&manifest).expect("validated manifest must format");
+    let reparsed = parse(&formatted).expect("canonical format must parse");
+    assert_eq!(
+        reparsed, manifest,
+        "format/parse round trip changed the manifest"
+    );
 
     let _ = consent_domains_for(&manifest);
     let policy = EgressPolicy::from_manifest(&manifest);

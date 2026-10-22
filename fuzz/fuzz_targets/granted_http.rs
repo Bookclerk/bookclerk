@@ -13,8 +13,8 @@
 
 use bookclerk_workerd::granted_http::{
     body_framing, declared_content_length_over_cap, parse_request_head, percent_decode,
-    query_param, transfer_encoding_is_chunked, BodyError, BodyFraming, BodyReader,
-    ChunkedDecoder, HeadParse, MAX_CHUNK_LINE_BYTES,
+    query_param, transfer_encoding_is_chunked, BodyError, BodyFraming, BodyReader, ChunkedDecoder,
+    HeadParse, MAX_CHUNK_LINE_BYTES,
 };
 use bookclerk_workerd::socket_proxy::parse_authority;
 use libfuzzer_sys::fuzz_target;
@@ -62,7 +62,10 @@ fn check_body_reader(framing: BodyFraming, body: &[u8]) {
     let (out, verdict) = drive(framing, cap, std::iter::once(body));
     let step = body.get(1).map_or(7, |b| usize::from(*b) + 1);
     let (piece_out, piece_verdict) = drive(framing, cap, body.chunks(step));
-    assert_eq!(verdict, piece_verdict, "split changed the body reader's verdict");
+    assert_eq!(
+        verdict, piece_verdict,
+        "split changed the body reader's verdict"
+    );
     if let Some(cap) = cap {
         assert!(out.len() <= cap, "yielded past the cap");
         assert!(piece_out.len() <= cap, "yielded past the cap");
