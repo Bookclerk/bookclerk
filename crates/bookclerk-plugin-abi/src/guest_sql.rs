@@ -1677,7 +1677,6 @@ const V1_RESERVED_WORDS: &[&str] = &[
     "freeze",
     "from",
     "full",
-    "glob",
     "grant",
     "group",
     "having",
@@ -1700,7 +1699,6 @@ const V1_RESERVED_WORDS: &[&str] = &[
     "limit",
     "localtime",
     "localtimestamp",
-    "match",
     "natural",
     "not",
     "nothing",
@@ -1715,9 +1713,7 @@ const V1_RESERVED_WORDS: &[&str] = &[
     "over",
     "placing",
     "primary",
-    "recursive",
     "references",
-    "regexp",
     "returning",
     "right",
     "select",
@@ -1750,9 +1746,8 @@ const V1_RESERVED_WORDS: &[&str] = &[
 /// True when `ident` (as [`Scan::read_ident`] returns it) is in
 /// [`V1_RESERVED_WORDS`], compared without regard to case.
 fn is_v1_reserved_word(ident: &str) -> bool {
-    V1_RESERVED_WORDS
-        .iter()
-        .any(|word| ident.eq_ignore_ascii_case(word))
+    let lower = ident.to_ascii_lowercase();
+    V1_RESERVED_WORDS.binary_search(&lower.as_str()).is_ok()
 }
 
 /// # Errors
@@ -1834,16 +1829,12 @@ fn take_v1_number(scan: &mut Scan<'_>) -> bool {
         saw = true;
         i += 1;
     }
-    if !leading_dot
-        && i < bytes.len()
-        && bytes[i] == b'.'
-        && bytes.get(i + 1).is_some_and(|b| b.is_ascii_digit())
-    {
+    if !leading_dot && saw && i < bytes.len() && bytes[i] == b'.' {
+        // `1.5` and the bare `1.` every engine reads as 1.0.
         i += 1;
         while i < bytes.len() && bytes[i].is_ascii_digit() {
             i += 1;
         }
-        saw = true;
     }
     if !saw {
         return false;
@@ -4143,6 +4134,7 @@ mod tests {
             "SELECT id FROM books WHERE title = 'a''",
             "SELECT id FROM books OFFSET 1",
             "SELECT 4+.11151.111%1-0",
+            "SELECT id + ESCAPE FROM books",
             "SELECT b.*Fe FROM books b",
             "SELECT b.* AS x FROM books b",
             "SELECT b.* + 1 FROM books b",
@@ -4154,13 +4146,54 @@ mod tests {
                 .unwrap_err();
             assert!(err.to_string().contains("SQL v1"), "{sql}: {err}");
         }
-        validate_guest_execute_request(&req(
+        for sql in [
             "SELECT body FROM books WHERE body LIKE 'a%' ORDER BY id ASC NULLS FIRST",
-            vec![],
-            DbResultSelection::Rows,
-            1,
-        ))
-        .unwrap();
+            // `1.` is the number 1 to every engine; `.5` too.
+            "SELECT id, 1., .5 FROM books WHERE id > 1.",
+            // Words both engines accept as names stay usable: SQLite falls
+            // back to an identifier and PostgreSQL does not reserve them.
+            "SELECT id AS match, title AS glob FROM books",
+            "SELECT id FROM books recursive WHERE recursive.id = 1",
+        ] {
+            validate_guest_execute_request(&req(sql, vec![], DbResultSelection::Rows, 1))
+                .unwrap_or_else(|err| panic!("{sql}: {err}"));
+        }
+    }
+
+    #[test]
+    fn v1_reserved_words_are_sorted_lowercase_and_exclude_portable_names() {
+        let mut sorted = V1_RESERVED_WORDS.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            V1_RESERVED_WORDS,
+            sorted.as_slice(),
+            "binary search needs a sorted list"
+        );
+        assert!(V1_RESERVED_WORDS
+            .iter()
+            .all(|w| w.chars().all(|c| c.is_ascii_lowercase() || c == '_')));
+        // SQLite falls back to identifiers for these and PostgreSQL does not
+        // reserve them, so a plugin may use them as names.
+        for word in ["match", "glob", "regexp", "recursive"] {
+            assert!(!is_v1_reserved_word(word), "{word}");
+        }
+        // PostgreSQL reserves these (type/function keywords cannot name a
+        // column), so they stay refused even though SQLite would accept them.
+        // ESCAPE is a real keyword in both engines (SQLite has no identifier
+        // fallback for it), so it stays reserved too.
+        for word in [
+            "like",
+            "ilike",
+            "similar",
+            "binary",
+            "freeze",
+            "verbose",
+            "concurrently",
+            "escape",
+        ] {
+            assert!(is_v1_reserved_word(word), "{word}");
+        }
     }
 
     #[test]

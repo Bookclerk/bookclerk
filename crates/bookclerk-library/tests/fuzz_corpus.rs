@@ -59,14 +59,10 @@ fn must_refuse(path: &Path) -> bool {
 
 /// The host's own verdict on a seed, for failure messages.
 fn host_verdict(data: &[u8]) -> String {
-    let Some((&selector, sql)) = data.split_first() else {
-        return "empty seed".to_string();
+    let Some((variant, sql, text_binds)) = oracle::decode(data) else {
+        return "seed is empty, too long or not UTF-8".to_string();
     };
-    let Ok(sql) = std::str::from_utf8(sql) else {
-        return "seed is not UTF-8".to_string();
-    };
-    let variant = Variant::from_selector(selector);
-    match oracle::host_admits(variant, sql, selector & 0x80 != 0) {
+    match oracle::host_admits(variant, sql, text_binds) {
         Ok(()) => format!("{variant:?} admitted it"),
         Err(err) => format!("{variant:?} refused it: {err}"),
     }

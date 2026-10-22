@@ -2165,12 +2165,19 @@ fn typecheck_insert_on_conflict(
     if !scan.take_kw("UPDATE") || !scan.take_kw("SET") {
         return Err(ty_err(cx.index, "ON CONFLICT DO NOTHING | DO UPDATE SET"));
     }
-    cx.from
-        .insert("excluded".to_string(), FromSrc::Physical(table.to_string()));
+    cx.from.insert(
+        EXCLUDED_ALIAS.to_string(),
+        FromSrc::Physical(table.to_string()),
+    );
     let result = typecheck_on_conflict_set(scan, cx, table);
-    cx.from.remove("excluded");
+    cx.from.remove(EXCLUDED_ALIAS);
     result
 }
+
+/// Alias every engine gives the row an `INSERT … ON CONFLICT DO UPDATE` would
+/// have inserted; it is visible only qualified (`excluded.col`) and never
+/// resolves an unqualified column.
+const EXCLUDED_ALIAS: &str = "excluded";
 
 /// Types the `SET col = expr, … [WHERE pred]` tail of `DO UPDATE` with
 /// `excluded` already visible in `cx.from`.
@@ -3796,7 +3803,17 @@ fn lookup_column(cx: &mut TypeCx<'_>, table: Option<&str>, column: &str) -> Resu
         return unknown_column(cx, Some(table), column);
     }
     let mut found = None;
-    for src in cx.from.values().cloned().collect::<Vec<_>>() {
+    let sources: Vec<(String, FromSrc)> = cx
+        .from
+        .iter()
+        .map(|(name, src)| (name.clone(), src.clone()))
+        .collect();
+    for (name, src) in sources {
+        // `excluded` is only reachable qualified: an unqualified column in a
+        // `DO UPDATE` clause names the target row in every engine.
+        if name == EXCLUDED_ALIAS {
+            continue;
+        }
         if let Ok(ty) = lookup_from_src(cx, &src, column) {
             if found.is_some() {
                 return Err(PluginError::invalid_params(format!(
@@ -4761,6 +4778,17 @@ mod tests {
         );
         typecheck_execute_request_resolved(
             &req("INSERT INTO books (id, title) VALUES (1, 'a') ON CONFLICT DO NOTHING"),
+            &env,
+        )
+        .unwrap();
+        // Unqualified columns in the DO UPDATE clause name the target row
+        // (`excluded` never makes them ambiguous), as SQLite and PostgreSQL
+        // resolve them.
+        typecheck_execute_request_resolved(
+            &req(
+                "INSERT INTO books (id, title) VALUES (1, 'a') ON CONFLICT (id) \
+                 DO UPDATE SET title = title || excluded.title WHERE title <> excluded.title",
+            ),
             &env,
         )
         .unwrap();

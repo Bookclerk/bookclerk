@@ -384,8 +384,19 @@ pub fn sqlite_accesses(sql: &str) -> Vec<Access> {
 
 /// True when the statement's first word is a DDL verb.
 fn is_ddl(sql: &str) -> bool {
-    sql.trim_start()
-        .split(|c: char| !c.is_ascii_alphabetic())
+    // The grammar skips leading trivia before the verb; so must this.
+    let mut rest = sql;
+    loop {
+        rest = rest.trim_start();
+        if let Some(after) = rest.strip_prefix("--") {
+            rest = after.split_once('\n').map_or("", |(_, tail)| tail);
+        } else if let Some(after) = rest.strip_prefix("/*") {
+            rest = after.split_once("*/").map_or("", |(_, tail)| tail);
+        } else {
+            break;
+        }
+    }
+    rest.split(|c: char| !c.is_ascii_alphabetic())
         .next()
         .is_some_and(|verb| {
             ["create", "drop", "alter"]
@@ -541,21 +552,29 @@ pub fn violation(variant: Variant, accesses: &[Access]) -> Option<String> {
 ///
 /// Returns `true` when the host admitted the statement.
 ///
+/// Splits one fuzz input into the policy variant, the statement and the
+/// bind-type flag; `None` when the input is too long, empty or not UTF-8.
+///
+/// The selector byte picks the variant (see [`Variant::from_selector`]) and
+/// its high bit asks for text binds. The replay test uses the same decoding
+/// so its diagnostics name the variant the target exercised.
+#[must_use]
+pub fn decode(data: &[u8]) -> Option<(Variant, &str, bool)> {
+    if data.len() > MAX_INPUT_BYTES {
+        return None;
+    }
+    let (&selector, sql) = data.split_first()?;
+    let sql = std::str::from_utf8(sql).ok()?;
+    Some((Variant::from_selector(selector), sql, selector & 0x80 != 0))
+}
+
 /// # Panics
 ///
 /// On a policy violation, with the statement and the first offending access.
 pub fn check(data: &[u8]) -> bool {
-    if data.len() > MAX_INPUT_BYTES {
-        return false;
-    }
-    let Some((&selector, sql)) = data.split_first() else {
+    let Some((variant, sql, text_binds)) = decode(data) else {
         return false;
     };
-    let Ok(sql) = std::str::from_utf8(sql) else {
-        return false;
-    };
-    let variant = Variant::from_selector(selector);
-    let text_binds = selector & 0x80 != 0;
     if host_admits(variant, sql, text_binds).is_err() {
         return false;
     }
