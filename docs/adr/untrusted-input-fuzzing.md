@@ -49,12 +49,14 @@ inputs their author imagined; a fuzzer supplies the rest.
    `GuestSqlPolicy`; for egress, the host that is authorized is the host
    that is dialed; for codecs, `read(write(v)) == v`; for framing, every
    documented memory and stream cap holds after every step.
-4. **Structure-aware where the grammar is rich.** SQL-v1 statements, Cap'n
-   Proto DTOs and multiplexer frames are generated from their grammar or
-   schema (`arbitrary` / the shared `proptest` generators), so the fuzzer
-   spends its budget inside the grammar instead of on lexer errors.
-   `scripts/gen-plugin-abi.py` emits the Cap'n Proto harness pieces so a new
-   schema type is fuzzed without hand-written code.
+4. **Structure-aware where the grammar is rich.** SQL-v1 statements and
+   Cap'n Proto DTOs are generated from their grammar or schema (`arbitrary`
+   / the shared `proptest` generators), so the fuzzer spends its budget
+   inside the grammar instead of on lexer errors; a grammar as small as the
+   multiplexer's nine-byte frame header is covered by raw bytes plus a
+   dictionary of header pieces. `scripts/gen-plugin-abi.py` emits the Cap'n
+   Proto harness pieces (`read_any_message`, `roundtrip_any_message`) so a
+   new schema type is fuzzed without hand-written code.
 5. **Crashes are handled as security reports.** A crash found by scheduled
    fuzzing is not filed as a public issue. It is fixed first, and the
    minimized input lands as `fuzz/corpus/<target>/regression_*` in the

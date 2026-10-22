@@ -352,12 +352,14 @@ dependencies = [
  "bookclerk-mp4",
  "bookclerk-plugin-abi",
  "bookclerk-plugin-manifest",
+ "bookclerk-plugin-sdk",
  "bookclerk-workerd",
  "httparse",
  "libfuzzer-sys",
  "rusqlite",
  "sea-orm",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

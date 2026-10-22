@@ -2170,7 +2170,9 @@ def emit_rust_generated(capnp_text: str) -> str:
     for d in decls:
         if isinstance(d, cs.Struct):
             lines.extend(_rs_struct_codec(ctx, d))
-    lines.extend(_rs_read_any(ctx, [d for d in decls if isinstance(d, cs.Struct)]))
+    structs = [d for d in decls if isinstance(d, cs.Struct)]
+    lines.extend(_rs_read_any(ctx, structs))
+    lines.extend(_rs_roundtrip_any(ctx, structs))
     return _rustfmt("\n".join(lines).rstrip() + "\n")
 
 
@@ -2214,6 +2216,99 @@ def _rs_read_any(ctx: _RsCtx, structs: list[cs.Struct]) -> list[str]:
             f"        {i} => {{ let _ = read_{snake}(reader.get_root::<plugin_capnp::{module}::Reader<'_>>()?)?; }}"
         )
     out.append('        _ => return Err(capnp::Error::failed(format!("unknown read_any selector {selector}"))),')
+    out.append("    }")
+    out.append("    Ok(())")
+    out.append("}")
+    out.append("")
+    return out
+
+
+def _rs_roundtrip_any(ctx: _RsCtx, structs: list[cs.Struct]) -> list[str]:
+    """``roundtrip_any_message``: ``read(write(read(bytes))) == read(bytes)``.
+
+    The fuzz target ``abi_roundtrip`` and its corpus replay drive every
+    generated ``read_*`` / ``write_*`` pair through this one entry point, so a
+    struct added to the schema gets the codec identity check without a
+    hand-written harness line (docs/adr/untrusted-input-fuzzing.md).
+    """
+    out = [
+        "/// Why [`roundtrip_any_message`] could not show `read(write(v)) == v`.",
+        "#[derive(Debug)]",
+        "pub enum RoundTripFailure {",
+        "    /// The input bytes did not decode; expected for arbitrary input and",
+        "    /// not a codec defect.",
+        "    Rejected(capnp::Error),",
+        "    /// A value that did decode failed to re-encode, to decode again, or",
+        "    /// came back different: a defect in a generated codec pair.",
+        "    Codec(String),",
+        "}",
+        "",
+        "impl From<capnp::Error> for RoundTripFailure {",
+        "    fn from(err: capnp::Error) -> Self {",
+        "        Self::Rejected(err)",
+        "    }",
+        "}",
+        "",
+        "/// Decodes `bytes` as the struct `selector` names (as [`read_any_message`]",
+        "/// does), writes the value back through that struct's `write_*` codec,",
+        "/// decodes the result and requires it to equal the first value.",
+        "///",
+        "/// Harness entry point for the `abi_roundtrip` fuzz target and its corpus",
+        "/// replay. The first decode runs under the same traversal and nesting",
+        "/// budget as [`read_any_message`]; the re-decode runs on bytes this crate",
+        "/// produced from an already bounded value, so it uses the default budget.",
+        "/// Equality is the DTO's `PartialEq`, except that two values which differ",
+        "/// only where a float is NaN count as equal when they re-encode to the",
+        "/// same bytes.",
+        "///",
+        "/// # Errors",
+        "///",
+        "/// [`RoundTripFailure::Rejected`] when the input does not decode or the",
+        "/// selector is at or past [`READ_ANY_COUNT`]; [`RoundTripFailure::Codec`]",
+        "/// when the decoded value does not survive `write_*` then `read_*` intact.",
+        "pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTripFailure> {",
+        "    let words = (bytes.len() / 8).saturating_add(16);",
+        "    let mut opts = capnp::message::ReaderOptions::new();",
+        "    opts.traversal_limit_in_words(Some(words));",
+        "    opts.nesting_limit(32);",
+        "    let reader = capnp::serialize::read_message(&mut std::io::Cursor::new(bytes), opts)?;",
+        "    match selector {",
+    ]
+    for i, st in enumerate(structs):
+        module = _rs_module(st.name)
+        snake = _snake(st.name)
+        out.append(f"        {i} => {{")
+        out.append(
+            f"            let first = read_{snake}(reader.get_root::<plugin_capnp::{module}::Reader<'_>>()?)?;"
+        )
+        out.append("            let mut message = capnp::message::Builder::new_default();")
+        out.append(
+            f"            write_{snake}(message.init_root::<plugin_capnp::{module}::Builder<'_>>(), &first)"
+        )
+        out.append('                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;')
+        out.append("            let encoded = capnp::serialize::write_message_to_words(&message);")
+        out.append("            let again = capnp::serialize::read_message(")
+        out.append("                &mut std::io::Cursor::new(&encoded),")
+        out.append("                capnp::message::ReaderOptions::new(),")
+        out.append("            )")
+        out.append(f"            .and_then(|again| read_{snake}(again.get_root::<plugin_capnp::{module}::Reader<'_>>()?))")
+        out.append('            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;')
+        out.append("            if first != again {")
+        out.append("                // `NaN != NaN`: a value that differs only in a NaN float still")
+        out.append("                // round-trips when its re-encoding is byte-identical.")
+        out.append("                let mut message = capnp::message::Builder::new_default();")
+        out.append(
+            f"                write_{snake}(message.init_root::<plugin_capnp::{module}::Builder<'_>>(), &again)"
+        )
+        out.append('                    .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;')
+        out.append("                if capnp::serialize::write_message_to_words(&message) != encoded {")
+        out.append("                    return Err(RoundTripFailure::Codec(format!(")
+        out.append('                        "round trip changed the value: {first:?} != {again:?}"')
+        out.append("                    )));")
+        out.append("                }")
+        out.append("            }")
+        out.append("        }")
+    out.append('        _ => return Err(capnp::Error::failed(format!("unknown round-trip selector {selector}")).into()),')
     out.append("    }")
     out.append("    Ok(())")
     out.append("}")

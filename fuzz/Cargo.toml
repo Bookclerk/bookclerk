@@ -19,7 +19,10 @@ bookclerk-plugin-manifest = { path = "../crates/bookclerk-plugin-manifest" }
 bookclerk-db-exec = { path = "../crates/bookclerk-db-exec" }
 bookclerk-mp4 = { path = "../crates/bookclerk-mp4" }
 bookclerk-workerd = { path = "../crates/bookclerk-workerd" }
+bookclerk-plugin-sdk = { path = "../crates/bookclerk-plugin-sdk" }
 sea-orm = { version = "2.0.0", default-features = false }
+# Runtime for mux_peer: the mux is driven through tokio reader and writer tasks.
+tokio = { version = "1", features = ["rt", "time", "io-util"] }
 # Oracle for guest_sql_authz: SQLite's own authorizer callback (`hooks`).
 rusqlite = { version = "0.39", features = ["bundled", "hooks"] }
 
@@ -78,6 +81,20 @@ bench = false
 [[bin]]
 name = "guest_sql_authz"
 path = "fuzz_targets/guest_sql_authz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mux_peer"
+path = "fuzz_targets/mux_peer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "abi_roundtrip"
+path = "fuzz_targets/abi_roundtrip.rs"
 test = false
 doc = false
 bench = false
