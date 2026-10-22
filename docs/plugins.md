@@ -503,7 +503,7 @@ Workerd egress matching (shared `EgressPolicy` + `bridge/egress.js`):
   plugin `fetch()` calls inside one RPC would need a CF-comparable invocation
   unit and is deferred. `cpu_ms` is clamped and logged at isolate start;
   OS-jail CPU enforcement is a follow-up
-  (see [#143](https://github.com/fritz-fritz/bookclerk/issues/143)).
+  (see [#143](https://github.com/Bookclerk/bookclerk/issues/143)).
 
 `bindings.oauth = true` (with outbound network) is how storefronts declare an
 OAuth-style callback need. The **host** owns the browser-facing TCP listener and

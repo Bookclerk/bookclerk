@@ -3,8 +3,8 @@
 - **Status:** Accepted (Phases 0–6 landed on `main`)
 - **Date:** 2026-08-11
 - **Updated:** 2026-08-15 (plugin-provided OIDC clients; see [plugin-oidc-clients.md](plugin-oidc-clients.md))
-- **Tracking:** [#117](https://github.com/fritz-fritz/bookclerk/issues/117) (closed via [#129](https://github.com/fritz-fritz/bookclerk/pull/129)); follow-ups [#150](https://github.com/fritz-fritz/bookclerk/pull/150), [#152](https://github.com/fritz-fritz/bookclerk/pull/152)
-- **Prerequisite:** [#116](https://github.com/fritz-fritz/bookclerk/issues/116) (atomic config reload; closed)
+- **Tracking:** [#117](https://github.com/Bookclerk/bookclerk/issues/117) (closed via [#129](https://github.com/Bookclerk/bookclerk/pull/129)); follow-ups [#150](https://github.com/Bookclerk/bookclerk/pull/150), [#152](https://github.com/Bookclerk/bookclerk/pull/152)
+- **Prerequisite:** [#116](https://github.com/Bookclerk/bookclerk/issues/116) (atomic config reload; closed)
 
 ## Context
 
@@ -74,11 +74,11 @@ service.
 
 ## Phases
 
-Core identity (Phases 0–5) shipped in [#129](https://github.com/fritz-fritz/bookclerk/pull/129)
-closing [#117](https://github.com/fritz-fritz/bookclerk/issues/117). Owner/RBAC Settings UI
-and provisioner matrix landed in [#150](https://github.com/fritz-fritz/bookclerk/pull/150).
+Core identity (Phases 0–5) shipped in [#129](https://github.com/Bookclerk/bookclerk/pull/129)
+closing [#117](https://github.com/Bookclerk/bookclerk/issues/117). Owner/RBAC Settings UI
+and provisioner matrix landed in [#150](https://github.com/Bookclerk/bookclerk/pull/150).
 Optional multi-IdP broker + WebAuthn (Phase 6) landed in
-[#152](https://github.com/fritz-fritz/bookclerk/pull/152).
+[#152](https://github.com/Bookclerk/bookclerk/pull/152).
 
 | Phase | Scope | Status |
 | --- | --- | --- |

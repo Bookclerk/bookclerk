@@ -18,7 +18,7 @@ Disable with `[daemon] tray = false`, `BOOKCLERK_NO_TRAY=1`, or
 tray automatically.
 
 An embedded Tauri window remains deferred pending an OSV-clean GTK4 graph —
-tracked in [#44](https://github.com/fritz-fritz/bookclerk/pull/44). Path notes:
+tracked in [#44](https://github.com/Bookclerk/bookclerk/pull/44). Path notes:
 [gui-desktop-path.md](gui-desktop-path.md).
 
 ## Auth (operator + users)
@@ -142,7 +142,7 @@ Branded daemon HTML (invite / 404) cannot read that row and only queries
     settings. Impersonating an Owner keeps this tab (with Owner privileges);
     impersonating a member does not.
   - **Impersonate** (operator / elevated Owner): a top-anchored brick banner
-    shows the target name and role (`Impersonating Casey as Owner`) with Stop
+    shows the target name and role (`Impersonating Alex as Owner`) with Stop
     to end. Settings tabs match the impersonated role (User Management for
     owner/administrator, Sign-in for owner). Server/Plugins stay operator-only
     until impersonation ends.

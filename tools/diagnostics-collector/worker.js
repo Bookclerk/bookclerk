@@ -18,7 +18,7 @@
  *   GITHUB_TOKEN            — optional; higher GitHub API rate limits
  *
  * Vars:
- *   GITHUB_REPOSITORY       — owner/repo for releases/latest (e.g. fritz-fritz/bookclerk)
+ *   GITHUB_REPOSITORY       — owner/repo for releases/latest (e.g. Bookclerk/bookclerk)
  */
 
 import {

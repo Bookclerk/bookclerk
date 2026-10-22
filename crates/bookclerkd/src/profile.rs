@@ -796,7 +796,7 @@ mod tests {
                     .header(header::CONTENT_TYPE, "application/json")
                     .header(header::COOKIE, &cookie)
                     .body(Body::from(
-                        r#"{"display_name":"Casey","email":"casey@example.com"}"#,
+                        r#"{"display_name":"Alex","email":"alex@example.com"}"#,
                     ))
                     .unwrap(),
             )
@@ -805,9 +805,9 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let body = String::from_utf8(res.into_body().collect().await.unwrap().to_bytes().to_vec())
             .unwrap();
-        assert!(body.contains("Casey"));
-        assert!(body.contains("casey@example.com"));
-        assert!(body.contains("b29f68227690dccb16d3e950f33fcd930aa704be4d7a4352121d84fd20d48020"));
+        assert!(body.contains("Alex"));
+        assert!(body.contains("alex@example.com"));
+        assert!(body.contains("6db61e6dcbcf2390e4a46af426f26a133a3bee45021422fc7ae86e9136f14110"));
         assert!(!body.contains("User #"));
     }
 
@@ -844,7 +844,7 @@ mod tests {
                     .uri("/api/auth/profile")
                     .header(header::CONTENT_TYPE, "application/json")
                     .header(header::COOKIE, &cookie)
-                    .body(Body::from(r#"{"email":"roland.fritz@gmail"}"#))
+                    .body(Body::from(r#"{"email":"alex.doe@gmail"}"#))
                     .unwrap(),
             )
             .await

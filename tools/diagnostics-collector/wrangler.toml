@@ -7,7 +7,7 @@ workers_dev = true
 
 [vars]
 # Used by GET /report to resolve the latest stable release baseline.
-GITHUB_REPOSITORY = "fritz-fritz/bookclerk"
+GITHUB_REPOSITORY = "Bookclerk/bookclerk"
 
 [secrets]
 required = [

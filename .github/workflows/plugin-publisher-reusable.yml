@@ -1,7 +1,7 @@
 # Reusable workflow for third-party Bookclerk plugin publishers.
 #
 # Callers copy this file into their repo or reference it via workflow_call from
-# a fork / `fritz-fritz/bookclerk` (path may move to a dedicated workflows repo).
+# a fork / `Bookclerk/bookclerk` (path may move to a dedicated workflows repo).
 # Bookclerk CI never builds foreign plugin source — publishers own the run.
 #
 # Permissions when `attest: true` (set on the *caller* job and inherited here):
