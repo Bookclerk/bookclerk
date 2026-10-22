@@ -717,6 +717,7 @@ pub fn validate_sql_v1_grammar(sql: &str, binding_owned: bool) -> Result<()> {
 ///
 /// Returns [`PluginError::invalid_params`] when `sql` is outside SQL v1.
 fn validate_sql_v1_grammar_at(index: usize, sql: &str, binding_owned: bool) -> Result<()> {
+    deny_unterminated_block_comment(index, sql)?;
     deny_non_v1_placeholders(index, sql)?;
     deny_non_v1_insert(index, sql)?;
     if binding_owned {
@@ -916,6 +917,9 @@ fn parse_v1_select_list(index: usize, scan: &mut Scan<'_>) -> Result<()> {
     loop {
         if scan.take_byte(b'*') {
             // whole-row *
+        } else if take_v1_qualified_star(index, scan) {
+            // `alias.*`: a whole-row item that takes no alias and no operator,
+            // so it is read here rather than as an expression atom.
         } else {
             parse_v1_expr(index, scan)?;
             if scan.take_kw("AS") {
@@ -928,6 +932,18 @@ fn parse_v1_select_list(index: usize, scan: &mut Scan<'_>) -> Result<()> {
             return Ok(());
         }
     }
+}
+
+/// Takes a `name.*` select-list item; leaves the scanner where it was when
+/// the next tokens are not one.
+fn take_v1_qualified_star(index: usize, scan: &mut Scan<'_>) -> bool {
+    scan.skip();
+    let start = scan.i;
+    if parse_v1_ident(index, scan).is_ok() && scan.take_byte(b'.') && scan.take_byte(b'*') {
+        return true;
+    }
+    scan.i = start;
+    false
 }
 
 fn parse_v1_optional_alias(scan: &mut Scan<'_>) -> bool {
@@ -958,7 +974,16 @@ fn parse_v1_optional_alias(scan: &mut Scan<'_>) -> bool {
     if matches!(scan.sql.as_bytes().get(scan.i), Some(b'"' | b'`' | b'[')) {
         return false;
     }
-    scan.read_ident().is_some()
+    let start = scan.i;
+    match scan.read_ident() {
+        // A reserved word is the next clause, not an alias; leave it unread.
+        Some(ident) if is_v1_reserved_word(&ident) => {
+            scan.i = start;
+            false
+        }
+        Some(_) => true,
+        None => false,
+    }
 }
 
 /// # Errors
@@ -1053,9 +1078,13 @@ fn parse_v1_order_limit(index: usize, scan: &mut Scan<'_>) -> Result<()> {
     }
     if scan.take_kw("LIMIT") {
         parse_v1_expr(index, scan)?;
-    }
-    if scan.take_kw("OFFSET") {
-        parse_v1_expr(index, scan)?;
+        // SQLite only parses OFFSET after LIMIT; a bare OFFSET is PostgreSQL
+        // syntax and not SQL v1.
+        if scan.take_kw("OFFSET") {
+            parse_v1_expr(index, scan)?;
+        }
+    } else if scan.peek_kw("OFFSET") {
+        return Err(v1_grammar_err(index, "OFFSET requires LIMIT"));
     }
     Ok(())
 }
@@ -1074,9 +1103,12 @@ fn parse_v1_insert(index: usize, scan: &mut Scan<'_>) -> Result<()> {
         return Err(v1_grammar_err(index, "INSERT INTO"));
     }
     parse_v1_table_name(index, scan)?;
+    let mut columns = None;
     if scan.take_byte(b'(') {
+        let mut count = 0usize;
         loop {
             parse_v1_ident(index, scan)?;
+            count += 1;
             if !scan.take_byte(b',') {
                 break;
             }
@@ -1084,11 +1116,18 @@ fn parse_v1_insert(index: usize, scan: &mut Scan<'_>) -> Result<()> {
         if !scan.take_byte(b')') {
             return Err(v1_grammar_err(index, "INSERT column list"));
         }
+        columns = Some(count);
     }
     if scan.peek_kw("SELECT") || scan.peek_kw("WITH") || scan.peek_kw("VALUES") {
         if scan.peek_kw("VALUES") {
             scan.take_kw("VALUES");
-            parse_v1_values_tuples(index, scan)?;
+            let arity = parse_v1_values_tuples(index, scan)?;
+            if columns.is_some_and(|columns| columns != arity) {
+                return Err(v1_grammar_err(
+                    index,
+                    "VALUES tuple arity differs from the INSERT column list",
+                ));
+            }
         } else {
             if scan.peek_kw("WITH") {
                 scan.take_kw("WITH");
@@ -1102,16 +1141,22 @@ fn parse_v1_insert(index: usize, scan: &mut Scan<'_>) -> Result<()> {
     parse_v1_returning(index, scan)
 }
 
+/// Parses one or more `( expr, … )` tuples and returns their shared arity.
+///
 /// # Errors
 ///
-/// Returns [`PluginError::invalid_params`] when the construct is not SQL v1.
-fn parse_v1_values_tuples(index: usize, scan: &mut Scan<'_>) -> Result<()> {
+/// Returns [`PluginError::invalid_params`] when the construct is not SQL v1
+/// or the tuples differ in arity.
+fn parse_v1_values_tuples(index: usize, scan: &mut Scan<'_>) -> Result<usize> {
+    let mut arity = None;
     loop {
         if !scan.take_byte(b'(') {
             return Err(v1_grammar_err(index, "VALUES tuple"));
         }
+        let mut count = 0usize;
         loop {
             parse_v1_expr(index, scan)?;
+            count += 1;
             if !scan.take_byte(b',') {
                 break;
             }
@@ -1119,8 +1164,14 @@ fn parse_v1_values_tuples(index: usize, scan: &mut Scan<'_>) -> Result<()> {
         if !scan.take_byte(b')') {
             return Err(v1_grammar_err(index, "VALUES tuple close"));
         }
+        // Every engine rejects ragged tuples; refusing them here keeps the
+        // lexical passes from admitting a statement the database will not run.
+        if arity.is_some_and(|arity| arity != count) {
+            return Err(v1_grammar_err(index, "VALUES tuples differ in arity"));
+        }
+        arity = Some(count);
         if !scan.take_byte(b',') {
-            return Ok(());
+            return Ok(count);
         }
     }
 }
@@ -1195,6 +1246,12 @@ fn parse_v1_ident(index: usize, scan: &mut Scan<'_>) -> Result<String> {
     let ident = scan
         .read_ident()
         .ok_or_else(|| v1_grammar_err(index, "identifier required"))?;
+    if is_v1_reserved_word(&ident) {
+        return Err(v1_grammar_err(
+            index,
+            &format!("reserved word {ident} cannot be used as a name"),
+        ));
+    }
     reject_oversize_ident(index, &ident)?;
     Ok(ident)
 }
@@ -1520,11 +1577,28 @@ fn parse_v1_atom(index: usize, scan: &mut Scan<'_>) -> Result<()> {
     if take_v1_number(scan) || take_v1_string(scan) {
         return Ok(());
     }
+    if scan
+        .sql
+        .as_bytes()
+        .get(scan.i)
+        .is_some_and(|b| b.is_ascii_digit() || *b == b'.')
+    {
+        return Err(v1_grammar_err(
+            index,
+            "numeric literal followed by identifier characters",
+        ));
+    }
     deny_quoted_ident(index, scan)?;
     let name = parse_v1_ident(index, scan)?;
     if scan.take_byte(b'.') {
-        if scan.take_byte(b'*') {
-            return Ok(());
+        if scan.peek_byte(b'*') {
+            // `alias.*` is a select-list item, never an operand: SQLite
+            // rejects `b.* x` and `b.* + 1` while this parser would have read
+            // them as an aliased or arithmetic expression.
+            return Err(v1_grammar_err(
+                index,
+                "alias.* is only admitted as a whole select-list item",
+            ));
         }
         parse_v1_ident(index, scan)?;
     }
@@ -1538,6 +1612,147 @@ fn parse_v1_atom(index: usize, scan: &mut Scan<'_>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Words SQL v1 never admits as a table, column, alias or function name: the
+/// keywords SQLite does not fall back to identifiers for, plus PostgreSQL's
+/// reserved words.
+///
+/// One engine or the other treats each as syntax, so a name position that
+/// reads one (`title +FROM books`, `SET LIMIT = ?`, `SELECT i d, ALTER FROM`)
+/// is a statement the grammar would admit and a database would reject, and
+/// the clause the word begins would go unread by every lexical pass that
+/// follows.
+const V1_RESERVED_WORDS: &[&str] = &[
+    "add",
+    "all",
+    "alter",
+    "analyse",
+    "analyze",
+    "and",
+    "any",
+    "array",
+    "as",
+    "asc",
+    "asymmetric",
+    "authorization",
+    "autoincrement",
+    "between",
+    "binary",
+    "both",
+    "case",
+    "cast",
+    "check",
+    "collate",
+    "column",
+    "commit",
+    "concurrently",
+    "constraint",
+    "create",
+    "cross",
+    "current_catalog",
+    "current_date",
+    "current_role",
+    "current_schema",
+    "current_time",
+    "current_timestamp",
+    "current_user",
+    "default",
+    "deferrable",
+    "delete",
+    "desc",
+    "distinct",
+    "do",
+    "drop",
+    "else",
+    "end",
+    "escape",
+    "except",
+    "exists",
+    "false",
+    "fetch",
+    "filter",
+    "for",
+    "foreign",
+    "freeze",
+    "from",
+    "full",
+    "glob",
+    "grant",
+    "group",
+    "having",
+    "ilike",
+    "in",
+    "index",
+    "indexed",
+    "initially",
+    "inner",
+    "insert",
+    "intersect",
+    "into",
+    "is",
+    "isnull",
+    "join",
+    "lateral",
+    "leading",
+    "left",
+    "like",
+    "limit",
+    "localtime",
+    "localtimestamp",
+    "match",
+    "natural",
+    "not",
+    "nothing",
+    "notnull",
+    "null",
+    "offset",
+    "on",
+    "only",
+    "or",
+    "order",
+    "outer",
+    "over",
+    "placing",
+    "primary",
+    "recursive",
+    "references",
+    "regexp",
+    "returning",
+    "right",
+    "select",
+    "session_user",
+    "set",
+    "similar",
+    "some",
+    "symmetric",
+    "table",
+    "tablesample",
+    "then",
+    "to",
+    "trailing",
+    "transaction",
+    "true",
+    "union",
+    "unique",
+    "update",
+    "user",
+    "using",
+    "values",
+    "variadic",
+    "verbose",
+    "when",
+    "where",
+    "window",
+    "with",
+];
+
+/// True when `ident` (as [`Scan::read_ident`] returns it) is in
+/// [`V1_RESERVED_WORDS`], compared without regard to case.
+fn is_v1_reserved_word(ident: &str) -> bool {
+    V1_RESERVED_WORDS
+        .iter()
+        .any(|word| ident.eq_ignore_ascii_case(word))
 }
 
 /// # Errors
@@ -1611,14 +1826,19 @@ fn take_v1_number(scan: &mut Scan<'_>) -> bool {
         return false;
     }
     let mut saw = false;
-    if bytes[i] == b'.' {
+    let leading_dot = bytes[i] == b'.';
+    if leading_dot {
         i += 1;
     }
     while i < bytes.len() && bytes[i].is_ascii_digit() {
         saw = true;
         i += 1;
     }
-    if i < bytes.len() && bytes[i] == b'.' && bytes.get(i + 1).is_some_and(|b| b.is_ascii_digit()) {
+    if !leading_dot
+        && i < bytes.len()
+        && bytes[i] == b'.'
+        && bytes.get(i + 1).is_some_and(|b| b.is_ascii_digit())
+    {
         i += 1;
         while i < bytes.len() && bytes[i].is_ascii_digit() {
             i += 1;
@@ -1628,17 +1848,32 @@ fn take_v1_number(scan: &mut Scan<'_>) -> bool {
     if !saw {
         return false;
     }
+    // `1114s` and `.1.1` are one unrecognized token to every engine, not a
+    // number and an alias or two numbers; leave the literal unread so the
+    // caller refuses it.
+    if bytes
+        .get(i)
+        .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'.')
+    {
+        return false;
+    }
     scan.i = i;
     true
 }
 
+/// Takes a `'…'` literal; an unterminated one is not a literal (every engine
+/// rejects the token) and is left unread so the caller refuses the statement.
 fn take_v1_string(scan: &mut Scan<'_>) -> bool {
     scan.skip();
     if scan.sql.as_bytes().get(scan.i) != Some(&b'\'') {
         return false;
     }
-    skip_quoted_string(scan, b'\'');
-    true
+    let start = scan.i;
+    if skip_quoted_string(scan, b'\'') {
+        return true;
+    }
+    scan.i = start;
+    false
 }
 
 /// `INSERT OR IGNORE` is canonical; `INSERT OR REPLACE` / `OR ABORT` are not.
@@ -1664,6 +1899,43 @@ fn deny_non_v1_insert(index: usize, sql: &str) -> Result<()> {
         index,
         &format!("INSERT OR {conflict} is not portable; use INSERT OR IGNORE"),
     ))
+}
+
+/// Rejects a `/*` comment with no closing `*/`.
+///
+/// The scanner would otherwise read it to the end of the text, so whatever
+/// the comment hides (a clause, an operand) goes unread by every pass while
+/// the engine reports an unterminated token.
+///
+/// # Errors
+///
+/// Returns [`PluginError::invalid_params`] when a block comment is open at
+/// the end of `sql`.
+fn deny_unterminated_block_comment(index: usize, sql: &str) -> Result<()> {
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' => {
+                let mut scan = Scan { sql, i };
+                skip_quoted_string(&mut scan, b'\'');
+                i = scan.i;
+            }
+            b'-' if bytes.get(i + 1) == Some(&b'-') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                let Some(close) = sql[i + 2..].find("*/") else {
+                    return Err(v1_grammar_err(index, "unterminated block comment"));
+                };
+                i += 2 + close + 2;
+            }
+            _ => i += 1,
+        }
+    }
+    Ok(())
 }
 
 /// SQL v1 binds are bare `?` only (`$n` and `?NNN` are engine-specific).
@@ -3213,7 +3485,7 @@ fn collect_from_aliases(
             parse_one_table_ref(scan, refs, ctes, aliases)?;
             continue;
         }
-        skip_one_expr_atom(scan, refs, ctes)?;
+        skip_one_expr_atom(scan, refs, ctes, aliases)?;
     }
     Ok(())
 }
@@ -3305,13 +3577,21 @@ fn skip_one_table_ref(scan: &mut Scan<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Skips one expression atom during the FROM-alias collection pass.
+/// Advances over one expression atom while the FROM/JOIN pass looks for
+/// table references, descending into every parenthesized group so a subquery
+/// in an `IN (…)`, `EXISTS (…)`, function argument or nested group is parsed
+/// as a statement and its tables collected.
 ///
 /// # Errors
 ///
 /// Returns [`PluginError::invalid_params`] when a nested subquery cannot be
 /// resolved.
-fn skip_one_expr_atom(scan: &mut Scan<'_>, refs: &mut GuestSqlRefs, ctes: &[String]) -> Result<()> {
+fn skip_one_expr_atom(
+    scan: &mut Scan<'_>,
+    refs: &mut GuestSqlRefs,
+    ctes: &[String],
+    aliases: &mut std::collections::BTreeMap<String, String>,
+) -> Result<()> {
     scan.skip();
     if scan.i >= scan.sql.len() {
         return Ok(());
@@ -3328,22 +3608,22 @@ fn skip_one_expr_atom(scan: &mut Scan<'_>, refs: &mut GuestSqlRefs, ctes: &[Stri
             .ok_or_else(|| unresolved("subquery"))?;
         if looks_like_sql_statement(inner) {
             parse_statement_into(inner, refs, ctes)?;
+        } else {
+            // An expression list or group: walk it so a nested subquery is
+            // still seen, and so a `FROM` inside it is never skipped.
+            let mut inner_scan = Scan { sql: inner, i: 0 };
+            collect_from_aliases(&mut inner_scan, refs, ctes, aliases)?;
         }
         return Ok(());
     }
     if scan.read_ident().is_some() {
-        if scan.take_byte(b'(') {
-            let _ = scan.take_balanced_inner();
-            return Ok(());
-        }
+        // A following `(` is a call's argument list or a subquery; either way
+        // the loop walks it as a group on the next step.
         if scan.take_byte(b'.') {
             if scan.take_byte(b'*') {
                 return Ok(());
             }
             let _ = scan.read_ident();
-            if scan.take_byte(b'(') {
-                let _ = scan.take_balanced_inner();
-            }
         }
         return Ok(());
     }
@@ -3448,10 +3728,13 @@ fn collect_one_expr_atom(
         return Ok(());
     }
     if let Some(ident) = scan.read_ident() {
+        if sql_keyword(&ident) {
+            // `IN (`, `EXISTS (`, `NOT (`: the group that follows is a
+            // subquery or expression, never a call, so leave it to the loop.
+            return Ok(());
+        }
         if scan.take_byte(b'(') {
-            if !sql_keyword(&ident) {
-                refs.functions.push(ident);
-            }
+            refs.functions.push(ident);
             return Ok(());
         }
         if scan.take_byte(b'.') {
@@ -3486,7 +3769,10 @@ fn collect_one_expr_atom(
     Ok(())
 }
 
-fn skip_quoted_string(scan: &mut Scan<'_>, q: u8) {
+/// Skips a `q`-quoted string starting at `scan.i`, honoring doubled quotes,
+/// and reports whether the closing quote was found. An unterminated string
+/// leaves `scan.i` at the end of the text.
+fn skip_quoted_string(scan: &mut Scan<'_>, q: u8) -> bool {
     scan.i += 1;
     let bytes = scan.sql.as_bytes();
     while scan.i < bytes.len() {
@@ -3496,10 +3782,11 @@ fn skip_quoted_string(scan: &mut Scan<'_>, q: u8) {
                 continue;
             }
             scan.i += 1;
-            return;
+            return true;
         }
         scan.i += 1;
     }
+    false
 }
 
 /// # Errors
@@ -3832,6 +4119,36 @@ mod tests {
             "SELECT CAST(id AS BYTEA) FROM books",
             "SELECT round(id, 2, 3) FROM books",
             r#"SELECT "hex"(id) FROM books"#,
+            // A reserved word is syntax, never an operand: the database would
+            // reject this, and the FROM clause would go unread here.
+            "SELECT id, title +FROM books WHERE id = 1",
+            "SELECT -WHERE FROM books",
+            "SELECT b.in FROM books b",
+            "UPDATE authors SET LIMIT = ?",
+            // Column list and tuple arity must agree, as must every tuple.
+            "INSERT INTO books (id, title, author_id) VALUES (?, ?)",
+            "INSERT INTO books (id, title) VALUES (?, ?), (?)",
+            "SELECT i d, ALTER FROM books",
+            "SELECT 'x' INTO",
+            "SELECT count(id) FROM books LIKE /* open",
+            "SELECT id FROM books /* open",
+            "SELECT id FROM books user",
+            "SELECT id FROM books ORDER BY user",
+            // A digit run glued to letters is one unrecognized token, not a
+            // literal with an implicit alias.
+            "SELECT 1114s FROM books",
+            "SELECT 1.5x FROM books",
+            // An unterminated literal swallows the rest of the statement.
+            "SELECT 'id, title FROM books WHERE title LIKE ?",
+            "SELECT id FROM books WHERE title = 'a''",
+            "SELECT id FROM books OFFSET 1",
+            "SELECT 4+.11151.111%1-0",
+            "SELECT b.*Fe FROM books b",
+            "SELECT b.* AS x FROM books b",
+            "SELECT b.* + 1 FROM books b",
+            "SELECT id FROM books b WHERE b.* = 1",
+            "SELECT 1.5.2 FROM books",
+            "SELECT id FROM books ORDER BY id OFFSET ?",
         ] {
             let err = validate_guest_execute_request(&req(sql, vec![], DbResultSelection::Rows, 1))
                 .unwrap_err();
@@ -4734,6 +5051,25 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("unauthorized table"), "{err}");
+    }
+
+    #[test]
+    fn lexical_refs_see_tables_inside_every_parenthesized_subquery() {
+        for sql in [
+            "SELECT b.title FROM books b WHERE b.id IN (SELECT ? d FROM host_secrets)",
+            "SELECT title FROM books WHERE EXISTS (SELECT 1 FROM host_secrets)",
+            "SELECT title FROM books WHERE NOT (id IN (SELECT id FROM host_secrets))",
+            "SELECT coalesce((SELECT token FROM host_secrets), '') FROM books",
+            "SELECT title FROM books WHERE id = ((SELECT max(id) FROM host_secrets))",
+            "SELECT title FROM books WHERE id IN (1, (SELECT id FROM host_secrets))",
+        ] {
+            let refs = parse_guest_sql_refs(sql).unwrap();
+            assert!(
+                refs.tables.iter().any(|t| t == "host_secrets"),
+                "{sql}: {:?}",
+                refs.tables
+            );
+        }
     }
 
     #[test]

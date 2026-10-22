@@ -1,1 +1,1 @@
-3INSERT INTO books (id, title) VALUES (?, ?) RETURNING id
+3INSERT INTO books (id, author_id) VALUES (?, ?) RETURNING id

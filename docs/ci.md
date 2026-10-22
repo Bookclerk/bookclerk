@@ -150,7 +150,7 @@ Each changed path (renames contribute old and new paths) is classified:
 | `ui/`, `packages/plugin-sdk*/`, ABI scripts | UI, SDK ABI and API-doc checks |
 | `docs/**` | Nothing beyond the plan job's always-on lint tests |
 | Root `Cargo.toml` / `Cargo.lock`, toolchain, `.cargo/`, workflows, the planner, `fuzz/Cargo.*`, unknown or unclassified paths, planner errors | **Full suite** |
-| `fuzz/corpus/<target>/**` | Owning crate's tests (declared `test_input`; an undeclared corpus is unclassified) |
+| `fuzz/corpus/<target>/**`, `fuzz/oracles/<target>.rs` | Owning crate's tests (declared `test_input`; an undeclared corpus or oracle is unclassified) |
 | `fuzz/fuzz_targets/**`, `fuzz/dictionaries/**` | Nothing here; the ClusterFuzzLite workflows select themselves by path |
 
 A planner error still uses that normal full plan when metadata, relations, and
@@ -299,7 +299,8 @@ corpus change to that crate's tests only (`relations.toml` `test_input`);
 planner route or a replay test, or when a fuzzed crate is missing from the
 PR workflow's path filter. An oracle shared by a target and a replay test lives
 in `fuzz/oracles/<target>.rs` and is included by both with `#[path]`, so the
-two cannot drift; `relations.toml` lists the oracle beside the corpus. `fuzz/dictionaries/<target>.dict` and
+two cannot drift; `relations.toml` lists the oracle beside the corpus, so an
+oracle change runs that crate's tests only. `fuzz/dictionaries/<target>.dict` and
 `<target>.options` (libFuzzer INI with a `[libfuzzer]` section whose `max_len`
 matches the target's early-return cap)
 ride beside each binary.

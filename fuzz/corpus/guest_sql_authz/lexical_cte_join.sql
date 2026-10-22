@@ -1,1 +1,1 @@
-0WITH recent AS (SELECT id FROM books WHERE id > ?) SELECT b.title, a.name FROM books b JOIN authors a ON a.id = b.author_id WHERE b.id IN (SELECT id FROM recent)
+0WITH recent AS (SELECT books.id FROM books WHERE books.id > ?) SELECT b.title, a.name FROM books b JOIN authors a ON a.id = b.author_id WHERE b.id IN (SELECT recent.id FROM recent)

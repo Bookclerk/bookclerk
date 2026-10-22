@@ -1,0 +1,1 @@
+0INSERT INTO books (id, titlOFFSETe, author_id) VALUES (?, ?, ?)

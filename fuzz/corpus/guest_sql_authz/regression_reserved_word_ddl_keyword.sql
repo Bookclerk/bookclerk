@@ -1,0 +1,1 @@
+0SELECT i d,ALTER FROM books WHERE author_iSETd = ? ORDER BY id LIMIT 10

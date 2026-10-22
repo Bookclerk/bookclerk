@@ -13,7 +13,8 @@
 //! the schema below, and every access SQLite reports while compiling it must
 //! be inside the policy.
 
-use std::sync::{Arc, Mutex};
+use std::cell::RefCell;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use bookclerk_db_exec::lower_canonical_sql;
 use bookclerk_plugin_abi::{
@@ -100,9 +101,22 @@ impl Variant {
         matches!(self, Self::BindingOwned | Self::BindingMigration)
     }
 
-    /// The policy this variant hands to the authorizer.
+    /// The policy this variant hands to the authorizer, built once per
+    /// process: parsing the catalog on every input would dominate the fuzzer's
+    /// time without exercising anything new.
     #[must_use]
-    pub fn policy(self) -> GuestSqlPolicy {
+    pub fn policy(self) -> &'static GuestSqlPolicy {
+        static POLICIES: OnceLock<Vec<GuestSqlPolicy>> = OnceLock::new();
+        let all = POLICIES.get_or_init(|| Self::ALL.iter().map(|v| v.build_policy()).collect());
+        let index = Self::ALL
+            .iter()
+            .position(|v| *v == self)
+            .unwrap_or_default();
+        &all[index]
+    }
+
+    /// Builds this variant's policy from [`SCHEMA`].
+    fn build_policy(self) -> GuestSqlPolicy {
         let env = sql_type_env_from_canonical_statements(SCHEMA);
         match self {
             Self::Lexical => GuestSqlPolicy::allow_tables(GRANTED_TABLES),
@@ -128,6 +142,10 @@ pub enum Access {
     },
     /// A function call by lower-cased name.
     Function(String),
+    /// SQLite's tokenizer or parser rejected a statement the host admitted;
+    /// carries SQLite's message. The host's grammar and lowering promise SQL
+    /// every engine parses, so this is a finding against one of them.
+    Unprepared(String),
     /// Schema DDL on `table` (`CREATE`/`DROP` `TABLE`/`INDEX`); `verb` is the
     /// authorizer action name.
     Schema {
@@ -221,8 +239,8 @@ pub fn host_admits(
 ) -> Result<(), bookclerk_plugin_abi::PluginError> {
     let policy = variant.policy();
     let req = request_for(sql, text_binds);
-    validate_guest_execute_request_for_policy(&req, &policy)?;
-    authorize_guest_sql_policy(&req, &policy)
+    validate_guest_execute_request_for_policy(&req, policy)?;
+    authorize_guest_sql_policy(&req, policy)
 }
 
 /// Opens the in-memory oracle database and creates [`SCHEMA`] on it.
@@ -234,35 +252,146 @@ fn oracle_connection() -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
+/// One oracle database per thread with the authorizer installed once; every
+/// access it reports lands in `seen`, which [`sqlite_accesses`] clears per
+/// statement. Statements are only prepared, never run, so the schema stays
+/// as [`SCHEMA`] created it.
+struct Oracle {
+    /// The connection carrying [`SCHEMA`] and the authorizer callback.
+    conn: Connection,
+    /// Accesses reported while compiling the current statement.
+    seen: Arc<Mutex<Vec<Access>>>,
+}
+
+impl Oracle {
+    /// Opens the database and installs the recording authorizer.
+    fn new() -> rusqlite::Result<Self> {
+        let conn = oracle_connection()?;
+        let seen: Arc<Mutex<Vec<Access>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+            if let Some(access) = classify(&ctx.action) {
+                if let Ok(mut seen) = sink.lock() {
+                    seen.push(access);
+                }
+            }
+            Authorization::Allow
+        }))?;
+        Ok(Self { conn, seen })
+    }
+}
+
+thread_local! {
+    /// The thread's oracle, created on first use.
+    static ORACLE: RefCell<Option<Oracle>> = const { RefCell::new(None) };
+}
+
 /// Compiles `sql`, lowered for SQLite, on the oracle database and returns
-/// every access SQLite's authorizer reported, in order. A statement SQLite
-/// cannot prepare still yields the accesses reported before the error.
+/// every access SQLite's authorizer reported, in order.
+///
+/// A statement SQLite cannot prepare yields the accesses reported before the
+/// error plus one more: a `no such table` error becomes a whole-table
+/// [`Access::Table`] on that name and `has no column named` a column access,
+/// since SQLite stops before authorizing a name it does not know and the
+/// lexical policies carry no catalog to know it either; a token-level
+/// rejection (syntax error, unrecognized token, incomplete input) of a DML
+/// statement becomes [`Access::Unprepared`]; DDL syntax and semantic errors
+/// add nothing, since binding DDL is authorized lexically and the adapter
+/// edge owns its shape.
 ///
 /// When the oracle database itself cannot be created, the result is a single
 /// [`Access::Forbidden`] so the caller fails closed instead of treating a
 /// broken oracle as "touched nothing".
 #[must_use]
 pub fn sqlite_accesses(sql: &str) -> Vec<Access> {
-    let Ok(conn) = oracle_connection() else {
-        return vec![Access::Forbidden("oracle database unavailable")];
-    };
-    let seen: Arc<Mutex<Vec<Access>>> = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&seen);
-    let installed = conn.authorizer(Some(move |ctx: AuthContext<'_>| {
-        if let Some(access) = classify(&ctx.action) {
-            if let Ok(mut seen) = sink.lock() {
-                seen.push(access);
+    ORACLE.with_borrow_mut(|slot| {
+        if slot.is_none() {
+            match Oracle::new() {
+                Ok(oracle) => *slot = Some(oracle),
+                Err(_) => return vec![Access::Forbidden("oracle database unavailable")],
             }
         }
-        Authorization::Allow
-    }));
-    if installed.is_err() {
-        return vec![Access::Forbidden("oracle authorizer unavailable")];
-    }
-    let lowered = lower_canonical_sql(DatabaseBackend::Sqlite, sql);
-    let _ = conn.prepare(&lowered);
-    drop(conn);
-    seen.lock().map(|seen| seen.clone()).unwrap_or_default()
+        let Some(oracle) = slot.as_ref() else {
+            return vec![Access::Forbidden("oracle database unavailable")];
+        };
+        if let Ok(mut seen) = oracle.seen.lock() {
+            seen.clear();
+        }
+        let lowered = lower_canonical_sql(DatabaseBackend::Sqlite, sql);
+        // rusqlite appends ` in <sql> at offset N` to a prepare error; drop
+        // that echo so words inside the statement (a fuzzer happily writes
+        // "syntax error" into a comment) cannot steer the classification.
+        let prepare_error = oracle.conn.prepare(&lowered).err().map(|err| {
+            let message = err.to_string();
+            let echo = format!(" in {lowered}");
+            message
+                .split_once(echo.as_str())
+                .map_or(message.clone(), |(head, _)| head.to_string())
+        });
+        let mut out = oracle
+            .seen
+            .lock()
+            .map(|seen| seen.clone())
+            .unwrap_or_default();
+        if let Some(message) = prepare_error {
+            if is_ddl(sql) {
+                // Binding DDL is authorized lexically (names, functions,
+                // idempotency) and typed at the adapter edge; its column
+                // list has no positive grammar yet, so the engine's own
+                // syntax and semantic rejections (a trailing comma, two
+                // primary keys) are not findings against the authorizer.
+            } else if let Some(table) = message.strip_prefix("no such table: ") {
+                out.push(Access::Table {
+                    table: table.trim().to_ascii_lowercase(),
+                    column: None,
+                });
+            } else if let Some(rest) = message.strip_prefix("table ") {
+                // "table T has no column named C": a name the lexical policies
+                // cannot know and SQLite stops on before authorizing it.
+                if let Some((table, column)) = rest.split_once(" has no column named ") {
+                    out.push(Access::Table {
+                        table: table.trim().to_ascii_lowercase(),
+                        column: Some(column.trim().to_ascii_lowercase()),
+                    });
+                } else if let Some((table, _)) = rest
+                    .split_once(" has ")
+                    .filter(|(_, tail)| tail.contains(" values were supplied"))
+                {
+                    // "table T has N columns but M values were supplied": an
+                    // INSERT without a column list whose arity the lexical
+                    // policies cannot check; the typed catalog refuses it.
+                    out.push(Access::Table {
+                        table: table.trim().to_ascii_lowercase(),
+                        column: None,
+                    });
+                } else {
+                    out.push(Access::Unprepared(message));
+                }
+            } else if message.contains("syntax error")
+                || message.contains("unrecognized token")
+                || message.contains("incomplete input")
+            {
+                // A token-level rejection is a defect in the grammar or the
+                // lowering: both promise SQL every engine parses. Semantic
+                // errors (unknown columns, arity, aggregate misuse) are facts
+                // about a schema the lexical policies do not model.
+                out.push(Access::Unprepared(message));
+            }
+        }
+        out
+    })
+}
+
+/// True when the statement's first word is a DDL verb.
+fn is_ddl(sql: &str) -> bool {
+    sql.trim_start()
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .next()
+        .is_some_and(|verb| {
+            ["create", "drop", "alter"]
+                .iter()
+                .any(|ddl| verb.eq_ignore_ascii_case(ddl))
+        })
 }
 
 /// Maps one authorizer action onto the oracle's vocabulary; `Select` and
@@ -394,6 +523,11 @@ pub fn violation(variant: Variant, accesses: &[Access]) -> Option<String> {
                 {
                     return Some(format!("{verb} on reserved table {table}"));
                 }
+            }
+            Access::Unprepared(message) => {
+                return Some(format!(
+                    "sqlite cannot compile the admitted statement: {message}"
+                ))
             }
             Access::Forbidden(what) => return Some(format!("forbidden action {what}")),
         }

@@ -2257,9 +2257,10 @@ def _rs_roundtrip_any(ctx: _RsCtx, structs: list[cs.Struct]) -> list[str]:
         "/// replay. The first decode runs under the same traversal and nesting",
         "/// budget as [`read_any_message`]; the re-decode runs on bytes this crate",
         "/// produced from an already bounded value, so it uses the default budget.",
-        "/// Equality is the DTO's `PartialEq`, except that two values which differ",
-        "/// only where a float is NaN count as equal when they re-encode to the",
-        "/// same bytes.",
+        "/// Equality is the DTO's `PartialEq`; because `NaN != NaN`, two values",
+        "/// that `PartialEq` separates still count as equal when their `Debug`",
+        "/// renderings agree, which is a field-by-field comparison that prints every",
+        "/// NaN the same way and keeps `-0.0` apart from `0.0`.",
         "///",
         "/// # Errors",
         "///",
@@ -2293,19 +2294,10 @@ def _rs_roundtrip_any(ctx: _RsCtx, structs: list[cs.Struct]) -> list[str]:
         out.append("            )")
         out.append(f"            .and_then(|again| read_{snake}(again.get_root::<plugin_capnp::{module}::Reader<'_>>()?))")
         out.append('            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;')
-        out.append("            if first != again {")
-        out.append("                // `NaN != NaN`: a value that differs only in a NaN float still")
-        out.append("                // round-trips when its re-encoding is byte-identical.")
-        out.append("                let mut message = capnp::message::Builder::new_default();")
-        out.append(
-            f"                write_{snake}(message.init_root::<plugin_capnp::{module}::Builder<'_>>(), &again)"
-        )
-        out.append('                    .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;')
-        out.append("                if capnp::serialize::write_message_to_words(&message) != encoded {")
-        out.append("                    return Err(RoundTripFailure::Codec(format!(")
-        out.append('                        "round trip changed the value: {first:?} != {again:?}"')
-        out.append("                    )));")
-        out.append("                }")
+        out.append("            if first != again && format!(\"{first:?}\") != format!(\"{again:?}\") {")
+        out.append("                return Err(RoundTripFailure::Codec(format!(")
+        out.append('                    "round trip changed the value: {first:?} != {again:?}"')
+        out.append("                )));")
         out.append("            }")
         out.append("        }")
     out.append('        _ => return Err(capnp::Error::failed(format!("unknown round-trip selector {selector}")).into()),')

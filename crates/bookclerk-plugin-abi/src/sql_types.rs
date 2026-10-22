@@ -2051,9 +2051,30 @@ fn typecheck_recursive_cte(
         took_real: false,
         base,
     };
+    // The arms' FROM sources are the CTE body's own scope: they must not stay
+    // visible to the statement that follows, or an unqualified column in its
+    // RETURNING or WHERE clause would resolve against (or collide with) them.
+    cx.outer_from.push(std::mem::take(&mut cx.from));
+    let result = typecheck_recursive_cte_body(&mut scan, cx, name, explicit);
+    cx.from = cx.outer_from.pop().unwrap_or_default();
+    result
+}
+
+/// Types the anchor and recursive arms of `name` on the scope `cx` holds.
+///
+/// # Errors
+///
+/// Returns when an arm is ill-typed, the arms disagree, or tokens remain
+/// after the last arm.
+fn typecheck_recursive_cte_body(
+    scan: &mut TScan<'_>,
+    cx: &mut TypeCx<'_>,
+    name: &str,
+    explicit: &[String],
+) -> Result<Vec<(String, SqlType)>> {
     let saved = cx.require_named_derived;
     cx.require_named_derived = explicit.is_empty();
-    let mut cols = infer_select_core(&mut scan, cx)?;
+    let mut cols = infer_select_core(scan, cx)?;
     cx.require_named_derived = saved;
     cols = apply_explicit_cte_names(cx.index, cols, explicit)?;
     reject_duplicate_names(cx.index, &cols)?;
@@ -2074,7 +2095,7 @@ fn typecheck_recursive_cte(
     cx.ctes.insert(name.to_string(), cols.clone());
     while scan.take_kw("UNION") {
         let _ = scan.take_kw("ALL");
-        let other = infer_select_core(&mut scan, cx)?;
+        let other = infer_select_core(scan, cx)?;
         if cols.len() != other.len() {
             return Err(ty_err(cx.index, "UNION column counts differ"));
         }
@@ -2088,6 +2109,7 @@ fn typecheck_recursive_cte(
             }
         }
     }
+    require_exhausted(scan, cx, "recursive CTE")?;
     Ok(cols)
 }
 
@@ -2098,13 +2120,15 @@ fn typecheck_recursive_cte(
 /// and functions would be missing from the proof the authorizer trusts.
 fn require_exhausted(scan: &mut TScan<'_>, cx: &TypeCx<'_>, what: &str) -> Result<()> {
     scan.skip();
-    let rest = scan
-        .sql
-        .get(scan.i..)
-        .unwrap_or("")
-        .trim_end_matches(';')
-        .trim();
-    if rest.is_empty() {
+    // A position off a character boundary means the scanner lost track of the
+    // text; refuse rather than treat the remainder as consumed.
+    let Some(rest) = scan.sql.get(scan.i..) else {
+        return Err(ty_err(
+            cx.index,
+            &format!("{what} scanner position is not a character boundary"),
+        ));
+    };
+    if rest.trim_end_matches(';').trim().is_empty() {
         Ok(())
     } else {
         Err(ty_err(
@@ -2258,6 +2282,9 @@ fn typecheck_sql_body(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<()> {
         if scan.take_kw("WHERE") {
             let ty = infer_expr(scan, cx)?;
             require_booleanish(cx.index, ty, "WHERE")?;
+        }
+        if scan.take_kw("RETURNING") {
+            cx.output_columns = parse_returning_list(scan, cx)?;
         }
         return Ok(());
     }
@@ -2446,9 +2473,11 @@ fn infer_select_core(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<Vec<(S
     }
     if scan.take_kw("LIMIT") {
         let _ = infer_expr(scan, cx)?;
-    }
-    if scan.take_kw("OFFSET") {
-        let _ = infer_expr(scan, cx)?;
+        // OFFSET is only read after LIMIT, as SQLite parses it; a bare
+        // OFFSET stays unread and fails the exhaustiveness check.
+        if scan.take_kw("OFFSET") {
+            let _ = infer_expr(scan, cx)?;
+        }
     }
     Ok(cols)
 }
@@ -4582,6 +4611,9 @@ mod tests {
             "SELECT id FROM books extra tokens",
             "SELECT title FROM books WHERE id IN (SELECT id FROM host_secrets) trailing",
             "SELECT title FROM books WHERE (id extra) = 1",
+            "SELECT title FROM books OFFSET 1",
+            "WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < 3 trailing) \
+             SELECT n FROM r",
         ] {
             let err = typecheck_execute_request_resolved(&req(sql), &env)
                 .err()
@@ -4592,6 +4624,34 @@ mod tests {
         // `RETURNING` after a FROM source is a clause, never the source's alias.
         let proofs = typecheck_execute_request_resolved(
             &req("INSERT INTO books (id, title) SELECT id, token FROM host_secrets RETURNING id"),
+            &env,
+        )
+        .unwrap();
+        assert_eq!(
+            proofs[0].output_columns,
+            vec![("id".to_string(), SqlType::Integer)]
+        );
+        // `DELETE … RETURNING` is admitted by the contract and typed like UPDATE.
+        let proofs = typecheck_execute_request_resolved(
+            &req("DELETE FROM books WHERE id = ? RETURNING id, title"),
+            &env,
+        )
+        .unwrap();
+        assert_eq!(
+            proofs[0].output_columns,
+            vec![
+                ("id".to_string(), SqlType::Integer),
+                ("title".to_string(), SqlType::Text)
+            ]
+        );
+        // A recursive CTE's arms read `FROM t`; that source belongs to the CTE
+        // body and must not make `id` ambiguous in the INSERT's RETURNING list
+        // (the conformance vectors insert through exactly this shape).
+        let proofs = typecheck_execute_request_resolved(
+            &req(
+                "WITH RECURSIVE t(id) AS (SELECT 0 UNION ALL SELECT id + 1 FROM t WHERE id < 3) \
+                 INSERT INTO books (id) SELECT id FROM t RETURNING id",
+            ),
             &env,
         )
         .unwrap();

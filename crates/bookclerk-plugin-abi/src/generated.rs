@@ -5197,9 +5197,10 @@ impl From<capnp::Error> for RoundTripFailure {
 /// replay. The first decode runs under the same traversal and nesting
 /// budget as [`read_any_message`]; the re-decode runs on bytes this crate
 /// produced from an already bounded value, so it uses the default budget.
-/// Equality is the DTO's `PartialEq`, except that two values which differ
-/// only where a float is NaN count as equal when they re-encode to the
-/// same bytes.
+/// Equality is the DTO's `PartialEq`; because `NaN != NaN`, two values
+/// that `PartialEq` separates still count as equal when their `Debug`
+/// renderings agree, which is a field-by-field comparison that prints every
+/// NaN the same way and keeps `-0.0` apart from `0.0`.
 ///
 /// # Errors
 ///
@@ -5234,20 +5235,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_event_consumer_spec(
-                    message.init_root::<plugin_capnp::event_consumer_spec::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         1 => {
@@ -5271,20 +5262,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_plugin_capabilities(
-                    message.init_root::<plugin_capnp::plugin_capabilities::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         2 => {
@@ -5302,20 +5283,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             )
             .and_then(|again| read_brand(again.get_root::<plugin_capnp::brand::Reader<'_>>()?))
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_brand(
-                    message.init_root::<plugin_capnp::brand::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         3 => {
@@ -5336,20 +5307,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_config_option(again.get_root::<plugin_capnp::config_option::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_config_option(
-                    message.init_root::<plugin_capnp::config_option::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         4 => {
@@ -5373,20 +5334,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_config_option_value(
-                    message.init_root::<plugin_capnp::config_option_value::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         5 => {
@@ -5407,20 +5358,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_cli_schema(again.get_root::<plugin_capnp::cli_schema::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_cli_schema(
-                    message.init_root::<plugin_capnp::cli_schema::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         6 => {
@@ -5444,20 +5385,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_cli_command_spec(
-                    message.init_root::<plugin_capnp::cli_command_spec::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         7 => {
@@ -5478,20 +5409,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_cli_arg_spec(again.get_root::<plugin_capnp::cli_arg_spec::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_cli_arg_spec(
-                    message.init_root::<plugin_capnp::cli_arg_spec::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         8 => {
@@ -5509,20 +5430,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             )
             .and_then(|again| read_cli_arg(again.get_root::<plugin_capnp::cli_arg::Reader<'_>>()?))
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_cli_arg(
-                    message.init_root::<plugin_capnp::cli_arg::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         9 => {
@@ -5546,20 +5457,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_cli_invoke_params(
-                    message.init_root::<plugin_capnp::cli_invoke_params::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         10 => {
@@ -5583,20 +5484,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_cli_invoke_result(
-                    message.init_root::<plugin_capnp::cli_invoke_result::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         11 => {
@@ -5620,20 +5511,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_cli_schema_reply(
-                    message.init_root::<plugin_capnp::cli_schema_reply::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         12 => {
@@ -5657,20 +5538,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_cli_invoke_reply(
-                    message.init_root::<plugin_capnp::cli_invoke_reply::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         13 => {
@@ -5694,20 +5565,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_database_adapter_config(
-                    message.init_root::<plugin_capnp::database_adapter_config::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         14 => {
@@ -5729,20 +5590,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_diagnose_result(again.get_root::<plugin_capnp::diagnose_result::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_diagnose_result(
-                    message.init_root::<plugin_capnp::diagnose_result::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         15 => {
@@ -5764,20 +5615,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_diagnose_reply(again.get_root::<plugin_capnp::diagnose_reply::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_diagnose_reply(
-                    message.init_root::<plugin_capnp::diagnose_reply::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         16 => {
@@ -5799,20 +5640,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_source_account(again.get_root::<plugin_capnp::source_account::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_source_account(
-                    message.init_root::<plugin_capnp::source_account::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         17 => {
@@ -5833,20 +5664,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_login_params(again.get_root::<plugin_capnp::login_params::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_login_params(
-                    message.init_root::<plugin_capnp::login_params::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         18 => {
@@ -5867,20 +5688,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_login_result(again.get_root::<plugin_capnp::login_result::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_login_result(
-                    message.init_root::<plugin_capnp::login_result::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         19 => {
@@ -5904,20 +5715,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_login_start_result(
-                    message.init_root::<plugin_capnp::login_start_result::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         20 => {
@@ -5941,20 +5742,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_login_complete_params(
-                    message.init_root::<plugin_capnp::login_complete_params::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         21 => {
@@ -5975,20 +5766,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_login_reply(again.get_root::<plugin_capnp::login_reply::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_login_reply(
-                    message.init_root::<plugin_capnp::login_reply::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         22 => {
@@ -6012,20 +5793,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_login_start_reply(
-                    message.init_root::<plugin_capnp::login_start_reply::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         23 => {
@@ -6049,20 +5820,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_account_credential(
-                    message.init_root::<plugin_capnp::account_credential::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         24 => {
@@ -6083,20 +5844,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_scan_params(again.get_root::<plugin_capnp::scan_params::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_scan_params(
-                    message.init_root::<plugin_capnp::scan_params::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         25 => {
@@ -6116,20 +5867,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_scan_book(again.get_root::<plugin_capnp::scan_book::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_scan_book(
-                    message.init_root::<plugin_capnp::scan_book::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         26 => {
@@ -6150,20 +5891,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_scan_summary(again.get_root::<plugin_capnp::scan_summary::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_scan_summary(
-                    message.init_root::<plugin_capnp::scan_summary::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         27 => {
@@ -6184,20 +5915,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_scan_reply(again.get_root::<plugin_capnp::scan_reply::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_scan_reply(
-                    message.init_root::<plugin_capnp::scan_reply::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         28 => {
@@ -6218,20 +5939,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_fetch_options(again.get_root::<plugin_capnp::fetch_options::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_fetch_options(
-                    message.init_root::<plugin_capnp::fetch_options::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         29 => {
@@ -6255,20 +5966,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_fetch_title_params(
-                    message.init_root::<plugin_capnp::fetch_title_params::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         30 => {
@@ -6289,20 +5990,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_plain_part(again.get_root::<plugin_capnp::plain_part::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_plain_part(
-                    message.init_root::<plugin_capnp::plain_part::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         31 => {
@@ -6324,20 +6015,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_chapter_marker(again.get_root::<plugin_capnp::chapter_marker::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_chapter_marker(
-                    message.init_root::<plugin_capnp::chapter_marker::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         32 => {
@@ -6358,20 +6039,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_plain_fetch(again.get_root::<plugin_capnp::plain_fetch::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_plain_fetch(
-                    message.init_root::<plugin_capnp::plain_fetch::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         33 => {
@@ -6395,20 +6066,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_fetch_title_reply(
-                    message.init_root::<plugin_capnp::fetch_title_reply::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         34 => {
@@ -6430,20 +6091,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_source_accounts(again.get_root::<plugin_capnp::source_accounts::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_source_accounts(
-                    message.init_root::<plugin_capnp::source_accounts::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         35 => {
@@ -6467,20 +6118,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_source_accounts_reply(
-                    message.init_root::<plugin_capnp::source_accounts_reply::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         36 => {
@@ -6504,20 +6145,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_search_catalog_params(
-                    message.init_root::<plugin_capnp::search_catalog_params::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         37 => {
@@ -6541,20 +6172,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_expand_candidates_params(
-                    message.init_root::<plugin_capnp::expand_candidates_params::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         38 => {
@@ -6578,20 +6199,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_purchase_hint_params(
-                    message.init_root::<plugin_capnp::purchase_hint_params::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         39 => {
@@ -6615,20 +6226,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_list_deals_params(
-                    message.init_root::<plugin_capnp::list_deals_params::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         40 => {
@@ -6652,20 +6253,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_catalog_detail_params(
-                    message.init_root::<plugin_capnp::catalog_detail_params::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         41 => {
@@ -6686,20 +6277,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_catalog_hit(again.get_root::<plugin_capnp::catalog_hit::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_catalog_hit(
-                    message.init_root::<plugin_capnp::catalog_hit::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         42 => {
@@ -6720,20 +6301,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_catalog_hits(again.get_root::<plugin_capnp::catalog_hits::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_catalog_hits(
-                    message.init_root::<plugin_capnp::catalog_hits::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         43 => {
@@ -6757,20 +6328,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_catalog_hits_reply(
-                    message.init_root::<plugin_capnp::catalog_hits_reply::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         44 => {
@@ -6792,20 +6353,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_catalog_detail(again.get_root::<plugin_capnp::catalog_detail::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_catalog_detail(
-                    message.init_root::<plugin_capnp::catalog_detail::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         45 => {
@@ -6829,20 +6380,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_catalog_detail_reply(
-                    message.init_root::<plugin_capnp::catalog_detail_reply::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         46 => {
@@ -6863,20 +6404,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_purchase_hint(again.get_root::<plugin_capnp::purchase_hint::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_purchase_hint(
-                    message.init_root::<plugin_capnp::purchase_hint::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         47 => {
@@ -6900,20 +6431,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_purchase_hint_result(
-                    message.init_root::<plugin_capnp::purchase_hint_result::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         48 => {
@@ -6937,20 +6458,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_purchase_hint_reply(
-                    message.init_root::<plugin_capnp::purchase_hint_reply::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         49 => {
@@ -6974,20 +6485,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_scan_library_params(
-                    message.init_root::<plugin_capnp::scan_library_params::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         50 => {
@@ -7011,20 +6512,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_authenticate_user_params(
-                    message.init_root::<plugin_capnp::authenticate_user_params::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         51 => {
@@ -7045,20 +6536,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_external_user(again.get_root::<plugin_capnp::external_user::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_external_user(
-                    message.init_root::<plugin_capnp::external_user::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         52 => {
@@ -7082,20 +6563,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_external_user_reply(
-                    message.init_root::<plugin_capnp::external_user_reply::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         53 => {
@@ -7119,20 +6590,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_event_poll_result(
-                    message.init_root::<plugin_capnp::event_poll_result::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         54 => {
@@ -7156,20 +6617,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_event_poll_reply(
-                    message.init_root::<plugin_capnp::event_poll_reply::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         55 => {
@@ -7193,20 +6644,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_listening_progress(
-                    message.init_root::<plugin_capnp::listening_progress::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         56 => {
@@ -7230,20 +6671,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_sync_listening_result(
-                    message.init_root::<plugin_capnp::sync_listening_result::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         57 => {
@@ -7267,20 +6698,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_sync_listening_reply(
-                    message.init_root::<plugin_capnp::sync_listening_reply::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         58 => {
@@ -7301,20 +6722,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_plugin_event(again.get_root::<plugin_capnp::plugin_event::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_plugin_event(
-                    message.init_root::<plugin_capnp::plugin_event::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         59 => {
@@ -7335,20 +6746,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_publish_ok(again.get_root::<plugin_capnp::publish_ok::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_publish_ok(
-                    message.init_root::<plugin_capnp::publish_ok::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         60 => {
@@ -7369,20 +6770,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_publish_reply(again.get_root::<plugin_capnp::publish_reply::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_publish_reply(
-                    message.init_root::<plugin_capnp::publish_reply::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         61 => {
@@ -7403,20 +6794,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_invocation(again.get_root::<plugin_capnp::invocation::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_invocation(
-                    message.init_root::<plugin_capnp::invocation::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         62 => {
@@ -7437,20 +6818,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_queue_message(again.get_root::<plugin_capnp::queue_message::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_queue_message(
-                    message.init_root::<plugin_capnp::queue_message::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         63 => {
@@ -7471,20 +6842,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_queue_batch(again.get_root::<plugin_capnp::queue_batch::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_queue_batch(
-                    message.init_root::<plugin_capnp::queue_batch::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         64 => {
@@ -7505,20 +6866,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_queue_retry(again.get_root::<plugin_capnp::queue_retry::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_queue_retry(
-                    message.init_root::<plugin_capnp::queue_retry::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         65 => {
@@ -7539,20 +6890,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_queue_result(again.get_root::<plugin_capnp::queue_result::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_queue_result(
-                    message.init_root::<plugin_capnp::queue_result::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         66 => {
@@ -7574,20 +6915,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_queue_batch_ok(again.get_root::<plugin_capnp::queue_batch_ok::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_queue_batch_ok(
-                    message.init_root::<plugin_capnp::queue_batch_ok::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         67 => {
@@ -7611,20 +6942,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_queue_batch_reply(
-                    message.init_root::<plugin_capnp::queue_batch_reply::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         68 => {
@@ -7648,20 +6969,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_queue_send_message(
-                    message.init_root::<plugin_capnp::queue_send_message::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         69 => {
@@ -7682,20 +6993,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_queue_send_ok(again.get_root::<plugin_capnp::queue_send_ok::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_queue_send_ok(
-                    message.init_root::<plugin_capnp::queue_send_ok::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         70 => {
@@ -7719,20 +7020,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_queue_send_reply(
-                    message.init_root::<plugin_capnp::queue_send_reply::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         71 => {
@@ -7754,20 +7045,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_kv_put_options(again.get_root::<plugin_capnp::kv_put_options::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_kv_put_options(
-                    message.init_root::<plugin_capnp::kv_put_options::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         72 => {
@@ -7787,20 +7068,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_kv_get_ok(again.get_root::<plugin_capnp::kv_get_ok::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_kv_get_ok(
-                    message.init_root::<plugin_capnp::kv_get_ok::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         73 => {
@@ -7821,20 +7092,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_kv_get_reply(again.get_root::<plugin_capnp::kv_get_reply::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_kv_get_reply(
-                    message.init_root::<plugin_capnp::kv_get_reply::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         74 => {
@@ -7854,20 +7115,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_kv_put_ok(again.get_root::<plugin_capnp::kv_put_ok::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_kv_put_ok(
-                    message.init_root::<plugin_capnp::kv_put_ok::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         75 => {
@@ -7888,20 +7139,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_kv_delete_ok(again.get_root::<plugin_capnp::kv_delete_ok::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_kv_delete_ok(
-                    message.init_root::<plugin_capnp::kv_delete_ok::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         76 => {
@@ -7922,20 +7163,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_kv_put_reply(again.get_root::<plugin_capnp::kv_put_reply::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_kv_put_reply(
-                    message.init_root::<plugin_capnp::kv_put_reply::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         77 => {
@@ -7957,20 +7188,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_kv_delete_reply(again.get_root::<plugin_capnp::kv_delete_reply::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_kv_delete_reply(
-                    message.init_root::<plugin_capnp::kv_delete_reply::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         78 => {
@@ -7992,20 +7213,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_kv_list_options(again.get_root::<plugin_capnp::kv_list_options::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_kv_list_options(
-                    message.init_root::<plugin_capnp::kv_list_options::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         79 => {
@@ -8026,20 +7237,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_kv_list_key(again.get_root::<plugin_capnp::kv_list_key::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_kv_list_key(
-                    message.init_root::<plugin_capnp::kv_list_key::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         80 => {
@@ -8060,20 +7261,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_kv_list_ok(again.get_root::<plugin_capnp::kv_list_ok::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_kv_list_ok(
-                    message.init_root::<plugin_capnp::kv_list_ok::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         81 => {
@@ -8094,20 +7285,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 read_kv_list_reply(again.get_root::<plugin_capnp::kv_list_reply::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
-            if first != again {
-                // `NaN != NaN`: a value that differs only in a NaN float still
-                // round-trips when its re-encoding is byte-identical.
-                let mut message = capnp::message::Builder::new_default();
-                write_kv_list_reply(
-                    message.init_root::<plugin_capnp::kv_list_reply::Builder<'_>>(),
-                    &again,
-                )
-                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
-                if capnp::serialize::write_message_to_words(&message) != encoded {
-                    return Err(RoundTripFailure::Codec(format!(
-                        "round trip changed the value: {first:?} != {again:?}"
-                    )));
-                }
+            if first != again && format!("{first:?}") != format!("{again:?}") {
+                return Err(RoundTripFailure::Codec(format!(
+                    "round trip changed the value: {first:?} != {again:?}"
+                )));
             }
         }
         _ => {

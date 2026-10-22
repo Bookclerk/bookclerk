@@ -42,7 +42,8 @@ fn corpus_files(target: &str) -> Vec<PathBuf> {
     files
 }
 
-/// Seeds whose file name says the host must refuse them.
+/// Seeds whose file name says the host must refuse them; every other seed
+/// must be admitted, so a regression in either direction fails the replay.
 fn must_refuse(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -56,6 +57,21 @@ fn must_refuse(path: &Path) -> bool {
         })
 }
 
+/// The host's own verdict on a seed, for failure messages.
+fn host_verdict(data: &[u8]) -> String {
+    let Some((&selector, sql)) = data.split_first() else {
+        return "empty seed".to_string();
+    };
+    let Ok(sql) = std::str::from_utf8(sql) else {
+        return "seed is not UTF-8".to_string();
+    };
+    let variant = Variant::from_selector(selector);
+    match oracle::host_admits(variant, sql, selector & 0x80 != 0) {
+        Ok(()) => format!("{variant:?} admitted it"),
+        Err(err) => format!("{variant:?} refused it: {err}"),
+    }
+}
+
 #[test]
 fn fuzz_corpus_guest_sql_authz_stays_inside_policy() {
     let mut admitted = 0;
@@ -65,10 +81,17 @@ fn fuzz_corpus_guest_sql_authz_stays_inside_policy() {
         if was_admitted {
             admitted += 1;
         }
-        assert!(
-            !(was_admitted && must_refuse(&path)),
-            "host admitted a seed it must refuse: {}",
-            path.display()
+        assert_eq!(
+            was_admitted,
+            !must_refuse(&path),
+            "seed {} must be {}; host said: {}",
+            path.display(),
+            if must_refuse(&path) {
+                "refused"
+            } else {
+                "admitted"
+            },
+            host_verdict(&data)
         );
     }
     assert!(admitted > 0, "no guest_sql_authz seed was admitted");
