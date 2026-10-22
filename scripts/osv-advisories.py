@@ -1690,45 +1690,6 @@ def draft_for(drafts: list[dict[str, Any]], group: Group, key: str) -> dict[str,
     return None
 
 
-def draft_changes(draft: dict[str, Any], body: dict[str, Any], markers: list[str]) -> dict[str, Any]:
-    """Computes the update that brings an open draft up to date.
-
-    Only the automation's own part of the description is rewritten (new
-    evidence, fixed versions, aliases), plus an affected range that is still
-    unset once a release exists. Severity, summary, CWE ids, a range a
-    maintainer set and text outside the automated part stay as they are.
-
-    Args:
-        draft: The open draft, as listed by the API.
-        body: A freshly rendered advisory (`render_advisory`).
-        markers: Marker lines it must carry (`marker_lines`).
-
-    Returns:
-        The fields to PATCH; empty when the draft is current.
-    """
-    changes: dict[str, Any] = {}
-    description = triage.splice_auto(str(draft.get("description") or ""), body["description"], markers)
-    if description is not None:
-        changes["description"] = description
-    proposed = body["vulnerabilities"][0]
-    if proposed["vulnerable_version_range"]:
-        filled = False
-        vulnerabilities = []
-        for vuln in draft.get("vulnerabilities") or []:
-            entry = {
-                k: vuln.get(k)
-                for k in ("package", "vulnerable_version_range", "patched_versions", "vulnerable_functions")
-            }
-            package = vuln.get("package") or {}
-            if package.get("name") == proposed["package"]["name"] and not vuln.get("vulnerable_version_range"):
-                entry["vulnerable_version_range"] = proposed["vulnerable_version_range"]
-                filled = True
-            vulnerabilities.append(entry)
-        if filled:
-            changes["vulnerabilities"] = vulnerabilities
-    return changes
-
-
 def file_decisions(
     decisions: list[Decision],
     gh: Any,
@@ -1741,7 +1702,7 @@ def file_decisions(
     """Files a draft advisory for each affected decision not on record.
 
     An affected decision whose draft is still open gets that draft updated
-    (`draft_changes`) instead of a second one; one whose advisory was closed
+    (`triage.draft_changes`) instead of a second one; one whose advisory was closed
     or published is left alone. Without a token (a local dry run) nothing is filed and the affected
     decisions are marked `no token`. Several shipped entries of
     one artifact (the Rust host and the web UI are both `bookclerk`) that
@@ -1785,7 +1746,7 @@ def file_decisions(
                 try:
                     version = artifact_version(artifact, release_tag, root)
                     body = render_advisory(decision, analysis, release_tag, version, commit, run_url)
-                    changes = draft_changes(draft, body, marker_lines(decision.group, artifact))
+                    changes = triage.draft_changes(draft, body, marker_lines(decision.group, artifact))
                     if changes and counts["updated"] >= MAX_FILED_PER_RUN:
                         decision.outcome = "capped"
                     elif changes:

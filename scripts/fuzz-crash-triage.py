@@ -632,6 +632,49 @@ def splice_auto(existing: str, generated: str, markers: Iterable[str] = ()) -> s
     return head + existing[:start] + new + existing[end + len(AUTO_END) :]
 
 
+def draft_changes(draft: dict[str, Any], body: dict[str, Any], markers: Iterable[str] = ()) -> dict[str, Any]:
+    """Computes the update that brings an open draft up to date.
+
+    Only the automation's own part of the description is rewritten
+    (``splice_auto``), plus any affected range that is still unset when the
+    fresh body proposes one (a release has been published since). Severity,
+    summary, CWE ids, a range a maintainer set and text outside the
+    automated part stay as they are.
+
+    Args:
+        draft: The open draft, as listed by the API.
+        body: A freshly rendered advisory request body.
+        markers: Marker lines the description must carry.
+
+    Returns:
+        The fields to PATCH; empty when the draft is current.
+    """
+    changes: dict[str, Any] = {}
+    description = splice_auto(str(draft.get("description") or ""), body["description"], markers)
+    if description is not None:
+        changes["description"] = description
+    proposed = {
+        (v["package"]["ecosystem"], v["package"]["name"]): v["vulnerable_version_range"]
+        for v in body.get("vulnerabilities") or []
+        if v.get("vulnerable_version_range")
+    }
+    filled = False
+    vulnerabilities = []
+    for vuln in draft.get("vulnerabilities") or []:
+        entry = {
+            k: vuln.get(k) for k in ("package", "vulnerable_version_range", "patched_versions", "vulnerable_functions")
+        }
+        package = vuln.get("package") or {}
+        new_range = proposed.get((package.get("ecosystem"), package.get("name")))
+        if new_range and not vuln.get("vulnerable_version_range"):
+            entry["vulnerable_version_range"] = new_range
+            filled = True
+        vulnerabilities.append(entry)
+    if filled:
+        changes["vulnerabilities"] = vulnerabilities
+    return changes
+
+
 def marker(sig: str) -> str:
     """Returns the body marker for a crash signature.
 
@@ -1097,17 +1140,20 @@ def newest_tag(tags: list[str]) -> str | None:
         tags: Published release tags in API order (newest created first).
 
     Returns:
-        The tag with the highest version (a prerelease sorts below its
-        release, pre-release identifiers compared as text); the first tag
-        when none is semver-shaped; None for no tags.
+        The tag with the highest version in SemVer precedence (a prerelease
+        sorts below its release; pre-release identifiers compare
+        numerically when numeric, as text otherwise, numeric below text, and
+        a shorter list below a longer one with the same prefix); the first
+        tag when none is semver-shaped; None for no tags.
     """
-    best: tuple[tuple[int, int, int, int, str], str] | None = None
+    best: tuple[tuple[Any, ...], str] | None = None
     for tag in tags:
         match = _TAG_VERSION.match(tag)
         if match is None:
             continue
         major, minor, patch, pre = match.groups()
-        key = (int(major), int(minor), int(patch), 0 if pre else 1, pre or "")
+        identifiers = tuple((0, int(i), "") if i.isdigit() else (1, 0, i) for i in pre.split(".")) if pre else ()
+        key = (int(major), int(minor), int(patch), 0 if pre else 1, identifiers)
         if best is None or key > best[0]:
             best = (key, tag)
     if best is not None:
@@ -1453,18 +1499,18 @@ def file_findings(
                 draft = next(
                     (d for d in drafts if finding.signature in extract_signatures(d.get("description") or "")), None
                 )
-                new = splice_auto(draft.get("description") or "", body["description"]) if draft else None
-                if draft is None or new is None:
+                changes = draft_changes(draft, body) if draft else {}
+                if draft is None or not changes:
                     counts["known"] += 1
                     continue
                 try:
-                    gh.update_advisory(str(draft["ghsa_id"]), {"description": new})
+                    gh.update_advisory(str(draft["ghsa_id"]), changes)
                 except (OSError, ValueError):
                     # A refused refresh (the draft was just closed, say) must
                     # not hold back the crashes after it.
                     counts["failed"] += 1
                     continue
-                draft["description"] = new
+                draft.update(changes)
                 counts["updated"] += 1
                 continue
             gh.create_advisory(body)

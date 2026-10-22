@@ -469,6 +469,17 @@ class DraftRefreshTest(unittest.TestCase):
         counts = triage.file_findings(gh, findings, _boundaries(), self.inputs, "c", "https://run", "b")
         self.assertEqual((counts["failed"], counts["advisory"]), (1, 1))
 
+    def test_unset_range_is_filled_once_a_release_exists(self) -> None:
+        finding = _finding(target="abi_decode")
+        before = triage.render_advisory(finding, _boundaries()["abi_decode"], None, "c", "u", "b", b"boom")
+        draft = {"ghsa_id": "GHSA-1", "state": "draft", **before}
+        draft["vulnerabilities"][1]["vulnerable_version_range"] = "<= v0.9.0"  # set by a maintainer
+        gh = FakeGitHub("v1.0.0", [], [before["description"]], drafts=[draft])
+        counts = triage.file_findings(gh, [finding], _boundaries(), self.inputs, "c", "https://run", "b")
+        self.assertEqual(counts["updated"], 1)
+        ranges = [v["vulnerable_version_range"] for v in gh.updated[0][1]["vulnerabilities"]]
+        self.assertEqual(ranges, ["<= v1.0.0", "<= v0.9.0"])
+
     def test_closed_or_published_advisories_are_left_alone(self) -> None:
         (self.inputs / "a.bin").write_bytes(b"a different minimized input")
         gh = FakeGitHub(None, [], [self._body()], drafts=[])
@@ -551,6 +562,10 @@ class NewestTagTest(unittest.TestCase):
         self.assertEqual(triage.newest_tag(["v2.0.0-rc.1", "v1.9.0"]), "v2.0.0-rc.1")
         self.assertEqual(triage.newest_tag(["v2.0.0-rc.1", "v2.0.0"]), "v2.0.0")
         self.assertEqual(triage.newest_tag(["nightly", "weekly"]), "nightly")
+        # SemVer pre-release precedence, not text order.
+        self.assertEqual(triage.newest_tag(["v1.0.0-rc.2", "v1.0.0-rc.10"]), "v1.0.0-rc.10")
+        self.assertEqual(triage.newest_tag(["v1.0.0-rc.1.1", "v1.0.0-rc.1"]), "v1.0.0-rc.1.1")
+        self.assertEqual(triage.newest_tag(["v1.0.0-beta", "v1.0.0-1"]), "v1.0.0-beta")
         self.assertIsNone(triage.newest_tag([]))
 
 
