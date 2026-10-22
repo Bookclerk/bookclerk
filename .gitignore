@@ -4,6 +4,8 @@
 # CARGO_HOME=<workspace>/.cargo-home; local hosts use the default ~/.cargo.
 # Do not put this under `.cargo/`.
 /.cargo-home/
+# Former workspace TMPDIR; safe to delete in old checkouts.
+/.tmp/
 **/*.rs.bk
 Cargo.lock.bak
 # Standalone author-surface fixture packages (scripts/check-author-surface.sh)
