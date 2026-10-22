@@ -54,6 +54,7 @@ libc = "0.2"
 
 [dev-dependencies]
 bookclerk-plugin-abi = { workspace = true, features = ["host"] }
+chrono.workspace = true
 bookclerk-sandbox.workspace = true
 tempfile.workspace = true
 

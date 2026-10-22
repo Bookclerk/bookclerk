@@ -291,62 +291,17 @@ fn parse_calendar_date(text: &str) -> Option<(i32, u32, u32)> {
     let year: i32 = text[..4].parse().ok()?;
     let month: u32 = text[5..7].parse().ok()?;
     let day: u32 = text[8..10].parse().ok()?;
-    let max_day = days_in_month(year, month)?;
-    if day == 0 || day > max_day {
-        return None;
-    }
-    Some((year, month, day))
-}
-
-/// Number of days in `month` (1-12) of `year`; `None` for a month out of range.
-fn days_in_month(year: i32, month: u32) -> Option<u32> {
-    Some(match month {
+    let max_day = match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
         2 if is_leap_year(year) => 29,
         2 => 28,
         _ => return None,
-    })
-}
-
-/// Calendar day after `date`, as `YYYY-MM-DD`.
-///
-/// Tests across crates use this to probe the fallback boundary one day past
-/// [`WORKERD_PIN_COMPAT_DATE`] without hard-coding a date a pin bump overtakes.
-///
-/// # Returns
-///
-/// `None` when `date` is not a real calendar date (see
-/// [`validate_author_compatibility_date`]).
-pub fn calendar_day_after(date: &str) -> Option<String> {
-    let (year, month, day) = parse_calendar_date(date)?;
-    let (year, month, day) = if day < days_in_month(year, month)? {
-        (year, month, day + 1)
-    } else if month < 12 {
-        (year, month + 1, 1)
-    } else {
-        (year + 1, 1, 1)
     };
-    Some(format!("{year:04}-{month:02}-{day:02}"))
-}
-
-/// Calendar day before `date`, as `YYYY-MM-DD`.
-///
-/// Counterpart of [`calendar_day_after`] for the "older than the pin" case.
-///
-/// # Returns
-///
-/// `None` when `date` is not a real calendar date.
-pub fn calendar_day_before(date: &str) -> Option<String> {
-    let (year, month, day) = parse_calendar_date(date)?;
-    let (year, month, day) = if day > 1 {
-        (year, month, day - 1)
-    } else if month > 1 {
-        (year, month - 1, days_in_month(year, month - 1)?)
-    } else {
-        (year - 1, 12, 31)
-    };
-    Some(format!("{year:04}-{month:02}-{day:02}"))
+    if day == 0 || day > max_day {
+        return None;
+    }
+    Some((year, month, day))
 }
 
 /// Proleptic Gregorian leap year.
@@ -377,48 +332,12 @@ mod tests {
     }
 
     #[test]
-    fn calendar_neighbors_roll_over_months_and_years() {
-        assert_eq!(
-            calendar_day_after("2026-10-15").as_deref(),
-            Some("2026-10-16")
-        );
-        assert_eq!(
-            calendar_day_after("2026-10-31").as_deref(),
-            Some("2026-11-01")
-        );
-        assert_eq!(
-            calendar_day_after("2026-12-31").as_deref(),
-            Some("2027-01-01")
-        );
-        assert_eq!(
-            calendar_day_after("2028-02-28").as_deref(),
-            Some("2028-02-29")
-        );
-        assert_eq!(
-            calendar_day_before("2026-10-15").as_deref(),
-            Some("2026-10-14")
-        );
-        assert_eq!(
-            calendar_day_before("2026-11-01").as_deref(),
-            Some("2026-10-31")
-        );
-        assert_eq!(
-            calendar_day_before("2027-01-01").as_deref(),
-            Some("2026-12-31")
-        );
-        assert_eq!(
-            calendar_day_before("2028-03-01").as_deref(),
-            Some("2028-02-29")
-        );
-        assert!(calendar_day_after("2026-13-01").is_none());
-        assert!(calendar_day_before("2026-8-1").is_none());
-    }
-
-    #[test]
     fn older_and_equal_dates_pass_through_newer_falls_back() {
         // One day either side of the pin, so the boundary tracks every pin bump.
-        let older_date = calendar_day_before(WORKERD_PIN_COMPAT_DATE).expect("day before pin");
-        let newer_date = calendar_day_after(WORKERD_PIN_COMPAT_DATE).expect("day after pin");
+        let pin = chrono::NaiveDate::parse_from_str(WORKERD_PIN_COMPAT_DATE, "%Y-%m-%d")
+            .expect("pin is a calendar date");
+        let older_date = pin.pred_opt().expect("day before pin").to_string();
+        let newer_date = pin.succ_opt().expect("day after pin").to_string();
         assert!(validate_author_compatibility_date(&older_date).is_ok());
         assert!(validate_author_compatibility_date(WORKERD_PIN_COMPAT_DATE).is_ok());
         assert!(validate_author_compatibility_date(&newer_date).is_ok());
