@@ -123,8 +123,8 @@ fn check_rejects_logo_parent() {
 }
 
 /// Copies the `valid-compat-date-future` fixture into a temp dir with its
-/// `compatibility_date` set to January 1 of the year after the workerd pin, so
-/// the date stays newer than the pin after every pin bump.
+/// `compatibility_date` set to the day after the workerd pin, so the boundary
+/// tracks every pin bump.
 ///
 /// # Returns
 ///
@@ -132,9 +132,10 @@ fn check_rejects_logo_parent() {
 fn future_date_fixture() -> tempfile::TempDir {
     let src =
         repo_root().join("crates/bookclerk-plugin-abi/fixtures/tools/valid-compat-date-future");
-    let pin = bookclerk_plugin_manifest::WORKERD_PIN_COMPAT_DATE;
-    let pin_year: i32 = pin[..4].parse().expect("pin year");
-    let newer = format!("{}-01-01", pin_year + 1);
+    let newer = bookclerk_plugin_manifest::calendar_day_after(
+        bookclerk_plugin_manifest::WORKERD_PIN_COMPAT_DATE,
+    )
+    .expect("day after pin");
     let dir = tempfile::tempdir().expect("tempdir");
     let manifest = std::fs::read_to_string(src.join("plugin.toml")).expect("read fixture");
     let rewritten: String = manifest

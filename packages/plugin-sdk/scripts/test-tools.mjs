@@ -34,11 +34,11 @@ run(["check", path.join(fixtures, "invalid-native-with-domains")], false);
 run(["check", path.join(fixtures, "invalid-logo-javascript")], false);
 run(["check", path.join(fixtures, "invalid-logo-vbscript")], false);
 run(["check", path.join(fixtures, "invalid-logo-parent")], false);
-// Rewrite the fixture's date to the year after the pin so it stays newer
-// than the pin after every pin bump.
+// Rewrite the fixture's date to the day after the pin so the fallback
+// boundary tracks every pin bump.
 {
-  const pinYear = Number(WORKERD_PIN_COMPAT_DATE.slice(0, 4));
-  const newer = `${pinYear + 1}-01-01`;
+  const [y, m, d] = WORKERD_PIN_COMPAT_DATE.split("-").map(Number);
+  const newer = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "compat-date-future-"));
   fs.cpSync(path.join(fixtures, "valid-compat-date-future"), dir, { recursive: true });
   const manifestPath = path.join(dir, "plugin.toml");

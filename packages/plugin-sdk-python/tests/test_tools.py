@@ -1,3 +1,5 @@
+import shutil
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -53,8 +55,23 @@ def test_check_rejects_logo_parent():
         check_plugin(FIXTURES / "invalid-logo-parent")
 
 
-def test_check_warns_when_compatibility_date_is_newer_than_pin(capsys):
-    result = check_plugin(FIXTURES / "valid-compat-date-future")
+def test_check_warns_when_compatibility_date_is_newer_than_pin(tmp_path: Path, capsys):
+    from bookclerk_plugin_sdk.tools import WORKERD_PIN_COMPAT_DATE
+
+    # Copy the fixture and set its date to the day after the pin, so the
+    # fallback boundary tracks every pin bump.
+    newer = (date.fromisoformat(WORKERD_PIN_COMPAT_DATE) + timedelta(days=1)).isoformat()
+    plugin = tmp_path / "valid-compat-date-future"
+    shutil.copytree(FIXTURES / "valid-compat-date-future", plugin)
+    manifest_path = plugin / "plugin.toml"
+    lines = manifest_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    rewritten = "".join(
+        f'compatibility_date = "{newer}"\n' if line.startswith("compatibility_date = ") else line
+        for line in lines
+    )
+    assert newer in rewritten
+    manifest_path.write_text(rewritten, encoding="utf-8")
+    result = check_plugin(plugin)
     assert result.startswith("ok ")
     assert "Falling back" in capsys.readouterr().err
 
@@ -868,8 +885,8 @@ def test_materialize_falls_back_when_compatibility_date_is_newer_than_pin(
     from bookclerk_plugin_sdk.sparse_workerd.config import materialize_config
     from bookclerk_plugin_sdk.tools import WORKERD_PIN_COMPAT_DATE
 
-    # Derived from the pin so the date stays newer after every pin bump.
-    newer = f"{int(WORKERD_PIN_COMPAT_DATE[:4]) + 1}-01-01"
+    # One day past the pin, so the boundary tracks every pin bump.
+    newer = (date.fromisoformat(WORKERD_PIN_COMPAT_DATE) + timedelta(days=1)).isoformat()
     plugin = tmp_path / "plugin"
     modules = plugin / "modules"
     modules.mkdir(parents=True)

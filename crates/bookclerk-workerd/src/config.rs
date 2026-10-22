@@ -1832,7 +1832,9 @@ mode = "deny"
 
     #[test]
     fn materialize_falls_back_when_compatibility_date_is_newer_than_pin() {
-        use bookclerk_plugin_manifest::{PluginManifest, WorkerdLimits, WORKERD_PIN_COMPAT_DATE};
+        use bookclerk_plugin_manifest::{
+            calendar_day_after, PluginManifest, WorkerdLimits, WORKERD_PIN_COMPAT_DATE,
+        };
 
         let dir = tempfile::tempdir().expect("tempdir");
         let _modules = create_dir_under(dir.path(), "modules");
@@ -1841,9 +1843,8 @@ mode = "deny"
             Path::new("modules").join("index.js"),
             "export default {};",
         );
-        // Derived from the pin so the date stays newer after every pin bump.
-        let pin_year: i32 = WORKERD_PIN_COMPAT_DATE[..4].parse().expect("pin year");
-        let newer = format!("{}-01-01", pin_year + 1);
+        // One day past the pin, so the boundary tracks every pin bump.
+        let newer = calendar_day_after(WORKERD_PIN_COMPAT_DATE).expect("day after pin");
         let manifest = PluginManifest::parse(&format!(
             r#"
 api_version = 3
