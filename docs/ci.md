@@ -354,24 +354,22 @@ reproducer as an artifact. The scheduled workflow therefore never uses it:
    token, files each signature not already on record (a hidden
    `<!-- fuzz-crash-signature: … -->` marker in an open `fuzz-crash` issue
    or in any repository advisory):
-   - **Draft security advisory** when a release is published (prereleases
-     count, drafts do not) and the crash is not an oracle failure. The draft
-     is private: it carries the stack, the reproducer (base64, up to 4 KiB)
-     and a reproduce command; affected packages are the target's artifacts
-     from `fuzz/boundaries.toml`, with a proposed range `<= <newest tag>`
-     that a maintainer confirms (the crash reproduced on `main`, not on the
-     release). Default severity: high for memory-safety errors (and anything
+   - **Draft security advisory** for every crash that is not an oracle
+     failure, before the first release too (drafts are private, and filing
+     them proves the path). The draft carries the stack, the reproducer
+     (base64, up to 4 KiB) and a reproduce command; affected packages are the
+     target's artifacts from `fuzz/boundaries.toml`, with a proposed range
+     `<= <newest tag>` that a maintainer confirms (the crash reproduced on
+     `main`, not on the release). Before the first release (prereleases
+     count, drafts do not) no range is proposed. Default severity: high for memory-safety errors (and anything
      unrecognized; the advisory asks for the fix in a temporary private
      fork, which a maintainer starts, since that needs the Administration
      permission the App does not have), medium for a
      denial of service in host code, low inside a guest or for a leak. A
      maintainer reviews and publishes.
-   - **Issue** otherwise. Before the first release no shipped artifact can be
-     affected, so a crash gets an issue that names only its signature and the
-     sealed bundle (no target or class that would point at unfixed code). A
-     failed oracle (a panic raised from `fuzz/fuzz_targets/` or
-     `fuzz/oracles/`) is a bug rather than a vulnerability, so its issue also
-     names the target and boundary. An issue closed as completed does not
+   - **Issue** for a failed oracle (a panic raised from `fuzz/fuzz_targets/`
+     or `fuzz/oracles/`), which is a bug rather than a vulnerability: the
+     issue names the target, its boundary and the sealed bundle. An issue closed as completed does not
      suppress a later identical crash (a regression); one closed as not
      planned or duplicate does.
 
@@ -533,8 +531,8 @@ App as [Dependabot auto-merge](#dependabot-auto-merge) instead of
 | `graphicaudio-api-probe.yml` | `api-drift` issue; `api-drift/graphicaudio` branch and pull request |
 | `chirp-api-probe.yml` | `api-drift` issue; `api-drift/chirp` branch and pull request |
 | `osv-remediate.yml` | reads OSV code-scanning alerts; `deps/osv-remediation` branch, pull request, auto-merge |
-| `cflite-batch.yml` | `fuzz-crash` issues; draft repository security advisories once a release exists ([triage](#fuzz-crash-triage)) |
-| `osv-advisories.yml` | reads OSV code-scanning and Dependabot alerts; draft repository security advisories once a release exists ([verdicts](#osv-advisories)) |
+| `cflite-batch.yml` | `fuzz-crash` issues for oracle failures; draft repository security advisories for crashes ([triage](#fuzz-crash-triage)) |
+| `osv-advisories.yml` | reads OSV code-scanning and Dependabot alerts; draft repository security advisories ([verdicts](#osv-advisories)) |
 
 The probes share `.github/actions/api-drift-report`: one open issue per source
 (found by a hidden `<!-- api-drift:<source> -->` marker and updated in place,
@@ -639,9 +637,9 @@ the merge queue takes them. Auto-merge stays on while it waits.
 `osv-advisories.yml` runs after every full OSV scan of `main`, next to the
 remediation, and answers a different question: does an open dependency alert
 affect something Bookclerk ships? A draft repository security advisory is
-filed only when it does, and only once a release is published
-([ADR](adr/security-advisory-automation.md)). Before the first release the
-run records its verdicts and files nothing.
+filed only when it does ([ADR](adr/security-advisory-automation.md)). Drafts
+are private to maintainers and are filed before the first release too, which
+proves the path; nothing becomes public until a maintainer publishes.
 
 [`shipped-artifacts.toml`](../shipped-artifacts.toml) declares the shipped
 artifacts and which lockfile entries end up in each; every lockfile in the
@@ -661,8 +659,7 @@ gives every artifact of that lockfile a verdict:
 | `packages/plugin-sdk-python/` | `bookclerk-plugin-sdk` (PyPI) | never by a dependency: the SDK has no runtime dependencies, and both the test and the workflow fail if `[project].dependencies` or a non-dev extra gains one before its closure is resolved |
 | anything else | none | never: examples, fuzzing, scripts and dev dependencies stay an alert plus the remediation bump |
 
-The call-analysis build takes hours, so it runs only when a release exists
-and an advisory with function data for a shipped crate has no draft yet, and
+The call-analysis build takes hours, so it runs only when an advisory with function data for a shipped crate has no draft yet, and
 then only on the weekly scheduled scan or a manual run (`call-analysis` input
 forces it). On other runs such an advisory waits as "awaiting call analysis".
 A build that fails, reports no executables, or leaves a binary with too few
@@ -679,6 +676,10 @@ from the upstream records and their aliases, the verdict and its evidence
 highest release tag (or, for the TypeScript SDK, its published version) for a
 maintainer to confirm. One run files at most ten drafts; a draft GitHub
 refuses is reported and fails the run without holding back the others.
+Before the first release, artifacts released with the host (host, web UI,
+Rust SDK, Worker) get no proposed range: the draft says so, and a maintainer
+either closes it once the fix is on `main` or sets the range when a release
+ships the code.
 
 Three jobs keep secrets away from third-party build code:
 
@@ -693,11 +694,21 @@ Three jobs keep secrets away from third-party build code:
    (`npm ci --ignore-scripts`) and, when planned, the shipped binaries. Its
    output names no advisory (the bundled packages and a truncated SHA-256 of
    every function in each binary), so it travels unsealed.
-3. `file` builds nothing. It mints an advisory-write token only when a
-   release exists, files the drafts, and seals the verdict report with
-   `FUZZ_CRASH_BUNDLE_KEY` as the `osv-advisories-report` artifact (30 days).
-   Read it with
-   `BUNDLE_KEY=<passphrase> scripts/osv-remediation-bundle.sh open sealed.bin <dir>`.
+3. `file` builds nothing. It mints an advisory-write token, files the
+   drafts, and writes the verdict report.
+
+The verdict report is the record for everything that did not become a draft:
+one row per (advisory, shipped artifact) with its verdict, packages and
+outcome (filed, already on record, capped, failed), the advisories on
+lockfiles that do not ship, and the evidence behind each verdict. It never
+leaves the job in the clear: it is sealed with `FUZZ_CRASH_BUNDLE_KEY` (the
+passphrase maintainers keep) and uploaded as the `osv-advisories-report`
+artifact of that workflow run, kept 30 days. Anyone can download the sealed
+file from the run page (Actions → OSV advisories → the run → Artifacts) or
+with `gh run download <run-id> -n osv-advisories-report`; only the
+passphrase opens it:
+`BUNDLE_KEY=<passphrase> scripts/osv-remediation-bundle.sh open sealed.bin <dir>`
+then read `<dir>/report.md`.
 
 Logs print counts only. A new shipped artifact, or a new lockfile, goes into
 `shipped-artifacts.toml` in the pull request that adds it. Cutting the fix

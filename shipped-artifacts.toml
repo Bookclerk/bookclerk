@@ -2,8 +2,8 @@
 #
 # `scripts/osv-advisories.py` reads this to decide whether a dependency
 # advisory (an OSV code-scanning alert or a Dependabot alert) affects a
-# shipped artifact, and so deserves a draft repository security advisory
-# once a release is published. Anything not shipped (examples, fuzzing,
+# shipped artifact, and so deserves a (private) draft repository security
+# advisory. Anything not shipped (examples, fuzzing,
 # scripts, GitHub Actions, dev dependencies) never produces an advisory: its
 # alert plus the remediation bump is the whole record. See
 # docs/adr/security-advisory-automation.md and docs/ci.md#osv-advisories.

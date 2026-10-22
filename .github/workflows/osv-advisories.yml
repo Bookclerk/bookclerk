@@ -1,6 +1,7 @@
 # Decide whether open dependency alerts affect something Bookclerk ships, and
-# draft a repository security advisory for each one that does, once a release
-# is published.
+# draft a repository security advisory for each one that does. Drafts are
+# private to maintainers and are filed before the first release too (with no
+# proposed affected range); publishing is a maintainer action.
 #
 # Runs after each full OSV scan of main (push, schedule or manual run of
 # osv-scanner.yml), next to osv-remediate.yml, which bumps what it can.
@@ -21,9 +22,8 @@
 #   weekly scheduled scan or a manual run when an advisory needs it, the
 #   shipped binaries. Its output names no advisory (bundled packages and
 #   digests of every function in the binaries), so it travels unsealed.
-# - `file` builds nothing. Only once a release is published does it mint an
-#   advisory-write token and file drafts, which are private to maintainers.
-#   The verdict report is sealed with FUZZ_CRASH_BUNDLE_KEY, the key
+# - `file` builds nothing. It mints an advisory-write token and files the
+#   drafts, which are private to maintainers. The verdict report is sealed with FUZZ_CRASH_BUNDLE_KEY, the key
 #   maintainers keep, as the `osv-advisories-report` artifact.
 # Logs print counts only. See docs/ci.md#osv-advisories.
 
@@ -65,7 +65,6 @@ jobs:
        contains(fromJSON('["push", "schedule", "workflow_dispatch"]'), github.event.workflow_run.event))
     runs-on: ubuntu-latest
     outputs:
-      release: ${{ steps.plan.outputs.release }}
       call-analysis: ${{ steps.plan.outputs.call-analysis }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -218,11 +217,8 @@ jobs:
           BUNDLE_KEY: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
         run: scripts/osv-remediation-bundle.sh open "$RUNNER_TEMP/osv-advisories-sealed/sealed.bin" "$RUNNER_TEMP/osv-advisories"
 
-      # No advisories before the first published release: then no token is
-      # minted and the step below only writes the verdict report.
       - name: Mint advisory token
         id: app
-        if: needs.fetch.outputs.release == 'true'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ secrets.AUTOMATION_APP_CLIENT_ID }}

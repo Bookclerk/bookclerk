@@ -23,14 +23,16 @@ Subcommands, in the order the workflow runs them:
   way OSV-Scanner's Rust call analysis does (fat LTO, one codegen unit,
   debug info) and record a digest of every function in their DWARF. Their
   output names no advisory, so it leaves the job unsealed.
-- ``file`` (job ``file``, builds nothing; advisory-write token only once a
-  release exists): gives every (advisory, artifact) pair a verdict, files a
-  draft advisory for each affected one not on record, and writes the verdict
-  report, which the workflow seals for maintainers.
+- ``file`` (job ``file``, builds nothing, advisory-write token): gives every
+  (advisory, artifact) pair a verdict, files a draft advisory for each
+  affected one not on record, and writes the verdict report, which the
+  workflow seals for maintainers.
 
-No advisory is drafted while Bookclerk has no published release: nothing
-shipped can be affected yet. Logs print counts only; alert details stay in
-the sealed bundles, Security -> Code scanning and the private drafts.
+Drafts are filed before the first release too: they are private to
+maintainers, nothing is published without one, and filing them proves the
+path. Until a release exists a draft proposes no affected range. Logs print
+counts only; alert details stay in the sealed bundles, Security -> Code
+scanning and the private drafts.
 
 Exit codes:
   0 - ran to completion
@@ -50,7 +52,6 @@ import re
 import subprocess
 import sys
 import tempfile
-import tomllib
 import urllib.error
 import urllib.parse
 from collections.abc import Callable, Iterable
@@ -58,6 +59,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "shipped-artifacts.toml"
@@ -828,11 +831,10 @@ def call_candidates(
     return out
 
 
-def plan_call_analysis(release: bool, candidates: list[str], event: str, force: bool) -> str:
+def plan_call_analysis(candidates: list[str], event: str, force: bool) -> str:
     """Decides whether the call-analysis build runs.
 
     Args:
-        release: Whether a release is published.
         candidates: Output of `call_candidates`.
         event: Event that triggered the OSV scan (or this workflow, when run
             by hand).
@@ -844,7 +846,7 @@ def plan_call_analysis(release: bool, candidates: list[str], event: str, force: 
     """
     if force:
         return "run"
-    if not release or not candidates:
+    if not candidates:
         return "not needed"
     return "run" if event in CALL_ANALYSIS_EVENTS else "deferred"
 
@@ -869,13 +871,12 @@ def cmd_plan(args: argparse.Namespace) -> int:
     groups = [Group.from_json(g) for g in state["groups"]]
     on_record = {tuple(m) for m in state.get("on_record", [])}
     candidates = call_candidates(groups, config, evidence, on_record, ROOT)
-    calls = plan_call_analysis(bool(state.get("release_tag")), candidates, args.event, args.force_call_analysis)
+    calls = plan_call_analysis(candidates, args.event, args.force_call_analysis)
     out = {"entries": evidence, "call_analysis": calls}
     Path(args.out).write_text(json.dumps(out, indent=1, sort_keys=True), encoding="utf-8")
     print(f"shipped entries: {len(evidence)}; call analysis: {calls}")
     if args.github_output:
         with Path(args.github_output).open("a", encoding="utf-8") as fh:
-            fh.write(f"release={'true' if state.get('release_tag') else 'false'}\n")
             fh.write(f"call-analysis={'true' if calls == 'run' else 'false'}\n")
     return 0
 
@@ -1178,7 +1179,7 @@ def cmd_calls(args: argparse.Namespace) -> int:
 # Verdicts and filing (pure)
 # ---------------------------------------------------------------------------
 
-# Verdicts that make an artifact affected (a draft advisory once released).
+# Verdicts that make an artifact affected (a draft advisory).
 REACHABLE = "reachable"  # call analysis found a vulnerable function in a shipped binary
 SHIPPED_NO_FUNCTIONS = "shipped, no function data"  # in the closure; record has no function list
 SHIPPED_UNANALYZED = "shipped, not analyzed"  # function data exists, no binary to check or analysis failed
@@ -1262,7 +1263,7 @@ class Decision:
         packages: Affected `(name, version)` pairs inside the artifact.
         functions: Vulnerable functions found, or checked when none were.
         binaries: Binaries the functions were found in.
-        outcome: `filed`, `on record`, `no release`, `capped`, `failed`, or
+        outcome: `filed`, `on record`, `no token`, `capped`, `failed`, or
             empty when not affected.
     """
 
@@ -1411,16 +1412,17 @@ def cwe_ids(record: dict[str, Any]) -> list[str]:
     return sorted(found)
 
 
-def artifact_version(artifact: Artifact, release_tag: str, root: Path) -> str:
+def artifact_version(artifact: Artifact, release_tag: str | None, root: Path) -> str | None:
     """Returns the top of the proposed affected range for an artifact.
 
     Args:
         artifact: The artifact.
-        release_tag: Newest published release tag.
+        release_tag: Newest published release tag, or None before the first.
         root: Repository root.
 
     Returns:
-        The release tag, or the version in the artifact's manifest.
+        The release tag (None before the first release: no range is
+        proposed), or the version in the artifact's manifest.
 
     Raises:
         ValueError: The manifest has no version.
@@ -1438,15 +1440,16 @@ def artifact_version(artifact: Artifact, release_tag: str, root: Path) -> str:
 
 
 def render_advisory(
-    decision: Decision, analysis: Analysis, release_tag: str, version: str, commit: str, run_url: str
+    decision: Decision, analysis: Analysis, release_tag: str | None, version: str | None, commit: str, run_url: str
 ) -> dict[str, Any]:
     """Renders the draft advisory for an affected artifact.
 
     Args:
         decision: An affected decision.
         analysis: The analyze job's output.
-        release_tag: Newest published release tag.
-        version: Top of the proposed affected range (`artifact_version`).
+        release_tag: Newest published release tag, or None before the first.
+        version: Top of the proposed affected range (`artifact_version`),
+            or None when no range is proposed.
         commit: The `main` commit the verdict was reached on.
         run_url: URL of the workflow run.
 
@@ -1463,12 +1466,24 @@ def render_advisory(
         fix = osv.smallest_fix(group.record, ecosystem, name, parsed) if parsed else None
         fixes.append(f"`{name}` {locked_version} → {fix if fix else 'no fixed release yet'}")
     lines = [*(f"<!-- osv-advisory: {i} {artifact.advisory_key} -->" for i in group.ids), ""]
+    if version is None:
+        lines += [
+            "Filed automatically as a draft by the OSV advisory workflow. Check the verdict and severity:",
+            f"the verdict was reached on `{commit}`. Bookclerk has no published release yet, so no affected",
+            "range is proposed: fix it before the first release and close this draft, or set the range to",
+            "the releases that ship the vulnerable code before publishing.",
+            "",
+        ]
+    else:
+        newest = f" (newest release `{release_tag}`)" if release_tag else ""
+        lines += [
+            "Filed automatically as a draft by the OSV advisory workflow. Check the verdict, severity and",
+            f"affected range before publishing: the verdict was reached on `{commit}`, and the range proposes",
+            f"every version up to `{version}`{newest} without having checked each release.",
+            "Narrow it, or close this draft, if a release does not contain the vulnerable code.",
+            "",
+        ]
     lines += [
-        "Filed automatically as a draft by the OSV advisory workflow. Check the verdict, severity and",
-        f"affected range before publishing: the verdict was reached on `{commit}`, and the range proposes",
-        f"every version up to `{version}` (newest release `{release_tag}`) without having checked each",
-        "release. Narrow it, or close this draft, if a release does not contain the vulnerable code.",
-        "",
         "## Upstream advisory",
         "",
         f"- Ids: {', '.join(group.ids)}",
@@ -1500,7 +1515,7 @@ def render_advisory(
         "vulnerabilities": [
             {
                 "package": {"ecosystem": artifact.ecosystem, "name": artifact.package},
-                "vulnerable_version_range": f"<= {version}",
+                "vulnerable_version_range": f"<= {version}" if version else None,
                 "patched_versions": None,
                 "vulnerable_functions": [],
             }
@@ -1532,7 +1547,7 @@ def render_report(
     lines = [
         "# OSV advisory verdicts",
         "",
-        f"Newest release: {release_tag or 'none (no advisories are drafted before the first release)'}.",
+        f"Newest release: {release_tag or 'none (drafts propose no affected range)'}.",
         f"Call analysis: {calls}.",
         f"Alerts naming ids OSV does not know: {unknown}.",
         "",
@@ -1594,8 +1609,8 @@ def file_decisions(
 ) -> dict[str, int]:
     """Files a draft advisory for each affected decision not on record.
 
-    Before the first release (no tag, or no token) nothing is filed and the
-    affected decisions are marked `no release`. Several shipped entries of
+    Without a token (a local dry run) nothing is filed and the affected
+    decisions are marked `no token`. Several shipped entries of
     one artifact (the Rust host and the web UI are both `bookclerk`) that
     hit the same upstream advisory get one draft. A draft GitHub refuses is
     marked `failed` and the others are still filed.
@@ -1603,7 +1618,7 @@ def file_decisions(
     Args:
         decisions: Output of `decide_all`; `outcome` is set in place.
         gh: Client with an advisory-write token (`create_advisory`), or None.
-        state: Output of `fetch` (release tag, markers on record).
+        state: Output of `fetch` (release tag or None, markers on record).
         analysis: The analyze job's output.
         root: Repository root.
         commit: Commit the verdicts were reached on.
@@ -1614,15 +1629,15 @@ def file_decisions(
     """
     release_tag = state.get("release_tag")
     on_record = {tuple(m) for m in state.get("on_record", [])}
-    counts = {"filed": 0, "on record": 0, "no release": 0, "capped": 0, "failed": 0}
+    counts = {"filed": 0, "on record": 0, "no token": 0, "capped": 0, "failed": 0}
     for decision in decisions:
         if decision.verdict not in AFFECTED:
             continue
         key = decision.entry.artifact.advisory_key
         if any((i, key) in on_record for i in decision.group.ids):
             decision.outcome = "on record"
-        elif not release_tag or gh is None:
-            decision.outcome = "no release"
+        elif gh is None:
+            decision.outcome = "no token"
         elif counts["filed"] >= MAX_FILED_PER_RUN:
             decision.outcome = "capped"
         else:
@@ -1670,7 +1685,7 @@ def cmd_file(args: argparse.Namespace) -> int:
     print(
         f"verdicts: {len(decisions)} (advisory x shipped entry), {affected} affected; "
         f"drafts filed: {counts['filed']}, failed: {counts['failed']}, on record: {counts['on record']}, "
-        f"held (no release): {counts['no release']}, over the per-run cap: {counts['capped']}; "
+        f"not filed (no token): {counts['no token']}, over the per-run cap: {counts['capped']}; "
         f"advisories on lockfiles that do not ship: {len(unshipped)}"
     )
     return 1 if counts["failed"] else 0

@@ -9,7 +9,6 @@ import re
 import subprocess
 import sys
 import tempfile
-import tomllib
 import unittest
 import urllib.error
 from email.message import Message
@@ -17,6 +16,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import tomllib
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -491,11 +491,10 @@ class DecisionTest(unittest.TestCase):
 
 class AnalysisTest(unittest.TestCase):
     def test_plan(self) -> None:
-        self.assertEqual(adv.plan_call_analysis(False, ["X"], "schedule", False), "not needed")
-        self.assertEqual(adv.plan_call_analysis(True, [], "schedule", False), "not needed")
-        self.assertEqual(adv.plan_call_analysis(True, ["X"], "push", False), "deferred")
-        self.assertEqual(adv.plan_call_analysis(True, ["X"], "schedule", False), "run")
-        self.assertEqual(adv.plan_call_analysis(False, [], "push", True), "run")
+        self.assertEqual(adv.plan_call_analysis([], "schedule", False), "not needed")
+        self.assertEqual(adv.plan_call_analysis(["X"], "push", False), "deferred")
+        self.assertEqual(adv.plan_call_analysis(["X"], "schedule", False), "run")
+        self.assertEqual(adv.plan_call_analysis([], "push", True), "run")
 
     def test_load_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -572,13 +571,28 @@ class FilingTest(unittest.TestCase):
         counts = adv.file_decisions(decisions, gh, self.state, BUNDLE, self.repo.root, "abc", "https://run")
         return decisions, unshipped, counts
 
-    def test_no_release_files_nothing(self) -> None:
+    def test_before_a_release_drafts_propose_no_range(self) -> None:
         self.state["release_tag"] = None
         gh = FakeGitHub()
         _, unshipped, counts = self.run_file(gh)
-        self.assertEqual(gh.created, [])
-        self.assertEqual(counts["no release"], 3)  # host + rust SDK + TS SDK
+        self.assertEqual(counts["filed"], 3)  # host + rust SDK + TS SDK
+        ranges = {
+            b["vulnerabilities"][0]["package"]["name"]: b["vulnerabilities"][0]["vulnerable_version_range"]
+            for b in gh.created
+        }
+        # Released with the host: no range yet. The npm SDK has a manifest version.
+        self.assertIsNone(ranges["bookclerk"])
+        self.assertIsNone(ranges["bookclerk-plugin-sdk"])
+        self.assertIsNotNone(ranges["@bookclerk/plugin-sdk"])
+        for body in gh.created:
+            self.assertNotIn("None", body["description"])
+        self.assertIn("no published release", gh.created[0]["description"])
         self.assertEqual([g.lockfile for g in unshipped], ["fuzz/Cargo.lock"])
+
+    def test_without_a_token_nothing_is_filed(self) -> None:
+        _, _, counts = self.run_file(None)
+        self.assertEqual(counts["no token"], 3)
+        self.assertEqual(counts["filed"], 0)
 
     def test_files_one_draft_per_artifact(self) -> None:
         gh = FakeGitHub()
@@ -701,10 +715,10 @@ class WorkflowTest(unittest.TestCase):
         self.assertNotIn("secrets.", job)
         self.assertNotIn("token", job.lower())
 
-    def test_file_job_writes_only_after_a_release_and_builds_nothing(self) -> None:
+    def test_file_job_only_writes_advisories_and_builds_nothing(self) -> None:
         steps = self.workflow["jobs"]["file"]["steps"]
         mint = next(s for s in steps if s.get("id") == "app")
-        self.assertEqual(mint["if"], "needs.fetch.outputs.release == 'true'")
+        self.assertNotIn("if", mint)
         self.assertEqual(
             {k: v for k, v in mint["with"].items() if k.startswith("permission-")},
             {"permission-repository-advisories": "write"},

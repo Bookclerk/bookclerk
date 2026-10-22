@@ -63,14 +63,21 @@ are not.
    - Not shipped, never an advisory: examples, fuzzing, scripts, GitHub
      Actions and every development dependency. Their alert and the
      remediation bump are the whole record.
-4. **No advisories before the first release.** Until a release is published
-   (prereleases count, drafts do not), nothing shipped can be affected: the
-   advisory workflow records its verdicts in a sealed report for maintainers,
-   and fuzz-crash triage files an issue that names only the crash signature.
-5. **Drafts, never publication.** The automation files drafts, which are
-   private to maintainers, with a proposed affected range ending at the newest
-   release (or the SDK's published version), the upstream ids, CWE and CVSS,
-   and the evidence. A maintainer confirms the range and severity, prepares
+4. **Drafts before the first release too.** A draft is private to
+   maintainers and publishes nothing, so both workflows file one as soon as
+   shipped code is affected, release or not: it proves the filing path end to
+   end, and a fix landed before the first release never ships vulnerable.
+   Until a release is published (prereleases count, drafts do not), a draft
+   for an artifact released with the host proposes no affected range and says
+   so; a maintainer closes it once the fix is on `main`, or sets the range
+   when a release ships the code. Failed fuzz oracles (bugs in a check, not
+   vulnerabilities) become issues instead. The advisory workflow also writes a
+   verdict report for every alert, sealed with the passphrase maintainers
+   keep, as an artifact of its run.
+5. **Drafts, never publication (for now).** The automation files drafts, which
+   are private to maintainers, with a proposed affected range ending at the
+   newest release (or the SDK's published version), the upstream ids, CWE and
+   CVSS, and the evidence. A maintainer confirms the range and severity, prepares
    code fixes in a temporary private fork, sets the patched version and
    publishes. Each draft carries a hidden marker per upstream id and Bookclerk
    package, so a draft is never filed twice, and one a maintainer closed as
@@ -79,7 +86,7 @@ are not.
    build tooling has no secrets and no token, and its output names no
    advisory. Alerts are read in another job with a read-only token that is
    revoked as soon as they are read; drafts are filed from a job that builds
-   nothing, with an advisory-write token minted only once a release exists.
+   nothing, with an advisory-write token minted only for that job.
    Alert data travels between jobs sealed, and logs print counts only.
 7. **Fail closed.** A call analysis that cannot run, or whose output does not
    look like a real analysis, files the advisory on the closure alone; a web
@@ -97,9 +104,14 @@ exist, is to close the loop from alert to published fix:
    of every shipped artifact, SDK packages to their registries).
 2. The workflow sets the draft's patched version to the new release and
    links it, so publishing the advisory and the release happens together.
-3. Publishing stays a maintainer action until the release pipeline has a
-   track record: the workflow prepares, a maintainer publishes. Requesting a
-   CVE stays manual.
+3. Publishing becomes automatic where it can be: the advisory and the fix
+   release are published together without a maintainer when the evidence is
+   unambiguous (an upstream advisory with a fixed version that the remediation
+   bump took, a passing release build, and a verdict the maintainers have
+   allowed to auto-publish). Anything else (own-code crashes, call analysis
+   that failed closed, no upstream fix) stays a maintainer action: the
+   workflow prepares, a maintainer publishes. Requesting a CVE stays manual
+   until then.
 4. The affected range is then checked, not proposed: the same evidence is
    recomputed against each released tag, so the draft names the first and
    last affected releases instead of "every release up to the newest".
@@ -116,8 +128,7 @@ release workflow.
   functions absent from the LTO build while present at run time. The closure
   is the union of every platform and feature the workspace resolves, and a
   failed analysis falls back to the closure.
-- The call-analysis build takes hours, so it runs only when a release exists
-  and an advisory with function data for a shipped crate has no draft yet,
+- The call-analysis build takes hours, so it runs only when an advisory with function data for a shipped crate has no draft yet,
   and only on the weekly scheduled scan or a manual run. Until then such an
   advisory waits rather than being filed.
 - Tampering by a compromised dependency's build script is out of reach of

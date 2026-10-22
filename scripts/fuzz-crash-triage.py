@@ -21,10 +21,10 @@ replaces those public paths with three private steps:
   frames of their stack.
 - ``file`` runs on the runner with the automation App token. It maps each
   unique crash to its boundary (``fuzz/boundaries.toml``) for a default
-  severity and files it: a draft repository security advisory when a
-  shipped Bookclerk release contains the crashing code, otherwise an issue
-  that names the target and crash class only. Crashes already on record
-  (by signature marker) are skipped.
+  severity and files it: a draft repository security advisory for a crash
+  in shipped code (drafts are private to maintainers, so this holds before
+  the first release too), or an issue for a failed test oracle. Crashes
+  already on record (by signature marker) are skipped.
 
 The workflow seals the crash files, the logs and the triage output with the
 FUZZ_CRASH_BUNDLE_KEY secret (`scripts/osv-remediation-bundle.sh`) before
@@ -625,22 +625,18 @@ class Finding:
     duplicates: int = 0
 
 
-def route(finding: Finding, release_tag: str | None) -> str:
+def route(finding: Finding) -> str:
     """Decides how a finding is filed.
 
     Args:
         finding: The crash.
-        release_tag: Tag of the latest published release, or None when
-            Bookclerk has no release yet.
 
     Returns:
-        ``advisory`` for a crash in shipped code when a release exists;
-        ``issue`` otherwise (failed oracles, and every crash before the
-        first release, when no shipped artifact can be affected).
+        ``advisory`` for a crash in shipped code, released or not (a draft
+        is private, and filing before the first release proves the path);
+        ``issue`` for a failed test oracle, which is not a vulnerability.
     """
-    if finding.oracle or release_tag is None:
-        return "issue"
-    return "advisory"
+    return "issue" if finding.oracle else "advisory"
 
 
 # ---------------------------------------------------------------------------
@@ -672,17 +668,15 @@ def kind_title(kind: str) -> str:
 
 
 def render_issue(finding: Finding, boundary: Boundary | None, run_url: str, bundle: str) -> tuple[str, str]:
-    """Renders the public issue for a finding.
+    """Renders the public issue for a failed test oracle.
 
-    A failed test oracle is not a vulnerability, so its issue names the
-    target, its boundary and the default severity. Any other crash may be
-    one, so its issue (filed only while Bookclerk has no release) names
-    nothing but the signature: no target, class or severity that would point
-    at unfixed code on ``main``. Neither ever carries the stack, the panic
-    message or the input; those are in the sealed bundle.
+    A failed oracle is not a vulnerability (every other crash goes to a
+    private draft advisory), so its issue names the target and its boundary.
+    It never carries the stack, the panic message or the input; those are in
+    the sealed bundle.
 
     Args:
-        finding: The crash.
+        finding: The crash (a failed oracle).
         boundary: Its boundary, or None when the map lacks the target.
         run_url: URL of the workflow run.
         bundle: Name of the sealed triage artifact of that run.
@@ -696,47 +690,31 @@ def render_issue(finding: Finding, boundary: Boundary | None, run_url: str, bund
         f"`{bundle}` artifact of {run_url} (open it with",
         "`BUNDLE_KEY=<FUZZ_CRASH_BUNDLE_KEY> scripts/osv-remediation-bundle.sh open sealed.bin <dir>`).",
     ]
-    if finding.oracle:
-        where = boundary.description if boundary else "not in fuzz/boundaries.toml"
-        crate = boundary.crate if boundary else "unknown"
-        title = f"Fuzz oracle failure in `{finding.target}`"
-        lines = [
-            marker(finding.signature),
-            "",
-            f"A test oracle of the `{finding.target}` fuzz target failed in the scheduled",
-            "fuzzing run: a bug in the code under test or in the oracle.",
-            "",
-            f"- Boundary: {where} (`{crate}`)",
-            f"- Signature: `{short}`",
-            "",
-            *where_details,
-            "",
-            "Fix it, then land the minimized input as",
-            f"`fuzz/corpus/{finding.target}/regression_<name>` in the fixing pull request",
-            "(docs/ci.md#fuzzing).",
-        ]
-    else:
-        title = f"Fuzz crash `{short}` from the scheduled run"
-        lines = [
-            marker(finding.signature),
-            "",
-            "The scheduled fuzzing run found a reproducible crash. It may be a",
-            "vulnerability, so this issue does not say where: handle it as a",
-            "security report (docs/ci.md#fuzzing).",
-            "",
-            *where_details,
-            "",
-            "No advisory was filed because Bookclerk has no published release.",
-            "Land the minimized input as `fuzz/corpus/<target>/regression_<name>`",
-            "in the fixing pull request.",
-        ]
+    where = boundary.description if boundary else "not in fuzz/boundaries.toml"
+    crate = boundary.crate if boundary else "unknown"
+    title = f"Fuzz oracle failure in `{finding.target}`"
+    lines = [
+        marker(finding.signature),
+        "",
+        f"A test oracle of the `{finding.target}` fuzz target failed in the scheduled",
+        "fuzzing run: a bug in the code under test or in the oracle.",
+        "",
+        f"- Boundary: {where} (`{crate}`)",
+        f"- Signature: `{short}`",
+        "",
+        *where_details,
+        "",
+        "Fix it, then land the minimized input as",
+        f"`fuzz/corpus/{finding.target}/regression_<name>` in the fixing pull request",
+        "(docs/ci.md#fuzzing).",
+    ]
     return title, "\n".join(lines) + "\n"
 
 
 def render_advisory(
     finding: Finding,
     boundary: Boundary | None,
-    release_tag: str,
+    release_tag: str | None,
     commit: str,
     run_url: str,
     bundle: str,
@@ -752,7 +730,8 @@ def render_advisory(
         boundary: Its boundary, or None when the map lacks the target (then
             the host binaries are named as affected).
         release_tag: Newest published release tag (the top of the proposed
-            affected range).
+            affected range), or None before the first release (no range is
+            proposed).
         commit: Commit the crash reproduced on.
         run_url: URL of the workflow run.
         bundle: Name of the sealed triage artifact of that run.
@@ -766,14 +745,25 @@ def render_advisory(
     where = boundary.description if boundary else f"`{finding.target}` (not in fuzz/boundaries.toml)"
     crate = boundary.crate if boundary else "unknown"
     input_from = boundary.input_from if boundary else "unknown"
+    if release_tag:
+        scope = [
+            "Filed automatically by the scheduled fuzzing run as a draft. Check the",
+            "severity and the affected range before publishing: the crash reproduced",
+            f"on `{commit}`, and the range proposes every release up to `{release_tag}`",
+            "without having reproduced it there. Narrow it (or close this draft) if",
+            "the bug arrived after that release.",
+        ]
+    else:
+        scope = [
+            "Filed automatically by the scheduled fuzzing run as a draft. The crash",
+            f"reproduced on `{commit}`. Bookclerk has no published release yet, so no",
+            "affected range is proposed: fix it before the first release, or set the",
+            "range to the releases that ship the code before publishing.",
+        ]
     lines = [
         marker(finding.signature),
         "",
-        "Filed automatically by the scheduled fuzzing run as a draft. Check the",
-        "severity and the affected range before publishing: the crash reproduced",
-        f"on `{commit}`, and the range proposes every release up to `{release_tag}`",
-        "without having reproduced it there. Narrow it (or close this draft) if",
-        "the bug arrived after that release.",
+        *scope,
         "",
         "## Details",
         "",
@@ -826,7 +816,7 @@ def render_advisory(
         "vulnerabilities": [
             {
                 "package": {"ecosystem": a.ecosystem, "name": a.package},
-                "vulnerable_version_range": f"<= {release_tag}",
+                "vulnerable_version_range": f"<= {release_tag}" if release_tag else None,
                 "patched_versions": None,
                 "vulnerable_functions": vulnerable_functions,
             }
@@ -1361,14 +1351,13 @@ def file_findings(
     label_ready = False
     for finding in findings:
         boundary = boundaries.get(finding.target)
-        how = route(finding, release_tag)
+        how = route(finding)
         if how == "advisory":
-            # An issue opened before the first release does not stand in for
-            # the advisory once a release ships the code.
+            # An opaque issue filed by an older version of this workflow does
+            # not stand in for the advisory.
             if finding.signature in advisory_sigs:
                 counts["known"] += 1
                 continue
-            assert release_tag is not None
             reproducer = (inputs / finding.reproducer).read_bytes()
             gh.create_advisory(render_advisory(finding, boundary, release_tag, commit, run_url, bundle, reproducer))
             advisory_sigs.add(finding.signature)

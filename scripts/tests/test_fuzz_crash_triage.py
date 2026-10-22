@@ -279,19 +279,8 @@ class WorkflowTest(unittest.TestCase):
 
 class RouteAndRenderTest(unittest.TestCase):
     def test_route(self) -> None:
-        self.assertEqual(triage.route(_finding(), None), "issue")
-        self.assertEqual(triage.route(_finding(), "v1.0.0"), "advisory")
-        self.assertEqual(triage.route(_finding(oracle=True), "v1.0.0"), "issue")
-
-    def test_pre_release_issue_names_only_the_signature(self) -> None:
-        finding = _finding(summary="panic at secret.rs: the len is 0 but the index is 4")
-        title, body = triage.render_issue(finding, _boundaries()["granted_http"], "https://run", "fuzz-triage-address")
-        self.assertIn(finding.signature[:16], title)
-        self.assertIn(triage.marker(finding.signature), body)
-        for secret in ("granted_http", "the len is 0", "parse_head", "crates/x.rs", "a.bin", "panic", "severity"):
-            self.assertNotIn(secret, title + body)
-        self.assertIn("fuzz-triage-address", body)
-        self.assertIn("no published release", body)
+        self.assertEqual(triage.route(_finding()), "advisory")
+        self.assertEqual(triage.route(_finding(oracle=True)), "issue")
 
     def test_oracle_issue_names_the_target(self) -> None:
         finding = _finding(oracle=True, summary="assertion failed: secret")
@@ -324,6 +313,12 @@ class RouteAndRenderTest(unittest.TestCase):
         body = triage.render_advisory(_finding(), _boundaries()["granted_http"], "v1", "c", "u", "b", big)
         self.assertNotIn("QUFB", body["description"])
         self.assertNotIn("temporary private fork", body["description"])
+
+    def test_advisory_before_a_release_proposes_no_range(self) -> None:
+        body = triage.render_advisory(_finding(), _boundaries()["granted_http"], None, "c", "u", "b", b"x")
+        self.assertTrue(all(v["vulnerable_version_range"] is None for v in body["vulnerabilities"]))
+        self.assertIn("no published release", body["description"])
+        self.assertNotIn("None", body["description"])
 
 
 class FakeGitHub:
@@ -373,12 +368,13 @@ class FileFindingsTest(unittest.TestCase):
     def _file(self, gh: FakeGitHub, findings: list[Any]) -> dict[str, int]:
         return triage.file_findings(gh, findings, _boundaries(), self.inputs, "abc", "https://run", "b")
 
-    def test_before_a_release_everything_is_an_issue(self) -> None:
+    def test_before_a_release_crashes_still_get_draft_advisories(self) -> None:
         gh = FakeGitHub(None, [], [])
         counts = self._file(gh, [_finding(), _finding(signature="b" * 64, kind="asan:SEGV")])
-        self.assertEqual(counts, {"advisory": 0, "issue": 2, "known": 0})
-        self.assertEqual(gh.created, [])
-        self.assertEqual(gh.label_checks, 1)
+        self.assertEqual(counts, {"advisory": 2, "issue": 0, "known": 0})
+        self.assertEqual(gh.opened, [])
+        self.assertEqual(gh.label_checks, 0)
+        self.assertIsNone(gh.created[0]["vulnerabilities"][0]["vulnerable_version_range"])
 
     def test_after_a_release_product_crashes_get_draft_advisories(self) -> None:
         gh = FakeGitHub("v1.0.0", [], [])
@@ -389,21 +385,23 @@ class FileFindingsTest(unittest.TestCase):
     def test_known_signatures_are_skipped(self) -> None:
         sig = "c" * 64
         gh = FakeGitHub(None, [f"x {triage.marker(sig)} y"], [])
-        self.assertEqual(self._file(gh, [_finding(signature=sig)])["known"], 1)
-        # A closed or draft advisory also suppresses a new issue.
+        self.assertEqual(self._file(gh, [_finding(signature=sig, oracle=True)])["known"], 1)
+        # A closed or draft advisory suppresses both a new advisory and a new issue.
         gh = FakeGitHub(None, [], [triage.marker(sig)])
         self.assertEqual(self._file(gh, [_finding(signature=sig)])["known"], 1)
+        self.assertEqual(self._file(gh, [_finding(signature=sig, oracle=True)])["known"], 1)
         self.assertEqual(gh.opened, [])
+        self.assertEqual(gh.created, [])
 
-    def test_pre_release_issue_does_not_stand_in_for_the_advisory(self) -> None:
+    def test_older_opaque_issue_does_not_stand_in_for_the_advisory(self) -> None:
         sig = "d" * 64
-        gh = FakeGitHub("v1.0.0", [triage.marker(sig)], [])
+        gh = FakeGitHub(None, [triage.marker(sig)], [])
         self.assertEqual(self._file(gh, [_finding(signature=sig)])["advisory"], 1)
 
     def test_same_signature_twice_in_one_run_files_once(self) -> None:
         gh = FakeGitHub(None, [], [])
         counts = self._file(gh, [_finding(), _finding()])
-        self.assertEqual(counts, {"advisory": 0, "issue": 1, "known": 1})
+        self.assertEqual(counts, {"advisory": 1, "issue": 0, "known": 1})
 
 
 class _Api(http.server.BaseHTTPRequestHandler):
