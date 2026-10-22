@@ -49,7 +49,7 @@ WORKSPACE = _SCRIPTS.parent
 def _default_plan_path() -> Path:
     if os.environ.get("BOOKCLERK_CI_PLAN"):
         return Path(os.environ["BOOKCLERK_CI_PLAN"])
-    base = Path(os.environ.get("RUNNER_TEMP") or WORKSPACE / ".tmp" / "ci-exec")
+    base = Path(os.environ.get("RUNNER_TEMP") or WORKSPACE / "target" / "ci-exec")
     return base / "ci-plan" / ARTIFACT_NAME
 
 

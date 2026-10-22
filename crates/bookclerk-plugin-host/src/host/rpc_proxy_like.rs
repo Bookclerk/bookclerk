@@ -91,10 +91,9 @@ fn copy_plugin_toml_and_assets(src: &Path, dest: &Path) -> std::io::Result<()> {
 }
 
 fn stage_files_dir() -> Option<TempDir> {
-    // Cargo TMPDIR is workspace `.tmp`. Nested plugin-state paths overflow
-    // Linux sockaddr_un (~108 bytes) on GitHub Actions; keep staging under a
-    // similarly long prefix so native-behind-workerd cannot regress to
-    // pathname sockets.
+    // Nested plugin-state paths under a long temp prefix overflow Linux
+    // sockaddr_un (~108 bytes); keep staging under a deliberately long prefix
+    // so native-behind-workerd cannot regress to pathname sockets.
     let base = std::env::temp_dir().join("gha-sunlen").join("x".repeat(48));
     std::fs::create_dir_all(&base).ok()?;
     tempfile::Builder::new().prefix("td").tempdir_in(base).ok()

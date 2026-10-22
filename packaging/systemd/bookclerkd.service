@@ -1,6 +1,6 @@
 [Unit]
 Description=Bookclerk audiobook daemon
-Documentation=https://github.com/fritz-fritz/bookclerk
+Documentation=https://github.com/Bookclerk/bookclerk
 After=network-online.target
 Wants=network-online.target
 

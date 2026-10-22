@@ -234,7 +234,7 @@ to `ReadWritePaths`.
 ## Docker
 
 Dockerfile: [`packaging/docker/Dockerfile`](../packaging/docker/Dockerfile)
-(repo-root convenience symlink: `Dockerfile`).
+(build from the repo root: `docker build -f packaging/docker/Dockerfile .`).
 
 For day-to-day compile/test with a controlled OpenSSL/Node toolchain (and host-
 runnable `target/` binaries), use the [Dev Container](devcontainer.md) instead

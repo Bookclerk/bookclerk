@@ -69,7 +69,7 @@ permissions:
 jobs:
   package:
     # Copy plugin-publisher-reusable.yml into this repo, or reference Bookclerk:
-    uses: fritz-fritz/bookclerk/.github/workflows/plugin-publisher-reusable.yml@main
+    uses: Bookclerk/bookclerk/.github/workflows/plugin-publisher-reusable.yml@main
     # uses: ./.github/workflows/plugin-publisher-reusable.yml
     with:
       plugin_package: bookclerk-plugin-integration-echo

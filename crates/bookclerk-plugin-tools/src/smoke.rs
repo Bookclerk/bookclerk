@@ -66,6 +66,14 @@ pub fn smoke_plugin(plugin_dir: &Path) -> Result<String, String> {
         .map(|w| w.limits.effective())
         .unwrap_or_else(|| bookclerk_plugin_manifest::WorkerdLimits::default().effective());
     let bridge_token = generate_bridge_token();
+    // Session state goes to the system temp dir, never beside the plugin: with
+    // no TMPDIR/TEMP/TMP set the library default is `<plugin>/.bookclerk-state`,
+    // and the author's directory may be read-only or under version control.
+    // Removed when this function returns, after the child is killed.
+    let state = tempfile::Builder::new()
+        .prefix("bookclerk-smoke-")
+        .tempdir()
+        .map_err(|e| format!("create smoke state dir: {e}"))?;
     let generated = config::materialize(
         &root,
         &manifest,
@@ -74,7 +82,7 @@ pub fn smoke_plugin(plugin_dir: &Path) -> Result<String, String> {
         listen,
         None,
         &bridge_token,
-        None,
+        Some(state.path()),
     )
     .map_err(|e| format!("materialize config: {e:#}"))?;
     let base = generated.listen.client_base_url();

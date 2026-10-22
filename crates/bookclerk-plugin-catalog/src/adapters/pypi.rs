@@ -13,7 +13,7 @@ use crate::manifest::BookclerkPackageManifest;
 const UA: &str = concat!(
     "bookclerk/",
     env!("CARGO_PKG_VERSION"),
-    " (+https://github.com/fritz-fritz/bookclerk; plugin-catalog)"
+    " (+https://github.com/Bookclerk/bookclerk; plugin-catalog)"
 );
 
 /// PyPI JSON API adapter. Search is not supported by PyPI; use static registries

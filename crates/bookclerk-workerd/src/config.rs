@@ -2569,8 +2569,8 @@ mode = "deny"
     }
 
     #[test]
-    fn github_actions_cargo_tmpdir_can_overflow_sockaddr_un() {
-        // Cargo `[env] TMPDIR = .tmp` + plugin-state fs_id + workerd leaf.
+    fn long_temp_prefix_can_overflow_sockaddr_un() {
+        // Long checkout-relative temp prefix + plugin-state fs_id + workerd leaf.
         // Absolute pathname sockets overflow Linux sun_path (108); the
         // launcher uses unix-abstract / relative names instead (see unix_bind).
         let scratch = PathBuf::from(

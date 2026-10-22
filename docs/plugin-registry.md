@@ -405,7 +405,7 @@ name = "bookclerk-plugin-source-example"
 # Path while developing against a local checkout:
 bookclerk-plugin-sdk = { path = "../bookclerk/crates/bookclerk-plugin-sdk" }
 # Or git (no crates.io publish required yet):
-# bookclerk-plugin-sdk = { git = "https://github.com/fritz-fritz/bookclerk", package = "bookclerk-plugin-sdk" }
+# bookclerk-plugin-sdk = { git = "https://github.com/Bookclerk/bookclerk", package = "bookclerk-plugin-sdk" }
 
 [package.metadata.bookclerk]
 api_version = 1
@@ -443,7 +443,7 @@ Author loop (native):
 
 ### What you never need
 
-- A mirror of `fritz-fritz/bookclerk`
+- A mirror of `Bookclerk/bookclerk`
 - Linking against `bookclerkd` / `bookclerk-cli` / host `bookclerk-plugin-host`
 - Matching our workspace `Cargo.toml` beyond the SDK’s MSRV
 - A per-OS binary when shipping `runtime = "workerd"` (`plugin.toml` + `modules/`)

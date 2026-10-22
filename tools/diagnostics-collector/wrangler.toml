@@ -3,11 +3,13 @@
 name = "bookclerk-diagnostics"
 main = "worker.js"
 compatibility_date = "2026-01-01"
-workers_dev = true
+# Served only on the custom domain `diagnostics.<DOMAIN>`; the deploy
+# workflow adds that route from the DOMAIN organization variable.
+workers_dev = false
 
 [vars]
 # Used by GET /report to resolve the latest stable release baseline.
-GITHUB_REPOSITORY = "fritz-fritz/bookclerk"
+GITHUB_REPOSITORY = "Bookclerk/bookclerk"
 
 [secrets]
 required = [

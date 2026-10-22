@@ -19,10 +19,9 @@ Start here if you are new:
 11. [Media worker pool](media.md) — confined codecs, concurrency, isolation modes
 12. [Operations](operations.md) — `bookclerkd`, Docker, systemd
     - [Libraries and branches](cluster-hosts.md) — Join a library, branch invites, host consent, uploads, node API, `/api/live`
-13. [Dev Container](devcontainer.md) — consistent Rust/OpenSSL/Node build env (Cursor / VS Code)
-14. [GUI](gui.md) — web UI, operator auth, tray companion
-15. [Desktop path](gui-desktop-path.md) — tray vs deferred Tauri / OSV constraints
-16. [Continuous integration](ci.md) — dependency-aware planner, selective docs, `CI Gate`
+13. [Dev Container](devcontainer.md) — consistent Rust/OpenSSL/Node build env
+14. [GUI](gui.md) — web UI, operator auth, tray companion, desktop shell path
+15. [Continuous integration](ci.md) — dependency-aware planner, selective docs, `CI Gate`
 
 ## Extending Bookclerk
 

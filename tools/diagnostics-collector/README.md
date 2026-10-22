@@ -3,7 +3,7 @@
 Deployed by **GitHub Actions** ([wrangler-action](https://github.com/cloudflare/wrangler-action)):
 [`.github/workflows/diagnostics-collector-deploy.yml`](../../.github/workflows/diagnostics-collector-deploy.yml).
 
-After deploy, `deployment-url` is stored in repository variable
+After deploy, `https://diagnostics.<DOMAIN>` is stored in repository variable
 **`DIAGNOSTICS_COLLECTOR_BASE_URL`**.
 
 | Method | Path | Who | Auth |
@@ -52,7 +52,7 @@ Deploy uses `actions-variables: write` (not broad `actions: write`) so
 Bake the collector URL at build time (CI does this automatically):
 
 ```bash
-BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL="https://bookclerk-diagnostics.fritztech.workers.dev" \
+BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL="https://diagnostics.bookclerk.app" \
   cargo build --release -p bookclerk-cli -p bookclerkd \
     -p bookclerk-media-worker -p bookclerk-jail
 ```

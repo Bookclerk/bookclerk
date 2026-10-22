@@ -6540,9 +6540,9 @@ async fn avatar_source_and_sso_pictures() {
     let user = store
         .create_user_with_profile(
             UserRole::Member,
-            Some("Casey"),
+            Some("Alex"),
             None,
-            Some("casey@example.com"),
+            Some("alex@example.com"),
             None,
         )
         .await
@@ -6555,11 +6555,11 @@ async fn avatar_source_and_sso_pictures() {
     assert_eq!(updated.avatar_source.as_deref(), Some("gravatar"));
 
     store
-        .link_portal_identity_to_user("oidc:google", "g-sub", user.id, Some("Casey"))
+        .link_portal_identity_to_user("oidc:google", "g-sub", user.id, Some("Alex"))
         .await
         .unwrap();
     store
-        .link_portal_identity_to_user("oidc:github", "gh-sub", user.id, Some("Casey"))
+        .link_portal_identity_to_user("oidc:github", "gh-sub", user.id, Some("Alex"))
         .await
         .unwrap();
     store

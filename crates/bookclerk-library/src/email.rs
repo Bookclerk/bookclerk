@@ -66,18 +66,18 @@ mod tests {
 
     #[test]
     fn dotted_domain_is_valid() {
-        assert!(is_valid_user_email("casey@example.com"));
+        assert!(is_valid_user_email("alex@example.com"));
         assert_eq!(
-            normalize_user_email(Some("Casey@Example.COM")).unwrap(),
-            Some(String::from("casey@example.com"))
+            normalize_user_email(Some("Alex@Example.COM")).unwrap(),
+            Some(String::from("alex@example.com"))
         );
     }
 
     #[test]
     fn missing_tld_is_invalid() {
-        assert!(!is_valid_user_email("roland.fritz@gmail"));
+        assert!(!is_valid_user_email("alex.doe@gmail"));
         assert!(matches!(
-            normalize_user_email(Some("roland.fritz@gmail")),
+            normalize_user_email(Some("alex.doe@gmail")),
             Err(LibraryError::InvalidEmail)
         ));
     }
@@ -91,12 +91,12 @@ mod tests {
     #[test]
     fn gravatar_hash_is_lowercase_sha256() {
         assert_eq!(
-            gravatar_hash("Casey@Example.COM"),
-            gravatar_hash("casey@example.com")
+            gravatar_hash("Alex@Example.COM"),
+            gravatar_hash("alex@example.com")
         );
         assert_eq!(
-            gravatar_hash("casey@example.com"),
-            "b29f68227690dccb16d3e950f33fcd930aa704be4d7a4352121d84fd20d48020"
+            gravatar_hash("alex@example.com"),
+            "6db61e6dcbcf2390e4a46af426f26a133a3bee45021422fc7ae86e9136f14110"
         );
     }
 }
