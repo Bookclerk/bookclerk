@@ -397,17 +397,22 @@ def classify(output: str) -> CrashReport:
     return CrashReport(kind=kind, frames=frames, panic_location=panic_location, summary=summary[:300])
 
 
-def signature(target: str, report: CrashReport) -> str:
+def signature(target: str, report: CrashReport, data: bytes) -> str:
     """Computes the deduplication key of a crash.
 
     The key covers the target, the crash kind and the top
     ``SIGNATURE_FRAMES`` frames of the code under test (function names only,
     so a moved line does not make a new crash). A report without usable
-    frames falls back to the panic file.
+    frames falls back to the panic file, and one without that either (a
+    wall-clock timeout, an unsymbolized signal) to a digest of the crashing
+    input: such crashes would otherwise all share one key per target and
+    kind, and a recorded key suppresses every later crash that has it.
 
     Args:
         target: Fuzz target name.
         report: The classified crash.
+        data: The input the crash was first seen with (not a minimized
+            copy, so a minimized input keeps the key it is compared to).
 
     Returns:
         A hex SHA-256 digest.
@@ -415,6 +420,8 @@ def signature(target: str, report: CrashReport) -> str:
     picked = [f.function for f in code_frames(report.frames)][:SIGNATURE_FRAMES]
     if not picked and report.panic_location:
         picked = [report.panic_location.split(":", 1)[0]]
+    if not picked:
+        picked = ["input:" + hashlib.sha256(data).hexdigest()]
     material = "\n".join([target, report.kind, *picked])
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
@@ -1231,11 +1238,12 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
                 log(f"{path}: did not reproduce")
                 dropped += 1
                 continue
-            sig = signature(target, report)
+            original = path.read_bytes()
+            sig = signature(target, report, original)
             if sig in found:
                 found[sig].duplicates += 1
                 continue
-            data = path.read_bytes()
+            data = original
             minimized = False
             if report.kind not in ("timeout", "oom", "leak"):
                 with tempfile.TemporaryDirectory() as tmp:
@@ -1254,7 +1262,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
                     )
                     if candidate.is_file() and candidate.stat().st_size < len(data):
                         again = reproduce_one(binary, candidate, log)
-                        if again is not None and signature(target, again) == sig:
+                        if again is not None and signature(target, again, original) == sig:
                             data = candidate.read_bytes()
                             report = again
                             minimized = True

@@ -343,8 +343,9 @@ reproducer as an artifact. The scheduled workflow therefore never uses it:
    classified (sanitizer error, panic, stack overflow, out of memory,
    timeout, leak, or a failed oracle: a panic raised from code under
    `fuzz/`) and deduplicated by target, kind and the top three frames of the
-   code under test. The output is sealed as `fuzz-triage-<sanitizer>`
-   (90 days).
+   code under test (a crash with no usable frames, such as a wall-clock
+   timeout, is keyed by its input instead, so unrelated ones stay apart).
+   The output is sealed as `fuzz-triage-<sanitizer>` (90 days).
 4. `fuzz-crash-triage.py file`, with the [automation App](#automation-app)
    token, files each signature not already on record (a hidden
    `<!-- fuzz-crash-signature: … -->` marker in an open `fuzz-crash` issue

@@ -157,7 +157,7 @@ class ClassifyTest(unittest.TestCase):
             "ERROR: libFuzzer: deadly signal\n" + b
         )
         self.assertEqual(triage.code_frames(ra.frames), [])
-        self.assertEqual(triage.signature("t", ra), triage.signature("t", rb))
+        self.assertEqual(triage.signature("t", ra, b"x"), triage.signature("t", rb, b"x"))
 
 
 class SignatureTest(unittest.TestCase):
@@ -165,26 +165,35 @@ class SignatureTest(unittest.TestCase):
         moved = HOST_PANIC.replace("granted_http.rs:120:9", "granted_http.rs:131:13").replace(
             "0x55eb81493150", "0x5600deadbeef"
         )
-        a = triage.signature("granted_http", triage.classify(HOST_PANIC))
-        b = triage.signature("granted_http", triage.classify(moved))
+        a = triage.signature("granted_http", triage.classify(HOST_PANIC), b"x")
+        b = triage.signature("granted_http", triage.classify(moved), b"x")
         self.assertEqual(a, b)
         self.assertRegex(a, r"^[0-9a-f]{64}$")
 
     def test_differs_by_target_kind_and_function(self) -> None:
         report = triage.classify(HOST_PANIC)
-        base = triage.signature("granted_http", report)
-        self.assertNotEqual(base, triage.signature("egress_policy", report))
+        base = triage.signature("granted_http", report, b"x")
+        self.assertNotEqual(base, triage.signature("egress_policy", report, b"x"))
         other_kind = triage.CrashReport("oom", report.frames, report.panic_location, "")
-        self.assertNotEqual(base, triage.signature("granted_http", other_kind))
+        self.assertNotEqual(base, triage.signature("granted_http", other_kind, b"x"))
         renamed = triage.classify(HOST_PANIC.replace("parse_head", "parse_body"))
-        self.assertNotEqual(base, triage.signature("granted_http", renamed))
+        self.assertNotEqual(base, triage.signature("granted_http", renamed, b"x"))
 
     def test_falls_back_to_panic_file(self) -> None:
         report = triage.CrashReport("panic", [], "crates/x/src/a.rs:1:2", "")
         self.assertEqual(
-            triage.signature("t", report),
-            triage.signature("t", triage.CrashReport("panic", [], "crates/x/src/a.rs:9:9", "")),
+            triage.signature("t", report, b"x"),
+            triage.signature("t", triage.CrashReport("panic", [], "crates/x/src/a.rs:9:9", ""), b"x"),
         )
+
+    def test_frameless_crashes_stay_distinct(self) -> None:
+        """Without frames or a panic file, the input keeps crashes apart."""
+        report = triage.CrashReport("timeout", [], "", "")
+        a = triage.signature("t", report, b"one")
+        self.assertEqual(a, triage.signature("t", report, b"one"))
+        self.assertNotEqual(a, triage.signature("t", report, b"two"))
+        framed = triage.classify(HOST_PANIC)
+        self.assertEqual(triage.signature("t", framed, b"one"), triage.signature("t", framed, b"two"))
 
 
 class SeverityTest(unittest.TestCase):
