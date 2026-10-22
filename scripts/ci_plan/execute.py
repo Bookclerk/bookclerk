@@ -501,12 +501,16 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "") -> 
     if check == "python_sdk":
         venv = ctx.tmp / "venv-plugin-sdk"
         py = str(venv / ("Scripts" if ctx.os_name == "Windows" else "bin") / "python")
+        # Tests import the SDK from its source tree.
+        src = {"PYTHONPATH": str(ctx.workspace / "packages" / "plugin-sdk-python" / "src")}
         return [
-            # Installs the SDK and its dev/docs extras at the versions in uv.lock
-            # (the lockfile OSV scans); `--locked` fails when the lockfile no
-            # longer matches pyproject.toml. Quiet: a sync lists every installed
-            # version, which would show an unpublished OSV remediation bump in
-            # the public log.
+            # Installs the dev/docs extras at the versions in uv.lock (the
+            # lockfile OSV scans); `--locked` fails when the lockfile no longer
+            # matches pyproject.toml. `--no-install-project` skips building the
+            # SDK itself, whose build backend would otherwise be resolved
+            # outside the lockfile. Quiet: a sync lists every installed version,
+            # which would show an unpublished OSV remediation bump in the
+            # public log.
             Command(
                 "uv sync plugin-sdk-python",
                 [
@@ -517,13 +521,14 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "") -> 
                     "packages/plugin-sdk-python",
                     "--locked",
                     "--all-extras",
+                    "--no-install-project",
                     "--python",
                     sys.executable,
                 ],
                 env={"UV_PROJECT_ENVIRONMENT": str(venv)},
             ),
             Command("ruff", [py, "-m", "ruff", "check", "packages/plugin-sdk-python"]),
-            Command("pytest", [py, "-m", "pytest", "packages/plugin-sdk-python/tests", "-q"]),
+            Command("pytest", [py, "-m", "pytest", "packages/plugin-sdk-python/tests", "-q"], env=src),
         ]
     if check == "ui":
         ui = str(ctx.workspace / "ui")

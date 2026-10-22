@@ -487,8 +487,10 @@ reports them.
 
 The Python SDK has no runtime dependencies. Its `uv.lock` pins the `dev` and
 `docs` extras that the `python_sdk` check and `generate-api-docs.sh --python`
-install (`uv sync --locked`, which fails when the lockfile is out of date with
-`pyproject.toml`), so OSV scans them and a runtime dependency added later is scanned from the start. After
+install (`uv sync --locked --no-install-project`, which fails when the
+lockfile is out of date with `pyproject.toml`; the SDK is imported from `src/`
+rather than built, so its unlocked build backend never runs), so OSV scans
+them and a runtime dependency added later is scanned from the start. After
 changing `pyproject.toml` dependencies, run `uv lock` in
 `packages/plugin-sdk-python`.
 

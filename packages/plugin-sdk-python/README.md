@@ -97,11 +97,14 @@ See [`examples/plugins-echo-workerd-python`](../../examples/plugins-echo-workerd
 ## Developing the SDK
 
 `uv.lock` pins the `dev` and `docs` extras (the SDK itself has no runtime
-dependencies); CI installs from it and the dependency scans read it.
+dependencies); CI installs from it and the dependency scans read it. CI does
+not build the SDK (its build backend is not in the lockfile) and imports it
+from `src/` instead:
 
 ```bash
-uv sync --project packages/plugin-sdk-python --locked --all-extras
-uv run --project packages/plugin-sdk-python pytest packages/plugin-sdk-python/tests
+uv sync --project packages/plugin-sdk-python --locked --all-extras --no-install-project
+PYTHONPATH=packages/plugin-sdk-python/src \
+  uv run --project packages/plugin-sdk-python --no-sync pytest packages/plugin-sdk-python/tests
 ```
 
 After changing dependencies in `pyproject.toml`, run `uv lock` in
