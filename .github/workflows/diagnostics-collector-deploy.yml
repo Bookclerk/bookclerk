@@ -9,8 +9,11 @@
 #   DIAGNOSTICS_B2_APPLICATION_KEY
 #   DIAGNOSTICS_B2_BUCKET_ID
 #
-# On success, stores wrangler deployment-url in repository variable
-# DIAGNOSTICS_COLLECTOR_BASE_URL (ingest workflow + CI release builds).
+# Organization variable DOMAIN (default bookclerk.app): the Worker is
+# served on the custom domain diagnostics.<DOMAIN>, whose zone must be in
+# the Cloudflare account. On success, stores https://diagnostics.<DOMAIN>
+# in repository variable DIAGNOSTICS_COLLECTOR_BASE_URL (ingest workflow + CI
+# release builds).
 #
 # https://github.com/cloudflare/wrangler-action
 # GITHUB_TOKEN permission keys:
@@ -72,6 +75,19 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+      - name: Route the Worker to its custom domain
+        id: route
+        env:
+          DOMAIN: ${{ vars.DOMAIN || 'bookclerk.app' }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$DOMAIN" | grep -Eq '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'; then
+            echo "::error::DOMAIN is not a lowercase hostname: $DOMAIN"
+            exit 1
+          fi
+          host="diagnostics.${DOMAIN}"
+          printf '\n[[routes]]\npattern = "%s"\ncustom_domain = true\n' "$host" >> wrangler.toml
+          echo "url=https://${host}" >> "$GITHUB_OUTPUT"
 
       - name: Deploy Worker
         id: deploy
@@ -94,14 +110,9 @@ jobs:
 
       - name: Set collector URL repository variable
         env:
-          DEPLOY_URL: ${{ steps.deploy.outputs.deployment-url }}
+          URL: ${{ steps.route.outputs.url }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          URL="${DEPLOY_URL%/}"
-          if [ -z "$URL" ]; then
-            echo "::error::wrangler-action did not return deployment-url"
-            exit 1
-          fi
-          echo "Collector deployment URL: $URL"
+          echo "Collector URL: $URL"
           gh variable set DIAGNOSTICS_COLLECTOR_BASE_URL --body "$URL"
