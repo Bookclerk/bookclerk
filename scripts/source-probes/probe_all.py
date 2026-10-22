@@ -29,6 +29,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -109,6 +110,23 @@ def http(
         return exc.code, dict(exc.headers.items()) if exc.headers else {}, exc.read() or b""
 
 
+ROOT = Path(__file__).resolve().parents[2]
+RUST_STR_CONST_RE = re.compile(
+    r'^\s*(?:pub(?:\([^)]*\))?\s+)?const\s+(?P<name>[A-Z0-9_]+)\s*:\s*&str\s*=\s*"(?P<value>[^"]*)"\s*;',
+    re.MULTILINE,
+)
+
+
+def rust_consts(relative: str) -> dict[str, str]:
+    """Return the `&str` constants declared in a Rust client file.
+
+    Probes read endpoints from the client instead of repeating them, so a run
+    after `apply_apk_updates.py` exercises exactly what the client will call.
+    """
+    text = (ROOT / relative).read_text(encoding="utf-8")
+    return {m.group("name"): m.group("value") for m in RUST_STR_CONST_RE.finditer(text)}
+
+
 def json_or_text(raw: bytes) -> Any:
     text = raw.decode("utf-8", errors="replace")
     try:
@@ -145,7 +163,11 @@ def probe_librivox(report: Report) -> None:
 
 
 def probe_graphicaudio(report: Report) -> None:
-    base = "https://www.graphicaudio.net/access"
+    consts = rust_consts("crates/bookclerk-plugins/optional/source-graphicaudio/src/client.rs")
+    base = consts["DEFAULT_BASE_URL"].rstrip("/")
+    login_url = base + consts["LOGIN_PATH"]
+    products_url = base + consts["PRODUCTS_PATH"]
+    links_url = base + consts["LINKS_PATH"]
     store = "https://www.graphicaudio.net"
 
     # Magento storefront login page (Browser Player / ZIP path dependency).
@@ -162,7 +184,7 @@ def probe_graphicaudio(report: Report) -> None:
         )
     )
 
-    status, _, body = http(f"{base}/api/products")
+    status, _, body = http(products_url)
     data = json_or_text(body)
     ok = status == 200 and isinstance(data, list) and len(data) > 0
     report.add(
@@ -180,7 +202,7 @@ def probe_graphicaudio(report: Report) -> None:
         sample_id = str(data[0].get("Id"))
 
     if sample_id:
-        status, _, body = http(f"{base}/api/links?product={sample_id}")
+        status, _, body = http(f"{links_url}?product={sample_id}")
         links = json_or_text(body)
         ok = (
             status == 200
@@ -217,7 +239,7 @@ def probe_graphicaudio(report: Report) -> None:
 
     # Login contract (expect 401 with bad creds)
     status, _, body = http(
-        f"{base}/activation/login",
+        login_url,
         method="POST",
         form={
             "username": "probe@example.com",
@@ -254,7 +276,7 @@ def probe_graphicaudio(report: Report) -> None:
 
     device = f"bookclerk-{uuid.uuid4()}"
     status, _, body = http(
-        f"{base}/activation/login",
+        login_url,
         method="POST",
         form={"username": email, "password": password, "client_id": device},
     )
@@ -275,22 +297,43 @@ def probe_graphicaudio(report: Report) -> None:
     )
     if not token:
         return
-    status, _, body = http(
-        f"{base}/api/products",
-        headers={"Authorization": str(token)},
-    )
-    data = json_or_text(body)
-    ok = status == 200 and isinstance(data, list)
-    report.add(
-        Check(
-            "graphicaudio",
-            "auth_products",
-            ok,
-            f"count={len(data) if isinstance(data, list) else 'n/a'}",
-            status,
-            needs_auth=True,
+    try:
+        status, _, body = http(
+            products_url,
+            headers={"Authorization": str(token)},
         )
-    )
+        data = json_or_text(body)
+        ok = status == 200 and isinstance(data, list)
+        report.add(
+            Check(
+                "graphicaudio",
+                "auth_products",
+                ok,
+                f"count={len(data) if isinstance(data, list) else 'n/a'}",
+                status,
+                needs_auth=True,
+            )
+        )
+    finally:
+        # The login above registered a device activation, and accounts have a
+        # limited number of them. Release it so scheduled probes never use one
+        # up (the client's default download route, the web player, needs none).
+        status, _, body = http(
+            base + consts["REMOVE_PATH"],
+            method="POST",
+            headers={"Authorization": str(token)},
+            form={"client_id": device},
+        )
+        report.add(
+            Check(
+                "graphicaudio",
+                "auth_release_device",
+                200 <= status < 300,
+                "device activation released" if 200 <= status < 300 else str(json_or_text(body))[:200],
+                status,
+                needs_auth=True,
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -299,8 +342,9 @@ def probe_graphicaudio(report: Report) -> None:
 
 
 def probe_chirp(report: Report) -> None:
-    # Matches crates/bookclerk-plugins/optional/source-chirp/src/client.rs DEFAULT_GRAPHQL_URL.
-    gql = "https://api.chirpbooks.com/api/graphql"
+    gql = rust_consts("crates/bookclerk-plugins/optional/source-chirp/src/client.rs")[
+        "DEFAULT_GRAPHQL_URL"
+    ]
     status, _, body = http(
         gql,
         method="POST",

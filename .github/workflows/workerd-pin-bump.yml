@@ -3,10 +3,12 @@
 # Policy:
 # - Only consider releases published ≥ 7 days ago (supply-chain cooldown).
 # - Run Echo workerd integration tests against the new pin in this workflow.
-# - Open a PR and squash-merge it after those tests pass.
+# - Open a PR with the automation App token and turn on auto-merge, so the
+#   merge queue lands it once the PR's required checks pass.
 #
-# PRs opened with GITHUB_TOKEN do not re-trigger workflows on that PR, so
-# validation runs here before merge rather than relying on PR CI alone.
+# The App token is required: the organization does not let GITHUB_TOKEN open
+# pull requests, and pushes made with GITHUB_TOKEN would not start CI on the
+# PR. See docs/ci.md#automation-app.
 
 name: workerd pin bump
 
@@ -16,9 +18,9 @@ on:
     - cron: "17 6 * * *"
   workflow_dispatch:
 
+# The branch, PR and auto-merge are written with the automation App token.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: workerd-pin-bump
@@ -104,12 +106,24 @@ jobs:
           chmod +x scripts/test-workerd-echo.sh
           ./scripts/test-workerd-echo.sh debug
 
+      - name: Mint automation App token
+        if: steps.select.outputs.bump == 'true'
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
       - name: Create or update pull request
         if: steps.select.outputs.bump == 'true'
         id: cpr
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
+          # Commit through the API so the commit is signed and attributed to the App.
+          sign-commits: true
           commit-message: |
             build(deps): bump workerd pin to ${{ steps.pin.outputs.tag }}
 
@@ -130,8 +144,8 @@ jobs:
             - [x] `cargo ensure-workerd` for the new pin
             - [x] `scripts/test-workerd-echo.sh`
 
-            This PR is squash-merged by the bump workflow after those checks (GITHUB_TOKEN
-            PRs do not re-trigger Actions, so validation is in-job).
+            Auto-merge is on: the merge queue lands this PR once its required
+            checks pass.
           labels: |
             dependencies
           add-paths: |
@@ -148,26 +162,18 @@ jobs:
             packages/plugin-sdk-python/src/bookclerk_plugin_sdk/workerd-pin.json
             packages/plugin-sdk-python/src/bookclerk_plugin_sdk/bridge/
 
-      - name: Automerge (squash) after in-job tests
-        if: >
-          steps.select.outputs.bump == 'true'
-          && steps.cpr.outputs.pull-request-number
-          && steps.cpr.outputs.pull-request-operation != 'none'
+      # Runs even when the branch was already up to date (operation `none`),
+      # so a run whose earlier `gh pr merge --auto` failed gets another try.
+      # Enabling auto-merge again on a PR that already has it is a no-op.
+      - name: Enable auto-merge
+        if: steps.select.outputs.bump == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           set -euo pipefail
-          pr="${{ steps.cpr.outputs.pull-request-number }}"
-          # Echo tests already passed in this job. GITHUB_TOKEN-authored PRs do
-          # not re-trigger Actions, so required PR checks would never complete
-          # under --auto alone — squash-merge here (or enable automerge when
-          # the repo allows merge without those checks).
-          if gh pr merge "$pr" --auto --squash 2>/dev/null; then
-            state="$(gh pr view "$pr" --json state,autoMergeRequest -q \
-              '[.state, (.autoMergeRequest != null)] | @tsv')"
-            echo "automerge status: $state"
+          pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --head deps/workerd-pin --state open --json number --jq '.[0].number // empty')"
+          if [[ -z "$pr" ]]; then
+            echo "No open workerd pin pull request."
+            exit 0
           fi
-          state="$(gh pr view "$pr" --json state -q .state)"
-          if [[ "$state" == "OPEN" ]]; then
-            gh pr merge "$pr" --squash --delete-branch
-          fi
+          gh pr merge "$pr" --repo "$GITHUB_REPOSITORY" --auto --squash
