@@ -23,7 +23,7 @@
 //! ```toml
 //! # In a standalone plugin repo / workspace:
 //! [dependencies]
-//! bookclerk-plugin-sdk = { git = "https://github.com/fritz-fritz/bookclerk", package = "bookclerk-plugin-sdk" }
+//! bookclerk-plugin-sdk = { git = "https://github.com/Bookclerk/bookclerk", package = "bookclerk-plugin-sdk" }
 //! # Database guests also need:
 //! # bookclerk-plugin-sdk = { …, features = ["db"] }
 //! ```

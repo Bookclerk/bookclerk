@@ -287,7 +287,7 @@ pub async fn enrich_books_from_openlibrary_with(
 fn ol_http_client(contact_email: Option<&str>) -> Result<reqwest::Client> {
     let ua = match contact_email.map(str::trim).filter(|s| !s.is_empty()) {
         Some(email) => format!(
-            "Bookclerk/{} ({email}; https://github.com/fritz-fritz/bookclerk)",
+            "Bookclerk/{} ({email}; https://github.com/Bookclerk/bookclerk)",
             env!("CARGO_PKG_VERSION")
         ),
         None => {
@@ -296,7 +296,7 @@ fn ol_http_client(contact_email: Option<&str>) -> Result<reqwest::Client> {
                  1 req/s; set a contact email in User-Agent per their API guidelines"
             );
             format!(
-                "Bookclerk/{} (https://github.com/fritz-fritz/bookclerk)",
+                "Bookclerk/{} (https://github.com/Bookclerk/bookclerk)",
                 env!("CARGO_PKG_VERSION")
             )
         }

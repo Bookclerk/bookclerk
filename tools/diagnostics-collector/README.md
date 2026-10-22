@@ -3,7 +3,7 @@
 Deployed by **GitHub Actions** ([wrangler-action](https://github.com/cloudflare/wrangler-action)):
 [`.github/workflows/diagnostics-collector-deploy.yml`](../../.github/workflows/diagnostics-collector-deploy.yml).
 
-After deploy, `deployment-url` is stored in repository variable
+After deploy, `https://diagnostics.<DOMAIN>` is stored in repository variable
 **`DIAGNOSTICS_COLLECTOR_BASE_URL`**.
 
 | Method | Path | Who | Auth |

@@ -9,7 +9,7 @@ After deploy CI has set `DIAGNOSTICS_COLLECTOR_BASE_URL`, build Bookclerk with t
 URL baked in:
 
 ```bash
-BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL="https://your-worker.workers.dev" cargo build --release -p bookclerk-cli
+BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL="https://diagnostics.bookclerk.app" cargo build --release -p bookclerk-cli
 ```
 
 Release builds on `main` in CI pass the repository variable automatically.
@@ -74,7 +74,7 @@ stable.
 
 | Workflow | Purpose |
 |----------|---------|
-| `diagnostics-collector-deploy` | Deploy Worker; set `DIAGNOSTICS_COLLECTOR_BASE_URL` from `deployment-url` |
+| `diagnostics-collector-deploy` | Deploy Worker on `diagnostics.<DOMAIN>` (default `bookclerk.app`); set `DIAGNOSTICS_COLLECTOR_BASE_URL` to that URL |
 | `diagnostics-ingest` | Daily `/report` pull + Copilot triage |
 | `ci` | Release builds with `BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL` from repo variable |
 

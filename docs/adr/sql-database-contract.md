@@ -5,9 +5,9 @@
 - **Supersedes:** thin-adapter wording in this ADR (2026-08-21). Domain
   ownership is unchanged; physical SQL realization belongs to adapters
   (shared SDK `bookclerk-db-exec`), not a host dialect lowerer.
-- **Related:** [#178](https://github.com/fritz-fritz/bookclerk/issues/178),
-  [#177](https://github.com/fritz-fritz/bookclerk/pull/177),
-  [#191](https://github.com/fritz-fritz/bookclerk/pull/191),
+- **Related:** [#178](https://github.com/Bookclerk/bookclerk/issues/178),
+  [#177](https://github.com/Bookclerk/bookclerk/pull/177),
+  [#191](https://github.com/Bookclerk/bookclerk/pull/191),
   [Workers RPC + workerd](plugin-workers-rpc-workerd.md)
 
 ## Context

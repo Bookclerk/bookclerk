@@ -9,7 +9,7 @@ use crate::{PluginError, Result};
 const CRATES_IO_USER_AGENT: &str = concat!(
     "bookclerk/",
     env!("CARGO_PKG_VERSION"),
-    " (+https://github.com/fritz-fritz/bookclerk; plugin-catalog)"
+    " (+https://github.com/Bookclerk/bookclerk; plugin-catalog)"
 );
 
 /// Search crates.io for Bookclerk plugins.

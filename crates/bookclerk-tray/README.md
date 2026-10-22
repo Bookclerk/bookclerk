@@ -3,7 +3,7 @@
 In-process system tray library used by `bookclerkd`. It does **not** embed a
 webview (no GTK3 / WebKitGTK / Tauri), so the root workspace OSV gate stays
 clear of the advisory-pinned `gtk-rs` 0.18 stack. See
-[`docs/gui-desktop-path.md`](../../docs/gui-desktop-path.md).
+[`docs/gui.md`](../../docs/gui.md#desktop-shell-path).
 
 There is no separate tray binary — start `bookclerkd` on a desktop session and
 the tray appears when `[daemon].tray` is enabled (default).

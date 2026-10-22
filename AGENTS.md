@@ -151,29 +151,18 @@ Formatting and lints already enforced by rustfmt and Clippy.
 ## Environment and services
 
 This is a Rust workspace (edition 2021, `rust-toolchain.toml` pins the `stable`
-channel with `rustfmt` + `clippy`). Cloud Agent / Builds use the shared image in
-[`.devcontainer/Dockerfile`](.devcontainer/Dockerfile) via
-[`.cursor/environment.json`](.cursor/environment.json); `install` runs
-[`.cursor/cloud-agent-install.sh`](.cursor/cloud-agent-install.sh) (`cargo fetch`,
-`ui` npm build, `cargo build-app --platform --optional --examples`). A `bookclerkd` terminal runs
-`cargo dev --skip-build`. Cloud commits use Cursor’s HSM signing (no custom
-signing secrets). Local Dev Containers inherit host `git config` and sign via
-the host SSH agent socket (private key never enters the container; see
-`docs/devcontainer.md`). Dev Container signing tweaks use project-local
-`.git/config` only and are not applied to Cloud Builds.
-
-Environment Builds: keep Builds **off** until the environment’s Builds tab
-shows a healthy **SYSTEM/RECURRING** snapshot of `main`. Draft (AGENT/MANUAL)
-builds validate config but are never the boot baseline; with Builds on and no
-healthy SYSTEM build, new agents resolve `no_healthy_builds` and cold-install.
+channel with `rustfmt` + `clippy`). The [Dev Container](docs/devcontainer.md)
+(`.devcontainer/`) provides a matching Linux toolchain; it inherits host
+`git config` and signs via the host SSH agent socket (the private key never
+enters the container), applying any signing tweaks to project-local
+`.git/config` only.
 
 Workspace-local caches (gitignored; travel with the bind-mounted checkout):
 
 | Path | Role |
 | --- | --- |
-| `.cargo-home/` | `CARGO_HOME` (registry + git) on the **Dev Container / Cloud** bind mount (`remoteEnv` / `cloud-agent-install.sh`). Local host and local Cursor use default `~/.cargo` so they share a registry. |
+| `.cargo-home/` | `CARGO_HOME` (registry + git) inside the Dev Container (`remoteEnv`). Local hosts use the default `~/.cargo`. |
 | `target/` | `CARGO_TARGET_DIR` (also `[build].target-dir` in `.cargo/config.toml`) |
-| `.tmp/` | `TMPDIR` for `cc` / build-script temps (avoids host `/tmp` quota) |
 | `BookclerkFiles/` | default `$BOOKCLERK_FILES_DIR` for `cargo dev` |
 
 `cargo reset --yes` wipes `BookclerkFiles/` (not `target/` / `.cargo-home/`).

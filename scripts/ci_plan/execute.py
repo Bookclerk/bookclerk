@@ -209,7 +209,7 @@ class Context:
 
     @classmethod
     def from_env(cls, workspace: Path) -> "Context":
-        tmp = Path(os.environ.get("RUNNER_TEMP") or workspace / ".tmp" / "ci-exec")
+        tmp = Path(os.environ.get("RUNNER_TEMP") or workspace / "target" / "ci-exec")
         files = Path(os.environ.get("BOOKCLERK_FILES_DIR") or tmp / "BookclerkFiles")
         artifacts = Path(os.environ.get("BOOKCLERK_PLUGIN_ARTIFACTS") or tmp / "bookclerk-plugins")
         return cls(workspace, platform.system(), tmp, files, artifacts)
