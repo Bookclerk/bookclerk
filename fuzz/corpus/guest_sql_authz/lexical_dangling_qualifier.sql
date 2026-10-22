@@ -1,0 +1,1 @@
+0SELECT z.*, a.name FROM books b JOIN authors a ON a.id = b.id

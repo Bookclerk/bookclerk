@@ -114,6 +114,73 @@ fn sqlite_oracle_sees_through_subqueries_and_ctes() {
 }
 
 #[test]
+fn unknown_tables_are_ungranted_not_aliases() {
+    // A table SQLite cannot resolve is never a CTE alias, so an admitted
+    // statement over it is a violation for every non-binding variant; a
+    // binding variant owns tables the oracle schema does not list and is held
+    // only to the reserved-name rule.
+    let accesses = oracle::sqlite_accesses("SELECT * FROM arbitrary_host_table");
+    assert!(accesses.contains(&Access::MissingTable("arbitrary_host_table".into())));
+    for variant in [Variant::Lexical, Variant::ColumnRestricted, Variant::Typed] {
+        assert!(
+            oracle::violation(variant, &accesses).is_some(),
+            "{variant:?}"
+        );
+    }
+    // A name that only qualifies a column or `*` was never a table reference:
+    // SQLite reports the same "no such table", but nothing is read.
+    let dangling = oracle::sqlite_accesses("SELECT x.*, title FROM books");
+    assert!(
+        !dangling
+            .iter()
+            .any(|a| matches!(a, Access::MissingTable(_))),
+        "{dangling:?}"
+    );
+    let commented = oracle::sqlite_accesses("SELECT x.*, title FROM books -- x* 'x'");
+    assert!(
+        !commented
+            .iter()
+            .any(|a| matches!(a, Access::MissingTable(_))),
+        "{commented:?}"
+    );
+    let mixed = oracle::sqlite_accesses("SELECT x.* FROM x");
+    assert!(
+        mixed.contains(&Access::MissingTable("x".into())),
+        "{mixed:?}"
+    );
+    let upper = oracle::sqlite_accesses("SELECT B2.*, title FROM books");
+    assert!(
+        !upper.iter().any(|a| matches!(a, Access::MissingTable(_))),
+        "{upper:?}"
+    );
+    let aliased = oracle::sqlite_accesses("SELECT b.*, 1 AS b -- b*");
+    assert!(
+        !aliased.iter().any(|a| matches!(a, Access::MissingTable(_))),
+        "{aliased:?}"
+    );
+    // The probe's scratch table is rolled back, so the next statement over
+    // the same name still finds it missing.
+    let again = oracle::sqlite_accesses("SELECT * FROM x");
+    assert!(
+        again.contains(&Access::MissingTable("x".into())),
+        "{again:?}"
+    );
+    for variant in [Variant::BindingOwned, Variant::BindingMigration] {
+        assert_eq!(oracle::violation(variant, &accesses), None, "{variant:?}");
+        assert!(
+            oracle::violation(variant, &[Access::MissingTable("bookclerk_private".into())])
+                .is_some()
+        );
+    }
+    // A binding is its own database: a host-library name is not reserved
+    // there, exactly as the host rule has it (DDL is still a migration-only
+    // action).
+    let drop = oracle::sqlite_accesses("DROP TABLE IF EXISTS encrypted_secrets");
+    assert_eq!(oracle::violation(Variant::BindingMigration, &drop), None);
+    assert!(oracle::violation(Variant::BindingOwned, &drop).is_some());
+}
+
+#[test]
 fn every_variant_admits_a_plain_granted_select() {
     for variant in Variant::ALL {
         assert!(

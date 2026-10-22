@@ -2346,6 +2346,8 @@ fn parse_default_literal(index: usize, scan: &mut Scan<'_>) -> Result<SqlType> {
     Err(v1_grammar_err(index, "DEFAULT value is not portable"))
 }
 
+/// Takes a canonical `X'hex'` blob literal. Every engine requires an even
+/// number of hex digits (two per byte); an odd count is not a literal.
 fn take_v1_blob_hex(scan: &mut Scan<'_>) -> bool {
     scan.skip();
     let rest = scan.rest();
@@ -2360,6 +2362,9 @@ fn take_v1_blob_hex(scan: &mut Scan<'_>) -> bool {
     while i < scan.sql.len() {
         let c = scan.sql.as_bytes()[i];
         if c == b'\'' {
+            if !(i - scan.i - 2).is_multiple_of(2) {
+                return false;
+            }
             scan.i = i + 1;
             return true;
         }
@@ -4135,6 +4140,9 @@ mod tests {
             "SELECT id FROM books OFFSET 1",
             "SELECT 4+.11151.111%1-0",
             "SELECT id + ESCAPE FROM books",
+            // Blob literals carry two hex digits per byte.
+            "SELECT x'111' FROM books",
+            "SELECT id FROM books WHERE note = X'a'",
             "SELECT b.*Fe FROM books b",
             "SELECT b.* AS x FROM books b",
             "SELECT b.* + 1 FROM books b",
@@ -4153,6 +4161,7 @@ mod tests {
             // Words both engines accept as names stay usable: SQLite falls
             // back to an identifier and PostgreSQL does not reserve them.
             "SELECT id AS match, title AS glob FROM books",
+            "SELECT id FROM books WHERE note = X'ab12'",
             "SELECT id FROM books recursive WHERE recursive.id = 1",
         ] {
             validate_guest_execute_request(&req(sql, vec![], DbResultSelection::Rows, 1))

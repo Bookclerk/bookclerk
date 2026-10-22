@@ -140,6 +140,10 @@ pub enum Access {
         /// Lower-cased column name, `None` for whole-table or column-less access.
         column: Option<String>,
     },
+    /// A read of a table SQLite does not have: the lower-cased name from its
+    /// `no such table` error. A CTE or subquery alias always resolves, so
+    /// this is a real table reference the oracle schema does not model.
+    MissingTable(String),
     /// A function call by lower-cased name.
     Function(String),
     /// SQLite's tokenizer or parser rejected a statement the host admitted;
@@ -264,6 +268,38 @@ struct Oracle {
 }
 
 impl Oracle {
+    /// Decides whether `table`, which SQLite reported as `no such table`
+    /// while compiling `lowered`, stands in a table position.
+    ///
+    /// SQLite gives the same message for a dangling qualifier (`SELECT x.*
+    /// FROM books`) or alias and for a real `FROM x`, so the oracle asks
+    /// SQLite: it creates a scratch table of that name inside a savepoint,
+    /// compiles again and rolls back. A statement that still fails with the
+    /// same message never referenced the table; any other outcome (it
+    /// compiles, or fails later on a column of the scratch table) means the
+    /// name was consumed as a table. A scratch table that cannot be created
+    /// counts as a reference, so the oracle fails closed.
+    fn is_table_reference(&self, lowered: &str, table: &str) -> bool {
+        let quoted = format!("\"{}\"", table.replace('"', "\"\""));
+        if self.conn.execute_batch("SAVEPOINT probe").is_err() {
+            return true;
+        }
+        let same_error = format!("no such table: {table}");
+        let verdict = match self
+            .conn
+            .execute_batch(&format!("CREATE TABLE {quoted} (probe INTEGER)"))
+        {
+            Err(_) => true,
+            Ok(()) => match self.conn.prepare(lowered) {
+                Ok(_) => true,
+                // SQLite echoes the name as the statement spelled it.
+                Err(err) => strip_echo(&err, lowered).trim().to_ascii_lowercase() != same_error,
+            },
+        };
+        let _ = self.conn.execute_batch("ROLLBACK TO probe; RELEASE probe");
+        verdict
+    }
+
     /// Opens the database and installs the recording authorizer.
     fn new() -> rusqlite::Result<Self> {
         let conn = oracle_connection()?;
@@ -281,6 +317,17 @@ impl Oracle {
     }
 }
 
+/// Returns `err`'s message without the ` in <sql> at offset N` echo rusqlite
+/// appends to a prepare error, so words inside the statement (a fuzzer
+/// happily writes "syntax error" into a comment) cannot steer classification.
+fn strip_echo(err: &rusqlite::Error, lowered: &str) -> String {
+    let message = err.to_string();
+    let echo = format!(" in {lowered}");
+    message
+        .split_once(echo.as_str())
+        .map_or(message.clone(), |(head, _)| head.to_string())
+}
+
 thread_local! {
     /// The thread's oracle, created on first use.
     static ORACLE: RefCell<Option<Oracle>> = const { RefCell::new(None) };
@@ -290,8 +337,8 @@ thread_local! {
 /// every access SQLite's authorizer reported, in order.
 ///
 /// A statement SQLite cannot prepare yields the accesses reported before the
-/// error plus one more: a `no such table` error becomes a whole-table
-/// [`Access::Table`] on that name and `has no column named` a column access,
+/// error plus one more: a `no such table` error becomes an
+/// [`Access::MissingTable`] on that name and `has no column named` a column access,
 /// since SQLite stops before authorizing a name it does not know and the
 /// lexical policies carry no catalog to know it either; a token-level
 /// rejection (syntax error, unrecognized token, incomplete input) of a DML
@@ -318,16 +365,11 @@ pub fn sqlite_accesses(sql: &str) -> Vec<Access> {
             seen.clear();
         }
         let lowered = lower_canonical_sql(DatabaseBackend::Sqlite, sql);
-        // rusqlite appends ` in <sql> at offset N` to a prepare error; drop
-        // that echo so words inside the statement (a fuzzer happily writes
-        // "syntax error" into a comment) cannot steer the classification.
-        let prepare_error = oracle.conn.prepare(&lowered).err().map(|err| {
-            let message = err.to_string();
-            let echo = format!(" in {lowered}");
-            message
-                .split_once(echo.as_str())
-                .map_or(message.clone(), |(head, _)| head.to_string())
-        });
+        let prepare_error = oracle
+            .conn
+            .prepare(&lowered)
+            .err()
+            .map(|err| strip_echo(&err, &lowered));
         let mut out = oracle
             .seen
             .lock()
@@ -341,10 +383,13 @@ pub fn sqlite_accesses(sql: &str) -> Vec<Access> {
                 // syntax and semantic rejections (a trailing comma, two
                 // primary keys) are not findings against the authorizer.
             } else if let Some(table) = message.strip_prefix("no such table: ") {
-                out.push(Access::Table {
-                    table: table.trim().to_ascii_lowercase(),
-                    column: None,
-                });
+                let table = table.trim().to_ascii_lowercase();
+                // `SELECT x.* FROM books` with no source `x` also fails with
+                // "no such table: x"; a name that is only a dangling qualifier
+                // or alias was never a table reference and reads nothing.
+                if oracle.is_table_reference(&lowered, &table) {
+                    out.push(Access::MissingTable(table));
+                }
             } else if let Some(rest) = message.strip_prefix("table ") {
                 // "table T has no column named C": a name the lexical policies
                 // cannot know and SQLite stops on before authorizing it.
@@ -484,8 +529,20 @@ fn classify(action: &AuthAction<'_>) -> Option<Access> {
 /// admitted under `variant` is inside that variant's policy. Returns the
 /// first violation as text, `None` when the statement is within policy.
 ///
-/// Table names SQLite reports that are not in [`PHYSICAL_TABLES`] are CTE or
-/// subquery aliases and carry no authority, so they are skipped.
+/// True for a table name no plugin-owned binding may touch: the host's
+/// `bookclerk_` bookkeeping prefix and the engine catalog. A binding is a
+/// physically separate database, so host-library names such as
+/// `encrypted_secrets` are not reserved there (the host rule says the same);
+/// [`GRANTED_TABLES`] keeps them off the non-binding variants.
+fn binding_reserved(table: &str) -> bool {
+    table.starts_with(BOOKCLERK_RESERVED_PREFIX) || table.starts_with("sqlite_")
+}
+
+/// Table names the authorizer reports that are not in [`PHYSICAL_TABLES`] are
+/// CTE or subquery aliases and carry no authority, so they are skipped. A name
+/// SQLite could not resolve at all ([`Access::MissingTable`]) is no alias: a
+/// non-binding variant that admitted it touched an ungranted table, and a
+/// binding variant is held to the reserved-name rule as for a known table.
 #[must_use]
 pub fn violation(variant: Variant, accesses: &[Access]) -> Option<String> {
     let policy = variant.policy();
@@ -496,8 +553,7 @@ pub fn violation(variant: Variant, accesses: &[Access]) -> Option<String> {
                     continue;
                 }
                 if variant.binding() {
-                    if table.starts_with(BOOKCLERK_RESERVED_PREFIX) || table == "encrypted_secrets"
-                    {
+                    if binding_reserved(table) {
                         return Some(format!("binding statement touched reserved table {table}"));
                     }
                     continue;
@@ -512,6 +568,17 @@ pub fn violation(variant: Variant, accesses: &[Access]) -> Option<String> {
                         }
                     }
                 }
+            }
+            Access::MissingTable(table) => {
+                if variant.binding() {
+                    if binding_reserved(table) {
+                        return Some(format!("binding statement touched reserved table {table}"));
+                    }
+                    continue;
+                }
+                return Some(format!(
+                    "touched ungranted table {table} (absent from the oracle schema)"
+                ));
             }
             Access::Function(name) => {
                 if LOWERING_FUNCTIONS.contains(&name.as_str()) {
@@ -528,10 +595,7 @@ pub fn violation(variant: Variant, accesses: &[Access]) -> Option<String> {
                 if *verb == "Reindex" {
                     continue;
                 }
-                if table.starts_with(BOOKCLERK_RESERVED_PREFIX)
-                    || table.starts_with("sqlite_")
-                    || table == "encrypted_secrets"
-                {
+                if binding_reserved(table) {
                     return Some(format!("{verb} on reserved table {table}"));
                 }
             }

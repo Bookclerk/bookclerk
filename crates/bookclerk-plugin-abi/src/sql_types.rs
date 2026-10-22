@@ -2517,7 +2517,7 @@ fn infer_select_core(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<Vec<(S
     }
     if scan.take_kw("FROM") {
         cx.from.clear();
-        take_from_item(scan, cx)?;
+        let _ = take_from_item(scan, cx)?;
         loop {
             if scan.take_kw("JOIN")
                 || scan.take_kw("INNER")
@@ -2526,15 +2526,17 @@ fn infer_select_core(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<Vec<(S
             {
                 let _ = scan.take_kw("OUTER");
                 let _ = scan.take_kw("JOIN");
-                take_from_item(scan, cx)?;
+                let joined = take_from_item(scan, cx)?;
                 if scan.take_kw("ON") {
                     let ty = infer_expr(scan, cx)?;
                     require_booleanish(cx.index, ty, "JOIN ON")?;
+                } else if scan.take_kw("USING") {
+                    typecheck_join_using(scan, cx, &joined)?;
                 }
                 continue;
             }
             if scan.take_byte(b',') {
-                take_from_item(scan, cx)?;
+                let _ = take_from_item(scan, cx)?;
                 continue;
             }
             break;
@@ -2970,7 +2972,12 @@ fn star_columns_for_src(cx: &mut TypeCx<'_>, src: &FromSrc) -> Result<Vec<(Strin
     )))
 }
 
-fn take_from_item(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<()> {
+/// Reads one FROM source (a physical table, a CTE reference or a derived
+/// table) with its optional alias and registers it in `cx.from`.
+///
+/// # Returns
+/// The name the source is visible under (its alias when one was given).
+fn take_from_item(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<String> {
     if scan.take_byte(b'(') {
         let inner = scan
             .take_balanced_inner()
@@ -2985,8 +2992,8 @@ fn take_from_item(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<()> {
             .read_ident()
             .ok_or_else(|| ty_err(cx.index, "subquery alias required"))?;
         cx.ctes.insert(alias.clone(), cols);
-        cx.from.insert(alias.clone(), FromSrc::Cte(alias));
-        return Ok(());
+        cx.from.insert(alias.clone(), FromSrc::Cte(alias.clone()));
+        return Ok(alias);
     }
     let name = scan
         .read_ident()
@@ -2998,6 +3005,7 @@ fn take_from_item(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<()> {
             || scan.peek_kw("LEFT")
             || scan.peek_kw("CROSS")
             || scan.peek_kw("ON")
+            || scan.peek_kw("USING")
             || scan.peek_kw("WHERE")
             || scan.peek_kw("GROUP")
             || scan.peek_kw("HAVING")
@@ -3013,11 +3021,59 @@ fn take_from_item(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<()> {
         }
     }
     if cx.ctes.contains_key(&name) {
-        cx.from.insert(visible, FromSrc::Cte(name));
+        cx.from.insert(visible.clone(), FromSrc::Cte(name));
     } else {
         require_physical_table(cx, &name)?;
         cx.note_physical(&name, None);
-        cx.from.insert(visible, FromSrc::Physical(name));
+        cx.from.insert(visible.clone(), FromSrc::Physical(name));
+    }
+    Ok(visible)
+}
+
+/// Typechecks a `JOIN … USING (col, …)` list after `joined` was registered.
+///
+/// Every listed column must exist on the joined source and on at least one
+/// earlier source, as both engines require; the matched columns are recorded
+/// as physical accesses through the lookups. An unqualified reference to a
+/// `USING` column elsewhere in the statement stays ambiguous for the checker
+/// (fail-closed); guests qualify it.
+///
+/// # Errors
+/// Returns the SQL-v1 type error when the list is malformed or a column is
+/// missing on either side.
+fn typecheck_join_using(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>, joined: &str) -> Result<()> {
+    if !scan.take_byte(b'(') {
+        return Err(ty_err(cx.index, "JOIN USING ("));
+    }
+    let earlier: Vec<String> = cx
+        .from
+        .keys()
+        .filter(|name| name.as_str() != joined)
+        .cloned()
+        .collect();
+    loop {
+        let col = scan
+            .read_ident()
+            .ok_or_else(|| ty_err(cx.index, "JOIN USING column"))?;
+        lookup_column(cx, Some(joined), &col)?;
+        let mut matched = false;
+        for name in &earlier {
+            if lookup_column(cx, Some(name), &col).is_ok() {
+                matched = true;
+            }
+        }
+        if !matched {
+            return Err(ty_err(
+                cx.index,
+                &format!("USING column {col} is not on the left side of the join"),
+            ));
+        }
+        if !scan.take_byte(b',') {
+            break;
+        }
+    }
+    if !scan.take_byte(b')') {
+        return Err(ty_err(cx.index, "JOIN USING )"));
     }
     Ok(())
 }
@@ -4074,6 +4130,7 @@ impl<'a> TScan<'a> {
             || self.peek_kw("LEFT")
             || self.peek_kw("CROSS")
             || self.peek_kw("ON")
+            || self.peek_kw("USING")
         {
             return None;
         }
@@ -4202,6 +4259,8 @@ impl<'a> TScan<'a> {
         true
     }
 
+    /// Takes a canonical `X'hex'` blob literal; an odd digit count is not a
+    /// literal in any engine, so the scanner stays put.
     fn take_blob_hex(&mut self) -> bool {
         self.skip();
         let rest = &self.sql[self.i..];
@@ -4211,10 +4270,15 @@ impl<'a> TScan<'a> {
         if !rest.as_bytes()[0].eq_ignore_ascii_case(&b'x') || rest.as_bytes()[1] != b'\'' {
             return false;
         }
+        let start = self.i;
         self.i += 2;
         while self.i < self.sql.len() {
             let b = self.sql.as_bytes()[self.i];
             if b == b'\'' {
+                if !(self.i - start - 2).is_multiple_of(2) {
+                    self.i = start;
+                    return false;
+                }
                 self.i += 1;
                 return true;
             }
@@ -4679,6 +4743,22 @@ mod tests {
     }
 
     #[test]
+    fn blob_literals_carry_two_hex_digits_per_byte() {
+        // Found by the guest_sql_authz fuzz target: `x'111'` was typed as a
+        // BLOB literal although SQLite and PostgreSQL both reject an odd
+        // digit count.
+        let env = SqlTypeEnv::new();
+        let proofs = typecheck_execute_request_resolved(&req("SELECT x'1122'"), &env).unwrap();
+        assert_eq!(proofs[0].output_columns[0].1, SqlType::Blob);
+        for sql in ["SELECT x'111'", "SELECT X'a'", "SELECT x'1' AS b"] {
+            assert!(
+                typecheck_execute_request_resolved(&req(sql), &env).is_err(),
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
     fn every_clause_is_read_so_no_source_escapes_the_proof() {
         // Found by the guest_sql_authz fuzz target: an implicit select alias
         // (`? d`) stopped the select-list parser, the FROM clause after it was
@@ -4717,6 +4797,26 @@ mod tests {
             "SELECT s.n FROM (SELECT id n FROM host_secrets) s",
         ] {
             assert!(touches_secrets(sql), "{sql}");
+        }
+        // `JOIN … USING (…)` is SQL v1; the column list is typed against both
+        // sides instead of being left as trailing tokens (`USING` is never an
+        // alias).
+        assert!(touches_secrets(
+            "SELECT b.title FROM books b JOIN host_secrets s USING (id)"
+        ));
+        assert!(touches_secrets(
+            "SELECT b.title FROM books b LEFT OUTER JOIN host_secrets USING (id) WHERE b.id = ?"
+        ));
+        for sql in [
+            "SELECT b.title FROM books b JOIN host_secrets s USING (nope)",
+            "SELECT b.title FROM books b JOIN host_secrets s USING (title)",
+            "SELECT b.title FROM books b JOIN host_secrets s USING id",
+            "SELECT b.title FROM books b JOIN host_secrets s USING (id",
+        ] {
+            assert!(
+                typecheck_execute_request_resolved(&req(sql), &env).is_err(),
+                "{sql}"
+            );
         }
         for sql in [
             "SELECT id FROM books extra tokens",
