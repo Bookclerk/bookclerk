@@ -1474,6 +1474,33 @@ class RunnerLayoutTests(unittest.TestCase):
         art = self.build_only_artifact()
         self.assertEqual(json.loads(job_outputs(art)["matrix_os"]), ["ubuntu-latest", "macos-latest", "windows-latest"])
 
+    def test_linux_only_is_refused_outside_pull_requests(self) -> None:
+        for event in ("merge_group", "push"):
+            with self.subTest(event=event), self.assertRaises(ExecError):
+                resolve(
+                    base=None,
+                    head=None,
+                    selective_ci="1",
+                    run_id="9",
+                    checkout_sha="abc",
+                    event=event,
+                    force_full=True,
+                    linux_only=True,
+                    paths=["Cargo.lock"],
+                    metadata=META,
+                    workspace=REPO,
+                )
+            art = self.linux_only_artifact()
+            art["event"] = event
+            with self.subTest(event=event, step="validate"), self.assertRaises(ExecError):
+                validate(art, run_id="9", checkout_sha="abc")
+
+    def test_validate_rejects_a_linux_only_plan_with_windows_jobs(self) -> None:
+        art = self.linux_only_artifact()
+        art["execution"] = art["predicted"]
+        with self.assertRaises(ExecError):
+            validate(art, run_id="9", checkout_sha="abc")
+
     def test_validate_rejects_an_unknown_matrix(self) -> None:
         for bad in (["macos-latest"], [], ["ubuntu-latest", "windows-latest"], "ubuntu-latest"):
             art = self.linux_only_artifact()

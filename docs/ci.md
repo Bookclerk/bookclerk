@@ -471,14 +471,17 @@ full-suite run is about 20 jobs, three of them on macOS and four on Windows,
 so a burst of pull requests can hold every runner while the queue waits.
 The repository keeps pull-request load down so the queue gets runners:
 
-- Superseded pull-request runs of `ci.yml` and the OSV PR scan are cancelled.
-  `merge_group`, `main` and scheduled runs are never cancelled or replaced.
-- Dependabot pull requests run with `--linux-only` (`matrix_os` is
+- Superseded pull-request runs of `ci.yml` and the OSV PR scan are cancelled;
+  `merge_group` runs never are.
+- Dependabot pull requests (opened and last pushed by Dependabot) run with
+  `--linux-only` (`matrix_os` is
   `["ubuntu-latest"]` in the plan artifact): the per-OS jobs keep only their
   Linux leg and `windows-cluster` is skipped, and the gate expects exactly
   that. Dependabot updates land only through the merge queue, whose full
   suite covers macOS and Windows, so the scarce runners are left to it.
-  Human pull requests keep every platform.
+  `ci-exec.py validate` rejects a Linux-only plan for any event other than
+  `pull_request`. Human pull requests, and human pushes to a Dependabot
+  branch, keep every platform.
 - Dependabot groups each ecosystem's updates into at most two pull requests a
   week (minor/patch and major) and spreads the ecosystems across weekdays
   (see below).

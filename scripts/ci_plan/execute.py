@@ -22,7 +22,7 @@ import sys
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .github_paths import open_github_actions_append
 from .plan import (
@@ -297,14 +297,12 @@ def resolve(
         )
     else:
         execution = predicted
+    if linux_only and event != "pull_request":
+        raise ExecError(f"--linux-only applies to pull requests only, not `{event}`")
     if build_only:
-        execution = plan_from_dict(plan_to_dict(execution))
-        execution.checks = {c: v for c, v in execution.checks.items() if CHECK_JOB[c] in BUILD_ONLY_JOBS}
-        execution.jobs = {job: on and job in BUILD_ONLY_JOBS for job, on in execution.jobs.items()}
+        execution = _keep_jobs(execution, BUILD_ONLY_JOBS.__contains__)
     if linux_only:
-        execution = plan_from_dict(plan_to_dict(execution))
-        execution.checks = {c: v for c, v in execution.checks.items() if CHECK_JOB[c] not in NON_LINUX_JOBS}
-        execution.jobs = {job: on and job not in NON_LINUX_JOBS for job, on in execution.jobs.items()}
+        execution = _keep_jobs(execution, lambda job: job not in NON_LINUX_JOBS)
     return {
         "schema_version": SCHEMA_VERSION,
         "execution_id": uuid.uuid4().hex,
@@ -320,6 +318,14 @@ def resolve(
         "predicted": plan_to_dict(predicted),
         "execution": plan_to_dict(execution),
     }
+
+
+def _keep_jobs(execution: Plan, keep: Callable[[str], bool]) -> Plan:
+    """A copy of ``execution`` without the jobs ``keep`` rejects or their checks."""
+    out = plan_from_dict(plan_to_dict(execution))
+    out.checks = {c: v for c, v in out.checks.items() if keep(CHECK_JOB[c])}
+    out.jobs = {job: on and keep(job) for job, on in out.jobs.items()}
+    return out
 
 
 def job_outputs(artifact: Mapping[str, Any]) -> dict[str, str]:
@@ -383,6 +389,10 @@ def validate(
     matrix_os = artifact["matrix_os"]
     if matrix_os not in (list(MATRIX_OS), [LINUX_OS]):
         raise ExecError(f"plan matrix_os {matrix_os!r} is neither {list(MATRIX_OS)} nor {[LINUX_OS]}")
+    # Merge-group and main runs are the full-platform audit; only a pull
+    # request may leave macOS and Windows out.
+    if matrix_os == [LINUX_OS] and artifact.get("event") != "pull_request":
+        raise ExecError(f"plan is Linux-only but its event is {artifact.get('event')!r}, not a pull request")
     if artifact["mode"] not in ("full", "shadow", "selective"):
         raise ExecError(f"plan mode {artifact['mode']!r} is invalid")
     if run_id is not None and str(artifact["run_id"]) != str(run_id):
@@ -401,6 +411,10 @@ def validate(
             raise ExecError(f"plan selects unknown check `{check}`")
     if set(plan.jobs) != set(JOB_CHECKS):
         raise ExecError(f"plan jobs {sorted(plan.jobs)} != {sorted(JOB_CHECKS)}")
+    if matrix_os == [LINUX_OS]:
+        stray = sorted(job for job in NON_LINUX_JOBS if plan.jobs[job])
+        if stray:
+            raise ExecError(f"Linux-only plan still runs non-Linux jobs {stray}")
 
 
 def git_head(workspace: Path) -> str:
@@ -1001,10 +1015,10 @@ def artifact_summary(artifact: Mapping[str, Any]) -> str:
             " **Build only** (push to `main`): checks compile and save caches; no tests run,"
             " because this commit already passed the full suite in its merge group."
         )
-    if artifact["matrix_os"] == [LINUX_OS]:
+    if artifact.get("matrix_os") == [LINUX_OS]:
         banner += (
-            " **Linux only** (Dependabot pull request): macOS and Windows jobs are left to the"
-            " merge queue, whose full-suite run tests every platform before the update lands."
+            " **Linux only** (`--linux-only`): macOS and Windows jobs are left to the merge queue,"
+            " whose full-suite run tests every platform before the change lands."
         )
     parts = [f"# CI execution: `{mode}`", "", banner, "", plan_to_summary(execution_plan(artifact), "Execution")]
     if mode == "shadow":

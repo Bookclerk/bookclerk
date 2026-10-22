@@ -238,11 +238,25 @@ class WorkflowContractTests(unittest.TestCase):
     def test_linux_only_is_limited_to_dependabot_pull_requests(self) -> None:
         step = next(s for s in self.jobs["plan"]["steps"] if "ci-exec.py resolve" in s.get("run", ""))
         run = step["run"]
-        guard = '"${{ github.event_name }}" = "pull_request" ] && [ "$PR_AUTHOR" = "dependabot[bot]" ]'
+        guard = (
+            '"${{ github.event_name }}" = "pull_request" ] && [ "$PR_AUTHOR" = "dependabot[bot]" ]'
+            ' && [ "$ACTOR" = "dependabot[bot]" ]'
+        )
         self.assertIn(guard, run)
         self.assertEqual(run.count("--linux-only"), 1)
         self.assertLess(run.index(guard), run.index("--linux-only"))
         self.assertEqual(step["env"]["PR_AUTHOR"], "${{ github.event.pull_request.user.login }}")
+        self.assertEqual(step["env"]["ACTOR"], "${{ github.actor }}")
+
+    def test_every_fixed_non_linux_job_is_skipped_by_linux_only_runs(self) -> None:
+        from ci_plan.execute import LINUX_OS, NON_LINUX_JOBS
+
+        fixed = {
+            name
+            for name, job in self.jobs.items()
+            if "${{" not in str(job["runs-on"]) and job["runs-on"] != LINUX_OS
+        }
+        self.assertEqual(fixed, set(NON_LINUX_JOBS))
 
     def test_build_only_is_limited_to_main_pushes(self) -> None:
         run = next(s["run"] for s in self.jobs["plan"]["steps"] if "ci-exec.py resolve" in s.get("run", ""))

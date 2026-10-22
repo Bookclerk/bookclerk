@@ -24,8 +24,7 @@ on:
         description: Passphrase of the sealed OSV remediation bundle.
         required: false
 
-# Cancel superseded PR runs; never cancel merge_group / main (a merge group's
-# ref is unique, so its group never collides with a pull request's).
+# Cancel superseded PR runs; never cancel merge_group / main.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -172,6 +171,7 @@ jobs:
         id: resolve
         env:
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
           EXTRA=()
@@ -189,7 +189,8 @@ jobs:
           # full-suite run covers macOS and Windows. Their pull-request runs
           # stay on Linux so a burst of updates cannot hold the scarce macOS
           # and Windows runners the queue needs (docs/ci.md#runner-capacity).
-          if [ "${{ github.event_name }}" = "pull_request" ] && [ "$PR_AUTHOR" = "dependabot[bot]" ]; then
+          # A person pushing to a Dependabot branch gets every platform.
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ "$PR_AUTHOR" = "dependabot[bot]" ] && [ "$ACTOR" = "dependabot[bot]" ]; then
             EXTRA+=(--linux-only)
           fi
           python3 scripts/ci-exec.py resolve \
