@@ -341,6 +341,30 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertLess(shas.index("inputs.private-head"), shas.index("pull_request"))
 
 
+class OsvRemediationWorkflowTest(unittest.TestCase):
+    """`osv-remediate.yml` never rebuilds a remediation PR that is already open."""
+
+    def setUp(self) -> None:
+        path = REPO / ".github" / "workflows" / "osv-remediate.yml"
+        self.jobs = yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"]
+
+    def test_open_pull_request_stops_the_run(self) -> None:
+        self.assertEqual(self.jobs["bump"]["needs"], "pending")
+        self.assertEqual(self.jobs["bump"]["if"], "needs.pending.outputs.open == 'false'")
+        # The branch `pending` looks for is the one `publish` creates.
+        find = next(s["run"] for s in self.jobs["pending"]["steps"] if s.get("id") == "find")
+        cpr = next(s for s in self.jobs["publish"]["steps"] if s.get("id") == "cpr")
+        self.assertIn(f"--head {cpr['with']['branch']} ", find)
+        self.assertIn(f"--base {cpr['with']['base']} ", find)
+        self.assertEqual(self.jobs["pending"]["permissions"], {"pull-requests": "read"})
+
+    def test_publish_needs_a_verified_bump(self) -> None:
+        self.assertEqual(
+            self.jobs["publish"]["if"],
+            "needs.bump.outputs.changed == 'true' && needs.verify.result == 'success'",
+        )
+
+
 # --- Postgres-gated Rust tests vs the executor's `postgres` steps ----------
 #
 # Postgres tests skip (or are `#[ignore]`d) without BOOKCLERK_TEST_POSTGRES_URL,
