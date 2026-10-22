@@ -428,6 +428,7 @@ App as [Dependabot auto-merge](#dependabot-auto-merge) instead of
 | `librofm-apk-probe.yml` | `api-drift` issue; `api-drift/librofm` branch and pull request |
 | `graphicaudio-api-probe.yml` | `api-drift` issue; `api-drift/graphicaudio` branch and pull request |
 | `chirp-api-probe.yml` | `api-drift` issue; `api-drift/chirp` branch and pull request |
+| `osv-remediate.yml` | reads OSV code-scanning alerts; `deps/osv-remediation` branch, pull request, auto-merge |
 
 The probes share `.github/actions/api-drift-report`: one open issue per source
 (found by a hidden `<!-- api-drift:<source> -->` marker and updated in place,
@@ -447,6 +448,8 @@ attributed to the App.
    - **Contents: read and write** (push branches)
    - **Pull requests: read and write** (open, update and auto-merge PRs)
    - **Issues: read and write** (file and update drift issues, add labels)
+   - **Code scanning alerts: read** (`osv-remediate.yml` reads the OSV
+     alerts on `main`)
    - **Metadata: read** (always granted)
 
    **Workflows** is not needed: none of these pull requests touch
@@ -455,10 +458,58 @@ attributed to the App.
    Scheduled runs do not receive the Dependabot copies:
    - `AUTOMATION_APP_CLIENT_ID`: the App's client ID.
    - `AUTOMATION_APP_PRIVATE_KEY`: a private key generated for the App.
+3. For `osv-remediate.yml`, add one more Actions secret,
+   `OSV_REMEDIATION_BUNDLE_KEY`: a random passphrase (for example
+   `openssl rand -base64 32`). It only encrypts the bump while CI tests it;
+   rotating it affects nothing but a run already in progress.
+
+### OSV remediation
+
+`osv-remediate.yml` runs after every full OSV scan of `main` (push, schedule
+or manual run) and on demand. It reads the open OSV-Scanner alerts in
+Security → Code scanning, looks each advisory up on api.osv.dev, and
+`scripts/osv-remediate.py` tries lockfile-only updates (`cargo update
+--precise`, then the newest compatible release; `npm update
+--package-lock-only --ignore-scripts`) until no locked version of the package
+is inside the advisory's affected ranges. An attempt that does not clear the
+advisory is rolled back. Manifests are never edited, so a fix that needs a new
+major version, or a change upstream, stays an open alert for a maintainer.
+
+A bump is published only once it is known to pass:
+
+1. `bump` commits the bump locally and seals it, with the pull request body,
+   using `OSV_REMEDIATION_BUNDLE_KEY` (`scripts/osv-remediation-bundle.sh`).
+   Artifacts of a public repository are downloadable by anyone, so the bump
+   never travels in the clear.
+2. `verify` calls `ci.yml` with `private-head: true`. Every CI job opens the
+   sealed bundle right after checkout (`.github/actions/osv-remediation-head`)
+   and tests the bump with the full suite. Caches are not saved, cargo output
+   is quiet, and the first failed job cancels the run, as in the merge queue.
+3. `publish` runs only when that CI Gate passed. It pushes
+   `deps/osv-remediation`, opens the pull request ready for review (the suite
+   has already passed, so it skips the draft stage) and turns on auto-merge,
+   so the merge queue lands it as soon as the pull request's required checks
+   pass.
+
+A bump that fails verification publishes nothing: the run fails and the
+alerts stay in Security → Code scanning for a maintainer. A run that has
+nothing left to bump closes an earlier remediation pull request.
+
+Scan results are not public, so the run keeps them private: its log prints
+counts only (command output is discarded, because a failed attempt would name
+a vulnerable package), and the pull request lists only the bumps it applied
+with their advisory ids. This hides which advisories the project is acting on
+until the fix is ready to land. It cannot hide the advisories themselves:
+`main`'s lockfiles are public, so anyone can scan them.
+
+Dependabot does not cover this: it raises alerts and security updates only for
+advisories GitHub has reviewed, and RustSec advisories often stay unreviewed,
+while its version updates wait out the cooldown and never touch transitive-only
+crates.
 
 Pull requests the App opens are not authored by a person, so rulesets that
 require approval for such changes still need a maintainer's approval before
-the merge queue takes them.
+the merge queue takes them. Auto-merge stays on while it waits.
 
 ## Expected PR feedback (when `SELECTIVE_CI=1`)
 
