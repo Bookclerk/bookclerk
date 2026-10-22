@@ -33,6 +33,8 @@ OUTPUT_REF = re.compile(r"needs\.plan\.outputs\.([A-Za-z0-9_]+)")
 RUN_CHECK = re.compile(r"ci-exec\.py run ([a-z0-9_]+)\b")
 # Watches a merge-group run and cancels it on the first failed job.
 FAIL_FAST_JOB = "merge-queue-fail-fast"
+# Checks out the OSV remediation workflow's sealed lockfile bump.
+PRIVATE_HEAD_ACTION = "./.github/actions/osv-remediation-head"
 
 
 def _load() -> dict:
@@ -245,7 +247,7 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_fail_fast_job_is_merge_group_only_and_alone_can_cancel(self) -> None:
         job = self.jobs[FAIL_FAST_JOB]
-        self.assertEqual(job["if"], "github.event_name == 'merge_group'")
+        self.assertEqual(job["if"], "github.event_name == 'merge_group' || inputs.private-head")
         self.assertEqual(job["permissions"], {"actions": "write"})
         self.assertNotIn("needs", job, "must watch from the start of the run")
         for step in job["steps"]:
@@ -281,8 +283,62 @@ class WorkflowContractTests(unittest.TestCase):
         for name, job in self.jobs.items():
             for step in job.get("steps", []):
                 uses = step.get("uses")
+                if uses == PRIVATE_HEAD_ACTION:
+                    continue
                 if uses:
                     self.assertRegex(uses, r"@[0-9a-f]{40}$", f"{name}: {uses}")
+        action = yaml.safe_load((REPO / PRIVATE_HEAD_ACTION / "action.yml").read_text(encoding="utf-8"))
+        for step in action["runs"]["steps"]:
+            if "uses" in step:
+                self.assertRegex(step["uses"], r"@[0-9a-f]{40}$", PRIVATE_HEAD_ACTION)
+
+    # --- OSV remediation runs (workflow_call with private-head) -------------
+
+    def test_private_head_follows_every_checkout(self) -> None:
+        """Every job tests the sealed bump, not main, when private-head is set."""
+        for name, job in self.jobs.items():
+            if name == FAIL_FAST_JOB:
+                continue
+            steps = job["steps"]
+            checkout = [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith("actions/checkout@")]
+            self.assertEqual(len(checkout), 1, name)
+            # The plan job first refuses a private-head call without a commit id.
+            offset = 2 if name == "plan" else 1
+            head = steps[checkout[0] + offset]
+            self.assertEqual(head.get("uses"), PRIVATE_HEAD_ACTION, name)
+            self.assertEqual(head.get("if"), "inputs.private-head", name)
+            self.assertEqual(head["with"]["key"], "${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}", name)
+            self.assertEqual(head["with"]["sha"], "${{ inputs.private-sha }}", name)
+
+    def test_private_head_saves_no_caches_and_runs_everything(self) -> None:
+        triggers = self.wf.get("on", self.wf.get(True))
+        self.assertEqual(triggers["workflow_call"]["inputs"]["private-head"]["default"], False)
+        self.assertEqual(self.wf["env"]["CARGO_TERM_QUIET"], "${{ inputs.private-head && 'true' || 'false' }}")
+        for name, job in self.jobs.items():
+            for step in job.get("steps", []):
+                uses = str(step.get("uses", ""))
+                with self.subTest(job=name, step=step.get("name", uses)):
+                    save_if = step.get("with", {}).get("save-if")
+                    if uses.startswith("Swatinem/rust-cache@") and save_if not in (False, "false"):
+                        # Any main/matrix condition, always ANDed with the private-head veto.
+                        self.assertRegex(save_if, r"^\$\{\{ [^|]+ && !inputs\.private-head \}\}$")
+                    if uses.startswith("actions/setup-node@") and "cache" in step.get("with", {}):
+                        self.assertEqual(step["with"]["cache"], "${{ !inputs.private-head && 'npm' || '' }}")
+        run = next(s["run"] for s in self.jobs["plan"]["steps"] if "ci-exec.py resolve" in s.get("run", ""))
+        force = next(line for line in run.splitlines() if "--force-full" not in line and "merge_group\"" in line)
+        self.assertEqual(
+            force.strip(),
+            'if [ "${{ github.event_name }}" = "merge_group" ] || [ "${{ github.ref }}" = "refs/heads/main" ]'
+            ' || [ "${{ inputs.private-head }}" = "true" ]; then',
+        )
+        steps = self.jobs["plan"]["steps"]
+        guard = next(i for i, s in enumerate(steps) if s.get("name") == "Require the sealed commit id")
+        self.assertEqual(steps[guard]["if"], "inputs.private-head && inputs.private-sha == ''")
+        self.assertIn("exit 1", steps[guard]["run"])
+        head = next(i for i, s in enumerate(steps) if s.get("uses") == PRIVATE_HEAD_ACTION)
+        self.assertLess(guard, head)
+        shas = next(s["run"] for s in self.jobs["plan"]["steps"] if s.get("id") == "shas")
+        self.assertLess(shas.index("inputs.private-head"), shas.index("pull_request"))
 
 
 # --- Postgres-gated Rust tests vs the executor's `postgres` steps ----------
