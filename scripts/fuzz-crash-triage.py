@@ -848,9 +848,10 @@ def render_advisory(
         scope = [
             "Filed automatically by the scheduled fuzzing run as a draft. Check the",
             "severity and the affected range before publishing: the crash reproduced",
-            f"on `main`, and the range proposes every release up to `{release_tag}`",
-            "without having reproduced it there. Narrow it (or close this draft) if",
-            "the bug arrived after that release.",
+            f"on `main`, and the automation proposes every release up to `{release_tag}`",
+            "without having reproduced it there (it fills the range only while it is",
+            "unset; the range set on this advisory is the one that counts). Narrow it",
+            "(or close this draft) if the bug arrived after that release.",
         ]
     else:
         scope = [
@@ -1126,8 +1127,17 @@ class GitHub:
         Args:
             ghsa_id: The draft's GHSA id.
             body: The fields to change (``description``, ``vulnerabilities``).
+
+        Raises:
+            OSError: The advisory was not found (or the request failed).
         """
-        self.request("PATCH", f"/repos/{self.repo}/security-advisories/{urllib.parse.quote(ghsa_id)}", body)
+        status, _, _ = self.request(
+            "PATCH", f"/repos/{self.repo}/security-advisories/{urllib.parse.quote(ghsa_id)}", body
+        )
+        if status == 404:
+            # `request` returns a 404 instead of raising; a draft deleted
+            # meanwhile, or not visible to the token, is a failed refresh.
+            raise OSError(f"advisory {ghsa_id} not found")
 
 
 _TAG_VERSION = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")

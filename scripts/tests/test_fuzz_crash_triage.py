@@ -460,6 +460,7 @@ class DraftRefreshTest(unittest.TestCase):
     def test_refused_refresh_does_not_stop_later_crashes(self) -> None:
         class Refusing(FakeGitHub):
             def update_advisory(self, ghsa_id: str, body: dict[str, Any]) -> None:
+                del ghsa_id, body
                 raise urllib.error.HTTPError("u", 422, "closed meanwhile", None, None)  # type: ignore[arg-type]
 
         (self.inputs / "a.bin").write_bytes(b"a different minimized input")
@@ -479,6 +480,15 @@ class DraftRefreshTest(unittest.TestCase):
         self.assertEqual(counts["updated"], 1)
         ranges = [v["vulnerable_version_range"] for v in gh.updated[0][1]["vulnerabilities"]]
         self.assertEqual(ranges, ["<= v1.0.0", "<= v0.9.0"])
+
+    def test_update_of_a_missing_advisory_raises(self) -> None:
+        class Missing(triage.GitHub):
+            def request(self, method: str, path: str, body: Any = None) -> tuple[int, Any, str]:
+                del method, path, body
+                return 404, None, ""
+
+        with self.assertRaises(OSError):
+            Missing("o/r", "t").update_advisory("GHSA-gone", {"description": "d"})
 
     def test_closed_or_published_advisories_are_left_alone(self) -> None:
         (self.inputs / "a.bin").write_bytes(b"a different minimized input")

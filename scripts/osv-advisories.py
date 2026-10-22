@@ -1550,8 +1550,9 @@ def render_advisory(
         newest = f" (newest release `{release_tag}`)" if release_tag else ""
         lines += [
             "Filed automatically as a draft by the OSV advisory workflow. Check the verdict, severity and",
-            f"affected range before publishing: the range proposes every version up to `{version}`{newest}",
-            "without having checked each release. Narrow it, or close this draft, if a release does not",
+            f"affected range before publishing: the automation proposes every version up to `{version}`{newest}",
+            "without having checked each release (it fills the range only while it is unset; the range set",
+            "on this advisory is the one that counts). Narrow it, or close this draft, if a release does not",
             "contain the vulnerable code.",
             "",
         ]

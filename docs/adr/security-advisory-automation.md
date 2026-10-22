@@ -132,9 +132,10 @@ release workflow.
   functions absent from the LTO build while present at run time. The closure
   is the union of every platform and feature the workspace resolves, and a
   failed analysis falls back to the closure.
-- The call-analysis build takes hours, so it runs only when an advisory with function data for a shipped crate has no draft yet,
-  and only on the weekly scheduled scan or a manual run. Until then such an
-  advisory waits rather than being filed.
+- The call-analysis build takes hours, so it runs only when an advisory with
+  function data for a shipped crate has no advisory yet or only an open draft
+  (which the analysis then refreshes), and only on the weekly scheduled scan
+  or a manual run. Until then such an advisory waits rather than being filed.
 - Tampering by a compromised dependency's build script is out of reach of
   this design: it can make the analysis job report less than the truth. The
   closure and the plan come from a job that runs no third-party code, and a
