@@ -357,7 +357,9 @@ reproducer as an artifact. The scheduled workflow therefore never uses it:
      from `fuzz/boundaries.toml`, with a proposed range `<= <newest tag>`
      that a maintainer confirms (the crash reproduced on `main`, not on the
      release). Default severity: high for memory-safety errors (and anything
-     unrecognized, with a temporary private fork for the fix), medium for a
+     unrecognized; the advisory asks for the fix in a temporary private
+     fork, which a maintainer starts, since that needs the Administration
+     permission the App does not have), medium for a
      denial of service in host code, low inside a guest or for a leak. A
      maintainer reviews and publishes.
    - **Issue** otherwise. Before the first release no shipped artifact can be

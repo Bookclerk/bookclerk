@@ -177,8 +177,8 @@ SANITIZER_SUMMARY_RE = re.compile(
 # Sanitizer error header, for reports cut off before their SUMMARY line.
 SANITIZER_RE = re.compile(r"ERROR: (AddressSanitizer|UndefinedBehaviorSanitizer|MemorySanitizer): ([\w-]+)")
 
-# Crash kinds that are memory-safety errors: high by default, and fixed in a
-# temporary private fork.
+# Crash kinds that are memory-safety errors: high by default, and the
+# advisory suggests fixing them in a temporary private fork.
 MEMORY_KINDS_PREFIX = ("asan:", "msan:", "ubsan:")
 # Crash kinds that deny service (the process aborts or stalls).
 DOS_KINDS = frozenset({"panic", "stack-overflow", "oom", "timeout", "asan:allocation-size-too-big"})
@@ -809,6 +809,14 @@ def render_advisory(
         "Land the minimized input as",
         f"`fuzz/corpus/{finding.target}/regression_<name>` with the fix.",
     ]
+    if severity == "high":
+        # The filing token cannot start the fork itself: that also needs the
+        # Administration permission, which the automation App does not get.
+        lines += [
+            "",
+            "Prepare the fix in a temporary private fork (Start a temporary",
+            "private fork on this advisory), not in a public pull request.",
+        ]
     vulnerable_functions = [finding.top_function] if finding.top_function else []
     return {
         "summary": f"{kind_title(finding.kind).capitalize()} in {crate} ({finding.target})"[:1024],
@@ -824,9 +832,6 @@ def render_advisory(
             }
             for a in artifacts
         ],
-        # Memory-safety fixes are prepared in a temporary private fork; a
-        # denial-of-service fix can go through a normal pull request.
-        "start_private_fork": severity == "high",
     }
 
 

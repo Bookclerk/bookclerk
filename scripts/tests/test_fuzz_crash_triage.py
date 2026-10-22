@@ -307,7 +307,8 @@ class RouteAndRenderTest(unittest.TestCase):
             finding, bounds["abi_decode"], "v1.2.0", "abc123", "https://run", "b", b"\x00\x01"
         )
         self.assertEqual(body["severity"], "high")
-        self.assertTrue(body["start_private_fork"])
+        self.assertNotIn("start_private_fork", body)
+        self.assertIn("temporary private fork", body["description"])
         self.assertEqual(body["cwe_ids"], ["CWE-122"])
         packages = [v["package"]["name"] for v in body["vulnerabilities"]]
         self.assertEqual(packages, ["bookclerk", "bookclerk-plugin-sdk"])
@@ -322,7 +323,7 @@ class RouteAndRenderTest(unittest.TestCase):
         big = b"A" * (triage.INLINE_REPRODUCER_MAX + 1)
         body = triage.render_advisory(_finding(), _boundaries()["granted_http"], "v1", "c", "u", "b", big)
         self.assertNotIn("QUFB", body["description"])
-        self.assertFalse(body["start_private_fork"])
+        self.assertNotIn("temporary private fork", body["description"])
 
 
 class FakeGitHub:
