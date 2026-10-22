@@ -51,11 +51,13 @@ Scheduled GitHub Actions (staggered weekly) keep reverse-engineered surfaces hon
   replacement; otherwise the drift is reported for a person.
 - **Drift and failures file an issue.** On scheduled/manual runs, APK drift or
   a failed probe files or updates one `api-drift` issue per source.
-- **Verified fixes open a PR.** When every drifted constant has a suggestion,
+- **Fixes open a draft PR.** When every drifted constant has a suggestion,
   `apply_apk_updates.py` writes them into `client.rs` (and the matching
   needles in `check_client_constants.py`), the contract check and the live
-  probe re-run against them, and if the probe passes **with auth** the change
-  goes up as a pull request that closes the issue. `probe_all.py` reads its
+  probe re-run against them, and if the probe passes the change goes up as a
+  draft pull request that closes the issue. Without the source's test-account
+  secrets only the public checks run, and the pull request says it is
+  unverified for signed-in calls. `probe_all.py` reads its
   endpoints from `client.rs`, so the re-run exercises the new values.
   Pull requests and issues use the automation App token (`docs/ci.md#automation-app`).
 
