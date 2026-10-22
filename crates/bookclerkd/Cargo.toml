@@ -98,7 +98,7 @@ http-body-util = "0.1"
 sea-orm.workspace = true
 tempfile.workspace = true
 # Same version axum's `ws` feature uses: a host-side client for socket tests.
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 tower = { version = "0.5", features = ["util"] }
 # Capture log output (tracing events and bridged `log` records, as the
 # daemon's subscriber does) in the node socket's no-secrets-in-logs test.
