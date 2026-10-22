@@ -32,8 +32,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::granted_http::{
     body_framing, declared_content_length_over_cap, parse_request_head, query_param,
-    transfer_encoding_is_chunked, BodyFraming, ChunkedDecoder, ChunkedError, FramingError,
-    HeadError, HeadParse, RequestHead, MAX_CHUNK_LINE_BYTES, MAX_HEAD_BYTES,
+    transfer_encoding_is_chunked, BodyError, BodyReader, FramingError, HeadError, HeadParse,
+    RequestHead, MAX_HEAD_BYTES,
 };
 
 /// Largest `/events/publish` request body: a base64 payload at
@@ -1349,105 +1349,57 @@ async fn write_plugin_error<S: AsyncWrite + Unpin>(
 
 /// The HTTP status a failed body read owes the guest, when the failure is the
 /// guest's: `413` for a body over the route's cap, `400` for a body the channel
-/// cannot frame or decode (bad `Content-Length`, bad chunk size, truncated
-/// chunked body, early EOF). Host-side failures return `None` and propagate.
+/// cannot frame or decode or that ended early. Host-side failures (socket
+/// errors, a closed destination) return `None` and propagate.
 fn body_error_response(err: &anyhow::Error) -> Option<(u16, String)> {
-    let message = err.to_string();
-    if message.contains("payload_too_large") {
-        return Some((413, "payload too large".to_string()));
+    if let Some(err) = err.downcast_ref::<BodyError>() {
+        return Some(match err {
+            BodyError::TooLarge { .. } => (413, "payload too large".to_string()),
+            BodyError::Framing(_) | BodyError::Chunked(_) | BodyError::Truncated => {
+                (400, format!("malformed body: {err}"))
+            }
+        });
     }
-    let guest_fault = err.downcast_ref::<FramingError>().is_some()
-        || err.downcast_ref::<ChunkedError>().is_some()
-        || message.contains("truncated chunked body")
-        || message.contains("early EOF before Content-Length")
-        || message.contains("body exceeded Content-Length");
-    guest_fault.then(|| (400, format!("malformed body: {message}")))
+    err.downcast_ref::<FramingError>()
+        .map(|err| (400, format!("malformed body: {err}")))
 }
 
-/// Streams a request body to the `/put` destination as framed by `headers`.
+/// Streams a request body to the `/put` destination as framed by `headers`,
+/// driving the sans-IO [`BodyReader`] from the socket.
 ///
 /// # Errors
 ///
-/// Returns the framing or chunk-decoding error (downcastable to
-/// [`FramingError`] / [`ChunkedError`]), a truncation error when the stream
-/// ends early, or the I/O error from `stream`; the caller reports those to the
-/// guest via [`body_error_response`] and to the destination as an `Err` chunk.
+/// Returns the [`BodyError`] (downcastable) for a body the guest framed,
+/// encoded or ended wrongly, or the I/O error from `stream`; the caller
+/// reports the former to the guest via [`body_error_response`] and to the
+/// destination as an `Err` chunk.
 pub(crate) async fn pump_http_body<S: AsyncRead + Unpin>(
     stream: &mut S,
     headers: &[(String, String)],
     prefix: Vec<u8>,
     body_tx: &mpsc::Sender<Result<Vec<u8>, String>>,
 ) -> Result<()> {
-    match body_framing(headers)? {
-        BodyFraming::Chunked => {
-            let mut decoder = ChunkedDecoder::new();
-            let mut buf = prefix;
-            let mut out = Vec::new();
-            loop {
-                let progress = decoder.decode(&buf, &mut out)?;
-                buf.drain(..progress.consumed);
-                if !out.is_empty() {
-                    body_tx
-                        .send(Ok(std::mem::take(&mut out)))
-                        .await
-                        .context("granted put body closed")?;
-                }
-                if progress.done {
-                    return Ok(());
-                }
-                let mut tmp = [0u8; 64 * 1024];
-                let n = stream.read(&mut tmp).await?;
-                if n == 0 {
-                    bail!("truncated chunked body");
-                }
-                buf.extend_from_slice(&tmp[..n]);
-            }
+    let mut reader = BodyReader::new(headers)?;
+    let mut input = prefix;
+    let mut tmp = vec![0u8; 64 * 1024];
+    loop {
+        let mut out = Vec::new();
+        let done = reader.push(&input, &mut out)?;
+        if !out.is_empty() {
+            body_tx
+                .send(Ok(out))
+                .await
+                .context("granted put body closed")?;
         }
-        BodyFraming::Length(len) => {
-            if prefix.len() > len {
-                bail!("body exceeded Content-Length");
-            }
-            let mut remaining = len.saturating_sub(prefix.len());
-            if !prefix.is_empty() {
-                body_tx
-                    .send(Ok(prefix))
-                    .await
-                    .context("granted put body closed")?;
-            }
-            let mut buf = vec![0u8; 64 * 1024];
-            while remaining > 0 {
-                let want = remaining.min(buf.len());
-                let n = stream.read(&mut buf[..want]).await?;
-                if n == 0 {
-                    bail!("early EOF before Content-Length");
-                }
-                remaining -= n;
-                body_tx
-                    .send(Ok(buf[..n].to_vec()))
-                    .await
-                    .context("granted put body closed")?;
-            }
-            Ok(())
+        if done {
+            return Ok(());
         }
-        BodyFraming::UntilEof => {
-            if !prefix.is_empty() {
-                body_tx
-                    .send(Ok(prefix))
-                    .await
-                    .context("granted put body closed")?;
-            }
-            let mut buf = vec![0u8; 64 * 1024];
-            loop {
-                let n = stream.read(&mut buf).await?;
-                if n == 0 {
-                    return Ok(());
-                }
-                body_tx
-                    .send(Ok(buf[..n].to_vec()))
-                    .await
-                    .context("granted put body closed")?;
-            }
+        let n = stream.read(&mut tmp).await?;
+        if n == 0 {
+            reader.finish()?;
+            return Ok(());
         }
+        input = tmp[..n].to_vec();
     }
 }
 
@@ -1494,75 +1446,34 @@ async fn read_request_head<S: AsyncRead + Unpin>(
     }
 }
 
-/// Reads a whole request body of at most `max_bytes` decoded bytes.
+/// Reads a whole request body of at most `max_bytes` decoded bytes, driving
+/// the sans-IO [`BodyReader`] from the socket.
 ///
-/// Chunked bodies are decoded, and the cap applies to the decoded body as
-/// well as to the bytes buffered while decoding it. Errors whose message
-/// starts with `payload_too_large` map to HTTP 413 at the call sites.
+/// # Errors
+///
+/// Returns the [`BodyError`] (downcastable; `TooLarge` past the cap) or the
+/// I/O error from `stream`.
 async fn read_content<S: AsyncRead + Unpin>(
     stream: &mut S,
     headers: &[(String, String)],
-    mut prefix: Vec<u8>,
+    prefix: Vec<u8>,
     max_bytes: u32,
 ) -> Result<Vec<u8>> {
     let cap = usize::try_from(max_bytes).unwrap_or(usize::MAX);
-    match body_framing(headers)? {
-        BodyFraming::Length(len) => {
-            if len > cap {
-                bail!("payload_too_large: Content-Length {len} exceeds {cap}");
-            }
-            while prefix.len() < len {
-                let mut tmp = vec![0u8; (len - prefix.len()).min(64 * 1024)];
-                let n = stream.read(&mut tmp).await?;
-                if n == 0 {
-                    break;
-                }
-                prefix.extend_from_slice(&tmp[..n]);
-                if prefix.len() > cap {
-                    bail!("payload_too_large: body exceeded {cap}");
-                }
-            }
-            prefix.truncate(len);
-            Ok(prefix)
+    let mut reader = BodyReader::new(headers)?.with_cap(cap);
+    let mut body = Vec::new();
+    let mut input = prefix;
+    let mut tmp = vec![0u8; 64 * 1024];
+    loop {
+        if reader.push(&input, &mut body)? {
+            return Ok(body);
         }
-        BodyFraming::Chunked => {
-            let mut decoder = ChunkedDecoder::new();
-            let mut buf = prefix;
-            let mut body = Vec::new();
-            loop {
-                let progress = decoder.decode(&buf, &mut body)?;
-                buf.drain(..progress.consumed);
-                if body.len() > cap || buf.len() > cap.saturating_add(MAX_CHUNK_LINE_BYTES) {
-                    bail!("payload_too_large: body exceeded {cap}");
-                }
-                if progress.done {
-                    return Ok(body);
-                }
-                let mut tmp = [0u8; 64 * 1024];
-                let n = stream.read(&mut tmp).await?;
-                if n == 0 {
-                    bail!("truncated chunked body");
-                }
-                buf.extend_from_slice(&tmp[..n]);
-            }
+        let n = stream.read(&mut tmp).await?;
+        if n == 0 {
+            reader.finish()?;
+            return Ok(body);
         }
-        BodyFraming::UntilEof => {
-            while prefix.len() <= cap {
-                let mut tmp = [0u8; 64 * 1024];
-                let n = stream.read(&mut tmp).await?;
-                if n == 0 {
-                    break;
-                }
-                prefix.extend_from_slice(&tmp[..n]);
-                if prefix.len() > cap {
-                    bail!("payload_too_large: body exceeded {cap}");
-                }
-            }
-            if prefix.len() > cap {
-                bail!("payload_too_large: body exceeded {cap}");
-            }
-            Ok(prefix)
-        }
+        input = tmp[..n].to_vec();
     }
 }
 

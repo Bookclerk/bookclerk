@@ -5,8 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use bookclerk_workerd::granted_http::{
-    body_framing, parse_request_head, percent_decode, query_param, BodyFraming, ChunkedDecoder,
-    HeadParse,
+    body_framing, parse_request_head, percent_decode, query_param, BodyError, BodyFraming,
+    BodyReader, ChunkedDecoder, HeadParse,
 };
 
 /// Regular files directly under `fuzz/corpus/granted_http/`, canonicalized
@@ -41,16 +41,28 @@ fn fuzz_corpus_granted_http_does_not_panic() {
         let (_, query) = head.split_query();
         let _ = query_param(query, "key");
         let _ = percent_decode(query);
-        if let Ok(BodyFraming::Chunked) = body_framing(&head.headers) {
+        // A `regression_*` seed pins a body the decoder must refuse; every
+        // other seed is a well-formed request whose body must read to its
+        // declared end, or it no longer covers the path it was written for.
+        let is_regression = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("regression_"));
+        let body = &data[consumed..];
+        let framing = body_framing(&head.headers).expect("seed framing");
+        // The route body reader must agree with itself whole and byte by byte.
+        let whole = drive(framing, std::iter::once(body));
+        let bytewise = drive(framing, body.chunks(1));
+        assert_eq!(whole, bytewise, "{}", path.display());
+        match (&whole.1, framing) {
+            (Ok(()), BodyFraming::Length(len)) => assert_eq!(whole.0, &body[..len]),
+            (Ok(()), BodyFraming::UntilEof) => assert_eq!(whole.0, body),
+            (Ok(()), BodyFraming::Chunked) => assert!(!is_regression, "{}", path.display()),
+            (Err(_), _) => assert!(is_regression, "{}", path.display()),
+        }
+        if framing == BodyFraming::Chunked {
             let mut decoder = ChunkedDecoder::new();
             let mut out = Vec::new();
-            // A `regression_*` seed pins a body the decoder must refuse; every
-            // other chunked seed is a well-formed body that must decode to its
-            // last chunk, or it no longer covers the path it was written for.
-            let is_regression = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("regression_"));
             match decoder.decode(&data[consumed..], &mut out) {
                 Ok(progress) => {
                     assert!(
@@ -72,6 +84,27 @@ fn fuzz_corpus_granted_http_does_not_panic() {
             }
         }
     }
+}
+
+/// Feeds `pieces` to a fresh uncapped reader, then end of stream.
+fn drive<'a>(
+    framing: BodyFraming,
+    pieces: impl Iterator<Item = &'a [u8]>,
+) -> (Vec<u8>, Result<(), BodyError>) {
+    let mut reader = BodyReader::for_framing(framing);
+    let mut out = Vec::new();
+    for piece in pieces {
+        match reader.push(piece, &mut out) {
+            Ok(true) => return (out, Ok(())),
+            Ok(false) => {}
+            Err(err) => return (out, Err(err)),
+        }
+    }
+    if let Err(err) = reader.push(&[], &mut out) {
+        return (out, Err(err));
+    }
+    let verdict = reader.finish();
+    (out, verdict)
 }
 
 /// The two regressions the corpus pins: a split UTF-8 escape in the query

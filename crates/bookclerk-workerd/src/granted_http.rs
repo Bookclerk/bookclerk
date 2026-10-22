@@ -552,9 +552,283 @@ fn hex_pair(hi: u8, lo: u8) -> Option<u8> {
     u8::try_from(hi * 16 + lo).ok()
 }
 
+/// Why a request body was rejected or cut short.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyError {
+    /// The framing headers were malformed or ambiguous.
+    Framing(FramingError),
+    /// The chunked framing was malformed.
+    Chunked(ChunkedError),
+    /// The body (declared or received) exceeds the route's byte cap.
+    TooLarge {
+        /// The cap the body ran past, in bytes.
+        cap: usize,
+    },
+    /// The stream ended before the declared `Content-Length` or the
+    /// terminating chunk.
+    Truncated,
+}
+
+impl fmt::Display for BodyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Framing(err) => err.fmt(f),
+            Self::Chunked(err) => err.fmt(f),
+            Self::TooLarge { cap } => write!(f, "body exceeds {cap} bytes"),
+            Self::Truncated => f.write_str("body ended before its declared end"),
+        }
+    }
+}
+
+impl std::error::Error for BodyError {}
+
+impl From<FramingError> for BodyError {
+    fn from(err: FramingError) -> Self {
+        Self::Framing(err)
+    }
+}
+
+impl From<ChunkedError> for BodyError {
+    fn from(err: ChunkedError) -> Self {
+        Self::Chunked(err)
+    }
+}
+
+/// Sans-IO reader for one request body under its declared framing.
+///
+/// [`crate::granted`] feeds it whatever bytes arrive on the socket and sends
+/// or collects what it yields; the `granted_http` fuzz target and the corpus
+/// replay feed it the same bytes in arbitrary splits. Framing dispatch, the
+/// route's byte cap and end-of-stream handling therefore run through one
+/// code path for all three (`docs/adr/untrusted-input-fuzzing.md`).
+///
+/// A `Content-Length` body yields its first `len` bytes and ignores anything
+/// after them (the connection closes after one request). A chunked body is
+/// decoded incrementally; a read-until-EOF body yields every byte and is
+/// done only at [`Self::finish`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BodyReader {
+    /// How the request framed its body.
+    framing: BodyFraming,
+    /// Route byte cap on the decoded body, when the route has one.
+    cap: Option<usize>,
+    /// Decoded body bytes yielded so far.
+    yielded: usize,
+    /// Undecoded chunked framing bytes awaiting more input.
+    pending: Vec<u8>,
+    /// Chunked decoder state; unused for the other framings.
+    chunked: ChunkedDecoder,
+    /// True once the body is complete.
+    done: bool,
+}
+
+impl BodyReader {
+    /// Starts a reader for the body `headers` describe.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BodyError::Framing`] when the framing headers are malformed
+    /// or ambiguous.
+    pub fn new(headers: &[(String, String)]) -> Result<Self, BodyError> {
+        Ok(Self::for_framing(body_framing(headers)?))
+    }
+
+    /// Starts a reader for an already decided framing.
+    #[must_use]
+    pub fn for_framing(framing: BodyFraming) -> Self {
+        Self {
+            framing,
+            cap: None,
+            yielded: 0,
+            pending: Vec::new(),
+            chunked: ChunkedDecoder::new(),
+            done: matches!(framing, BodyFraming::Length(0)),
+        }
+    }
+
+    /// Caps the decoded body at `cap` bytes; a body that declares or
+    /// delivers more fails with [`BodyError::TooLarge`].
+    #[must_use]
+    pub fn with_cap(mut self, cap: usize) -> Self {
+        self.cap = Some(cap);
+        self
+    }
+
+    /// The framing this reader follows.
+    #[must_use]
+    pub fn framing(&self) -> BodyFraming {
+        self.framing
+    }
+
+    /// True once the body is complete (a read-until-EOF body only after
+    /// [`Self::finish`]).
+    #[must_use]
+    pub fn is_done(&self) -> bool {
+        self.done
+    }
+
+    /// Feeds the next bytes from the stream, appending decoded body bytes to
+    /// `out`.
+    ///
+    /// # Returns
+    ///
+    /// `true` once the body is complete; later input is ignored.
+    ///
+    /// # Errors
+    ///
+    /// [`BodyError::TooLarge`] when the declared or received body passes the
+    /// cap, or [`BodyError::Chunked`] on malformed chunked framing. Either
+    /// error is final.
+    pub fn push(&mut self, input: &[u8], out: &mut Vec<u8>) -> Result<bool, BodyError> {
+        if self.done {
+            return Ok(true);
+        }
+        match self.framing {
+            BodyFraming::Length(len) => {
+                self.check_cap(len)?;
+                let take = input.len().min(len - self.yielded);
+                out.extend_from_slice(&input[..take]);
+                self.yielded += take;
+                self.done = self.yielded == len;
+            }
+            BodyFraming::UntilEof => {
+                let total = self.yielded.saturating_add(input.len());
+                self.check_cap(total)?;
+                out.extend_from_slice(input);
+                self.yielded = total;
+            }
+            BodyFraming::Chunked => {
+                self.pending.extend_from_slice(input);
+                let before = out.len();
+                let decoded = self.chunked.decode(&self.pending, out);
+                let yielded = self.yielded.saturating_add(out.len() - before);
+                // The cap is judged on the bytes decoded so far, before any
+                // framing error further into this push, so the verdict does
+                // not depend on how the stream was split: a reader fed one
+                // byte at a time hits the cap before it sees the bad framing.
+                // Nothing past the cap is yielded: the bytes this call
+                // decoded are taken back. Framing bytes the decoder has not
+                // consumed yet are bounded by the longest chunk line, so
+                // `pending` cannot grow without bound. Bytes after the
+                // terminating chunk belong to the connection, not the body.
+                if let Err(err) = self.check_cap(yielded) {
+                    out.truncate(before);
+                    return Err(err);
+                }
+                // Bytes decoded ahead of a framing error stay in `out`: they
+                // are exactly what a reader fed smaller pieces had already
+                // yielded, and the caller discards the body on any error.
+                let progress = decoded?;
+                self.pending.drain(..progress.consumed);
+                self.yielded = yielded;
+                self.done = progress.done;
+                if self.done {
+                    self.pending.clear();
+                }
+            }
+        }
+        Ok(self.done)
+    }
+
+    /// Reports end of stream.
+    ///
+    /// # Errors
+    ///
+    /// [`BodyError::Truncated`] when a `Content-Length` or chunked body is
+    /// incomplete. A read-until-EOF body completes here.
+    pub fn finish(&mut self) -> Result<(), BodyError> {
+        match self.framing {
+            BodyFraming::UntilEof => {
+                self.done = true;
+                Ok(())
+            }
+            BodyFraming::Length(_) | BodyFraming::Chunked => {
+                if self.done {
+                    Ok(())
+                } else {
+                    Err(BodyError::Truncated)
+                }
+            }
+        }
+    }
+
+    /// Fails when `bytes` passes the route cap.
+    fn check_cap(&self, bytes: usize) -> Result<(), BodyError> {
+        match self.cap {
+            Some(cap) if bytes > cap => Err(BodyError::TooLarge { cap }),
+            _ => Ok(()),
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::missing_panics_doc)]
 mod tests {
+    #[test]
+    fn body_reader_follows_each_framing_and_its_cap() {
+        let h = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).into(), (*v).into()))
+                .collect()
+        };
+        // Content-Length: exactly len bytes, extras ignored, EOF early is an error.
+        let mut r = BodyReader::new(&h(&[("Content-Length", "5")])).unwrap();
+        let mut out = Vec::new();
+        assert!(!r.push(b"hel", &mut out).unwrap());
+        assert_eq!(r.finish(), Err(BodyError::Truncated));
+        assert!(r.push(b"lo!!", &mut out).unwrap());
+        assert_eq!(out, b"hello");
+        assert_eq!(r.finish(), Ok(()));
+        let mut r = BodyReader::new(&h(&[("Content-Length", "5")]))
+            .unwrap()
+            .with_cap(4);
+        assert_eq!(
+            r.push(b"", &mut Vec::new()),
+            Err(BodyError::TooLarge { cap: 4 })
+        );
+        // Until EOF: everything, done at finish, capped.
+        let mut r = BodyReader::new(&h(&[])).unwrap().with_cap(6);
+        let mut out = Vec::new();
+        assert!(!r.push(b"abc", &mut out).unwrap());
+        assert!(!r.push(b"def", &mut out).unwrap());
+        assert_eq!(r.finish(), Ok(()));
+        assert!(r.is_done());
+        assert_eq!(out, b"abcdef");
+        let mut r = BodyReader::new(&h(&[])).unwrap().with_cap(6);
+        assert_eq!(
+            r.push(b"abcdefg", &mut Vec::new()),
+            Err(BodyError::TooLarge { cap: 6 })
+        );
+        // Chunked: decoded across splits, truncated at EOF, capped on output.
+        let mut r = BodyReader::new(&h(&[("Transfer-Encoding", "chunked")])).unwrap();
+        let mut out = Vec::new();
+        assert!(!r.push(b"5\r\nhel", &mut out).unwrap());
+        assert_eq!(r.finish(), Err(BodyError::Truncated));
+        assert!(!r.push(b"lo\r", &mut out).unwrap());
+        assert!(r.push(b"\n0\r\n\r\n", &mut out).unwrap());
+        assert_eq!(out, b"hello");
+        assert_eq!(r.finish(), Ok(()));
+        let mut r = BodyReader::new(&h(&[("Transfer-Encoding", "chunked")]))
+            .unwrap()
+            .with_cap(3);
+        let mut out = b"kept".to_vec();
+        assert_eq!(
+            r.push(b"5\r\nhello\r\n", &mut out),
+            Err(BodyError::TooLarge { cap: 3 })
+        );
+        assert_eq!(out, b"kept", "nothing past the cap is yielded");
+        let mut r = BodyReader::new(&h(&[("Transfer-Encoding", "chunked")])).unwrap();
+        assert_eq!(
+            r.push(b"zz\r\n", &mut Vec::new()),
+            Err(BodyError::Chunked(ChunkedError::BadChunkSize))
+        );
+        assert_eq!(
+            BodyReader::new(&h(&[("Content-Length", "+1")])).err(),
+            Some(BodyError::Framing(FramingError::BadContentLength))
+        );
+    }
+
     use super::*;
 
     fn head(buf: &[u8]) -> (RequestHead, usize) {

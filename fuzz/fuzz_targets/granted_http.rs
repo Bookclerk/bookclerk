@@ -3,15 +3,18 @@
 //! string, every byte of which a plugin isolate controls.
 //!
 //! Oracles: no panic; a chunked body decodes to the same bytes whether it is
-//! fed whole or split; and whenever an `httparse`-based reference decoder
-//! completes a chunked body, ours completes it with identical bytes.
+//! fed whole or split; whenever an `httparse`-based reference decoder
+//! completes a chunked body, ours completes it with identical bytes; and the
+//! route body reader (`BodyReader`: framing dispatch, byte cap, end of
+//! stream) yields the same bytes and verdict under any input split and
+//! matches the framing the head declared.
 
 #![no_main]
 
 use bookclerk_workerd::granted_http::{
     body_framing, declared_content_length_over_cap, parse_request_head, percent_decode,
-    query_param, transfer_encoding_is_chunked, BodyFraming, ChunkedDecoder, HeadParse,
-    MAX_CHUNK_LINE_BYTES,
+    query_param, transfer_encoding_is_chunked, BodyError, BodyFraming, BodyReader,
+    ChunkedDecoder, HeadParse, MAX_CHUNK_LINE_BYTES,
 };
 use bookclerk_workerd::socket_proxy::parse_authority;
 use libfuzzer_sys::fuzz_target;
@@ -36,10 +39,94 @@ fuzz_target!(|data: &[u8]| {
     let _ = declared_content_length_over_cap(&head.headers, 16);
     let body = &data[consumed..];
     match body_framing(&head.headers) {
-        Ok(BodyFraming::Chunked) => check_chunked(body),
-        Ok(BodyFraming::Length(_) | BodyFraming::UntilEof) | Err(_) => {}
+        Ok(framing) => {
+            if framing == BodyFraming::Chunked {
+                check_chunked(body);
+            }
+            check_body_reader(framing, body);
+        }
+        Err(err) => assert_eq!(
+            BodyReader::new(&head.headers).err(),
+            Some(BodyError::Framing(err))
+        ),
     }
 });
+
+/// Drives the route body reader whole and in input-chosen pieces, with and
+/// without a cap, and checks the result against what the framing promises.
+fn check_body_reader(framing: BodyFraming, body: &[u8]) {
+    let cap = body
+        .first()
+        .map(|b| usize::from(*b).saturating_mul(16))
+        .filter(|cap| cap % 3 != 0);
+    let (out, verdict) = drive(framing, cap, std::iter::once(body));
+    let step = body.get(1).map_or(7, |b| usize::from(*b) + 1);
+    let (piece_out, piece_verdict) = drive(framing, cap, body.chunks(step));
+    assert_eq!(verdict, piece_verdict, "split changed the body reader's verdict");
+    if let Some(cap) = cap {
+        assert!(out.len() <= cap, "yielded past the cap");
+        assert!(piece_out.len() <= cap, "yielded past the cap");
+        if verdict == Err(BodyError::TooLarge { cap }) {
+            // How much was yielded before the cap tripped depends on the
+            // split; the server discards it either way.
+            return;
+        }
+    }
+    assert_eq!(out, piece_out, "split changed the yielded body");
+    match framing {
+        BodyFraming::Length(len) => {
+            if body.len() >= len {
+                assert_eq!(verdict, Ok(()));
+                assert_eq!(out, &body[..len]);
+            } else {
+                assert_eq!(verdict, Err(BodyError::Truncated));
+                assert_eq!(out, body);
+            }
+        }
+        BodyFraming::UntilEof => {
+            assert_eq!(verdict, Ok(()));
+            assert_eq!(out, body);
+        }
+        BodyFraming::Chunked => {
+            if let Some(reference) = reference_chunked(body) {
+                assert_eq!(verdict, Ok(()), "reference completed; reader must too");
+                assert_eq!(out, reference);
+            }
+            if verdict.is_ok() {
+                assert!(ChunkedDecoder::new()
+                    .decode(body, &mut Vec::new())
+                    .is_ok_and(|p| p.done));
+            }
+        }
+    }
+}
+
+/// Feeds `pieces` to a fresh reader, then end of stream; returns what it
+/// yielded and its final verdict.
+fn drive<'a>(
+    framing: BodyFraming,
+    cap: Option<usize>,
+    pieces: impl Iterator<Item = &'a [u8]>,
+) -> (Vec<u8>, Result<(), BodyError>) {
+    let mut reader = BodyReader::for_framing(framing);
+    if let Some(cap) = cap {
+        reader = reader.with_cap(cap);
+    }
+    let mut out = Vec::new();
+    for piece in pieces {
+        match reader.push(piece, &mut out) {
+            Ok(true) => return (out, Ok(())),
+            Ok(false) => {}
+            Err(err) => return (out, Err(err)),
+        }
+    }
+    // An empty body never reaches `push`; the reader must still judge it.
+    if let Err(err) = reader.push(&[], &mut out) {
+        return (out, Err(err));
+    }
+    let verdict = reader.finish();
+    (out, verdict)
+}
 
 /// Decodes `body` whole and in pieces, and against the reference.
 fn check_chunked(body: &[u8]) {
