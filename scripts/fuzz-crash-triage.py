@@ -21,10 +21,10 @@ replaces those public paths with three private steps:
   frames of their stack.
 - ``file`` runs on the runner with the automation App token. It maps each
   unique crash to its boundary (``fuzz/boundaries.toml``) for a default
-  severity and files it: a draft repository security advisory when a
-  shipped Bookclerk release contains the crashing code, otherwise an issue
-  that names the target and crash class only. Crashes already on record
-  (by signature marker) are skipped.
+  severity and files it: a draft repository security advisory for a crash
+  in shipped code (drafts are private to maintainers, so this holds before
+  the first release too), or an issue for a failed test oracle. Crashes
+  already on record (by signature marker) are skipped.
 
 The workflow seals the crash files, the logs and the triage output with the
 FUZZ_CRASH_BUNDLE_KEY secret (`scripts/osv-remediation-bundle.sh`) before
@@ -48,6 +48,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
@@ -94,6 +95,17 @@ MARKER_PREFIX = "<!-- fuzz-crash-signature: "
 MARKER_SUFFIX = " -->"
 # Label on every issue this script opens.
 ISSUE_LABEL = "fuzz-crash"
+
+# Bounds of the part of a draft advisory the automation owns. A later run that
+# finds the same problem rewrites only this part of a draft (never a closed
+# or published advisory), so a maintainer's notes outside it survive.
+AUTO_BEGIN = "<!-- bookclerk-auto: begin (rewritten by automation while this is a draft) -->"
+AUTO_END = "<!-- bookclerk-auto: end -->"
+
+# Lines inside the automated part that change on every run (the commit and
+# run that last saw the problem). They are refreshed only together with a
+# real change, so an unchanged finding does not rewrite its draft daily.
+VOLATILE_PREFIX = "Last seen: "
 
 # Function names (exact) and name prefixes of frames that are runtime,
 # sanitizer, fuzzer or standard-library plumbing rather than the code under
@@ -576,6 +588,93 @@ def cwe_for(kind: str) -> str:
     return DEFAULT_MEMORY_CWE
 
 
+def auto_section(lines: list[str]) -> list[str]:
+    """Wraps generated description lines in the automation's bounds.
+
+    Args:
+        lines: The generated part of a description.
+
+    Returns:
+        The lines between ``AUTO_BEGIN`` and ``AUTO_END``.
+    """
+    return [AUTO_BEGIN, *lines, AUTO_END]
+
+
+def _stable(section: str) -> str:
+    """Drops the volatile lines of an automated section for comparison."""
+    return "\n".join(line for line in section.splitlines() if not line.startswith(VOLATILE_PREFIX)).strip()
+
+
+def splice_auto(existing: str, generated: str, markers: Iterable[str] = ()) -> str | None:
+    """Replaces the automated part of a draft's description.
+
+    Args:
+        existing: The draft's current description.
+        generated: A freshly rendered description holding one automated part.
+        markers: Marker lines the description must carry (new upstream
+            aliases); missing ones are added at the top.
+
+    Returns:
+        The new description, or None when nothing but volatile lines would
+        change, or the existing description has no automated part (written
+        by hand or by an older version of the automation: left alone).
+    """
+    start, end = existing.find(AUTO_BEGIN), existing.find(AUTO_END)
+    new_start, new_end = generated.find(AUTO_BEGIN), generated.find(AUTO_END)
+    if start < 0 or end < start or new_start < 0 or new_end < new_start:
+        return None
+    old = existing[start : end + len(AUTO_END)]
+    new = generated[new_start : new_end + len(AUTO_END)]
+    missing = [m for m in markers if m not in existing]
+    if _stable(old) == _stable(new) and not missing:
+        return None
+    head = "".join(f"{m}\n" for m in missing)
+    return head + existing[:start] + new + existing[end + len(AUTO_END) :]
+
+
+def draft_changes(draft: dict[str, Any], body: dict[str, Any], markers: Iterable[str] = ()) -> dict[str, Any]:
+    """Computes the update that brings an open draft up to date.
+
+    Only the automation's own part of the description is rewritten
+    (``splice_auto``), plus any affected range that is still unset when the
+    fresh body proposes one (a release has been published since). Severity,
+    summary, CWE ids, a range a maintainer set and text outside the
+    automated part stay as they are.
+
+    Args:
+        draft: The open draft, as listed by the API.
+        body: A freshly rendered advisory request body.
+        markers: Marker lines the description must carry.
+
+    Returns:
+        The fields to PATCH; empty when the draft is current.
+    """
+    changes: dict[str, Any] = {}
+    description = splice_auto(str(draft.get("description") or ""), body["description"], markers)
+    if description is not None:
+        changes["description"] = description
+    proposed = {
+        (v["package"]["ecosystem"], v["package"]["name"]): v["vulnerable_version_range"]
+        for v in body.get("vulnerabilities") or []
+        if v.get("vulnerable_version_range")
+    }
+    filled = False
+    vulnerabilities = []
+    for vuln in draft.get("vulnerabilities") or []:
+        entry = {
+            k: vuln.get(k) for k in ("package", "vulnerable_version_range", "patched_versions", "vulnerable_functions")
+        }
+        package = vuln.get("package") or {}
+        new_range = proposed.get((package.get("ecosystem"), package.get("name")))
+        if new_range and not vuln.get("vulnerable_version_range"):
+            entry["vulnerable_version_range"] = new_range
+            filled = True
+        vulnerabilities.append(entry)
+    if filled:
+        changes["vulnerabilities"] = vulnerabilities
+    return changes
+
+
 def marker(sig: str) -> str:
     """Returns the body marker for a crash signature.
 
@@ -625,22 +724,18 @@ class Finding:
     duplicates: int = 0
 
 
-def route(finding: Finding, release_tag: str | None) -> str:
+def route(finding: Finding) -> str:
     """Decides how a finding is filed.
 
     Args:
         finding: The crash.
-        release_tag: Tag of the latest published release, or None when
-            Bookclerk has no release yet.
 
     Returns:
-        ``advisory`` for a crash in shipped code when a release exists;
-        ``issue`` otherwise (failed oracles, and every crash before the
-        first release, when no shipped artifact can be affected).
+        ``advisory`` for a crash in shipped code, released or not (a draft
+        is private, and filing before the first release proves the path);
+        ``issue`` for a failed test oracle, which is not a vulnerability.
     """
-    if finding.oracle or release_tag is None:
-        return "issue"
-    return "advisory"
+    return "issue" if finding.oracle else "advisory"
 
 
 # ---------------------------------------------------------------------------
@@ -672,17 +767,15 @@ def kind_title(kind: str) -> str:
 
 
 def render_issue(finding: Finding, boundary: Boundary | None, run_url: str, bundle: str) -> tuple[str, str]:
-    """Renders the public issue for a finding.
+    """Renders the public issue for a failed test oracle.
 
-    A failed test oracle is not a vulnerability, so its issue names the
-    target, its boundary and the default severity. Any other crash may be
-    one, so its issue (filed only while Bookclerk has no release) names
-    nothing but the signature: no target, class or severity that would point
-    at unfixed code on ``main``. Neither ever carries the stack, the panic
-    message or the input; those are in the sealed bundle.
+    A failed oracle is not a vulnerability (every other crash goes to a
+    private draft advisory), so its issue names the target and its boundary.
+    It never carries the stack, the panic message or the input; those are in
+    the sealed bundle.
 
     Args:
-        finding: The crash.
+        finding: The crash (a failed oracle).
         boundary: Its boundary, or None when the map lacks the target.
         run_url: URL of the workflow run.
         bundle: Name of the sealed triage artifact of that run.
@@ -696,47 +789,31 @@ def render_issue(finding: Finding, boundary: Boundary | None, run_url: str, bund
         f"`{bundle}` artifact of {run_url} (open it with",
         "`BUNDLE_KEY=<FUZZ_CRASH_BUNDLE_KEY> scripts/osv-remediation-bundle.sh open sealed.bin <dir>`).",
     ]
-    if finding.oracle:
-        where = boundary.description if boundary else "not in fuzz/boundaries.toml"
-        crate = boundary.crate if boundary else "unknown"
-        title = f"Fuzz oracle failure in `{finding.target}`"
-        lines = [
-            marker(finding.signature),
-            "",
-            f"A test oracle of the `{finding.target}` fuzz target failed in the scheduled",
-            "fuzzing run: a bug in the code under test or in the oracle.",
-            "",
-            f"- Boundary: {where} (`{crate}`)",
-            f"- Signature: `{short}`",
-            "",
-            *where_details,
-            "",
-            "Fix it, then land the minimized input as",
-            f"`fuzz/corpus/{finding.target}/regression_<name>` in the fixing pull request",
-            "(docs/ci.md#fuzzing).",
-        ]
-    else:
-        title = f"Fuzz crash `{short}` from the scheduled run"
-        lines = [
-            marker(finding.signature),
-            "",
-            "The scheduled fuzzing run found a reproducible crash. It may be a",
-            "vulnerability, so this issue does not say where: handle it as a",
-            "security report (docs/ci.md#fuzzing).",
-            "",
-            *where_details,
-            "",
-            "No advisory was filed because Bookclerk has no published release.",
-            "Land the minimized input as `fuzz/corpus/<target>/regression_<name>`",
-            "in the fixing pull request.",
-        ]
+    where = boundary.description if boundary else "not in fuzz/boundaries.toml"
+    crate = boundary.crate if boundary else "unknown"
+    title = f"Fuzz oracle failure in `{finding.target}`"
+    lines = [
+        marker(finding.signature),
+        "",
+        f"A test oracle of the `{finding.target}` fuzz target failed in the scheduled",
+        "fuzzing run: a bug in the code under test or in the oracle.",
+        "",
+        f"- Boundary: {where} (`{crate}`)",
+        f"- Signature: `{short}`",
+        "",
+        *where_details,
+        "",
+        "Fix it, then land the minimized input as",
+        f"`fuzz/corpus/{finding.target}/regression_<name>` in the fixing pull request",
+        "(docs/ci.md#fuzzing).",
+    ]
     return title, "\n".join(lines) + "\n"
 
 
 def render_advisory(
     finding: Finding,
     boundary: Boundary | None,
-    release_tag: str,
+    release_tag: str | None,
     commit: str,
     run_url: str,
     bundle: str,
@@ -752,7 +829,8 @@ def render_advisory(
         boundary: Its boundary, or None when the map lacks the target (then
             the host binaries are named as affected).
         release_tag: Newest published release tag (the top of the proposed
-            affected range).
+            affected range), or None before the first release (no range is
+            proposed).
         commit: Commit the crash reproduced on.
         run_url: URL of the workflow run.
         bundle: Name of the sealed triage artifact of that run.
@@ -766,14 +844,24 @@ def render_advisory(
     where = boundary.description if boundary else f"`{finding.target}` (not in fuzz/boundaries.toml)"
     crate = boundary.crate if boundary else "unknown"
     input_from = boundary.input_from if boundary else "unknown"
+    if release_tag:
+        scope = [
+            "Filed automatically by the scheduled fuzzing run as a draft. Check the",
+            "severity and the affected range before publishing: the crash reproduced",
+            f"on `main`, and the automation proposes every release up to `{release_tag}`",
+            "without having reproduced it there (it fills the range only while it is",
+            "unset; the range set on this advisory is the one that counts). Narrow it",
+            "(or close this draft) if the bug arrived after that release.",
+        ]
+    else:
+        scope = [
+            "Filed automatically by the scheduled fuzzing run as a draft. The crash",
+            "reproduced on `main`. Bookclerk has no published release yet, so no",
+            "affected range is proposed: fix it before the first release, or set the",
+            "range to the releases that ship the code before publishing.",
+        ]
     lines = [
-        marker(finding.signature),
-        "",
-        "Filed automatically by the scheduled fuzzing run as a draft. Check the",
-        "severity and the affected range before publishing: the crash reproduced",
-        f"on `{commit}`, and the range proposes every release up to `{release_tag}`",
-        "without having reproduced it there. Narrow it (or close this draft) if",
-        "the bug arrived after that release.",
+        *scope,
         "",
         "## Details",
         "",
@@ -804,8 +892,6 @@ def render_advisory(
         lines.append(f"{len(reproducer)} bytes: too large to inline; see the sealed bundle below.")
     lines += [
         "",
-        f"Sealed bundle (stack, logs, reproducer): `{bundle}` artifact of {run_url}.",
-        "",
         "Land the minimized input as",
         f"`fuzz/corpus/{finding.target}/regression_<name>` with the fix.",
     ]
@@ -817,16 +903,21 @@ def render_advisory(
             "Prepare the fix in a temporary private fork (Start a temporary",
             "private fork on this advisory), not in a public pull request.",
         ]
+    lines += [
+        "",
+        f"{VOLATILE_PREFIX}`{commit}`; sealed bundle (stack, logs, reproducer): `{bundle}` artifact of {run_url}.",
+    ]
     vulnerable_functions = [finding.top_function] if finding.top_function else []
+    description = [marker(finding.signature), "", *auto_section(lines), ""]
     return {
         "summary": f"{kind_title(finding.kind).capitalize()} in {crate} ({finding.target})"[:1024],
-        "description": "\n".join(lines) + "\n",
+        "description": "\n".join(description) + "\n",
         "severity": severity,
         "cwe_ids": [cwe_for(finding.kind)],
         "vulnerabilities": [
             {
                 "package": {"ecosystem": a.ecosystem, "name": a.package},
-                "vulnerable_version_range": f"<= {release_tag}",
+                "vulnerable_version_range": f"<= {release_tag}" if release_tag else None,
                 "patched_versions": None,
                 "vulnerable_functions": vulnerable_functions,
             }
@@ -858,6 +949,7 @@ class GitHub:
         self.repo = repo
         self._token = token
         self._api = api
+        self._advisories: list[dict[str, Any]] | None = None
 
     def request(self, method: str, path: str, body: Any = None) -> tuple[int, Any, str]:
         """Sends one request.
@@ -929,14 +1021,16 @@ class GitHub:
         """Returns the tag of the newest published release.
 
         Prereleases count (their binaries are downloadable); drafts do not.
+        Newest means the highest version (``newest_tag``), not the release
+        created last, so a backport cut after a later release does not
+        shrink the proposed affected range.
 
         Returns:
             The tag, or None when the repository has no published release.
         """
-        for release in self.paginate(f"/repos/{self.repo}/releases"):
-            if not release.get("draft"):
-                return str(release["tag_name"])
-        return None
+        return newest_tag(
+            [str(r["tag_name"]) for r in self.paginate(f"/repos/{self.repo}/releases") if not r.get("draft")]
+        )
 
     def known_signatures(self) -> tuple[set[str], set[str]]:
         """Collects the signatures already on record.
@@ -957,9 +1051,31 @@ class GitHub:
                 continue
             issues.update(extract_signatures(issue.get("body") or ""))
         advisories = set()
-        for advisory in self.paginate(f"/repos/{self.repo}/security-advisories"):
+        for advisory in self.advisories():
             advisories.update(extract_signatures(advisory.get("description") or ""))
         return issues, advisories
+
+    def advisories(self) -> list[dict[str, Any]]:
+        """Returns every repository advisory, listed once per client.
+
+        Returns:
+            Advisory objects of every state, as the API lists them.
+        """
+        if self._advisories is None:
+            self._advisories = [
+                a for a in self.paginate(f"/repos/{self.repo}/security-advisories") if isinstance(a, dict)
+            ]
+        return self._advisories
+
+    def drafts(self) -> list[dict[str, Any]]:
+        """Returns the repository advisories still in the draft state.
+
+        Returns:
+            Advisory objects as the API lists them (``ghsa_id``,
+            ``description``, ``vulnerabilities``, ...). Closed and published
+            advisories are never rewritten, so they are left out.
+        """
+        return [a for a in self.advisories() if a.get("state") == "draft"]
 
     def ensure_label(self) -> None:
         """Creates ``ISSUE_LABEL`` unless it exists.
@@ -1004,6 +1120,55 @@ class GitHub:
         """
         _, created, _ = self.request("POST", f"/repos/{self.repo}/security-advisories", body)
         return str(created["ghsa_id"])
+
+    def update_advisory(self, ghsa_id: str, body: dict[str, Any]) -> None:
+        """Updates fields of a draft repository security advisory.
+
+        Args:
+            ghsa_id: The draft's GHSA id.
+            body: The fields to change (``description``, ``vulnerabilities``).
+
+        Raises:
+            OSError: The advisory was not found (or the request failed).
+        """
+        status, _, _ = self.request(
+            "PATCH", f"/repos/{self.repo}/security-advisories/{urllib.parse.quote(ghsa_id)}", body
+        )
+        if status == 404:
+            # `request` returns a 404 instead of raising; a draft deleted
+            # meanwhile, or not visible to the token, is a failed refresh.
+            raise OSError(f"advisory {ghsa_id} not found")
+
+
+_TAG_VERSION = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
+
+
+def newest_tag(tags: list[str]) -> str | None:
+    """Picks the highest semver release tag.
+
+    Args:
+        tags: Published release tags in API order (newest created first).
+
+    Returns:
+        The tag with the highest version in SemVer precedence (a prerelease
+        sorts below its release; pre-release identifiers compare
+        numerically when numeric, as text otherwise, numeric below text, and
+        a shorter list below a longer one with the same prefix); the first
+        tag when none is semver-shaped; None for no tags.
+    """
+    best: tuple[tuple[Any, ...], str] | None = None
+    for tag in tags:
+        match = _TAG_VERSION.match(tag)
+        if match is None:
+            continue
+        major, minor, patch, pre = match.groups()
+        identifiers = tuple((0, int(i), "") if i.isdigit() else (1, 0, i) for i in pre.split(".")) if pre else ()
+        key = (int(major), int(minor), int(patch), 0 if pre else 1, identifiers)
+        if best is None or key > best[0]:
+            best = (key, tag)
+    if best is not None:
+        return best[1]
+    return tags[0] if tags else None
 
 
 def next_link(link_header: str) -> str | None:
@@ -1225,6 +1390,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     os.environ.setdefault("RUST_BACKTRACE", "1")
 
     with open(out / "reproduce.log", "w", encoding="utf-8") as log_handle:
+
         def log(text: str) -> None:
             log_handle.write(text.rstrip("\n") + "\n")
 
@@ -1274,8 +1440,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
             name = f"{sig}.bin"
             (inputs / name).write_bytes(data)
             frames = [
-                f"{f.function} @ {f.location}" if f.location else f.function
-                for f in report.frames[:STACK_FRAMES_KEPT]
+                f"{f.function} @ {f.location}" if f.location else f.function for f in report.frames[:STACK_FRAMES_KEPT]
             ]
             found[sig] = Finding(
                 target=target,
@@ -1295,10 +1460,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         json.dumps([asdict(f) for f in found.values()], indent=2) + "\n", encoding="utf-8"
     )
     _make_readable(out)
-    print(
-        f"{len(files)} crash file(s): {len(found)} unique, {dropped} did not reproduce, "
-        f"{missing} without a binary"
-    )
+    print(f"{len(files)} crash file(s): {len(found)} unique, {dropped} did not reproduce, {missing} without a binary")
     return 0
 
 
@@ -1313,6 +1475,10 @@ def file_findings(
 ) -> dict[str, int]:
     """Files each finding that is not already on record.
 
+    A crash whose draft advisory is still a draft gets that draft's automated
+    part refreshed when it changed (a new reproducer, boundary or severity
+    mapping); a closed or published advisory is left alone.
+
     Args:
         gh: API client with the automation App token.
         findings: Output of ``reproduce``.
@@ -1323,24 +1489,41 @@ def file_findings(
         bundle: Name of the sealed triage artifact.
 
     Returns:
-        Counts by outcome: ``advisory``, ``issue``, ``known``.
+        Counts by outcome: ``advisory``, ``updated``, ``failed`` (a refresh
+        GitHub refused), ``issue``, ``known``.
     """
     release_tag = gh.latest_release_tag()
     issue_sigs, advisory_sigs = gh.known_signatures()
-    counts = {"advisory": 0, "issue": 0, "known": 0}
+    drafts = gh.drafts()
+    counts = {"advisory": 0, "updated": 0, "failed": 0, "issue": 0, "known": 0}
     label_ready = False
     for finding in findings:
         boundary = boundaries.get(finding.target)
-        how = route(finding, release_tag)
+        how = route(finding)
         if how == "advisory":
-            # An issue opened before the first release does not stand in for
-            # the advisory once a release ships the code.
-            if finding.signature in advisory_sigs:
-                counts["known"] += 1
-                continue
-            assert release_tag is not None
+            # An opaque issue filed by an older version of this workflow does
+            # not stand in for the advisory.
             reproducer = (inputs / finding.reproducer).read_bytes()
-            gh.create_advisory(render_advisory(finding, boundary, release_tag, commit, run_url, bundle, reproducer))
+            body = render_advisory(finding, boundary, release_tag, commit, run_url, bundle, reproducer)
+            if finding.signature in advisory_sigs:
+                draft = next(
+                    (d for d in drafts if finding.signature in extract_signatures(d.get("description") or "")), None
+                )
+                changes = draft_changes(draft, body) if draft else {}
+                if draft is None or not changes:
+                    counts["known"] += 1
+                    continue
+                try:
+                    gh.update_advisory(str(draft["ghsa_id"]), changes)
+                except (OSError, ValueError):
+                    # A refused refresh (the draft was just closed, say) must
+                    # not hold back the crashes after it.
+                    counts["failed"] += 1
+                    continue
+                draft.update(changes)
+                counts["updated"] += 1
+                continue
+            gh.create_advisory(body)
             advisory_sigs.add(finding.signature)
         else:
             if finding.signature in issue_sigs or finding.signature in advisory_sigs:
@@ -1380,7 +1563,7 @@ def cmd_file(args: argparse.Namespace) -> int:
     counts = file_findings(gh, findings, boundaries, triage / "inputs", commit, run_url, args.bundle)
     unmapped = sum(1 for f in findings if f.target not in boundaries)
     print(
-        f"{len(findings)} finding(s): {counts['advisory']} draft advisories, {counts['issue']} issues, "
+        f"{len(findings)} finding(s): {counts['advisory']} draft advisories, {counts['updated']} drafts refreshed ({counts['failed']} refused), {counts['issue']} issues, "
         f"{counts['known']} already on record, {unmapped} from targets missing in boundaries.toml"
     )
     return 0
