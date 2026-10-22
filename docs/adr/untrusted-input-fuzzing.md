@@ -38,8 +38,10 @@ inputs their author imagined; a fuzzer supplies the rest.
    confined helper process (`bookclerk-media-worker`, database guests).
 2. **The boundary list is maintained in [`docs/ci.md`](../ci.md#fuzzing).**
    A pull request that adds a boundary, or widens one, adds the target in
-   the same pull request. A review that finds an unfuzzed boundary files an
-   issue labeled `review-followup` and the target lands in a follow-up.
+   the same pull request; a review that finds such a boundary without its
+   target, corpus and replay test blocks on it. Only a pre-existing boundary
+   unrelated to the pull request's scope is deferred: the review files an
+   issue labeled `review-followup` and that target lands in a follow-up.
 3. **Targets assert invariants, not just "no panic".** Where a boundary has
    an authorization or confinement property, the target checks it against
    an independent oracle: for guest SQL, the set of tables and columns a

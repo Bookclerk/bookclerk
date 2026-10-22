@@ -44,12 +44,31 @@ fn fuzz_corpus_granted_http_does_not_panic() {
         if let Ok(BodyFraming::Chunked) = body_framing(&head.headers) {
             let mut decoder = ChunkedDecoder::new();
             let mut out = Vec::new();
-            if let Ok(progress) = decoder.decode(&data[consumed..], &mut out) {
-                assert!(
-                    progress.consumed <= data.len() - consumed,
-                    "{}",
+            // A `regression_*` seed pins a body the decoder must refuse; every
+            // other chunked seed is a well-formed body that must decode to its
+            // last chunk, or it no longer covers the path it was written for.
+            let is_regression = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("regression_"));
+            match decoder.decode(&data[consumed..], &mut out) {
+                Ok(progress) => {
+                    assert!(
+                        progress.consumed <= data.len() - consumed,
+                        "{}",
+                        path.display()
+                    );
+                    assert!(
+                        is_regression || progress.done,
+                        "chunked seed does not complete: {}",
+                        path.display()
+                    );
+                }
+                Err(err) => assert!(
+                    is_regression,
+                    "chunked seed rejected ({err}): {}",
                     path.display()
-                );
+                ),
             }
         }
     }

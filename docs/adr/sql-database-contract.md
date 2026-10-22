@@ -241,7 +241,8 @@ limits is not loaded.
   connections.
 - Non-SQL backends remain unsupported by product policy, not by a
   missing adapter.
-- The SQL-v1 lexer, grammar, guest authorization and adapter lowering are
-  fuzzed per [Untrusted-input fuzzing](untrusted-input-fuzzing.md); the
-  guest-SQL oracle is a real SQLite authorizer whose observed accesses must
-  stay inside the `GuestSqlPolicy`.
+- The SQL-v1 lexer, grammar and adapter lowering are fuzzed per
+  [Untrusted-input fuzzing](untrusted-input-fuzzing.md) (`sql_parse`,
+  `sql_lower`). Guest-SQL authorization against a real SQLite authorizer
+  oracle, whose observed accesses must stay inside the `GuestSqlPolicy`, is
+  still to add and tracked in [`docs/ci.md`](../ci.md#fuzzing).

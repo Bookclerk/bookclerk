@@ -279,7 +279,7 @@ a pull request that adds or widens a boundary extends it.
 | `sql_lower` | Adapter lowering of canonical SQL (`bookclerk-db-exec`) | Quoted strings and comments survive lowering verbatim except documented rewrites |
 | `mp4_parse` | ISO-BMFF parse and remux of store downloads (`bookclerk-mp4`) | — |
 | `granted_http` | Granted reverse channel: request head, body framing, chunked bodies, query string (`bookclerk-workerd::granted_http`) | Split-invariant chunked decoding; agrees with an `httparse` reference decoder |
-| `egress_policy` | Guest egress allowlist (`bookclerk-plugin-manifest::EgressPolicy`, JSON wire form) | Deny allows nothing; loopback/private need a CIDR; `*.suffix` never matches `xsuffix`; percent-encoded hosts never match; JSON round trip |
+| `egress_policy` | Guest egress allowlist (`bookclerk-plugin-manifest::EgressPolicy`, JSON wire form) | Deny allows nothing; loopback/private/metadata need a CIDR in every spelling (trailing dot, fullwidth digits, legacy `127.1` / hex / octal IPv4); `*.suffix` never matches `xsuffix`; percent-encoded hosts never match; JSON round trip |
 | `plugin_manifest` | `plugin.toml` parse, validation, derived egress and consent (`bookclerk-plugin-manifest`) | `format_manifest` round trip; a deny manifest yields a deny policy |
 | `abi_decode` | Every generated Cap'n Proto `read_*` codec (`read_any_message`) and the database envelope decoders (`bookclerk-plugin-abi`) | Traversal budget derived from input size |
 

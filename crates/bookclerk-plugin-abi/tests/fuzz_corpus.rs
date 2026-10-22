@@ -29,7 +29,6 @@ fn corpus_files(target: &str) -> Vec<PathBuf> {
     files
 }
 
-#[cfg(feature = "host")]
 #[test]
 fn fuzz_corpus_sql_parse_does_not_panic() {
     for path in corpus_files("sql_parse") {
@@ -86,8 +85,14 @@ fn read_any_message_covers_every_selector() {
         .copied()
         .collect();
     for selector in 0..bookclerk_plugin_abi::READ_ANY_COUNT {
-        // Empty unions report "unset", which is an error, not a panic.
-        let _ = bookclerk_plugin_abi::read_any_message(selector, &empty_root);
+        // Empty unions report "unset", which is an error, not a panic; only a
+        // selector with no dispatch arm is a failure here.
+        if let Err(err) = bookclerk_plugin_abi::read_any_message(selector, &empty_root) {
+            assert!(
+                !err.to_string().contains("unknown read_any selector"),
+                "selector {selector} has no dispatch arm: {err}"
+            );
+        }
     }
     assert!(bookclerk_plugin_abi::read_any_message(
         bookclerk_plugin_abi::READ_ANY_COUNT,

@@ -118,6 +118,11 @@ pub fn parse_request_head(buf: &[u8]) -> Result<HeadParse, HeadError> {
     let head = std::str::from_utf8(&buf[..end]).map_err(|_| HeadError::NotUtf8)?;
     let mut lines = head.split("\r\n");
     let request_line = lines.next().unwrap_or("");
+    // Lines are split on CRLF only, so a bare CR or LF inside a line is the
+    // guest trying to smuggle a second line; RFC 9112 lets a server reject it.
+    if request_line.contains(['\r', '\n']) {
+        return Err(HeadError::BadRequestLine);
+    }
     let mut parts = request_line.split_whitespace();
     let (Some(method), Some(path)) = (parts.next(), parts.next()) else {
         return Err(HeadError::BadRequestLine);
@@ -127,10 +132,18 @@ pub fn parse_request_head(buf: &[u8]) -> Result<HeadParse, HeadError> {
         if line.is_empty() {
             continue;
         }
+        if line.contains(['\r', '\n']) {
+            return Err(HeadError::BadHeaderLine);
+        }
         let Some((name, value)) = line.split_once(':') else {
             return Err(HeadError::BadHeaderLine);
         };
-        headers.push((name.trim().to_string(), value.trim().to_string()));
+        // RFC 9112 §5.1: no whitespace between the field name and the colon,
+        // and a field line never starts with whitespace (obs-fold is gone).
+        if name.is_empty() || name.bytes().any(|b| b.is_ascii_whitespace()) {
+            return Err(HeadError::BadHeaderLine);
+        }
+        headers.push((name.to_string(), value.trim().to_string()));
     }
     Ok(HeadParse::Complete {
         head: RequestHead {
@@ -231,10 +244,13 @@ pub fn body_framing(headers: &[(String, String)]) -> Result<BodyFraming, Framing
         if !name.eq_ignore_ascii_case("content-length") {
             continue;
         }
-        let parsed: usize = value
-            .trim()
-            .parse()
-            .map_err(|_| FramingError::BadContentLength)?;
+        // RFC 9112: `Content-Length = 1*DIGIT`; `str::parse` would also take
+        // a leading `+`, which is not a length.
+        let value = value.trim();
+        if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(FramingError::BadContentLength);
+        }
+        let parsed: usize = value.parse().map_err(|_| FramingError::BadContentLength)?;
         match length {
             Some(seen) if seen != parsed => return Err(FramingError::BadContentLength),
             _ => length = Some(parsed),
@@ -584,6 +600,41 @@ mod tests {
     }
 
     #[test]
+    fn request_head_rejects_whitespace_names_and_bare_line_breaks() {
+        assert!(matches!(
+            parse_request_head(b"GET /x HTTP/1.1\r\nContent-Length : 5\r\n\r\n"),
+            Err(HeadError::BadHeaderLine)
+        ));
+        assert!(matches!(
+            parse_request_head(b"GET /x HTTP/1.1\r\n Transfer-Encoding: chunked\r\n\r\n"),
+            Err(HeadError::BadHeaderLine)
+        ));
+        assert!(matches!(
+            parse_request_head(b"GET /x HTTP/1.1\r\n: v\r\n\r\n"),
+            Err(HeadError::BadHeaderLine)
+        ));
+        assert!(matches!(
+            parse_request_head(b"GET /x HTTP/1.1\r\nX: a\nContent-Length: 5\r\n\r\n"),
+            Err(HeadError::BadHeaderLine)
+        ));
+        assert!(matches!(
+            parse_request_head(b"GET /x HTTP/1.1\r\nX: a\rb\r\n\r\n"),
+            Err(HeadError::BadHeaderLine)
+        ));
+        assert!(matches!(
+            parse_request_head(b"GET /x\nHost: y HTTP/1.1\r\n\r\n"),
+            Err(HeadError::BadRequestLine)
+        ));
+        // Optional whitespace around the value is still fine.
+        match parse_request_head(b"GET /x HTTP/1.1\r\nContent-Length:  5 \r\n\r\n") {
+            Ok(HeadParse::Complete { head, .. }) => {
+                assert_eq!(head.headers, vec![("Content-Length".into(), "5".into())]);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn framing_rejects_malformed_and_ambiguous_lengths() {
         let h = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
             pairs
@@ -598,6 +649,14 @@ mod tests {
         );
         assert_eq!(
             body_framing(&h(&[("Content-Length", "x")])),
+            Err(FramingError::BadContentLength)
+        );
+        assert_eq!(
+            body_framing(&h(&[("Content-Length", "+1")])),
+            Err(FramingError::BadContentLength)
+        );
+        assert_eq!(
+            body_framing(&h(&[("Content-Length", "")])),
             Err(FramingError::BadContentLength)
         );
         assert_eq!(

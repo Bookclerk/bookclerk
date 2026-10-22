@@ -32,8 +32,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::granted_http::{
     body_framing, declared_content_length_over_cap, parse_request_head, query_param,
-    transfer_encoding_is_chunked, BodyFraming, ChunkedDecoder, HeadError, HeadParse, RequestHead,
-    MAX_CHUNK_LINE_BYTES, MAX_HEAD_BYTES,
+    transfer_encoding_is_chunked, BodyFraming, ChunkedDecoder, ChunkedError, FramingError,
+    HeadError, HeadParse, RequestHead, MAX_CHUNK_LINE_BYTES, MAX_HEAD_BYTES,
 };
 
 /// Largest `/events/publish` request body: a base64 payload at
@@ -203,7 +203,9 @@ enum GrantedCmd {
         invocation: String,
         key: String,
         options: WriteOptions,
-        body_rx: mpsc::Receiver<Vec<u8>>,
+        /// Body chunks; an `Err` means the guest's body broke mid-stream and
+        /// the destination must discard the partial write.
+        body_rx: mpsc::Receiver<Result<Vec<u8>, String>>,
         resp: oneshot::Sender<Result<PutOk, String>>,
     },
     Progress {
@@ -565,7 +567,7 @@ async fn dispatch_put(
     invocation: String,
     key: String,
     options: WriteOptions,
-    body_rx: mpsc::Receiver<Vec<u8>>,
+    body_rx: mpsc::Receiver<Result<Vec<u8>, String>>,
 ) -> Result<PutOk, String> {
     let output = {
         let mut table = table.borrow_mut();
@@ -768,8 +770,15 @@ async fn dispatch_execute(
     encoded_execute_result_reply_bytes(outcome).map_err(|err| err.to_string())
 }
 
+/// Adapts the granted `/put` body channel to `AsyncRead` for the destination.
+///
+/// A closed channel is end of body; an `Err` chunk (the HTTP pump hit a
+/// framing or chunk error, or the guest hung up early) becomes a read error so
+/// the destination fails the write instead of publishing a truncated object.
 struct ChannelReader {
-    rx: mpsc::Receiver<Vec<u8>>,
+    /// Body chunks from the HTTP side, or the reason the body broke.
+    rx: mpsc::Receiver<Result<Vec<u8>, String>>,
+    /// Bytes of the current chunk not yet handed to the reader.
     buf: Vec<u8>,
 }
 
@@ -781,7 +790,10 @@ impl AsyncRead for ChannelReader {
     ) -> Poll<std::io::Result<()>> {
         if self.buf.is_empty() {
             match self.rx.poll_recv(cx) {
-                Poll::Ready(Some(chunk)) => self.buf = chunk,
+                Poll::Ready(Some(Ok(chunk))) => self.buf = chunk,
+                Poll::Ready(Some(Err(reason))) => {
+                    return Poll::Ready(Err(std::io::Error::other(reason)));
+                }
                 Poll::Ready(None) => return Poll::Ready(Ok(())),
                 Poll::Pending => return Poll::Pending,
             }
@@ -934,6 +946,12 @@ where
     }
 
     if method == "PUT" && path_only == "/put" {
+        // Refuse a body the channel cannot frame before the destination is
+        // opened for it, so a bad request never costs a partial write.
+        if let Err(err) = body_framing(&headers) {
+            write_status(&mut writer, 400, &format!("malformed body: {err}")).await?;
+            return Ok(());
+        }
         let content_type = headers
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
@@ -942,7 +960,7 @@ where
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
             .and_then(|(_, v)| v.parse().ok());
-        let (body_tx, body_rx) = mpsc::channel::<Vec<u8>>(4);
+        let (body_tx, body_rx) = mpsc::channel::<Result<Vec<u8>, String>>(4);
         let (resp_tx, resp_rx) = oneshot::channel();
         cmds.send(GrantedCmd::Put {
             invocation,
@@ -959,12 +977,22 @@ where
         })
         .await
         .context("granted dispatch closed")?;
-        pump_http_body(&mut reader, &headers, prefix, &body_tx).await?;
+        let pumped = pump_http_body(&mut reader, &headers, prefix, &body_tx).await;
+        if let Err(err) = &pumped {
+            // Tell the destination the body broke so it discards the partial
+            // write; a plain close would read as a clean end of body.
+            let _ = body_tx.send(Err(err.to_string())).await;
+        }
         drop(body_tx);
-        let put = resp_rx
-            .await
-            .context("granted put dropped")?
-            .map_err(anyhow::Error::msg)?;
+        let put = resp_rx.await.context("granted put dropped")?;
+        if let Err(err) = pumped {
+            let Some((status, reason)) = body_error_response(&err) else {
+                return Err(err);
+            };
+            write_status(&mut writer, status, &reason).await?;
+            return Ok(());
+        }
+        let put = put.map_err(anyhow::Error::msg)?;
         let json = serde_json::json!({
             "key": put.key,
             "bytesWritten": put.bytes_written,
@@ -982,7 +1010,16 @@ where
     }
 
     if method == "POST" && path_only == "/progress" {
-        let rest = read_content(&mut reader, &headers, prefix, 64 * 1024).await?;
+        let rest = match read_content(&mut reader, &headers, prefix, 64 * 1024).await {
+            Ok(body) => body,
+            Err(err) => {
+                let Some((status, reason)) = body_error_response(&err) else {
+                    return Err(err);
+                };
+                write_status(&mut writer, status, &reason).await?;
+                return Ok(());
+            }
+        };
         let value: serde_json::Value = serde_json::from_slice(&rest).unwrap_or_default();
         let percent = value
             .get("percent")
@@ -1067,11 +1104,13 @@ where
         }
         let rest = match read_content(&mut reader, &headers, prefix, cap).await {
             Ok(body) => body,
-            Err(err) if err.to_string().contains("payload_too_large") => {
-                write_status(&mut writer, 413, "payload too large").await?;
+            Err(err) => {
+                let Some((status, reason)) = body_error_response(&err) else {
+                    return Err(err);
+                };
+                write_status(&mut writer, status, &reason).await?;
                 return Ok(());
             }
-            Err(err) => return Err(err),
         };
         let (resp_tx, resp_rx) = oneshot::channel();
         cmds.send(GrantedCmd::Execute {
@@ -1103,11 +1142,13 @@ where
         let rest =
             match read_content(&mut reader, &headers, prefix, MAX_EVENT_PUBLISH_BODY_BYTES).await {
                 Ok(body) => body,
-                Err(err) if err.to_string().contains("payload_too_large") => {
-                    write_status(&mut writer, 413, "payload too large").await?;
+                Err(err) => {
+                    let Some((status, reason)) = body_error_response(&err) else {
+                        return Err(err);
+                    };
+                    write_status(&mut writer, status, &reason).await?;
                     return Ok(());
                 }
-                Err(err) => return Err(err),
             };
         let event: PluginEvent = match serde_json::from_slice(&rest) {
             Ok(event) => event,
@@ -1152,11 +1193,13 @@ where
         let rest =
             match read_content(&mut reader, &headers, prefix, MAX_QUEUE_SEND_BODY_BYTES).await {
                 Ok(body) => body,
-                Err(err) if err.to_string().contains("payload_too_large") => {
-                    write_status(&mut writer, 413, "payload too large").await?;
+                Err(err) => {
+                    let Some((status, reason)) = body_error_response(&err) else {
+                        return Err(err);
+                    };
+                    write_status(&mut writer, status, &reason).await?;
                     return Ok(());
                 }
-                Err(err) => return Err(err),
             };
         let send: QueueSendRequest = match serde_json::from_slice(&rest) {
             Ok(send) => send,
@@ -1206,11 +1249,13 @@ where
         }
         let rest = match read_content(&mut reader, &headers, prefix, MAX_KV_BODY_BYTES).await {
             Ok(body) => body,
-            Err(err) if err.to_string().contains("payload_too_large") => {
-                write_status(&mut writer, 413, "payload too large").await?;
+            Err(err) => {
+                let Some((status, reason)) = body_error_response(&err) else {
+                    return Err(err);
+                };
+                write_status(&mut writer, status, &reason).await?;
                 return Ok(());
             }
-            Err(err) => return Err(err),
         };
         // The op is the path; the body carries only that op's fields.
         let call: Result<KvCall, serde_json::Error> =
@@ -1302,11 +1347,36 @@ async fn write_plugin_error<S: AsyncWrite + Unpin>(
     Ok(())
 }
 
+/// The HTTP status a failed body read owes the guest, when the failure is the
+/// guest's: `413` for a body over the route's cap, `400` for a body the channel
+/// cannot frame or decode (bad `Content-Length`, bad chunk size, truncated
+/// chunked body, early EOF). Host-side failures return `None` and propagate.
+fn body_error_response(err: &anyhow::Error) -> Option<(u16, String)> {
+    let message = err.to_string();
+    if message.contains("payload_too_large") {
+        return Some((413, "payload too large".to_string()));
+    }
+    let guest_fault = err.downcast_ref::<FramingError>().is_some()
+        || err.downcast_ref::<ChunkedError>().is_some()
+        || message.contains("truncated chunked body")
+        || message.contains("early EOF before Content-Length")
+        || message.contains("body exceeded Content-Length");
+    guest_fault.then(|| (400, format!("malformed body: {message}")))
+}
+
+/// Streams a request body to the `/put` destination as framed by `headers`.
+///
+/// # Errors
+///
+/// Returns the framing or chunk-decoding error (downcastable to
+/// [`FramingError`] / [`ChunkedError`]), a truncation error when the stream
+/// ends early, or the I/O error from `stream`; the caller reports those to the
+/// guest via [`body_error_response`] and to the destination as an `Err` chunk.
 pub(crate) async fn pump_http_body<S: AsyncRead + Unpin>(
     stream: &mut S,
     headers: &[(String, String)],
     prefix: Vec<u8>,
-    body_tx: &mpsc::Sender<Vec<u8>>,
+    body_tx: &mpsc::Sender<Result<Vec<u8>, String>>,
 ) -> Result<()> {
     match body_framing(headers)? {
         BodyFraming::Chunked => {
@@ -1318,7 +1388,7 @@ pub(crate) async fn pump_http_body<S: AsyncRead + Unpin>(
                 buf.drain(..progress.consumed);
                 if !out.is_empty() {
                     body_tx
-                        .send(std::mem::take(&mut out))
+                        .send(Ok(std::mem::take(&mut out)))
                         .await
                         .context("granted put body closed")?;
                 }
@@ -1340,7 +1410,7 @@ pub(crate) async fn pump_http_body<S: AsyncRead + Unpin>(
             let mut remaining = len.saturating_sub(prefix.len());
             if !prefix.is_empty() {
                 body_tx
-                    .send(prefix)
+                    .send(Ok(prefix))
                     .await
                     .context("granted put body closed")?;
             }
@@ -1353,7 +1423,7 @@ pub(crate) async fn pump_http_body<S: AsyncRead + Unpin>(
                 }
                 remaining -= n;
                 body_tx
-                    .send(buf[..n].to_vec())
+                    .send(Ok(buf[..n].to_vec()))
                     .await
                     .context("granted put body closed")?;
             }
@@ -1362,7 +1432,7 @@ pub(crate) async fn pump_http_body<S: AsyncRead + Unpin>(
         BodyFraming::UntilEof => {
             if !prefix.is_empty() {
                 body_tx
-                    .send(prefix)
+                    .send(Ok(prefix))
                     .await
                     .context("granted put body closed")?;
             }
@@ -1373,7 +1443,7 @@ pub(crate) async fn pump_http_body<S: AsyncRead + Unpin>(
                     return Ok(());
                 }
                 body_tx
-                    .send(buf[..n].to_vec())
+                    .send(Ok(buf[..n].to_vec()))
                     .await
                     .context("granted put body closed")?;
             }

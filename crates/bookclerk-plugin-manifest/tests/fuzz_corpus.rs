@@ -58,21 +58,40 @@ fn restricted_spellings(host: &str) -> Vec<String> {
 /// Destinations that must need an explicit CIDR grant (mirrors the target).
 const RESTRICTED: &[&str] = &[
     "localhost",
+    "LOCALHOST.",
+    "a.localhost",
+    "\u{ff4c}ocalhost",
+    "localhost%41",
+    "localhost.localdomain",
+    "metadata.google.internal",
     "127.0.0.1",
+    "127.1.2.3",
+    "127.1",
+    "2130706433",
+    "0x7f.0.0.1",
+    "0177.0.0.1",
+    "0x7f000001",
     "::1",
     "[::1]",
+    "[::ffff:7f00:1]",
+    "0.0.0.0",
     "10.0.0.1",
+    "172.16.0.1",
     "192.168.1.1",
     "169.254.169.254",
+    "fe80::1",
+    "::ffff:127.0.0.1",
 ];
 
 #[test]
 fn fuzz_corpus_plugin_manifest_round_trips() {
+    let mut parsed = 0;
     for path in corpus_files("plugin_manifest") {
         let text = std::fs::read_to_string(&path).expect("read");
         let Ok(manifest) = parse(&text) else {
             continue;
         };
+        parsed += 1;
         manifest.validate().expect("parse() validated");
         let formatted = format_manifest(&manifest)
             .unwrap_or_else(|err| panic!("format {}: {err}", path.display()));
@@ -89,15 +108,18 @@ fn fuzz_corpus_plugin_manifest_round_trips() {
         }
         let _ = policy.to_policy_json();
     }
+    assert!(parsed > 0, "no plugin_manifest seed parsed");
 }
 
 #[test]
 fn fuzz_corpus_egress_policy_holds_invariants() {
+    let mut parsed = 0;
     for path in corpus_files("egress_policy") {
         let text = std::fs::read_to_string(&path).expect("read");
         let Ok(policy) = serde_json::from_str::<EgressPolicy>(&text) else {
             continue;
         };
+        parsed += 1;
         let json = serde_json::to_string(&policy).expect("serialize");
         assert_eq!(
             serde_json::from_str::<EgressPolicy>(&json).expect("reparse"),
@@ -109,9 +131,20 @@ fn fuzz_corpus_egress_policy_holds_invariants() {
                 .copied()
                 .chain(policy.domains.iter().map(String::as_str))
             {
-                assert!(!policy.allows_initial(host) && !policy.allows_tcp(host, 443));
+                assert!(
+                    !policy.allows_initial(host)
+                        && !policy.allows_tcp(host, 443)
+                        && !policy.allows_redirect(host, 0),
+                    "deny mode allowed {host:?} via {}",
+                    path.display()
+                );
             }
         }
+        assert!(
+            !policy.allows_redirect("example.com", policy.max_redirects),
+            "hop budget exceeded via {}",
+            path.display()
+        );
         if policy.address_cidrs.is_empty() {
             for host in RESTRICTED
                 .iter()
@@ -153,10 +186,12 @@ fn fuzz_corpus_egress_policy_holds_invariants() {
                         Some(normalized.as_str())
                     );
                     assert!(host_matches(suffix, pattern));
+                    assert!(host_matches(&format!("a.{normalized}"), pattern));
                     assert!(!host_matches(&format!("x{suffix}"), pattern));
                 }
             }
             assert!(!policy.allows_initial(&format!("{pattern}%41")));
         }
     }
+    assert!(parsed > 0, "no egress_policy seed parsed");
 }
