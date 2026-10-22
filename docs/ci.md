@@ -483,7 +483,7 @@ The repository keeps pull-request load down so the queue gets runners:
   `pull_request`. Human pull requests, and human pushes to a Dependabot
   branch, keep every platform.
 - Dependabot groups each ecosystem's updates into at most two pull requests a
-  week (minor/patch and major) and spreads the ecosystems across weekdays
+  week (minor/patch and major) and spreads the ecosystems across the week
   (see below).
 
 More capacity is an account setting rather than a repository one: a plan
@@ -509,7 +509,7 @@ example after adding the secrets), comment `@dependabot rebase`.
 
 Version updates (`.github/dependabot.yml`, weekly, 7-day cooldown, at most
 one minor/patch and one major pull request per ecosystem, ecosystems spread
-across weekdays) cover
+across the week) cover
 every lockfile of a shipped artifact or its build: Cargo at the workspace
 root, npm in `ui/`, `packages/plugin-sdk` and `tools/diagnostics-collector`,
 uv in `packages/plugin-sdk-python`, and GitHub Actions. `examples/` lockfiles

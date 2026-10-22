@@ -1,6 +1,6 @@
 # Each entry opens at most two version-update pull requests a week (one
 # minor/patch group, one major group; Cargo adds the capnp group), and the
-# entries are spread across the weekdays so one week's updates never all ask
+# entries are spread across the week so one week's updates never all ask
 # for CI at once. Every update lands through the merge queue
 # (docs/ci.md#runner-capacity).
 version: 2
