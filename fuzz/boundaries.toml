@@ -2,10 +2,10 @@
 #
 # `scripts/fuzz-crash-triage.py file` reads this to give a crash from the
 # scheduled fuzzing run its default severity and the shipped artifacts a
-# draft advisory names. The human-readable boundary list is the table in
-# docs/ci.md#fuzzing; every `[[bin]]` in fuzz/Cargo.toml needs an entry here
-# too (scripts/tests/test_fuzz_crash_triage.py). A target missing here is triaged
-# as high severity against the host binaries.
+# draft advisory names. It extends the boundary table in docs/ci.md#fuzzing
+# with what triage needs; every `[[bin]]` in fuzz/Cargo.toml and every target
+# in that table needs an entry here too (scripts/tests/test_fuzz_crash_triage.py).
+# A target missing here is triaged as high severity against the host binaries.
 #
 # Per target:
 #   crate      - crate that owns the boundary code
@@ -74,29 +74,6 @@ artifacts = ["bookclerk"]
 [targets.abi_decode]
 crate = "bookclerk-plugin-abi"
 boundary = "Generated Cap'n Proto read_* codecs and the database envelope decoders"
-input_from = "guest"
-side = "host"
-artifacts = ["bookclerk", "rust-sdk"]
-
-# Targets added by the second fuzzing pull request; listed ahead so triage
-# knows them whichever lands first.
-[targets.guest_sql_authz]
-crate = "bookclerk-plugin-abi"
-boundary = "Guest SQL authorization (table allowlist and typed catalog checks)"
-input_from = "guest"
-side = "host"
-artifacts = ["bookclerk", "rust-sdk"]
-
-[targets.mux_peer]
-crate = "bookclerk-plugin-sdk"
-boundary = "Plugin stream multiplexer fed raw peer bytes"
-input_from = "guest"
-side = "host"
-artifacts = ["bookclerk", "rust-sdk"]
-
-[targets.abi_roundtrip]
-crate = "bookclerk-plugin-abi"
-boundary = "Generated Cap'n Proto codecs, write then read round trip"
 input_from = "guest"
 side = "host"
 artifacts = ["bookclerk", "rust-sdk"]

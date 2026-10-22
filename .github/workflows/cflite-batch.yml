@@ -12,9 +12,9 @@
 #   sealed with the FUZZ_CRASH_BUNDLE_KEY secret.
 # - `triage` rebuilds the fuzzers, re-runs and minimizes each crash, dedupes
 #   by stack and files each new one with the automation App token: a draft
-#   security advisory when a published release ships the crashing code,
-#   otherwise an issue naming only the target and crash class. Its own output
-#   is sealed the same way. Logs print counts only.
+#   security advisory once Bookclerk has a published release, otherwise an
+#   issue that names only a signature (or, for a failed test oracle, the
+#   target). Its own output is sealed the same way. Logs print counts only.
 # - `prune` and `coverage` replay the corpus, which can start crashing after a
 #   regression lands on main, so they run through the same private action;
 #   `batch` reports such a crash, because libFuzzer replays the corpus first.
@@ -65,9 +65,10 @@ jobs:
           sanitizer: ${{ matrix.sanitizer }}
 
       # Only crashes leave the job, and only sealed. Without the key the step
-      # fails and nothing is uploaded.
+      # fails and nothing is uploaded. Crashes kept before a fuzzing error
+      # are sealed too.
       - name: Seal crashes
-        if: steps.fuzz.outputs.crashes != '0'
+        if: ${{ !cancelled() && steps.fuzz.outputs.crashes != '' && steps.fuzz.outputs.crashes != '0' }}
         env:
           BUNDLE_KEY: ${{ secrets.FUZZ_CRASH_BUNDLE_KEY }}
         run: |
@@ -79,7 +80,7 @@ jobs:
           scripts/osv-remediation-bundle.sh seal "$dir" "$RUNNER_TEMP/fuzz-crashes-sealed/sealed.bin"
 
       - name: Upload sealed crashes
-        if: steps.fuzz.outputs.crashes != '0'
+        if: ${{ !cancelled() && steps.fuzz.outputs.crashes != '' && steps.fuzz.outputs.crashes != '0' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fuzz-crashes-${{ matrix.sanitizer }}
@@ -90,6 +91,8 @@ jobs:
   triage:
     name: triage crashes (${{ matrix.sanitizer }})
     needs: batch
+    # Also after a failed batch job, which may still have uploaded crashes.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -189,9 +192,10 @@ jobs:
           permission-issues: write
           permission-repository-advisories: write
 
-      # A draft advisory only when a published release contains the code
-      # (`releases/latest` exists); before the first release every crash is
-      # an issue. Already-recorded signatures are skipped.
+      # A draft advisory only once a release is published (a maintainer
+      # confirms the affected range); before the first release every crash
+      # is an issue that does not say where it is. Already-recorded
+      # signatures are skipped.
       - name: File new crashes
         if: steps.find.outputs.found == 'true' && github.ref == 'refs/heads/main'
         env:

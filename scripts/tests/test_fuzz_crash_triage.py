@@ -112,6 +112,46 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(triage.classify("==1==ERROR: AddressSanitizer: ABRT on unknown address").kind, "signal")
         self.assertEqual(triage.classify("something else").kind, "unknown")
 
+    def test_allocation_failures_are_denial_of_service(self) -> None:
+        too_big = (
+            "==1==ERROR: AddressSanitizer: requested allocation size 0xffffffff exceeds maximum\n"
+            "SUMMARY: AddressSanitizer: allocation-size-too-big in malloc\n"
+        )
+        self.assertEqual(triage.classify(too_big).kind, "asan:allocation-size-too-big")
+        oom = (
+            "==1==ERROR: AddressSanitizer: out of memory: allocator is trying to allocate 0x1 bytes\n"
+            "SUMMARY: AddressSanitizer: out-of-memory\n"
+        )
+        self.assertEqual(triage.classify(oom).kind, "oom")
+        rust_alloc = (
+            "memory allocation of 18446744073709551615 bytes failed\n"
+            "==1==ERROR: AddressSanitizer: ABRT on unknown address 0x1\n"
+            "SUMMARY: AddressSanitizer: ABRT (/lib/x86_64-linux-gnu/libc.so.6+0x4300b) in raise\n"
+        )
+        self.assertEqual(triage.classify(rust_alloc).kind, "oom")
+        double_free = (
+            "==1==ERROR: AddressSanitizer: attempting double-free on 0x1\n"
+            "SUMMARY: AddressSanitizer: double-free in free\n"
+        )
+        self.assertEqual(triage.classify(double_free).kind, "asan:double-free")
+
+    def test_generated_code_under_fuzz_target_dir_is_not_an_oracle(self) -> None:
+        generated = HOST_PANIC.replace(
+            "/src/bookclerk/crates/bookclerk-workerd/src/granted_http.rs:120:9",
+            "/src/bookclerk/fuzz/target/x86_64-unknown-linux-gnu/release/build/"
+            "bookclerk-plugin-abi-0123/out/plugin_capnp.rs:120:9",
+        )
+        self.assertFalse(triage.is_oracle_failure(triage.classify(generated)))
+
+    def test_unsymbolized_frames_do_not_shape_signatures(self) -> None:
+        a = "    #0 0x5 (/out/t+0x1234) (BuildId: abc)\n    #1 0x6 (/out/t+0x5678)\n"
+        b = "    #0 0x9 (/out/t+0x4321) (BuildId: abd)\n    #1 0xa (/out/t+0x8765)\n"
+        ra, rb = triage.classify("ERROR: libFuzzer: deadly signal\n" + a), triage.classify(
+            "ERROR: libFuzzer: deadly signal\n" + b
+        )
+        self.assertEqual(triage.code_frames(ra.frames), [])
+        self.assertEqual(triage.signature("t", ra), triage.signature("t", rb))
+
 
 class SignatureTest(unittest.TestCase):
     def test_ignores_addresses_lines_and_plumbing(self) -> None:
@@ -169,6 +209,14 @@ class BoundariesTest(unittest.TestCase):
         missing = targets - set(_boundaries())
         self.assertFalse(missing, f"fuzz/boundaries.toml lacks {sorted(missing)}")
 
+    def test_every_documented_target_is_mapped(self) -> None:
+        docs = (ROOT / "docs" / "ci.md").read_text(encoding="utf-8")
+        section = docs.split("### Fuzzing", 1)[1].split("Still to add", 1)[0]
+        documented = set(re.findall(r"^\| `([a-z0-9_]+)` \|", section, re.MULTILINE))
+        self.assertTrue(documented)
+        missing = documented - set(_boundaries())
+        self.assertFalse(missing, f"fuzz/boundaries.toml lacks {sorted(missing)}")
+
     def test_rejects_bad_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "b.toml"
@@ -207,20 +255,29 @@ class RouteAndRenderTest(unittest.TestCase):
         self.assertEqual(triage.route(_finding(), "v1.0.0"), "advisory")
         self.assertEqual(triage.route(_finding(oracle=True), "v1.0.0"), "issue")
 
-    def test_issue_is_public_safe(self) -> None:
+    def test_pre_release_issue_names_only_the_signature(self) -> None:
         finding = _finding(summary="panic at secret.rs: the len is 0 but the index is 4")
         title, body = triage.render_issue(finding, _boundaries()["granted_http"], "https://run", "fuzz-triage-address")
-        self.assertIn("granted_http", title)
-        self.assertIn("denial of service", title)
+        self.assertIn(finding.signature[:16], title)
         self.assertIn(triage.marker(finding.signature), body)
-        for secret in ("the len is 0", "parse_head", "crates/x.rs", "a.bin"):
-            self.assertNotIn(secret, body)
-        self.assertIn("No advisory was filed", body)
+        for secret in ("granted_http", "the len is 0", "parse_head", "crates/x.rs", "a.bin", "panic", "severity"):
+            self.assertNotIn(secret, title + body)
+        self.assertIn("fuzz-triage-address", body)
+        self.assertIn("no published release", body)
+
+    def test_oracle_issue_names_the_target(self) -> None:
+        finding = _finding(oracle=True, summary="assertion failed: secret")
+        title, body = triage.render_issue(finding, _boundaries()["granted_http"], "https://run", "b")
+        self.assertIn("granted_http", title)
+        self.assertIn("Granted reverse channel", body)
+        self.assertNotIn("assertion failed", body)
 
     def test_advisory_body(self) -> None:
         bounds = _boundaries()
         finding = _finding(kind="asan:heap-buffer-overflow", target="abi_decode")
-        body = triage.render_advisory(finding, bounds["abi_decode"], "v1.2.0", "https://run", "b", b"\x00\x01")
+        body = triage.render_advisory(
+            finding, bounds["abi_decode"], "v1.2.0", "abc123", "https://run", "b", b"\x00\x01"
+        )
         self.assertEqual(body["severity"], "high")
         self.assertTrue(body["start_private_fork"])
         self.assertEqual(body["cwe_ids"], ["CWE-122"])
@@ -229,12 +286,13 @@ class RouteAndRenderTest(unittest.TestCase):
         self.assertTrue(all(v["vulnerable_version_range"] == "<= v1.2.0" for v in body["vulnerabilities"]))
         self.assertEqual(body["vulnerabilities"][0]["vulnerable_functions"], [finding.top_function])
         self.assertIn("AAE=", body["description"])
+        self.assertIn("`abc123`", body["description"])
         self.assertIn(triage.marker(finding.signature), body["description"])
         json.dumps(body)
 
     def test_large_reproducer_is_not_inlined(self) -> None:
         big = b"A" * (triage.INLINE_REPRODUCER_MAX + 1)
-        body = triage.render_advisory(_finding(), _boundaries()["granted_http"], "v1", "u", "b", big)
+        body = triage.render_advisory(_finding(), _boundaries()["granted_http"], "v1", "c", "u", "b", big)
         self.assertNotIn("QUFB", body["description"])
         self.assertFalse(body["start_private_fork"])
 
@@ -280,7 +338,7 @@ class FileFindingsTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def _file(self, gh: FakeGitHub, findings: list[Any]) -> dict[str, int]:
-        return triage.file_findings(gh, findings, _boundaries(), self.inputs, "https://run", "b")
+        return triage.file_findings(gh, findings, _boundaries(), self.inputs, "abc", "https://run", "b")
 
     def test_before_a_release_everything_is_an_issue(self) -> None:
         gh = FakeGitHub(None, [], [])
@@ -315,31 +373,45 @@ class FileFindingsTest(unittest.TestCase):
 
 
 class _Api(http.server.BaseHTTPRequestHandler):
-    """Canned REST API: no release, one page of issues, one advisory."""
+    """Canned REST API: a draft release only, issues in every state, and
+    advisories split across two cursor pages linked by a ``Link`` header."""
 
     posts: ClassVar[list[tuple[str, dict[str, Any]]]] = []
 
     def log_message(self, format: str, *args: Any) -> None:
         del format, args
 
-    def _send(self, status: int, body: Any) -> None:
+    def _send(self, status: int, body: Any, link: str = "") -> None:
         raw = json.dumps(body).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
+        if link:
+            self.send_header("Link", link)
         self.end_headers()
         self.wfile.write(raw)
 
     def do_GET(self) -> None:
         assert self.headers["Authorization"] == "Bearer tok"
-        if self.path.startswith("/repos/o/r/releases/latest"):
-            self._send(404, {"message": "Not Found"})
+        base = f"http://127.0.0.1:{self.server.server_port}"
+        if self.path.startswith("/repos/o/r/releases"):
+            self._send(200, [{"tag_name": "v0.9.0", "draft": True}])
         elif self.path.startswith("/repos/o/r/issues"):
-            assert "labels=fuzz-crash" in self.path
-            page = 1 if "page=1" in self.path.split("per_page=100")[1] else 2
-            self._send(200, [{"body": triage.marker("1" * 64)}] if page == 1 else [])
+            assert "state=all" in self.path and "labels=fuzz-crash" in self.path
+            self._send(
+                200,
+                [
+                    {"state": "open", "body": triage.marker("1" * 64)},
+                    {"state": "closed", "state_reason": "not_planned", "body": triage.marker("3" * 64)},
+                    {"state": "closed", "state_reason": "completed", "body": triage.marker("4" * 64)},
+                    {"state": "open", "pull_request": {}, "body": triage.marker("5" * 64)},
+                ],
+            )
+        elif self.path.startswith("/repos/o/r/security-advisories?per_page=100&after=c1"):
+            self._send(200, [{"description": triage.marker("6" * 64)}])
         elif self.path.startswith("/repos/o/r/security-advisories"):
-            self._send(200, [{"description": triage.marker("2" * 64)}, {"description": None}])
+            link = f'<{base}/repos/o/r/security-advisories?per_page=100&after=c1>; rel="next"'
+            self._send(200, [{"description": triage.marker("2" * 64)}, {"description": None}], link)
         else:
             self._send(500, {})
 
@@ -361,13 +433,22 @@ class GitHubClientTest(unittest.TestCase):
         try:
             gh = triage.GitHub("o/r", "tok", f"http://127.0.0.1:{server.server_port}")
             self.assertIsNone(gh.latest_release_tag())
-            self.assertEqual(gh.known_signatures(), ({"1" * 64}, {"2" * 64}))
+            issues, advisories = gh.known_signatures()
+            self.assertEqual(issues, {"1" * 64, "3" * 64})
+            self.assertEqual(advisories, {"2" * 64, "6" * 64})
             self.assertEqual(gh.open_issue("t", "b"), 7)
             self.assertEqual(gh.create_advisory({"summary": "s"}), "GHSA-aaaa-bbbb-cccc")
             self.assertEqual(_Api.posts[0], ("/repos/o/r/issues", {"title": "t", "body": "b", "labels": ["fuzz-crash"]}))
+            with self.assertRaises(ValueError):
+                gh.request("GET", "https://elsewhere.example/x")
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_next_link(self) -> None:
+        header = '<https://api.github.com/x?page=2>; rel="next", <https://api.github.com/x?page=9>; rel="last"'
+        self.assertEqual(triage.next_link(header), "https://api.github.com/x?page=2")
+        self.assertIsNone(triage.next_link(""))
 
 
 class CrashFilesTest(unittest.TestCase):

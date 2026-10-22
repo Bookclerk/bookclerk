@@ -166,7 +166,13 @@ BUILD_ID_RE = re.compile(r"\s+\(BuildId: [0-9a-fA-F]+\)$")
 RUST_HASH_RE = re.compile(r"::h[0-9a-f]{16}$")
 # Rust panic header (1.73+): `panicked at <path>:<line>:<col>:`.
 PANIC_RE = re.compile(r"panicked at (\S+?):(\d+):(\d+)")
-# Sanitizer error header: tool and error name.
+# Sanitizer summary line: tool and error name. The SUMMARY line names the
+# error class (`allocation-size-too-big`); the header above the stack is
+# prose for some classes (`requested allocation size ...`).
+SANITIZER_SUMMARY_RE = re.compile(
+    r"^SUMMARY: (AddressSanitizer|UndefinedBehaviorSanitizer|MemorySanitizer): ([\w-]+)", re.MULTILINE
+)
+# Sanitizer error header, for reports cut off before their SUMMARY line.
 SANITIZER_RE = re.compile(r"ERROR: (AddressSanitizer|UndefinedBehaviorSanitizer|MemorySanitizer): ([\w-]+)")
 
 # Crash kinds that are memory-safety errors: high by default, and fixed in a
@@ -195,6 +201,9 @@ CWE_BY_KIND = {
 }
 # CWE for memory-safety kinds without a specific entry above.
 DEFAULT_MEMORY_CWE = "CWE-119"
+
+# Repository directories whose assertions are test oracles, not product code.
+ORACLE_DIRS = ("fuzz/fuzz_targets/", "fuzz/oracles/")
 
 # GitHub advisory ecosystem for packages that are not on a public registry.
 OTHER_ECOSYSTEM = "other"
@@ -308,6 +317,10 @@ def is_ignored_frame(frame: Frame) -> bool:
     """
     if frame.function in IGNORED_FRAME_NAMES or frame.function.startswith(IGNORED_FRAME_PREFIXES):
         return True
+    # An unsymbolized frame (`(module+0x1f)`) has a build-specific offset in
+    # place of a name, so it would make the signature change every build.
+    if frame.function.startswith("(") or not frame.function:
+        return True
     return any(part in frame.location for part in IGNORED_LOCATION_PARTS)
 
 
@@ -339,18 +352,24 @@ def classify(output: str) -> CrashReport:
     panic_location = ""
     if panic:
         panic_location = f"{normalize_path(panic.group(1))}:{panic.group(2)}:{panic.group(3)}"
-    sanitizer = SANITIZER_RE.search(output)
+    sanitizer = SANITIZER_SUMMARY_RE.search(output) or SANITIZER_RE.search(output)
+    # Rust's allocation-failure handler aborts without a panic header (the
+    # image runs with allocator_may_return_null=1).
+    alloc_failure = "memory allocation of " in output and " bytes failed" in output
     summary = ""
     for line in output.splitlines():
         if line.startswith("SUMMARY: "):
             summary = line[len("SUMMARY: ") :].strip()
             break
 
-    # A Rust panic aborts the process, which AddressSanitizer reports as ABRT.
-    if sanitizer and not (panic and sanitizer.group(2) == "ABRT"):
+    # A Rust panic or allocation failure aborts the process, which
+    # AddressSanitizer reports as ABRT.
+    if sanitizer and not ((panic or alloc_failure) and sanitizer.group(2) == "ABRT"):
         tool, error = sanitizer.group(1), sanitizer.group(2)
         if error == "stack-overflow":
             kind = "stack-overflow"
+        elif error in ("out-of-memory", "rss-limit-exceeded", "malloc-limit-exceeded"):
+            kind = "oom"
         elif error == "ABRT":
             kind = "signal"
         elif tool == "AddressSanitizer":
@@ -365,7 +384,7 @@ def classify(output: str) -> CrashReport:
         kind = "panic"
         message = output[panic.end() :].lstrip(":").strip().splitlines()
         summary = f"panic at {panic_location}: {message[0] if message else ''}".strip()
-    elif "ERROR: libFuzzer: out-of-memory" in output or "malloc limit" in output:
+    elif alloc_failure or "ERROR: libFuzzer: out-of-memory" in output or "malloc limit" in output:
         kind = "oom"
     elif "ERROR: libFuzzer: timeout" in output:
         kind = "timeout"
@@ -402,8 +421,9 @@ def is_oracle_failure(report: CrashReport) -> bool:
     """Says whether a crash is a failed test oracle rather than a product bug.
 
     Targets check invariants with assertions in the target or in
-    ``fuzz/oracles/``; a panic raised from code under ``fuzz/`` is such a
-    check failing. It is still a bug (in the code or the oracle) but not by
+    ``fuzz/oracles/``; a panic raised from code there is such a check
+    failing (``fuzz/target/`` holds build output such as generated codecs,
+    which is product code). It is still a bug (in the code or the oracle) but not by
     itself a vulnerability, and ``fuzz/`` is never shipped, so it is filed
     as an issue.
 
@@ -412,14 +432,14 @@ def is_oracle_failure(report: CrashReport) -> bool:
 
     Returns:
         True when the crash is a panic whose innermost frame of code under
-        test lies in ``fuzz/``.
+        test lies in ``ORACLE_DIRS``.
     """
     if report.kind != "panic":
         return False
     top = code_frames(report.frames)
     if top:
-        return top[0].location.startswith("fuzz/")
-    return report.panic_location.startswith(("fuzz/", "fuzz_targets/", "oracles/"))
+        return top[0].location.startswith(ORACLE_DIRS)
+    return report.panic_location.startswith((*ORACLE_DIRS, "fuzz_targets/", "oracles/"))
 
 
 # ---------------------------------------------------------------------------
@@ -642,29 +662,15 @@ def kind_title(kind: str) -> str:
     return names.get(kind, "crash")
 
 
-def public_class(finding: Finding) -> str:
-    """Returns the crash class a public issue may name.
-
-    Args:
-        finding: The crash.
-
-    Returns:
-        ``test oracle failure``, ``denial of service`` or ``memory safety``
-        (``unknown`` kinds count as memory safety).
-    """
-    if finding.oracle:
-        return "test oracle failure"
-    if finding.kind in DOS_KINDS or finding.kind == "leak":
-        return "denial of service"
-    return "memory safety"
-
-
 def render_issue(finding: Finding, boundary: Boundary | None, run_url: str, bundle: str) -> tuple[str, str]:
     """Renders the public issue for a finding.
 
-    The body names the target, its boundary, the crash class and default
-    severity, and where the sealed details are. It never carries the stack,
-    the panic message or the input.
+    A failed test oracle is not a vulnerability, so its issue names the
+    target, its boundary and the default severity. Any other crash may be
+    one, so its issue (filed only while Bookclerk has no release) names
+    nothing but the signature: no target, class or severity that would point
+    at unfixed code on ``main``. Neither ever carries the stack, the panic
+    message or the input; those are in the sealed bundle.
 
     Args:
         finding: The crash.
@@ -675,35 +681,45 @@ def render_issue(finding: Finding, boundary: Boundary | None, run_url: str, bund
     Returns:
         ``(title, body)``.
     """
-    crash_class = public_class(finding)
-    severity = default_severity(finding.kind, boundary)
-    title = f"Fuzz crash in `{finding.target}` ({crash_class})"
-    where = boundary.description if boundary else "not in fuzz/boundaries.toml"
-    crate = boundary.crate if boundary else "unknown"
-    lines = [
-        marker(finding.signature),
-        "",
-        f"The scheduled fuzzing run found a reproducible crash in `{finding.target}`.",
-        "",
-        f"- Boundary: {where} (`{crate}`)",
-        f"- Class: {crash_class}",
-        f"- Default severity: {severity}",
-        f"- Signature: `{finding.signature[:16]}`",
-        "",
+    short = finding.signature[:16]
+    where_details = [
         "The stack, the minimized reproducer and the logs are in the sealed",
         f"`{bundle}` artifact of {run_url} (open it with",
         "`BUNDLE_KEY=<FUZZ_CRASH_BUNDLE_KEY> scripts/osv-remediation-bundle.sh open sealed.bin <dir>`).",
-        "",
-        "Fix it, then land the minimized input as",
-        f"`fuzz/corpus/{finding.target}/regression_<name>` in the fixing pull request",
-        "(docs/ci.md#fuzzing).",
     ]
     if finding.oracle:
-        lines += ["", "A test oracle in `fuzz/` failed: a bug in the code or in the oracle."]
-    else:
-        lines += [
+        where = boundary.description if boundary else "not in fuzz/boundaries.toml"
+        crate = boundary.crate if boundary else "unknown"
+        title = f"Fuzz oracle failure in `{finding.target}`"
+        lines = [
+            marker(finding.signature),
             "",
-            "No advisory was filed because no published release contains this code.",
+            f"A test oracle of the `{finding.target}` fuzz target failed in the scheduled",
+            "fuzzing run: a bug in the code under test or in the oracle.",
+            "",
+            f"- Boundary: {where} (`{crate}`)",
+            f"- Signature: `{short}`",
+            "",
+            *where_details,
+            "",
+            "Fix it, then land the minimized input as",
+            f"`fuzz/corpus/{finding.target}/regression_<name>` in the fixing pull request",
+            "(docs/ci.md#fuzzing).",
+        ]
+    else:
+        title = f"Fuzz crash `{short}` from the scheduled run"
+        lines = [
+            marker(finding.signature),
+            "",
+            "The scheduled fuzzing run found a reproducible crash. It may be a",
+            "vulnerability, so this issue does not say where: handle it as a",
+            "security report (docs/ci.md#fuzzing).",
+            "",
+            *where_details,
+            "",
+            "No advisory was filed because Bookclerk has no published release.",
+            "Land the minimized input as `fuzz/corpus/<target>/regression_<name>`",
+            "in the fixing pull request.",
         ]
     return title, "\n".join(lines) + "\n"
 
@@ -712,6 +728,7 @@ def render_advisory(
     finding: Finding,
     boundary: Boundary | None,
     release_tag: str,
+    commit: str,
     run_url: str,
     bundle: str,
     reproducer: bytes,
@@ -725,8 +742,9 @@ def render_advisory(
         finding: The crash.
         boundary: Its boundary, or None when the map lacks the target (then
             the host binaries are named as affected).
-        release_tag: Latest published release tag (the top of the affected
-            range).
+        release_tag: Newest published release tag (the top of the proposed
+            affected range).
+        commit: Commit the crash reproduced on.
         run_url: URL of the workflow run.
         bundle: Name of the sealed triage artifact of that run.
         reproducer: The (minimized) crashing input.
@@ -743,7 +761,10 @@ def render_advisory(
         marker(finding.signature),
         "",
         "Filed automatically by the scheduled fuzzing run as a draft. Check the",
-        "severity and the affected range before publishing.",
+        "severity and the affected range before publishing: the crash reproduced",
+        f"on `{commit}`, and the range proposes every release up to `{release_tag}`",
+        "without having reproduced it there. Narrow it (or close this draft) if",
+        "the bug arrived after that release.",
         "",
         "## Details",
         "",
@@ -824,23 +845,32 @@ class GitHub:
         self._token = token
         self._api = api
 
-    def request(self, method: str, path: str, body: Any = None) -> tuple[int, Any]:
+    def request(self, method: str, path: str, body: Any = None) -> tuple[int, Any, str]:
         """Sends one request.
 
         Args:
             method: HTTP method.
-            path: Path under the API root, starting with ``/``.
+            path: Path under the API root starting with ``/``, or an absolute
+                URL under it (a ``Link`` header's next page).
             body: JSON body, or None.
 
         Returns:
-            ``(status, parsed JSON or None)``. A 404 is returned, not raised.
+            ``(status, parsed JSON or None, Link header)``. A 404 is
+            returned, not raised.
 
         Raises:
             urllib.error.HTTPError: Any other error status.
+            ValueError: An absolute URL outside the API root.
         """
+        if path.startswith("/"):
+            url = f"{self._api}{path}"
+        elif path.startswith(f"{self._api}/"):
+            url = path
+        else:
+            raise ValueError(f"refusing to follow {path!r} outside {self._api}")
         data = None if body is None else json.dumps(body).encode("utf-8")
         request = urllib.request.Request(
-            f"{self._api}{path}",
+            url,
             data=data,
             method=method,
             headers={
@@ -853,51 +883,65 @@ class GitHub:
         try:
             with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_S) as response:
                 raw = response.read()
-                return response.status, json.loads(raw) if raw else None
+                link = response.headers.get("Link", "")
+                return response.status, json.loads(raw) if raw else None, link
         except urllib.error.HTTPError as err:
             if err.code == 404:
-                return 404, None
+                return 404, None, ""
             raise
 
     def paginate(self, path: str) -> Iterable[dict[str, Any]]:
         """Yields every item of a list endpoint, up to ``MAX_PAGES`` pages.
 
+        Follows the ``Link`` header, which works for both page-numbered
+        listings and cursor-paged ones such as repository advisories.
+
         Args:
-            path: List path; ``per_page`` and ``page`` are appended.
+            path: List path; ``per_page=100`` is appended.
 
         Yields:
             Items in API order.
         """
         sep = "&" if "?" in path else "?"
-        for page in range(1, MAX_PAGES + 1):
-            _, items = self.request("GET", f"{path}{sep}per_page=100&page={page}")
-            if not items:
+        url: str | None = f"{path}{sep}per_page=100"
+        for _ in range(MAX_PAGES):
+            if url is None:
                 return
-            yield from items
-            if len(items) < 100:
-                return
+            _, items, link = self.request("GET", url)
+            yield from items or []
+            url = next_link(link)
 
     def latest_release_tag(self) -> str | None:
-        """Returns the tag of the latest published, non-prerelease release.
+        """Returns the tag of the newest published release.
+
+        Prereleases count (their binaries are downloadable); drafts do not.
 
         Returns:
-            The tag, or None when the repository has no such release.
+            The tag, or None when the repository has no published release.
         """
-        status, release = self.request("GET", f"/repos/{self.repo}/releases/latest")
-        if status == 404 or not release:
-            return None
-        return str(release["tag_name"])
+        _, releases, _ = self.request("GET", f"/repos/{self.repo}/releases?per_page=20")
+        for release in releases or []:
+            if not release.get("draft"):
+                return str(release["tag_name"])
+        return None
 
     def known_signatures(self) -> tuple[set[str], set[str]]:
         """Collects the signatures already on record.
 
         Returns:
-            ``(signatures in open fuzz-crash issues, signatures in any
-            repository advisory)``. Advisories of every state count, so a
-            draft closed as not a vulnerability is not filed again.
+            ``(signatures in fuzz-crash issues that still stand, signatures
+            in any repository advisory)``. An issue stands while open or when
+            closed as not planned or duplicate; one closed as completed (the
+            fix landed) does not, so a regression is filed again. Advisories
+            of every state count, so a draft closed as not a vulnerability is
+            not filed again.
         """
         issues = set()
-        for issue in self.paginate(f"/repos/{self.repo}/issues?state=open&labels={ISSUE_LABEL}"):
+        for issue in self.paginate(f"/repos/{self.repo}/issues?state=all&labels={ISSUE_LABEL}"):
+            if "pull_request" in issue:
+                continue
+            if issue.get("state") == "closed" and issue.get("state_reason") not in ("not_planned", "duplicate"):
+                continue
             issues.update(extract_signatures(issue.get("body") or ""))
         advisories = set()
         for advisory in self.paginate(f"/repos/{self.repo}/security-advisories"):
@@ -914,7 +958,7 @@ class GitHub:
         Returns:
             The issue number.
         """
-        _, created = self.request(
+        _, created, _ = self.request(
             "POST", f"/repos/{self.repo}/issues", {"title": title, "body": body, "labels": [ISSUE_LABEL]}
         )
         return int(created["number"])
@@ -928,8 +972,24 @@ class GitHub:
         Returns:
             The advisory's GHSA id.
         """
-        _, created = self.request("POST", f"/repos/{self.repo}/security-advisories", body)
+        _, created, _ = self.request("POST", f"/repos/{self.repo}/security-advisories", body)
         return str(created["ghsa_id"])
+
+
+def next_link(link_header: str) -> str | None:
+    """Returns the ``rel="next"`` URL of a GitHub ``Link`` header.
+
+    Args:
+        link_header: The header value, possibly empty.
+
+    Returns:
+        The next page's URL, or None on the last page.
+    """
+    for part in link_header.split(","):
+        section = part.split(";")
+        if len(section) >= 2 and section[1].strip() == 'rel="next"':
+            return section[0].strip().strip("<>")
+    return None
 
 
 def extract_signatures(text: str) -> set[str]:
@@ -1044,6 +1104,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     if output:
         with open(output, "a", encoding="utf-8") as handle:
             handle.write(f"crashes={count}\n")
+    # An error after a crash was kept still fails the step; the workflow
+    # seals and triages whatever crashes exist regardless.
     if code in (CIFUZZ_OK, CIFUZZ_BUG_FOUND):
         return 0
     return 1
@@ -1207,6 +1269,7 @@ def file_findings(
     findings: list[Finding],
     boundaries: dict[str, Boundary],
     inputs: Path,
+    commit: str,
     run_url: str,
     bundle: str,
 ) -> dict[str, int]:
@@ -1217,6 +1280,7 @@ def file_findings(
         findings: Output of ``reproduce``.
         boundaries: Target map.
         inputs: Directory holding the reproducers named in the findings.
+        commit: Commit the crashes reproduced on.
         run_url: URL of the workflow run.
         bundle: Name of the sealed triage artifact.
 
@@ -1237,7 +1301,7 @@ def file_findings(
                 continue
             assert release_tag is not None
             reproducer = (inputs / finding.reproducer).read_bytes()
-            gh.create_advisory(render_advisory(finding, boundary, release_tag, run_url, bundle, reproducer))
+            gh.create_advisory(render_advisory(finding, boundary, release_tag, commit, run_url, bundle, reproducer))
             advisory_sigs.add(finding.signature)
         else:
             if finding.signature in issue_sigs or finding.signature in advisory_sigs:
@@ -1270,7 +1334,8 @@ def cmd_file(args: argparse.Namespace) -> int:
     repo = os.environ["GITHUB_REPOSITORY"]
     run_url = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
     gh = GitHub(repo, os.environ["GH_TOKEN"], os.environ.get("GITHUB_API_URL", API))
-    counts = file_findings(gh, findings, boundaries, triage / "inputs", run_url, args.bundle)
+    commit = os.environ.get("GITHUB_SHA", "unknown")
+    counts = file_findings(gh, findings, boundaries, triage / "inputs", commit, run_url, args.bundle)
     unmapped = sum(1 for f in findings if f.target not in boundaries)
     print(
         f"{len(findings)} finding(s): {counts['advisory']} draft advisories, {counts['issue']} issues, "

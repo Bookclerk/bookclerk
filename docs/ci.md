@@ -314,7 +314,8 @@ Build config lives in `.clusterfuzzlite/` (`Dockerfile`, `build.sh`,
 `project.yaml`). To add a target: a `[[bin]]` in `fuzz/Cargo.toml`, a seed
 directory under `fuzz/corpus/`, a `test_input` route in
 `scripts/ci_plan/relations.toml`, a replay test in the owning crate, the
-crate on `cflite-pr.yml`'s path filter, and a row above. `build.sh`
+crate on `cflite-pr.yml`'s path filter, a row above, and an entry in
+`fuzz/boundaries.toml` ([triage](#fuzz-crash-triage)). `build.sh`
 packages every target `cargo fuzz list` reports. Reproduce locally with
 `cargo +nightly fuzz run <target>` from `fuzz/` (needs `capnp` on `PATH`).
 
@@ -345,25 +346,33 @@ reproducer as an artifact. The scheduled workflow therefore never uses it:
    token, files each signature not already on record (a hidden
    `<!-- fuzz-crash-signature: … -->` marker in an open `fuzz-crash` issue
    or in any repository advisory):
-   - **Draft security advisory** when a published release exists
-     (`releases/latest`) and the crash is not an oracle failure. The draft is
-     private: it carries the stack, the reproducer (base64, up to 4 KiB) and
-     a reproduce command; affected packages are the target's artifacts from
-     `fuzz/boundaries.toml`, range `<= <latest tag>`. Default severity: high
-     for memory-safety errors (and anything unrecognized, with a temporary
-     private fork for the fix), medium for a denial of service in host code,
-     low inside a guest or for a leak. A maintainer reviews and publishes.
-   - **Issue** otherwise: oracle failures, and every crash while Bookclerk
-     has no release, since no shipped artifact can be affected. The issue
-     names the target, its boundary, the crash class and the default
-     severity, and points at the sealed bundle; never the stack or input.
+   - **Draft security advisory** when a release is published (prereleases
+     count, drafts do not) and the crash is not an oracle failure. The draft
+     is private: it carries the stack, the reproducer (base64, up to 4 KiB)
+     and a reproduce command; affected packages are the target's artifacts
+     from `fuzz/boundaries.toml`, with a proposed range `<= <newest tag>`
+     that a maintainer confirms (the crash reproduced on `main`, not on the
+     release). Default severity: high for memory-safety errors (and anything
+     unrecognized, with a temporary private fork for the fix), medium for a
+     denial of service in host code, low inside a guest or for a leak. A
+     maintainer reviews and publishes.
+   - **Issue** otherwise. Before the first release no shipped artifact can be
+     affected, so a crash gets an issue that names only its signature and the
+     sealed bundle (no target or class that would point at unfixed code). A
+     failed oracle (a panic raised from `fuzz/fuzz_targets/` or
+     `fuzz/oracles/`) is a bug rather than a vulnerability, so its issue also
+     names the target and boundary. An issue closed as completed does not
+     suppress a later identical crash (a regression); one closed as not
+     planned or duplicate does.
 
 `fuzz/boundaries.toml` maps every target to its crate, who controls its input,
 whether it runs host-side, and which shipped artifacts contain it;
-`scripts/tests/test_fuzz_crash_triage.py` fails when a target lacks an entry.
+`scripts/tests/test_fuzz_crash_triage.py` fails when a target in
+`fuzz/Cargo.toml` or in the table above lacks an entry, so adding a target
+means adding one there too.
 To read a bundle, download the artifact and run
 `BUNDLE_KEY=<passphrase> scripts/osv-remediation-bundle.sh open sealed.bin <dir>`.
-A target or sanitizer added later needs nothing else here; a new
+A new sanitizer needs a matrix entry in both jobs; a new
 run-fuzzers image digest must be bumped in the action and in `triage`
 together, and re-tested, because the wrapper patches one method of the
 image's Python package (it refuses to fuzz when that method is missing).
