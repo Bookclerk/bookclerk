@@ -5236,9 +5236,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded EventConsumerSpec value".to_string(),
+                ));
             }
         }
         1 => {
@@ -5263,9 +5266,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded PluginCapabilities value".to_string(),
+                ));
             }
         }
         2 => {
@@ -5284,9 +5290,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             .and_then(|again| read_brand(again.get_root::<plugin_capnp::brand::Reader<'_>>()?))
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded Brand value".to_string(),
+                ));
             }
         }
         3 => {
@@ -5308,9 +5317,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded ConfigOption value".to_string(),
+                ));
             }
         }
         4 => {
@@ -5335,9 +5347,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded ConfigOptionValue value".to_string(),
+                ));
             }
         }
         5 => {
@@ -5359,9 +5374,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded CliSchema value".to_string(),
+                ));
             }
         }
         6 => {
@@ -5386,9 +5404,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded CliCommandSpec value".to_string(),
+                ));
             }
         }
         7 => {
@@ -5410,9 +5431,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded CliArgSpec value".to_string(),
+                ));
             }
         }
         8 => {
@@ -5431,9 +5455,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             .and_then(|again| read_cli_arg(again.get_root::<plugin_capnp::cli_arg::Reader<'_>>()?))
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded CliArg value".to_string(),
+                ));
             }
         }
         9 => {
@@ -5458,9 +5485,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded CliInvokeParams value".to_string(),
+                ));
             }
         }
         10 => {
@@ -5485,9 +5515,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded CliInvokeResult value".to_string(),
+                ));
             }
         }
         11 => {
@@ -5512,9 +5545,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded CliSchemaReply value".to_string(),
+                ));
             }
         }
         12 => {
@@ -5539,9 +5575,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded CliInvokeReply value".to_string(),
+                ));
             }
         }
         13 => {
@@ -5566,9 +5605,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded DatabaseAdapterConfig value".to_string(),
+                ));
             }
         }
         14 => {
@@ -5591,9 +5633,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded DiagnoseResult value".to_string(),
+                ));
             }
         }
         15 => {
@@ -5616,9 +5661,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded DiagnoseReply value".to_string(),
+                ));
             }
         }
         16 => {
@@ -5641,9 +5689,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded SourceAccount value".to_string(),
+                ));
             }
         }
         17 => {
@@ -5665,9 +5716,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded LoginParams value".to_string(),
+                ));
             }
         }
         18 => {
@@ -5689,9 +5743,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded LoginResult value".to_string(),
+                ));
             }
         }
         19 => {
@@ -5716,9 +5773,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded LoginStartResult value".to_string(),
+                ));
             }
         }
         20 => {
@@ -5743,9 +5803,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded LoginCompleteParams value".to_string(),
+                ));
             }
         }
         21 => {
@@ -5767,9 +5830,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded LoginReply value".to_string(),
+                ));
             }
         }
         22 => {
@@ -5794,9 +5860,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded LoginStartReply value".to_string(),
+                ));
             }
         }
         23 => {
@@ -5821,9 +5890,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded AccountCredential value".to_string(),
+                ));
             }
         }
         24 => {
@@ -5845,9 +5917,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded ScanParams value".to_string(),
+                ));
             }
         }
         25 => {
@@ -5868,9 +5943,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded ScanBook value".to_string(),
+                ));
             }
         }
         26 => {
@@ -5892,9 +5970,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded ScanSummary value".to_string(),
+                ));
             }
         }
         27 => {
@@ -5916,9 +5997,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded ScanReply value".to_string(),
+                ));
             }
         }
         28 => {
@@ -5940,9 +6024,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded FetchOptions value".to_string(),
+                ));
             }
         }
         29 => {
@@ -5967,9 +6054,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded FetchTitleParams value".to_string(),
+                ));
             }
         }
         30 => {
@@ -5991,9 +6081,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded PlainPart value".to_string(),
+                ));
             }
         }
         31 => {
@@ -6016,9 +6109,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded ChapterMarker value".to_string(),
+                ));
             }
         }
         32 => {
@@ -6040,9 +6136,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded PlainFetch value".to_string(),
+                ));
             }
         }
         33 => {
@@ -6067,9 +6166,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded FetchTitleReply value".to_string(),
+                ));
             }
         }
         34 => {
@@ -6092,9 +6194,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded SourceAccounts value".to_string(),
+                ));
             }
         }
         35 => {
@@ -6119,9 +6224,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded SourceAccountsReply value".to_string(),
+                ));
             }
         }
         36 => {
@@ -6146,9 +6254,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded SearchCatalogParams value".to_string(),
+                ));
             }
         }
         37 => {
@@ -6173,9 +6284,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded ExpandCandidatesParams value".to_string(),
+                ));
             }
         }
         38 => {
@@ -6200,9 +6314,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded PurchaseHintParams value".to_string(),
+                ));
             }
         }
         39 => {
@@ -6227,9 +6344,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded ListDealsParams value".to_string(),
+                ));
             }
         }
         40 => {
@@ -6254,9 +6374,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded CatalogDetailParams value".to_string(),
+                ));
             }
         }
         41 => {
@@ -6278,9 +6401,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded CatalogHit value".to_string(),
+                ));
             }
         }
         42 => {
@@ -6302,9 +6428,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded CatalogHits value".to_string(),
+                ));
             }
         }
         43 => {
@@ -6329,9 +6458,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded CatalogHitsReply value".to_string(),
+                ));
             }
         }
         44 => {
@@ -6354,9 +6486,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded CatalogDetail value".to_string(),
+                ));
             }
         }
         45 => {
@@ -6381,9 +6516,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded CatalogDetailReply value".to_string(),
+                ));
             }
         }
         46 => {
@@ -6405,9 +6543,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded PurchaseHint value".to_string(),
+                ));
             }
         }
         47 => {
@@ -6432,9 +6573,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded PurchaseHintResult value".to_string(),
+                ));
             }
         }
         48 => {
@@ -6459,9 +6603,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded PurchaseHintReply value".to_string(),
+                ));
             }
         }
         49 => {
@@ -6486,9 +6633,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded ScanLibraryParams value".to_string(),
+                ));
             }
         }
         50 => {
@@ -6513,9 +6663,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded AuthenticateUserParams value".to_string(),
+                ));
             }
         }
         51 => {
@@ -6537,9 +6690,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded ExternalUser value".to_string(),
+                ));
             }
         }
         52 => {
@@ -6564,9 +6720,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded ExternalUserReply value".to_string(),
+                ));
             }
         }
         53 => {
@@ -6591,9 +6750,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded EventPollResult value".to_string(),
+                ));
             }
         }
         54 => {
@@ -6618,9 +6780,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded EventPollReply value".to_string(),
+                ));
             }
         }
         55 => {
@@ -6645,9 +6810,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded ListeningProgress value".to_string(),
+                ));
             }
         }
         56 => {
@@ -6672,9 +6840,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded SyncListeningResult value".to_string(),
+                ));
             }
         }
         57 => {
@@ -6699,9 +6870,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded SyncListeningReply value".to_string(),
+                ));
             }
         }
         58 => {
@@ -6723,9 +6897,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded PluginEvent value".to_string(),
+                ));
             }
         }
         59 => {
@@ -6747,9 +6924,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded PublishOk value".to_string(),
+                ));
             }
         }
         60 => {
@@ -6771,9 +6951,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded PublishReply value".to_string(),
+                ));
             }
         }
         61 => {
@@ -6795,9 +6978,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded Invocation value".to_string(),
+                ));
             }
         }
         62 => {
@@ -6819,9 +7005,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded QueueMessage value".to_string(),
+                ));
             }
         }
         63 => {
@@ -6843,9 +7032,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded QueueBatch value".to_string(),
+                ));
             }
         }
         64 => {
@@ -6867,9 +7059,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded QueueRetry value".to_string(),
+                ));
             }
         }
         65 => {
@@ -6891,9 +7086,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded QueueResult value".to_string(),
+                ));
             }
         }
         66 => {
@@ -6916,9 +7114,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded QueueBatchOk value".to_string(),
+                ));
             }
         }
         67 => {
@@ -6943,9 +7144,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded QueueBatchReply value".to_string(),
+                ));
             }
         }
         68 => {
@@ -6970,9 +7174,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded QueueSendMessage value".to_string(),
+                ));
             }
         }
         69 => {
@@ -6994,9 +7201,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded QueueSendOk value".to_string(),
+                ));
             }
         }
         70 => {
@@ -7021,9 +7231,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded QueueSendReply value".to_string(),
+                ));
             }
         }
         71 => {
@@ -7046,9 +7259,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded KvPutOptions value".to_string(),
+                ));
             }
         }
         72 => {
@@ -7069,9 +7285,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded KvGetOk value".to_string(),
+                ));
             }
         }
         73 => {
@@ -7093,9 +7312,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded KvGetReply value".to_string(),
+                ));
             }
         }
         74 => {
@@ -7116,9 +7338,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded KvPutOk value".to_string(),
+                ));
             }
         }
         75 => {
@@ -7140,9 +7365,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded KvDeleteOk value".to_string(),
+                ));
             }
         }
         76 => {
@@ -7164,9 +7392,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded KvPutReply value".to_string(),
+                ));
             }
         }
         77 => {
@@ -7189,9 +7420,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded KvDeleteReply value".to_string(),
+                ));
             }
         }
         78 => {
@@ -7214,9 +7448,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded KvListOptions value".to_string(),
+                ));
             }
         }
         79 => {
@@ -7238,9 +7475,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded KvListKey value".to_string(),
+                ));
             }
         }
         80 => {
@@ -7262,9 +7502,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded KvListOk value".to_string(),
+                ));
             }
         }
         81 => {
@@ -7286,9 +7529,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again && format!("{first:?}") != format!("{again:?}") {
-                return Err(RoundTripFailure::Codec(format!(
-                    "round trip changed the value: {first:?} != {again:?}"
-                )));
+                // The values stay out of the message: a decoded DTO may carry
+                // credential fields, and the failing input is what a harness
+                // needs to reproduce the difference.
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded KvListReply value".to_string(),
+                ));
             }
         }
         _ => {

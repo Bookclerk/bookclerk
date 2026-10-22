@@ -2113,6 +2113,99 @@ fn typecheck_recursive_cte_body(
     Ok(cols)
 }
 
+/// Types an INSERT's optional conflict clause:
+/// `ON CONFLICT [(col, …) [WHERE pred]] DO NOTHING | DO UPDATE SET col = expr, … [WHERE pred]`.
+///
+/// Host SQL reaches the checker in this form (the ORM's upserts); guest SQL
+/// v1 only admits the `INSERT OR IGNORE` spelling, which the grammar checks
+/// before typing. Conflict-target columns must belong to `table`; `excluded`
+/// names the row that would have been inserted and carries the table's
+/// columns; every `SET` pair uses the UPDATE dest-typing rule and is recorded
+/// as an assignment in the proof.
+///
+/// # Errors
+///
+/// Returns when the clause is malformed, names an unknown column, or assigns
+/// a value whose type does not unify with the destination column.
+fn typecheck_insert_on_conflict(
+    scan: &mut TScan<'_>,
+    cx: &mut TypeCx<'_>,
+    table: &str,
+) -> Result<()> {
+    if !scan.take_kw("ON") {
+        return Ok(());
+    }
+    if !scan.take_kw("CONFLICT") {
+        return Err(ty_err(cx.index, "ON CONFLICT"));
+    }
+    if scan.take_byte(b'(') {
+        loop {
+            let col = scan
+                .read_ident()
+                .ok_or_else(|| ty_err(cx.index, "ON CONFLICT column"))?;
+            lookup_column(cx, Some(table), &col)?;
+            if !scan.take_byte(b',') {
+                break;
+            }
+        }
+        if !scan.take_byte(b')') {
+            return Err(ty_err(cx.index, "ON CONFLICT columns"));
+        }
+        if scan.take_kw("WHERE") {
+            let ty = infer_expr(scan, cx)?;
+            require_booleanish(cx.index, ty, "ON CONFLICT WHERE")?;
+        }
+    }
+    if !scan.take_kw("DO") {
+        return Err(ty_err(cx.index, "ON CONFLICT DO"));
+    }
+    if scan.take_kw("NOTHING") {
+        return Ok(());
+    }
+    if !scan.take_kw("UPDATE") || !scan.take_kw("SET") {
+        return Err(ty_err(cx.index, "ON CONFLICT DO NOTHING | DO UPDATE SET"));
+    }
+    cx.from
+        .insert("excluded".to_string(), FromSrc::Physical(table.to_string()));
+    let result = typecheck_on_conflict_set(scan, cx, table);
+    cx.from.remove("excluded");
+    result
+}
+
+/// Types the `SET col = expr, … [WHERE pred]` tail of `DO UPDATE` with
+/// `excluded` already visible in `cx.from`.
+///
+/// # Errors
+///
+/// Returns when a destination is unknown or a source does not unify with it.
+fn typecheck_on_conflict_set(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>, table: &str) -> Result<()> {
+    loop {
+        let col = scan
+            .read_ident()
+            .ok_or_else(|| ty_err(cx.index, "DO UPDATE SET column"))?;
+        if !scan.take_byte(b'=') {
+            return Err(ty_err(cx.index, "DO UPDATE SET ="));
+        }
+        let dest = lookup_column(cx, Some(table), &col)?;
+        let src = infer_expr(scan, cx)?;
+        let unified = unify_types(cx.index, dest, src)?;
+        cx.assignments.push(ResolvedAssignment {
+            table: table.to_string(),
+            column: col,
+            dest,
+            source: unified,
+        });
+        if !scan.take_byte(b',') {
+            break;
+        }
+    }
+    if scan.take_kw("WHERE") {
+        let ty = infer_expr(scan, cx)?;
+        require_booleanish(cx.index, ty, "DO UPDATE WHERE")?;
+    }
+    Ok(())
+}
+
 /// Fails when `scan` still holds tokens after `what` was fully typechecked.
 ///
 /// Every statement and subquery must be consumed to its end: a token the
@@ -2225,6 +2318,7 @@ fn typecheck_sql_body(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<()> {
             }
             cx.from = dest_from;
         }
+        typecheck_insert_on_conflict(scan, cx, &table)?;
         if scan.take_kw("RETURNING") {
             cx.output_columns = parse_returning_list(scan, cx)?;
         }
@@ -4644,6 +4738,43 @@ mod tests {
                 ("title".to_string(), SqlType::Text)
             ]
         );
+        // The ORM's upserts reach the checker as `ON CONFLICT … DO UPDATE SET`;
+        // the clause is typed (target columns, `excluded`, dest-typing) rather
+        // than left as trailing tokens.
+        let proofs = typecheck_execute_request_resolved(
+            &req("INSERT INTO books (id, title) VALUES (1, 'a') \
+                 ON CONFLICT (id) DO UPDATE SET title = excluded.title RETURNING id"),
+            &env,
+        )
+        .unwrap();
+        assert_eq!(
+            proofs[0].output_columns,
+            vec![("id".to_string(), SqlType::Integer)]
+        );
+        assert!(
+            proofs[0]
+                .assignments
+                .iter()
+                .any(|a| a.table == "books" && a.column == "title"),
+            "{:?}",
+            proofs[0].assignments
+        );
+        typecheck_execute_request_resolved(
+            &req("INSERT INTO books (id, title) VALUES (1, 'a') ON CONFLICT DO NOTHING"),
+            &env,
+        )
+        .unwrap();
+        for sql in [
+            "INSERT INTO books (id, title) VALUES (1, 'a') ON CONFLICT (nope) DO NOTHING",
+            "INSERT INTO books (id, title) VALUES (1, 'a') ON CONFLICT (id) DO UPDATE SET title = excluded.id",
+            "INSERT INTO books (id, title) VALUES (1, 'a') ON CONFLICT (id) DO UPDATE SET nope = excluded.title",
+            "INSERT INTO books (id, title) VALUES (1, 'a') ON CONFLICT (id) DO REPLACE",
+        ] {
+            assert!(
+                typecheck_execute_request_resolved(&req(sql), &env).is_err(),
+                "{sql}"
+            );
+        }
         // A recursive CTE's arms read `FROM t`; that source belongs to the CTE
         // body and must not make `id` ambiguous in the INSERT's RETURNING list
         // (the conformance vectors insert through exactly this shape).
