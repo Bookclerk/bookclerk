@@ -97,18 +97,24 @@ fn check_policy(policy: &EgressPolicy) {
 
     if policy.address_cidrs.is_empty() {
         for host in RESTRICTED {
-            assert!(
-                !policy.allows_initial(host),
-                "restricted initial allowed: {host}"
-            );
-            assert!(
-                !policy.allows_redirect(host, 0),
-                "restricted redirect allowed: {host}"
-            );
-            assert!(
-                !policy.allows_tcp(host, 443),
-                "restricted tcp allowed: {host}"
-            );
+            // Every spelling the host and URL layers may hand over must be
+            // judged as the same destination: trailing dot, surrounding
+            // whitespace, upper case and fullwidth digits (IDNA maps them to
+            // ASCII, so `１２７.0.0.1` is loopback once normalized).
+            for spelling in restricted_spellings(host) {
+                assert!(
+                    !policy.allows_initial(&spelling),
+                    "restricted initial allowed: {spelling:?}"
+                );
+                assert!(
+                    !policy.allows_redirect(&spelling, 0),
+                    "restricted redirect allowed: {spelling:?}"
+                );
+                assert!(
+                    !policy.allows_tcp(&spelling, 443),
+                    "restricted tcp allowed: {spelling:?}"
+                );
+            }
             if let Ok(ip) = host.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
                 assert!(!policy.allows_ip(ip), "restricted ip allowed: {host}");
             }
@@ -141,4 +147,24 @@ fn check_policy(policy: &EgressPolicy) {
         !policy.allows_redirect("example.com", policy.max_redirects),
         "hop budget exceeded"
     );
+}
+
+/// Spellings of one restricted destination that must all be refused without a
+/// CIDR grant: as given, with a trailing dot, padded, upper-cased, and with
+/// ASCII digits replaced by their fullwidth forms.
+fn restricted_spellings(host: &str) -> Vec<String> {
+    let fullwidth: String = host
+        .chars()
+        .map(|c| match c {
+            '0'..='9' => char::from_u32(0xff10 + (u32::from(c) - u32::from('0'))).unwrap_or(c),
+            other => other,
+        })
+        .collect();
+    vec![
+        host.to_string(),
+        format!("{host}."),
+        format!(" {host}. "),
+        host.to_ascii_uppercase(),
+        fullwidth,
+    ]
 }

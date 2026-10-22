@@ -35,6 +35,26 @@ fn corpus_files(target: &str) -> Vec<PathBuf> {
     files
 }
 
+/// Spellings of one restricted destination that must all be refused without a
+/// CIDR grant (mirrors the target): as given, trailing dot, padded, upper case,
+/// and ASCII digits replaced by their fullwidth forms, which IDNA maps back.
+fn restricted_spellings(host: &str) -> Vec<String> {
+    let fullwidth: String = host
+        .chars()
+        .map(|c| match c {
+            '0'..='9' => char::from_u32(0xff10 + (u32::from(c) - u32::from('0'))).unwrap_or(c),
+            other => other,
+        })
+        .collect();
+    vec![
+        host.to_string(),
+        format!("{host}."),
+        format!(" {host}. "),
+        host.to_ascii_uppercase(),
+        fullwidth,
+    ]
+}
+
 /// Destinations that must need an explicit CIDR grant (mirrors the target).
 const RESTRICTED: &[&str] = &[
     "localhost",
@@ -93,22 +113,32 @@ fn fuzz_corpus_egress_policy_holds_invariants() {
             }
         }
         if policy.address_cidrs.is_empty() {
-            for host in RESTRICTED {
+            for host in RESTRICTED
+                .iter()
+                .flat_map(|host| restricted_spellings(host))
+            {
                 assert!(
-                    !policy.allows_initial(host),
-                    "{host} via {}",
+                    !policy.allows_initial(&host),
+                    "{host:?} via {}",
                     path.display()
                 );
                 assert!(
-                    !policy.allows_tcp(host, 443),
-                    "{host} via {}",
+                    !policy.allows_tcp(&host, 443),
+                    "{host:?} via {}",
                     path.display()
                 );
                 assert!(
-                    !policy.allows_redirect(host, 0),
-                    "{host} via {}",
+                    !policy.allows_redirect(&host, 0),
+                    "{host:?} via {}",
                     path.display()
                 );
+                for port in policy.tcp.iter().flat_map(|grant| grant.ports.iter()) {
+                    assert!(
+                        !policy.allows_tcp(&host, *port),
+                        "{host:?}:{port} via {}",
+                        path.display()
+                    );
+                }
             }
         }
         for pattern in policy

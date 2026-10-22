@@ -292,12 +292,13 @@ impl EgressPolicy {
         match self.mode {
             NetworkMode::Deny => false,
             NetworkMode::Outbound => {
-                if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                let normalized = normalize_hostname(host);
+                if let Some(ip) = ip_literal(host, normalized.as_deref()) {
                     if !self.allows_ip(ip) {
                         return false;
                     }
                 }
-                let Some(host) = normalize_hostname(host) else {
+                let Some(host) = normalized else {
                     return false;
                 };
                 if is_restricted_hostname(&host) && !self.hostname_address_ok(&host) {
@@ -347,12 +348,13 @@ impl EgressPolicy {
         if self.mode == NetworkMode::Deny {
             return false;
         }
-        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        let normalized = normalize_hostname(host);
+        if let Some(ip) = ip_literal(host, normalized.as_deref()) {
             if !self.allows_ip(ip) {
                 return false;
             }
         }
-        let Some(host) = normalize_hostname(host) else {
+        let Some(host) = normalized else {
             return false;
         };
         if is_restricted_hostname(&host) && !self.hostname_address_ok(&host) {
@@ -378,7 +380,13 @@ impl EgressPolicy {
                 if hop_index >= self.max_redirects {
                     return false;
                 }
-                if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                // Judge IP literals and the restricted-name rules on the
+                // IDNA-normalized spelling too, so a Unicode confusable of
+                // `localhost`, a trailing-dot `127.0.0.1.` or fullwidth digits
+                // are still the loopback they are here (the `egress_policy`
+                // oracle's class of bug).
+                let normalized = normalize_hostname(host);
+                if let Some(ip) = ip_literal(host, normalized.as_deref()) {
                     return self.allows_ip(ip)
                         && (self.allow_undeclared_public_redirects
                             || self
@@ -386,10 +394,7 @@ impl EgressPolicy {
                                 .iter()
                                 .any(|d| host_matches_normalized(&ip.to_string(), d)));
                 }
-                // Judge the restricted-name rules on the IDNA-normalized
-                // spelling, so a Unicode confusable of `localhost` is still
-                // `localhost` here (the `egress_policy` oracle's class of bug).
-                let Some(host) = normalize_hostname(host) else {
+                let Some(host) = normalized else {
                     return false;
                 };
                 if is_restricted_hostname(&host) && !self.hostname_address_ok(&host) {
@@ -631,6 +636,25 @@ fn unbracketed(host: &str) -> &str {
         .unwrap_or(host)
 }
 
+/// The IP address `host` spells, judged on the raw spelling first (IPv6 fails
+/// IDNA) and then on the IDNA-normalized one, so `127.0.0.1.` (trailing dot)
+/// or fullwidth digits are the address they map to rather than a hostname that
+/// slips past the address-space check.
+///
+/// # Arguments
+///
+/// * `raw` - Unbracketed request host as the guest spelled it.
+/// * `normalized` - Its [`normalize_hostname`] form, when IDNA accepted it.
+///
+/// # Returns
+///
+/// The parsed address, or `None` when neither spelling is an IP literal.
+fn ip_literal(raw: &str, normalized: Option<&str>) -> Option<std::net::IpAddr> {
+    raw.parse::<std::net::IpAddr>()
+        .ok()
+        .or_else(|| normalized.and_then(|h| h.parse::<std::net::IpAddr>().ok()))
+}
+
 /// Exact or `*.suffix` match on already-normalized host and pattern strings.
 fn host_matches_normalized(host: &str, pattern: &str) -> bool {
     // `host` and policy `domains` are already IDNA-normalized by callers
@@ -821,6 +845,44 @@ mod tests {
         assert!(!policy.allows_redirect("localhost", 1));
         policy.address_cidrs = vec!["10.0.0.1/32".into()];
         assert!(policy.allows_redirect("10.0.0.1", 1));
+    }
+
+    #[test]
+    fn normalized_ip_literal_spellings_still_need_an_address_grant() {
+        // `127.0.0.1.` fails `IpAddr` parsing, normalizes to `127.0.0.1`, and
+        // must still be judged as loopback (fuzz regression
+        // `egress_policy/regression_trailing_dot_ip.json`). Fullwidth digits
+        // map to ASCII under IDNA and are the same address.
+        let mut policy = EgressPolicy {
+            mode: NetworkMode::Outbound,
+            domains: vec!["127.0.0.1".into(), "10.0.0.1".into()],
+            allow_undeclared_public_redirects: true,
+            tcp: vec![TcpGrant {
+                host: "10.0.0.1".into(),
+                ports: vec![5432],
+            }],
+            ..EgressPolicy::deny()
+        };
+        for spelling in [
+            "127.0.0.1.",
+            " 127.0.0.1. ",
+            "\u{ff11}\u{ff12}\u{ff17}.0.0.1",
+            "10.0.0.1.",
+            "169.254.169.254.",
+        ] {
+            assert!(
+                !policy.allows_redirect(spelling, 1),
+                "redirect {spelling:?}"
+            );
+            assert!(!policy.allows_initial(spelling), "initial {spelling:?}");
+            assert!(!policy.allows_tcp(spelling, 5432), "tcp {spelling:?}");
+        }
+        assert!(policy.allows_redirect("93.184.216.34.", 1));
+        policy.address_cidrs = vec!["127.0.0.1/32".into(), "10.0.0.1/32".into()];
+        assert!(policy.allows_initial("127.0.0.1."));
+        assert!(policy.allows_redirect("127.0.0.1.", 1));
+        assert!(policy.allows_tcp("10.0.0.1.", 5432));
+        assert!(!policy.allows_redirect("169.254.169.254.", 1));
     }
 
     #[test]
