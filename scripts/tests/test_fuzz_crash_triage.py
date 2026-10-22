@@ -466,6 +466,15 @@ class _Api(http.server.BaseHTTPRequestHandler):
             self._send(201, {"ghsa_id": "GHSA-aaaa-bbbb-cccc"})
 
 
+class NewestTagTest(unittest.TestCase):
+    def test_highest_version_wins(self) -> None:
+        self.assertEqual(triage.newest_tag(["v1.4.1", "v2.0.0", "v1.4.0"]), "v2.0.0")
+        self.assertEqual(triage.newest_tag(["v2.0.0-rc.1", "v1.9.0"]), "v2.0.0-rc.1")
+        self.assertEqual(triage.newest_tag(["v2.0.0-rc.1", "v2.0.0"]), "v2.0.0")
+        self.assertEqual(triage.newest_tag(["nightly", "weekly"]), "nightly")
+        self.assertIsNone(triage.newest_tag([]))
+
+
 class GitHubClientTest(unittest.TestCase):
     def test_against_a_local_api(self) -> None:
         server = http.server.HTTPServer(("127.0.0.1", 0), _Api)

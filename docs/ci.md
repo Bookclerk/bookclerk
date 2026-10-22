@@ -534,6 +534,7 @@ App as [Dependabot auto-merge](#dependabot-auto-merge) instead of
 | `chirp-api-probe.yml` | `api-drift` issue; `api-drift/chirp` branch and pull request |
 | `osv-remediate.yml` | reads OSV code-scanning alerts; `deps/osv-remediation` branch, pull request, auto-merge |
 | `cflite-batch.yml` | `fuzz-crash` issues; draft repository security advisories once a release exists ([triage](#fuzz-crash-triage)) |
+| `osv-advisories.yml` | reads OSV code-scanning and Dependabot alerts; draft repository security advisories once a release exists ([verdicts](#osv-advisories)) |
 
 The probes share `.github/actions/api-drift-report`: one open issue per source
 (found by a hidden `<!-- api-drift:<source> -->` marker and updated in place,
@@ -553,10 +554,12 @@ attributed to the App.
    - **Contents: read and write** (push branches)
    - **Pull requests: read and write** (open, update and auto-merge PRs)
    - **Issues: read and write** (file and update drift issues, add labels)
-   - **Code scanning alerts: read** (`osv-remediate.yml` reads the OSV
-     alerts on `main`)
+   - **Code scanning alerts: read** (`osv-remediate.yml` and
+     `osv-advisories.yml` read the OSV alerts on `main`)
+   - **Dependabot alerts: read** (`osv-advisories.yml`)
    - **Repository security advisories: read and write**
-     (`cflite-batch.yml` files draft advisories and dedupes against them)
+     (`cflite-batch.yml` and `osv-advisories.yml` file draft advisories and
+     dedupe against them)
    - **Metadata: read** (always granted)
 
    **Workflows** is not needed: none of these pull requests touch
@@ -572,7 +575,8 @@ attributed to the App.
 4. For `cflite-batch.yml`, add `FUZZ_CRASH_BUNDLE_KEY`, generated the same
    way and kept by maintainers: it seals crash bundles that are read after
    the run. Without it a run that finds a crash fails before uploading
-   anything.
+   anything. `osv-advisories.yml` seals its verdict report with the same
+   key, and its intermediate evidence with `OSV_REMEDIATION_BUNDLE_KEY`.
 
 ### OSV remediation
 
@@ -629,6 +633,76 @@ crates.
 Pull requests the App opens are not authored by a person, so rulesets that
 require approval for such changes still need a maintainer's approval before
 the merge queue takes them. Auto-merge stays on while it waits.
+
+### OSV advisories
+
+`osv-advisories.yml` runs after every full OSV scan of `main`, next to the
+remediation, and answers a different question: does an open dependency alert
+affect something Bookclerk ships? A draft repository security advisory is
+filed only when it does, and only once a release is published
+([ADR](adr/security-advisory-automation.md)). Before the first release the
+run records its verdicts and files nothing.
+
+[`shipped-artifacts.toml`](../shipped-artifacts.toml) declares the shipped
+artifacts and which lockfile entries end up in each; every lockfile in the
+repository is either listed there or named as not shipped
+(`scripts/tests/test_osv_advisories.py` fails on an unclassified one). For
+each open OSV-Scanner alert and Dependabot alert on `main` (merged per
+lockfile when their ids or aliases overlap), `scripts/osv-advisories.py`
+gives every artifact of that lockfile a verdict:
+
+| Lockfile | Artifact | Affected when |
+| --- | --- | --- |
+| `Cargo.lock` | host binaries, platform and optional guests | the crate is in the shipped closure of the shipped crates in `cargo metadata` (normal edges, every target platform; dev and build dependencies and proc macros excluded, except `*-src` build dependencies, which compile vendored C into the binary), and, when the upstream advisory names vulnerable functions, one of them is in the DWARF of the fat-LTO release build of the shipped binaries (the method of OSV-Scanner's Rust call analysis) |
+| `Cargo.lock` | Rust plugin SDK | the crate is in the SDK's shipped closure (a library: no binary to analyze) |
+| `ui/package-lock.json` | web UI, served by `bookclerkd` | a production dependency with code in the production bundle (`vite build --sourcemap`, then the source maps); if the bundle cannot be built, any production dependency. A test keeps the UI from importing package files as `?url`/`?raw` assets or wasm, which source maps would not show |
+| `packages/plugin-sdk/package-lock.json` | `@bookclerk/plugin-sdk` | a production dependency (not `dev` in the lockfile) |
+| `tools/diagnostics-collector/package-lock.json` | diagnostics collector Worker | a production dependency (it has none today) |
+| `packages/plugin-sdk-python/` | `bookclerk-plugin-sdk` (PyPI) | never by a dependency: the SDK has no runtime dependencies, and both the test and the workflow fail if `[project].dependencies` or a non-dev extra gains one before its closure is resolved |
+| anything else | none | never: examples, fuzzing, scripts and dev dependencies stay an alert plus the remediation bump |
+
+The call-analysis build takes hours, so it runs only when a release exists
+and an advisory with function data for a shipped crate has no draft yet, and
+then only on the weekly scheduled scan or a manual run (`call-analysis` input
+forces it). On other runs such an advisory waits as "awaiting call analysis".
+A build that fails, reports no executables, or leaves a binary with too few
+functions or no `main` in its DWARF fails closed: the advisory is filed on
+the closure alone. An advisory a maintainer judges unaffected is closed as a
+draft (it is not filed again) or ignored in `osv-scanner.toml`.
+
+A draft carries the upstream ids (each as a hidden
+`<!-- osv-advisory: <id> <ecosystem>/<package> -->` marker, so it is never
+filed twice and a draft a maintainer closed is not filed again), the locked
+and first fixed versions, CVSS (or the highest GHSA severity) and CWE ids
+from the upstream records and their aliases, the verdict and its evidence
+(saying so when reachability is unproven), and a proposed range up to the
+highest release tag (or, for the TypeScript SDK, its published version) for a
+maintainer to confirm. One run files at most ten drafts; a draft GitHub
+refuses is reported and fails the run without holding back the others.
+
+Three jobs keep secrets away from third-party build code:
+
+1. `fetch` mints a read-only App token (code scanning, Dependabot and
+   repository advisories) for one step that reads the alerts, their records
+   on api.osv.dev, the newest release and the advisories on record, and
+   revokes it when the step ends. It then computes the closures from the
+   lockfiles and `cargo metadata`, which runs no build script, and decides on
+   call analysis. Its output leaves the job sealed with
+   `OSV_REMEDIATION_BUNDLE_KEY`.
+2. `analyze` has no secrets and no token. It builds the web UI
+   (`npm ci --ignore-scripts`) and, when planned, the shipped binaries. Its
+   output names no advisory (the bundled packages and a truncated SHA-256 of
+   every function in each binary), so it travels unsealed.
+3. `file` builds nothing. It mints an advisory-write token only when a
+   release exists, files the drafts, and seals the verdict report with
+   `FUZZ_CRASH_BUNDLE_KEY` as the `osv-advisories-report` artifact (30 days).
+   Read it with
+   `BUNDLE_KEY=<passphrase> scripts/osv-remediation-bundle.sh open sealed.bin <dir>`.
+
+Logs print counts only. A new shipped artifact, or a new lockfile, goes into
+`shipped-artifacts.toml` in the pull request that adds it. Cutting the fix
+release automatically is a documented future goal, not built yet (see the
+ADR).
 
 ## Expected PR feedback (when `SELECTIVE_CI=1`)
 

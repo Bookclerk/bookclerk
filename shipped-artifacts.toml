@@ -1,0 +1,119 @@
+# What Bookclerk ships, and which lockfile entries end up inside it.
+#
+# `scripts/osv-advisories.py` reads this to decide whether a dependency
+# advisory (an OSV code-scanning alert or a Dependabot alert) affects a
+# shipped artifact, and so deserves a draft repository security advisory
+# once a release is published. Anything not shipped (examples, fuzzing,
+# scripts, GitHub Actions, dev dependencies) never produces an advisory: its
+# alert plus the remediation bump is the whole record. See
+# docs/adr/security-advisory-automation.md and docs/ci.md#osv-advisories.
+#
+# Every lockfile in the repository must appear exactly once, either under a
+# `[[shipped]]` entry or in `not_shipped`
+# (scripts/tests/test_osv_advisories.py), so a new lockfile forces a decision.
+# `fuzz/boundaries.toml` names the same artifacts for fuzz crashes; keys and
+# advisory packages must agree.
+
+# Lockfiles whose packages never ship. Path, then why.
+not_shipped = [
+  { path = "fuzz/Cargo.lock", why = "fuzz targets and oracles, CI only" },
+  { path = "examples/plugins-echo-workerd-fetch/package-lock.json", why = "reference example, never packaged" },
+  { path = "examples/plugins-echo-workerd-ts/package-lock.json", why = "reference example, never packaged" },
+  { path = "examples/plugins-echo-native-python/requirements-dev.txt", why = "reference example, dev tooling" },
+  { path = "scripts/tests/requirements.txt", why = "CI test tooling" },
+]
+
+# Shipped artifacts. `ecosystem` and `package` go into the advisory's
+# affected-package entry. `version` is the top of the proposed affected
+# range: `release-tag` for artifacts released with the host (named by the
+# newest published release tag), or a manifest whose `version` field is the
+# package's published version.
+[artifacts.bookclerk]
+title = "Bookclerk host binaries, platform and optional guests, web UI"
+ecosystem = "other"
+package = "bookclerk"
+version = "release-tag"
+
+[artifacts.rust-sdk]
+title = "Rust plugin SDK (bookclerk-plugin-sdk crate)"
+ecosystem = "other"
+package = "bookclerk-plugin-sdk"
+version = "release-tag"
+
+[artifacts.plugin-sdk-npm]
+title = "TypeScript plugin SDK (@bookclerk/plugin-sdk)"
+ecosystem = "npm"
+package = "@bookclerk/plugin-sdk"
+version = "packages/plugin-sdk/package.json"
+
+[artifacts.plugin-sdk-python]
+title = "Python plugin SDK (bookclerk-plugin-sdk)"
+ecosystem = "pip"
+package = "bookclerk-plugin-sdk"
+version = "packages/plugin-sdk-python/pyproject.toml"
+
+[artifacts.diagnostics-collector]
+title = "Diagnostics collector Worker"
+ecosystem = "other"
+package = "bookclerk-diagnostics"
+version = "release-tag"
+
+# Which lockfile entries each artifact contains, and how that is proven:
+#
+#   cargo       - the dependency closure of `roots` in `cargo metadata`:
+#                 normal edges on every target platform; no dev or
+#                 proc-macro edges, and build edges only into `*-src` crates
+#                 (vendored C compiled into the binary). `default_members`
+#                 adds the workspace default-members; `root_dirs` adds every
+#                 workspace package under those directories. With
+#                 `call_analysis`, the roots' binaries are also built with
+#                 fat LTO and debug info and checked for the advisory's
+#                 vulnerable functions (weekly; see docs/ci.md).
+#   npm         - packages the lockfile does not mark `dev` (production
+#                 dependencies, what `npm install <package>` pulls in).
+#   npm-bundle  - npm, narrowed to the packages whose code is in the
+#                 production bundle (`vite build --sourcemap`, then the
+#                 bundle's source maps); tree-shaken packages are dropped.
+#   pip         - `[project].dependencies` of `manifest`. Bookclerk's Python
+#                 SDK has none, and the scripts refuse to run when one
+#                 appears until its closure is resolved here too.
+
+[[shipped]]
+artifact = "bookclerk"
+lockfile = "Cargo.lock"
+evidence = "cargo"
+default_members = true
+root_dirs = ["crates/bookclerk-plugins/platform", "crates/bookclerk-plugins/optional"]
+call_analysis = true
+
+[[shipped]]
+artifact = "rust-sdk"
+lockfile = "Cargo.lock"
+evidence = "cargo"
+roots = ["bookclerk-plugin-sdk"]
+# A library: its code runs in third-party plugins, which this repository
+# does not build, so there is no binary to analyze.
+call_analysis = false
+
+[[shipped]]
+artifact = "bookclerk"
+lockfile = "ui/package-lock.json"
+evidence = "npm-bundle"
+
+[[shipped]]
+artifact = "plugin-sdk-npm"
+lockfile = "packages/plugin-sdk/package-lock.json"
+evidence = "npm"
+
+[[shipped]]
+artifact = "diagnostics-collector"
+lockfile = "tools/diagnostics-collector/package-lock.json"
+evidence = "npm"
+
+[[shipped]]
+artifact = "plugin-sdk-python"
+lockfile = "packages/plugin-sdk-python/uv.lock"
+evidence = "pip"
+manifest = "packages/plugin-sdk-python/pyproject.toml"
+# Extras that hold development tooling only (tests, lint, API docs).
+dev_extras = ["dev", "docs"]

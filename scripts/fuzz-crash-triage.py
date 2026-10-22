@@ -929,14 +929,16 @@ class GitHub:
         """Returns the tag of the newest published release.
 
         Prereleases count (their binaries are downloadable); drafts do not.
+        Newest means the highest version (``newest_tag``), not the release
+        created last, so a backport cut after a later release does not
+        shrink the proposed affected range.
 
         Returns:
             The tag, or None when the repository has no published release.
         """
-        for release in self.paginate(f"/repos/{self.repo}/releases"):
-            if not release.get("draft"):
-                return str(release["tag_name"])
-        return None
+        return newest_tag(
+            [str(r["tag_name"]) for r in self.paginate(f"/repos/{self.repo}/releases") if not r.get("draft")]
+        )
 
     def known_signatures(self) -> tuple[set[str], set[str]]:
         """Collects the signatures already on record.
@@ -1004,6 +1006,34 @@ class GitHub:
         """
         _, created, _ = self.request("POST", f"/repos/{self.repo}/security-advisories", body)
         return str(created["ghsa_id"])
+
+
+_TAG_VERSION = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
+
+
+def newest_tag(tags: list[str]) -> str | None:
+    """Picks the highest semver release tag.
+
+    Args:
+        tags: Published release tags in API order (newest created first).
+
+    Returns:
+        The tag with the highest version (a prerelease sorts below its
+        release, pre-release identifiers compared as text); the first tag
+        when none is semver-shaped; None for no tags.
+    """
+    best: tuple[tuple[int, int, int, int, str], str] | None = None
+    for tag in tags:
+        match = _TAG_VERSION.match(tag)
+        if match is None:
+            continue
+        major, minor, patch, pre = match.groups()
+        key = (int(major), int(minor), int(patch), 0 if pre else 1, pre or "")
+        if best is None or key > best[0]:
+            best = (key, tag)
+    if best is not None:
+        return best[1]
+    return tags[0] if tags else None
 
 
 def next_link(link_header: str) -> str | None:
