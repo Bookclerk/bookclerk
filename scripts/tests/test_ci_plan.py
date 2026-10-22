@@ -1030,9 +1030,10 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(out["job_e2e"], "false")
         self.assertEqual(out["release_mode"], "affected")
         self.assertEqual(out["check_needs_node"], "false")
+        self.assertEqual(out["check_needs_uv"], "false")
         self.assertEqual(
             set(out),
-            {"mode", "check_needs_cargo", "check_needs_node", "release_mode"}
+            {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode"}
             | {f"job_{j.replace('-', '_')}" for j in JOB_CHECKS}
             | {f"check_{c}" for c in JOB_CHECKS["check"]},
         )

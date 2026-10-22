@@ -86,6 +86,7 @@ jobs:
       check_store_free: ${{ steps.resolve.outputs.check_store_free }}
       check_needs_cargo: ${{ steps.resolve.outputs.check_needs_cargo }}
       check_needs_node: ${{ steps.resolve.outputs.check_needs_node }}
+      check_needs_uv: ${{ steps.resolve.outputs.check_needs_uv }}
       release_mode: ${{ steps.resolve.outputs.release_mode }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -238,6 +239,16 @@ jobs:
           cache-dependency-path: |
             ui/package-lock.json
             packages/plugin-sdk/package-lock.json
+
+      # The Python SDK check and its API docs install from
+      # packages/plugin-sdk-python/uv.lock. No uv cache: nothing from an
+      # unpublished OSV remediation bump may be saved.
+      - name: Install uv
+        if: needs.plan.outputs.check_needs_uv == 'true'
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.11.32"
+          enable-cache: false
 
       - name: Install capnproto
         if: needs.plan.outputs.check_needs_cargo == 'true'

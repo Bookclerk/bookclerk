@@ -30,6 +30,50 @@ updates:
     cooldown:
       default-days: 7
 
+  # Web UI bundled into ui/dist and served by bookclerkd.
+  - package-ecosystem: npm
+    directory: "/ui"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      # Vite / ESLint / TypeScript tooling releases often; one PR a week.
+      ui-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # TypeScript plugin SDK, published as @bookclerk/plugin-sdk.
+  - package-ecosystem: npm
+    directory: "/packages/plugin-sdk"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      plugin-sdk-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # Python plugin SDK, published as bookclerk-plugin-sdk. It has no runtime
+  # dependencies; uv.lock pins its dev and docs extras.
+  - package-ecosystem: uv
+    directory: "/packages/plugin-sdk-python"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      python-sdk-minor-patch:
+        update-types:
+          - minor
+          - patch
+
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

@@ -2045,6 +2045,7 @@ name = "bookclerk-plugin-manifest"
 version = "0.1.0"
 dependencies = [
  "bookclerk-plugin-abi",
+ "chrono",
  "idna",
  "serde",
  "serde_json",
@@ -2204,6 +2205,7 @@ dependencies = [
  "bookclerk-plugin-manifest",
  "bookclerk-plugin-sdk",
  "bookclerk-workerd",
+ "chrono",
  "flate2",
  "hex",
  "serde_json",
@@ -2324,6 +2326,7 @@ dependencies = [
  "bookclerk-sandbox",
  "capnp",
  "capnp-rpc",
+ "chrono",
  "flate2",
  "hex",
  "libc",

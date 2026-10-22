@@ -2,8 +2,11 @@
 /** Conformance: check / fmt --check against abi fixtures. */
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { WORKERD_PIN_COMPAT_DATE } from "../dist/tools/validate.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const cli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/cli.js");
@@ -31,7 +34,27 @@ run(["check", path.join(fixtures, "invalid-native-with-domains")], false);
 run(["check", path.join(fixtures, "invalid-logo-javascript")], false);
 run(["check", path.join(fixtures, "invalid-logo-vbscript")], false);
 run(["check", path.join(fixtures, "invalid-logo-parent")], false);
-run(["check", path.join(fixtures, "valid-compat-date-future")], true, "Falling back");
+// Rewrite the fixture's date to the day after the pin so the fallback
+// boundary tracks every pin bump.
+{
+  const [y, m, d] = WORKERD_PIN_COMPAT_DATE.split("-").map(Number);
+  const newer = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "compat-date-future-"));
+  try {
+    fs.cpSync(path.join(fixtures, "valid-compat-date-future"), dir, { recursive: true });
+    const manifestPath = path.join(dir, "plugin.toml");
+    const manifest = fs.readFileSync(manifestPath, "utf8");
+    const rewritten = manifest.replace(/^compatibility_date = ".*"$/m, `compatibility_date = "${newer}"`);
+    if (!rewritten.includes(newer)) {
+      console.error("FAIL valid-compat-date-future has no compatibility_date");
+      process.exit(1);
+    }
+    fs.writeFileSync(manifestPath, rewritten);
+    run(["check", dir], true, "Falling back");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
 run(["check", path.join(fixtures, "invalid-compat-date-shape")], false, "YYYY-MM-DD");
 run(["check", path.join(fixtures, "invalid-compat-flag")], false, "not allowed");
 run(["check", path.join(fixtures, "invalid-compat-experimental")], false, "host-only");

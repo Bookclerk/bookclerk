@@ -1,6 +1,6 @@
 # Dependency vulnerability scanning via OSV-Scanner.
 # Results upload to GitHub Code Scanning (Security tab) as SARIF —
-# complements CodeQL default setup for lockfile advisories (Cargo + npm).
+# complements CodeQL default setup for lockfile advisories (Cargo, npm, uv).
 #
 # Behavior:
 #   - PR / merge_group: fail the check when the PR introduces *new* vulns

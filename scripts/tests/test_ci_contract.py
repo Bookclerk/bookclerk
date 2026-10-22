@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import bisect
 import functools
+import importlib.util
 import os
 import re
 import sys
 import tomllib
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import yaml
@@ -43,7 +45,7 @@ def _load() -> dict:
 
 
 def _emitted_keys() -> set[str]:
-    keys = {"mode", "check_needs_cargo", "check_needs_node", "release_mode"}
+    keys = {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode"}
     keys |= {f"job_{j.replace('-', '_')}" for j in JOB_CHECKS}
     keys |= {f"check_{c}" for c in JOB_CHECKS["check"]}
     return keys
@@ -375,6 +377,8 @@ class WorkflowContractTests(unittest.TestCase):
                         self.assertRegex(save_if, r"^\$\{\{ [^|]+ && !inputs\.private-head \}\}$")
                     if uses.startswith("actions/setup-node@") and "cache" in step.get("with", {}):
                         self.assertEqual(step["with"]["cache"], "${{ !inputs.private-head && 'npm' || '' }}")
+                    if uses.startswith("astral-sh/setup-uv@"):
+                        self.assertIs(step.get("with", {}).get("enable-cache"), False)
         run = next(s["run"] for s in self.jobs["plan"]["steps"] if "ci-exec.py resolve" in s.get("run", ""))
         force = next(line for line in run.splitlines() if "--force-full" not in line and "merge_group\"" in line)
         self.assertEqual(
@@ -410,6 +414,22 @@ class OsvRemediationWorkflowTest(unittest.TestCase):
         self.assertIn(f"&head=$GITHUB_REPOSITORY_OWNER:{cpr['with']['branch']}\"", find)
         self.assertIn('select(.head.repo.full_name == \\"$GITHUB_REPOSITORY\\")', find)
         self.assertEqual(self.jobs["pending"]["permissions"], {"pull-requests": "read"})
+
+    def test_publish_commits_every_lockfile_the_script_updates(self) -> None:
+        spec = importlib.util.spec_from_file_location("osv_remediate", REPO / "scripts" / "osv-remediate.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        # dataclasses resolves annotations through sys.modules.
+        with mock.patch.dict(sys.modules, {"osv_remediate": module}):
+            spec.loader.exec_module(module)
+        cpr = next(s for s in self.jobs["publish"]["steps"] if s.get("id") == "cpr")
+        paths = set(cpr["with"]["add-paths"].split())
+        self.assertEqual(paths, {f"*{name}" for name in module.LOCKFILE_ECOSYSTEMS})
+
+    def test_unpublished_bump_saves_no_uv_cache(self) -> None:
+        setup = [s for s in self.jobs["bump"]["steps"] if str(s.get("uses", "")).startswith("astral-sh/setup-uv@")]
+        self.assertEqual(len(setup), 1)
+        self.assertIs(setup[0]["with"]["enable-cache"], False)
 
     def test_publish_needs_a_verified_bump(self) -> None:
         self.assertEqual(

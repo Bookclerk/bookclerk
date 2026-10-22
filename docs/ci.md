@@ -482,6 +482,22 @@ The action must run while checks are still pending: GitHub rejects enabling
 auto-merge on a PR that is already mergeable. To retry a Dependabot PR (for
 example after adding the secrets), comment `@dependabot rebase`.
 
+Version updates (`.github/dependabot.yml`, weekly, 7-day cooldown) cover
+every lockfile of a shipped artifact or its build: Cargo at the workspace
+root, npm in `ui/`, `packages/plugin-sdk` and `tools/diagnostics-collector`,
+uv in `packages/plugin-sdk-python`, and GitHub Actions. `examples/` lockfiles
+are left out (reference plugins, never packaged); the full OSV scan still
+reports them.
+
+The Python SDK has no runtime dependencies. Its `uv.lock` pins the `dev` and
+`docs` extras that the `python_sdk` check and `generate-api-docs.sh --python`
+install (`uv sync --locked --no-install-project`, which fails when the
+lockfile is out of date with `pyproject.toml`; the SDK is imported from `src/`
+rather than built, so its unlocked build backend never runs), so OSV scans
+them and a runtime dependency added later is scanned from the start. After
+changing `pyproject.toml` dependencies, run `uv lock` in
+`packages/plugin-sdk-python`.
+
 Policy knobs live in the workflow's `with:` block:
 
 - `target: any` merges every update type. Tighten to `minor` or `patch` to
@@ -589,8 +605,9 @@ or manual run) and on demand. It reads the open OSV-Scanner alerts in
 Security → Code scanning, looks each advisory up on api.osv.dev, and
 `scripts/osv-remediate.py` tries lockfile-only updates (`cargo update
 --precise`, then the newest compatible release; `npm update
---package-lock-only --ignore-scripts`) until no locked version of the package
-is inside the advisory's affected ranges. An attempt that does not clear the
+--package-lock-only --ignore-scripts`; `uv lock --no-build --upgrade-package
+<name>==<fix>`, then the newest allowed release) until no locked version of
+the package is inside the advisory's affected ranges. An attempt that does not clear the
 advisory is rolled back. Manifests are never edited, so a fix that needs a new
 major version, or a change upstream, stays an open alert for a maintainer.
 
