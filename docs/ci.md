@@ -369,9 +369,15 @@ reproducer as an artifact. The scheduled workflow therefore never uses it:
      maintainer reviews and publishes.
    - **Issue** for a failed oracle (a panic raised from `fuzz/fuzz_targets/`
      or `fuzz/oracles/`), which is a bug rather than a vulnerability: the
-     issue names the target, its boundary and the sealed bundle. An issue closed as completed does not
-     suppress a later identical crash (a regression); one closed as not
-     planned or duplicate does.
+     issue names the target, its boundary and the sealed bundle. An issue
+     closed as completed does not suppress a later identical crash (a
+     regression); one closed as not planned or duplicate does.
+   - A crash already on record as an advisory is not filed again. While that
+     advisory is still a draft, a run that sees the crash again rewrites
+     only the automated part of its description (a new reproducer, boundary
+     or default severity mapping), the same way as the
+     [OSV advisories](#osv-advisories) do; closed and published advisories
+     are never touched.
 
 `fuzz/boundaries.toml` maps every target to its crate, who controls its input,
 whether it runs host-side, and which shipped artifacts contain it;
@@ -674,7 +680,17 @@ and first fixed versions, CVSS (or the highest GHSA severity) and CWE ids
 from the upstream records and their aliases, the verdict and its evidence
 (saying so when reachability is unproven), and a proposed range up to the
 highest release tag (or, for the TypeScript SDK, its published version) for a
-maintainer to confirm. One run files at most ten drafts; a draft GitHub
+maintainer to confirm. A later run that finds the same advisory never files
+a second draft: while the first is still a draft it rewrites only the
+automated part of its description (between the
+`<!-- bookclerk-auto: begin … -->` and `<!-- bookclerk-auto: end -->`
+comments: new evidence, fixed versions, aliases, the newest release), adds
+markers for new aliases, and fills an affected range that is still unset
+once a release exists. Text a maintainer adds outside that part, and the
+severity, CWE ids, summary and any range a maintainer set, are left alone;
+nothing is rewritten when only the "Last seen" line would change; closed and
+published advisories are never touched. One run files at most ten drafts
+(and updates at most ten); a draft GitHub
 refuses is reported and fails the run without holding back the others.
 Before the first release, artifacts released with the host (host, web UI,
 Rust SDK, Worker) get no proposed range: the draft says so, and a maintainer

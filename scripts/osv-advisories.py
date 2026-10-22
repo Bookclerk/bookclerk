@@ -65,8 +65,9 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "shipped-artifacts.toml"
 API = "https://api.github.com"
-# Upper bound on draft advisories one run files, so a bad map or a burst of
-# upstream advisories cannot flood the advisory list.
+# Upper bound on draft advisories one run files, and separately on drafts it
+# updates, so a bad map or a burst of upstream advisories cannot flood the
+# advisory list.
 MAX_FILED_PER_RUN = 10
 # Wall-clock cap for `npm ci` and for `vite build` of the web UI.
 BUNDLE_TIMEOUT_S = 900
@@ -581,6 +582,17 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         records = {vuln_id: fetch_record(vuln_id) for vuln_id in sorted({a[0] for a in alerts})}
         release_tag = gh.latest_release_tag()
         on_record = gh.advisory_markers()
+        drafts = [
+            {
+                "ghsa_id": d["ghsa_id"],
+                "description": d["description"],
+                "vulnerabilities": d.get("vulnerabilities") or [],
+            }
+            for d in gh.drafts()
+            if isinstance(d.get("ghsa_id"), str)
+            and isinstance(d.get("description"), str)
+            and MARKER_RE.search(d["description"])
+        ]
     except (urllib.error.URLError, TypeError, ValueError, KeyError) as err:
         # The type only: a message could name an alert.
         print(f"could not read alerts, advisories or releases: {type(err).__name__}", file=sys.stderr)
@@ -591,6 +603,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         "groups": [g.to_json() for g in groups],
         "unknown_alerts": unknown,
         "on_record": sorted([list(m) for m in on_record]),
+        "drafts": drafts,
     }
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -1263,7 +1276,7 @@ class Decision:
         packages: Affected `(name, version)` pairs inside the artifact.
         functions: Vulnerable functions found, or checked when none were.
         binaries: Binaries the functions were found in.
-        outcome: `filed`, `on record`, `no token`, `capped`, `failed`, or
+        outcome: `filed`, `updated`, `on record`, `no token`, `capped`, `failed`, or
             empty when not affected.
     """
 
@@ -1439,6 +1452,19 @@ def artifact_version(artifact: Artifact, release_tag: str | None, root: Path) ->
     return version
 
 
+def marker_lines(group: Group, artifact: Artifact) -> list[str]:
+    """Returns the hidden marker lines that tie a draft to its upstream ids.
+
+    Args:
+        group: The upstream advisory (every id and alias it goes by).
+        artifact: The Bookclerk artifact the draft is for.
+
+    Returns:
+        One `<!-- osv-advisory: <id> <advisory key> -->` line per id.
+    """
+    return [f"<!-- osv-advisory: {i} {artifact.advisory_key} -->" for i in group.ids]
+
+
 def render_advisory(
     decision: Decision, analysis: Analysis, release_tag: str | None, version: str | None, commit: str, run_url: str
 ) -> dict[str, Any]:
@@ -1465,22 +1491,22 @@ def render_advisory(
         parsed = osv.Version.parse(locked_version)
         fix = osv.smallest_fix(group.record, ecosystem, name, parsed) if parsed else None
         fixes.append(f"`{name}` {locked_version} → {fix if fix else 'no fixed release yet'}")
-    lines = [*(f"<!-- osv-advisory: {i} {artifact.advisory_key} -->" for i in group.ids), ""]
+    lines: list[str] = []
     if version is None:
         lines += [
-            "Filed automatically as a draft by the OSV advisory workflow. Check the verdict and severity:",
-            f"the verdict was reached on `{commit}`. Bookclerk has no published release yet, so no affected",
-            "range is proposed: fix it before the first release and close this draft, or set the range to",
-            "the releases that ship the vulnerable code before publishing.",
+            "Filed automatically as a draft by the OSV advisory workflow. Check the verdict and severity.",
+            "Bookclerk has no published release yet, so no affected range is proposed: fix it before the",
+            "first release and close this draft, or set the range to the releases that ship the vulnerable",
+            "code before publishing.",
             "",
         ]
     else:
         newest = f" (newest release `{release_tag}`)" if release_tag else ""
         lines += [
             "Filed automatically as a draft by the OSV advisory workflow. Check the verdict, severity and",
-            f"affected range before publishing: the verdict was reached on `{commit}`, and the range proposes",
-            f"every version up to `{version}`{newest} without having checked each release.",
-            "Narrow it, or close this draft, if a release does not contain the vulnerable code.",
+            f"affected range before publishing: the range proposes every version up to `{version}`{newest}",
+            "without having checked each release. Narrow it, or close this draft, if a release does not",
+            "contain the vulnerable code.",
             "",
         ]
     lines += [
@@ -1506,11 +1532,12 @@ def render_advisory(
         "replace the dependency, or gate the feature). Prepare code work in a temporary private fork of",
         "this advisory. Once the fix is in a release, set the patched version here and publish.",
         "",
-        f"Run: {run_url}",
+        f"{triage.VOLATILE_PREFIX}verdict reached on `{commit}` by {run_url}",
     ]
+    description = [*marker_lines(group, artifact), "", *triage.auto_section(lines), ""]
     body: dict[str, Any] = {
         "summary": f"Vulnerable dependency {', '.join(names)} shipped in {artifact.package} ({group.primary})"[:1024],
-        "description": "\n".join(lines) + "\n",
+        "description": "\n".join(description) + "\n",
         "cwe_ids": cwe_ids(group.record),
         "vulnerabilities": [
             {
@@ -1598,6 +1625,64 @@ def decide_all(
     return decisions, unshipped
 
 
+def draft_for(drafts: list[dict[str, Any]], group: Group, key: str) -> dict[str, Any] | None:
+    """Finds the open draft that carries a marker of this advisory and package.
+
+    Args:
+        drafts: `drafts` of the fetch output (advisories still in draft).
+        group: The upstream advisory.
+        key: The artifact's advisory key (`<ecosystem>/<package>`).
+
+    Returns:
+        The draft, or None when the advisory is only on record as closed or
+        published (or not at all).
+    """
+    for draft in drafts:
+        found = set(MARKER_RE.findall(str(draft.get("description") or "")))
+        if any((i, key) in found for i in group.ids):
+            return draft
+    return None
+
+
+def draft_changes(draft: dict[str, Any], body: dict[str, Any], markers: list[str]) -> dict[str, Any]:
+    """Computes the update that brings an open draft up to date.
+
+    Only the automation's own part of the description is rewritten (new
+    evidence, fixed versions, aliases), plus an affected range that is still
+    unset once a release exists. Severity, summary, CWE ids, a range a
+    maintainer set and text outside the automated part stay as they are.
+
+    Args:
+        draft: The open draft, as listed by the API.
+        body: A freshly rendered advisory (`render_advisory`).
+        markers: Marker lines it must carry (`marker_lines`).
+
+    Returns:
+        The fields to PATCH; empty when the draft is current.
+    """
+    changes: dict[str, Any] = {}
+    description = triage.splice_auto(str(draft.get("description") or ""), body["description"], markers)
+    if description is not None:
+        changes["description"] = description
+    proposed = body["vulnerabilities"][0]
+    if proposed["vulnerable_version_range"]:
+        filled = False
+        vulnerabilities = []
+        for vuln in draft.get("vulnerabilities") or []:
+            entry = {
+                k: vuln.get(k)
+                for k in ("package", "vulnerable_version_range", "patched_versions", "vulnerable_functions")
+            }
+            package = vuln.get("package") or {}
+            if package.get("name") == proposed["package"]["name"] and not vuln.get("vulnerable_version_range"):
+                entry["vulnerable_version_range"] = proposed["vulnerable_version_range"]
+                filled = True
+            vulnerabilities.append(entry)
+        if filled:
+            changes["vulnerabilities"] = vulnerabilities
+    return changes
+
+
 def file_decisions(
     decisions: list[Decision],
     gh: Any,
@@ -1609,7 +1694,9 @@ def file_decisions(
 ) -> dict[str, int]:
     """Files a draft advisory for each affected decision not on record.
 
-    Without a token (a local dry run) nothing is filed and the affected
+    An affected decision whose draft is still open gets that draft updated
+    (`draft_changes`) instead of a second one; one whose advisory was closed
+    or published is left alone. Without a token (a local dry run) nothing is filed and the affected
     decisions are marked `no token`. Several shipped entries of
     one artifact (the Rust host and the web UI are both `bookclerk`) that
     hit the same upstream advisory get one draft. A draft GitHub refuses is
@@ -1617,8 +1704,10 @@ def file_decisions(
 
     Args:
         decisions: Output of `decide_all`; `outcome` is set in place.
-        gh: Client with an advisory-write token (`create_advisory`), or None.
-        state: Output of `fetch` (release tag or None, markers on record).
+        gh: Client with an advisory-write token (`create_advisory`,
+            `update_advisory`), or None.
+        state: Output of `fetch` (release tag or None, markers on record,
+            open drafts).
         analysis: The analyze job's output.
         root: Repository root.
         commit: Commit the verdicts were reached on.
@@ -1629,13 +1718,30 @@ def file_decisions(
     """
     release_tag = state.get("release_tag")
     on_record = {tuple(m) for m in state.get("on_record", [])}
-    counts = {"filed": 0, "on record": 0, "no token": 0, "capped": 0, "failed": 0}
+    drafts = state.get("drafts", [])
+    refreshed: set[str] = set()
+    counts = {"filed": 0, "updated": 0, "on record": 0, "no token": 0, "capped": 0, "failed": 0}
     for decision in decisions:
         if decision.verdict not in AFFECTED:
             continue
-        key = decision.entry.artifact.advisory_key
+        artifact = decision.entry.artifact
+        key = artifact.advisory_key
         if any((i, key) in on_record for i in decision.group.ids):
             decision.outcome = "on record"
+            draft = draft_for(drafts, decision.group, key)
+            if gh is not None and draft is not None and draft["ghsa_id"] not in refreshed:
+                refreshed.add(draft["ghsa_id"])
+                try:
+                    version = artifact_version(artifact, release_tag, root)
+                    body = render_advisory(decision, analysis, release_tag, version, commit, run_url)
+                    changes = draft_changes(draft, body, marker_lines(decision.group, artifact))
+                    if changes and counts["updated"] >= MAX_FILED_PER_RUN:
+                        decision.outcome = "capped"
+                    elif changes:
+                        gh.update_advisory(draft["ghsa_id"], changes)
+                        decision.outcome = "updated"
+                except (urllib.error.URLError, ValueError, KeyError, TypeError):
+                    decision.outcome = "failed"
         elif gh is None:
             decision.outcome = "no token"
         elif counts["filed"] >= MAX_FILED_PER_RUN:
@@ -1684,7 +1790,7 @@ def cmd_file(args: argparse.Namespace) -> int:
     affected = sum(1 for d in decisions if d.verdict in AFFECTED)
     print(
         f"verdicts: {len(decisions)} (advisory x shipped entry), {affected} affected; "
-        f"drafts filed: {counts['filed']}, failed: {counts['failed']}, on record: {counts['on record']}, "
+        f"drafts filed: {counts['filed']}, updated: {counts['updated']}, failed: {counts['failed']}, on record: {counts['on record']}, "
         f"not filed (no token): {counts['no token']}, over the per-run cap: {counts['capped']}; "
         f"advisories on lockfiles that do not ship: {len(unshipped)}"
     )

@@ -144,10 +144,14 @@ class FakeGitHub:
 
     def __init__(self) -> None:
         self.created: list[dict[str, Any]] = []
+        self.updated: list[tuple[str, dict[str, Any]]] = []
 
     def create_advisory(self, body: dict[str, Any]) -> str:
         self.created.append(body)
         return f"GHSA-fake-{len(self.created)}"
+
+    def update_advisory(self, ghsa_id: str, body: dict[str, Any]) -> None:
+        self.updated.append((ghsa_id, body))
 
 
 class Repo:
@@ -570,6 +574,66 @@ class FilingTest(unittest.TestCase):
         decisions, unshipped = adv.decide_all(self.state, self.repo.config, EVIDENCE, BUNDLE, self.repo.root)
         counts = adv.file_decisions(decisions, gh, self.state, BUNDLE, self.repo.root, "abc", "https://run")
         return decisions, unshipped, counts
+
+    def _as_draft(self, body: dict[str, Any], ghsa: str = "GHSA-host", prefix: str = "") -> dict[str, Any]:
+        """Turns a filed body into the draft the next run's fetch lists."""
+        return {
+            "ghsa_id": ghsa,
+            "description": prefix + body["description"],
+            "vulnerabilities": body["vulnerabilities"],
+        }
+
+    def _second_run(self, draft: dict[str, Any]) -> tuple[list[Any], FakeGitHub]:
+        self.state["on_record"] = [list(m) for m in adv.MARKER_RE.findall(draft["description"])]
+        self.state["drafts"] = [draft]
+        gh = FakeGitHub()
+        decisions, _, _ = self.run_file(gh)
+        return decisions, gh
+
+    def _host_body(self) -> dict[str, Any]:
+        first = FakeGitHub()
+        self.run_file(first)
+        return next(b for b in first.created if b["vulnerabilities"][0]["package"]["name"] == "bookclerk")
+
+    def test_open_draft_is_not_filed_twice_or_rewritten_when_current(self) -> None:
+        decisions, gh = self._second_run(self._as_draft(self._host_body()))
+        host = next(d for d in decisions if d.entry.artifact.key == "bookclerk")
+        self.assertEqual(host.outcome, "on record")
+        self.assertEqual(gh.updated, [])
+        self.assertNotIn("bookclerk", [b["vulnerabilities"][0]["package"]["name"] for b in gh.created])
+
+    def test_open_draft_gets_new_evidence_and_keeps_maintainer_edits(self) -> None:
+        draft = self._as_draft(self._host_body(), prefix="Maintainer: confirmed reachable via the scan job.\n")
+        draft["vulnerabilities"][0]["vulnerable_version_range"] = ">= v0.1.0, <= v0.2.0"
+        self.state["groups"][0]["ids"] = ["GHSA-time", "RUSTSEC-2", "CVE-2026-1"]
+        decisions, gh = self._second_run(draft)
+        host = next(d for d in decisions if d.entry.artifact.key == "bookclerk")
+        self.assertEqual(host.outcome, "updated")
+        ghsa, changes = gh.updated[0]
+        self.assertEqual(ghsa, "GHSA-host")
+        self.assertTrue(changes["description"].startswith("<!-- osv-advisory: CVE-2026-1 other/bookclerk -->\n"))
+        self.assertIn("Maintainer: confirmed reachable", changes["description"])
+        self.assertIn("CVE-2026-1", changes["description"])
+        self.assertNotIn("vulnerabilities", changes)  # the maintainer's range stays
+
+    def test_unset_range_is_filled_once_a_release_exists(self) -> None:
+        self.state["release_tag"] = None
+        draft = self._as_draft(self._host_body())
+        self.assertIsNone(draft["vulnerabilities"][0]["vulnerable_version_range"])
+        self.state["release_tag"] = "v0.2.0"
+        _, gh = self._second_run(draft)
+        changes = gh.updated[0][1]
+        self.assertEqual(changes["vulnerabilities"][0]["vulnerable_version_range"], "<= v0.2.0")
+        self.assertIn("v0.2.0", changes["description"])
+
+    def test_closed_or_published_advisory_is_left_alone(self) -> None:
+        body = self._host_body()
+        self.state["on_record"] = [list(m) for m in adv.MARKER_RE.findall(body["description"])]
+        self.state["drafts"] = []
+        gh = FakeGitHub()
+        self.run_file(gh)
+        self.assertEqual(gh.updated, [])
+        self.assertNotIn("bookclerk", [b["vulnerabilities"][0]["package"]["name"] for b in gh.created])
 
     def test_before_a_release_drafts_propose_no_range(self) -> None:
         self.state["release_tag"] = None

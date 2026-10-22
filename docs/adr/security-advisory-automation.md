@@ -80,8 +80,13 @@ are not.
    CVSS, and the evidence. A maintainer confirms the range and severity, prepares
    code fixes in a temporary private fork, sets the patched version and
    publishes. Each draft carries a hidden marker per upstream id and Bookclerk
-   package, so a draft is never filed twice, and one a maintainer closed as
-   not affecting Bookclerk is not filed again.
+   package (or per crash signature), so a draft is never filed twice, and one
+   a maintainer closed as not affecting Bookclerk is not filed again. When a
+   later run finds the same problem, an open draft is updated instead: only
+   the part of its description the automation owns is rewritten (and an
+   unset affected range filled once a release exists), so a maintainer's
+   notes, severity and range survive. Closed and published advisories are
+   never changed.
 6. **Least privilege, nothing public.** The job that runs build scripts and
    build tooling has no secrets and no token, and its output names no
    advisory. Alerts are read in another job with a read-only token that is
