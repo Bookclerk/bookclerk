@@ -321,6 +321,11 @@ def job_outputs(artifact: Mapping[str, Any]) -> dict[str, str]:
         or plan.selected("plugin_sdk_abi")
         or (plan.selected("api_docs") and (docs.get("all") or docs.get("typescript") or docs.get("ui")))
     )
+    # uv installs the Python SDK and its pdoc extra from uv.lock.
+    out["check_needs_uv"] = _b(
+        plan.selected("python_sdk")
+        or (plan.selected("api_docs") and (docs.get("all") or docs.get("python")))
+    )
     out["release_mode"] = plan.params("release").get("mode", "none") if plan.selected("release") else "none"
     return out
 
@@ -497,8 +502,26 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "") -> 
         venv = ctx.tmp / "venv-plugin-sdk"
         py = str(venv / ("Scripts" if ctx.os_name == "Windows" else "bin") / "python")
         return [
-            Command("python venv", [sys.executable, "-m", "venv", str(venv)]),
-            Command("pip install plugin-sdk-python", [py, "-m", "pip", "install", "-e", "packages/plugin-sdk-python[dev,docs]"]),
+            # Installs the SDK and its dev/docs extras at the versions in uv.lock
+            # (the lockfile OSV scans); `--locked` fails when the lockfile no
+            # longer matches pyproject.toml. Quiet: a sync lists every installed
+            # version, which would show an unpublished OSV remediation bump in
+            # the public log.
+            Command(
+                "uv sync plugin-sdk-python",
+                [
+                    "uv",
+                    "sync",
+                    "--quiet",
+                    "--project",
+                    "packages/plugin-sdk-python",
+                    "--locked",
+                    "--all-extras",
+                    "--python",
+                    sys.executable,
+                ],
+                env={"UV_PROJECT_ENVIRONMENT": str(venv)},
+            ),
             Command("ruff", [py, "-m", "ruff", "check", "packages/plugin-sdk-python"]),
             Command("pytest", [py, "-m", "pytest", "packages/plugin-sdk-python/tests", "-q"]),
         ]
@@ -861,7 +884,10 @@ def _run_one(cmd: Command, ctx: Context) -> None:
             raise ExecError(f"{cmd.label}: missing {target}")
         return
     env = {**os.environ, **cmd.env}
-    proc = subprocess.run(cmd.argv, cwd=cmd.cwd or str(ctx.workspace), env=env)
+    try:
+        proc = subprocess.run(cmd.argv, cwd=cmd.cwd or str(ctx.workspace), env=env)
+    except FileNotFoundError as err:
+        raise ExecError(f"{cmd.label}: `{head}` is not installed or not on PATH") from err
     if proc.returncode != 0:
         raise ExecError(f"{cmd.label}: `{' '.join(cmd.argv)}` exited {proc.returncode}")
 
