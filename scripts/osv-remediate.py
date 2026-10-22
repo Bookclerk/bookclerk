@@ -705,8 +705,9 @@ def render_summary(fixed: list[tuple[Target, Version]]) -> str:
         "",
         "Manifests are unchanged: each bump stays within the existing version",
         "requirements, and each was checked against the advisory's affected",
-        "ranges after the update. CI on this pull request builds and tests the",
-        "result.",
+        "ranges after the update. The full CI suite passed on these bumps before",
+        "this pull request was opened; it is queued to merge once its required",
+        "checks pass.",
         "",
     ]
     return "\n".join(lines)

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""OSV remediation: version ranges, lockfile parsing, planning and rollback (offline)."""
+"""OSV remediation: version ranges, lockfile parsing, planning, rollback and sealing (offline)."""
 
 from __future__ import annotations
 
 import importlib.util
 import json
 import os
+import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -333,6 +335,101 @@ class ApplyTest(unittest.TestCase):
         self.assertIn(
             "| `Cargo.lock` | `rustls` | 0.23.45 | 0.23.46 | RUSTSEC-2026-0346 |", body
         )
+
+
+BUNDLE_SCRIPT = ROOT / "scripts" / "osv-remediation-bundle.sh"
+
+
+def _git(repo: Path, *args: str) -> str:
+    """Runs git in `repo` with a fixed identity and returns its stdout."""
+    return subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@invalid", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+@unittest.skipUnless(
+    shutil.which("openssl") and shutil.which("git"), "needs openssl and git"
+)
+class BundleTest(unittest.TestCase):
+    """The sealed bundle round-trips one commit and refuses a wrong key."""
+
+    def _bundle(self, *args: str, key: str) -> subprocess.CompletedProcess[str]:
+        env = {**os.environ, "BUNDLE_KEY": key}
+        return subprocess.run(
+            ["bash", str(BUNDLE_SCRIPT), *args],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_round_trip_checks_out_the_sealed_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            src = base / "src"
+            src.mkdir()
+            _git(src, "init", "-q")
+            (src / "Cargo.lock").write_text("old\n", encoding="utf-8")
+            _git(src, "add", ".")
+            _git(src, "commit", "-qm", "base")
+            clone = base / "clone"
+            _git(base, "clone", "-q", str(src), str(clone))
+            (src / "Cargo.lock").write_text("new\n", encoding="utf-8")
+            _git(src, "commit", "-qam", "bump")
+            _git(src, "branch", "osv-remediation")
+            sealed_dir = base / "sealed"
+            sealed_dir.mkdir()
+            _git(
+                src,
+                "bundle",
+                "create",
+                "-q",
+                str(sealed_dir / "head.bundle"),
+                "osv-remediation",
+                "^HEAD^",
+            )
+            (sealed_dir / "summary.md").write_text("body\n", encoding="utf-8")
+            sealed = base / "sealed.bin"
+            self.assertEqual(
+                self._bundle("seal", str(sealed_dir), str(sealed), key="k1").returncode,
+                0,
+            )
+            self.assertNotIn(b"new", sealed.read_bytes())
+
+            opened = base / "opened"
+            self.assertEqual(
+                self._bundle("open", str(sealed), str(opened), key="k1").returncode, 0
+            )
+            self.assertEqual(
+                (opened / "summary.md").read_text(encoding="utf-8"), "body\n"
+            )
+            _git(
+                clone,
+                "fetch",
+                "-q",
+                str(opened / "head.bundle"),
+                "refs/heads/osv-remediation",
+            )
+            _git(clone, "checkout", "-q", "--detach", "FETCH_HEAD")
+            self.assertEqual(
+                _git(clone, "rev-parse", "HEAD"), _git(src, "rev-parse", "HEAD")
+            )
+            self.assertEqual(
+                (clone / "Cargo.lock").read_text(encoding="utf-8"), "new\n"
+            )
+
+            wrong = self._bundle("open", str(sealed), str(base / "wrong"), key="k2")
+            self.assertNotEqual(wrong.returncode, 0)
+
+    def test_empty_key_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._bundle("seal", tmp, str(Path(tmp) / "x.bin"), key="")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("BUNDLE_KEY is empty", result.stderr)
 
 
 if __name__ == "__main__":

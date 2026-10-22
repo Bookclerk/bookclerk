@@ -6,6 +6,23 @@ on:
   pull_request:
   merge_group:
     types: [checks_requested]
+  # The OSV remediation workflow runs the whole suite on a lockfile bump it
+  # has not published yet: every job checks out the sealed commit after
+  # actions/checkout, caches are not saved, and cargo output is quiet.
+  workflow_call:
+    inputs:
+      private-head:
+        description: Check out this run's sealed OSV remediation commit in every job.
+        type: boolean
+        default: false
+      private-sha:
+        description: Id of the sealed commit (its parent is github.sha).
+        type: string
+        default: ""
+    secrets:
+      OSV_REMEDIATION_BUNDLE_KEY:
+        description: Passphrase of the sealed OSV remediation bundle.
+        required: false
 
 # Cancel superseded PR runs; never cancel merge_group / main.
 concurrency:
@@ -32,6 +49,9 @@ env:
   # selective prediction is recorded in the plan summary for audit. "1" = jobs
   # and checks follow the prediction. merge_group / main always --force-full.
   SELECTIVE_CI: "1"
+  # Quiet cargo on an unpublished OSV remediation bump: "Compiling <crate>
+  # <version>" lines would show the bump in the public log.
+  CARGO_TERM_QUIET: ${{ inputs.private-head && 'true' || 'false' }}
 
 # Every job below `plan` downloads the `ci-plan` artifact, validates it
 # (schema, run id, checked-out commit) and runs checks through
@@ -72,6 +92,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Run by the OSV remediation workflow: test its unpublished lockfile
+      # bump (see docs/ci.md#osv-remediation).
+      - name: Check out the OSV remediation head
+        if: inputs.private-head
+        uses: ./.github/actions/osv-remediation-head
+        with:
+          key: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
+          sha: ${{ inputs.private-sha }}
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
@@ -81,7 +110,11 @@ jobs:
         id: shas
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
+          if [ "${{ inputs.private-head }}" = "true" ]; then
+            # The sealed commit sits on top of github.sha.
+            HEAD="$(git rev-parse HEAD)"
+            BASE="$(git rev-parse HEAD^)"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
             BASE="${{ github.event.pull_request.base.sha }}"
             HEAD="${{ github.event.pull_request.head.sha }}"
           elif [ "${{ github.event_name }}" = "merge_group" ]; then
@@ -128,8 +161,9 @@ jobs:
         run: |
           set -euo pipefail
           EXTRA=()
-          # Full suite on merge_group / main push regardless of paths.
-          if [ "${{ github.event_name }}" = "merge_group" ] || [ "${{ github.ref }}" = "refs/heads/main" ]; then
+          # Full suite on merge_group / main push / OSV remediation regardless
+          # of paths.
+          if [ "${{ github.event_name }}" = "merge_group" ] || [ "${{ github.ref }}" = "refs/heads/main" ] || [ "${{ inputs.private-head }}" = "true" ]; then
             EXTRA+=(--force-full)
           fi
           # main only advances through the merge queue, whose run already
@@ -160,6 +194,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Run by the OSV remediation workflow: test its unpublished lockfile
+      # bump (see docs/ci.md#osv-remediation).
+      - name: Check out the OSV remediation head
+        if: inputs.private-head
+        uses: ./.github/actions/osv-remediation-head
+        with:
+          key: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
+          sha: ${{ inputs.private-sha }}
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ci-plan
@@ -180,7 +223,8 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
-          cache: npm
+          # No npm cache for an unpublished OSV remediation bump.
+          cache: ${{ !inputs.private-head && 'npm' || '' }}
           cache-dependency-path: |
             ui/package-lock.json
             packages/plugin-sdk/package-lock.json
@@ -198,7 +242,7 @@ jobs:
           shared-key: lint
           env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' && !inputs.private-head }}
 
       - name: UI lint, tests and build
         if: needs.plan.outputs.check_ui == 'true'
@@ -252,6 +296,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Run by the OSV remediation workflow: test its unpublished lockfile
+      # bump (see docs/ci.md#osv-remediation).
+      - name: Check out the OSV remediation head
+        if: inputs.private-head
+        uses: ./.github/actions/osv-remediation-head
+        with:
+          key: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
+          sha: ${{ inputs.private-sha }}
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ci-plan
@@ -281,7 +334,7 @@ jobs:
           shared-key: debug
           env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' && !inputs.private-head }}
 
       - name: Test
         run: python3 scripts/ci-exec.py run rust_test
@@ -293,6 +346,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Run by the OSV remediation workflow: test its unpublished lockfile
+      # bump (see docs/ci.md#osv-remediation).
+      - name: Check out the OSV remediation head
+        if: inputs.private-head
+        uses: ./.github/actions/osv-remediation-head
+        with:
+          key: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
+          sha: ${{ inputs.private-sha }}
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -331,6 +393,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Run by the OSV remediation workflow: test its unpublished lockfile
+      # bump (see docs/ci.md#osv-remediation).
+      - name: Check out the OSV remediation head
+        if: inputs.private-head
+        uses: ./.github/actions/osv-remediation-head
+        with:
+          key: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
+          sha: ${{ inputs.private-sha }}
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ci-plan
@@ -349,7 +420,8 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
-          cache: npm
+          # No npm cache for an unpublished OSV remediation bump.
+          cache: ${{ !inputs.private-head && 'npm' || '' }}
           cache-dependency-path: ui/package-lock.json
 
       - name: Install capnproto
@@ -363,7 +435,7 @@ jobs:
           shared-key: release
           env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' && !inputs.private-head }}
 
       - name: Build release binaries
         env:
@@ -381,6 +453,15 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Run by the OSV remediation workflow: test its unpublished lockfile
+      # bump (see docs/ci.md#osv-remediation).
+      - name: Check out the OSV remediation head
+        if: inputs.private-head
+        uses: ./.github/actions/osv-remediation-head
+        with:
+          key: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
+          sha: ${{ inputs.private-sha }}
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -424,6 +505,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Run by the OSV remediation workflow: test its unpublished lockfile
+      # bump (see docs/ci.md#osv-remediation).
+      - name: Check out the OSV remediation head
+        if: inputs.private-head
+        uses: ./.github/actions/osv-remediation-head
+        with:
+          key: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
+          sha: ${{ inputs.private-sha }}
+
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -448,7 +538,7 @@ jobs:
           shared-key: debug
           env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' && matrix.os != 'ubuntu-latest' }}
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.os != 'ubuntu-latest' && !inputs.private-head }}
 
       - name: Install capnproto (Linux)
         if: runner.os == 'Linux'
@@ -496,6 +586,15 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Run by the OSV remediation workflow: test its unpublished lockfile
+      # bump (see docs/ci.md#osv-remediation).
+      - name: Check out the OSV remediation head
+        if: inputs.private-head
+        uses: ./.github/actions/osv-remediation-head
+        with:
+          key: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
+          sha: ${{ inputs.private-sha }}
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -555,6 +654,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Run by the OSV remediation workflow: test its unpublished lockfile
+      # bump (see docs/ci.md#osv-remediation).
+      - name: Check out the OSV remediation head
+        if: inputs.private-head
+        uses: ./.github/actions/osv-remediation-head
+        with:
+          key: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
+          sha: ${{ inputs.private-sha }}
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ci-plan
@@ -592,6 +700,15 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Run by the OSV remediation workflow: test its unpublished lockfile
+      # bump (see docs/ci.md#osv-remediation).
+      - name: Check out the OSV remediation head
+        if: inputs.private-head
+        uses: ./.github/actions/osv-remediation-head
+        with:
+          key: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
+          sha: ${{ inputs.private-sha }}
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -651,6 +768,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Run by the OSV remediation workflow: test its unpublished lockfile
+      # bump (see docs/ci.md#osv-remediation).
+      - name: Check out the OSV remediation head
+        if: inputs.private-head
+        uses: ./.github/actions/osv-remediation-head
+        with:
+          key: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
+          sha: ${{ inputs.private-sha }}
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ci-plan
@@ -688,15 +814,16 @@ jobs:
           path: ${{ runner.temp }}/BookclerkFiles/envelope-metrics.json
           if-no-files-found: warn
 
-  # A merge group only needs to know whether it can land. Once any job fails,
-  # cancel the rest of the run so CI Gate reports at once and the queue ejects
-  # the group instead of holding runners until the slowest job ends. Pull
-  # requests keep running every job so one round shows every failure. This
-  # job builds and runs no repository code; it is the only one that can
-  # cancel the run.
+  # A merge group, like an OSV remediation run, only needs to know whether it
+  # can land. Once any job fails, cancel the rest of the run so CI Gate
+  # reports at once and the queue ejects the group instead of holding runners
+  # until the slowest job ends. Pull requests keep running every job so one
+  # round shows every failure. This job builds and runs no repository code;
+  # it is the only one that can cancel the run. In a called run, job names
+  # carry the caller's prefix (`<caller job> / CI Gate`).
   merge-queue-fail-fast:
     name: merge-queue fail-fast
-    if: github.event_name == 'merge_group'
+    if: github.event_name == 'merge_group' || inputs.private-head
     runs-on: ubuntu-latest
     timeout-minutes: 130
     permissions:
@@ -711,18 +838,18 @@ jobs:
           set -uo pipefail
           while true; do
             if ! jobs=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
-                --jq '.jobs[] | select(.name != "merge-queue fail-fast") | "\(.status)|\(.conclusion)|\(.name)"'); then
+                --jq '.jobs[] | select(.name | endswith("merge-queue fail-fast") | not) | "\(.status)|\(.conclusion)|\(.name)"'); then
               sleep 30
               continue
             fi
             # CI Gate starts only after every other job has finished; from
             # then on it reports the result, and a cancel would stop it.
-            if grep -qE '^(in_progress|completed)\|[^|]*\|CI Gate$' <<<"$jobs"; then
+            if grep -qE '^(in_progress|completed)\|[^|]*\|(.* / )?CI Gate$' <<<"$jobs"; then
               exit 0
             fi
             failed=$(grep -E '^completed\|(failure|timed_out)\|' <<<"$jobs" || true)
             # Cancel only while another job is still running or waiting.
-            pending=$(grep -vE '^completed\|' <<<"$jobs" | grep -v '|CI Gate$' || true)
+            pending=$(grep -vE '^completed\|' <<<"$jobs" | grep -vE '\|(.* / )?CI Gate$' || true)
             if [ -n "$failed" ] && [ -n "$pending" ]; then
               echo "::error::cancelling the merge-group run: $(cut -d'|' -f3 <<<"$failed" | paste -sd, -)"
               gh run cancel "$RUN_ID"
@@ -738,6 +865,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Run by the OSV remediation workflow: test its unpublished lockfile
+      # bump (see docs/ci.md#osv-remediation).
+      - name: Check out the OSV remediation head
+        if: inputs.private-head
+        uses: ./.github/actions/osv-remediation-head
+        with:
+          key: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
+          sha: ${{ inputs.private-sha }}
 
       # A failed or skipped plan job leaves no artifact: download fails and
       # so does the gate.

@@ -1,0 +1,62 @@
+# Open the sealed OSV remediation bundle of this run and, optionally, check
+# out the lockfile bump it carries.
+#
+# Used by every job of ci.yml when the OSV remediation workflow calls it with
+# `private-head: true`, and by that workflow's publish job. Run it right after
+# actions/checkout of `github.sha`: the bundle holds one commit whose parent is
+# that commit, so a depth-1 checkout is enough.
+#
+# The bundle is encrypted because artifacts of a public repository are
+# downloadable by anyone; see scripts/osv-remediation-bundle.sh and
+# docs/ci.md#osv-remediation.
+
+name: OSV remediation head
+description: Decrypt this run's OSV remediation bundle and check out the commit it carries.
+
+inputs:
+  key:
+    description: The OSV_REMEDIATION_BUNDLE_KEY secret.
+    required: true
+  sha:
+    description: >
+      Commit id the sealing job reported. The checked-out commit must match
+      it; empty skips the checkout (only the pull request body is needed).
+    required: false
+    default: ""
+
+outputs:
+  dir:
+    description: Directory holding the opened bundle (`summary.md`, and `head.bundle` when a bump was made).
+    value: ${{ steps.open.outputs.dir }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: osv-remediation
+        path: ${{ runner.temp }}/osv-remediation-sealed
+
+    - name: Open the bundle
+      id: open
+      shell: bash
+      env:
+        BUNDLE_KEY: ${{ inputs.key }}
+        EXPECTED_SHA: ${{ inputs.sha }}
+      run: |
+        set -euo pipefail
+        dir="$RUNNER_TEMP/osv-remediation"
+        bash "$GITHUB_WORKSPACE/scripts/osv-remediation-bundle.sh" \
+          open "$RUNNER_TEMP/osv-remediation-sealed/sealed.bin" "$dir"
+        echo "dir=$dir" >> "$GITHUB_OUTPUT"
+        if [[ -z "$EXPECTED_SHA" ]]; then
+          exit 0
+        fi
+        # Quiet, so the log never lists what the commit changes.
+        git fetch --quiet "$dir/head.bundle" refs/heads/osv-remediation
+        git -c advice.detachedHead=false checkout --quiet --detach FETCH_HEAD
+        actual="$(git rev-parse HEAD)"
+        if [[ "$actual" != "$EXPECTED_SHA" ]]; then
+          echo "::error::bundle commit $actual is not the sealed commit $EXPECTED_SHA"
+          exit 1
+        fi

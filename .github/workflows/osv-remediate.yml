@@ -1,4 +1,5 @@
-# Bump locked dependencies that open OSV code-scanning alerts flag.
+# Bump locked dependencies that open OSV code-scanning alerts flag, prove the
+# bump passes the full CI suite, and only then publish it and queue it.
 #
 # Runs after each full OSV scan of main (push, schedule or manual run of
 # osv-scanner.yml). Reads the open OSV-Scanner alerts with the automation App
@@ -6,14 +7,22 @@
 # (Cargo.lock, package-lock.json) that move each flagged package out of its
 # advisory's affected ranges. Manifests are never edited.
 #
-# Alert details are not public: this workflow's log prints counts only, and
-# the pull request lists only the bumps it applied (advisory ids are public
-# once the fix lands). Unfixed alerts stay in Security -> Code scanning.
+# Nothing about a bump is public until it is known to land:
+# - `bump` commits the bump locally and seals it (a git bundle plus the pull
+#   request body) with the OSV_REMEDIATION_BUNDLE_KEY secret, because
+#   artifacts of a public repository are downloadable by anyone.
+# - `verify` runs ci.yml with `private-head: true`: every CI job opens the
+#   sealed bundle and checks the bump out, caches are not saved, and cargo
+#   output is quiet.
+# - `publish` runs only when CI Gate passed: it pushes the branch, opens the
+#   pull request ready for review and turns on auto-merge, so the merge queue
+#   lands it once the PR's required checks pass. A failed verification
+#   publishes nothing; the run fails and the alerts stay in
+#   Security -> Code scanning for a maintainer.
 #
-# The pull request opens as a draft (marked ready once CI Gate is green, as
-# AGENTS.md requires) and is never auto-merged: a bump can pull in a release
-# newer than the Dependabot cooldown, so a maintainer approves it.
-# See docs/ci.md#automation-app.
+# A run with nothing to bump still runs `publish`, which then finds no diff
+# and closes an earlier remediation pull request. This workflow's own log
+# prints counts only. See docs/ci.md#osv-remediation.
 
 name: OSV remediation
 
@@ -36,21 +45,25 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  remediate:
+  bump:
     name: bump flagged dependencies
     # Only full scans of main: PR and merge-group scans report diffs, not the
     # alerts on main. The event check also matters for safety: `branches`
     # matches the triggering run's head branch name, which a fork PR can also
-    # call `main`. Either way the job checks out main, never PR code.
+    # call `main`. Either way every job checks out `github.sha`, which for
+    # these events is the tip of main, never PR code.
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
        contains(fromJSON('["push", "schedule", "workflow_dispatch"]'), github.event.workflow_run.event))
     runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.bump.outputs.changed }}
+      sha: ${{ steps.seal.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main
           persist-credentials: false
 
       - name: Install Rust toolchain
@@ -76,15 +89,86 @@ jobs:
         env:
           ALERTS_TOKEN: ${{ steps.read.outputs.token }}
         run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/osv-remediation"
           python3 scripts/osv-remediate.py \
             --ref refs/heads/main \
-            --summary "$RUNNER_TEMP/osv-remediation.md" \
+            --summary "$RUNNER_TEMP/osv-remediation/summary.md" \
             --github-output "$GITHUB_OUTPUT"
 
-      # The PR steps run even when nothing changed: create-pull-request then
-      # finds no diff and closes an earlier remediation PR whose alerts were
-      # resolved some other way. They are skipped when the script fails, so a
-      # transient error never closes an open fix.
+      # A local commit only: it travels sealed to the CI jobs, and `publish`
+      # recommits the same lockfiles through the API, signed by the App.
+      - name: Commit and seal the bump
+        id: seal
+        env:
+          BUNDLE_KEY: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
+          CHANGED: ${{ steps.bump.outputs.changed }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/osv-remediation"
+          if [[ "$CHANGED" == "true" ]]; then
+            # The script only rewrites tracked lockfiles.
+            git add --update
+            git -c user.name="OSV remediation" -c user.email="osv-remediation@invalid" \
+              commit --quiet --no-verify -m "build(deps): bump dependencies flagged by OSV"
+            git branch osv-remediation
+            git bundle create --quiet "$dir/head.bundle" osv-remediation ^HEAD^
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+          mkdir -p "$RUNNER_TEMP/osv-remediation-sealed"
+          scripts/osv-remediation-bundle.sh seal "$dir" "$RUNNER_TEMP/osv-remediation-sealed/sealed.bin"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: osv-remediation
+          path: ${{ runner.temp }}/osv-remediation-sealed/sealed.bin
+          if-no-files-found: error
+          retention-days: 1
+
+  verify:
+    name: verify
+    needs: bump
+    if: needs.bump.outputs.changed == 'true'
+    # ci.yml's fail-fast job needs `actions: write` to cancel this run when a
+    # CI job fails; every other ci.yml job keeps `contents: read`.
+    permissions:
+      contents: read
+      actions: write
+    uses: ./.github/workflows/ci.yml
+    with:
+      private-head: true
+      private-sha: ${{ needs.bump.outputs.sha }}
+    secrets:
+      OSV_REMEDIATION_BUNDLE_KEY: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
+
+  publish:
+    name: publish and queue
+    needs: [bump, verify]
+    # Publish only a verified bump. With nothing to bump, still run so an
+    # earlier remediation PR with no remaining diff is closed. A failed
+    # `bump` (for example a transient API error) never closes an open fix.
+    if: >-
+      always() && needs.bump.result == 'success' &&
+      (needs.bump.outputs.changed != 'true' || needs.verify.result == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Open the sealed bump
+        id: head
+        uses: ./.github/actions/osv-remediation-head
+        with:
+          key: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
+          sha: ${{ needs.bump.outputs.sha }}
+
+      # Leave the verified lockfiles as uncommitted changes on github.sha for
+      # create-pull-request to commit.
+      - name: Stage the bump on main
+        if: needs.bump.outputs.changed == 'true'
+        run: git reset --quiet --soft HEAD^
+
       - name: Mint pull-request token
         id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -95,9 +179,11 @@ jobs:
           permission-pull-requests: write
 
       - name: Create, update or close pull request
+        id: cpr
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ steps.app.outputs.token }}
+          base: main
           # Commit through the API so the commit is signed and attributed to the App.
           sign-commits: true
           commit-message: |
@@ -105,13 +191,21 @@ jobs:
 
             Lockfile-only updates within existing version requirements.
           branch: deps/osv-remediation
-          draft: true
           delete-branch: true
           title: "build(deps): bump dependencies flagged by OSV"
-          body-path: ${{ runner.temp }}/osv-remediation.md
+          body-path: ${{ steps.head.outputs.dir }}/summary.md
           labels: |
             dependencies
           # Git pathspecs: `*` also matches `/`, so these cover nested lockfiles.
           add-paths: |
             *Cargo.lock
             *package-lock.json
+
+      # The full suite already passed on this bump, so the PR opens ready and
+      # goes straight to the merge queue once its required checks pass.
+      - name: Enable auto-merge
+        if: steps.cpr.outputs.pull-request-operation == 'created' || steps.cpr.outputs.pull-request-operation == 'updated'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR_NUMBER: ${{ steps.cpr.outputs.pull-request-number }}
+        run: gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --squash
