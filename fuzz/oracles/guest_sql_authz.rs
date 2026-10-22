@@ -16,11 +16,12 @@
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use bookclerk_db_exec::lower_canonical_sql;
+use bookclerk_db_exec::{lower_canonical_sql, lower_canonical_sql_typed};
 use bookclerk_plugin_abi::{
     authorize_guest_sql_policy, guest_statement_kind, sql_type_env_from_canonical_statements,
-    validate_guest_execute_request_for_policy, DbPlanStatementKind, DbResultSelection, DbValue,
-    ExecuteRequest, GuestSqlPolicy, TypedDbStatement, BOOKCLERK_RESERVED_PREFIX,
+    typecheck_execute_request_proofs, validate_guest_execute_request_for_policy,
+    DbPlanStatementKind, DbResultSelection, DbValue, ExecuteRequest, GuestSqlPolicy, SqlTypeEnv,
+    TypedDbStatement, BOOKCLERK_RESERVED_PREFIX,
 };
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::Connection;
@@ -101,6 +102,17 @@ impl Variant {
         matches!(self, Self::BindingOwned | Self::BindingMigration)
     }
 
+    /// True for the variants whose policy carries the catalog: the host
+    /// executes their statements through the typed adapter path, whose
+    /// lowering is directed by the type proof.
+    #[must_use]
+    pub fn typed(self) -> bool {
+        matches!(
+            self,
+            Self::Typed | Self::BindingOwned | Self::BindingMigration
+        )
+    }
+
     /// The policy this variant hands to the authorizer, built once per
     /// process: parsing the catalog on every input would dominate the fuzzer's
     /// time without exercising anything new.
@@ -117,7 +129,7 @@ impl Variant {
 
     /// Builds this variant's policy from [`SCHEMA`].
     fn build_policy(self) -> GuestSqlPolicy {
-        let env = sql_type_env_from_canonical_statements(SCHEMA);
+        let env = typed_env().clone();
         match self {
             Self::Lexical => GuestSqlPolicy::allow_tables(GRANTED_TABLES),
             Self::ColumnRestricted => GuestSqlPolicy::allow_tables(GRANTED_TABLES)
@@ -127,6 +139,39 @@ impl Variant {
             Self::BindingMigration => GuestSqlPolicy::binding_migration().with_sql_types(env),
         }
     }
+}
+
+/// The catalog the typed variants carry, parsed from [`SCHEMA`] once.
+fn typed_env() -> &'static SqlTypeEnv {
+    static ENV: OnceLock<SqlTypeEnv> = OnceLock::new();
+    ENV.get_or_init(|| sql_type_env_from_canonical_statements(SCHEMA))
+}
+
+/// Lowers `sql` for SQLite the way the host lowers it under `variant`.
+///
+/// A typed variant executes through the typed adapter, which lowers a non-DDL
+/// statement with its type proof (`lower_canonical_sql_typed`), so the
+/// proof's rewrite sites (integer overflow wraps) reach the engine. The
+/// lexical variants and DDL go through the mechanical lowering
+/// (`lower_canonical_sql`), as `execute_physical_sql` does. A statement whose
+/// proof cannot be built here falls back to mechanical lowering: the host
+/// already typechecked it when it admitted it.
+///
+/// # Errors
+///
+/// The lowering's own rejection of a proof it should accept, as text.
+pub fn lowered_for(variant: Variant, sql: &str, text_binds: bool) -> Result<String, String> {
+    if variant.typed() && !is_ddl(sql) {
+        if let Ok(proofs) =
+            typecheck_execute_request_proofs(&request_for(sql, text_binds), typed_env())
+        {
+            // The adapter lowers the trimmed statement, which the proof is
+            // bound to.
+            return lower_canonical_sql_typed(DatabaseBackend::Sqlite, sql.trim(), proofs.first())
+                .map_err(|err| err.to_string());
+        }
+    }
+    Ok(lower_canonical_sql(DatabaseBackend::Sqlite, sql))
 }
 
 /// One access SQLite's authorizer reported while compiling a statement.
@@ -333,8 +378,21 @@ thread_local! {
     static ORACLE: RefCell<Option<Oracle>> = const { RefCell::new(None) };
 }
 
-/// Compiles `sql`, lowered for SQLite, on the oracle database and returns
-/// every access SQLite's authorizer reported, in order.
+/// [`sqlite_accesses`] with the lowering the host applies under `variant`
+/// ([`lowered_for`]); a lowering that refuses an admitted statement is an
+/// [`Access::Unprepared`] finding.
+#[must_use]
+pub fn sqlite_accesses_for(variant: Variant, sql: &str, text_binds: bool) -> Vec<Access> {
+    match lowered_for(variant, sql, text_binds) {
+        Ok(lowered) => accesses_of(sql, &lowered),
+        Err(message) => vec![Access::Unprepared(format!(
+            "typed lowering failed: {message}"
+        ))],
+    }
+}
+
+/// Compiles `sql`, mechanically lowered for SQLite, on the oracle database
+/// and returns every access SQLite's authorizer reported, in order.
 ///
 /// A statement SQLite cannot prepare yields the accesses reported before the
 /// error plus one more: a `no such table` error becomes an
@@ -351,6 +409,12 @@ thread_local! {
 /// broken oracle as "touched nothing".
 #[must_use]
 pub fn sqlite_accesses(sql: &str) -> Vec<Access> {
+    accesses_of(sql, &lower_canonical_sql(DatabaseBackend::Sqlite, sql))
+}
+
+/// Prepares `lowered`, the SQLite form of the canonical `sql`, on the oracle
+/// database and classifies what the authorizer and the prepare error report.
+fn accesses_of(sql: &str, lowered: &str) -> Vec<Access> {
     ORACLE.with_borrow_mut(|slot| {
         if slot.is_none() {
             match Oracle::new() {
@@ -364,12 +428,11 @@ pub fn sqlite_accesses(sql: &str) -> Vec<Access> {
         if let Ok(mut seen) = oracle.seen.lock() {
             seen.clear();
         }
-        let lowered = lower_canonical_sql(DatabaseBackend::Sqlite, sql);
         let prepare_error = oracle
             .conn
-            .prepare(&lowered)
+            .prepare(lowered)
             .err()
-            .map(|err| strip_echo(&err, &lowered));
+            .map(|err| strip_echo(&err, lowered));
         let mut out = oracle
             .seen
             .lock()
@@ -387,7 +450,7 @@ pub fn sqlite_accesses(sql: &str) -> Vec<Access> {
                 // `SELECT x.* FROM books` with no source `x` also fails with
                 // "no such table: x"; a name that is only a dangling qualifier
                 // or alias was never a table reference and reads nothing.
-                if oracle.is_table_reference(&lowered, &table) {
+                if oracle.is_table_reference(lowered, &table) {
                     out.push(Access::MissingTable(table));
                 }
             } else if let Some(rest) = message.strip_prefix("table ") {
@@ -538,8 +601,10 @@ fn binding_reserved(table: &str) -> bool {
     table.starts_with(BOOKCLERK_RESERVED_PREFIX) || table.starts_with("sqlite_")
 }
 
-/// Table names the authorizer reports that are not in [`PHYSICAL_TABLES`] are
-/// CTE or subquery aliases and carry no authority, so they are skipped. A name
+/// An engine catalog read (`sqlite_*`) is a violation unless the statement
+/// is DDL, which SQLite serves from its own catalog. Other table names the
+/// authorizer reports that are not in [`PHYSICAL_TABLES`] are CTE or subquery
+/// aliases and carry no authority, so they are skipped. A name
 /// SQLite could not resolve at all ([`Access::MissingTable`]) is no alias: a
 /// non-binding variant that admitted it touched an ungranted table, and a
 /// binding variant is held to the reserved-name rule as for a known table.
@@ -549,6 +614,15 @@ pub fn violation(variant: Variant, accesses: &[Access]) -> Option<String> {
     for access in accesses {
         match access {
             Access::Table { table, column } => {
+                if table.starts_with("sqlite_") {
+                    // SQLite reads and writes its own catalog while it runs
+                    // DDL; a statement without a schema action that reaches
+                    // the catalog named it, which no grant allows.
+                    if accesses.iter().any(|a| matches!(a, Access::Schema { .. })) {
+                        continue;
+                    }
+                    return Some(format!("touched engine catalog {table}"));
+                }
                 if !PHYSICAL_TABLES.contains(&table.as_str()) {
                     continue;
                 }
@@ -642,7 +716,7 @@ pub fn check(data: &[u8]) -> bool {
     if host_admits(variant, sql, text_binds).is_err() {
         return false;
     }
-    let accesses = sqlite_accesses(sql);
+    let accesses = sqlite_accesses_for(variant, sql, text_binds);
     if let Some(why) = violation(variant, &accesses) {
         panic!("{variant:?} admitted {sql:?}: {why}; sqlite saw {accesses:?}");
     }

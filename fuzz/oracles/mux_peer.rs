@@ -11,8 +11,9 @@
 //! - once the peer's bytes end the mux settles within [`SETTLE`]: every
 //!   `accept` returns, every accepted stream reaches end of stream, and both
 //!   mux tasks finish after `shutdown`;
-//! - no more payload is delivered than the peer sent and no more streams are
-//!   accepted than the peer could have opened;
+//! - no more payload is delivered than the peer's complete `Data` frames
+//!   carried and no more streams are accepted than the peer's complete
+//!   `Open` frames asked for;
 //! - no mux task outlives its runtime.
 
 use std::io::Cursor;
@@ -33,6 +34,52 @@ pub const SETTLE: Duration = Duration::from_secs(5);
 /// Smallest wire frame: `u32` length, type byte and `u32` connection id.
 pub const MIN_FRAME_BYTES: usize = 9;
 
+/// Frame type byte of a peer `Open`, as `bookclerk_plugin_sdk::mux` numbers it.
+const TYPE_OPEN: u8 = 1;
+
+/// Frame type byte of a peer `Data` frame.
+const TYPE_DATA: u8 = 2;
+
+/// What the peer's bytes offered, read independently of the mux: the
+/// upper bounds the local side's observations must stay under.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Offered {
+    /// Complete `Open` frames, duplicates and wrong-parity ids included.
+    pub opens: usize,
+    /// Payload bytes of complete `Data` frames, on any stream id.
+    pub data_bytes: usize,
+}
+
+/// Walks the peer's byte stream frame by frame: a big-endian `u32` length
+/// covering a type byte, a big-endian `u32` stream id and the payload. Stops
+/// at the first incomplete frame or illegal length (shorter than the fixed
+/// header), where the mux stops reading too, so nothing after it counts.
+#[must_use]
+pub fn offered(data: &[u8]) -> Offered {
+    let mut out = Offered::default();
+    let mut i = 0;
+    while let Some(head) = data.get(i..i + MIN_FRAME_BYTES) {
+        let len = usize::try_from(u32::from_be_bytes([head[0], head[1], head[2], head[3]]))
+            .unwrap_or(usize::MAX);
+        if len < 5 {
+            break;
+        }
+        let Some(end) = i.checked_add(4).and_then(|start| start.checked_add(len)) else {
+            break;
+        };
+        if end > data.len() {
+            break;
+        }
+        match head[4] {
+            TYPE_OPEN => out.opens += 1,
+            TYPE_DATA => out.data_bytes += len - 5,
+            _ => {}
+        }
+        i = end;
+    }
+    out
+}
+
 /// What the local side observed while the peer's bytes were consumed.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Outcome {
@@ -52,9 +99,9 @@ pub struct Outcome {
 /// # Panics
 ///
 /// When an invariant fails: the mux does not settle within [`SETTLE`] after
-/// the peer's bytes end, more payload is delivered than the peer sent, more
-/// streams are accepted than the peer could have opened, or a mux task
-/// outlives the runtime.
+/// the peer's bytes end, more payload is delivered than the peer's `Data`
+/// frames carried, more streams are accepted than the peer's `Open` frames
+/// asked for, or a mux task outlives the runtime.
 #[must_use]
 pub fn check(data: &[u8]) -> Outcome {
     if data.len() > MAX_INPUT_BYTES {
@@ -132,17 +179,18 @@ async fn drive(data: &[u8]) -> Outcome {
         timeout(SETTLE, mux.closed()).await.is_ok(),
         "mux tasks did not finish within {SETTLE:?} after shutdown"
     );
+    let offered = offered(data);
     assert!(
-        outcome.received <= data.len(),
-        "delivered {} payload bytes from a {}-byte peer stream",
+        outcome.received <= offered.data_bytes,
+        "delivered {} payload bytes; the peer's Data frames carried {}",
         outcome.received,
-        data.len()
+        offered.data_bytes
     );
     assert!(
-        outcome.accepted <= data.len() / MIN_FRAME_BYTES,
-        "accepted {} streams from a {}-byte peer stream",
+        outcome.accepted <= offered.opens,
+        "accepted {} streams; the peer sent {} Open frames",
         outcome.accepted,
-        data.len()
+        offered.opens
     );
     outcome
 }

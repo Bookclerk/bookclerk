@@ -3222,11 +3222,12 @@ fn infer_concat(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
 
 fn infer_add(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
     scan.skip();
-    let lhs_start = scan.abs(scan.i);
+    let lhs_from = scan.i;
+    let lhs_start = scan.abs(lhs_from);
     let mut t = infer_mul(scan, cx)?;
     loop {
         scan.skip();
-        let lhs_end = scan.abs(scan.i);
+        let lhs_end = scan.abs(token_end(scan.sql, lhs_from, scan.i));
         let kind = if scan.take_op("+") {
             IntegerArithKind::Add
         } else if scan.take_op("-") {
@@ -3235,9 +3236,10 @@ fn infer_add(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
             break;
         };
         scan.skip();
-        let rhs_start = scan.abs(scan.i);
+        let rhs_from = scan.i;
+        let rhs_start = scan.abs(rhs_from);
         let r = infer_mul(scan, cx)?;
-        let rhs_end = scan.abs(scan.i);
+        let rhs_end = scan.abs(token_end(scan.sql, rhs_from, scan.i));
         t = unify_numeric(cx.index, t, r)?;
         if t == SqlType::Integer {
             cx.note_arith(IntegerArithSite {
@@ -3262,11 +3264,12 @@ fn infer_add(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
 
 fn infer_mul(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
     scan.skip();
-    let lhs_start = scan.abs(scan.i);
+    let lhs_from = scan.i;
+    let lhs_start = scan.abs(lhs_from);
     let mut t = infer_prefix(scan, cx)?;
     loop {
         scan.skip();
-        let lhs_end = scan.abs(scan.i);
+        let lhs_end = scan.abs(token_end(scan.sql, lhs_from, scan.i));
         if scan.take_op("%") {
             let r = infer_prefix(scan, cx)?;
             t = unify_integer_mod(cx.index, t, r)?;
@@ -3275,9 +3278,10 @@ fn infer_mul(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
             t = unify_numeric(cx.index, t, r)?;
         } else if scan.take_op("*") {
             scan.skip();
-            let rhs_start = scan.abs(scan.i);
+            let rhs_from = scan.i;
+            let rhs_start = scan.abs(rhs_from);
             let r = infer_prefix(scan, cx)?;
-            let rhs_end = scan.abs(scan.i);
+            let rhs_end = scan.abs(token_end(scan.sql, rhs_from, scan.i));
             t = unify_numeric(cx.index, t, r)?;
             if t == SqlType::Integer {
                 cx.note_arith(IntegerArithSite {
@@ -3301,6 +3305,55 @@ fn infer_mul(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
         }
     }
     Ok(t)
+}
+
+/// End of the last token in `sql[start..end]`: `end` with trailing
+/// whitespace and comments stripped, never below `start`.
+///
+/// The scanner's `skip` runs past an expression's trailing trivia before the
+/// parser learns the expression has ended, so a span taken from the scanner
+/// position would include it. A `--` comment that runs to the end of the
+/// statement must stay outside every rewrite span: the lowering wraps a span
+/// in parentheses, and a closing parenthesis inside the comment is lost.
+/// Quoted strings and identifiers are skipped whole, so `'--'` inside a
+/// literal is not a comment.
+fn token_end(sql: &str, start: usize, end: usize) -> usize {
+    let bytes = sql.as_bytes();
+    let end = end.min(bytes.len());
+    let mut i = start;
+    let mut last = start;
+    while i < end {
+        let rest = &bytes[i..end];
+        if rest.starts_with(b"--") {
+            i += rest.iter().position(|&b| b == b'\n').unwrap_or(rest.len());
+        } else if rest.starts_with(b"/*") {
+            i += rest[2..]
+                .windows(2)
+                .position(|w| w == b"*/")
+                .map_or(rest.len(), |p| p + 4);
+        } else if bytes[i].is_ascii_whitespace() {
+            i += 1;
+        } else if matches!(bytes[i], b'\'' | b'"' | b'`') {
+            let quote = bytes[i];
+            let mut j = i + 1;
+            while j < end {
+                if bytes[j] == quote {
+                    if bytes.get(j + 1) == Some(&quote) && j + 1 < end {
+                        j += 2;
+                        continue;
+                    }
+                    break;
+                }
+                j += 1;
+            }
+            i = (j + 1).min(end);
+            last = i;
+        } else {
+            i += 1;
+            last = i;
+        }
+    }
+    last
 }
 
 fn unify_integer_mod(index: usize, a: SqlType, b: SqlType) -> Result<SqlType> {
@@ -3718,7 +3771,7 @@ fn infer_call(
             if out == SqlType::Integer {
                 let full = SqlSpan {
                     start: scan.abs(ident_start),
-                    end: scan.abs(scan.i),
+                    end: scan.abs(token_end(scan.sql, ident_start, scan.i)),
                 };
                 cx.note_arith(IntegerArithSite {
                     full,
@@ -4740,6 +4793,26 @@ mod tests {
             timing: crate::DbTiming::default(),
         };
         assert!(catalog_page_statement(&empty).is_err());
+    }
+
+    #[test]
+    fn arithmetic_spans_stop_before_trailing_comments() {
+        // Found by the guest_sql_authz fuzz target once its oracle lowered
+        // with the proof: the right operand's span ran through a trailing
+        // `--` comment, so the overflow wrap's closing parenthesis landed
+        // inside the comment and SQLite saw incomplete input.
+        let sql = "SELECT 7 + 1 -- note";
+        let proofs = typecheck_execute_request_resolved(&req(sql), &SqlTypeEnv::new()).unwrap();
+        let site = &proofs[0].integer_arith_sites[0];
+        assert_eq!(&sql[site.full.start..site.full.end], "7 + 1");
+        assert_eq!(&sql[site.rhs.start..site.rhs.end], "1");
+        let sql = "SELECT 2 /* a */ * 3 /* b */ + abs(5) -- c";
+        let proofs = typecheck_execute_request_resolved(&req(sql), &SqlTypeEnv::new()).unwrap();
+        for site in &proofs[0].integer_arith_sites {
+            let text = &sql[site.full.start..site.full.end];
+            assert!(!text.ends_with("-- c") && !text.ends_with(' '), "{text:?}");
+        }
+        assert_eq!(token_end("'--' -- x", 0, 9), 4);
     }
 
     #[test]

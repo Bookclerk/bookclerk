@@ -178,6 +178,19 @@ fn unknown_tables_are_ungranted_not_aliases() {
     let drop = oracle::sqlite_accesses("DROP TABLE IF EXISTS encrypted_secrets");
     assert_eq!(oracle::violation(Variant::BindingMigration, &drop), None);
     assert!(oracle::violation(Variant::BindingOwned, &drop).is_some());
+    // SQLite serves DDL from its own catalog, which the authorizer reports as
+    // sqlite_master reads; a statement that names the catalog is a violation
+    // under every variant.
+    assert!(drop
+        .iter()
+        .any(|a| matches!(a, Access::Table { table, .. } if table == "sqlite_master")));
+    let catalog = oracle::sqlite_accesses("SELECT name FROM sqlite_master");
+    for variant in Variant::ALL {
+        assert!(
+            oracle::violation(variant, &catalog).is_some(),
+            "{variant:?}"
+        );
+    }
 }
 
 #[test]
@@ -189,5 +202,21 @@ fn every_variant_admits_a_plain_granted_select() {
         );
         let accesses = oracle::sqlite_accesses("SELECT id, title FROM books WHERE id = ?");
         assert_eq!(oracle::violation(variant, &accesses), None, "{variant:?}");
+        // The typed variants lower with the proof, so overflow rewrite sites
+        // reach SQLite; the lexical ones lower mechanically.
+        // Trailing whitespace: the adapter lowers the trimmed statement.
+        let arith = "SELECT id + 1, price * 2 FROM books WHERE id = ? ";
+        if oracle::host_admits(variant, arith, false).is_ok() {
+            let accesses = oracle::sqlite_accesses_for(variant, arith, false);
+            assert_eq!(oracle::violation(variant, &accesses), None, "{variant:?}");
+            if variant.typed() {
+                let lowered = oracle::lowered_for(variant, arith, false).unwrap();
+                assert_ne!(
+                    lowered,
+                    bookclerk_db_exec::lower_canonical_sql(sea_orm::DatabaseBackend::Sqlite, arith),
+                    "{variant:?}"
+                );
+            }
+        }
     }
 }

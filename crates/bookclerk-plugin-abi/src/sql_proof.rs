@@ -265,9 +265,43 @@ fn spans_nested_or_disjoint(a: SqlSpan, b: SqlSpan) -> bool {
 }
 
 /// True when `want` is the first non-whitespace operator between operands.
+/// True when the only code between the operands is the operator `want`:
+/// whitespace and comments may surround it, since operand spans end at their
+/// last token and a comment can sit on either side of the operator.
 fn binary_op_between(sql: &str, lhs_end: usize, rhs_start: usize, want: char) -> bool {
-    if lhs_end > rhs_start || rhs_start > sql.len() {
+    if lhs_end > rhs_start || rhs_start > sql.len() || !sql.is_char_boundary(lhs_end) {
         return false;
     }
-    sql[lhs_end..rhs_start].trim_start().starts_with(want)
+    let between = &sql[lhs_end..rhs_start];
+    let after_trivia = skip_trivia(between);
+    let Some(rest) = between
+        .get(after_trivia..)
+        .and_then(|rest| rest.strip_prefix(want))
+    else {
+        return false;
+    };
+    skip_trivia(rest) == rest.len()
+}
+
+/// Length of the leading whitespace and comments (`--` to end of line,
+/// `/* */`) of `s`.
+fn skip_trivia(s: &str) -> usize {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let rest = &bytes[i..];
+        if rest.starts_with(b"--") {
+            i += rest.iter().position(|&b| b == b'\n').unwrap_or(rest.len());
+        } else if rest.starts_with(b"/*") {
+            i += rest[2..]
+                .windows(2)
+                .position(|w| w == b"*/")
+                .map_or(rest.len(), |p| p + 4);
+        } else if bytes[i].is_ascii_whitespace() {
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    i
 }
