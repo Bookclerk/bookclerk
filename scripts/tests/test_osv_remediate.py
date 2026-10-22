@@ -152,6 +152,11 @@ version = "1.0.0"
 source = { directory = "../helper" }
 
 [[package]]
+name = "forked"
+version = "2.0.0"
+source = { git = "https://example.invalid/forked?rev=abc#abc" }
+
+[[package]]
 name = "pyyaml"
 version = "6.0.2"
 source = { registry = "https://pypi.org/simple" }
@@ -201,6 +206,7 @@ class LockfileTest(unittest.TestCase):
         self.assertEqual(versions["typing-extensions"], [V("4.12.2")])
         self.assertNotIn("bookclerk-plugin-sdk", versions)
         self.assertNotIn("local-helper", versions)
+        self.assertNotIn("forked", versions)
 
     def test_pypi_advisory_names_match_normalized(self) -> None:
         # Advisories keep the display spelling; uv.lock records PEP 503 names.
@@ -219,6 +225,9 @@ class LockfileTest(unittest.TestCase):
         )
         self.assertFalse(osv.ranges_parse(pep440, "PyPI", "pyyaml"))
         self.assertTrue(osv.ranges_parse(PYYAML, "PyPI", "pyyaml"))
+        # OSV allows `limit: *` (unbounded).
+        unbounded = _vuln("P3", "PyYAML", "PyPI", [{"introduced": "0"}, {"limit": "*"}])
+        self.assertTrue(osv.ranges_parse(unbounded, "PyPI", "pyyaml"))
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
             (root / "uv.lock").write_text(UV_LOCK, encoding="utf-8")

@@ -70,10 +70,6 @@ LOCKFILE_ECOSYSTEMS = {
     "uv.lock": "PyPI",
 }
 
-# uv.lock `source` keys for packages that come from the working tree rather
-# than an index or repository (the project itself, path dependencies). OSV
-# has no records for them.
-LOCAL_UV_SOURCES = frozenset({"editable", "virtual", "directory", "path"})
 
 _SEMVER = re.compile(
     r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$"
@@ -391,13 +387,18 @@ def ranges_parse(vuln: dict[str, object], ecosystem: str, name: str) -> bool:
 
     Returns:
         False when an `introduced`, `fixed`, `last_affected` or `limit` event
-        (other than `introduced: 0`) is not semver-shaped.
+        (other than `introduced: 0` and the unbounded `limit: *`) is not
+        semver-shaped.
     """
     for events in _ranges(vuln, ecosystem, name):
         for event in events:
             for kind in ("introduced", "fixed", "last_affected", "limit"):
                 raw = event.get(kind)
-                if raw is None or (kind == "introduced" and raw == "0"):
+                if (
+                    raw is None
+                    or (kind == "introduced" and raw == "0")
+                    or (kind == "limit" and raw == "*")
+                ):
                     continue
                 if not isinstance(raw, str) or Version.parse(raw) is None:
                     return False
@@ -533,7 +534,7 @@ def locked_versions(lockfile: Path) -> dict[str, list[Version]]:
     Returns:
         Package name to locked versions (a crate can be locked at several
         semver-incompatible versions at once). uv.lock names are PEP 503
-        normalized, and packages built from the working tree are left out.
+        normalized, and only packages from a package index are read.
 
     Raises:
         ValueError: The lockfile kind is not supported.
@@ -565,8 +566,10 @@ def locked_versions(lockfile: Path) -> dict[str, list[Version]]:
         for package in data.get("package", []):
             if not isinstance(package, dict) or not isinstance(package.get("name"), str):
                 continue
+            # Only index packages are the PyPI releases advisories describe; a
+            # git, URL or working-tree source with the same name is not.
             source = package.get("source")
-            if isinstance(source, dict) and LOCAL_UV_SOURCES & source.keys():
+            if not isinstance(source, dict) or "registry" not in source:
                 continue
             add(package_key("PyPI", package["name"]), package.get("version"))
     else:
