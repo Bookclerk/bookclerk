@@ -868,6 +868,8 @@ def test_materialize_falls_back_when_compatibility_date_is_newer_than_pin(
     from bookclerk_plugin_sdk.sparse_workerd.config import materialize_config
     from bookclerk_plugin_sdk.tools import WORKERD_PIN_COMPAT_DATE
 
+    # Derived from the pin so the date stays newer after every pin bump.
+    newer = f"{int(WORKERD_PIN_COMPAT_DATE[:4]) + 1}-01-01"
     plugin = tmp_path / "plugin"
     modules = plugin / "modules"
     modules.mkdir(parents=True)
@@ -880,7 +882,7 @@ def test_materialize_falls_back_when_compatibility_date_is_newer_than_pin(
             "runtime": "workerd",
             "entrypoints": ["cli"],
             "workerd": {
-                "compatibility_date": "2099-12-31",
+                "compatibility_date": newer,
                 "main_module": "index.js",
                 "modules_dir": "modules",
                 "entrypoint": "default",
@@ -892,7 +894,7 @@ def test_materialize_falls_back_when_compatibility_date_is_newer_than_pin(
     )
     text = generated.config_path.read_text(encoding="utf-8")
     assert f'compatibilityDate = "{WORKERD_PIN_COMPAT_DATE}"' in text
-    assert "2099-12-31" not in text
+    assert newer not in text
     assert "Falling back" in capsys.readouterr().err
 
 

@@ -122,9 +122,52 @@ fn check_rejects_logo_parent() {
     assert!(!out.status.success());
 }
 
+/// Copies the `valid-compat-date-future` fixture into a temp dir with its
+/// `compatibility_date` set to January 1 of the year after the workerd pin, so
+/// the date stays newer than the pin after every pin bump.
+///
+/// # Returns
+///
+/// The temp dir holding the rewritten fixture; dropping it removes the copy.
+fn future_date_fixture() -> tempfile::TempDir {
+    let src =
+        repo_root().join("crates/bookclerk-plugin-abi/fixtures/tools/valid-compat-date-future");
+    let pin = bookclerk_plugin_manifest::WORKERD_PIN_COMPAT_DATE;
+    let pin_year: i32 = pin[..4].parse().expect("pin year");
+    let newer = format!("{}-01-01", pin_year + 1);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manifest = std::fs::read_to_string(src.join("plugin.toml")).expect("read fixture");
+    let rewritten: String = manifest
+        .lines()
+        .map(|line| {
+            if line.starts_with("compatibility_date = ") {
+                format!("compatibility_date = \"{newer}\"\n")
+            } else {
+                format!("{line}\n")
+            }
+        })
+        .collect();
+    assert!(
+        rewritten.contains(&newer),
+        "fixture has no compatibility_date"
+    );
+    std::fs::write(dir.path().join("plugin.toml"), rewritten).expect("write fixture");
+    std::fs::create_dir(dir.path().join("modules")).expect("modules dir");
+    std::fs::copy(
+        src.join("modules/index.js"),
+        dir.path().join("modules/index.js"),
+    )
+    .expect("copy module");
+    dir
+}
+
 #[test]
 fn check_warns_when_compatibility_date_is_newer_than_pin() {
-    let out = check_fixture("valid-compat-date-future");
+    let dir = future_date_fixture();
+    let out = bookclerk_plugin()
+        .args(["check", dir.path().to_str().expect("utf8 path")])
+        .output()
+        .expect("run check");
     assert!(
         out.status.success(),
         "newer date should load: {}",

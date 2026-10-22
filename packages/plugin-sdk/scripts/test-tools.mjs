@@ -2,8 +2,11 @@
 /** Conformance: check / fmt --check against abi fixtures. */
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { WORKERD_PIN_COMPAT_DATE } from "../dist/tools/validate.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const cli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/cli.js");
@@ -31,7 +34,24 @@ run(["check", path.join(fixtures, "invalid-native-with-domains")], false);
 run(["check", path.join(fixtures, "invalid-logo-javascript")], false);
 run(["check", path.join(fixtures, "invalid-logo-vbscript")], false);
 run(["check", path.join(fixtures, "invalid-logo-parent")], false);
-run(["check", path.join(fixtures, "valid-compat-date-future")], true, "Falling back");
+// Rewrite the fixture's date to the year after the pin so it stays newer
+// than the pin after every pin bump.
+{
+  const pinYear = Number(WORKERD_PIN_COMPAT_DATE.slice(0, 4));
+  const newer = `${pinYear + 1}-01-01`;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "compat-date-future-"));
+  fs.cpSync(path.join(fixtures, "valid-compat-date-future"), dir, { recursive: true });
+  const manifestPath = path.join(dir, "plugin.toml");
+  const manifest = fs.readFileSync(manifestPath, "utf8");
+  const rewritten = manifest.replace(/^compatibility_date = ".*"$/m, `compatibility_date = "${newer}"`);
+  if (!rewritten.includes(newer)) {
+    console.error("FAIL valid-compat-date-future has no compatibility_date");
+    process.exit(1);
+  }
+  fs.writeFileSync(manifestPath, rewritten);
+  run(["check", dir], true, "Falling back");
+  fs.rmSync(dir, { recursive: true, force: true });
+}
 run(["check", path.join(fixtures, "invalid-compat-date-shape")], false, "YYYY-MM-DD");
 run(["check", path.join(fixtures, "invalid-compat-flag")], false, "not allowed");
 run(["check", path.join(fixtures, "invalid-compat-experimental")], false, "host-only");

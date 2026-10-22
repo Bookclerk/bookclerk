@@ -1841,7 +1841,10 @@ mode = "deny"
             Path::new("modules").join("index.js"),
             "export default {};",
         );
-        let manifest = PluginManifest::parse(
+        // Derived from the pin so the date stays newer after every pin bump.
+        let pin_year: i32 = WORKERD_PIN_COMPAT_DATE[..4].parse().expect("pin year");
+        let newer = format!("{}-01-01", pin_year + 1);
+        let manifest = PluginManifest::parse(&format!(
             r#"
 api_version = 3
 id = "echo"
@@ -1849,15 +1852,15 @@ runtime = "workerd"
 entrypoints = ["cli"]
 
 [workerd]
-compatibility_date = "2099-12-31"
+compatibility_date = "{newer}"
 main_module = "index.js"
 modules_dir = "modules"
 entrypoint = "default"
 
 [capabilities.network]
 mode = "deny"
-"#,
-        )
+"#
+        ))
         .expect("newer compatibility date still parses");
         let generated = materialize(
             dir.path(),
@@ -1877,7 +1880,7 @@ mode = "deny"
             "workerd config should run at the pin:\n{capnp}"
         );
         assert!(
-            !capnp.contains("2099-12-31"),
+            !capnp.contains(&newer),
             "requested date must not be passed to workerd:\n{capnp}"
         );
     }
