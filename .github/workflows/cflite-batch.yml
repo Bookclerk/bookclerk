@@ -53,6 +53,10 @@ jobs:
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           language: rust
+          # The build check runs each target briefly and prints its output
+          # to the job log; a crash there would be public. Batch fuzzing
+          # replays the corpus and catches the same crash privately.
+          bad-build-check: false
           sanitizer: ${{ matrix.sanitizer }}
 
       - name: Run fuzzers (private output)
@@ -126,6 +130,10 @@ jobs:
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           language: rust
+          # The build check runs each target briefly and prints its output
+          # to the job log; a crash there would be public. Batch fuzzing
+          # replays the corpus and catches the same crash privately.
+          bad-build-check: false
           sanitizer: ${{ matrix.sanitizer }}
 
       - name: Download sealed crashes
@@ -223,6 +231,10 @@ jobs:
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           language: rust
+          # The build check runs each target briefly and prints its output
+          # to the job log; a crash there would be public. Batch fuzzing
+          # replays the corpus and catches the same crash privately.
+          bad-build-check: false
 
       - name: Prune corpus
         uses: ./.github/actions/cflite-private-run
@@ -245,6 +257,10 @@ jobs:
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           language: rust
+          # The build check runs each target briefly and prints its output
+          # to the job log; a crash there would be public. Batch fuzzing
+          # replays the corpus and catches the same crash privately.
+          bad-build-check: false
           sanitizer: coverage
 
       - name: Coverage report

@@ -331,6 +331,9 @@ reproducer as an artifact. The scheduled workflow therefore never uses it:
    `scripts/fuzz-crash-triage.py run`: the image's own mode, with its output
    in a private log and its crash upload disabled. Corpus and coverage
    artifacts are unchanged, so PR fuzzing is too. The log shows a crash count.
+   Timeout inputs are kept (`REPORT_TIMEOUTS`) so triage sees them. Every
+   scheduled build sets `bad-build-check: false`, because that check runs
+   each target briefly and prints its output to the log.
 2. When `batch` kept crashes, it seals them with its log
    (`FUZZ_CRASH_BUNDLE_KEY`, `scripts/osv-remediation-bundle.sh`) as the
    `fuzz-crashes-<sanitizer>` artifact (7 days).

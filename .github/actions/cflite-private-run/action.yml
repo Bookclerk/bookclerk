@@ -50,6 +50,9 @@ runs:
     GITHUB_TOKEN: ${{ inputs.github-token }}
     LOW_DISK_SPACE: "True"
     REPORT_UNREPRODUCIBLE_CRASHES: "False"
+    # Keep timeout inputs (the default drops them) so triage sees DoS
+    # findings; OOM inputs are kept by default.
+    REPORT_TIMEOUTS: "True"
     OUTPUT_SARIF: "false"
     MINIMIZE_CRASHES: "False"
     CFL_PLATFORM: github

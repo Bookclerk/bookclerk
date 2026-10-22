@@ -255,6 +255,18 @@ class WorkflowTest(unittest.TestCase):
         self.assertNotIn("actions/run_fuzzers@", workflow)
         self.assertEqual(workflow.count("uses: ./.github/actions/cflite-private-run"), 3)
 
+    def test_scheduled_builds_skip_the_public_build_check(self) -> None:
+        """The build check prints each target's output to the job log."""
+        workflow = (ROOT / ".github" / "workflows" / "cflite-batch.yml").read_text(encoding="utf-8")
+        builds = workflow.count("actions/build_fuzzers@")
+        self.assertGreater(builds, 0)
+        self.assertEqual(workflow.count("bad-build-check: false"), builds)
+
+    def test_timeout_inputs_are_kept(self) -> None:
+        """ClusterFuzzLite drops timeout inputs unless told to keep them."""
+        action = (ROOT / ".github" / "actions" / "cflite-private-run" / "action.yml").read_text(encoding="utf-8")
+        self.assertIn('REPORT_TIMEOUTS: "True"', action)
+
 
 class RouteAndRenderTest(unittest.TestCase):
     def test_route(self) -> None:
