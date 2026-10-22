@@ -1,0 +1,48 @@
+api_version = 3
+id = "echo_workerd_python"
+name = "Echo Integration (workerd Python)"
+version = "1.0.0"
+runtime = "workerd"
+entrypoints = ["cli"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+# Required for Python Workers under local bookclerk-workerd (also enforced by
+# `python -m bookclerk_plugin_sdk check|fmt|package`).
+compatibility_flags = [
+    "python_workers",
+    "disable_python_external_sdk",
+]
+main_module = "plugin.py"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+# Host-clamped; subrequests enforced in egress (local workerd has no Cap'n Proto cpuMs/subRequests).
+cpu_ms = 30000
+subrequests = 50
+
+[[modules]]
+name = "plugin.py"
+path = "plugin.py"
+type = "python"
+
+[capabilities.network]
+mode = "deny"
+
+[vars]
+
+[[events.consumers]]
+type = "book_acquired"
+schema_versions = [1]
+supports_suspend = false
+
+# Plugin-owned queues on the outbox: `queue(batch)` consumes `echo`; the
+# `ECHO_OUT` binding sends to `echo.out` (absent when the host grants no outbox).
+[[queues.consumers]]
+queue = "echo"
+max_retries = 2
+
+[[queues.producers]]
+queue = "echo.out"
+binding = "ECHO_OUT"

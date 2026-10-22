@@ -1,0 +1,54 @@
+api_version = 3
+id = "local"
+name = "Local output"
+version = "0.1.0"
+logo = "assets/logo.svg"
+runtime = "native"
+command = "./bookclerk-plugin-destination-local"
+entrypoints = ["storage"]
+
+[capabilities.network]
+mode = "deny"
+
+[vars]
+
+[[settings]]
+key = "root"
+label = "Output root"
+type = "string"
+default = "Audiobooks"
+required = true
+description = "Directory for acquired audiobooks; relative paths resolve under the files directory."
+
+[[settings]]
+key = "prefix"
+label = "Key prefix"
+type = "string"
+default = ""
+
+[[settings]]
+key = "naming_profile"
+label = "Naming profile"
+type = "enum"
+values = [{ id = "audiobookshelf", label = "Audiobookshelf" }, { id = "classic", label = "Classic Libation" }]
+description = "Overrides [output].naming_profile for this destination only; unset inherits it."
+
+[[settings]]
+key = "folder_template"
+label = "Folder template"
+type = "string"
+
+[[settings]]
+key = "file_template"
+label = "File template"
+type = "string"
+
+[[settings]]
+key = "chapter_file_template"
+label = "Chapter file template"
+type = "string"
+
+[work_fs]
+
+[triggers]
+jobs = ["stream_copy"]

@@ -1,0 +1,15 @@
+api_version = 3
+id = "sqlite"
+name = "SQLite"
+version = "0.1.0"
+logo = "assets/logo.png"
+runtime = "native"
+command = "./bookclerk-plugin-database-sqlite"
+entrypoints = ["databaseAdapter"]
+
+[capabilities.network]
+mode = "deny"
+
+[vars]
+
+[work_fs]

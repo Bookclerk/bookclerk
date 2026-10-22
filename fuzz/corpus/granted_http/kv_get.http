@@ -1,0 +1,6 @@
+POST /kv/get HTTP/1.1
+Authorization: Bearer kv-1
+Content-Type: application/json
+Content-Length: 13
+
+{"key":"abc"}

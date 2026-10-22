@@ -9,11 +9,15 @@ name: ClusterFuzzLite PR fuzzing
 on:
   pull_request:
     branches: [main]
+    # Every crate a fuzz target links (`path =` dependencies in
+    # fuzz/Cargo.toml); scripts/tests/test_ci_contract.py keeps this in sync.
     paths:
       - "fuzz/**"
       - "crates/bookclerk-mp4/**"
       - "crates/bookclerk-plugin-abi/**"
       - "crates/bookclerk-db-exec/**"
+      - "crates/bookclerk-plugin-manifest/**"
+      - "crates/bookclerk-workerd/**"
       - ".clusterfuzzlite/**"
       - ".github/workflows/cflite-*.yml"
   workflow_dispatch:

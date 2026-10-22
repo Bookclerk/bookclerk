@@ -2170,7 +2170,55 @@ def emit_rust_generated(capnp_text: str) -> str:
     for d in decls:
         if isinstance(d, cs.Struct):
             lines.extend(_rs_struct_codec(ctx, d))
+    lines.extend(_rs_read_any(ctx, [d for d in decls if isinstance(d, cs.Struct)]))
     return _rustfmt("\n".join(lines).rstrip() + "\n")
+
+
+def _rs_read_any(ctx: _RsCtx, structs: list[cs.Struct]) -> list[str]:
+    """``read_any_message``: one entry point over every generated ``read_*``.
+
+    The fuzz target ``abi_decode`` and the corpus replay test select a codec by
+    ordinal, so a struct added to the schema is fuzzed without a hand-written
+    harness line (docs/adr/untrusted-input-fuzzing.md).
+    """
+    out = [
+        "/// Number of root structs [`read_any_message`] can decode; selectors are",
+        "/// `0..READ_ANY_COUNT` in schema order.",
+        f"pub const READ_ANY_COUNT: u8 = {len(structs)};",
+        "",
+        "/// Decodes `bytes` as an unpacked single-segment Cap'n Proto message whose",
+        "/// root is the struct `selector` names, through that struct's `read_*`",
+        "/// codec, and drops the result.",
+        "///",
+        "/// Harness entry point for the `abi_decode` fuzz target and its corpus",
+        "/// replay: every generated decoder runs with a traversal budget derived",
+        "/// from the input size and a fixed nesting limit, so a small buffer cannot",
+        "/// expand into a large graph.",
+        "///",
+        "/// # Errors",
+        "///",
+        "/// Returns the Cap'n Proto error the framing or the codec reports, or a",
+        "/// failure for a selector at or past [`READ_ANY_COUNT`].",
+        "pub fn read_any_message(selector: u8, bytes: &[u8]) -> capnp::Result<()> {",
+        "    let words = (bytes.len() / 8).saturating_add(16);",
+        "    let mut opts = capnp::message::ReaderOptions::new();",
+        "    opts.traversal_limit_in_words(Some(words));",
+        "    opts.nesting_limit(32);",
+        "    let reader = capnp::serialize::read_message(&mut std::io::Cursor::new(bytes), opts)?;",
+        "    match selector {",
+    ]
+    for i, st in enumerate(structs):
+        module = _rs_module(st.name)
+        snake = _snake(st.name)
+        out.append(
+            f"        {i} => {{ let _ = read_{snake}(reader.get_root::<plugin_capnp::{module}::Reader<'_>>()?)?; }}"
+        )
+    out.append('        _ => return Err(capnp::Error::failed(format!("unknown read_any selector {selector}"))),')
+    out.append("    }")
+    out.append("    Ok(())")
+    out.append("}")
+    out.append("")
+    return out
 
 
 def _rustfmt(source: str) -> str:

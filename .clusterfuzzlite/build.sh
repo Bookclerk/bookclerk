@@ -17,4 +17,13 @@ for target in $(cargo fuzz list); do
   if [ -d "corpus/$target" ]; then
     (cd "corpus/$target" && zip -q -r "$OUT/${target}_seed_corpus.zip" .)
   fi
+  # libFuzzer picks up `<target>.dict` (token dictionary) and
+  # `<target>.options` (libFuzzer INI with a `[libfuzzer]` section whose `max_len`
+  # matches the target's early-return cap)
+  # from beside the binary.
+  for ext in dict options; do
+    if [ -f "dictionaries/$target.$ext" ]; then
+      cp "dictionaries/$target.$ext" "$OUT/$target.$ext"
+    fi
+  done
 done

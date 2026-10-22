@@ -291,16 +291,18 @@ impl EgressPolicy {
         match self.mode {
             NetworkMode::Deny => false,
             NetworkMode::Outbound => {
-                if is_restricted_hostname(host) && !self.hostname_address_ok(host) {
-                    return false;
-                }
-                let Some(host) = normalize_hostname(host) else {
-                    return false;
-                };
-                if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-                    if !self.allows_ip(ip) {
-                        return false;
+                let host = match classify_host(host) {
+                    HostKind::Invalid => return false,
+                    HostKind::Ip(ip) => {
+                        if !self.allows_ip(ip) {
+                            return false;
+                        }
+                        ip.to_string()
                     }
+                    HostKind::Name(name) => name,
+                };
+                if is_restricted_hostname(&host) && !self.hostname_address_ok(&host) {
+                    return false;
                 }
                 self.domains
                     .iter()
@@ -329,9 +331,17 @@ impl EgressPolicy {
 
     /// Loopback / metadata hostnames need a matching CIDR, not any CIDR.
     fn hostname_address_ok(&self, host: &str) -> bool {
-        if host.eq_ignore_ascii_case("localhost")
-            || host.to_ascii_lowercase().ends_with(".localhost")
-        {
+        // Same spelling rules as `is_restricted_hostname`: `LOCALHOST.` is
+        // loopback too.
+        let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+        if host == "metadata.google.internal" {
+            // The cloud metadata name resolves to the link-local metadata
+            // address; only a grant for that address lets a guest name it.
+            return self.allows_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::new(
+                169, 254, 169, 254,
+            )));
+        }
+        if host == "localhost" || host == "localhost.localdomain" || host.ends_with(".localhost") {
             return self.allows_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
                 || self.allows_ip(std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST));
         }
@@ -344,16 +354,18 @@ impl EgressPolicy {
         if self.mode == NetworkMode::Deny {
             return false;
         }
-        if is_restricted_hostname(host) && !self.hostname_address_ok(host) {
-            return false;
-        }
-        let Some(host) = normalize_hostname(host) else {
-            return false;
-        };
-        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-            if !self.allows_ip(ip) {
-                return false;
+        let host = match classify_host(host) {
+            HostKind::Invalid => return false,
+            HostKind::Ip(ip) => {
+                if !self.allows_ip(ip) {
+                    return false;
+                }
+                ip.to_string()
             }
+            HostKind::Name(name) => name,
+        };
+        if is_restricted_hostname(&host) && !self.hostname_address_ok(&host) {
+            return false;
         }
         self.tcp
             .iter()
@@ -374,22 +386,29 @@ impl EgressPolicy {
                 if hop_index >= self.max_redirects {
                     return false;
                 }
-                if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-                    if !self.allows_ip(ip) {
-                        return false;
+                // Judge IP literals and the restricted-name rules on the
+                // canonical spelling, so a Unicode confusable of `localhost`,
+                // a trailing-dot `127.0.0.1.`, fullwidth digits or a legacy
+                // `127.1` / `0x7f.0.0.1` form are still the loopback they are
+                // here (the `egress_policy` oracle's class of bug).
+                let host = match classify_host(host) {
+                    HostKind::Invalid => return false,
+                    HostKind::Ip(ip) => {
+                        return self.allows_ip(ip)
+                            && (self.allow_undeclared_public_redirects
+                                || self
+                                    .domains
+                                    .iter()
+                                    .any(|d| host_matches_normalized(&ip.to_string(), d)));
                     }
-                } else if is_restricted_hostname(host) && !self.hostname_address_ok(host) {
+                    HostKind::Name(name) => name,
+                };
+                if is_restricted_hostname(&host) && !self.hostname_address_ok(&host) {
                     return false;
                 }
                 if self.allow_undeclared_public_redirects {
-                    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-                        return self.allows_ip(ip);
-                    }
-                    return !is_restricted_hostname(host);
+                    return !is_restricted_hostname(&host);
                 }
-                let Some(host) = normalize_hostname(host) else {
-                    return false;
-                };
                 self.domains
                     .iter()
                     .any(|d| host_matches_normalized(&host, d))
@@ -612,6 +631,64 @@ pub fn host_matches(host: &str, pattern: &str) -> bool {
     host_matches_normalized(&host, &pattern)
 }
 
+/// `host` without URL-form IPv6 brackets (`[::1]` → `::1`), so an address a
+/// URL parser hands over in brackets is judged as the address it is rather
+/// than as an unknown hostname (which the undeclared-public-redirect path
+/// would otherwise let through).
+fn unbracketed(host: &str) -> &str {
+    let host = host.trim();
+    host.strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(host)
+}
+
+/// What a request host string names once every spelling is canonicalized.
+enum HostKind {
+    /// An IP literal in any accepted spelling: plain, bracketed IPv6,
+    /// trailing dot, fullwidth digits, or a legacy WHATWG IPv4 form such as
+    /// `127.1`, `2130706433` or `0x7f.0.0.1`.
+    Ip(std::net::IpAddr),
+    /// An IDNA-normalized hostname that is not an address.
+    Name(String),
+    /// Neither a hostname IDNA accepts nor a well-formed address (a numeric
+    /// last label that does not parse, a percent-encoded host, an empty one).
+    Invalid,
+}
+
+/// Classifies a request host so every caller judges IP literals before any
+/// hostname matching, whatever spelling the guest or the URL layer chose.
+///
+/// The raw spelling is parsed first (IPv6 fails IDNA), then the
+/// [`normalize_hostname`] form, then the WHATWG host parser, which folds the
+/// legacy IPv4 spellings (`127.1`, decimal, hex and octal octets) a URL parser
+/// would canonicalize and rejects a numeric last label that is not an address.
+///
+/// # Arguments
+///
+/// * `host` - Request host as given, with or without IPv6 brackets.
+///
+/// # Returns
+///
+/// The address, the normalized name, or [`HostKind::Invalid`] (fail closed).
+fn classify_host(host: &str) -> HostKind {
+    let raw = unbracketed(host);
+    if let Ok(ip) = raw.parse::<std::net::IpAddr>() {
+        return HostKind::Ip(ip);
+    }
+    let Some(normalized) = normalize_hostname(raw) else {
+        return HostKind::Invalid;
+    };
+    if let Ok(ip) = normalized.parse::<std::net::IpAddr>() {
+        return HostKind::Ip(ip);
+    }
+    match url::Host::parse(&normalized) {
+        Ok(url::Host::Ipv4(v4)) => HostKind::Ip(std::net::IpAddr::V4(v4)),
+        Ok(url::Host::Ipv6(v6)) => HostKind::Ip(std::net::IpAddr::V6(v6)),
+        Ok(url::Host::Domain(_)) => HostKind::Name(normalized),
+        Err(_) => HostKind::Invalid,
+    }
+}
+
 /// Exact or `*.suffix` match on already-normalized host and pattern strings.
 fn host_matches_normalized(host: &str, pattern: &str) -> bool {
     // `host` and policy `domains` are already IDNA-normalized by callers
@@ -627,6 +704,92 @@ fn host_matches_normalized(host: &str, pattern: &str) -> bool {
 #[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bracketed_ipv6_is_judged_as_an_address() {
+        // Found by the `egress_policy` corpus oracle: `url.hostname` hands IPv6
+        // over in brackets, and an unknown hostname passed the undeclared-public
+        // redirect path.
+        let policy = EgressPolicy {
+            mode: NetworkMode::Outbound,
+            domains: vec!["api.example.com".into()],
+            max_redirects: 5,
+            allow_undeclared_public_redirects: true,
+            ..EgressPolicy::deny()
+        };
+        for host in [
+            "[::1]",
+            "::1",
+            "[fe80::1]",
+            "[::ffff:127.0.0.1]",
+            "[fd00::1]",
+        ] {
+            assert!(!policy.allows_redirect(host, 0), "{host}");
+            assert!(!policy.allows_initial(host), "{host}");
+            assert!(!policy.allows_tcp(host, 443), "{host}");
+        }
+        assert!(policy.allows_redirect("[2606:4700::1111]", 0));
+        let granted = EgressPolicy {
+            address_cidrs: vec!["::1/128".into()],
+            ..policy
+        };
+        assert!(granted.allows_redirect("[::1]", 0));
+    }
+
+    #[test]
+    fn trailing_dot_localhost_still_needs_a_loopback_grant() {
+        // Found reviewing the `egress_policy` oracle: `is_restricted_hostname`
+        // strips the trailing dot, `hostname_address_ok` did not.
+        let policy = EgressPolicy {
+            mode: NetworkMode::Outbound,
+            domains: vec!["localhost".into()],
+            tcp: vec![TcpGrant {
+                host: "localhost".into(),
+                ports: vec![5432],
+            }],
+            max_redirects: 5,
+            ..EgressPolicy::deny()
+        };
+        for host in ["localhost", "LOCALHOST.", "localhost.", "a.localhost."] {
+            assert!(!policy.allows_initial(host), "{host}");
+            assert!(!policy.allows_tcp(host, 5432), "{host}");
+            assert!(!policy.allows_redirect(host, 0), "{host}");
+        }
+        let granted = EgressPolicy {
+            address_cidrs: vec!["127.0.0.0/8".into()],
+            ..policy
+        };
+        assert!(granted.allows_initial("LOCALHOST."));
+        assert!(granted.allows_tcp("localhost.", 5432));
+    }
+
+    #[test]
+    fn unicode_confusable_of_localhost_is_still_restricted() {
+        // Fullwidth `ｌocalhost` IDNA-normalizes to `localhost`; the
+        // restricted-name rules must see the normalized spelling.
+        let policy = EgressPolicy {
+            mode: NetworkMode::Outbound,
+            domains: vec!["localhost".into()],
+            tcp: vec![TcpGrant {
+                host: "localhost".into(),
+                ports: vec![5432],
+            }],
+            max_redirects: 5,
+            allow_undeclared_public_redirects: true,
+            ..EgressPolicy::deny()
+        };
+        for host in [
+            "\u{ff4c}ocalhost",
+            "\u{ff4c}ocalhost.",
+            "a.\u{ff4c}ocalhost",
+        ] {
+            assert!(!policy.allows_initial(host), "{host}");
+            assert!(!policy.allows_tcp(host, 5432), "{host}");
+            assert!(!policy.allows_redirect(host, 0), "{host}");
+        }
+        assert!(policy.allows_redirect("\u{ff45}xample.com", 0));
+        assert!(!policy.allows_redirect("localhost%41", 0));
+    }
 
     #[test]
     fn wildcard_and_redirect_policy() {
@@ -716,6 +879,82 @@ mod tests {
         assert!(!policy.allows_redirect("localhost", 1));
         policy.address_cidrs = vec!["10.0.0.1/32".into()];
         assert!(policy.allows_redirect("10.0.0.1", 1));
+    }
+
+    #[test]
+    fn normalized_ip_literal_spellings_still_need_an_address_grant() {
+        // `127.0.0.1.` fails `IpAddr` parsing, normalizes to `127.0.0.1`, and
+        // must still be judged as loopback (fuzz regression
+        // `egress_policy/regression_trailing_dot_ip.json`). Fullwidth digits
+        // map to ASCII under IDNA and are the same address.
+        let mut policy = EgressPolicy {
+            mode: NetworkMode::Outbound,
+            domains: vec!["127.0.0.1".into(), "10.0.0.1".into()],
+            allow_undeclared_public_redirects: true,
+            tcp: vec![TcpGrant {
+                host: "10.0.0.1".into(),
+                ports: vec![5432],
+            }],
+            ..EgressPolicy::deny()
+        };
+        for spelling in [
+            "127.0.0.1.",
+            " 127.0.0.1. ",
+            "\u{ff11}\u{ff12}\u{ff17}.0.0.1",
+            "127.1",
+            "2130706433",
+            "0x7f.0.0.1",
+            "0177.0.0.1",
+            "0x7f000001",
+            "[::ffff:7f00:1]",
+            "10.0.0.1.",
+            "169.254.169.254.",
+        ] {
+            assert!(
+                !policy.allows_redirect(spelling, 1),
+                "redirect {spelling:?}"
+            );
+            assert!(!policy.allows_initial(spelling), "initial {spelling:?}");
+            assert!(!policy.allows_tcp(spelling, 5432), "tcp {spelling:?}");
+        }
+        assert!(policy.allows_redirect("93.184.216.34.", 1));
+        assert!(policy.allows_redirect("0x5db8d822", 1));
+        // A numeric last label that is not an address is not a hostname either
+        // (WHATWG host parsing fails these, as a URL parser would).
+        for invalid in ["1.2.3.4.5", "999.1", "0x", "0x100000000"] {
+            assert!(!policy.allows_redirect(invalid, 1), "{invalid:?}");
+            assert!(!policy.allows_initial(invalid), "{invalid:?}");
+        }
+        policy.address_cidrs = vec!["127.0.0.1/32".into(), "10.0.0.1/32".into()];
+        assert!(policy.allows_initial("127.0.0.1."));
+        assert!(policy.allows_initial("127.1"));
+        assert!(policy.allows_redirect("127.0.0.1.", 1));
+        assert!(policy.allows_redirect("0x7f.0.0.1", 1));
+        assert!(policy.allows_tcp("10.0.0.1.", 5432));
+        assert!(policy.allows_tcp("0xa.0.0.1", 5432));
+        assert!(!policy.allows_redirect("169.254.169.254.", 1));
+    }
+
+    #[test]
+    fn every_restricted_name_needs_its_own_address_grant() {
+        let mut policy = EgressPolicy {
+            mode: NetworkMode::Outbound,
+            domains: vec![
+                "localhost.localdomain".into(),
+                "metadata.google.internal".into(),
+            ],
+            allow_undeclared_public_redirects: true,
+            ..EgressPolicy::deny()
+        };
+        for name in ["localhost.localdomain", "METADATA.google.internal."] {
+            assert!(!policy.allows_initial(name), "{name}");
+            assert!(!policy.allows_redirect(name, 1), "{name}");
+        }
+        policy.address_cidrs = vec!["127.0.0.1/32".into()];
+        assert!(policy.allows_initial("localhost.localdomain"));
+        assert!(!policy.allows_initial("metadata.google.internal"));
+        policy.address_cidrs.push("169.254.169.254/32".into());
+        assert!(policy.allows_initial("metadata.google.internal"));
     }
 
     #[test]

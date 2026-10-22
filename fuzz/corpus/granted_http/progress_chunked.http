@@ -1,0 +1,8 @@
+POST /progress HTTP/1.1
+Authorization: Bearer grant-1
+Transfer-Encoding: chunked
+
+1e
+{"percent":12.5,"message":"x"}
+0
+
