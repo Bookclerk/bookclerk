@@ -22,6 +22,8 @@ const RESTRICTED: &[&str] = &[
     "localhost",
     "LOCALHOST.",
     "a.localhost",
+    "\u{ff4c}ocalhost",
+    "localhost%41",
     "127.0.0.1",
     "127.1.2.3",
     "::1",
@@ -118,21 +120,19 @@ fn check_policy(policy: &EgressPolicy) {
         .iter()
         .chain(policy.tcp.iter().map(|g| &g.host))
     {
-        if let Some(suffix) = pattern.strip_prefix("*.") {
-            if normalize_hostname(suffix).is_some() {
-                assert!(
-                    host_matches(suffix, pattern),
-                    "wildcard misses its own suffix {pattern}"
-                );
-                assert!(
-                    host_matches(&format!("a.{suffix}"), pattern),
-                    "wildcard misses subdomain of {pattern}"
-                );
-                assert!(
-                    !host_matches(&format!("x{suffix}"), pattern),
-                    "wildcard matched sibling of {pattern}"
-                );
-            }
+        if let Some(suffix) = pattern.strip_prefix("*.").and_then(normalize_hostname) {
+            assert!(
+                host_matches(&suffix, pattern),
+                "wildcard misses its own suffix {pattern}"
+            );
+            assert!(
+                host_matches(&format!("a.{suffix}"), pattern),
+                "wildcard misses subdomain of {pattern}"
+            );
+            assert!(
+                !host_matches(&format!("x{suffix}"), pattern),
+                "wildcard matched sibling of {pattern}"
+            );
         }
         assert!(!host_matches(&format!("{pattern}%41"), pattern));
     }

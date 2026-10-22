@@ -296,7 +296,8 @@ corpus change to that crate's tests only (`relations.toml` `test_input`);
 `scripts/tests/test_ci_contract.py` fails when a target lacks a corpus, a
 planner route or a replay test, or when a fuzzed crate is missing from the
 PR workflow's path filter. `fuzz/dictionaries/<target>.dict` and
-`<target>.options` (`-max_len` matched to the target's early-return cap)
+`<target>.options` (libFuzzer INI with a `[libfuzzer]` section whose `max_len`
+matches the target's early-return cap)
 ride beside each binary.
 
 | Workflow | When | What |

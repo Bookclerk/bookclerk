@@ -63,9 +63,6 @@ name = "arbitrary"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed"
-dependencies = [
- "derive_arbitrary",
-]
 
 [[package]]
 name = "arrayvec"
@@ -351,13 +348,11 @@ dependencies = [
 name = "bookclerk-fuzz"
 version = "0.0.0"
 dependencies = [
- "arbitrary",
  "bookclerk-db-exec",
  "bookclerk-mp4",
  "bookclerk-plugin-abi",
  "bookclerk-plugin-manifest",
  "bookclerk-workerd",
- "capnp",
  "httparse",
  "libfuzzer-sys",
  "sea-orm",
@@ -807,17 +802,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "derive_arbitrary"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b034bd7d5f032402a2479444dcc6f74e36a03f31854d41680fb240ef682a1ac"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 3.0.3",
 ]
 
 [[package]]

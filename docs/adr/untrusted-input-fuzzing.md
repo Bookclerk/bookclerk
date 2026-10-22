@@ -58,9 +58,10 @@ inputs their author imagined; a fuzzer supplies the rest.
    minimized input lands as `fuzz/corpus/<target>/regression_*` in the
    fixing pull request, so the finding becomes public together with its fix.
 6. **Sanitizers follow the code.** Pure-Rust targets run with debug
-   assertions and overflow checks on; AddressSanitizer and
-   UndefinedBehaviorSanitizer are enabled for targets that link C code
-   (bundled SQLite, LAME). MemorySanitizer is not used.
+   assertions and overflow checks on under AddressSanitizer. The first
+   target that links C code (bundled SQLite, LAME) adds
+   UndefinedBehaviorSanitizer to the workflow matrix; none does yet.
+   MemorySanitizer is not used.
 
 ## Consequences
 

@@ -292,16 +292,16 @@ impl EgressPolicy {
         match self.mode {
             NetworkMode::Deny => false,
             NetworkMode::Outbound => {
-                if is_restricted_hostname(host) && !self.hostname_address_ok(host) {
-                    return false;
-                }
-                let Some(host) = normalize_hostname(host) else {
-                    return false;
-                };
                 if let Ok(ip) = host.parse::<std::net::IpAddr>() {
                     if !self.allows_ip(ip) {
                         return false;
                     }
+                }
+                let Some(host) = normalize_hostname(host) else {
+                    return false;
+                };
+                if is_restricted_hostname(&host) && !self.hostname_address_ok(&host) {
+                    return false;
                 }
                 self.domains
                     .iter()
@@ -330,9 +330,10 @@ impl EgressPolicy {
 
     /// Loopback / metadata hostnames need a matching CIDR, not any CIDR.
     fn hostname_address_ok(&self, host: &str) -> bool {
-        if host.eq_ignore_ascii_case("localhost")
-            || host.to_ascii_lowercase().ends_with(".localhost")
-        {
+        // Same spelling rules as `is_restricted_hostname`: `LOCALHOST.` is
+        // loopback too.
+        let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+        if host == "localhost" || host.ends_with(".localhost") {
             return self.allows_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
                 || self.allows_ip(std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST));
         }
@@ -346,16 +347,16 @@ impl EgressPolicy {
         if self.mode == NetworkMode::Deny {
             return false;
         }
-        if is_restricted_hostname(host) && !self.hostname_address_ok(host) {
-            return false;
-        }
-        let Some(host) = normalize_hostname(host) else {
-            return false;
-        };
         if let Ok(ip) = host.parse::<std::net::IpAddr>() {
             if !self.allows_ip(ip) {
                 return false;
             }
+        }
+        let Some(host) = normalize_hostname(host) else {
+            return false;
+        };
+        if is_restricted_hostname(&host) && !self.hostname_address_ok(&host) {
+            return false;
         }
         self.tcp
             .iter()
@@ -378,21 +379,25 @@ impl EgressPolicy {
                     return false;
                 }
                 if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-                    if !self.allows_ip(ip) {
-                        return false;
-                    }
-                } else if is_restricted_hostname(host) && !self.hostname_address_ok(host) {
-                    return false;
+                    return self.allows_ip(ip)
+                        && (self.allow_undeclared_public_redirects
+                            || self
+                                .domains
+                                .iter()
+                                .any(|d| host_matches_normalized(&ip.to_string(), d)));
                 }
-                if self.allow_undeclared_public_redirects {
-                    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-                        return self.allows_ip(ip);
-                    }
-                    return !is_restricted_hostname(host);
-                }
+                // Judge the restricted-name rules on the IDNA-normalized
+                // spelling, so a Unicode confusable of `localhost` is still
+                // `localhost` here (the `egress_policy` oracle's class of bug).
                 let Some(host) = normalize_hostname(host) else {
                     return false;
                 };
+                if is_restricted_hostname(&host) && !self.hostname_address_ok(&host) {
+                    return false;
+                }
+                if self.allow_undeclared_public_redirects {
+                    return !is_restricted_hostname(&host);
+                }
                 self.domains
                     .iter()
                     .any(|d| host_matches_normalized(&host, d))
@@ -671,6 +676,61 @@ mod tests {
             ..policy
         };
         assert!(granted.allows_redirect("[::1]", 0));
+    }
+
+    #[test]
+    fn trailing_dot_localhost_still_needs_a_loopback_grant() {
+        // Found reviewing the `egress_policy` oracle: `is_restricted_hostname`
+        // strips the trailing dot, `hostname_address_ok` did not.
+        let policy = EgressPolicy {
+            mode: NetworkMode::Outbound,
+            domains: vec!["localhost".into()],
+            tcp: vec![TcpGrant {
+                host: "localhost".into(),
+                ports: vec![5432],
+            }],
+            max_redirects: 5,
+            ..EgressPolicy::deny()
+        };
+        for host in ["localhost", "LOCALHOST.", "localhost.", "a.localhost."] {
+            assert!(!policy.allows_initial(host), "{host}");
+            assert!(!policy.allows_tcp(host, 5432), "{host}");
+            assert!(!policy.allows_redirect(host, 0), "{host}");
+        }
+        let granted = EgressPolicy {
+            address_cidrs: vec!["127.0.0.0/8".into()],
+            ..policy
+        };
+        assert!(granted.allows_initial("LOCALHOST."));
+        assert!(granted.allows_tcp("localhost.", 5432));
+    }
+
+    #[test]
+    fn unicode_confusable_of_localhost_is_still_restricted() {
+        // Fullwidth `ｌocalhost` IDNA-normalizes to `localhost`; the
+        // restricted-name rules must see the normalized spelling.
+        let policy = EgressPolicy {
+            mode: NetworkMode::Outbound,
+            domains: vec!["localhost".into()],
+            tcp: vec![TcpGrant {
+                host: "localhost".into(),
+                ports: vec![5432],
+            }],
+            max_redirects: 5,
+            allow_undeclared_public_redirects: true,
+            ..EgressPolicy::deny()
+        };
+        for host in [
+            "\u{ff4c}ocalhost",
+            "\u{ff4c}ocalhost.",
+            "a.\u{ff4c}ocalhost",
+        ] {
+            assert!(!policy.allows_initial(host), "{host}");
+            assert!(!policy.allows_tcp(host, 5432), "{host}");
+            assert!(!policy.allows_redirect(host, 0), "{host}");
+        }
+        assert!(policy.allows_redirect("\u{ff45}xample.com", 0));
+        assert!(!policy.allows_redirect("localhost%41", 0));
     }
 
     #[test]

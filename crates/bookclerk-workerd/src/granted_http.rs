@@ -10,6 +10,11 @@
 //! Limits enforced here are structural (head size, chunk-size digits,
 //! trailer count). Body byte caps belong to the route and stay in
 //! [`crate::granted`].
+//!
+//! Parsing is strict rather than lenient: the only client is the plugin
+//! runtime's own `fetch`, so anything RFC 9112 does not require accepting
+//! (bare LF, whitespace before a chunk size, a second transfer coding) is
+//! rejected and answered with `400 Bad Request` instead of being guessed at.
 
 use std::fmt;
 
@@ -146,12 +151,26 @@ pub fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str
         .map(|(_, v)| v.as_str())
 }
 
-/// True when a `Transfer-Encoding` header names `chunked`.
+/// Every transfer coding named by the `Transfer-Encoding` headers, in wire
+/// order, lowercased and trimmed, with empty list elements dropped.
+#[must_use]
+pub fn transfer_encodings(headers: &[(String, String)]) -> Vec<String> {
+    headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("transfer-encoding"))
+        .flat_map(|(_, value)| value.split(','))
+        .map(|coding| coding.trim().to_ascii_lowercase())
+        .filter(|coding| !coding.is_empty())
+        .collect()
+}
+
+/// True when a `Transfer-Encoding` header lists the `chunked` coding as a
+/// token (so `chunkedx` or `notchunked` do not count).
 #[must_use]
 pub fn transfer_encoding_is_chunked(headers: &[(String, String)]) -> bool {
-    header(headers, "transfer-encoding")
-        .map(|v| v.to_ascii_lowercase().contains("chunked"))
-        .unwrap_or(false)
+    transfer_encodings(headers)
+        .iter()
+        .any(|coding| coding == "chunked")
 }
 
 /// How the request frames its body.
@@ -172,6 +191,10 @@ pub enum FramingError {
     BadContentLength,
     /// Both `Content-Length` and chunked encoding are present.
     Ambiguous,
+    /// `Transfer-Encoding` names a coding other than a single `chunked`
+    /// (`gzip, chunked`, `identity`, `chunked, chunked`); the channel does
+    /// not decode those, so the body length would be unknown.
+    UnsupportedTransferEncoding,
 }
 
 impl fmt::Display for FramingError {
@@ -180,6 +203,9 @@ impl fmt::Display for FramingError {
             Self::BadContentLength => f.write_str("malformed Content-Length"),
             Self::Ambiguous => {
                 f.write_str("both Content-Length and Transfer-Encoding: chunked present")
+            }
+            Self::UnsupportedTransferEncoding => {
+                f.write_str("unsupported Transfer-Encoding (only a single chunked is accepted)")
             }
         }
     }
@@ -191,7 +217,10 @@ impl std::error::Error for FramingError {}
 ///
 /// A `Content-Length` that is not a decimal number, or that disagrees with a
 /// second `Content-Length`, is rejected rather than ignored, so a malformed
-/// header can never turn a bounded body into a read-until-EOF one.
+/// header can never turn a bounded body into a read-until-EOF one. A
+/// `Transfer-Encoding` is accepted only when it names exactly one coding and
+/// that coding is `chunked`; any other coding list is rejected because the
+/// channel cannot know where such a body ends.
 ///
 /// # Errors
 ///
@@ -211,7 +240,12 @@ pub fn body_framing(headers: &[(String, String)]) -> Result<BodyFraming, Framing
             _ => length = Some(parsed),
         }
     }
-    let chunked = transfer_encoding_is_chunked(headers);
+    let encodings = transfer_encodings(headers);
+    let chunked = match encodings.as_slice() {
+        [] => false,
+        [only] if only == "chunked" => true,
+        _ => return Err(FramingError::UnsupportedTransferEncoding),
+    };
     match (length, chunked) {
         (Some(_), true) => Err(FramingError::Ambiguous),
         (Some(len), false) => Ok(BodyFraming::Length(len)),
@@ -420,16 +454,20 @@ fn find_crlf(buf: &[u8], max: usize) -> Result<Option<usize>, ()> {
 
 /// Parses one chunk-size field (hex digits, then an optional `;extension`).
 ///
+/// The line must start with a hex digit (RFC 9112 §7.1 allows no leading
+/// whitespace); trailing spaces and tabs before the extension or CRLF are
+/// tolerated as the usual bad-whitespace allowance.
+///
 /// # Errors
 ///
 /// Returns [`ChunkedError::BadChunkSize`] when the digits are missing, not
-/// hex, or more than [`MAX_CHUNK_SIZE_DIGITS`].
+/// hex, preceded by whitespace, or more than [`MAX_CHUNK_SIZE_DIGITS`].
 fn parse_chunk_size(line: &[u8]) -> Result<u64, ChunkedError> {
     let field = line
         .iter()
         .position(|&b| b == b';')
         .map_or(line, |end| &line[..end]);
-    let digits = trim_ascii_ws(field);
+    let digits = trim_trailing_ascii_ws(field);
     if digits.is_empty() || digits.len() > MAX_CHUNK_SIZE_DIGITS {
         return Err(ChunkedError::BadChunkSize);
     }
@@ -448,17 +486,13 @@ fn parse_chunk_size(line: &[u8]) -> Result<u64, ChunkedError> {
     Ok(size)
 }
 
-/// `bytes` without leading or trailing spaces and tabs.
-fn trim_ascii_ws(bytes: &[u8]) -> &[u8] {
-    let start = bytes
-        .iter()
-        .position(|b| !matches!(b, b' ' | b'\t'))
-        .unwrap_or(bytes.len());
+/// `bytes` without trailing spaces and tabs.
+fn trim_trailing_ascii_ws(bytes: &[u8]) -> &[u8] {
     let end = bytes
         .iter()
         .rposition(|b| !matches!(b, b' ' | b'\t'))
-        .map_or(start, |p| p + 1);
-    &bytes[start..end.max(start)]
+        .map_or(0, |p| p + 1);
+    &bytes[..end]
 }
 
 /// The percent-decoded value of the first `name=` pair in `query`.
@@ -581,6 +615,37 @@ mod tests {
             body_framing(&h(&[("Transfer-Encoding", "Chunked")])),
             Ok(BodyFraming::Chunked)
         );
+        assert_eq!(
+            body_framing(&h(&[("Transfer-Encoding", " chunked , ")])),
+            Ok(BodyFraming::Chunked)
+        );
+        for te in ["gzip, chunked", "chunked, chunked", "identity", "chunkedx"] {
+            assert_eq!(
+                body_framing(&h(&[("Transfer-Encoding", te)])),
+                Err(FramingError::UnsupportedTransferEncoding),
+                "{te}"
+            );
+            assert_eq!(
+                body_framing(&h(&[("Content-Length", "1"), ("Transfer-Encoding", te)])),
+                Err(FramingError::UnsupportedTransferEncoding),
+                "{te}"
+            );
+        }
+        assert_eq!(
+            body_framing(&h(&[
+                ("Transfer-Encoding", "gzip"),
+                ("Transfer-Encoding", "chunked")
+            ])),
+            Err(FramingError::UnsupportedTransferEncoding)
+        );
+        assert!(transfer_encoding_is_chunked(&h(&[(
+            "transfer-encoding",
+            "gzip, Chunked"
+        )])));
+        assert!(!transfer_encoding_is_chunked(&h(&[(
+            "transfer-encoding",
+            "notchunked"
+        )])));
         assert!(declared_content_length_over_cap(
             &h(&[("Content-Length", "11")]),
             10
@@ -600,6 +665,18 @@ mod tests {
         let mut out = Vec::new();
         let progress = dec.decode(input, &mut out)?;
         Ok((out, progress.consumed, progress.done))
+    }
+
+    #[test]
+    fn chunk_size_rejects_leading_whitespace_but_allows_trailing() {
+        assert_eq!(
+            decode_all(b" 5\r\nhello\r\n0\r\n\r\n"),
+            Err(ChunkedError::BadChunkSize)
+        );
+        assert_eq!(decode_all(b"\t0\r\n\r\n"), Err(ChunkedError::BadChunkSize));
+        let (out, _, done) = decode_all(b"5 \r\nhello\r\n0\r\n\r\n").expect("trailing ws");
+        assert_eq!(out, b"hello");
+        assert!(done);
     }
 
     #[test]

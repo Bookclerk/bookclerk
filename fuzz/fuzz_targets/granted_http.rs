@@ -11,6 +11,7 @@
 use bookclerk_workerd::granted_http::{
     body_framing, declared_content_length_over_cap, parse_request_head, percent_decode,
     query_param, transfer_encoding_is_chunked, BodyFraming, ChunkedDecoder, HeadParse,
+    MAX_CHUNK_LINE_BYTES,
 };
 use bookclerk_workerd::socket_proxy::parse_authority;
 use libfuzzer_sys::fuzz_target;
@@ -99,9 +100,14 @@ fn check_chunked(body: &[u8]) {
 fn reference_chunked(mut input: &[u8]) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     loop {
-        // `httparse` tolerates an empty or whitespace-led size line; RFC 9112
-        // and our decoder require a hex digit first.
+        // `httparse` tolerates an empty or whitespace-led size line and a bare
+        // LF terminator; RFC 9112 and our decoder require a hex digit first
+        // and CRLF, within the decoder's line cap.
         if !input.first().is_some_and(u8::is_ascii_hexdigit) {
+            return None;
+        }
+        let newline = input.iter().position(|&b| b == b'\n')?;
+        if newline == 0 || input[newline - 1] != b'\r' || newline + 1 > MAX_CHUNK_LINE_BYTES {
             return None;
         }
         let (consumed, size) = match httparse::parse_chunk_size(input) {

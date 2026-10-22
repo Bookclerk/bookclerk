@@ -32,8 +32,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::granted_http::{
     body_framing, declared_content_length_over_cap, parse_request_head, query_param,
-    transfer_encoding_is_chunked, BodyFraming, ChunkedDecoder, HeadParse, RequestHead,
-    MAX_CHUNK_LINE_BYTES,
+    transfer_encoding_is_chunked, BodyFraming, ChunkedDecoder, HeadError, HeadParse, RequestHead,
+    MAX_CHUNK_LINE_BYTES, MAX_HEAD_BYTES,
 };
 
 /// Largest `/events/publish` request body: a base64 payload at
@@ -855,7 +855,18 @@ where
 {
     let (reader, mut writer) = tokio::io::split(stream);
     let mut reader = reader;
-    let (method, path, headers, prefix) = read_request_head(&mut reader).await?;
+    let (method, path, headers, prefix) = match read_request_head(&mut reader).await {
+        Ok(head) => head,
+        Err(err) => {
+            // A malformed head is the guest's mistake, not a host fault:
+            // answer 400 so the isolate sees a response instead of a reset.
+            if let Some(head_err) = err.downcast_ref::<HeadError>() {
+                write_status(&mut writer, 400, &format!("malformed request: {head_err}")).await?;
+                return Ok(());
+            }
+            return Err(err);
+        }
+    };
     tracing::debug!(method = %method, path = %path, "granted HTTP request");
     let auth = headers
         .iter()
@@ -1372,12 +1383,33 @@ pub(crate) async fn pump_http_body<S: AsyncRead + Unpin>(
 
 /// Reads the request head, returning it with whatever body bytes arrived in
 /// the same reads.
+///
+/// The buffer is scanned for the terminating blank line only over bytes not
+/// yet scanned, so a head arriving in small reads costs linear work; it is
+/// parsed once, when terminated or once it exceeds [`MAX_HEAD_BYTES`].
+///
+/// # Errors
+///
+/// Returns a [`HeadError`] (downcastable) for a malformed or oversized head,
+/// and an I/O or EOF error when the stream ends first.
 async fn read_request_head<S: AsyncRead + Unpin>(
     stream: &mut S,
 ) -> Result<(String, String, Vec<(String, String)>, Vec<u8>)> {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 1024];
+    let mut scan_from = 0usize;
     loop {
+        let n = stream.read(&mut tmp).await?;
+        if n == 0 {
+            bail!("eof before request headers");
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        let terminated = buf[scan_from..].windows(4).any(|w| w == b"\r\n\r\n");
+        if !terminated && buf.len() <= MAX_HEAD_BYTES {
+            // Back up so a terminator split across reads is still seen.
+            scan_from = buf.len().saturating_sub(3);
+            continue;
+        }
         match parse_request_head(&buf)? {
             HeadParse::Complete { head, consumed } => {
                 let RequestHead {
@@ -1387,13 +1419,8 @@ async fn read_request_head<S: AsyncRead + Unpin>(
                 } = head;
                 return Ok((method, path, headers, buf[consumed..].to_vec()));
             }
-            HeadParse::Incomplete => {}
+            HeadParse::Incomplete => bail!("request head exceeded {MAX_HEAD_BYTES} bytes"),
         }
-        let n = stream.read(&mut tmp).await?;
-        if n == 0 {
-            bail!("eof before request headers");
-        }
-        buf.extend_from_slice(&tmp[..n]);
     }
 }
 
@@ -1476,6 +1503,7 @@ async fn write_status<S: AsyncWrite + Unpin>(
 ) -> Result<()> {
     let reason = match status {
         200 => "OK",
+        400 => "Bad Request",
         401 => "Unauthorized",
         413 => "Payload Too Large",
         _ => "Error",
