@@ -1,0 +1,1 @@
+3SELECT operation_id FROM bookclerk_receipts

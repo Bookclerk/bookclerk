@@ -1,0 +1,1 @@
+0DELETE FROM books WHERE id IN (SELECT id FROM books WHERE price IS NULL)

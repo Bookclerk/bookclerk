@@ -1,0 +1,1 @@
+2SELECT id + 1 FROM books WHERE id = ? -- note

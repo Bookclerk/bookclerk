@@ -1,0 +1,1 @@
+0PRAGMA table_info(books)

@@ -1,0 +1,1 @@
+2SELECT id + 1, price * 2 FROM books WHERE id = ?

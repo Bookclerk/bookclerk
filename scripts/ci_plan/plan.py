@@ -53,6 +53,10 @@ FUZZ_SELF_SELECTING_PREFIXES = (
     "fuzz/dictionaries/",
 )
 FUZZ_CORPUS_PREFIX = "fuzz/corpus/"
+# Oracles shared by a fuzz target and the owning crate's replay test
+# (`#[path]`-included); like a corpus they are declared `test_input` in
+# relations.toml and an undeclared oracle stays a full suite.
+FUZZ_ORACLE_PREFIX = "fuzz/oracles/"
 
 # Crates documented/linted as the public plugin authoring surface.
 PUBLISH_CRATES = frozenset(
@@ -654,8 +658,10 @@ def build_plan(
     changed_pkgs: set[str] = set()
 
     for path in plan.changed_paths:
-        fuzz_input = path.startswith(FUZZ_CORPUS_PREFIX) or path.startswith(
-            FUZZ_SELF_SELECTING_PREFIXES
+        fuzz_input = (
+            path.startswith(FUZZ_CORPUS_PREFIX)
+            or path.startswith(FUZZ_ORACLE_PREFIX)
+            or path.startswith(FUZZ_SELF_SELECTING_PREFIXES)
         )
         if not fuzz_input and (
             path in FULL_SUITE_PATHS or any(path.startswith(p) for p in FULL_SUITE_PATH_PREFIXES)

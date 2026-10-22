@@ -5171,3 +5171,3527 @@ pub fn read_any_message(selector: u8, bytes: &[u8]) -> capnp::Result<()> {
     }
     Ok(())
 }
+
+/// Why [`roundtrip_any_message`] could not show `read(write(v)) == v`.
+#[derive(Debug)]
+pub enum RoundTripFailure {
+    /// The input bytes did not decode; expected for arbitrary input and
+    /// not a codec defect.
+    Rejected(capnp::Error),
+    /// A value that did decode failed to re-encode, to decode again, or
+    /// came back different: a defect in a generated codec pair.
+    Codec(String),
+}
+
+impl From<capnp::Error> for RoundTripFailure {
+    fn from(err: capnp::Error) -> Self {
+        Self::Rejected(err)
+    }
+}
+
+/// Decodes `bytes` as the struct `selector` names (as [`read_any_message`]
+/// does), writes the value back through that struct's `write_*` codec,
+/// decodes the result and requires it to equal the first value.
+///
+/// Harness entry point for the `abi_roundtrip` fuzz target and its corpus
+/// replay. The first decode runs under the same traversal and nesting
+/// budget as [`read_any_message`]; the re-decode runs on bytes this crate
+/// produced from an already bounded value, so it uses the default budget.
+/// Equality is the DTO's `PartialEq`; because `NaN != NaN`, two values
+/// that `PartialEq` separates still count as equal when their `Debug`
+/// renderings agree (a field-by-field comparison that prints every NaN
+/// the same way and keeps `-0.0` apart from `0.0`) and the re-decoded
+/// value re-encodes to the same bytes (which also covers fields whose
+/// `Debug` redacts).
+///
+/// # Errors
+///
+/// [`RoundTripFailure::Rejected`] when the input does not decode or the
+/// selector is at or past [`READ_ANY_COUNT`]; [`RoundTripFailure::Codec`]
+/// when the decoded value does not survive `write_*` then `read_*` intact.
+pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTripFailure> {
+    let words = (bytes.len() / 8).saturating_add(16);
+    let mut opts = capnp::message::ReaderOptions::new();
+    opts.traversal_limit_in_words(Some(words));
+    opts.nesting_limit(32);
+    let reader = capnp::serialize::read_message(&mut std::io::Cursor::new(bytes), opts)?;
+    match selector {
+        0 => {
+            let first = read_event_consumer_spec(
+                reader.get_root::<plugin_capnp::event_consumer_spec::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_event_consumer_spec(
+                message.init_root::<plugin_capnp::event_consumer_spec::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_event_consumer_spec(
+                    again.get_root::<plugin_capnp::event_consumer_spec::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_event_consumer_spec(
+                    message.init_root::<plugin_capnp::event_consumer_spec::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded EventConsumerSpec value".to_string(),
+                    ));
+                }
+            }
+        }
+        1 => {
+            let first = read_plugin_capabilities(
+                reader.get_root::<plugin_capnp::plugin_capabilities::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_plugin_capabilities(
+                message.init_root::<plugin_capnp::plugin_capabilities::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_plugin_capabilities(
+                    again.get_root::<plugin_capnp::plugin_capabilities::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_plugin_capabilities(
+                    message.init_root::<plugin_capnp::plugin_capabilities::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded PluginCapabilities value".to_string(),
+                    ));
+                }
+            }
+        }
+        2 => {
+            let first = read_brand(reader.get_root::<plugin_capnp::brand::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_brand(
+                message.init_root::<plugin_capnp::brand::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| read_brand(again.get_root::<plugin_capnp::brand::Reader<'_>>()?))
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_brand(
+                    message.init_root::<plugin_capnp::brand::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded Brand value".to_string(),
+                    ));
+                }
+            }
+        }
+        3 => {
+            let first =
+                read_config_option(reader.get_root::<plugin_capnp::config_option::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_config_option(
+                message.init_root::<plugin_capnp::config_option::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_config_option(again.get_root::<plugin_capnp::config_option::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_config_option(
+                    message.init_root::<plugin_capnp::config_option::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded ConfigOption value".to_string(),
+                    ));
+                }
+            }
+        }
+        4 => {
+            let first = read_config_option_value(
+                reader.get_root::<plugin_capnp::config_option_value::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_config_option_value(
+                message.init_root::<plugin_capnp::config_option_value::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_config_option_value(
+                    again.get_root::<plugin_capnp::config_option_value::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_config_option_value(
+                    message.init_root::<plugin_capnp::config_option_value::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded ConfigOptionValue value".to_string(),
+                    ));
+                }
+            }
+        }
+        5 => {
+            let first =
+                read_cli_schema(reader.get_root::<plugin_capnp::cli_schema::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_cli_schema(
+                message.init_root::<plugin_capnp::cli_schema::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_cli_schema(again.get_root::<plugin_capnp::cli_schema::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_cli_schema(
+                    message.init_root::<plugin_capnp::cli_schema::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded CliSchema value".to_string(),
+                    ));
+                }
+            }
+        }
+        6 => {
+            let first = read_cli_command_spec(
+                reader.get_root::<plugin_capnp::cli_command_spec::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_cli_command_spec(
+                message.init_root::<plugin_capnp::cli_command_spec::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_cli_command_spec(
+                    again.get_root::<plugin_capnp::cli_command_spec::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_cli_command_spec(
+                    message.init_root::<plugin_capnp::cli_command_spec::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded CliCommandSpec value".to_string(),
+                    ));
+                }
+            }
+        }
+        7 => {
+            let first =
+                read_cli_arg_spec(reader.get_root::<plugin_capnp::cli_arg_spec::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_cli_arg_spec(
+                message.init_root::<plugin_capnp::cli_arg_spec::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_cli_arg_spec(again.get_root::<plugin_capnp::cli_arg_spec::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_cli_arg_spec(
+                    message.init_root::<plugin_capnp::cli_arg_spec::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded CliArgSpec value".to_string(),
+                    ));
+                }
+            }
+        }
+        8 => {
+            let first = read_cli_arg(reader.get_root::<plugin_capnp::cli_arg::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_cli_arg(
+                message.init_root::<plugin_capnp::cli_arg::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| read_cli_arg(again.get_root::<plugin_capnp::cli_arg::Reader<'_>>()?))
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_cli_arg(
+                    message.init_root::<plugin_capnp::cli_arg::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded CliArg value".to_string(),
+                    ));
+                }
+            }
+        }
+        9 => {
+            let first = read_cli_invoke_params(
+                reader.get_root::<plugin_capnp::cli_invoke_params::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_cli_invoke_params(
+                message.init_root::<plugin_capnp::cli_invoke_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_cli_invoke_params(
+                    again.get_root::<plugin_capnp::cli_invoke_params::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_cli_invoke_params(
+                    message.init_root::<plugin_capnp::cli_invoke_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded CliInvokeParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        10 => {
+            let first = read_cli_invoke_result(
+                reader.get_root::<plugin_capnp::cli_invoke_result::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_cli_invoke_result(
+                message.init_root::<plugin_capnp::cli_invoke_result::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_cli_invoke_result(
+                    again.get_root::<plugin_capnp::cli_invoke_result::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_cli_invoke_result(
+                    message.init_root::<plugin_capnp::cli_invoke_result::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded CliInvokeResult value".to_string(),
+                    ));
+                }
+            }
+        }
+        11 => {
+            let first = read_cli_schema_reply(
+                reader.get_root::<plugin_capnp::cli_schema_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_cli_schema_reply(
+                message.init_root::<plugin_capnp::cli_schema_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_cli_schema_reply(
+                    again.get_root::<plugin_capnp::cli_schema_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_cli_schema_reply(
+                    message.init_root::<plugin_capnp::cli_schema_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded CliSchemaReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        12 => {
+            let first = read_cli_invoke_reply(
+                reader.get_root::<plugin_capnp::cli_invoke_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_cli_invoke_reply(
+                message.init_root::<plugin_capnp::cli_invoke_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_cli_invoke_reply(
+                    again.get_root::<plugin_capnp::cli_invoke_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_cli_invoke_reply(
+                    message.init_root::<plugin_capnp::cli_invoke_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded CliInvokeReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        13 => {
+            let first = read_database_adapter_config(
+                reader.get_root::<plugin_capnp::database_adapter_config::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_database_adapter_config(
+                message.init_root::<plugin_capnp::database_adapter_config::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_database_adapter_config(
+                    again.get_root::<plugin_capnp::database_adapter_config::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_database_adapter_config(
+                    message.init_root::<plugin_capnp::database_adapter_config::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded DatabaseAdapterConfig value".to_string(),
+                    ));
+                }
+            }
+        }
+        14 => {
+            let first = read_diagnose_result(
+                reader.get_root::<plugin_capnp::diagnose_result::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_diagnose_result(
+                message.init_root::<plugin_capnp::diagnose_result::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_diagnose_result(again.get_root::<plugin_capnp::diagnose_result::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_diagnose_result(
+                    message.init_root::<plugin_capnp::diagnose_result::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded DiagnoseResult value".to_string(),
+                    ));
+                }
+            }
+        }
+        15 => {
+            let first = read_diagnose_reply(
+                reader.get_root::<plugin_capnp::diagnose_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_diagnose_reply(
+                message.init_root::<plugin_capnp::diagnose_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_diagnose_reply(again.get_root::<plugin_capnp::diagnose_reply::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_diagnose_reply(
+                    message.init_root::<plugin_capnp::diagnose_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded DiagnoseReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        16 => {
+            let first = read_source_account(
+                reader.get_root::<plugin_capnp::source_account::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_source_account(
+                message.init_root::<plugin_capnp::source_account::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_source_account(again.get_root::<plugin_capnp::source_account::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_source_account(
+                    message.init_root::<plugin_capnp::source_account::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded SourceAccount value".to_string(),
+                    ));
+                }
+            }
+        }
+        17 => {
+            let first =
+                read_login_params(reader.get_root::<plugin_capnp::login_params::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_login_params(
+                message.init_root::<plugin_capnp::login_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_login_params(again.get_root::<plugin_capnp::login_params::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_login_params(
+                    message.init_root::<plugin_capnp::login_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded LoginParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        18 => {
+            let first =
+                read_login_result(reader.get_root::<plugin_capnp::login_result::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_login_result(
+                message.init_root::<plugin_capnp::login_result::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_login_result(again.get_root::<plugin_capnp::login_result::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_login_result(
+                    message.init_root::<plugin_capnp::login_result::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded LoginResult value".to_string(),
+                    ));
+                }
+            }
+        }
+        19 => {
+            let first = read_login_start_result(
+                reader.get_root::<plugin_capnp::login_start_result::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_login_start_result(
+                message.init_root::<plugin_capnp::login_start_result::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_login_start_result(
+                    again.get_root::<plugin_capnp::login_start_result::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_login_start_result(
+                    message.init_root::<plugin_capnp::login_start_result::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded LoginStartResult value".to_string(),
+                    ));
+                }
+            }
+        }
+        20 => {
+            let first = read_login_complete_params(
+                reader.get_root::<plugin_capnp::login_complete_params::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_login_complete_params(
+                message.init_root::<plugin_capnp::login_complete_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_login_complete_params(
+                    again.get_root::<plugin_capnp::login_complete_params::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_login_complete_params(
+                    message.init_root::<plugin_capnp::login_complete_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded LoginCompleteParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        21 => {
+            let first =
+                read_login_reply(reader.get_root::<plugin_capnp::login_reply::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_login_reply(
+                message.init_root::<plugin_capnp::login_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_login_reply(again.get_root::<plugin_capnp::login_reply::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_login_reply(
+                    message.init_root::<plugin_capnp::login_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded LoginReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        22 => {
+            let first = read_login_start_reply(
+                reader.get_root::<plugin_capnp::login_start_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_login_start_reply(
+                message.init_root::<plugin_capnp::login_start_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_login_start_reply(
+                    again.get_root::<plugin_capnp::login_start_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_login_start_reply(
+                    message.init_root::<plugin_capnp::login_start_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded LoginStartReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        23 => {
+            let first = read_account_credential(
+                reader.get_root::<plugin_capnp::account_credential::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_account_credential(
+                message.init_root::<plugin_capnp::account_credential::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_account_credential(
+                    again.get_root::<plugin_capnp::account_credential::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_account_credential(
+                    message.init_root::<plugin_capnp::account_credential::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded AccountCredential value".to_string(),
+                    ));
+                }
+            }
+        }
+        24 => {
+            let first =
+                read_scan_params(reader.get_root::<plugin_capnp::scan_params::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_scan_params(
+                message.init_root::<plugin_capnp::scan_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_scan_params(again.get_root::<plugin_capnp::scan_params::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_scan_params(
+                    message.init_root::<plugin_capnp::scan_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded ScanParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        25 => {
+            let first = read_scan_book(reader.get_root::<plugin_capnp::scan_book::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_scan_book(
+                message.init_root::<plugin_capnp::scan_book::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_scan_book(again.get_root::<plugin_capnp::scan_book::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_scan_book(
+                    message.init_root::<plugin_capnp::scan_book::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded ScanBook value".to_string(),
+                    ));
+                }
+            }
+        }
+        26 => {
+            let first =
+                read_scan_summary(reader.get_root::<plugin_capnp::scan_summary::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_scan_summary(
+                message.init_root::<plugin_capnp::scan_summary::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_scan_summary(again.get_root::<plugin_capnp::scan_summary::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_scan_summary(
+                    message.init_root::<plugin_capnp::scan_summary::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded ScanSummary value".to_string(),
+                    ));
+                }
+            }
+        }
+        27 => {
+            let first =
+                read_scan_reply(reader.get_root::<plugin_capnp::scan_reply::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_scan_reply(
+                message.init_root::<plugin_capnp::scan_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_scan_reply(again.get_root::<plugin_capnp::scan_reply::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_scan_reply(
+                    message.init_root::<plugin_capnp::scan_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded ScanReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        28 => {
+            let first =
+                read_fetch_options(reader.get_root::<plugin_capnp::fetch_options::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_fetch_options(
+                message.init_root::<plugin_capnp::fetch_options::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_fetch_options(again.get_root::<plugin_capnp::fetch_options::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_fetch_options(
+                    message.init_root::<plugin_capnp::fetch_options::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded FetchOptions value".to_string(),
+                    ));
+                }
+            }
+        }
+        29 => {
+            let first = read_fetch_title_params(
+                reader.get_root::<plugin_capnp::fetch_title_params::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_fetch_title_params(
+                message.init_root::<plugin_capnp::fetch_title_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_fetch_title_params(
+                    again.get_root::<plugin_capnp::fetch_title_params::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_fetch_title_params(
+                    message.init_root::<plugin_capnp::fetch_title_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded FetchTitleParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        30 => {
+            let first =
+                read_plain_part(reader.get_root::<plugin_capnp::plain_part::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_plain_part(
+                message.init_root::<plugin_capnp::plain_part::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_plain_part(again.get_root::<plugin_capnp::plain_part::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_plain_part(
+                    message.init_root::<plugin_capnp::plain_part::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded PlainPart value".to_string(),
+                    ));
+                }
+            }
+        }
+        31 => {
+            let first = read_chapter_marker(
+                reader.get_root::<plugin_capnp::chapter_marker::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_chapter_marker(
+                message.init_root::<plugin_capnp::chapter_marker::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_chapter_marker(again.get_root::<plugin_capnp::chapter_marker::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_chapter_marker(
+                    message.init_root::<plugin_capnp::chapter_marker::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded ChapterMarker value".to_string(),
+                    ));
+                }
+            }
+        }
+        32 => {
+            let first =
+                read_plain_fetch(reader.get_root::<plugin_capnp::plain_fetch::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_plain_fetch(
+                message.init_root::<plugin_capnp::plain_fetch::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_plain_fetch(again.get_root::<plugin_capnp::plain_fetch::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_plain_fetch(
+                    message.init_root::<plugin_capnp::plain_fetch::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded PlainFetch value".to_string(),
+                    ));
+                }
+            }
+        }
+        33 => {
+            let first = read_fetch_title_reply(
+                reader.get_root::<plugin_capnp::fetch_title_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_fetch_title_reply(
+                message.init_root::<plugin_capnp::fetch_title_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_fetch_title_reply(
+                    again.get_root::<plugin_capnp::fetch_title_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_fetch_title_reply(
+                    message.init_root::<plugin_capnp::fetch_title_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded FetchTitleReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        34 => {
+            let first = read_source_accounts(
+                reader.get_root::<plugin_capnp::source_accounts::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_source_accounts(
+                message.init_root::<plugin_capnp::source_accounts::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_source_accounts(again.get_root::<plugin_capnp::source_accounts::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_source_accounts(
+                    message.init_root::<plugin_capnp::source_accounts::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded SourceAccounts value".to_string(),
+                    ));
+                }
+            }
+        }
+        35 => {
+            let first = read_source_accounts_reply(
+                reader.get_root::<plugin_capnp::source_accounts_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_source_accounts_reply(
+                message.init_root::<plugin_capnp::source_accounts_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_source_accounts_reply(
+                    again.get_root::<plugin_capnp::source_accounts_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_source_accounts_reply(
+                    message.init_root::<plugin_capnp::source_accounts_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded SourceAccountsReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        36 => {
+            let first = read_search_catalog_params(
+                reader.get_root::<plugin_capnp::search_catalog_params::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_search_catalog_params(
+                message.init_root::<plugin_capnp::search_catalog_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_search_catalog_params(
+                    again.get_root::<plugin_capnp::search_catalog_params::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_search_catalog_params(
+                    message.init_root::<plugin_capnp::search_catalog_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded SearchCatalogParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        37 => {
+            let first = read_expand_candidates_params(
+                reader.get_root::<plugin_capnp::expand_candidates_params::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_expand_candidates_params(
+                message.init_root::<plugin_capnp::expand_candidates_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_expand_candidates_params(
+                    again.get_root::<plugin_capnp::expand_candidates_params::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_expand_candidates_params(
+                    message.init_root::<plugin_capnp::expand_candidates_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded ExpandCandidatesParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        38 => {
+            let first = read_purchase_hint_params(
+                reader.get_root::<plugin_capnp::purchase_hint_params::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_purchase_hint_params(
+                message.init_root::<plugin_capnp::purchase_hint_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_purchase_hint_params(
+                    again.get_root::<plugin_capnp::purchase_hint_params::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_purchase_hint_params(
+                    message.init_root::<plugin_capnp::purchase_hint_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded PurchaseHintParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        39 => {
+            let first = read_list_deals_params(
+                reader.get_root::<plugin_capnp::list_deals_params::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_list_deals_params(
+                message.init_root::<plugin_capnp::list_deals_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_list_deals_params(
+                    again.get_root::<plugin_capnp::list_deals_params::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_list_deals_params(
+                    message.init_root::<plugin_capnp::list_deals_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded ListDealsParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        40 => {
+            let first = read_catalog_detail_params(
+                reader.get_root::<plugin_capnp::catalog_detail_params::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_catalog_detail_params(
+                message.init_root::<plugin_capnp::catalog_detail_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_catalog_detail_params(
+                    again.get_root::<plugin_capnp::catalog_detail_params::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_catalog_detail_params(
+                    message.init_root::<plugin_capnp::catalog_detail_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded CatalogDetailParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        41 => {
+            let first =
+                read_catalog_hit(reader.get_root::<plugin_capnp::catalog_hit::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_catalog_hit(
+                message.init_root::<plugin_capnp::catalog_hit::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_catalog_hit(again.get_root::<plugin_capnp::catalog_hit::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_catalog_hit(
+                    message.init_root::<plugin_capnp::catalog_hit::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded CatalogHit value".to_string(),
+                    ));
+                }
+            }
+        }
+        42 => {
+            let first =
+                read_catalog_hits(reader.get_root::<plugin_capnp::catalog_hits::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_catalog_hits(
+                message.init_root::<plugin_capnp::catalog_hits::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_catalog_hits(again.get_root::<plugin_capnp::catalog_hits::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_catalog_hits(
+                    message.init_root::<plugin_capnp::catalog_hits::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded CatalogHits value".to_string(),
+                    ));
+                }
+            }
+        }
+        43 => {
+            let first = read_catalog_hits_reply(
+                reader.get_root::<plugin_capnp::catalog_hits_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_catalog_hits_reply(
+                message.init_root::<plugin_capnp::catalog_hits_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_catalog_hits_reply(
+                    again.get_root::<plugin_capnp::catalog_hits_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_catalog_hits_reply(
+                    message.init_root::<plugin_capnp::catalog_hits_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded CatalogHitsReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        44 => {
+            let first = read_catalog_detail(
+                reader.get_root::<plugin_capnp::catalog_detail::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_catalog_detail(
+                message.init_root::<plugin_capnp::catalog_detail::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_catalog_detail(again.get_root::<plugin_capnp::catalog_detail::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_catalog_detail(
+                    message.init_root::<plugin_capnp::catalog_detail::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded CatalogDetail value".to_string(),
+                    ));
+                }
+            }
+        }
+        45 => {
+            let first = read_catalog_detail_reply(
+                reader.get_root::<plugin_capnp::catalog_detail_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_catalog_detail_reply(
+                message.init_root::<plugin_capnp::catalog_detail_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_catalog_detail_reply(
+                    again.get_root::<plugin_capnp::catalog_detail_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_catalog_detail_reply(
+                    message.init_root::<plugin_capnp::catalog_detail_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded CatalogDetailReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        46 => {
+            let first =
+                read_purchase_hint(reader.get_root::<plugin_capnp::purchase_hint::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_purchase_hint(
+                message.init_root::<plugin_capnp::purchase_hint::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_purchase_hint(again.get_root::<plugin_capnp::purchase_hint::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_purchase_hint(
+                    message.init_root::<plugin_capnp::purchase_hint::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded PurchaseHint value".to_string(),
+                    ));
+                }
+            }
+        }
+        47 => {
+            let first = read_purchase_hint_result(
+                reader.get_root::<plugin_capnp::purchase_hint_result::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_purchase_hint_result(
+                message.init_root::<plugin_capnp::purchase_hint_result::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_purchase_hint_result(
+                    again.get_root::<plugin_capnp::purchase_hint_result::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_purchase_hint_result(
+                    message.init_root::<plugin_capnp::purchase_hint_result::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded PurchaseHintResult value".to_string(),
+                    ));
+                }
+            }
+        }
+        48 => {
+            let first = read_purchase_hint_reply(
+                reader.get_root::<plugin_capnp::purchase_hint_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_purchase_hint_reply(
+                message.init_root::<plugin_capnp::purchase_hint_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_purchase_hint_reply(
+                    again.get_root::<plugin_capnp::purchase_hint_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_purchase_hint_reply(
+                    message.init_root::<plugin_capnp::purchase_hint_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded PurchaseHintReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        49 => {
+            let first = read_scan_library_params(
+                reader.get_root::<plugin_capnp::scan_library_params::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_scan_library_params(
+                message.init_root::<plugin_capnp::scan_library_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_scan_library_params(
+                    again.get_root::<plugin_capnp::scan_library_params::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_scan_library_params(
+                    message.init_root::<plugin_capnp::scan_library_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded ScanLibraryParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        50 => {
+            let first = read_authenticate_user_params(
+                reader.get_root::<plugin_capnp::authenticate_user_params::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_authenticate_user_params(
+                message.init_root::<plugin_capnp::authenticate_user_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_authenticate_user_params(
+                    again.get_root::<plugin_capnp::authenticate_user_params::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_authenticate_user_params(
+                    message.init_root::<plugin_capnp::authenticate_user_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded AuthenticateUserParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        51 => {
+            let first =
+                read_external_user(reader.get_root::<plugin_capnp::external_user::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_external_user(
+                message.init_root::<plugin_capnp::external_user::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_external_user(again.get_root::<plugin_capnp::external_user::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_external_user(
+                    message.init_root::<plugin_capnp::external_user::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded ExternalUser value".to_string(),
+                    ));
+                }
+            }
+        }
+        52 => {
+            let first = read_external_user_reply(
+                reader.get_root::<plugin_capnp::external_user_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_external_user_reply(
+                message.init_root::<plugin_capnp::external_user_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_external_user_reply(
+                    again.get_root::<plugin_capnp::external_user_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_external_user_reply(
+                    message.init_root::<plugin_capnp::external_user_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded ExternalUserReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        53 => {
+            let first = read_event_poll_result(
+                reader.get_root::<plugin_capnp::event_poll_result::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_event_poll_result(
+                message.init_root::<plugin_capnp::event_poll_result::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_event_poll_result(
+                    again.get_root::<plugin_capnp::event_poll_result::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_event_poll_result(
+                    message.init_root::<plugin_capnp::event_poll_result::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded EventPollResult value".to_string(),
+                    ));
+                }
+            }
+        }
+        54 => {
+            let first = read_event_poll_reply(
+                reader.get_root::<plugin_capnp::event_poll_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_event_poll_reply(
+                message.init_root::<plugin_capnp::event_poll_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_event_poll_reply(
+                    again.get_root::<plugin_capnp::event_poll_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_event_poll_reply(
+                    message.init_root::<plugin_capnp::event_poll_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded EventPollReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        55 => {
+            let first = read_listening_progress(
+                reader.get_root::<plugin_capnp::listening_progress::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_listening_progress(
+                message.init_root::<plugin_capnp::listening_progress::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_listening_progress(
+                    again.get_root::<plugin_capnp::listening_progress::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_listening_progress(
+                    message.init_root::<plugin_capnp::listening_progress::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded ListeningProgress value".to_string(),
+                    ));
+                }
+            }
+        }
+        56 => {
+            let first = read_sync_listening_result(
+                reader.get_root::<plugin_capnp::sync_listening_result::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_sync_listening_result(
+                message.init_root::<plugin_capnp::sync_listening_result::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_sync_listening_result(
+                    again.get_root::<plugin_capnp::sync_listening_result::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_sync_listening_result(
+                    message.init_root::<plugin_capnp::sync_listening_result::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded SyncListeningResult value".to_string(),
+                    ));
+                }
+            }
+        }
+        57 => {
+            let first = read_sync_listening_reply(
+                reader.get_root::<plugin_capnp::sync_listening_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_sync_listening_reply(
+                message.init_root::<plugin_capnp::sync_listening_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_sync_listening_reply(
+                    again.get_root::<plugin_capnp::sync_listening_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_sync_listening_reply(
+                    message.init_root::<plugin_capnp::sync_listening_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded SyncListeningReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        58 => {
+            let first =
+                read_plugin_event(reader.get_root::<plugin_capnp::plugin_event::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_plugin_event(
+                message.init_root::<plugin_capnp::plugin_event::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_plugin_event(again.get_root::<plugin_capnp::plugin_event::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_plugin_event(
+                    message.init_root::<plugin_capnp::plugin_event::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded PluginEvent value".to_string(),
+                    ));
+                }
+            }
+        }
+        59 => {
+            let first =
+                read_publish_ok(reader.get_root::<plugin_capnp::publish_ok::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_publish_ok(
+                message.init_root::<plugin_capnp::publish_ok::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_publish_ok(again.get_root::<plugin_capnp::publish_ok::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_publish_ok(
+                    message.init_root::<plugin_capnp::publish_ok::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded PublishOk value".to_string(),
+                    ));
+                }
+            }
+        }
+        60 => {
+            let first =
+                read_publish_reply(reader.get_root::<plugin_capnp::publish_reply::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_publish_reply(
+                message.init_root::<plugin_capnp::publish_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_publish_reply(again.get_root::<plugin_capnp::publish_reply::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_publish_reply(
+                    message.init_root::<plugin_capnp::publish_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded PublishReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        61 => {
+            let first =
+                read_invocation(reader.get_root::<plugin_capnp::invocation::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_invocation(
+                message.init_root::<plugin_capnp::invocation::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_invocation(again.get_root::<plugin_capnp::invocation::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_invocation(
+                    message.init_root::<plugin_capnp::invocation::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded Invocation value".to_string(),
+                    ));
+                }
+            }
+        }
+        62 => {
+            let first =
+                read_queue_message(reader.get_root::<plugin_capnp::queue_message::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_queue_message(
+                message.init_root::<plugin_capnp::queue_message::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_queue_message(again.get_root::<plugin_capnp::queue_message::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_queue_message(
+                    message.init_root::<plugin_capnp::queue_message::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded QueueMessage value".to_string(),
+                    ));
+                }
+            }
+        }
+        63 => {
+            let first =
+                read_queue_batch(reader.get_root::<plugin_capnp::queue_batch::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_queue_batch(
+                message.init_root::<plugin_capnp::queue_batch::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_queue_batch(again.get_root::<plugin_capnp::queue_batch::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_queue_batch(
+                    message.init_root::<plugin_capnp::queue_batch::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded QueueBatch value".to_string(),
+                    ));
+                }
+            }
+        }
+        64 => {
+            let first =
+                read_queue_retry(reader.get_root::<plugin_capnp::queue_retry::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_queue_retry(
+                message.init_root::<plugin_capnp::queue_retry::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_queue_retry(again.get_root::<plugin_capnp::queue_retry::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_queue_retry(
+                    message.init_root::<plugin_capnp::queue_retry::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded QueueRetry value".to_string(),
+                    ));
+                }
+            }
+        }
+        65 => {
+            let first =
+                read_queue_result(reader.get_root::<plugin_capnp::queue_result::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_queue_result(
+                message.init_root::<plugin_capnp::queue_result::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_queue_result(again.get_root::<plugin_capnp::queue_result::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_queue_result(
+                    message.init_root::<plugin_capnp::queue_result::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded QueueResult value".to_string(),
+                    ));
+                }
+            }
+        }
+        66 => {
+            let first = read_queue_batch_ok(
+                reader.get_root::<plugin_capnp::queue_batch_ok::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_queue_batch_ok(
+                message.init_root::<plugin_capnp::queue_batch_ok::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_queue_batch_ok(again.get_root::<plugin_capnp::queue_batch_ok::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_queue_batch_ok(
+                    message.init_root::<plugin_capnp::queue_batch_ok::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded QueueBatchOk value".to_string(),
+                    ));
+                }
+            }
+        }
+        67 => {
+            let first = read_queue_batch_reply(
+                reader.get_root::<plugin_capnp::queue_batch_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_queue_batch_reply(
+                message.init_root::<plugin_capnp::queue_batch_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_queue_batch_reply(
+                    again.get_root::<plugin_capnp::queue_batch_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_queue_batch_reply(
+                    message.init_root::<plugin_capnp::queue_batch_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded QueueBatchReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        68 => {
+            let first = read_queue_send_message(
+                reader.get_root::<plugin_capnp::queue_send_message::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_queue_send_message(
+                message.init_root::<plugin_capnp::queue_send_message::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_queue_send_message(
+                    again.get_root::<plugin_capnp::queue_send_message::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_queue_send_message(
+                    message.init_root::<plugin_capnp::queue_send_message::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded QueueSendMessage value".to_string(),
+                    ));
+                }
+            }
+        }
+        69 => {
+            let first =
+                read_queue_send_ok(reader.get_root::<plugin_capnp::queue_send_ok::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_queue_send_ok(
+                message.init_root::<plugin_capnp::queue_send_ok::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_queue_send_ok(again.get_root::<plugin_capnp::queue_send_ok::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_queue_send_ok(
+                    message.init_root::<plugin_capnp::queue_send_ok::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded QueueSendOk value".to_string(),
+                    ));
+                }
+            }
+        }
+        70 => {
+            let first = read_queue_send_reply(
+                reader.get_root::<plugin_capnp::queue_send_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_queue_send_reply(
+                message.init_root::<plugin_capnp::queue_send_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_queue_send_reply(
+                    again.get_root::<plugin_capnp::queue_send_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_queue_send_reply(
+                    message.init_root::<plugin_capnp::queue_send_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded QueueSendReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        71 => {
+            let first = read_kv_put_options(
+                reader.get_root::<plugin_capnp::kv_put_options::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_kv_put_options(
+                message.init_root::<plugin_capnp::kv_put_options::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_kv_put_options(again.get_root::<plugin_capnp::kv_put_options::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_kv_put_options(
+                    message.init_root::<plugin_capnp::kv_put_options::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded KvPutOptions value".to_string(),
+                    ));
+                }
+            }
+        }
+        72 => {
+            let first = read_kv_get_ok(reader.get_root::<plugin_capnp::kv_get_ok::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_kv_get_ok(
+                message.init_root::<plugin_capnp::kv_get_ok::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_kv_get_ok(again.get_root::<plugin_capnp::kv_get_ok::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_kv_get_ok(
+                    message.init_root::<plugin_capnp::kv_get_ok::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded KvGetOk value".to_string(),
+                    ));
+                }
+            }
+        }
+        73 => {
+            let first =
+                read_kv_get_reply(reader.get_root::<plugin_capnp::kv_get_reply::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_kv_get_reply(
+                message.init_root::<plugin_capnp::kv_get_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_kv_get_reply(again.get_root::<plugin_capnp::kv_get_reply::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_kv_get_reply(
+                    message.init_root::<plugin_capnp::kv_get_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded KvGetReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        74 => {
+            let first = read_kv_put_ok(reader.get_root::<plugin_capnp::kv_put_ok::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_kv_put_ok(
+                message.init_root::<plugin_capnp::kv_put_ok::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_kv_put_ok(again.get_root::<plugin_capnp::kv_put_ok::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_kv_put_ok(
+                    message.init_root::<plugin_capnp::kv_put_ok::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded KvPutOk value".to_string(),
+                    ));
+                }
+            }
+        }
+        75 => {
+            let first =
+                read_kv_delete_ok(reader.get_root::<plugin_capnp::kv_delete_ok::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_kv_delete_ok(
+                message.init_root::<plugin_capnp::kv_delete_ok::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_kv_delete_ok(again.get_root::<plugin_capnp::kv_delete_ok::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_kv_delete_ok(
+                    message.init_root::<plugin_capnp::kv_delete_ok::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded KvDeleteOk value".to_string(),
+                    ));
+                }
+            }
+        }
+        76 => {
+            let first =
+                read_kv_put_reply(reader.get_root::<plugin_capnp::kv_put_reply::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_kv_put_reply(
+                message.init_root::<plugin_capnp::kv_put_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_kv_put_reply(again.get_root::<plugin_capnp::kv_put_reply::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_kv_put_reply(
+                    message.init_root::<plugin_capnp::kv_put_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded KvPutReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        77 => {
+            let first = read_kv_delete_reply(
+                reader.get_root::<plugin_capnp::kv_delete_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_kv_delete_reply(
+                message.init_root::<plugin_capnp::kv_delete_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_kv_delete_reply(again.get_root::<plugin_capnp::kv_delete_reply::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_kv_delete_reply(
+                    message.init_root::<plugin_capnp::kv_delete_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded KvDeleteReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        78 => {
+            let first = read_kv_list_options(
+                reader.get_root::<plugin_capnp::kv_list_options::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_kv_list_options(
+                message.init_root::<plugin_capnp::kv_list_options::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_kv_list_options(again.get_root::<plugin_capnp::kv_list_options::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_kv_list_options(
+                    message.init_root::<plugin_capnp::kv_list_options::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded KvListOptions value".to_string(),
+                    ));
+                }
+            }
+        }
+        79 => {
+            let first =
+                read_kv_list_key(reader.get_root::<plugin_capnp::kv_list_key::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_kv_list_key(
+                message.init_root::<plugin_capnp::kv_list_key::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_kv_list_key(again.get_root::<plugin_capnp::kv_list_key::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_kv_list_key(
+                    message.init_root::<plugin_capnp::kv_list_key::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded KvListKey value".to_string(),
+                    ));
+                }
+            }
+        }
+        80 => {
+            let first =
+                read_kv_list_ok(reader.get_root::<plugin_capnp::kv_list_ok::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_kv_list_ok(
+                message.init_root::<plugin_capnp::kv_list_ok::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_kv_list_ok(again.get_root::<plugin_capnp::kv_list_ok::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_kv_list_ok(
+                    message.init_root::<plugin_capnp::kv_list_ok::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded KvListOk value".to_string(),
+                    ));
+                }
+            }
+        }
+        81 => {
+            let first =
+                read_kv_list_reply(reader.get_root::<plugin_capnp::kv_list_reply::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_kv_list_reply(
+                message.init_root::<plugin_capnp::kv_list_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_kv_list_reply(again.get_root::<plugin_capnp::kv_list_reply::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_kv_list_reply(
+                    message.init_root::<plugin_capnp::kv_list_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded KvListReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        _ => {
+            return Err(
+                capnp::Error::failed(format!("unknown round-trip selector {selector}")).into(),
+            )
+        }
+    }
+    Ok(())
+}

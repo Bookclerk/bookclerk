@@ -77,3 +77,24 @@ boundary = "Generated Cap'n Proto read_* codecs and the database envelope decode
 input_from = "guest"
 side = "host"
 artifacts = ["bookclerk", "rust-sdk"]
+
+[targets.guest_sql_authz]
+crate = "bookclerk-plugin-abi"
+boundary = "Guest SQL authorization under every host-issued policy shape"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk", "rust-sdk"]
+
+[targets.mux_peer]
+crate = "bookclerk-plugin-sdk"
+boundary = "Peer frames on the multiplexed byte link"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk", "rust-sdk"]
+
+[targets.abi_roundtrip]
+crate = "bookclerk-plugin-abi"
+boundary = "Generated Cap'n Proto read_* / write_* codec pairs"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk", "rust-sdk"]

@@ -1,0 +1,1 @@
+0SELECT id, title FROM books WHERE author_id = ? ORDER BY id LIMIT 10

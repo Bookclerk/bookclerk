@@ -2051,9 +2051,30 @@ fn typecheck_recursive_cte(
         took_real: false,
         base,
     };
+    // The arms' FROM sources are the CTE body's own scope: they must not stay
+    // visible to the statement that follows, or an unqualified column in its
+    // RETURNING or WHERE clause would resolve against (or collide with) them.
+    cx.outer_from.push(std::mem::take(&mut cx.from));
+    let result = typecheck_recursive_cte_body(&mut scan, cx, name, explicit);
+    cx.from = cx.outer_from.pop().unwrap_or_default();
+    result
+}
+
+/// Types the anchor and recursive arms of `name` on the scope `cx` holds.
+///
+/// # Errors
+///
+/// Returns when an arm is ill-typed, the arms disagree, or tokens remain
+/// after the last arm.
+fn typecheck_recursive_cte_body(
+    scan: &mut TScan<'_>,
+    cx: &mut TypeCx<'_>,
+    name: &str,
+    explicit: &[String],
+) -> Result<Vec<(String, SqlType)>> {
     let saved = cx.require_named_derived;
     cx.require_named_derived = explicit.is_empty();
-    let mut cols = infer_select_core(&mut scan, cx)?;
+    let mut cols = infer_select_core(scan, cx)?;
     cx.require_named_derived = saved;
     cols = apply_explicit_cte_names(cx.index, cols, explicit)?;
     reject_duplicate_names(cx.index, &cols)?;
@@ -2074,7 +2095,7 @@ fn typecheck_recursive_cte(
     cx.ctes.insert(name.to_string(), cols.clone());
     while scan.take_kw("UNION") {
         let _ = scan.take_kw("ALL");
-        let other = infer_select_core(&mut scan, cx)?;
+        let other = infer_select_core(scan, cx)?;
         if cols.len() != other.len() {
             return Err(ty_err(cx.index, "UNION column counts differ"));
         }
@@ -2088,7 +2109,133 @@ fn typecheck_recursive_cte(
             }
         }
     }
+    require_exhausted(scan, cx, "recursive CTE")?;
     Ok(cols)
+}
+
+/// Types an INSERT's optional conflict clause:
+/// `ON CONFLICT [(col, …) [WHERE pred]] DO NOTHING | DO UPDATE SET col = expr, … [WHERE pred]`.
+///
+/// Host SQL reaches the checker in this form (the ORM's upserts); guest SQL
+/// v1 only admits the `INSERT OR IGNORE` spelling, which the grammar checks
+/// before typing. Conflict-target columns must belong to `table`; `excluded`
+/// names the row that would have been inserted and carries the table's
+/// columns; every `SET` pair uses the UPDATE dest-typing rule and is recorded
+/// as an assignment in the proof.
+///
+/// # Errors
+///
+/// Returns when the clause is malformed, names an unknown column, or assigns
+/// a value whose type does not unify with the destination column.
+fn typecheck_insert_on_conflict(
+    scan: &mut TScan<'_>,
+    cx: &mut TypeCx<'_>,
+    table: &str,
+) -> Result<()> {
+    if !scan.take_kw("ON") {
+        return Ok(());
+    }
+    if !scan.take_kw("CONFLICT") {
+        return Err(ty_err(cx.index, "ON CONFLICT"));
+    }
+    if scan.take_byte(b'(') {
+        loop {
+            let col = scan
+                .read_ident()
+                .ok_or_else(|| ty_err(cx.index, "ON CONFLICT column"))?;
+            lookup_column(cx, Some(table), &col)?;
+            if !scan.take_byte(b',') {
+                break;
+            }
+        }
+        if !scan.take_byte(b')') {
+            return Err(ty_err(cx.index, "ON CONFLICT columns"));
+        }
+        if scan.take_kw("WHERE") {
+            let ty = infer_expr(scan, cx)?;
+            require_booleanish(cx.index, ty, "ON CONFLICT WHERE")?;
+        }
+    }
+    if !scan.take_kw("DO") {
+        return Err(ty_err(cx.index, "ON CONFLICT DO"));
+    }
+    if scan.take_kw("NOTHING") {
+        return Ok(());
+    }
+    if !scan.take_kw("UPDATE") || !scan.take_kw("SET") {
+        return Err(ty_err(cx.index, "ON CONFLICT DO NOTHING | DO UPDATE SET"));
+    }
+    cx.from.insert(
+        EXCLUDED_ALIAS.to_string(),
+        FromSrc::Physical(table.to_string()),
+    );
+    let result = typecheck_on_conflict_set(scan, cx, table);
+    cx.from.remove(EXCLUDED_ALIAS);
+    result
+}
+
+/// Alias every engine gives the row an `INSERT … ON CONFLICT DO UPDATE` would
+/// have inserted; it is visible only qualified (`excluded.col`) and never
+/// resolves an unqualified column.
+const EXCLUDED_ALIAS: &str = "excluded";
+
+/// Types the `SET col = expr, … [WHERE pred]` tail of `DO UPDATE` with
+/// `excluded` already visible in `cx.from`.
+///
+/// # Errors
+///
+/// Returns when a destination is unknown or a source does not unify with it.
+fn typecheck_on_conflict_set(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>, table: &str) -> Result<()> {
+    loop {
+        let col = scan
+            .read_ident()
+            .ok_or_else(|| ty_err(cx.index, "DO UPDATE SET column"))?;
+        if !scan.take_byte(b'=') {
+            return Err(ty_err(cx.index, "DO UPDATE SET ="));
+        }
+        let dest = lookup_column(cx, Some(table), &col)?;
+        let src = infer_expr(scan, cx)?;
+        let unified = unify_types(cx.index, dest, src)?;
+        cx.assignments.push(ResolvedAssignment {
+            table: table.to_string(),
+            column: col,
+            dest,
+            source: unified,
+        });
+        if !scan.take_byte(b',') {
+            break;
+        }
+    }
+    if scan.take_kw("WHERE") {
+        let ty = infer_expr(scan, cx)?;
+        require_booleanish(cx.index, ty, "DO UPDATE WHERE")?;
+    }
+    Ok(())
+}
+
+/// Fails when `scan` still holds tokens after `what` was fully typechecked.
+///
+/// Every statement and subquery must be consumed to its end: a token the
+/// checker did not read is a clause it did not see, so its tables, columns
+/// and functions would be missing from the proof the authorizer trusts.
+fn require_exhausted(scan: &mut TScan<'_>, cx: &TypeCx<'_>, what: &str) -> Result<()> {
+    scan.skip();
+    // A position off a character boundary means the scanner lost track of the
+    // text; refuse rather than treat the remainder as consumed.
+    let Some(rest) = scan.sql.get(scan.i..) else {
+        return Err(ty_err(
+            cx.index,
+            &format!("{what} scanner position is not a character boundary"),
+        ));
+    };
+    if rest.trim_end_matches(';').trim().is_empty() {
+        Ok(())
+    } else {
+        Err(ty_err(
+            cx.index,
+            &format!("{what} has unparsed trailing tokens"),
+        ))
+    }
 }
 
 fn typecheck_sql(sql: &str, cx: &mut TypeCx<'_>) -> Result<()> {
@@ -2098,9 +2245,14 @@ fn typecheck_sql(sql: &str, cx: &mut TypeCx<'_>) -> Result<()> {
         took_real: false,
         base: 0,
     };
-    parse_optional_with(&mut scan, cx)?;
+    typecheck_sql_body(&mut scan, cx)?;
+    require_exhausted(&mut scan, cx, "statement")
+}
+
+fn typecheck_sql_body(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<()> {
+    parse_optional_with(scan, cx)?;
     if scan.peek_kw("SELECT") || scan.peek_kw("VALUES") {
-        let cols = infer_select(&mut scan, cx)?;
+        let cols = infer_select(scan, cx)?;
         cx.output_columns = cols;
         return Ok(());
     }
@@ -2144,7 +2296,7 @@ fn typecheck_sql(sql: &str, cx: &mut TypeCx<'_>) -> Result<()> {
                 }
                 let mut i = 0usize;
                 loop {
-                    let ty = infer_expr(&mut scan, cx)?;
+                    let ty = infer_expr(scan, cx)?;
                     unify_insert_dest(cx, &table, &dests, i, ty)?;
                     i += 1;
                     if !scan.take_byte(b',') {
@@ -2163,8 +2315,8 @@ fn typecheck_sql(sql: &str, cx: &mut TypeCx<'_>) -> Result<()> {
             }
         } else {
             let dest_from = cx.from.clone();
-            parse_optional_with(&mut scan, cx)?;
-            let cols = infer_select(&mut scan, cx)?;
+            parse_optional_with(scan, cx)?;
+            let cols = infer_select(scan, cx)?;
             if !dests.is_empty() && cols.len() != dests.len() {
                 return Err(ty_err(cx.index, "INSERT SELECT arity"));
             }
@@ -2173,8 +2325,9 @@ fn typecheck_sql(sql: &str, cx: &mut TypeCx<'_>) -> Result<()> {
             }
             cx.from = dest_from;
         }
+        typecheck_insert_on_conflict(scan, cx, &table)?;
         if scan.take_kw("RETURNING") {
-            cx.output_columns = parse_returning_list(&mut scan, cx)?;
+            cx.output_columns = parse_returning_list(scan, cx)?;
         }
         return Ok(());
     }
@@ -2197,7 +2350,7 @@ fn typecheck_sql(sql: &str, cx: &mut TypeCx<'_>) -> Result<()> {
                 return Err(ty_err(cx.index, "UPDATE ="));
             }
             let dest = lookup_column(cx, Some(&table), &col)?;
-            let src = infer_expr(&mut scan, cx)?;
+            let src = infer_expr(scan, cx)?;
             let unified = unify_types(cx.index, dest, src)?;
             cx.assignments.push(ResolvedAssignment {
                 table: table.clone(),
@@ -2210,11 +2363,11 @@ fn typecheck_sql(sql: &str, cx: &mut TypeCx<'_>) -> Result<()> {
             }
         }
         if scan.take_kw("WHERE") {
-            let ty = infer_expr(&mut scan, cx)?;
+            let ty = infer_expr(scan, cx)?;
             require_booleanish(cx.index, ty, "WHERE")?;
         }
         if scan.take_kw("RETURNING") {
-            cx.output_columns = parse_returning_list(&mut scan, cx)?;
+            cx.output_columns = parse_returning_list(scan, cx)?;
         }
         return Ok(());
     }
@@ -2228,14 +2381,18 @@ fn typecheck_sql(sql: &str, cx: &mut TypeCx<'_>) -> Result<()> {
             .insert(table.clone(), FromSrc::Physical(table.clone()));
         cx.note_physical(&table, None);
         if scan.take_kw("WHERE") {
-            let ty = infer_expr(&mut scan, cx)?;
+            let ty = infer_expr(scan, cx)?;
             require_booleanish(cx.index, ty, "WHERE")?;
+        }
+        if scan.take_kw("RETURNING") {
+            cx.output_columns = parse_returning_list(scan, cx)?;
         }
         return Ok(());
     }
-    if scan.take_kw("CREATE") || scan.take_kw("DROP") {
-        return Ok(());
-    }
+    // DDL and anything else is typed by the dedicated DDL parsers or refused
+    // by the grammar before this point; nothing here reads it, so consume it
+    // rather than report it as trailing tokens.
+    scan.i = scan.sql.len();
     Ok(())
 }
 
@@ -2291,7 +2448,9 @@ fn typecheck_select_list_only(
         took_real: false,
         base,
     };
-    infer_select(&mut scan, cx)
+    let cols = infer_select(&mut scan, cx)?;
+    require_exhausted(&mut scan, cx, "subquery")?;
+    Ok(cols)
 }
 
 fn infer_select(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<Vec<(String, SqlType)>> {
@@ -2358,7 +2517,7 @@ fn infer_select_core(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<Vec<(S
     }
     if scan.take_kw("FROM") {
         cx.from.clear();
-        take_from_item(scan, cx)?;
+        let _ = take_from_item(scan, cx)?;
         loop {
             if scan.take_kw("JOIN")
                 || scan.take_kw("INNER")
@@ -2367,15 +2526,17 @@ fn infer_select_core(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<Vec<(S
             {
                 let _ = scan.take_kw("OUTER");
                 let _ = scan.take_kw("JOIN");
-                take_from_item(scan, cx)?;
+                let joined = take_from_item(scan, cx)?;
                 if scan.take_kw("ON") {
                     let ty = infer_expr(scan, cx)?;
                     require_booleanish(cx.index, ty, "JOIN ON")?;
+                } else if scan.take_kw("USING") {
+                    typecheck_join_using(scan, cx, &joined)?;
                 }
                 continue;
             }
             if scan.take_byte(b',') {
-                take_from_item(scan, cx)?;
+                let _ = take_from_item(scan, cx)?;
                 continue;
             }
             break;
@@ -2415,9 +2576,11 @@ fn infer_select_core(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<Vec<(S
     }
     if scan.take_kw("LIMIT") {
         let _ = infer_expr(scan, cx)?;
-    }
-    if scan.take_kw("OFFSET") {
-        let _ = infer_expr(scan, cx)?;
+        // OFFSET is only read after LIMIT, as SQLite parses it; a bare
+        // OFFSET stays unread and fails the exhaustiveness check.
+        if scan.take_kw("OFFSET") {
+            let _ = infer_expr(scan, cx)?;
+        }
     }
     Ok(cols)
 }
@@ -2515,6 +2678,11 @@ fn select_item_name(
         return scan
             .read_ident()
             .ok_or_else(|| ty_err(cx.index, "select alias"));
+    }
+    // `expr alias` without `AS`: the alias must be consumed here, or the
+    // clause after it would be left unread and its sources unproven.
+    if let Some(alias) = scan.read_ident_if_not_clause() {
+        return Ok(alias);
     }
     if let Some(name) = inherited_column_name(expr_sql) {
         return Ok(name);
@@ -2804,7 +2972,12 @@ fn star_columns_for_src(cx: &mut TypeCx<'_>, src: &FromSrc) -> Result<Vec<(Strin
     )))
 }
 
-fn take_from_item(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<()> {
+/// Reads one FROM source (a physical table, a CTE reference or a derived
+/// table) with its optional alias and registers it in `cx.from`.
+///
+/// # Returns
+/// The name the source is visible under (its alias when one was given).
+fn take_from_item(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<String> {
     if scan.take_byte(b'(') {
         let inner = scan
             .take_balanced_inner()
@@ -2819,8 +2992,8 @@ fn take_from_item(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<()> {
             .read_ident()
             .ok_or_else(|| ty_err(cx.index, "subquery alias required"))?;
         cx.ctes.insert(alias.clone(), cols);
-        cx.from.insert(alias.clone(), FromSrc::Cte(alias));
-        return Ok(());
+        cx.from.insert(alias.clone(), FromSrc::Cte(alias.clone()));
+        return Ok(alias);
     }
     let name = scan
         .read_ident()
@@ -2832,6 +3005,7 @@ fn take_from_item(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<()> {
             || scan.peek_kw("LEFT")
             || scan.peek_kw("CROSS")
             || scan.peek_kw("ON")
+            || scan.peek_kw("USING")
             || scan.peek_kw("WHERE")
             || scan.peek_kw("GROUP")
             || scan.peek_kw("HAVING")
@@ -2840,16 +3014,66 @@ fn take_from_item(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<()> {
             || scan.peek_kw("UNION")
             || scan.peek_byte(b','))
     {
-        if let Some(alias) = scan.read_ident() {
+        // A clause keyword (`RETURNING`, `WHERE`, …) is never an alias;
+        // reading it as one would leave that clause unparsed.
+        if let Some(alias) = scan.read_ident_if_not_clause() {
             visible = alias;
         }
     }
     if cx.ctes.contains_key(&name) {
-        cx.from.insert(visible, FromSrc::Cte(name));
+        cx.from.insert(visible.clone(), FromSrc::Cte(name));
     } else {
         require_physical_table(cx, &name)?;
         cx.note_physical(&name, None);
-        cx.from.insert(visible, FromSrc::Physical(name));
+        cx.from.insert(visible.clone(), FromSrc::Physical(name));
+    }
+    Ok(visible)
+}
+
+/// Typechecks a `JOIN … USING (col, …)` list after `joined` was registered.
+///
+/// Every listed column must exist on the joined source and on at least one
+/// earlier source, as both engines require; the matched columns are recorded
+/// as physical accesses through the lookups. An unqualified reference to a
+/// `USING` column elsewhere in the statement stays ambiguous for the checker
+/// (fail-closed); guests qualify it.
+///
+/// # Errors
+/// Returns the SQL-v1 type error when the list is malformed or a column is
+/// missing on either side.
+fn typecheck_join_using(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>, joined: &str) -> Result<()> {
+    if !scan.take_byte(b'(') {
+        return Err(ty_err(cx.index, "JOIN USING ("));
+    }
+    let earlier: Vec<String> = cx
+        .from
+        .keys()
+        .filter(|name| name.as_str() != joined)
+        .cloned()
+        .collect();
+    loop {
+        let col = scan
+            .read_ident()
+            .ok_or_else(|| ty_err(cx.index, "JOIN USING column"))?;
+        lookup_column(cx, Some(joined), &col)?;
+        let mut matched = false;
+        for name in &earlier {
+            if lookup_column(cx, Some(name), &col).is_ok() {
+                matched = true;
+            }
+        }
+        if !matched {
+            return Err(ty_err(
+                cx.index,
+                &format!("USING column {col} is not on the left side of the join"),
+            ));
+        }
+        if !scan.take_byte(b',') {
+            break;
+        }
+    }
+    if !scan.take_byte(b')') {
+        return Err(ty_err(cx.index, "JOIN USING )"));
     }
     Ok(())
 }
@@ -2969,6 +3193,7 @@ fn infer_in_list(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>, left: SqlType) -> Re
         cx.require_named_derived = false;
         let cols = infer_select(&mut body, cx)?;
         cx.require_named_derived = saved_named;
+        require_exhausted(&mut body, cx, "IN subquery")?;
         if let Some((_, ty)) = cols.first() {
             let _ = unify_types(cx.index, left, *ty)?;
         }
@@ -2981,7 +3206,7 @@ fn infer_in_list(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>, left: SqlType) -> Re
             break;
         }
     }
-    Ok(())
+    require_exhausted(&mut body, cx, "IN list")
 }
 
 fn infer_concat(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
@@ -2997,11 +3222,12 @@ fn infer_concat(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
 
 fn infer_add(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
     scan.skip();
-    let lhs_start = scan.abs(scan.i);
+    let lhs_from = scan.i;
+    let lhs_start = scan.abs(lhs_from);
     let mut t = infer_mul(scan, cx)?;
     loop {
         scan.skip();
-        let lhs_end = scan.abs(scan.i);
+        let lhs_end = scan.abs(token_end(scan.sql, lhs_from, scan.i));
         let kind = if scan.take_op("+") {
             IntegerArithKind::Add
         } else if scan.take_op("-") {
@@ -3010,9 +3236,10 @@ fn infer_add(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
             break;
         };
         scan.skip();
-        let rhs_start = scan.abs(scan.i);
+        let rhs_from = scan.i;
+        let rhs_start = scan.abs(rhs_from);
         let r = infer_mul(scan, cx)?;
-        let rhs_end = scan.abs(scan.i);
+        let rhs_end = scan.abs(token_end(scan.sql, rhs_from, scan.i));
         t = unify_numeric(cx.index, t, r)?;
         if t == SqlType::Integer {
             cx.note_arith(IntegerArithSite {
@@ -3037,11 +3264,12 @@ fn infer_add(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
 
 fn infer_mul(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
     scan.skip();
-    let lhs_start = scan.abs(scan.i);
+    let lhs_from = scan.i;
+    let lhs_start = scan.abs(lhs_from);
     let mut t = infer_prefix(scan, cx)?;
     loop {
         scan.skip();
-        let lhs_end = scan.abs(scan.i);
+        let lhs_end = scan.abs(token_end(scan.sql, lhs_from, scan.i));
         if scan.take_op("%") {
             let r = infer_prefix(scan, cx)?;
             t = unify_integer_mod(cx.index, t, r)?;
@@ -3050,9 +3278,10 @@ fn infer_mul(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
             t = unify_numeric(cx.index, t, r)?;
         } else if scan.take_op("*") {
             scan.skip();
-            let rhs_start = scan.abs(scan.i);
+            let rhs_from = scan.i;
+            let rhs_start = scan.abs(rhs_from);
             let r = infer_prefix(scan, cx)?;
-            let rhs_end = scan.abs(scan.i);
+            let rhs_end = scan.abs(token_end(scan.sql, rhs_from, scan.i));
             t = unify_numeric(cx.index, t, r)?;
             if t == SqlType::Integer {
                 cx.note_arith(IntegerArithSite {
@@ -3076,6 +3305,55 @@ fn infer_mul(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
         }
     }
     Ok(t)
+}
+
+/// End of the last token in `sql[start..end]`: `end` with trailing
+/// whitespace and comments stripped, never below `start`.
+///
+/// The scanner's `skip` runs past an expression's trailing trivia before the
+/// parser learns the expression has ended, so a span taken from the scanner
+/// position would include it. A `--` comment that runs to the end of the
+/// statement must stay outside every rewrite span: the lowering wraps a span
+/// in parentheses, and a closing parenthesis inside the comment is lost.
+/// Quoted strings and identifiers are skipped whole, so `'--'` inside a
+/// literal is not a comment.
+fn token_end(sql: &str, start: usize, end: usize) -> usize {
+    let bytes = sql.as_bytes();
+    let end = end.min(bytes.len());
+    let mut i = start;
+    let mut last = start;
+    while i < end {
+        let rest = &bytes[i..end];
+        if rest.starts_with(b"--") {
+            i += rest.iter().position(|&b| b == b'\n').unwrap_or(rest.len());
+        } else if rest.starts_with(b"/*") {
+            i += rest[2..]
+                .windows(2)
+                .position(|w| w == b"*/")
+                .map_or(rest.len(), |p| p + 4);
+        } else if bytes[i].is_ascii_whitespace() {
+            i += 1;
+        } else if matches!(bytes[i], b'\'' | b'"' | b'`') {
+            let quote = bytes[i];
+            let mut j = i + 1;
+            while j < end {
+                if bytes[j] == quote {
+                    if bytes.get(j + 1) == Some(&quote) && j + 1 < end {
+                        j += 2;
+                        continue;
+                    }
+                    break;
+                }
+                j += 1;
+            }
+            i = (j + 1).min(end);
+            last = i;
+        } else {
+            i += 1;
+            last = i;
+        }
+    }
+    last
 }
 
 fn unify_integer_mod(index: usize, a: SqlType, b: SqlType) -> Result<SqlType> {
@@ -3193,9 +3471,12 @@ fn infer_atom(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
             let cols = infer_select(&mut body, cx)?;
             cx.require_named_derived = saved_named;
             cx.collate_call_arg = saved_collate;
+            require_exhausted(&mut body, cx, "scalar subquery")?;
             return Ok(cols.first().map(|(_, t)| *t).unwrap_or(SqlType::Null));
         }
-        return infer_expr(&mut body, cx);
+        let ty = infer_expr(&mut body, cx)?;
+        require_exhausted(&mut body, cx, "parenthesized expression")?;
+        return Ok(ty);
     }
     let ident_start = {
         scan.skip();
@@ -3490,7 +3771,7 @@ fn infer_call(
             if out == SqlType::Integer {
                 let full = SqlSpan {
                     start: scan.abs(ident_start),
-                    end: scan.abs(scan.i),
+                    end: scan.abs(token_end(scan.sql, ident_start, scan.i)),
                 };
                 cx.note_arith(IntegerArithSite {
                     full,
@@ -3631,7 +3912,17 @@ fn lookup_column(cx: &mut TypeCx<'_>, table: Option<&str>, column: &str) -> Resu
         return unknown_column(cx, Some(table), column);
     }
     let mut found = None;
-    for src in cx.from.values().cloned().collect::<Vec<_>>() {
+    let sources: Vec<(String, FromSrc)> = cx
+        .from
+        .iter()
+        .map(|(name, src)| (name.clone(), src.clone()))
+        .collect();
+    for (name, src) in sources {
+        // `excluded` is only reachable qualified: an unqualified column in a
+        // `DO UPDATE` clause names the target row in every engine.
+        if name == EXCLUDED_ALIAS {
+            continue;
+        }
         if let Ok(ty) = lookup_from_src(cx, &src, column) {
             if found.is_some() {
                 return Err(PluginError::invalid_params(format!(
@@ -3892,6 +4183,7 @@ impl<'a> TScan<'a> {
             || self.peek_kw("LEFT")
             || self.peek_kw("CROSS")
             || self.peek_kw("ON")
+            || self.peek_kw("USING")
         {
             return None;
         }
@@ -4020,6 +4312,8 @@ impl<'a> TScan<'a> {
         true
     }
 
+    /// Takes a canonical `X'hex'` blob literal; an odd digit count is not a
+    /// literal in any engine, so the scanner stays put.
     fn take_blob_hex(&mut self) -> bool {
         self.skip();
         let rest = &self.sql[self.i..];
@@ -4029,10 +4323,15 @@ impl<'a> TScan<'a> {
         if !rest.as_bytes()[0].eq_ignore_ascii_case(&b'x') || rest.as_bytes()[1] != b'\'' {
             return false;
         }
+        let start = self.i;
         self.i += 2;
         while self.i < self.sql.len() {
             let b = self.sql.as_bytes()[self.i];
             if b == b'\'' {
+                if !(self.i - start - 2).is_multiple_of(2) {
+                    self.i = start;
+                    return false;
+                }
                 self.i += 1;
                 return true;
             }
@@ -4494,6 +4793,204 @@ mod tests {
             timing: crate::DbTiming::default(),
         };
         assert!(catalog_page_statement(&empty).is_err());
+    }
+
+    #[test]
+    fn arithmetic_spans_stop_before_trailing_comments() {
+        // Found by the guest_sql_authz fuzz target once its oracle lowered
+        // with the proof: the right operand's span ran through a trailing
+        // `--` comment, so the overflow wrap's closing parenthesis landed
+        // inside the comment and SQLite saw incomplete input.
+        let sql = "SELECT 7 + 1 -- note";
+        let proofs = typecheck_execute_request_resolved(&req(sql), &SqlTypeEnv::new()).unwrap();
+        let site = &proofs[0].integer_arith_sites[0];
+        assert_eq!(&sql[site.full.start..site.full.end], "7 + 1");
+        assert_eq!(&sql[site.rhs.start..site.rhs.end], "1");
+        let sql = "SELECT 2 /* a */ * 3 /* b */ + abs(5) -- c";
+        let proofs = typecheck_execute_request_resolved(&req(sql), &SqlTypeEnv::new()).unwrap();
+        for site in &proofs[0].integer_arith_sites {
+            let text = &sql[site.full.start..site.full.end];
+            assert!(!text.ends_with("-- c") && !text.ends_with(' '), "{text:?}");
+        }
+        assert_eq!(token_end("'--' -- x", 0, 9), 4);
+    }
+
+    #[test]
+    fn blob_literals_carry_two_hex_digits_per_byte() {
+        // Found by the guest_sql_authz fuzz target: `x'111'` was typed as a
+        // BLOB literal although SQLite and PostgreSQL both reject an odd
+        // digit count.
+        let env = SqlTypeEnv::new();
+        let proofs = typecheck_execute_request_resolved(&req("SELECT x'1122'"), &env).unwrap();
+        assert_eq!(proofs[0].output_columns[0].1, SqlType::Blob);
+        for sql in ["SELECT x'111'", "SELECT X'a'", "SELECT x'1' AS b"] {
+            assert!(
+                typecheck_execute_request_resolved(&req(sql), &env).is_err(),
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_clause_is_read_so_no_source_escapes_the_proof() {
+        // Found by the guest_sql_authz fuzz target: an implicit select alias
+        // (`? d`) stopped the select-list parser, the FROM clause after it was
+        // never read, and the subquery's table was missing from the proof the
+        // authorizer trusts.
+        let mut env = SqlTypeEnv::new();
+        env.insert_table(
+            "books",
+            [
+                ("id".into(), SqlType::Integer),
+                ("title".into(), SqlType::Text),
+            ],
+        );
+        env.insert_table(
+            "host_secrets",
+            [
+                ("id".into(), SqlType::Integer),
+                ("token".into(), SqlType::Text),
+            ],
+        );
+        let touches_secrets = |sql: &str| {
+            let mut request = req(sql);
+            request.statements[0].parameters = vec![DbValue::Int64(1); sql.matches('?').count()];
+            let proofs = typecheck_execute_request_resolved(&request, &env).unwrap();
+            proofs[0]
+                .physical_accesses
+                .iter()
+                .any(|a| a.table == "host_secrets")
+        };
+        for sql in [
+            "SELECT ? d FROM host_secrets",
+            "SELECT 1 d FROM host_secrets",
+            "SELECT title FROM books WHERE id IN (SELECT ? d FROM host_secrets)",
+            "SELECT title FROM books WHERE EXISTS (SELECT 1 n FROM host_secrets)",
+            "SELECT title FROM books WHERE (SELECT id n FROM host_secrets) = 1",
+            "SELECT s.n FROM (SELECT id n FROM host_secrets) s",
+        ] {
+            assert!(touches_secrets(sql), "{sql}");
+        }
+        // `JOIN … USING (…)` is SQL v1; the column list is typed against both
+        // sides instead of being left as trailing tokens (`USING` is never an
+        // alias).
+        assert!(touches_secrets(
+            "SELECT b.title FROM books b JOIN host_secrets s USING (id)"
+        ));
+        assert!(touches_secrets(
+            "SELECT b.title FROM books b LEFT OUTER JOIN host_secrets USING (id) WHERE b.id = ?"
+        ));
+        for sql in [
+            "SELECT b.title FROM books b JOIN host_secrets s USING (nope)",
+            "SELECT b.title FROM books b JOIN host_secrets s USING (title)",
+            "SELECT b.title FROM books b JOIN host_secrets s USING id",
+            "SELECT b.title FROM books b JOIN host_secrets s USING (id",
+        ] {
+            assert!(
+                typecheck_execute_request_resolved(&req(sql), &env).is_err(),
+                "{sql}"
+            );
+        }
+        for sql in [
+            "SELECT id FROM books extra tokens",
+            "SELECT title FROM books WHERE id IN (SELECT id FROM host_secrets) trailing",
+            "SELECT title FROM books WHERE (id extra) = 1",
+            "SELECT title FROM books OFFSET 1",
+            "WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < 3 trailing) \
+             SELECT n FROM r",
+        ] {
+            let err = typecheck_execute_request_resolved(&req(sql), &env)
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default();
+            assert!(err.contains("unparsed trailing tokens"), "{sql}: {err}");
+        }
+        // `RETURNING` after a FROM source is a clause, never the source's alias.
+        let proofs = typecheck_execute_request_resolved(
+            &req("INSERT INTO books (id, title) SELECT id, token FROM host_secrets RETURNING id"),
+            &env,
+        )
+        .unwrap();
+        assert_eq!(
+            proofs[0].output_columns,
+            vec![("id".to_string(), SqlType::Integer)]
+        );
+        // `DELETE … RETURNING` is admitted by the contract and typed like UPDATE.
+        let proofs = typecheck_execute_request_resolved(
+            &req("DELETE FROM books WHERE id = ? RETURNING id, title"),
+            &env,
+        )
+        .unwrap();
+        assert_eq!(
+            proofs[0].output_columns,
+            vec![
+                ("id".to_string(), SqlType::Integer),
+                ("title".to_string(), SqlType::Text)
+            ]
+        );
+        // The ORM's upserts reach the checker as `ON CONFLICT … DO UPDATE SET`;
+        // the clause is typed (target columns, `excluded`, dest-typing) rather
+        // than left as trailing tokens.
+        let proofs = typecheck_execute_request_resolved(
+            &req("INSERT INTO books (id, title) VALUES (1, 'a') \
+                 ON CONFLICT (id) DO UPDATE SET title = excluded.title RETURNING id"),
+            &env,
+        )
+        .unwrap();
+        assert_eq!(
+            proofs[0].output_columns,
+            vec![("id".to_string(), SqlType::Integer)]
+        );
+        assert!(
+            proofs[0]
+                .assignments
+                .iter()
+                .any(|a| a.table == "books" && a.column == "title"),
+            "{:?}",
+            proofs[0].assignments
+        );
+        typecheck_execute_request_resolved(
+            &req("INSERT INTO books (id, title) VALUES (1, 'a') ON CONFLICT DO NOTHING"),
+            &env,
+        )
+        .unwrap();
+        // Unqualified columns in the DO UPDATE clause name the target row
+        // (`excluded` never makes them ambiguous), as SQLite and PostgreSQL
+        // resolve them.
+        typecheck_execute_request_resolved(
+            &req(
+                "INSERT INTO books (id, title) VALUES (1, 'a') ON CONFLICT (id) \
+                 DO UPDATE SET title = title || excluded.title WHERE title <> excluded.title",
+            ),
+            &env,
+        )
+        .unwrap();
+        for sql in [
+            "INSERT INTO books (id, title) VALUES (1, 'a') ON CONFLICT (nope) DO NOTHING",
+            "INSERT INTO books (id, title) VALUES (1, 'a') ON CONFLICT (id) DO UPDATE SET title = excluded.id",
+            "INSERT INTO books (id, title) VALUES (1, 'a') ON CONFLICT (id) DO UPDATE SET nope = excluded.title",
+            "INSERT INTO books (id, title) VALUES (1, 'a') ON CONFLICT (id) DO REPLACE",
+        ] {
+            assert!(
+                typecheck_execute_request_resolved(&req(sql), &env).is_err(),
+                "{sql}"
+            );
+        }
+        // A recursive CTE's arms read `FROM t`; that source belongs to the CTE
+        // body and must not make `id` ambiguous in the INSERT's RETURNING list
+        // (the conformance vectors insert through exactly this shape).
+        let proofs = typecheck_execute_request_resolved(
+            &req(
+                "WITH RECURSIVE t(id) AS (SELECT 0 UNION ALL SELECT id + 1 FROM t WHERE id < 3) \
+                 INSERT INTO books (id) SELECT id FROM t RETURNING id",
+            ),
+            &env,
+        )
+        .unwrap();
+        assert_eq!(
+            proofs[0].output_columns,
+            vec![("id".to_string(), SqlType::Integer)]
+        );
     }
 
     #[test]

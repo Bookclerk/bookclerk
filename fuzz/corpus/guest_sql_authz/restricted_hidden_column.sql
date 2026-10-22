@@ -1,0 +1,1 @@
+1SELECT note FROM books

@@ -1,0 +1,1 @@
+2SELECT b.title, a.name FROM books b JOIN authors a USING (id) WHERE b.id = ?
