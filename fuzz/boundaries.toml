@@ -18,6 +18,8 @@
 
 # Shipped artifacts a crash can affect. `ecosystem` and `package` go into the
 # advisory's affected-package entry; neither is on a public registry yet.
+# Keys and packages must match shipped-artifacts.toml, which declares every
+# shipped artifact (scripts/tests/test_osv_advisories.py).
 [artifacts.bookclerk]
 # Host binaries (bookclerkd, bookclerk, bookclerk-media-worker, bookclerk-jail,
 # bookclerk-workerd) and the platform guests, released together.

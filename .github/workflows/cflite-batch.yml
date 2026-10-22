@@ -11,10 +11,10 @@
 #   the fuzzer output and crash files in the workspace, and uploads them only
 #   sealed with the FUZZ_CRASH_BUNDLE_KEY secret.
 # - `triage` rebuilds the fuzzers, re-runs and minimizes each crash, dedupes
-#   by stack and files each new one with the automation App token: a draft
-#   security advisory once Bookclerk has a published release, otherwise an
-#   issue that names only a signature (or, for a failed test oracle, the
-#   target). Its own output is sealed the same way. Logs print counts only.
+#   by stack and files each new one with the automation App token: a private
+#   draft security advisory (before the first release too, with no proposed
+#   range), or for a failed test oracle an issue naming the target. Its own
+#   output is sealed the same way. Logs print counts only.
 # - `prune` and `coverage` replay the corpus, which can start crashing after a
 #   regression lands on main, so they run through the same private action;
 #   `batch` reports such a crash, because libFuzzer replays the corpus first.
@@ -205,10 +205,9 @@ jobs:
           permission-issues: write
           permission-repository-advisories: write
 
-      # A draft advisory only once a release is published (a maintainer
-      # confirms the affected range); before the first release every crash
-      # is an issue that does not say where it is. Already-recorded
-      # signatures are skipped.
+      # A crash becomes a private draft advisory (a maintainer confirms the
+      # severity and affected range, then publishes); a failed oracle becomes
+      # an issue. Already-recorded signatures are skipped.
       - name: File new crashes
         if: steps.find.outputs.found == 'true' && github.ref == 'refs/heads/main'
         env:

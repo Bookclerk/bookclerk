@@ -1,0 +1,273 @@
+# Decide whether open dependency alerts affect something Bookclerk ships, and
+# draft a repository security advisory for each one that does. Drafts are
+# private to maintainers and are filed before the first release too (with no
+# proposed affected range); publishing is a maintainer action.
+#
+# Runs after each full OSV scan of main (push, schedule or manual run of
+# osv-scanner.yml), next to osv-remediate.yml, which bumps what it can.
+# `scripts/osv-advisories.py` checks each open OSV-Scanner code-scanning alert
+# and Dependabot alert against `shipped-artifacts.toml`: the Cargo dependency
+# closure of the shipped crates (and, when an advisory names vulnerable
+# functions, whether they are in the DWARF of a fat-LTO build of the shipped
+# binaries), npm production dependencies, the packages in the web UI bundle,
+# and the Python SDK's runtime dependencies (none; the run fails if one
+# appears).
+#
+# Three jobs keep secrets away from third-party build code:
+# - `fetch` reads the alerts with a read-only token that is revoked as soon as
+#   that step ends, then computes the dependency closures from lockfiles and
+#   `cargo metadata` (which runs no build script). Its output is sealed with
+#   OSV_REMEDIATION_BUNDLE_KEY.
+# - `analyze` has no secrets and no token. It builds the web UI and, on the
+#   weekly scheduled scan or a manual run when an advisory needs it, the
+#   shipped binaries. Its output names no advisory (bundled packages and
+#   digests of every function in the binaries), so it travels unsealed.
+# - `file` builds nothing. It mints an advisory-write token and files the
+#   drafts, which are private to maintainers. The verdict report is sealed with FUZZ_CRASH_BUNDLE_KEY, the key
+#   maintainers keep, as the `osv-advisories-report` artifact.
+# Logs print counts only. See docs/ci.md#osv-advisories.
+
+name: OSV advisories
+
+on:
+  workflow_run:
+    workflows: ["OSV-Scanner"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      call-analysis:
+        description: Build the shipped binaries for call analysis even when no advisory needs it
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: osv-advisories
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fetch:
+    name: read alerts and plan
+    # Only full scans of main, as in osv-remediate.yml: `branches` matches the
+    # triggering run's head branch name, which a fork PR can also call `main`,
+    # so the event is checked too. Every job checks out `github.sha`, the tip
+    # of main for these events.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       contains(fromJSON('["push", "schedule", "workflow_dispatch"]'), github.event.workflow_run.event))
+    runs-on: ubuntu-latest
+    outputs:
+      call-analysis: ${{ steps.plan.outputs.call-analysis }}
+      bundle: ${{ steps.plan.outputs.bundle }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Mint alert-read token
+        id: read
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          permission-security-events: read
+          permission-vulnerability-alerts: read
+          permission-repository-advisories: read
+          # The next step revokes it as soon as the alerts are read.
+          skip-token-revoke: true
+
+      - name: Read alerts, releases and advisories on record
+        env:
+          GH_TOKEN: ${{ steps.read.outputs.token }}
+        run: |
+          set -euo pipefail
+          revoke() {
+            curl -fsS -o /dev/null -X DELETE \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "$GITHUB_API_URL/installation/token" || echo "::warning::could not revoke the alert-read token"
+          }
+          trap revoke EXIT
+          mkdir -p "$RUNNER_TEMP/osv-advisories"
+          python3 scripts/osv-advisories.py fetch --out "$RUNNER_TEMP/osv-advisories/state.json"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+
+      # `cargo metadata` downloads and resolves packages but runs no build
+      # script or proc macro; the rest is lockfile parsing.
+      - name: Compute shipped closures and plan call analysis
+        id: plan
+        env:
+          # The scan's own trigger: the call-analysis build runs on the
+          # weekly scheduled scan and on manual runs only.
+          EVENT: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.event || github.event_name }}
+          FORCE: ${{ inputs.call-analysis && '--force-call-analysis' || '' }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086 # FORCE is one flag or empty
+          python3 scripts/osv-advisories.py plan \
+            --state "$RUNNER_TEMP/osv-advisories/state.json" \
+            --out "$RUNNER_TEMP/osv-advisories/plan.json" \
+            --event "$EVENT" --github-output "$GITHUB_OUTPUT" $FORCE
+
+      - name: Seal alerts and plan
+        env:
+          BUNDLE_KEY: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/osv-advisories-sealed"
+          scripts/osv-remediation-bundle.sh seal "$RUNNER_TEMP/osv-advisories" "$RUNNER_TEMP/osv-advisories-sealed/sealed.bin"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: osv-advisories-state
+          path: ${{ runner.temp }}/osv-advisories-sealed/sealed.bin
+          if-no-files-found: error
+          retention-days: 1
+
+  analyze:
+    name: analyze bundles and binaries
+    needs: fetch
+    runs-on: ubuntu-latest
+    # The call-analysis build compiles every shipped binary with fat LTO.
+    timeout-minutes: 300
+    # No secrets and no token reach this job: it runs dependency build
+    # scripts and the web UI's build tooling.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        if: needs.fetch.outputs.bundle == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+
+      # Only when an open advisory is on the web UI's lockfile; otherwise an
+      # empty listing, which no verdict reads.
+      - name: List the packages in the web UI bundle
+        env:
+          BUNDLE: ${{ needs.fetch.outputs.bundle }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/osv-advisories-analysis"
+          if [ "$BUNDLE" = true ]; then
+            python3 scripts/osv-advisories.py bundle --out "$RUNNER_TEMP/osv-advisories-analysis/bundle.json"
+          else
+            echo '{}' > "$RUNNER_TEMP/osv-advisories-analysis/bundle.json"
+          fi
+
+      - name: Install Rust toolchain
+        if: needs.fetch.outputs.call-analysis == 'true'
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+
+      - name: Prepare the call-analysis build
+        if: needs.fetch.outputs.call-analysis == 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends capnproto
+          # Fat-LTO builds with debug info of every shipped binary need more
+          # disk than the runner leaves free.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h "$RUNNER_TEMP" | tail -1
+
+      - name: Call analysis
+        if: needs.fetch.outputs.call-analysis == 'true'
+        run: |
+          python3 scripts/osv-advisories.py calls \
+            --out "$RUNNER_TEMP/osv-advisories-analysis/calls.json" \
+            --target-dir "$RUNNER_TEMP/call-analysis-target"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: osv-advisories-analysis
+          path: ${{ runner.temp }}/osv-advisories-analysis
+          if-no-files-found: error
+          retention-days: 1
+
+  file:
+    name: decide and file
+    needs: [fetch, analyze]
+    # A failed analysis does not hold back the verdicts: missing output
+    # counts as "not analyzed", which files on the closure alone.
+    if: ${{ !cancelled() && needs.fetch.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: osv-advisories-state
+          path: ${{ runner.temp }}/osv-advisories-sealed
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.analyze.result == 'success'
+        with:
+          name: osv-advisories-analysis
+          path: ${{ runner.temp }}/osv-advisories-analysis
+
+      - name: Open alerts and plan
+        env:
+          BUNDLE_KEY: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
+        run: scripts/osv-remediation-bundle.sh open "$RUNNER_TEMP/osv-advisories-sealed/sealed.bin" "$RUNNER_TEMP/osv-advisories"
+
+      - name: Mint advisory token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          permission-repository-advisories: write
+
+      - name: Decide verdicts and file drafts
+        id: decide
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/osv-advisories"
+          analysis="$RUNNER_TEMP/osv-advisories-analysis"
+          mkdir -p "$RUNNER_TEMP/osv-advisories-report"
+          python3 scripts/osv-advisories.py file \
+            --state "$dir/state.json" \
+            --plan "$dir/plan.json" \
+            --calls "$analysis/calls.json" \
+            --bundle "$analysis/bundle.json" \
+            --report "$RUNNER_TEMP/osv-advisories-report/report.md"
+
+      # The report is written even when a draft was refused, so a maintainer
+      # can see which drafts exist.
+      - name: Seal the verdict report
+        id: seal
+        if: ${{ !cancelled() && steps.decide.outcome != 'skipped' }}
+        env:
+          BUNDLE_KEY: ${{ secrets.FUZZ_CRASH_BUNDLE_KEY }}
+        run: |
+          set -euo pipefail
+          test -f "$RUNNER_TEMP/osv-advisories-report/report.md"
+          mkdir -p "$RUNNER_TEMP/osv-advisories-report-sealed"
+          scripts/osv-remediation-bundle.sh seal "$RUNNER_TEMP/osv-advisories-report" "$RUNNER_TEMP/osv-advisories-report-sealed/sealed.bin"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() && steps.seal.outcome == 'success' }}
+        with:
+          name: osv-advisories-report
+          path: ${{ runner.temp }}/osv-advisories-report-sealed/sealed.bin
+          if-no-files-found: error
+          retention-days: 30

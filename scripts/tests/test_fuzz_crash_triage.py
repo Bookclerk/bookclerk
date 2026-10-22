@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.error
 from pathlib import Path
 from types import ModuleType
 from typing import Any, ClassVar
@@ -153,8 +154,9 @@ class ClassifyTest(unittest.TestCase):
     def test_unsymbolized_frames_do_not_shape_signatures(self) -> None:
         a = "    #0 0x5 (/out/t+0x1234) (BuildId: abc)\n    #1 0x6 (/out/t+0x5678)\n"
         b = "    #0 0x9 (/out/t+0x4321) (BuildId: abd)\n    #1 0xa (/out/t+0x8765)\n"
-        ra, rb = triage.classify("ERROR: libFuzzer: deadly signal\n" + a), triage.classify(
-            "ERROR: libFuzzer: deadly signal\n" + b
+        ra, rb = (
+            triage.classify("ERROR: libFuzzer: deadly signal\n" + a),
+            triage.classify("ERROR: libFuzzer: deadly signal\n" + b),
         )
         self.assertEqual(triage.code_frames(ra.frames), [])
         self.assertEqual(triage.signature("t", ra, b"x"), triage.signature("t", rb, b"x"))
@@ -279,19 +281,8 @@ class WorkflowTest(unittest.TestCase):
 
 class RouteAndRenderTest(unittest.TestCase):
     def test_route(self) -> None:
-        self.assertEqual(triage.route(_finding(), None), "issue")
-        self.assertEqual(triage.route(_finding(), "v1.0.0"), "advisory")
-        self.assertEqual(triage.route(_finding(oracle=True), "v1.0.0"), "issue")
-
-    def test_pre_release_issue_names_only_the_signature(self) -> None:
-        finding = _finding(summary="panic at secret.rs: the len is 0 but the index is 4")
-        title, body = triage.render_issue(finding, _boundaries()["granted_http"], "https://run", "fuzz-triage-address")
-        self.assertIn(finding.signature[:16], title)
-        self.assertIn(triage.marker(finding.signature), body)
-        for secret in ("granted_http", "the len is 0", "parse_head", "crates/x.rs", "a.bin", "panic", "severity"):
-            self.assertNotIn(secret, title + body)
-        self.assertIn("fuzz-triage-address", body)
-        self.assertIn("no published release", body)
+        self.assertEqual(triage.route(_finding()), "advisory")
+        self.assertEqual(triage.route(_finding(oracle=True)), "issue")
 
     def test_oracle_issue_names_the_target(self) -> None:
         finding = _finding(oracle=True, summary="assertion failed: secret")
@@ -325,16 +316,30 @@ class RouteAndRenderTest(unittest.TestCase):
         self.assertNotIn("QUFB", body["description"])
         self.assertNotIn("temporary private fork", body["description"])
 
+    def test_advisory_before_a_release_proposes_no_range(self) -> None:
+        body = triage.render_advisory(_finding(), _boundaries()["granted_http"], None, "c", "u", "b", b"x")
+        self.assertTrue(all(v["vulnerable_version_range"] is None for v in body["vulnerabilities"]))
+        self.assertIn("no published release", body["description"])
+        self.assertNotIn("None", body["description"])
+
 
 class FakeGitHub:
     """Stands in for `GitHub` with canned listings and recorded writes."""
 
-    def __init__(self, release: str | None, issues: list[str], advisories: list[str]) -> None:
+    def __init__(
+        self,
+        release: str | None,
+        issues: list[str],
+        advisories: list[str],
+        drafts: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.release = release
         self.issue_bodies = issues
         self.advisory_bodies = advisories
+        self.draft_list = drafts or []
         self.opened: list[tuple[str, str]] = []
         self.created: list[dict[str, Any]] = []
+        self.updated: list[tuple[str, dict[str, Any]]] = []
         self.label_checks = 0
 
     def latest_release_tag(self) -> str | None:
@@ -360,6 +365,12 @@ class FakeGitHub:
         self.created.append(body)
         return "GHSA-xxxx"
 
+    def drafts(self) -> list[dict[str, Any]]:
+        return self.draft_list
+
+    def update_advisory(self, ghsa_id: str, body: dict[str, Any]) -> None:
+        self.updated.append((ghsa_id, body))
+
 
 class FileFindingsTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -373,37 +384,126 @@ class FileFindingsTest(unittest.TestCase):
     def _file(self, gh: FakeGitHub, findings: list[Any]) -> dict[str, int]:
         return triage.file_findings(gh, findings, _boundaries(), self.inputs, "abc", "https://run", "b")
 
-    def test_before_a_release_everything_is_an_issue(self) -> None:
+    def test_before_a_release_crashes_still_get_draft_advisories(self) -> None:
         gh = FakeGitHub(None, [], [])
         counts = self._file(gh, [_finding(), _finding(signature="b" * 64, kind="asan:SEGV")])
-        self.assertEqual(counts, {"advisory": 0, "issue": 2, "known": 0})
-        self.assertEqual(gh.created, [])
-        self.assertEqual(gh.label_checks, 1)
+        self.assertEqual(counts, {"advisory": 2, "updated": 0, "failed": 0, "issue": 0, "known": 0})
+        self.assertEqual(gh.opened, [])
+        self.assertEqual(gh.label_checks, 0)
+        self.assertIsNone(gh.created[0]["vulnerabilities"][0]["vulnerable_version_range"])
 
     def test_after_a_release_product_crashes_get_draft_advisories(self) -> None:
         gh = FakeGitHub("v1.0.0", [], [])
         counts = self._file(gh, [_finding(), _finding(signature="b" * 64, oracle=True)])
-        self.assertEqual(counts, {"advisory": 1, "issue": 1, "known": 0})
+        self.assertEqual(counts, {"advisory": 1, "updated": 0, "failed": 0, "issue": 1, "known": 0})
         self.assertEqual(gh.created[0]["vulnerabilities"][0]["vulnerable_version_range"], "<= v1.0.0")
 
     def test_known_signatures_are_skipped(self) -> None:
         sig = "c" * 64
         gh = FakeGitHub(None, [f"x {triage.marker(sig)} y"], [])
-        self.assertEqual(self._file(gh, [_finding(signature=sig)])["known"], 1)
-        # A closed or draft advisory also suppresses a new issue.
+        self.assertEqual(self._file(gh, [_finding(signature=sig, oracle=True)])["known"], 1)
+        # A closed or draft advisory suppresses both a new advisory and a new issue.
         gh = FakeGitHub(None, [], [triage.marker(sig)])
         self.assertEqual(self._file(gh, [_finding(signature=sig)])["known"], 1)
+        self.assertEqual(self._file(gh, [_finding(signature=sig, oracle=True)])["known"], 1)
         self.assertEqual(gh.opened, [])
+        self.assertEqual(gh.created, [])
 
-    def test_pre_release_issue_does_not_stand_in_for_the_advisory(self) -> None:
+    def test_older_opaque_issue_does_not_stand_in_for_the_advisory(self) -> None:
         sig = "d" * 64
-        gh = FakeGitHub("v1.0.0", [triage.marker(sig)], [])
+        gh = FakeGitHub(None, [triage.marker(sig)], [])
         self.assertEqual(self._file(gh, [_finding(signature=sig)])["advisory"], 1)
 
     def test_same_signature_twice_in_one_run_files_once(self) -> None:
         gh = FakeGitHub(None, [], [])
         counts = self._file(gh, [_finding(), _finding()])
-        self.assertEqual(counts, {"advisory": 0, "issue": 1, "known": 1})
+        self.assertEqual(counts, {"advisory": 1, "updated": 0, "failed": 0, "issue": 0, "known": 1})
+
+
+class DraftRefreshTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.inputs = Path(self.tmp.name)
+        (self.inputs / "a.bin").write_bytes(b"boom")
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _body(self, commit: str = "abc", reproducer: bytes = b"boom") -> str:
+        body = triage.render_advisory(
+            _finding(), _boundaries()["granted_http"], None, commit, "https://run", "b", reproducer
+        )
+        return str(body["description"])
+
+    def _file(self, gh: FakeGitHub, commit: str = "abc") -> dict[str, int]:
+        return triage.file_findings(gh, [_finding()], _boundaries(), self.inputs, commit, "https://run", "b")
+
+    def test_unchanged_finding_does_not_rewrite_its_draft(self) -> None:
+        old = self._body(commit="old")
+        gh = FakeGitHub(None, [], [old], drafts=[{"ghsa_id": "GHSA-1", "state": "draft", "description": old}])
+        self.assertEqual(self._file(gh, commit="new")["known"], 1)
+        self.assertEqual(gh.updated, [])
+
+    def test_changed_finding_refreshes_only_the_automated_part(self) -> None:
+        (self.inputs / "a.bin").write_bytes(b"a different minimized input")
+        old = "Maintainer note: tracked in the private fork.\n" + self._body(reproducer=b"boom")
+        gh = FakeGitHub(None, [], [old], drafts=[{"ghsa_id": "GHSA-1", "state": "draft", "description": old}])
+        counts = self._file(gh, commit="new")
+        self.assertEqual((counts["updated"], counts["advisory"]), (1, 0))
+        ghsa, body = gh.updated[0]
+        self.assertEqual(ghsa, "GHSA-1")
+        self.assertTrue(body["description"].startswith("Maintainer note"))
+        self.assertIn("`new`", body["description"])
+        self.assertEqual(body["description"].count(triage.AUTO_BEGIN), 1)
+        self.assertEqual(set(body), {"description"})
+
+    def test_refused_refresh_does_not_stop_later_crashes(self) -> None:
+        class Refusing(FakeGitHub):
+            def update_advisory(self, ghsa_id: str, body: dict[str, Any]) -> None:
+                del ghsa_id, body
+                raise urllib.error.HTTPError("u", 422, "closed meanwhile", None, None)  # type: ignore[arg-type]
+
+        (self.inputs / "a.bin").write_bytes(b"a different minimized input")
+        old = self._body()
+        gh = Refusing(None, [], [old], drafts=[{"ghsa_id": "GHSA-1", "state": "draft", "description": old}])
+        findings = [_finding(), _finding(signature="e" * 64)]
+        counts = triage.file_findings(gh, findings, _boundaries(), self.inputs, "c", "https://run", "b")
+        self.assertEqual((counts["failed"], counts["advisory"]), (1, 1))
+
+    def test_unset_range_is_filled_once_a_release_exists(self) -> None:
+        finding = _finding(target="abi_decode")
+        before = triage.render_advisory(finding, _boundaries()["abi_decode"], None, "c", "u", "b", b"boom")
+        draft = {"ghsa_id": "GHSA-1", "state": "draft", **before}
+        draft["vulnerabilities"][1]["vulnerable_version_range"] = "<= v0.9.0"  # set by a maintainer
+        gh = FakeGitHub("v1.0.0", [], [before["description"]], drafts=[draft])
+        counts = triage.file_findings(gh, [finding], _boundaries(), self.inputs, "c", "https://run", "b")
+        self.assertEqual(counts["updated"], 1)
+        ranges = [v["vulnerable_version_range"] for v in gh.updated[0][1]["vulnerabilities"]]
+        self.assertEqual(ranges, ["<= v1.0.0", "<= v0.9.0"])
+
+    def test_update_of_a_missing_advisory_raises(self) -> None:
+        class Missing(triage.GitHub):
+            def request(self, method: str, path: str, body: Any = None) -> tuple[int, Any, str]:
+                del method, path, body
+                return 404, None, ""
+
+        with self.assertRaises(OSError):
+            Missing("o/r", "t").update_advisory("GHSA-gone", {"description": "d"})
+
+    def test_closed_or_published_advisories_are_left_alone(self) -> None:
+        (self.inputs / "a.bin").write_bytes(b"a different minimized input")
+        gh = FakeGitHub(None, [], [self._body()], drafts=[])
+        self.assertEqual(self._file(gh)["known"], 1)
+        self.assertEqual((gh.updated, gh.created), ([], []))
+
+    def test_splice_leaves_hand_written_drafts_alone(self) -> None:
+        self.assertIsNone(triage.splice_auto("written by hand", self._body()))
+
+    def test_splice_adds_missing_markers(self) -> None:
+        old = self._body()
+        new = triage.splice_auto(old, old, markers=["<!-- osv-advisory: GHSA-new x -->"])
+        assert new is not None
+        self.assertTrue(new.startswith("<!-- osv-advisory: GHSA-new x -->\n"))
 
 
 class _Api(http.server.BaseHTTPRequestHandler):
@@ -466,6 +566,19 @@ class _Api(http.server.BaseHTTPRequestHandler):
             self._send(201, {"ghsa_id": "GHSA-aaaa-bbbb-cccc"})
 
 
+class NewestTagTest(unittest.TestCase):
+    def test_highest_version_wins(self) -> None:
+        self.assertEqual(triage.newest_tag(["v1.4.1", "v2.0.0", "v1.4.0"]), "v2.0.0")
+        self.assertEqual(triage.newest_tag(["v2.0.0-rc.1", "v1.9.0"]), "v2.0.0-rc.1")
+        self.assertEqual(triage.newest_tag(["v2.0.0-rc.1", "v2.0.0"]), "v2.0.0")
+        self.assertEqual(triage.newest_tag(["nightly", "weekly"]), "nightly")
+        # SemVer pre-release precedence, not text order.
+        self.assertEqual(triage.newest_tag(["v1.0.0-rc.2", "v1.0.0-rc.10"]), "v1.0.0-rc.10")
+        self.assertEqual(triage.newest_tag(["v1.0.0-rc.1.1", "v1.0.0-rc.1"]), "v1.0.0-rc.1.1")
+        self.assertEqual(triage.newest_tag(["v1.0.0-beta", "v1.0.0-1"]), "v1.0.0-beta")
+        self.assertIsNone(triage.newest_tag([]))
+
+
 class GitHubClientTest(unittest.TestCase):
     def test_against_a_local_api(self) -> None:
         server = http.server.HTTPServer(("127.0.0.1", 0), _Api)
@@ -482,7 +595,9 @@ class GitHubClientTest(unittest.TestCase):
             self.assertEqual(_Api.posts[-1][0], "/repos/o/r/labels")
             self.assertEqual(gh.open_issue("t", "b"), 7)
             self.assertEqual(gh.create_advisory({"summary": "s"}), "GHSA-aaaa-bbbb-cccc")
-            self.assertEqual(_Api.posts[1], ("/repos/o/r/issues", {"title": "t", "body": "b", "labels": ["fuzz-crash"]}))
+            self.assertEqual(
+                _Api.posts[1], ("/repos/o/r/issues", {"title": "t", "body": "b", "labels": ["fuzz-crash"]})
+            )
             with self.assertRaises(ValueError):
                 gh.request("GET", "https://elsewhere.example/x")
         finally:
