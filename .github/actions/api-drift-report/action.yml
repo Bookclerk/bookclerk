@@ -1,0 +1,191 @@
+# Report drift found by a storefront API probe: file (or refresh) one issue
+# per source, and when the probe produced fixes in the working tree, push a
+# branch and open (or update) a pull request that closes that issue (or only
+# references it, when the fix is partial).
+#
+# Callers mint a GitHub App token (see docs/ci.md#automation-app) and pass it
+# as `token`. Pull requests opened with GITHUB_TOKEN are blocked by the
+# organization's Actions policy and would not start CI on the PR anyway.
+#
+# Deduplication: the issue carries a hidden `<!-- api-drift:<source> -->`
+# marker and the `api-drift` label; an open issue with the marker (or the
+# caller's `legacy-marker`) is updated in place and gets a comment per new
+# detection. The pull request uses a
+# fixed branch per source, so a later run updates the same pull request.
+
+name: API drift report
+description: File or update the drift issue for a source and open the fix pull request.
+
+inputs:
+  token:
+    description: GitHub App installation token with contents, pull-requests and issues write.
+    required: true
+  source:
+    description: Short source slug used in the marker, label and branch (for example `librofm`).
+    required: true
+  source-name:
+    description: Human-readable source name for titles (for example `Libro.fm`).
+    required: true
+  summary:
+    description: One or more Markdown sentences describing what drifted and what the run did about it.
+    required: true
+  report-path:
+    description: Markdown probe report to embed in the issue (missing files are noted, not fatal).
+    required: true
+  legacy-marker:
+    description: >
+      Body marker an older version of the caller used for its issue. An open
+      issue carrying it is adopted (marker and labels added) instead of
+      filing a duplicate.
+    required: false
+    default: ""
+  fix-paths:
+    description: >
+      Newline-separated paths the probe's fixer may have changed. Leave empty
+      when the source has no fixer; then only the issue is filed.
+    required: false
+    default: ""
+  closes-issue:
+    description: >
+      `true` when the fix addresses every blocking drift, so merging the pull
+      request may close the issue; anything else links it with `Refs` and
+      leaves the issue open for the drift the fixer could not apply.
+    required: false
+    default: "true"
+  commit-message:
+    description: Commit message for the fix commit.
+    required: false
+    default: ""
+  pr-title:
+    description: Title of the fix pull request.
+    required: false
+    default: ""
+  pr-notes:
+    description: Extra Markdown appended to the fix pull request body.
+    required: false
+    default: ""
+
+outputs:
+  issue-number:
+    description: Number of the drift issue that was created or updated.
+    value: ${{ steps.issue.outputs.number }}
+  pull-request-number:
+    description: Number of the fix pull request, empty when none was opened.
+    value: ${{ steps.pr.outputs.pull-request-number }}
+
+runs:
+  using: composite
+  steps:
+    - name: File or update drift issue
+      id: issue
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        DRIFT_SOURCE: ${{ inputs.source }}
+        DRIFT_SOURCE_NAME: ${{ inputs.source-name }}
+        DRIFT_SUMMARY: ${{ inputs.summary }}
+        DRIFT_REPORT_PATH: ${{ inputs.report-path }}
+        DRIFT_LEGACY_MARKER: ${{ inputs.legacy-marker }}
+      with:
+        github-token: ${{ inputs.token }}
+        script: |
+          const fs = require('fs');
+          const { DRIFT_SOURCE: source, DRIFT_SOURCE_NAME: name } = process.env;
+          const marker = `<!-- api-drift:${source} -->`;
+          const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+          const reportPath = process.env.DRIFT_REPORT_PATH;
+          let report = fs.existsSync(reportPath)
+            ? fs.readFileSync(reportPath, 'utf8')
+            : `(no report at \`${reportPath}\`)`;
+          // Issue bodies are capped at 65,536 characters; the run keeps the full report.
+          const maxReport = 60000;
+          if (report.length > maxReport) {
+            report = `${report.slice(0, maxReport)}\n\n_(truncated; full report in the run artifacts: ${runUrl})_`;
+          }
+          const title = `${name} API drift detected`;
+          const body = [
+            marker,
+            '',
+            process.env.DRIFT_SUMMARY,
+            '',
+            '<details><summary>Probe report</summary>',
+            '',
+            report,
+            '',
+            '</details>',
+            '',
+            `_Latest detection: ${runUrl}_`,
+          ].join('\n');
+          const labels = ['api-drift', `${source}-api-drift`];
+          const open = await github.paginate(github.rest.issues.listForRepo, {
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            state: 'open',
+            per_page: 100,
+          });
+          const legacy = process.env.DRIFT_LEGACY_MARKER;
+          const existing = open.find((i) => {
+            const text = i.body || '';
+            return !i.pull_request && (text.includes(marker) || (legacy !== '' && text.includes(legacy)));
+          });
+          let number;
+          if (existing) {
+            number = existing.number;
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: number,
+              body,
+            });
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: number,
+              labels,
+            });
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: number,
+              body: `Drift detected again: ${runUrl}`,
+            });
+          } else {
+            const created = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels,
+            });
+            number = created.data.number;
+          }
+          core.setOutput('number', String(number));
+          core.summary.addRaw(`Drift issue: #${number}\n`);
+          await core.summary.write();
+
+    - name: Open or update fix pull request
+      id: pr
+      if: inputs.fix-paths != ''
+      uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+      with:
+        token: ${{ inputs.token }}
+        # Commit through the API so the commit is signed and attributed to the App.
+        sign-commits: true
+        # Fixes come from heuristics over decompiled code, so they open as
+        # drafts; a maintainer marks one ready after CI and review.
+        draft: true
+        add-paths: ${{ inputs.fix-paths }}
+        commit-message: ${{ inputs.commit-message }}
+        branch: api-drift/${{ inputs.source }}
+        delete-branch: true
+        title: ${{ inputs.pr-title }}
+        body: |
+          ${{ inputs.closes-issue == 'true' && 'Closes' || 'Refs' }} #${{ steps.issue.outputs.number }}${{ inputs.closes-issue == 'true' && '.' || '. This fixes only part of the reported drift, so the issue stays open.' }}
+
+          The scheduled ${{ inputs.source-name }} API probe detected drift and its
+          fixer updated the files below. The probe report is on the issue and in
+          the workflow run's artifacts.
+
+          ${{ inputs.pr-notes }}
+        labels: |
+          api-drift
+          ${{ inputs.source }}-api-drift

@@ -44,7 +44,9 @@ bumps:
 2. Installs `capnproto` (needed to compile `schema/plugin.capnp`), rebuilds
    `bookclerk-workerd`, runs `cargo ensure-workerd`, then
    `scripts/test-workerd-echo.sh` against the Echo workerd example guests.
-3. Opens `deps/workerd-pin` and squash-merges after those checks pass.
+3. Opens `deps/workerd-pin` with the automation App token and turns on
+   auto-merge, so the merge queue lands it once its required checks pass
+   (see [CI: automation App](ci.md#automation-app)).
 
 Manual check (no write):
 
