@@ -22,11 +22,11 @@ hex.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tar.workspace = true
+tempfile.workspace = true
 ureq.workspace = true
 
 [dev-dependencies]
 chrono.workspace = true
-tempfile.workspace = true
 
 [lints]
 workspace = true

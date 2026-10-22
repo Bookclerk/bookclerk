@@ -81,7 +81,9 @@ jobs:
           DOMAIN: ${{ vars.DOMAIN || 'bookclerk.app' }}
         run: |
           set -euo pipefail
-          if ! printf '%s' "$DOMAIN" | grep -Eq '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'; then
+          # [[ =~ ]] matches the whole value, so a trailing newline is rejected.
+          hostname_re='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
+          if [[ ! "$DOMAIN" =~ $hostname_re ]]; then
             echo "::error::DOMAIN is not a lowercase hostname: $DOMAIN"
             exit 1
           fi
