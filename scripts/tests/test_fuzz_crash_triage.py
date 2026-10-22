@@ -306,6 +306,7 @@ class FakeGitHub:
         self.advisory_bodies = advisories
         self.opened: list[tuple[str, str]] = []
         self.created: list[dict[str, Any]] = []
+        self.label_checks = 0
 
     def latest_release_tag(self) -> str | None:
         return self.release
@@ -318,6 +319,9 @@ class FakeGitHub:
         for body in self.advisory_bodies:
             advisories |= triage.extract_signatures(body)
         return issues, advisories
+
+    def ensure_label(self) -> None:
+        self.label_checks += 1
 
     def open_issue(self, title: str, body: str) -> int:
         self.opened.append((title, body))
@@ -345,6 +349,7 @@ class FileFindingsTest(unittest.TestCase):
         counts = self._file(gh, [_finding(), _finding(signature="b" * 64, kind="asan:SEGV")])
         self.assertEqual(counts, {"advisory": 0, "issue": 2, "known": 0})
         self.assertEqual(gh.created, [])
+        self.assertEqual(gh.label_checks, 1)
 
     def test_after_a_release_product_crashes_get_draft_advisories(self) -> None:
         gh = FakeGitHub("v1.0.0", [], [])
@@ -399,6 +404,8 @@ class _Api(http.server.BaseHTTPRequestHandler):
         elif self.path.startswith("/repos/o/r/releases"):
             link = f'<{base}/repos/o/r/releases?per_page=100&page=2>; rel="next"'
             self._send(200, [{"tag_name": "v0.9.0", "draft": True}], link)
+        elif self.path == "/repos/o/r/labels/fuzz-crash":
+            self._send(404, {"message": "Not Found"})
         elif self.path.startswith("/repos/o/r/issues"):
             assert "state=all" in self.path and "labels=fuzz-crash" in self.path
             self._send(
@@ -424,6 +431,8 @@ class _Api(http.server.BaseHTTPRequestHandler):
         type(self).posts.append((self.path, body))
         if self.path == "/repos/o/r/issues":
             self._send(201, {"number": 7})
+        elif self.path == "/repos/o/r/labels":
+            self._send(201, {"name": body["name"]})
         else:
             self._send(201, {"ghsa_id": "GHSA-aaaa-bbbb-cccc"})
 
@@ -440,9 +449,11 @@ class GitHubClientTest(unittest.TestCase):
             issues, advisories = gh.known_signatures()
             self.assertEqual(issues, {"1" * 64, "3" * 64})
             self.assertEqual(advisories, {"2" * 64, "6" * 64})
+            gh.ensure_label()
+            self.assertEqual(_Api.posts[-1][0], "/repos/o/r/labels")
             self.assertEqual(gh.open_issue("t", "b"), 7)
             self.assertEqual(gh.create_advisory({"summary": "s"}), "GHSA-aaaa-bbbb-cccc")
-            self.assertEqual(_Api.posts[0], ("/repos/o/r/issues", {"title": "t", "body": "b", "labels": ["fuzz-crash"]}))
+            self.assertEqual(_Api.posts[1], ("/repos/o/r/issues", {"title": "t", "body": "b", "labels": ["fuzz-crash"]}))
             with self.assertRaises(ValueError):
                 gh.request("GET", "https://elsewhere.example/x")
         finally:

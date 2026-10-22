@@ -947,6 +947,23 @@ class GitHub:
             advisories.update(extract_signatures(advisory.get("description") or ""))
         return issues, advisories
 
+    def ensure_label(self) -> None:
+        """Creates ``ISSUE_LABEL`` unless it exists.
+
+        Deduplication lists issues by this label, so an issue must never be
+        filed without it.
+
+        Raises:
+            urllib.error.HTTPError: The label could not be read or created.
+        """
+        status, _, _ = self.request("GET", f"/repos/{self.repo}/labels/{ISSUE_LABEL}")
+        if status == 404:
+            self.request(
+                "POST",
+                f"/repos/{self.repo}/labels",
+                {"name": ISSUE_LABEL, "color": "b60205", "description": "Crash found by scheduled fuzzing"},
+            )
+
     def open_issue(self, title: str, body: str) -> int:
         """Opens an issue labeled ``ISSUE_LABEL``.
 
@@ -1289,6 +1306,7 @@ def file_findings(
     release_tag = gh.latest_release_tag()
     issue_sigs, advisory_sigs = gh.known_signatures()
     counts = {"advisory": 0, "issue": 0, "known": 0}
+    label_ready = False
     for finding in findings:
         boundary = boundaries.get(finding.target)
         how = route(finding, release_tag)
@@ -1307,6 +1325,9 @@ def file_findings(
                 counts["known"] += 1
                 continue
             title, body = render_issue(finding, boundary, run_url, bundle)
+            if not label_ready:
+                gh.ensure_label()
+                label_ready = True
             gh.open_issue(title, body)
             issue_sigs.add(finding.signature)
         counts[how] += 1
