@@ -54,6 +54,15 @@ runs:
         fi
         # Quiet, so the log never lists what the commit changes.
         git fetch --quiet "$dir/head.bundle" refs/heads/osv-remediation
+        # Fail closed: a remediation commit sits on github.sha and changes
+        # lockfiles only (in any directory). The offending paths are not
+        # printed.
+        if [[ "$(git rev-parse FETCH_HEAD^)" != "$(git rev-parse HEAD)" ]] ||
+          git diff --name-only HEAD FETCH_HEAD |
+            grep -qvE '(^|/)(Cargo\.lock|package-lock\.json)$'; then
+          echo "::error::the sealed commit is not a lockfile-only change on top of github.sha"
+          exit 1
+        fi
         git -c advice.detachedHead=false checkout --quiet --detach FETCH_HEAD
         actual="$(git rev-parse HEAD)"
         if [[ "$actual" != "$EXPECTED_SHA" ]]; then

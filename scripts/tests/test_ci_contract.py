@@ -302,7 +302,9 @@ class WorkflowContractTests(unittest.TestCase):
             steps = job["steps"]
             checkout = [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith("actions/checkout@")]
             self.assertEqual(len(checkout), 1, name)
-            head = steps[checkout[0] + 1]
+            # The plan job first refuses a private-head call without a commit id.
+            offset = 2 if name == "plan" else 1
+            head = steps[checkout[0] + offset]
             self.assertEqual(head.get("uses"), PRIVATE_HEAD_ACTION, name)
             self.assertEqual(head.get("if"), "inputs.private-head", name)
             self.assertEqual(head["with"]["key"], "${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}", name)
@@ -311,18 +313,30 @@ class WorkflowContractTests(unittest.TestCase):
     def test_private_head_saves_no_caches_and_runs_everything(self) -> None:
         triggers = self.wf.get("on", self.wf.get(True))
         self.assertEqual(triggers["workflow_call"]["inputs"]["private-head"]["default"], False)
-        self.assertIn("inputs.private-head", self.wf["env"]["CARGO_TERM_QUIET"])
+        self.assertEqual(self.wf["env"]["CARGO_TERM_QUIET"], "${{ inputs.private-head && 'true' || 'false' }}")
         for name, job in self.jobs.items():
             for step in job.get("steps", []):
                 uses = str(step.get("uses", ""))
                 with self.subTest(job=name, step=step.get("name", uses)):
-                    if uses.startswith("Swatinem/rust-cache@") and step["with"]["save-if"] not in (False, "false"):
-                        self.assertIn("!inputs.private-head", step["with"]["save-if"])
+                    save_if = step.get("with", {}).get("save-if")
+                    if uses.startswith("Swatinem/rust-cache@") and save_if not in (False, "false"):
+                        # Any main/matrix condition, always ANDed with the private-head veto.
+                        self.assertRegex(save_if, r"^\$\{\{ [^|]+ && !inputs\.private-head \}\}$")
                     if uses.startswith("actions/setup-node@") and "cache" in step.get("with", {}):
-                        self.assertIn("!inputs.private-head", step["with"]["cache"])
+                        self.assertEqual(step["with"]["cache"], "${{ !inputs.private-head && 'npm' || '' }}")
         run = next(s["run"] for s in self.jobs["plan"]["steps"] if "ci-exec.py resolve" in s.get("run", ""))
         force = next(line for line in run.splitlines() if "--force-full" not in line and "merge_group\"" in line)
-        self.assertIn('"${{ inputs.private-head }}" = "true"', force)
+        self.assertEqual(
+            force.strip(),
+            'if [ "${{ github.event_name }}" = "merge_group" ] || [ "${{ github.ref }}" = "refs/heads/main" ]'
+            ' || [ "${{ inputs.private-head }}" = "true" ]; then',
+        )
+        steps = self.jobs["plan"]["steps"]
+        guard = next(i for i, s in enumerate(steps) if s.get("name") == "Require the sealed commit id")
+        self.assertEqual(steps[guard]["if"], "inputs.private-head && inputs.private-sha == ''")
+        self.assertIn("exit 1", steps[guard]["run"])
+        head = next(i for i, s in enumerate(steps) if s.get("uses") == PRIVATE_HEAD_ACTION)
+        self.assertLess(guard, head)
         shas = next(s["run"] for s in self.jobs["plan"]["steps"] if s.get("id") == "shas")
         self.assertLess(shas.index("inputs.private-head"), shas.index("pull_request"))
 

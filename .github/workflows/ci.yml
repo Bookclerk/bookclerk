@@ -92,6 +92,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Fail closed: without the commit id no job would check the bump out,
+      # and CI Gate would pass on github.sha alone.
+      - name: Require the sealed commit id
+        if: inputs.private-head && inputs.private-sha == ''
+        run: |
+          echo "::error::private-head requires private-sha"
+          exit 1
+
       # Run by the OSV remediation workflow: test its unpublished lockfile
       # bump (see docs/ci.md#osv-remediation).
       - name: Check out the OSV remediation head

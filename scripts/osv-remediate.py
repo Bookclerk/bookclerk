@@ -560,16 +560,21 @@ def _run(cmd: list[str], cwd: Path) -> bool:
     """Runs a command quietly, returning whether it exited 0.
 
     Output is discarded, not logged: a failed attempt names a package that is
-    still vulnerable, and workflow logs on a public repository are public.
+    still vulnerable, and workflow logs on a public repository are public. A
+    missing package manager counts as a failed attempt, so its lockfile is
+    restored and the alert stays open, rather than aborting the other bumps.
     """
-    result = subprocess.run(
-        cmd,
-        cwd=cwd,
-        env=_child_env(),
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=cwd,
+            env=_child_env(),
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return False
     return result.returncode == 0
 
 

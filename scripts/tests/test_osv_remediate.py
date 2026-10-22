@@ -216,45 +216,98 @@ import os, sys
 from pathlib import Path
 args = sys.argv[1:]
 lock = Path(args[args.index("--manifest-path") + 1]).parent / "Cargo.lock"
-with open(os.environ["FAKE_CARGO_LOG"], "a") as log:
+with open(os.environ["FAKE_LOG"], "a") as log:
     log.write(" ".join(args) + "\\n")
 if "--precise" in args:
     sys.exit(int(os.environ.get("FAKE_PRECISE_EXIT", "0")))
 lock.write_text(lock.read_text().replace('"0.23.45"', os.environ["FAKE_UPDATE_TO"]))
+sys.exit(int(os.environ.get("FAKE_UPDATE_EXIT", "0")))
 """
+
+# Rewrites package-lock.json in its working directory, then exits FAKE_UPDATE_EXIT.
+FAKE_NPM = """#!/usr/bin/env python3
+import os, sys
+from pathlib import Path
+with open(os.environ["FAKE_LOG"], "a") as log:
+    log.write(" ".join(sys.argv[1:]) + "\\n")
+lock = Path("package-lock.json")
+lock.write_text(lock.read_text().replace('"1.0.0"', os.environ["FAKE_UPDATE_TO"]))
+sys.exit(int(os.environ.get("FAKE_UPDATE_EXIT", "0")))
+"""
+
+NPM_LOCK = json.dumps(
+    {
+        "lockfileVersion": 3,
+        "packages": {"": {"name": "ui"}, "node_modules/left-pad": {"version": "1.0.0"}},
+    }
+)
+LEFT_PAD = _vuln("N", "left-pad", "npm", [{"introduced": "0"}, {"fixed": "1.0.1"}])
 
 
 class ApplyTest(unittest.TestCase):
-    def _run(self, precise_exit: str, update_to: str) -> tuple[object, str, list[str]]:
+    def _run(
+        self,
+        precise_exit: str,
+        update_to: str,
+        *,
+        update_exit: str = "0",
+        npm: bool = False,
+        tools: bool = True,
+    ) -> tuple[object, str, list[str]]:
+        """Applies one target against a fake package manager on PATH.
+
+        Returns the replacement version, the lockfile afterwards, and the
+        argument lines the fake tool logged.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
             bin_dir = root / "bin"
             bin_dir.mkdir()
-            cargo = bin_dir / "cargo"
-            cargo.write_text(FAKE_CARGO, encoding="utf-8")
-            cargo.chmod(cargo.stat().st_mode | stat.S_IEXEC)
+            if tools:
+                for tool, script in (("cargo", FAKE_CARGO), ("npm", FAKE_NPM)):
+                    exe = bin_dir / tool
+                    exe.write_text(script, encoding="utf-8")
+                    exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
             (root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
             (root / "Cargo.lock").write_text(CARGO_LOCK, encoding="utf-8")
+            (root / "package-lock.json").write_text(NPM_LOCK, encoding="utf-8")
             log = root / "log"
+            log.touch()
+            # Without tools, PATH holds only the empty bin dir.
+            path = (
+                str(bin_dir)
+                if not tools
+                else f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
+            )
             env = {
-                "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-                "FAKE_CARGO_LOG": str(log),
+                "PATH": path,
+                "FAKE_LOG": str(log),
                 "FAKE_PRECISE_EXIT": precise_exit,
                 "FAKE_UPDATE_TO": update_to,
+                "FAKE_UPDATE_EXIT": update_exit,
             }
             saved = os.environ.copy()
             os.environ.update(env)
             try:
-                target = osv.Target(
-                    "Cargo.lock", "crates.io", "rustls", V("0.23.45"), {"R": RUSTLS}
-                )
+                if npm:
+                    target = osv.Target(
+                        "package-lock.json",
+                        "npm",
+                        "left-pad",
+                        V("1.0.0"),
+                        {"N": LEFT_PAD},
+                    )
+                else:
+                    target = osv.Target(
+                        "Cargo.lock", "crates.io", "rustls", V("0.23.45"), {"R": RUSTLS}
+                    )
                 result = osv.apply_target(target, root)
             finally:
                 os.environ.clear()
                 os.environ.update(saved)
             return (
                 result,
-                (root / "Cargo.lock").read_text(encoding="utf-8"),
+                (root / target.lockfile).read_text(encoding="utf-8"),
                 log.read_text().splitlines(),
             )
 
@@ -270,6 +323,35 @@ class ApplyTest(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(lock, CARGO_LOCK)
         self.assertEqual(len(calls), 2)
+
+    def test_failed_update_restores_the_lockfile(self) -> None:
+        # Both attempts exit non-zero; the second also rewrote the lockfile.
+        result, lock, calls = self._run("101", '"0.23.47"', update_exit="1")
+        self.assertIsNone(result)
+        self.assertEqual(lock, CARGO_LOCK)
+        self.assertEqual(len(calls), 2)
+
+    def test_missing_package_manager_counts_as_failed(self) -> None:
+        result, lock, calls = self._run("0", '"0.23.47"', tools=False)
+        self.assertIsNone(result)
+        self.assertEqual(lock, CARGO_LOCK)
+        self.assertEqual(calls, [])
+
+    def test_npm_update_is_lockfile_only_without_scripts(self) -> None:
+        result, lock, calls = self._run("0", '"1.0.2"', npm=True)
+        self.assertEqual(result, V("1.0.2"))
+        self.assertIn('"1.0.2"', lock)
+        self.assertEqual(
+            calls,
+            [
+                "update left-pad --package-lock-only --ignore-scripts --no-audit --no-fund"
+            ],
+        )
+
+    def test_npm_failure_restores_the_lockfile(self) -> None:
+        result, lock, _ = self._run("0", '"1.0.2"', npm=True, update_exit="1")
+        self.assertIsNone(result)
+        self.assertEqual(lock, NPM_LOCK)
 
     def test_other_affected_line_does_not_block_fix(self) -> None:
         both = _vuln(
