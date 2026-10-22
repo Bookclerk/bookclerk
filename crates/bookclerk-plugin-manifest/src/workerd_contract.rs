@@ -333,20 +333,25 @@ mod tests {
 
     #[test]
     fn older_and_equal_dates_pass_through_newer_falls_back() {
-        assert!(validate_author_compatibility_date("2024-09-23").is_ok());
+        // One day either side of the pin, so the boundary tracks every pin bump.
+        let pin = chrono::NaiveDate::parse_from_str(WORKERD_PIN_COMPAT_DATE, "%Y-%m-%d")
+            .expect("pin is a calendar date");
+        let older_date = pin.pred_opt().expect("day before pin").to_string();
+        let newer_date = pin.succ_opt().expect("day after pin").to_string();
+        assert!(validate_author_compatibility_date(&older_date).is_ok());
         assert!(validate_author_compatibility_date(WORKERD_PIN_COMPAT_DATE).is_ok());
-        assert!(validate_author_compatibility_date("2026-08-02").is_ok());
-        let older = apply_author_compatibility_date("2024-09-23").expect("older date");
-        assert_eq!(older.applied, "2024-09-23");
+        assert!(validate_author_compatibility_date(&newer_date).is_ok());
+        let older = apply_author_compatibility_date(&older_date).expect("older date");
+        assert_eq!(older.applied, older_date);
         assert!(older.warning.is_none());
         let equal = apply_author_compatibility_date(WORKERD_PIN_COMPAT_DATE).expect("pin date");
         assert_eq!(equal.applied, WORKERD_PIN_COMPAT_DATE);
         assert!(equal.warning.is_none());
-        let newer = apply_author_compatibility_date("2026-08-02").expect("newer date");
+        let newer = apply_author_compatibility_date(&newer_date).expect("newer date");
         assert_eq!(newer.applied, WORKERD_PIN_COMPAT_DATE);
         let warning = newer.warning.expect("fallback warning");
         assert!(warning.contains("Falling back"), "{warning}");
-        assert!(warning.contains("2026-08-02"), "{warning}");
+        assert!(warning.contains(&newer_date), "{warning}");
         assert!(warning.contains(WORKERD_PIN_COMPAT_DATE), "{warning}");
     }
 

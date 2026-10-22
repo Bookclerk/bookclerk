@@ -2568,18 +2568,18 @@ mode = "deny"
 
     #[test]
     fn compatibility_date_accepts_newer_than_pin_and_rejects_non_dates() {
-        let future = PluginManifest::parse(&workerd_body("").replace("2026-08-01", "2026-08-02"))
+        // One day either side of the pin, so the boundary tracks every pin bump.
+        let pin = chrono::NaiveDate::parse_from_str(crate::WORKERD_PIN_COMPAT_DATE, "%Y-%m-%d")
+            .expect("pin is a calendar date");
+        let newer = pin.succ_opt().expect("day after pin").to_string();
+        let future = PluginManifest::parse(&workerd_body("").replace("2026-08-01", &newer))
             .expect("newer date stays legal");
-        assert_eq!(
-            future.workerd.expect("workerd").compatibility_date,
-            "2026-08-02"
-        );
+        assert_eq!(future.workerd.expect("workerd").compatibility_date, newer);
         let shape = PluginManifest::parse(&workerd_body("").replace("2026-08-01", "2026-8-1"))
             .expect_err("unpadded");
         assert!(shape.to_string().contains("YYYY-MM-DD"), "{shape}");
-        assert!(
-            PluginManifest::parse(&workerd_body("").replace("2026-08-01", "2024-09-23")).is_ok()
-        );
+        let older = pin.pred_opt().expect("day before pin").to_string();
+        assert!(PluginManifest::parse(&workerd_body("").replace("2026-08-01", &older)).is_ok());
     }
 
     #[test]

@@ -122,9 +122,67 @@ fn check_rejects_logo_parent() {
     assert!(!out.status.success());
 }
 
+/// Recursively copies `src` into `dst` (created if missing).
+fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) {
+    std::fs::create_dir_all(dst).expect("create dir");
+    for entry in std::fs::read_dir(src).expect("read dir") {
+        let entry = entry.expect("dir entry");
+        let target = dst.join(entry.file_name());
+        if entry.file_type().expect("file type").is_dir() {
+            copy_dir_all(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).expect("copy file");
+        }
+    }
+}
+
+/// Copies the `valid-compat-date-future` fixture into a temp dir with its
+/// `compatibility_date` set to the day after the workerd pin, so the boundary
+/// tracks every pin bump.
+///
+/// # Returns
+///
+/// The temp dir holding the rewritten fixture; dropping it removes the copy.
+fn future_date_fixture() -> tempfile::TempDir {
+    let src =
+        repo_root().join("crates/bookclerk-plugin-abi/fixtures/tools/valid-compat-date-future");
+    let newer = chrono::NaiveDate::parse_from_str(
+        bookclerk_plugin_manifest::WORKERD_PIN_COMPAT_DATE,
+        "%Y-%m-%d",
+    )
+    .expect("pin is a calendar date")
+    .succ_opt()
+    .expect("day after pin")
+    .to_string();
+    let dir = tempfile::tempdir().expect("tempdir");
+    copy_dir_all(&src, dir.path());
+    let manifest_path = dir.path().join("plugin.toml");
+    let manifest = std::fs::read_to_string(&manifest_path).expect("read fixture");
+    let rewritten: String = manifest
+        .lines()
+        .map(|line| {
+            if line.starts_with("compatibility_date = ") {
+                format!("compatibility_date = \"{newer}\"\n")
+            } else {
+                format!("{line}\n")
+            }
+        })
+        .collect();
+    assert!(
+        rewritten.contains(&newer),
+        "fixture has no compatibility_date"
+    );
+    std::fs::write(manifest_path, rewritten).expect("write fixture");
+    dir
+}
+
 #[test]
 fn check_warns_when_compatibility_date_is_newer_than_pin() {
-    let out = check_fixture("valid-compat-date-future");
+    let dir = future_date_fixture();
+    let out = bookclerk_plugin()
+        .args(["check", dir.path().to_str().expect("utf8 path")])
+        .output()
+        .expect("run check");
     assert!(
         out.status.success(),
         "newer date should load: {}",

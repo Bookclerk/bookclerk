@@ -1841,7 +1841,13 @@ mode = "deny"
             Path::new("modules").join("index.js"),
             "export default {};",
         );
-        let manifest = PluginManifest::parse(
+        // One day past the pin, so the boundary tracks every pin bump.
+        let newer = chrono::NaiveDate::parse_from_str(WORKERD_PIN_COMPAT_DATE, "%Y-%m-%d")
+            .expect("pin is a calendar date")
+            .succ_opt()
+            .expect("day after pin")
+            .to_string();
+        let manifest = PluginManifest::parse(&format!(
             r#"
 api_version = 3
 id = "echo"
@@ -1849,15 +1855,15 @@ runtime = "workerd"
 entrypoints = ["cli"]
 
 [workerd]
-compatibility_date = "2026-09-30"
+compatibility_date = "{newer}"
 main_module = "index.js"
 modules_dir = "modules"
 entrypoint = "default"
 
 [capabilities.network]
 mode = "deny"
-"#,
-        )
+"#
+        ))
         .expect("newer compatibility date still parses");
         let generated = materialize(
             dir.path(),
@@ -1877,7 +1883,7 @@ mode = "deny"
             "workerd config should run at the pin:\n{capnp}"
         );
         assert!(
-            !capnp.contains("2026-09-30"),
+            !capnp.contains(&newer),
             "requested date must not be passed to workerd:\n{capnp}"
         );
     }

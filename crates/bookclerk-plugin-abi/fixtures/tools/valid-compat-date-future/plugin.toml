@@ -5,7 +5,7 @@ runtime = "workerd"
 entrypoints = ["cli"]
 
 [workerd]
-compatibility_date = "2026-08-02"
+compatibility_date = "2099-12-31"
 main_module = "index.js"
 modules_dir = "modules"
 entrypoint = "default"
