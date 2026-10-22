@@ -1,6 +1,9 @@
 //! Replays the checked-in `sql_parse` and `abi_decode` fuzz corpora in PR CI
 //! (no libFuzzer required), so an input that once crashed a decoder stays
 //! fixed (`docs/adr/untrusted-input-fuzzing.md`).
+// Test code: a failed assertion or a missing corpus file is the test failing,
+// not a documented panic path.
+#![allow(clippy::missing_panics_doc)]
 
 use std::path::{Path, PathBuf};
 

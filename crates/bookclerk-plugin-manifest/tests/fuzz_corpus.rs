@@ -2,6 +2,9 @@
 //! in PR CI (no libFuzzer required), with the same oracles as the targets, so
 //! an input that once broke a manifest or policy check stays fixed
 //! (`docs/adr/untrusted-input-fuzzing.md`).
+// Test code: a failed assertion or a missing corpus file is the test failing,
+// not a documented panic path.
+#![allow(clippy::missing_panics_doc)]
 
 use std::path::{Path, PathBuf};
 
