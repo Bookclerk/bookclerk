@@ -1,8 +1,23 @@
-# Scheduled ClusterFuzzLite: batch fuzzing that grows the corpus, then corpus
-# pruning and a coverage report (which PR fuzzing uses to pick targets).
-# Corpora and reports are kept as GitHub Actions artifacts. Batch mode splits
-# `fuzz-seconds` across every target, so the schedule is daily to keep each
-# target's share useful as targets are added (docs/adr/untrusted-input-fuzzing.md).
+# Scheduled ClusterFuzzLite: batch fuzzing that grows the corpus, private
+# triage of any crash, then corpus pruning and a coverage report (which PR
+# fuzzing uses to pick targets). Corpora and reports are kept as GitHub
+# Actions artifacts. Batch mode splits `fuzz-seconds` across every target, so
+# the schedule is daily to keep each target's share useful as targets are
+# added (docs/adr/untrusted-input-fuzzing.md).
+#
+# Job logs and artifacts of this public repository are readable by anyone, so
+# nothing about a crash is published in the clear (docs/ci.md#fuzz-crash-triage):
+# - `batch` fuzzes through .github/actions/cflite-private-run, which keeps
+#   the fuzzer output and crash files in the workspace, and uploads them only
+#   sealed with the FUZZ_CRASH_BUNDLE_KEY secret.
+# - `triage` rebuilds the fuzzers, re-runs and minimizes each crash, dedupes
+#   by stack and files each new one with the automation App token: a draft
+#   security advisory once Bookclerk has a published release, otherwise an
+#   issue that names only a signature (or, for a failed test oracle, the
+#   target). Its own output is sealed the same way. Logs print counts only.
+# - `prune` and `coverage` replay the corpus, which can start crashing after a
+#   regression lands on main, so they run through the same private action;
+#   `batch` reports such a crash, because libFuzzer replays the corpus first.
 # https://google.github.io/clusterfuzzlite/running-clusterfuzzlite/github-actions/
 
 name: ClusterFuzzLite batch fuzzing
@@ -29,50 +44,227 @@ jobs:
       matrix:
         sanitizer: [address]
     steps:
+      # The private batch action runs the triage script from the checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Build fuzzers
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           language: rust
+          # The build check runs each target briefly and prints its output
+          # to the job log; a crash there would be public. Batch fuzzing
+          # replays the corpus and catches the same crash privately.
+          bad-build-check: false
           sanitizer: ${{ matrix.sanitizer }}
 
-      - name: Run fuzzers
-        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+      - name: Run fuzzers (private output)
+        id: fuzz
+        uses: ./.github/actions/cflite-private-run
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           fuzz-seconds: 2700
           mode: batch
           sanitizer: ${{ matrix.sanitizer }}
 
+      # Only crashes leave the job, and only sealed. Without the key the step
+      # fails and nothing is uploaded. Crashes kept before a fuzzing error
+      # are sealed too.
+      - name: Seal crashes
+        if: ${{ !cancelled() && steps.fuzz.outputs.crashes != '' && steps.fuzz.outputs.crashes != '0' }}
+        env:
+          BUNDLE_KEY: ${{ secrets.FUZZ_CRASH_BUNDLE_KEY }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/fuzz-crashes"
+          mkdir -p "$dir" "$RUNNER_TEMP/fuzz-crashes-sealed"
+          cp -R out/artifacts "$dir/artifacts"
+          cp fuzz-private/batch.log "$dir/batch.log"
+          scripts/osv-remediation-bundle.sh seal "$dir" "$RUNNER_TEMP/fuzz-crashes-sealed/sealed.bin"
+
+      - name: Upload sealed crashes
+        if: ${{ !cancelled() && steps.fuzz.outputs.crashes != '' && steps.fuzz.outputs.crashes != '0' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-crashes-${{ matrix.sanitizer }}
+          path: ${{ runner.temp }}/fuzz-crashes-sealed/sealed.bin
+          if-no-files-found: error
+          retention-days: 7
+
+  triage:
+    name: triage crashes (${{ matrix.sanitizer }})
+    needs: batch
+    # Also after a failed batch job, which may still have uploaded crashes.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address]
+    steps:
+      - name: Look for sealed crashes
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: fuzz-crashes-${{ matrix.sanitizer }}
+        run: |
+          set -euo pipefail
+          count="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?name=$NAME" --jq '.total_count')"
+          if [[ "$count" -gt 0 ]]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no crashes to triage"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.find.outputs.found == 'true'
+        with:
+          persist-credentials: false
+
+      # A fresh build of the same commit: a crash counts only if it
+      # reproduces against it.
+      - name: Rebuild fuzzers
+        if: steps.find.outputs.found == 'true'
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: rust
+          # The build check runs each target briefly and prints its output
+          # to the job log; a crash there would be public. Batch fuzzing
+          # replays the corpus and catches the same crash privately.
+          bad-build-check: false
+          sanitizer: ${{ matrix.sanitizer }}
+
+      - name: Download sealed crashes
+        if: steps.find.outputs.found == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: fuzz-crashes-${{ matrix.sanitizer }}
+          path: ${{ runner.temp }}/fuzz-crashes-sealed
+
+      - name: Reproduce, minimize and dedupe
+        id: reproduce
+        if: steps.find.outputs.found == 'true'
+        env:
+          BUNDLE_KEY: ${{ secrets.FUZZ_CRASH_BUNDLE_KEY }}
+          # Same image (and so the same sanitizer runtime and symbolizer) the
+          # fuzzers ran in; keep in sync with .github/actions/cflite-private-run.
+          RUNNER_IMAGE: gcr.io/oss-fuzz-base/clusterfuzzlite-run-fuzzers@sha256:163155a2e32aa262507fa1c2c88d8d0be41fef3cad8b0d2bebffa31237e39a88
+        run: |
+          set -euo pipefail
+          crashes="$RUNNER_TEMP/fuzz-crashes"
+          triage="$RUNNER_TEMP/fuzz-triage"
+          mkdir -p "$triage"
+          scripts/osv-remediation-bundle.sh open "$RUNNER_TEMP/fuzz-crashes-sealed/sealed.bin" "$crashes"
+          # Output goes to files in $triage; the script prints counts only.
+          # stderr (a traceback could name a crash path) stays private too.
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/build-out:/out" \
+            -v "$GITHUB_WORKSPACE/scripts:/scripts:ro" \
+            -v "$crashes:/crashes:ro" \
+            -v "$triage:/triage" \
+            --entrypoint python3 "$RUNNER_IMAGE" \
+            /scripts/fuzz-crash-triage.py reproduce \
+            --build-out /out --artifacts /crashes/artifacts --out /triage \
+            2> "$triage/reproduce.stderr"
+          cp "$crashes/batch.log" "$triage/batch.log"
+
+      # Also after a failed reproduce step, so its logs are kept.
+      - name: Seal triage output
+        id: seal
+        if: ${{ !cancelled() && steps.find.outputs.found == 'true' && steps.reproduce.outcome != 'skipped' }}
+        env:
+          BUNDLE_KEY: ${{ secrets.FUZZ_CRASH_BUNDLE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/fuzz-triage-sealed"
+          scripts/osv-remediation-bundle.sh seal "$RUNNER_TEMP/fuzz-triage" "$RUNNER_TEMP/fuzz-triage-sealed/sealed.bin"
+
+      # Kept for the life of an advisory investigation; issues and advisories
+      # point here for the stack, logs and reproducer.
+      - name: Upload sealed triage output
+        if: ${{ !cancelled() && steps.seal.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-triage-${{ matrix.sanitizer }}
+          path: ${{ runner.temp }}/fuzz-triage-sealed/sealed.bin
+          if-no-files-found: error
+          retention-days: 90
+
+      # Filing only from main: a manual run on another branch still
+      # reproduces and seals, which is how a change here is tried out.
+      - name: Mint filing token
+        id: app
+        if: steps.find.outputs.found == 'true' && github.ref == 'refs/heads/main'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          permission-contents: read
+          permission-issues: write
+          permission-repository-advisories: write
+
+      # A draft advisory only once a release is published (a maintainer
+      # confirms the affected range); before the first release every crash
+      # is an issue that does not say where it is. Already-recorded
+      # signatures are skipped.
+      - name: File new crashes
+        if: steps.find.outputs.found == 'true' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          BUNDLE: fuzz-triage-${{ matrix.sanitizer }}
+        run: |
+          python3 scripts/fuzz-crash-triage.py file \
+            --triage "$RUNNER_TEMP/fuzz-triage" --bundle "$BUNDLE"
+
   prune:
     name: prune corpus
     needs: batch
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Build fuzzers
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           language: rust
+          # The build check runs each target briefly and prints its output
+          # to the job log; a crash there would be public. Batch fuzzing
+          # replays the corpus and catches the same crash privately.
+          bad-build-check: false
 
       - name: Prune corpus
-        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        uses: ./.github/actions/cflite-private-run
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           fuzz-seconds: 600
           mode: prune
+          sanitizer: address
 
   coverage:
     name: coverage report
     needs: prune
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Build fuzzers
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           language: rust
+          # The build check runs each target briefly and prints its output
+          # to the job log; a crash there would be public. Batch fuzzing
+          # replays the corpus and catches the same crash privately.
+          bad-build-check: false
           sanitizer: coverage
 
       - name: Coverage report
-        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        uses: ./.github/actions/cflite-private-run
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           fuzz-seconds: 600

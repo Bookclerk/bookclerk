@@ -1,0 +1,59 @@
+# ClusterFuzzLite scheduled fuzzing whose output stays private.
+#
+# The stock run_fuzzers action prints every crash's stack trace and libFuzzer
+# output (which includes small crashing inputs) to the job log and uploads the
+# reproducer as an artifact; both are public on this repository. This action
+# runs the same image in the same mode (batch, prune or coverage), through
+# `scripts/fuzz-crash-triage.py run`, which sends the image's output to
+# `fuzz-private/batch.log` in the workspace and keeps crashes in
+# `out/artifacts/` instead of uploading them. Corpus and coverage artifacts
+# are still read and written as before, so PR fuzzing is unchanged. A caller
+# that wants the crashes seals both directories before anything leaves the
+# job; otherwise they die with the runner.
+#
+# Needs the repository checked out at the workspace root and the fuzzers built
+# into `build-out/` (build_fuzzers). The image is pinned by digest: the
+# wrapper patches one method of the image's Python package and refuses to run
+# when it is missing, so bump the digest deliberately and re-test.
+
+name: ClusterFuzzLite private run
+description: Scheduled fuzzing with private logs and crashes.
+inputs:
+  mode:
+    description: ClusterFuzzLite mode (batch, prune or coverage).
+    required: true
+  fuzz-seconds:
+    description: Total fuzzing time, split across targets.
+    required: true
+  sanitizer:
+    description: Sanitizer the fuzzers were built with.
+    required: true
+  github-token:
+    description: Token for the corpus artifacts (GITHUB_TOKEN).
+    required: true
+outputs:
+  crashes:
+    description: Number of crash files kept in out/artifacts.
+runs:
+  using: docker
+  image: docker://gcr.io/oss-fuzz-base/clusterfuzzlite-run-fuzzers@sha256:163155a2e32aa262507fa1c2c88d8d0be41fef3cad8b0d2bebffa31237e39a88
+  entrypoint: python3
+  args:
+    - /github/workspace/scripts/fuzz-crash-triage.py
+    - run
+  env:
+    FUZZ_SECONDS: ${{ inputs.fuzz-seconds }}
+    MODE: ${{ inputs.mode }}
+    LANGUAGE: rust
+    DRY_RUN: "false"
+    SANITIZER: ${{ inputs.sanitizer }}
+    GITHUB_TOKEN: ${{ inputs.github-token }}
+    LOW_DISK_SPACE: "True"
+    REPORT_UNREPRODUCIBLE_CRASHES: "False"
+    # Keep timeout inputs (the default drops them) so triage sees DoS
+    # findings; OOM inputs are kept by default.
+    REPORT_TIMEOUTS: "True"
+    OUTPUT_SARIF: "false"
+    MINIMIZE_CRASHES: "False"
+    CFL_PLATFORM: github
+    PARALLEL_FUZZING: "false"
