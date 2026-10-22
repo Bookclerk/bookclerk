@@ -49,7 +49,25 @@ fn fuzz_corpus_granted_http_does_not_panic() {
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.starts_with("regression_"));
         let body = &data[consumed..];
-        let framing = body_framing(&head.headers).expect("seed framing");
+        // A seed whose framing headers the parser rejects is a regression
+        // seed for a framing fix; the route reader must refuse it the same way.
+        let framing = match body_framing(&head.headers) {
+            Ok(framing) => framing,
+            Err(err) => {
+                assert!(
+                    is_regression,
+                    "seed framing rejected ({err:?}): {}",
+                    path.display()
+                );
+                assert_eq!(
+                    BodyReader::new(&head.headers).err(),
+                    Some(BodyError::Framing(err)),
+                    "{}",
+                    path.display()
+                );
+                continue;
+            }
+        };
         // The route body reader must agree with itself whole and byte by byte.
         let whole = drive(framing, std::iter::once(body));
         let bytewise = drive(framing, body.chunks(1));
