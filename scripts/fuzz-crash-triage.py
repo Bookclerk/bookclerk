@@ -168,9 +168,11 @@ RUST_HASH_RE = re.compile(r"::h[0-9a-f]{16}$")
 PANIC_RE = re.compile(r"panicked at (\S+?):(\d+):(\d+)")
 # Sanitizer summary line: tool and error name. The SUMMARY line names the
 # error class (`allocation-size-too-big`); the header above the stack is
-# prose for some classes (`requested allocation size ...`).
+# prose for some classes (`requested allocation size ...`). A leak summary
+# starts with a byte count, so the name must start with a letter.
 SANITIZER_SUMMARY_RE = re.compile(
-    r"^SUMMARY: (AddressSanitizer|UndefinedBehaviorSanitizer|MemorySanitizer): ([\w-]+)", re.MULTILINE
+    r"^SUMMARY: (AddressSanitizer|UndefinedBehaviorSanitizer|MemorySanitizer): ([A-Za-z][\w-]*)",
+    re.MULTILINE,
 )
 # Sanitizer error header, for reports cut off before their SUMMARY line.
 SANITIZER_RE = re.compile(r"ERROR: (AddressSanitizer|UndefinedBehaviorSanitizer|MemorySanitizer): ([\w-]+)")
@@ -1171,12 +1173,19 @@ def reproduce_one(binary: Path, data: Path, log: Callable[[str], None]) -> Crash
         log: Sink for the private log.
 
     Returns:
-        The crash report, or None when the input did not crash.
+        The crash report, or None when the input did not crash (or only
+        exited non-zero without a crash report).
     """
     for _ in range(REPRODUCE_ATTEMPTS):
         code, out = _run([str(binary), *LIBFUZZER_LIMITS, str(data)], REPRODUCE_TIMEOUT_S, log)
-        if code != 0:
-            return classify(out)
+        if code == 0:
+            continue
+        report = classify(out)
+        # A signal death can leave no marker; a plain positive exit without
+        # one is not a crash the target reported.
+        if code < 0 or report.kind != "unknown":
+            return report
+        log(f"{data}: exit {code} without a recognized crash report")
     return None
 
 

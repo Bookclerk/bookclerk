@@ -106,6 +106,13 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(triage.classify("==1== ERROR: libFuzzer: deadly signal").kind, "signal")
         self.assertEqual(triage.classify("==1==ERROR: LeakSanitizer: detected memory leaks").kind, "leak")
         self.assertEqual(
+            triage.classify(
+                "==1==ERROR: LeakSanitizer: detected memory leaks\n"
+                "SUMMARY: AddressSanitizer: 4 byte(s) leaked in 1 allocation(s).\n"
+            ).kind,
+            "leak",
+        )
+        self.assertEqual(
             triage.classify("==1==ERROR: AddressSanitizer: stack-overflow on address 0x1").kind,
             "stack-overflow",
         )

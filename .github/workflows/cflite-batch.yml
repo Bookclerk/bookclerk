@@ -136,6 +136,7 @@ jobs:
           path: ${{ runner.temp }}/fuzz-crashes-sealed
 
       - name: Reproduce, minimize and dedupe
+        id: reproduce
         if: steps.find.outputs.found == 'true'
         env:
           BUNDLE_KEY: ${{ secrets.FUZZ_CRASH_BUNDLE_KEY }}
@@ -161,8 +162,10 @@ jobs:
             2> "$triage/reproduce.stderr"
           cp "$crashes/batch.log" "$triage/batch.log"
 
+      # Also after a failed reproduce step, so its logs are kept.
       - name: Seal triage output
-        if: steps.find.outputs.found == 'true'
+        id: seal
+        if: ${{ !cancelled() && steps.find.outputs.found == 'true' && steps.reproduce.outcome != 'skipped' }}
         env:
           BUNDLE_KEY: ${{ secrets.FUZZ_CRASH_BUNDLE_KEY }}
         run: |
@@ -173,7 +176,7 @@ jobs:
       # Kept for the life of an advisory investigation; issues and advisories
       # point here for the stack, logs and reproducer.
       - name: Upload sealed triage output
-        if: steps.find.outputs.found == 'true'
+        if: ${{ !cancelled() && steps.seal.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fuzz-triage-${{ matrix.sanitizer }}
