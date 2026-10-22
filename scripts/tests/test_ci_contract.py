@@ -45,7 +45,7 @@ def _load() -> dict:
 
 
 def _emitted_keys() -> set[str]:
-    keys = {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode"}
+    keys = {"mode", "matrix_os", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode"}
     keys |= {f"job_{j.replace('-', '_')}" for j in JOB_CHECKS}
     keys |= {f"check_{c}" for c in JOB_CHECKS["check"]}
     return keys
@@ -77,7 +77,7 @@ class WorkflowContractTests(unittest.TestCase):
 
         index = package_index_from_metadata(meta)
         plan = build_plan(["docs/x.md"], index, load_relations(), guests=discover_guests(REPO, index))
-        art = {"mode": "selective", "execution": plan_to_dict(plan)}
+        art = {"mode": "selective", "matrix_os": ["ubuntu-latest"], "execution": plan_to_dict(plan)}
         self.assertEqual(set(job_outputs(art)), _emitted_keys())
 
         declared = self.jobs["plan"]["outputs"]
@@ -166,7 +166,7 @@ class WorkflowContractTests(unittest.TestCase):
         job = self.jobs["native-gateway"]
         self.assertEqual(job["runs-on"], "${{ matrix.os }}")
         self.assertIs(job["strategy"]["fail-fast"], False)
-        self.assertEqual(job["strategy"]["matrix"], {"os": ["ubuntu-latest", "macos-latest", "windows-latest"]})
+        self.assertEqual(job["strategy"]["matrix"], {"os": "${{ fromJSON(needs.plan.outputs.matrix_os) }}"})
         steps = job["steps"]
         capnp = {s.get("if") for s in steps if "capnp" in s.get("run", "") and "ci-exec.py" not in s.get("run", "")}
         self.assertEqual(
@@ -222,6 +222,27 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_selective_ci_default_is_explicit(self) -> None:
         self.assertIn(self.wf["env"]["SELECTIVE_CI"], ("0", "1"))
+
+    def test_per_os_jobs_take_their_matrix_from_the_plan(self) -> None:
+        from ci_plan.execute import MATRIX_OS
+
+        self.assertEqual(self.jobs["plan"]["outputs"]["matrix_os"], "${{ steps.resolve.outputs.matrix_os }}")
+        for name, job in self.jobs.items():
+            matrix = (job.get("strategy") or {}).get("matrix") or {}
+            if "os" in matrix:
+                with self.subTest(job=name):
+                    self.assertEqual(matrix["os"], "${{ fromJSON(needs.plan.outputs.matrix_os) }}")
+                    self.assertEqual(job["runs-on"], "${{ matrix.os }}")
+        self.assertEqual(MATRIX_OS, ("ubuntu-latest", "macos-latest", "windows-latest"))
+
+    def test_linux_only_is_limited_to_dependabot_pull_requests(self) -> None:
+        step = next(s for s in self.jobs["plan"]["steps"] if "ci-exec.py resolve" in s.get("run", ""))
+        run = step["run"]
+        guard = '"${{ github.event_name }}" = "pull_request" ] && [ "$PR_AUTHOR" = "dependabot[bot]" ]'
+        self.assertIn(guard, run)
+        self.assertEqual(run.count("--linux-only"), 1)
+        self.assertLess(run.index(guard), run.index("--linux-only"))
+        self.assertEqual(step["env"]["PR_AUTHOR"], "${{ github.event.pull_request.user.login }}")
 
     def test_build_only_is_limited_to_main_pushes(self) -> None:
         run = next(s["run"] for s in self.jobs["plan"]["steps"] if "ci-exec.py resolve" in s.get("run", ""))

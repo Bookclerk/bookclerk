@@ -1,10 +1,16 @@
+# Each entry opens at most two version-update pull requests a week (one
+# minor/patch group, one major group; Cargo adds the capnp group), and the
+# entries are spread across the weekdays so one week's updates never all ask
+# for CI at once. Every update lands through the merge queue
+# (docs/ci.md#runner-capacity).
 version: 2
 updates:
   - package-ecosystem: cargo
     directory: "/"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+      day: monday
+    open-pull-requests-limit: 3
     # Match workerd pin cooldown (supply-chain). Platform default is 3 days.
     cooldown:
       default-days: 7
@@ -21,21 +27,34 @@ updates:
         update-types:
           - minor
           - patch
+      cargo-major:
+        update-types:
+          - major
 
   - package-ecosystem: npm
     directory: "/tools/diagnostics-collector"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+      day: friday
+    open-pull-requests-limit: 2
     cooldown:
       default-days: 7
+    groups:
+      diagnostics-collector-minor-patch:
+        update-types:
+          - minor
+          - patch
+      diagnostics-collector-major:
+        update-types:
+          - major
 
   # Web UI bundled into ui/dist and served by bookclerkd.
   - package-ecosystem: npm
     directory: "/ui"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+      day: tuesday
+    open-pull-requests-limit: 2
     cooldown:
       default-days: 7
     groups:
@@ -44,13 +63,17 @@ updates:
         update-types:
           - minor
           - patch
+      ui-major:
+        update-types:
+          - major
 
   # TypeScript plugin SDK, published as @bookclerk/plugin-sdk.
   - package-ecosystem: npm
     directory: "/packages/plugin-sdk"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+      day: wednesday
+    open-pull-requests-limit: 2
     cooldown:
       default-days: 7
     groups:
@@ -58,6 +81,9 @@ updates:
         update-types:
           - minor
           - patch
+      plugin-sdk-major:
+        update-types:
+          - major
 
   # Python plugin SDK, published as bookclerk-plugin-sdk. It has no runtime
   # dependencies; uv.lock pins its dev and docs extras.
@@ -65,7 +91,8 @@ updates:
     directory: "/packages/plugin-sdk-python"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+      day: thursday
+    open-pull-requests-limit: 2
     cooldown:
       default-days: 7
     groups:
@@ -73,12 +100,16 @@ updates:
         update-types:
           - minor
           - patch
+      python-sdk-major:
+        update-types:
+          - major
 
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+      day: thursday
+    open-pull-requests-limit: 2
     cooldown:
       default-days: 7
     groups:
@@ -86,3 +117,6 @@ updates:
         update-types:
           - minor
           - patch
+      github-actions-major:
+        update-types:
+          - major

@@ -24,7 +24,8 @@ on:
         description: Passphrase of the sealed OSV remediation bundle.
         required: false
 
-# Cancel superseded PR runs; never cancel merge_group / main.
+# Cancel superseded PR runs; never cancel merge_group / main (a merge group's
+# ref is unique, so its group never collides with a pull request's).
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -64,6 +65,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       mode: ${{ steps.resolve.outputs.mode }}
+      matrix_os: ${{ steps.resolve.outputs.matrix_os }}
       job_check: ${{ steps.resolve.outputs.job_check }}
       job_test: ${{ steps.resolve.outputs.job_test }}
       job_e2e: ${{ steps.resolve.outputs.job_e2e }}
@@ -168,6 +170,8 @@ jobs:
 
       - name: Resolve CI plan
         id: resolve
+        env:
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           set -euo pipefail
           EXTRA=()
@@ -180,6 +184,13 @@ jobs:
           # tested this exact commit: the push run compiles and saves caches.
           if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ]; then
             EXTRA+=(--build-only)
+          fi
+          # Dependabot updates land only through the merge queue, whose
+          # full-suite run covers macOS and Windows. Their pull-request runs
+          # stay on Linux so a burst of updates cannot hold the scarce macOS
+          # and Windows runners the queue needs (docs/ci.md#runner-capacity).
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ "$PR_AUTHOR" = "dependabot[bot]" ]; then
+            EXTRA+=(--linux-only)
           fi
           python3 scripts/ci-exec.py resolve \
             --base "${{ steps.shas.outputs.base }}" \
@@ -470,7 +481,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(needs.plan.outputs.matrix_os) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -521,7 +532,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(needs.plan.outputs.matrix_os) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -603,7 +614,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(needs.plan.outputs.matrix_os) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

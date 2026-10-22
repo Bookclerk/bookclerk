@@ -92,7 +92,8 @@ flowchart LR
 
 - The `plan` job runs `scripts/ci-exec.py resolve`, which writes
   `ci-plan.json` (schema version, run id, a fresh `execution_id`, checked-out
-  commit, the prediction and the resolved `execution`) and the job outputs
+  commit, the per-OS matrix `matrix_os`, the prediction and the resolved
+  `execution`) and the job outputs
   used by `if:` gates — both from the same JSON.
 - Every downstream job downloads that artifact and runs
   `ci-exec.py validate` first; a missing, stale or foreign artifact fails the
@@ -461,6 +462,31 @@ With a queue required, "require branches to be up to date" no longer matters;
 the queue tests each entry against current `main` stacked on the entries ahead
 of it.
 
+### Runner capacity
+
+GitHub-hosted runners have an account-wide limit on concurrent jobs, and
+macOS runners a much lower one. Runners have no priority: a queued
+`merge_group` job waits behind every `pull_request` job queued before it. A
+full-suite run is about 20 jobs, three of them on macOS and four on Windows,
+so a burst of pull requests can hold every runner while the queue waits.
+The repository keeps pull-request load down so the queue gets runners:
+
+- Superseded pull-request runs of `ci.yml` and the OSV PR scan are cancelled.
+  `merge_group`, `main` and scheduled runs are never cancelled or replaced.
+- Dependabot pull requests run with `--linux-only` (`matrix_os` is
+  `["ubuntu-latest"]` in the plan artifact): the per-OS jobs keep only their
+  Linux leg and `windows-cluster` is skipped, and the gate expects exactly
+  that. Dependabot updates land only through the merge queue, whose full
+  suite covers macOS and Windows, so the scarce runners are left to it.
+  Human pull requests keep every platform.
+- Dependabot groups each ecosystem's updates into at most two pull requests a
+  week (minor/patch and major) and spreads the ecosystems across weekdays
+  (see below).
+
+More capacity is an account setting rather than a repository one: a plan
+with a higher concurrent-job limit, larger runners, or a self-hosted runner
+reserved for `merge_group` runs.
+
 ## Dependabot auto-merge
 
 `.github/workflows/dependabot-auto-merge.yml` runs
@@ -478,7 +504,9 @@ The action must run while checks are still pending: GitHub rejects enabling
 auto-merge on a PR that is already mergeable. To retry a Dependabot PR (for
 example after adding the secrets), comment `@dependabot rebase`.
 
-Version updates (`.github/dependabot.yml`, weekly, 7-day cooldown) cover
+Version updates (`.github/dependabot.yml`, weekly, 7-day cooldown, at most
+one minor/patch and one major pull request per ecosystem, ecosystems spread
+across weekdays) cover
 every lockfile of a shipped artifact or its build: Cargo at the workspace
 root, npm in `ui/`, `packages/plugin-sdk` and `tools/diagnostics-collector`,
 uv in `packages/plugin-sdk-python`, and GitHub Actions. `examples/` lockfiles

@@ -30,6 +30,7 @@ from ci_plan.execute import (  # noqa: E402
     Command,
     Context,
     ExecError,
+    artifact_summary,
     build_only_command,
     execution_mode,
     gate,
@@ -87,6 +88,7 @@ def artifact(p, mode: str = "selective") -> dict:
         "selective_ci": "1",
         "mode": mode,
         "build_only": False,
+        "matrix_os": ["ubuntu-latest", "macos-latest", "windows-latest"],
         "predicted": plan_to_dict(p),
         "execution": plan_to_dict(p),
     }
@@ -1033,7 +1035,7 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(out["check_needs_uv"], "false")
         self.assertEqual(
             set(out),
-            {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode"}
+            {"mode", "matrix_os", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode"}
             | {f"job_{j.replace('-', '_')}" for j in JOB_CHECKS}
             | {f"check_{c}" for c in JOB_CHECKS["check"]},
         )
@@ -1431,6 +1433,53 @@ class RunnerLayoutTests(unittest.TestCase):
         for job in JOB_CHECKS:
             needs[job] = {"result": "success" if job in BUILD_ONLY_JOBS else "skipped"}
         self.assertEqual(gate(art, needs), [])
+
+    def linux_only_artifact(self) -> dict:
+        return resolve(
+            base=None,
+            head=None,
+            selective_ci="1",
+            run_id="9",
+            checkout_sha="abc",
+            event="pull_request",
+            linux_only=True,
+            paths=["Cargo.lock"],
+            metadata=META,
+            workspace=REPO,
+        )
+
+    def test_linux_only_keeps_the_linux_leg_and_skips_windows_jobs(self) -> None:
+        art = self.linux_only_artifact()
+        validate(art, run_id="9", checkout_sha="abc")
+        self.assertEqual(art["matrix_os"], ["ubuntu-latest"])
+        execution = plan_from_dict(art["execution"])
+        predicted = plan_from_dict(art["predicted"])
+        self.assertTrue(predicted.jobs["windows-cluster"])
+        on = {job for job, run in execution.jobs.items() if run}
+        self.assertEqual(on, {job for job, run in predicted.jobs.items() if run} - {"windows-cluster"})
+        self.assertNotIn("windows_cluster", execution.checks)
+        out = job_outputs(art)
+        self.assertEqual(json.loads(out["matrix_os"]), ["ubuntu-latest"])
+        self.assertEqual(out["job_windows_cluster"], "false")
+        self.assertEqual(out["job_native_gateway"], "true")
+        self.assertIn("Linux only", artifact_summary(art))
+        needs = {"plan": {"result": "success"}}
+        for job, run in execution.jobs.items():
+            needs[job] = {"result": "success" if run else "skipped"}
+        self.assertEqual(gate(art, needs), [])
+        needs["windows-cluster"] = {"result": "success"}
+        self.assertEqual(gate(art, needs), ["windows-cluster: expected to skip, result success"])
+
+    def test_default_matrix_covers_every_os(self) -> None:
+        art = self.build_only_artifact()
+        self.assertEqual(json.loads(job_outputs(art)["matrix_os"]), ["ubuntu-latest", "macos-latest", "windows-latest"])
+
+    def test_validate_rejects_an_unknown_matrix(self) -> None:
+        for bad in (["macos-latest"], [], ["ubuntu-latest", "windows-latest"], "ubuntu-latest"):
+            art = self.linux_only_artifact()
+            art["matrix_os"] = bad
+            with self.subTest(matrix=bad), self.assertRaises(ExecError):
+                validate(art, run_id="9", checkout_sha="abc")
 
     def test_build_only_compiles_and_runs_nothing(self) -> None:
         art = self.build_only_artifact()

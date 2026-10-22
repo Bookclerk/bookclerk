@@ -76,6 +76,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Compile every check's targets (cache warming) but run no tests",
     )
+    r.add_argument(
+        "--linux-only",
+        action="store_true",
+        help="Run only the Linux leg of per-OS jobs and skip Windows-only jobs (Dependabot PRs)",
+    )
     r.add_argument("--selective", default=os.environ.get("SELECTIVE_CI", "0"))
     r.add_argument("--event", default=os.environ.get("GITHUB_EVENT_NAME", "local"))
     r.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID", "local"))
@@ -104,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
                 event=args.event,
                 force_full=args.force_full,
                 build_only=args.build_only,
+                linux_only=args.linux_only,
                 workspace=WORKSPACE,
                 paths=args.paths,
             )

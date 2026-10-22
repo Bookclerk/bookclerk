@@ -43,7 +43,7 @@ from .plan import (
     plan_to_summary,
 )
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 ARTIFACT_NAME = "ci-plan.json"
 # One path segment. A fresh id is minted per resolve so marker dirs cannot
 # collide across local re-resolves that share a temp dir, commit, and run id.
@@ -181,6 +181,13 @@ BUILD_SUBCOMMANDS = frozenset({"build", "build-app", "check", "clippy", "install
 BUILD_ONLY_JOBS = frozenset({"check", "test", "native-gateway", "release"})
 # Prerequisites kept in build-only runs (staging and installs only feed tests).
 BUILD_PREREQS = frozenset({"build", "ensure_workerd"})
+# Runner labels of the per-OS matrix jobs (`confinement`, `native-gateway`,
+# `tray`), in matrix order. ci.yml reads the list from the `matrix_os` output.
+MATRIX_OS = ("ubuntu-latest", "macos-latest", "windows-latest")
+# Linux-only runs keep only this matrix leg.
+LINUX_OS = "ubuntu-latest"
+# Jobs that run only on a non-Linux runner; Linux-only runs skip them.
+NON_LINUX_JOBS = frozenset({"windows-cluster"})
 
 
 class ExecError(Exception):
@@ -253,6 +260,7 @@ def resolve(
     event: str,
     force_full: bool = False,
     build_only: bool = False,
+    linux_only: bool = False,
     workspace: Path | None = None,
     paths: Sequence[str] | None = None,
     metadata: Mapping[str, Any] | None = None,
@@ -264,6 +272,10 @@ def resolve(
     ``build_only`` (push to ``main``) compiles what every check compiles,
     which saves the caches later runs restore, and runs no tests: the same
     commit already passed the full suite in its merge group.
+    ``linux_only`` (Dependabot pull requests) keeps only the Linux leg of
+    the per-OS matrix jobs and skips the Windows-only jobs, leaving the
+    scarce macOS and Windows runners to the merge queue, whose full-suite
+    run tests every platform before the update lands.
     """
     predicted = plan_from_event(
         base=base,
@@ -289,6 +301,10 @@ def resolve(
         execution = plan_from_dict(plan_to_dict(execution))
         execution.checks = {c: v for c, v in execution.checks.items() if CHECK_JOB[c] in BUILD_ONLY_JOBS}
         execution.jobs = {job: on and job in BUILD_ONLY_JOBS for job, on in execution.jobs.items()}
+    if linux_only:
+        execution = plan_from_dict(plan_to_dict(execution))
+        execution.checks = {c: v for c, v in execution.checks.items() if CHECK_JOB[c] not in NON_LINUX_JOBS}
+        execution.jobs = {job: on and job not in NON_LINUX_JOBS for job, on in execution.jobs.items()}
     return {
         "schema_version": SCHEMA_VERSION,
         "execution_id": uuid.uuid4().hex,
@@ -300,6 +316,7 @@ def resolve(
         "selective_ci": selective_ci,
         "mode": mode,
         "build_only": bool(build_only),
+        "matrix_os": [LINUX_OS] if linux_only else list(MATRIX_OS),
         "predicted": plan_to_dict(predicted),
         "execution": plan_to_dict(execution),
     }
@@ -308,7 +325,7 @@ def resolve(
 def job_outputs(artifact: Mapping[str, Any]) -> dict[str, str]:
     """``GITHUB_OUTPUT`` keys for ``if:`` gates, all from ``execution``."""
     plan = plan_from_dict(artifact["execution"])
-    out: dict[str, str] = {"mode": artifact["mode"]}
+    out: dict[str, str] = {"mode": artifact["mode"], "matrix_os": json.dumps(artifact["matrix_os"])}
     for job, on in plan.jobs.items():
         out[f"job_{job.replace('-', '_')}"] = _b(on)
     for check in JOB_CHECKS["check"]:
@@ -357,12 +374,15 @@ def validate(
         raise ExecError(
             f"plan schema_version {artifact.get('schema_version')!r} != {SCHEMA_VERSION}"
         )
-    for key in ("run_id", "checkout_sha", "mode", "build_only", "predicted", "execution", "execution_id"):
+    for key in ("run_id", "checkout_sha", "mode", "build_only", "matrix_os", "predicted", "execution", "execution_id"):
         if key not in artifact:
             raise ExecError(f"plan artifact missing `{key}`")
     require_execution_id(artifact)
     if not isinstance(artifact["build_only"], bool):
         raise ExecError(f"plan build_only {artifact['build_only']!r} is not a boolean")
+    matrix_os = artifact["matrix_os"]
+    if matrix_os not in (list(MATRIX_OS), [LINUX_OS]):
+        raise ExecError(f"plan matrix_os {matrix_os!r} is neither {list(MATRIX_OS)} nor {[LINUX_OS]}")
     if artifact["mode"] not in ("full", "shadow", "selective"):
         raise ExecError(f"plan mode {artifact['mode']!r} is invalid")
     if run_id is not None and str(artifact["run_id"]) != str(run_id):
@@ -980,6 +1000,11 @@ def artifact_summary(artifact: Mapping[str, Any]) -> str:
         banner += (
             " **Build only** (push to `main`): checks compile and save caches; no tests run,"
             " because this commit already passed the full suite in its merge group."
+        )
+    if artifact["matrix_os"] == [LINUX_OS]:
+        banner += (
+            " **Linux only** (Dependabot pull request): macOS and Windows jobs are left to the"
+            " merge queue, whose full-suite run tests every platform before the update lands."
         )
     parts = [f"# CI execution: `{mode}`", "", banner, "", plan_to_summary(execution_plan(artifact), "Execution")]
     if mode == "shadow":
