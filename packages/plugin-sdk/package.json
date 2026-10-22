@@ -58,7 +58,7 @@
   "devDependencies": {
     "@types/node": "^22.13.10",
     "esbuild": "0.28.2",
-    "oxlint": "^1.78.0",
+    "oxlint": "^1.88.0",
     "typedoc": "^0.28.20",
     "typescript": "^5.8.2"
   },
