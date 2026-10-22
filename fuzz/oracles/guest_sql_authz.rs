@@ -1,0 +1,433 @@
+//! Shared oracle for the `guest_sql_authz` fuzz target and its corpus replay
+//! test (`crates/bookclerk-library/tests/fuzz_corpus.rs`): the guest SQL
+//! authorizer in `bookclerk-plugin-abi` is checked against SQLite's own
+//! authorizer callback, an independent view of which tables, columns and
+//! functions a statement really touches (`docs/adr/untrusted-input-fuzzing.md`).
+//!
+//! Both harnesses include this file with `#[path]`, so the policy set, the
+//! schema and the invariant stay identical and cannot drift.
+//!
+//! Input layout: the first byte selects the policy and bind type; the rest is
+//! one canonical SQL statement. A statement the policy admits is lowered the
+//! way the SQLite adapter lowers it, prepared on an in-memory database holding
+//! the schema below, and every access SQLite reports while compiling it must
+//! be inside the policy.
+
+use std::sync::{Arc, Mutex};
+
+use bookclerk_db_exec::lower_canonical_sql;
+use bookclerk_plugin_abi::{
+    authorize_guest_sql_policy, guest_statement_kind, sql_type_env_from_canonical_statements,
+    validate_guest_execute_request_for_policy, DbPlanStatementKind, DbResultSelection, DbValue,
+    ExecuteRequest, GuestSqlPolicy, TypedDbStatement, BOOKCLERK_RESERVED_PREFIX,
+};
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+use rusqlite::Connection;
+use sea_orm::DatabaseBackend;
+
+/// Largest statement worth checking; the wire caps guest SQL far below this.
+pub const MAX_INPUT_BYTES: usize = 4096;
+
+/// Tables every policy variant grants.
+pub const GRANTED_TABLES: &[&str] = &["books", "authors"];
+
+/// Columns the column-restricted variant leaves visible on `books`.
+pub const BOOKS_VISIBLE_COLUMNS: &[&str] = &["id", "title"];
+
+/// Schema the oracle database holds: the granted tables, a host table no
+/// policy grants, a denied-by-name table, and one host bookkeeping table so a
+/// plugin-owned binding statement that names it compiles far enough for
+/// SQLite to report the access.
+pub const SCHEMA: &[&str] = &[
+    "CREATE TABLE books (id INTEGER PRIMARY KEY NOT NULL, title TEXT NOT NULL, note TEXT, \
+     author_id INTEGER, price REAL, cover BLOB)",
+    "CREATE TABLE authors (id INTEGER PRIMARY KEY NOT NULL, name TEXT NOT NULL, born INTEGER)",
+    "CREATE TABLE host_secrets (id INTEGER PRIMARY KEY NOT NULL, token TEXT NOT NULL)",
+    "CREATE TABLE encrypted_secrets (id INTEGER PRIMARY KEY NOT NULL, blob BLOB)",
+    "CREATE TABLE bookclerk_receipts (operation_id TEXT PRIMARY KEY NOT NULL, \
+     operation_kind TEXT NOT NULL)",
+];
+
+/// Physical tables in [`SCHEMA`], lower case, as SQLite reports them.
+pub const PHYSICAL_TABLES: &[&str] = &[
+    "books",
+    "authors",
+    "host_secrets",
+    "encrypted_secrets",
+    "bookclerk_receipts",
+];
+
+/// Functions the SQLite lowering introduces that no guest wrote: `LIKE` is
+/// rewritten to `GLOB`, and SQLite compiles both operators as function calls.
+pub const LOWERING_FUNCTIONS: &[&str] = &["like", "glob"];
+
+/// Which host-issued policy a run exercises.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Variant {
+    /// `allow_tables` with no column types: the lexical reference parser.
+    Lexical,
+    /// `allow_tables` plus a column restriction on `books`.
+    ColumnRestricted,
+    /// `allow_tables` with the catalog loaded: the typed-proof path.
+    Typed,
+    /// A plugin-owned binding: any non-reserved table, no durable DDL.
+    BindingOwned,
+    /// A plugin-owned binding inside a migration: bounded `CREATE`/`DROP`.
+    BindingMigration,
+}
+
+impl Variant {
+    /// Every variant, in selector order.
+    pub const ALL: [Self; 5] = [
+        Self::Lexical,
+        Self::ColumnRestricted,
+        Self::Typed,
+        Self::BindingOwned,
+        Self::BindingMigration,
+    ];
+
+    /// Decodes the selector byte: digits `'0'..='4'` keep seeds readable,
+    /// anything else wraps into the same five variants.
+    #[must_use]
+    pub fn from_selector(byte: u8) -> Self {
+        let index = usize::from(byte.wrapping_sub(b'0')) % Self::ALL.len();
+        Self::ALL[index]
+    }
+
+    /// True for the plugin-owned binding variants.
+    #[must_use]
+    pub fn binding(self) -> bool {
+        matches!(self, Self::BindingOwned | Self::BindingMigration)
+    }
+
+    /// The policy this variant hands to the authorizer.
+    #[must_use]
+    pub fn policy(self) -> GuestSqlPolicy {
+        let env = sql_type_env_from_canonical_statements(SCHEMA);
+        match self {
+            Self::Lexical => GuestSqlPolicy::allow_tables(GRANTED_TABLES),
+            Self::ColumnRestricted => GuestSqlPolicy::allow_tables(GRANTED_TABLES)
+                .restrict_columns("books", BOOKS_VISIBLE_COLUMNS),
+            Self::Typed => GuestSqlPolicy::allow_tables(GRANTED_TABLES).with_sql_types(env),
+            Self::BindingOwned => GuestSqlPolicy::binding_owned().with_sql_types(env),
+            Self::BindingMigration => GuestSqlPolicy::binding_migration().with_sql_types(env),
+        }
+    }
+}
+
+/// One access SQLite's authorizer reported while compiling a statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Access {
+    /// A read, insert, update or delete on `table`; `column` is set for reads
+    /// and updates of a named column.
+    Table {
+        /// Lower-cased table name as SQLite reports it.
+        table: String,
+        /// Lower-cased column name, `None` for whole-table or column-less access.
+        column: Option<String>,
+    },
+    /// A function call by lower-cased name.
+    Function(String),
+    /// Schema DDL on `table` (`CREATE`/`DROP` `TABLE`/`INDEX`); `verb` is the
+    /// authorizer action name.
+    Schema {
+        /// The authorizer action, e.g. `CreateTable`.
+        verb: &'static str,
+        /// Lower-cased table name the action targets.
+        table: String,
+    },
+    /// Anything a guest statement must never cause: transactions, pragmas,
+    /// attach, views, triggers, virtual tables, `ALTER`, `ANALYZE`, `REINDEX`.
+    Forbidden(&'static str),
+}
+
+/// Builds the one-statement request the host would see for `sql`.
+#[must_use]
+pub fn request_for(sql: &str, text_binds: bool) -> ExecuteRequest {
+    let kind = guest_statement_kind(sql);
+    let binds = placeholder_count(sql);
+    let parameters = (0..binds)
+        .map(|i| {
+            if text_binds {
+                DbValue::Text(format!("v{i}"))
+            } else {
+                DbValue::Int64(i64::try_from(i).unwrap_or(0) + 1)
+            }
+        })
+        .collect();
+    ExecuteRequest {
+        operation_id: "fuzz-op".into(),
+        request_hash: String::new(),
+        statements: vec![TypedDbStatement {
+            sql: sql.to_string(),
+            parameters,
+            kind,
+            max_rows: 0,
+            result_selection: match kind {
+                DbPlanStatementKind::Select | DbPlanStatementKind::Returning => {
+                    DbResultSelection::Rows
+                }
+                DbPlanStatementKind::Execute => DbResultSelection::AffectedRows,
+            },
+        }],
+        deadline_unix_ms: 0,
+    }
+}
+
+/// Counts `?` placeholders outside quotes and comments.
+#[must_use]
+pub fn placeholder_count(sql: &str) -> usize {
+    let bytes = sql.as_bytes();
+    let mut count = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            quote @ (b'\'' | b'"' | b'`') => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote {
+                    i += 1;
+                }
+            }
+            b'-' if bytes.get(i + 1) == Some(&b'-') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i += 1;
+            }
+            b'?' => count += 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    count
+}
+
+/// Runs the host pipeline for `sql` under `variant`: grammar and policy
+/// validation, then authorization. `Ok` means the host would execute it.
+///
+/// # Errors
+///
+/// The host's own rejection, verbatim.
+pub fn host_admits(
+    variant: Variant,
+    sql: &str,
+    text_binds: bool,
+) -> Result<(), bookclerk_plugin_abi::PluginError> {
+    let policy = variant.policy();
+    let req = request_for(sql, text_binds);
+    validate_guest_execute_request_for_policy(&req, &policy)?;
+    authorize_guest_sql_policy(&req, &policy)
+}
+
+/// Opens the in-memory oracle database and creates [`SCHEMA`] on it.
+fn oracle_connection() -> rusqlite::Result<Connection> {
+    let conn = Connection::open_in_memory()?;
+    for ddl in SCHEMA {
+        conn.execute_batch(ddl)?;
+    }
+    Ok(conn)
+}
+
+/// Compiles `sql`, lowered for SQLite, on the oracle database and returns
+/// every access SQLite's authorizer reported, in order. A statement SQLite
+/// cannot prepare still yields the accesses reported before the error.
+///
+/// When the oracle database itself cannot be created, the result is a single
+/// [`Access::Forbidden`] so the caller fails closed instead of treating a
+/// broken oracle as "touched nothing".
+#[must_use]
+pub fn sqlite_accesses(sql: &str) -> Vec<Access> {
+    let Ok(conn) = oracle_connection() else {
+        return vec![Access::Forbidden("oracle database unavailable")];
+    };
+    let seen: Arc<Mutex<Vec<Access>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    let installed = conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+        if let Some(access) = classify(&ctx.action) {
+            if let Ok(mut seen) = sink.lock() {
+                seen.push(access);
+            }
+        }
+        Authorization::Allow
+    }));
+    if installed.is_err() {
+        return vec![Access::Forbidden("oracle authorizer unavailable")];
+    }
+    let lowered = lower_canonical_sql(DatabaseBackend::Sqlite, sql);
+    let _ = conn.prepare(&lowered);
+    drop(conn);
+    seen.lock().map(|seen| seen.clone()).unwrap_or_default()
+}
+
+/// Maps one authorizer action onto the oracle's vocabulary; `Select` and
+/// `Recursive` carry no object and are dropped.
+fn classify(action: &AuthAction<'_>) -> Option<Access> {
+    let lower = |s: &str| s.to_ascii_lowercase();
+    Some(match action {
+        AuthAction::Read {
+            table_name,
+            column_name,
+        } => Access::Table {
+            table: lower(table_name),
+            column: (!column_name.is_empty()).then(|| lower(column_name)),
+        },
+        AuthAction::Update {
+            table_name,
+            column_name,
+        } => Access::Table {
+            table: lower(table_name),
+            column: (!column_name.is_empty()).then(|| lower(column_name)),
+        },
+        AuthAction::Insert { table_name } | AuthAction::Delete { table_name } => Access::Table {
+            table: lower(table_name),
+            column: None,
+        },
+        AuthAction::Function { function_name } => Access::Function(lower(function_name)),
+        AuthAction::CreateTable { table_name } => Access::Schema {
+            verb: "CreateTable",
+            table: lower(table_name),
+        },
+        AuthAction::DropTable { table_name } => Access::Schema {
+            verb: "DropTable",
+            table: lower(table_name),
+        },
+        AuthAction::CreateIndex { table_name, .. } => Access::Schema {
+            verb: "CreateIndex",
+            table: lower(table_name),
+        },
+        AuthAction::DropIndex { table_name, .. } => Access::Schema {
+            verb: "DropIndex",
+            table: lower(table_name),
+        },
+        AuthAction::Select | AuthAction::Recursive => return None,
+        AuthAction::Unknown { .. } => Access::Forbidden("Unknown"),
+        AuthAction::CreateTempIndex { .. } => Access::Forbidden("CreateTempIndex"),
+        AuthAction::CreateTempTable { .. } => Access::Forbidden("CreateTempTable"),
+        AuthAction::CreateTempTrigger { .. } => Access::Forbidden("CreateTempTrigger"),
+        AuthAction::CreateTempView { .. } => Access::Forbidden("CreateTempView"),
+        AuthAction::CreateTrigger { .. } => Access::Forbidden("CreateTrigger"),
+        AuthAction::CreateView { .. } => Access::Forbidden("CreateView"),
+        AuthAction::DropTempIndex { .. } => Access::Forbidden("DropTempIndex"),
+        AuthAction::DropTempTable { .. } => Access::Forbidden("DropTempTable"),
+        AuthAction::DropTempTrigger { .. } => Access::Forbidden("DropTempTrigger"),
+        AuthAction::DropTempView { .. } => Access::Forbidden("DropTempView"),
+        AuthAction::DropTrigger { .. } => Access::Forbidden("DropTrigger"),
+        AuthAction::DropView { .. } => Access::Forbidden("DropView"),
+        AuthAction::Pragma { .. } => Access::Forbidden("Pragma"),
+        AuthAction::Transaction { .. } => Access::Forbidden("Transaction"),
+        AuthAction::Attach { .. } => Access::Forbidden("Attach"),
+        AuthAction::Detach { .. } => Access::Forbidden("Detach"),
+        AuthAction::AlterTable { .. } => Access::Forbidden("AlterTable"),
+        // SQLite reports a reindex while it populates a freshly created
+        // index, so this follows an admitted `CreateIndex` in a migration.
+        AuthAction::Reindex { .. } => Access::Schema {
+            verb: "Reindex",
+            table: String::new(),
+        },
+        AuthAction::Analyze { .. } => Access::Forbidden("Analyze"),
+        AuthAction::CreateVtable { .. } => Access::Forbidden("CreateVtable"),
+        AuthAction::DropVtable { .. } => Access::Forbidden("DropVtable"),
+        AuthAction::Savepoint { .. } => Access::Forbidden("Savepoint"),
+        // `AuthAction` is `#[non_exhaustive]`; a variant added by a later
+        // rusqlite is something no guest statement should trigger either.
+        _ => Access::Forbidden("Unclassified"),
+    })
+}
+
+/// The invariant: every access SQLite reports for a statement the host
+/// admitted under `variant` is inside that variant's policy. Returns the
+/// first violation as text, `None` when the statement is within policy.
+///
+/// Table names SQLite reports that are not in [`PHYSICAL_TABLES`] are CTE or
+/// subquery aliases and carry no authority, so they are skipped.
+#[must_use]
+pub fn violation(variant: Variant, accesses: &[Access]) -> Option<String> {
+    let policy = variant.policy();
+    for access in accesses {
+        match access {
+            Access::Table { table, column } => {
+                if !PHYSICAL_TABLES.contains(&table.as_str()) {
+                    continue;
+                }
+                if variant.binding() {
+                    if table.starts_with(BOOKCLERK_RESERVED_PREFIX) || table == "encrypted_secrets"
+                    {
+                        return Some(format!("binding statement touched reserved table {table}"));
+                    }
+                    continue;
+                }
+                if !GRANTED_TABLES.contains(&table.as_str()) {
+                    return Some(format!("touched ungranted table {table}"));
+                }
+                if variant == Variant::ColumnRestricted && table == "books" {
+                    if let Some(column) = column {
+                        if !BOOKS_VISIBLE_COLUMNS.contains(&column.as_str()) {
+                            return Some(format!("touched restricted column books.{column}"));
+                        }
+                    }
+                }
+            }
+            Access::Function(name) => {
+                if LOWERING_FUNCTIONS.contains(&name.as_str()) {
+                    continue;
+                }
+                if !policy.functions().any(|allowed| allowed == name) {
+                    return Some(format!("called unauthorized function {name}"));
+                }
+            }
+            Access::Schema { verb, table } => {
+                if variant != Variant::BindingMigration {
+                    return Some(format!("{verb} on {table} outside a migration context"));
+                }
+                if *verb == "Reindex" {
+                    continue;
+                }
+                if table.starts_with(BOOKCLERK_RESERVED_PREFIX)
+                    || table.starts_with("sqlite_")
+                    || table == "encrypted_secrets"
+                {
+                    return Some(format!("{verb} on reserved table {table}"));
+                }
+            }
+            Access::Forbidden(what) => return Some(format!("forbidden action {what}")),
+        }
+    }
+    None
+}
+
+/// Full check for one input: decodes the selector, runs the host pipeline,
+/// and, when the host admits the statement, compares SQLite's view with the
+/// policy. Panics on a violation so the fuzzer and the replay test fail.
+///
+/// Returns `true` when the host admitted the statement.
+///
+/// # Panics
+///
+/// On a policy violation, with the statement and the first offending access.
+pub fn check(data: &[u8]) -> bool {
+    if data.len() > MAX_INPUT_BYTES {
+        return false;
+    }
+    let Some((&selector, sql)) = data.split_first() else {
+        return false;
+    };
+    let Ok(sql) = std::str::from_utf8(sql) else {
+        return false;
+    };
+    let variant = Variant::from_selector(selector);
+    let text_binds = selector & 0x80 != 0;
+    if host_admits(variant, sql, text_binds).is_err() {
+        return false;
+    }
+    let accesses = sqlite_accesses(sql);
+    if let Some(why) = violation(variant, &accesses) {
+        panic!("{variant:?} admitted {sql:?}: {why}; sqlite saw {accesses:?}");
+    }
+    true
+}

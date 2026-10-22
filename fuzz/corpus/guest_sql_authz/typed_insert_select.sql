@@ -1,0 +1,1 @@
+2INSERT INTO books (id, title) SELECT id, name FROM authors WHERE born > ?

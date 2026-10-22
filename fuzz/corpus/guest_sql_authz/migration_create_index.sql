@@ -1,0 +1,1 @@
+4CREATE INDEX IF NOT EXISTS books_title ON books (title)

@@ -223,6 +223,15 @@ impl GuestSqlPolicy {
     pub fn sql_types(&self) -> &SqlTypeEnv {
         &self.sql_types
     }
+
+    /// Lower-cased scalar function names this policy admits, in sorted order.
+    ///
+    /// Lets a harness compare the policy against an independent view of the
+    /// functions a statement calls (the fuzzing ADR's SQLite authorizer
+    /// oracle); authorization itself happens in [`authorize_guest_sql_policy`].
+    pub fn functions(&self) -> impl Iterator<Item = &str> {
+        self.functions.iter().map(String::as_str)
+    }
     /// Restricts `table` to `cols` (empty set denies every column on that table).
     #[must_use]
     pub fn restrict_columns(

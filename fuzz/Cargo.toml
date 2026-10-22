@@ -20,6 +20,8 @@ bookclerk-db-exec = { path = "../crates/bookclerk-db-exec" }
 bookclerk-mp4 = { path = "../crates/bookclerk-mp4" }
 bookclerk-workerd = { path = "../crates/bookclerk-workerd" }
 sea-orm = { version = "2.0.0", default-features = false }
+# Oracle for guest_sql_authz: SQLite's own authorizer callback (`hooks`).
+rusqlite = { version = "0.39", features = ["bundled", "hooks"] }
 
 [workspace]
 members = ["."]
@@ -69,6 +71,13 @@ bench = false
 [[bin]]
 name = "abi_decode"
 path = "fuzz_targets/abi_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "guest_sql_authz"
+path = "fuzz_targets/guest_sql_authz.rs"
 test = false
 doc = false
 bench = false

@@ -1,0 +1,1 @@
+0SELECT * FROM encrypted_secrets

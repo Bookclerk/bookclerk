@@ -1,0 +1,1 @@
+3INSERT INTO books (id, title) VALUES (?, ?) RETURNING id

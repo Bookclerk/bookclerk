@@ -1,0 +1,1 @@
+2SELECT count(*), max(price) FROM books GROUP BY author_id HAVING count(*) > ?
