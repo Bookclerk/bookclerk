@@ -333,8 +333,9 @@ def _metadata() -> dict[str, Any]:
 class CargoEvidenceTest(unittest.TestCase):
     def test_closure_keeps_normal_edges_only(self) -> None:
         closure = {name for name, _ in adv.cargo_closure(_metadata(), {"host-id"})}
-        # Vendored C compiled by a `-src` build dependency ships too.
-        self.assertEqual(closure, {"host", "normal", "deep", "both", "openssl-src", "cc"})
+        # Vendored C compiled by a `-src` build dependency ships too, but not
+        # the build tooling it depends on.
+        self.assertEqual(closure, {"host", "normal", "deep", "both", "openssl-src"})
 
     def test_roots(self) -> None:
         meta = _metadata()
@@ -535,6 +536,9 @@ class SeverityTest(unittest.TestCase):
         cvss = dict(ghsa, severity=[{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}])
         self.assertIn("cvss_vector_string", adv.severity_fields(adv.with_alias_meta(rustsec, [cvss])))
         self.assertEqual(adv.severity_fields(rustsec), {"severity": "medium"})
+        # Only CVSS 3.1 vectors are sent; an older one falls back to the level.
+        old = dict(ghsa, severity=[{"type": "CVSS_V3", "score": "CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}])
+        self.assertEqual(adv.severity_fields(adv.with_alias_meta(rustsec, [old])), {"severity": "critical"})
         # Groups merged later keep every record's data.
         groups, _ = adv.group_alerts(
             [("RUSTSEC-9", "Cargo.lock", "code-scanning"), ("GHSA-9", "Cargo.lock", "dependabot")],
@@ -626,6 +630,30 @@ class FilingTest(unittest.TestCase):
         self.assertEqual(changes["vulnerabilities"][0]["vulnerable_version_range"], "<= v0.2.0")
         self.assertIn("v0.2.0", changes["description"])
 
+    def test_open_draft_no_longer_affected_is_reported(self) -> None:
+        draft = self._as_draft(self._host_body())
+        self.state["on_record"] = [list(m) for m in adv.MARKER_RE.findall(draft["description"])]
+        self.state["drafts"] = [draft]
+        decisions, _ = adv.decide_all(self.state, self.repo.config, EVIDENCE, BUNDLE, self.repo.root)
+        host = next(d for d in decisions if d.entry.artifact.key == "bookclerk")
+        host.verdict = adv.NOT_CALLED
+        gh = FakeGitHub()
+        adv.file_decisions(decisions, gh, self.state, BUNDLE, self.repo.root, "abc", "https://run")
+        self.assertEqual(host.outcome, "open draft, now not affected")
+        self.assertEqual(gh.updated, [])
+
+    def test_network_errors_mark_one_draft_failed(self) -> None:
+        class Stalling(FakeGitHub):
+            def create_advisory(self, body: dict[str, Any]) -> str:
+                if not self.created:
+                    self.created.append({})
+                    raise TimeoutError("read timed out")
+                return super().create_advisory(body)
+
+        gh = Stalling()
+        _, _, counts = self.run_file(gh)
+        self.assertEqual((counts["failed"], counts["filed"]), (1, 2))
+
     def test_closed_or_published_advisory_is_left_alone(self) -> None:
         body = self._host_body()
         self.state["on_record"] = [list(m) for m in adv.MARKER_RE.findall(body["description"])]
@@ -644,10 +672,9 @@ class FilingTest(unittest.TestCase):
             b["vulnerabilities"][0]["package"]["name"]: b["vulnerabilities"][0]["vulnerable_version_range"]
             for b in gh.created
         }
-        # Released with the host: no range yet. The npm SDK has a manifest version.
-        self.assertIsNone(ranges["bookclerk"])
-        self.assertIsNone(ranges["bookclerk-plugin-sdk"])
-        self.assertIsNotNone(ranges["@bookclerk/plugin-sdk"])
+        # Nothing is published yet, so no artifact gets a range, not even one
+        # whose manifest names a version.
+        self.assertEqual(set(ranges.values()), {None})
         for body in gh.created:
             self.assertNotIn("None", body["description"])
         self.assertIn("no published release", gh.created[0]["description"])
@@ -740,6 +767,18 @@ class FilingTest(unittest.TestCase):
         self.assertEqual(adv.call_candidates(groups, config, unshipped, set(), self.repo.root), [])
         plain = [_group("Cargo.lock", _record("RUSTSEC-2", "time", "crates.io", "0.2.0"))]
         self.assertEqual(adv.call_candidates(plain, config, EVIDENCE, set(), self.repo.root), [])
+
+    def test_open_drafts_still_get_call_analysis(self) -> None:
+        marker = "<!-- osv-advisory: RUSTSEC-1 other/bookclerk -->"
+        state = {"on_record": [["RUSTSEC-1", "other/bookclerk"], ["RUSTSEC-2", "other/bookclerk"]]}
+        state["drafts"] = [{"ghsa_id": "GHSA-a", "description": marker}]
+        self.assertEqual(adv.settled_markers(state), {("RUSTSEC-2", "other/bookclerk")})
+
+    def test_bundle_needed_only_for_web_ui_advisories(self) -> None:
+        smol = _record("GHSA-smol", "smol-toml", "npm", "1.0.1")
+        config = self.repo.config
+        self.assertFalse(adv.bundle_needed([_group("packages/plugin-sdk/package-lock.json", smol)], config))
+        self.assertTrue(adv.bundle_needed([_group("ui/package-lock.json", smol)], config))
 
 
 class UiImportGuardTest(unittest.TestCase):

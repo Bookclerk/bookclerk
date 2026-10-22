@@ -905,6 +905,7 @@ class GitHub:
         self.repo = repo
         self._token = token
         self._api = api
+        self._advisories: list[dict[str, Any]] | None = None
 
     def request(self, method: str, path: str, body: Any = None) -> tuple[int, Any, str]:
         """Sends one request.
@@ -1006,9 +1007,21 @@ class GitHub:
                 continue
             issues.update(extract_signatures(issue.get("body") or ""))
         advisories = set()
-        for advisory in self.paginate(f"/repos/{self.repo}/security-advisories"):
+        for advisory in self.advisories():
             advisories.update(extract_signatures(advisory.get("description") or ""))
         return issues, advisories
+
+    def advisories(self) -> list[dict[str, Any]]:
+        """Returns every repository advisory, listed once per client.
+
+        Returns:
+            Advisory objects of every state, as the API lists them.
+        """
+        if self._advisories is None:
+            self._advisories = [
+                a for a in self.paginate(f"/repos/{self.repo}/security-advisories") if isinstance(a, dict)
+            ]
+        return self._advisories
 
     def drafts(self) -> list[dict[str, Any]]:
         """Returns the repository advisories still in the draft state.
@@ -1018,11 +1031,7 @@ class GitHub:
             ``description``, ``vulnerabilities``, ...). Closed and published
             advisories are never rewritten, so they are left out.
         """
-        return [
-            a
-            for a in self.paginate(f"/repos/{self.repo}/security-advisories?state=draft")
-            if isinstance(a, dict) and a.get("state") == "draft"
-        ]
+        return [a for a in self.advisories() if a.get("state") == "draft"]
 
     def ensure_label(self) -> None:
         """Creates ``ISSUE_LABEL`` unless it exists.
@@ -1424,12 +1433,13 @@ def file_findings(
         bundle: Name of the sealed triage artifact.
 
     Returns:
-        Counts by outcome: ``advisory``, ``updated``, ``issue``, ``known``.
+        Counts by outcome: ``advisory``, ``updated``, ``failed`` (a refresh
+        GitHub refused), ``issue``, ``known``.
     """
     release_tag = gh.latest_release_tag()
     issue_sigs, advisory_sigs = gh.known_signatures()
     drafts = gh.drafts()
-    counts = {"advisory": 0, "updated": 0, "issue": 0, "known": 0}
+    counts = {"advisory": 0, "updated": 0, "failed": 0, "issue": 0, "known": 0}
     label_ready = False
     for finding in findings:
         boundary = boundaries.get(finding.target)
@@ -1447,7 +1457,13 @@ def file_findings(
                 if draft is None or new is None:
                     counts["known"] += 1
                     continue
-                gh.update_advisory(str(draft["ghsa_id"]), {"description": new})
+                try:
+                    gh.update_advisory(str(draft["ghsa_id"]), {"description": new})
+                except (OSError, ValueError):
+                    # A refused refresh (the draft was just closed, say) must
+                    # not hold back the crashes after it.
+                    counts["failed"] += 1
+                    continue
                 draft["description"] = new
                 counts["updated"] += 1
                 continue
@@ -1491,7 +1507,7 @@ def cmd_file(args: argparse.Namespace) -> int:
     counts = file_findings(gh, findings, boundaries, triage / "inputs", commit, run_url, args.bundle)
     unmapped = sum(1 for f in findings if f.target not in boundaries)
     print(
-        f"{len(findings)} finding(s): {counts['advisory']} draft advisories, {counts['updated']} drafts refreshed, {counts['issue']} issues, "
+        f"{len(findings)} finding(s): {counts['advisory']} draft advisories, {counts['updated']} drafts refreshed ({counts['failed']} refused), {counts['issue']} issues, "
         f"{counts['known']} already on record, {unmapped} from targets missing in boundaries.toml"
     )
     return 0

@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.error
 from pathlib import Path
 from types import ModuleType
 from typing import Any, ClassVar
@@ -386,7 +387,7 @@ class FileFindingsTest(unittest.TestCase):
     def test_before_a_release_crashes_still_get_draft_advisories(self) -> None:
         gh = FakeGitHub(None, [], [])
         counts = self._file(gh, [_finding(), _finding(signature="b" * 64, kind="asan:SEGV")])
-        self.assertEqual(counts, {"advisory": 2, "updated": 0, "issue": 0, "known": 0})
+        self.assertEqual(counts, {"advisory": 2, "updated": 0, "failed": 0, "issue": 0, "known": 0})
         self.assertEqual(gh.opened, [])
         self.assertEqual(gh.label_checks, 0)
         self.assertIsNone(gh.created[0]["vulnerabilities"][0]["vulnerable_version_range"])
@@ -394,7 +395,7 @@ class FileFindingsTest(unittest.TestCase):
     def test_after_a_release_product_crashes_get_draft_advisories(self) -> None:
         gh = FakeGitHub("v1.0.0", [], [])
         counts = self._file(gh, [_finding(), _finding(signature="b" * 64, oracle=True)])
-        self.assertEqual(counts, {"advisory": 1, "updated": 0, "issue": 1, "known": 0})
+        self.assertEqual(counts, {"advisory": 1, "updated": 0, "failed": 0, "issue": 1, "known": 0})
         self.assertEqual(gh.created[0]["vulnerabilities"][0]["vulnerable_version_range"], "<= v1.0.0")
 
     def test_known_signatures_are_skipped(self) -> None:
@@ -416,7 +417,7 @@ class FileFindingsTest(unittest.TestCase):
     def test_same_signature_twice_in_one_run_files_once(self) -> None:
         gh = FakeGitHub(None, [], [])
         counts = self._file(gh, [_finding(), _finding()])
-        self.assertEqual(counts, {"advisory": 1, "updated": 0, "issue": 0, "known": 1})
+        self.assertEqual(counts, {"advisory": 1, "updated": 0, "failed": 0, "issue": 0, "known": 1})
 
 
 class DraftRefreshTest(unittest.TestCase):
@@ -455,6 +456,18 @@ class DraftRefreshTest(unittest.TestCase):
         self.assertIn("`new`", body["description"])
         self.assertEqual(body["description"].count(triage.AUTO_BEGIN), 1)
         self.assertEqual(set(body), {"description"})
+
+    def test_refused_refresh_does_not_stop_later_crashes(self) -> None:
+        class Refusing(FakeGitHub):
+            def update_advisory(self, ghsa_id: str, body: dict[str, Any]) -> None:
+                raise urllib.error.HTTPError("u", 422, "closed meanwhile", None, None)  # type: ignore[arg-type]
+
+        (self.inputs / "a.bin").write_bytes(b"a different minimized input")
+        old = self._body()
+        gh = Refusing(None, [], [old], drafts=[{"ghsa_id": "GHSA-1", "state": "draft", "description": old}])
+        findings = [_finding(), _finding(signature="e" * 64)]
+        counts = triage.file_findings(gh, findings, _boundaries(), self.inputs, "c", "https://run", "b")
+        self.assertEqual((counts["failed"], counts["advisory"]), (1, 1))
 
     def test_closed_or_published_advisories_are_left_alone(self) -> None:
         (self.inputs / "a.bin").write_bytes(b"a different minimized input")

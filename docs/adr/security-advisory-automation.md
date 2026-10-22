@@ -68,8 +68,7 @@ are not.
    shipped code is affected, release or not: it proves the filing path end to
    end, and a fix landed before the first release never ships vulnerable.
    Until a release is published (prereleases count, drafts do not), a draft
-   for an artifact released with the host proposes no affected range and says
-   so; a maintainer closes it once the fix is on `main`, or sets the range
+   proposes no affected range and says so; a maintainer closes it once the fix is on `main`, or sets the range
    when a release ships the code. Failed fuzz oracles (bugs in a check, not
    vulnerabilities) become issues instead. The advisory workflow also writes a
    verdict report for every alert, sealed with the passphrase maintainers

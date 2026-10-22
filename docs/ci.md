@@ -657,7 +657,7 @@ gives every artifact of that lockfile a verdict:
 
 | Lockfile | Artifact | Affected when |
 | --- | --- | --- |
-| `Cargo.lock` | host binaries, platform and optional guests | the crate is in the shipped closure of the shipped crates in `cargo metadata` (normal edges, every target platform; dev and build dependencies and proc macros excluded, except `*-src` build dependencies, which compile vendored C into the binary), and, when the upstream advisory names vulnerable functions, one of them is in the DWARF of the fat-LTO release build of the shipped binaries (the method of OSV-Scanner's Rust call analysis) |
+| `Cargo.lock` | host binaries, platform and optional guests | the crate is in the shipped closure of the shipped crates in `cargo metadata` (normal edges, every target platform; dev and build dependencies and proc macros excluded, except `*-src` build dependencies, which compile vendored C into the binary; their own dependencies, such as `cc`, are build tooling and excluded), and, when the upstream advisory names vulnerable functions, one of them is in the DWARF of the fat-LTO release build of the shipped binaries (the method of OSV-Scanner's Rust call analysis) |
 | `Cargo.lock` | Rust plugin SDK | the crate is in the SDK's shipped closure (a library: no binary to analyze) |
 | `ui/package-lock.json` | web UI, served by `bookclerkd` | a production dependency with code in the production bundle (`vite build --sourcemap`, then the source maps); if the bundle cannot be built, any production dependency. A test keeps the UI from importing package files as `?url`/`?raw` assets or wasm, which source maps would not show |
 | `packages/plugin-sdk/package-lock.json` | `@bookclerk/plugin-sdk` | a production dependency (not `dev` in the lockfile) |
@@ -665,9 +665,18 @@ gives every artifact of that lockfile a verdict:
 | `packages/plugin-sdk-python/` | `bookclerk-plugin-sdk` (PyPI) | never by a dependency: the SDK has no runtime dependencies, and both the test and the workflow fail if `[project].dependencies` or a non-dev extra gains one before its closure is resolved |
 | anything else | none | never: examples, fuzzing, scripts and dev dependencies stay an alert plus the remediation bump |
 
-The call-analysis build takes hours, so it runs only when an advisory with function data for a shipped crate has no draft yet, and
-then only on the weekly scheduled scan or a manual run (`call-analysis` input
-forces it). On other runs such an advisory waits as "awaiting call analysis".
+The call-analysis build takes hours, so it runs only when an advisory with
+function data for a shipped crate has no advisory yet or only an open draft
+(which the analysis then refreshes), and then only on the weekly scheduled
+scan or a manual run (`call-analysis` input forces it). On other runs such an
+advisory waits as "awaiting call analysis". Runs queue one at a time, and a
+newer run replaces one still waiting, so a scheduled run queued behind
+another can give way to a push's run; its call analysis then waits a week,
+or a manual run with `call-analysis` does it now. An open draft whose
+advisory the analysis (or the web bundle) later shows unaffected is left as
+is and reported as "open draft, now not affected" for a maintainer to close.
+The web UI bundle is built only when an open advisory is on
+`ui/package-lock.json`.
 A build that fails, reports no executables, or leaves a binary with too few
 functions or no `main` in its DWARF fails closed: the advisory is filed on
 the closure alone. An advisory a maintainer judges unaffected is closed as a
@@ -679,8 +688,8 @@ filed twice and a draft a maintainer closed is not filed again), the locked
 and first fixed versions, CVSS (or the highest GHSA severity) and CWE ids
 from the upstream records and their aliases, the verdict and its evidence
 (saying so when reachability is unproven), and a proposed range up to the
-highest release tag (or, for the TypeScript SDK, its published version) for a
-maintainer to confirm. A later run that finds the same advisory never files
+highest release tag (or, for the TypeScript and Python SDKs, the version in
+their manifest) for a maintainer to confirm. A later run that finds the same advisory never files
 a second draft: while the first is still a draft it rewrites only the
 automated part of its description (between the
 `<!-- bookclerk-auto: begin … -->` and `<!-- bookclerk-auto: end -->`
@@ -692,10 +701,9 @@ nothing is rewritten when only the "Last seen" line would change; closed and
 published advisories are never touched. One run files at most ten drafts
 (and updates at most ten); a draft GitHub
 refuses is reported and fails the run without holding back the others.
-Before the first release, artifacts released with the host (host, web UI,
-Rust SDK, Worker) get no proposed range: the draft says so, and a maintainer
-either closes it once the fix is on `main` or sets the range when a release
-ships the code.
+Before the first release no draft proposes a range (nothing is published
+yet): the draft says so, and a maintainer either closes it once the fix is
+on `main` or sets the range when a release ships the code.
 
 Three jobs keep secrets away from third-party build code:
 

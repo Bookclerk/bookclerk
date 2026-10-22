@@ -513,7 +513,7 @@ class GitHub(triage.GitHub):
         not affecting Bookclerk is not filed again.
         """
         found: set[tuple[str, str]] = set()
-        for advisory in self._items(f"/repos/{self.repo}/security-advisories"):
+        for advisory in self.advisories():
             found.update(MARKER_RE.findall(advisory.get("description") or ""))
         return found
 
@@ -626,7 +626,9 @@ def cargo_closure(metadata: dict[str, Any], roots: set[str]) -> set[tuple[str, s
     Normal edges are followed. Dev dependencies never ship. Build
     dependencies run at build time, so they are skipped too, except crates
     named `*-src` (`openssl-src` and the like), which exist to compile
-    vendored C that the dependent `-sys` crate links in. Proc-macro crates
+    vendored C that the dependent `-sys` crate links in; their own
+    dependencies (`cc` and other build tooling) are not followed, since
+    only the C they compile is linked. Proc-macro crates
     and what only they pull in run in the compiler and are skipped.
     `cargo metadata` without `--filter-platform` resolves every target
     platform, and its features are the union across the workspace.
@@ -645,17 +647,25 @@ def cargo_closure(metadata: dict[str, Any], roots: set[str]) -> set[tuple[str, s
         return any("proc-macro" in t.get("kind", []) for t in packages[pkg_id].get("targets", []))
 
     seen: set[str] = set()
-    stack = [r for r in roots if r in packages]
+    # Reached only through a build edge into a `*-src` crate: shipped, but
+    # its own dependencies are build tooling.
+    leaves: set[str] = set()
+    stack = [(r, True) for r in roots if r in packages]
     while stack:
-        pkg_id = stack.pop()
-        if pkg_id in seen or is_proc_macro(pkg_id):
+        pkg_id, follow = stack.pop()
+        if is_proc_macro(pkg_id) or (pkg_id in seen and (follow is False or pkg_id not in leaves)):
             continue
         seen.add(pkg_id)
+        if not follow:
+            leaves.add(pkg_id)
+            continue
+        leaves.discard(pkg_id)
         for dep in nodes.get(pkg_id, {}).get("deps", []):
             kinds = {k.get("kind") for k in dep.get("dep_kinds") or [{"kind": None}]}
-            vendored = "build" in kinds and packages.get(dep["pkg"], {}).get("name", "").endswith("-src")
-            if None in kinds or vendored:
-                stack.append(dep["pkg"])
+            if None in kinds:
+                stack.append((dep["pkg"], True))
+            elif "build" in kinds and packages.get(dep["pkg"], {}).get("name", "").endswith("-src"):
+                stack.append((dep["pkg"], False))
     return {(packages[i]["name"], packages[i]["version"]) for i in seen}
 
 
@@ -814,13 +824,15 @@ def call_candidates(
 
     An advisory qualifies when it affects a package of a call-analysis
     entry's shipped closure, names vulnerable functions for it, and that
-    artifact has no advisory on record for it yet.
+    artifact has no closed or published advisory for it (an open draft
+    still qualifies, so the analysis can refresh it).
 
     Args:
         groups: Open advisory groups.
         config: Shipped-artifact map.
         evidence: Output of `collect_evidence`.
-        on_record: Advisory markers already filed.
+        on_record: Markers of advisories that are closed or published
+            (`settled_markers`).
         root: Repository root.
 
     Returns:
@@ -842,6 +854,32 @@ def call_candidates(
                 out.append(group.primary)
                 break
     return out
+
+
+def settled_markers(state: dict[str, Any]) -> set[tuple[str, str]]:
+    """Returns the markers of advisories on record that are no longer drafts.
+
+    Args:
+        state: Output of `fetch`.
+
+    Returns:
+        `(upstream id, advisory key)` pairs of closed and published advisories.
+    """
+    open_drafts = {m for d in state.get("drafts", []) for m in MARKER_RE.findall(str(d.get("description") or ""))}
+    return {tuple(m) for m in state.get("on_record", [])} - open_drafts
+
+
+def bundle_needed(groups: list[Group], config: Config) -> bool:
+    """Says whether any open advisory needs the web UI bundle's contents.
+
+    Args:
+        groups: Open advisory groups.
+        config: Shipped-artifact map.
+
+    Returns:
+        True when an advisory is on a lockfile with `npm-bundle` evidence.
+    """
+    return any(e.evidence == "npm-bundle" for g in groups for e in config.for_lockfile(g.lockfile))
 
 
 def plan_call_analysis(candidates: list[str], event: str, force: bool) -> str:
@@ -882,15 +920,18 @@ def cmd_plan(args: argparse.Namespace) -> int:
         print(f"could not collect evidence: {err}", file=sys.stderr)
         return 1
     groups = [Group.from_json(g) for g in state["groups"]]
-    on_record = {tuple(m) for m in state.get("on_record", [])}
-    candidates = call_candidates(groups, config, evidence, on_record, ROOT)
+    candidates = call_candidates(groups, config, evidence, settled_markers(state), ROOT)
     calls = plan_call_analysis(candidates, args.event, args.force_call_analysis)
+    bundle = bundle_needed(groups, config)
     out = {"entries": evidence, "call_analysis": calls}
     Path(args.out).write_text(json.dumps(out, indent=1, sort_keys=True), encoding="utf-8")
-    print(f"shipped entries: {len(evidence)}; call analysis: {calls}")
+    print(
+        f"shipped entries: {len(evidence)}; call analysis: {calls}; web bundle: {'needed' if bundle else 'not needed'}"
+    )
     if args.github_output:
         with Path(args.github_output).open("a", encoding="utf-8") as fh:
             fh.write(f"call-analysis={'true' if calls == 'run' else 'false'}\n")
+            fh.write(f"bundle={'true' if bundle else 'false'}\n")
     return 0
 
 
@@ -1388,9 +1429,10 @@ def _metas(record: dict[str, Any]) -> list[dict[str, Any]]:
 def severity_fields(record: dict[str, Any]) -> dict[str, Any]:
     """Copies the upstream severity for the advisory body.
 
-    A CVSS v3 vector is preferred (from the GHSA record when there is one,
-    since GitHub reviewed it), then the highest GHSA severity level, then
-    medium.
+    A CVSS 3.1 vector is preferred (from the GHSA record when there is one,
+    since GitHub reviewed it; other CVSS versions are not sent, as the
+    advisory API may refuse them), then the highest GHSA severity level,
+    then medium.
 
     Args:
         record: The merged record.
@@ -1404,7 +1446,7 @@ def severity_fields(record: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(item, dict):
                 continue
             score = item.get("score")
-            if item.get("type") == "CVSS_V3" and isinstance(score, str) and score.startswith("CVSS:3."):
+            if item.get("type") == "CVSS_V3" and isinstance(score, str) and score.startswith("CVSS:3.1/"):
                 return {"cvss_vector_string": score}
     levels = []
     for meta in metas:
@@ -1434,12 +1476,16 @@ def artifact_version(artifact: Artifact, release_tag: str | None, root: Path) ->
         root: Repository root.
 
     Returns:
-        The release tag (None before the first release: no range is
-        proposed), or the version in the artifact's manifest.
+        None before the first release (no range is proposed), otherwise the
+        release tag or the version in the artifact's manifest.
 
     Raises:
         ValueError: The manifest has no version.
     """
+    if release_tag is None:
+        # Nothing is published before the first release, so no version is
+        # affected yet, whatever a manifest says.
+        return None
     if artifact.version == "release-tag":
         return release_tag
     path = root / artifact.version
@@ -1723,6 +1769,11 @@ def file_decisions(
     counts = {"filed": 0, "updated": 0, "on record": 0, "no token": 0, "capped": 0, "failed": 0}
     for decision in decisions:
         if decision.verdict not in AFFECTED:
+            if decision.verdict in (NOT_CALLED, TREE_SHAKEN) and draft_for(
+                drafts, decision.group, decision.entry.artifact.advisory_key
+            ):
+                # The draft is left as is; the report tells a maintainer it may be closed.
+                decision.outcome = "open draft, now not affected"
             continue
         artifact = decision.entry.artifact
         key = artifact.advisory_key
@@ -1740,7 +1791,7 @@ def file_decisions(
                     elif changes:
                         gh.update_advisory(draft["ghsa_id"], changes)
                         decision.outcome = "updated"
-                except (urllib.error.URLError, ValueError, KeyError, TypeError):
+                except (OSError, ValueError, KeyError, TypeError):
                     decision.outcome = "failed"
         elif gh is None:
             decision.outcome = "no token"
@@ -1750,7 +1801,7 @@ def file_decisions(
             try:
                 version = artifact_version(decision.entry.artifact, release_tag, root)
                 gh.create_advisory(render_advisory(decision, analysis, release_tag, version, commit, run_url))
-            except (urllib.error.URLError, ValueError, KeyError, TypeError):
+            except (OSError, ValueError, KeyError, TypeError):
                 decision.outcome = "failed"
             else:
                 on_record.update((i, key) for i in decision.group.ids)

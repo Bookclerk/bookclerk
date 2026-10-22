@@ -66,6 +66,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       call-analysis: ${{ steps.plan.outputs.call-analysis }}
+      bundle: ${{ steps.plan.outputs.bundle }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -149,14 +150,23 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node
+        if: needs.fetch.outputs.bundle == 'true'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
 
+      # Only when an open advisory is on the web UI's lockfile; otherwise an
+      # empty listing, which no verdict reads.
       - name: List the packages in the web UI bundle
+        env:
+          BUNDLE: ${{ needs.fetch.outputs.bundle }}
         run: |
           mkdir -p "$RUNNER_TEMP/osv-advisories-analysis"
-          python3 scripts/osv-advisories.py bundle --out "$RUNNER_TEMP/osv-advisories-analysis/bundle.json"
+          if [ "$BUNDLE" = true ]; then
+            python3 scripts/osv-advisories.py bundle --out "$RUNNER_TEMP/osv-advisories-analysis/bundle.json"
+          else
+            echo '{}' > "$RUNNER_TEMP/osv-advisories-analysis/bundle.json"
+          fi
 
       - name: Install Rust toolchain
         if: needs.fetch.outputs.call-analysis == 'true'
