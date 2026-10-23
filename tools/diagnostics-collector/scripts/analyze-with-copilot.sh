@@ -101,7 +101,8 @@ $(cat "$DATA_FILE")
 UNTRUSTED_DATA_END
 EOF
 
-# Non-interactive Copilot CLI. Allow GitHub tools for issue creation only when supported.
+# Non-interactive Copilot CLI, limited to GitHub tools for issue creation. The
+# prompt carries untrusted report data, so never widen this to all tools.
 # Auth: prefer GITHUB_TOKEN when the workflow grants copilot-requests: write
 # (GitHub Agentic Workflows / org billing). COPILOT_GITHUB_TOKEN is an optional
 # personal-repo PAT fallback — when set it overrides the workflow token.
@@ -118,16 +119,17 @@ fi
 export GH_TOKEN
 
 set +e
-copilot --yolo -p "$(cat "$PROMPT_FILE")" \
+# No --yolo / --allow-all*: in prompt mode a tool outside these patterns is
+# refused, so the model can file and look up issues but not run other
+# commands, write files or fetch URLs.
+copilot -p "$(cat "$PROMPT_FILE")" \
   --allow-tool 'github' \
-  --allow-tool 'shell(gh)' \
+  --allow-tool 'shell(gh issue create)' \
+  --allow-tool 'shell(gh issue list)' \
+  --allow-tool 'shell(gh label create)' \
+  --deny-tool 'write' \
   2>/tmp/copilot-diag.err
 status=$?
-if [[ $status -ne 0 ]]; then
-  copilot --yolo -p "$(cat "$PROMPT_FILE")" --allow-all-tools \
-    2>>/tmp/copilot-diag.err
-  status=$?
-fi
 set -e
 
 if [[ $status -ne 0 ]]; then
@@ -145,12 +147,10 @@ if [[ $status -ne 0 ]]; then
     echo "### Report IDs"
     jq -r '.[] | "- `\(.report_id // "unknown")`"' "$DATA_FILE" 2>/dev/null || true
     echo
-    echo "Copilot CLI could not complete analysis in CI. Raw batch (already redacted client-side):"
+    echo "Copilot CLI could not complete analysis in CI. Review the reports"
+    echo "by ID in the collector's storage; report contents are not posted here."
     echo
-    echo '```json'
-    head -c 50000 "$DATA_FILE"
-    echo
-    echo '```'
+    echo "Workflow run: ${GITHUB_SERVER_URL:-https://github.com}/${REPO}/actions/runs/${GITHUB_RUN_ID:-unknown}"
   } | gh issue create --title "[diagnostics] unattended batch (${count})" --label diagnostics --body-file -
 fi
 
