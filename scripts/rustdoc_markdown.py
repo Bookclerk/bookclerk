@@ -764,6 +764,37 @@ class Page:
         return "::".join((self.crate, *self.path))
 
 
+def _homes(crate: Crate, root: Json) -> dict[int, tuple[int, tuple[str, ...]]]:
+    """Map each item defined in a public module to that module.
+
+    A module counts when it is reachable from the root through public
+    ``mod`` declarations alone; an item is then documented on its own
+    module's page even when a glob also re-exports it elsewhere.
+
+    Args:
+        crate: The crate.
+        root: Its root module item.
+
+    Returns:
+        Item id -> (id of the public module that defines it, that module's
+        path from the crate root).
+    """
+    out: dict[int, tuple[int, tuple[str, ...]]] = {}
+    queue: list[tuple[tuple[str, ...], Json]] = [((), root)]
+    seen = {root["id"]}
+    while queue:
+        path, module = queue.pop(0)
+        for item_id in module["inner"]["module"]["items"]:
+            item = crate.item(item_id)
+            if item is None or item.get("visibility") != "public" or kind_of(item) == "use":
+                continue
+            out.setdefault(item_id, (module["id"], path))
+            if kind_of(item) == "module" and item_id not in seen:
+                seen.add(item_id)
+                queue.append(((*path, item["name"]), item))
+    return out
+
+
 class _PageWalk:
     """State of one breadth-first walk over a crate's public modules.
 
@@ -778,6 +809,7 @@ class _PageWalk:
         self.queue: list[tuple[tuple[str, ...], Json]] = [((), root)]
         self.seen_modules: set[int] = {root["id"]}
         self.placed: set[int] = set()
+        self.home = _homes(crate, root)
 
     def page(self, path: tuple[str, ...], module: Json) -> Page:
         """Fill the page of one module, queueing its public submodules.
@@ -810,6 +842,13 @@ class _PageWalk:
                 page.entries.setdefault("module", []).append(Entry(name, item))
             return
         if kind not in SECTION_KINDS or item["id"] in self.placed or (kind, name) in names:
+            return
+        home = self.home.get(item["id"])
+        if home is not None and home[0] != page.module["id"]:
+            # Its own public module documents it (`pub mod types; pub use
+            # types::*;`): list it here as a re-export of that page.
+            names.add((kind, name))
+            page.reexports.append(ReExport(name, item["id"], "::".join((*home[1], item["name"]))))
             return
         self.placed.add(item["id"])
         names.add((kind, name))

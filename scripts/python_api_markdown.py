@@ -279,7 +279,7 @@ def _definitions(tree: ast.Module) -> dict[str, ast.AST]:
             for t in node.targets:
                 if isinstance(t, ast.Name):
                     out[t.id] = node
-        elif isinstance(node, getattr(ast, "TypeAlias", ())):
+        elif isinstance(node, _TYPE_ALIAS):
             out[node.name.id] = node
     return out
 
@@ -314,9 +314,39 @@ def _is_public_constant(name: str, node: ast.AST) -> bool:
         node: The assignment.
 
     Returns:
-        True for annotated assignments and upper-case names.
+        True for annotated assignments, upper-case names, ``type`` aliases,
+        and CapWords names bound to a type expression (``DbValue =
+        Union[...]``, ``Id = str | int``, ``T = TypeVar("T")``).
     """
-    return isinstance(node, ast.AnnAssign) or name.isupper() or isinstance(node, getattr(ast, "TypeAlias", ()))
+    if isinstance(node, ast.AnnAssign) or name.isupper() or isinstance(node, _TYPE_ALIAS):
+        return True
+    return name[:1].isupper() and isinstance(node, ast.Assign) and _is_type_expression(node.value)
+
+
+#: Calls that create a type rather than a value.
+_TYPE_FACTORIES = frozenset({"TypeVar", "ParamSpec", "TypeVarTuple", "NewType", "TypeAliasType"})
+
+
+def _is_type_expression(value: ast.expr) -> bool:
+    """Tell whether an assigned value reads as a type alias.
+
+    Args:
+        value: The right-hand side.
+
+    Returns:
+        True for a subscripted generic (``Union[...]``, ``dict[str, int]``),
+        a ``|`` union of such or of names, and a call to a type factory
+        such as ``TypeVar``.
+    """
+    if isinstance(value, ast.Subscript):
+        return True
+    if isinstance(value, ast.BinOp) and isinstance(value.op, ast.BitOr):
+        return all(isinstance(side, (ast.Name, ast.Attribute, ast.Subscript, ast.Constant, ast.BinOp)) for side in (value.left, value.right))
+    if isinstance(value, ast.Call):
+        func = value.func
+        name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+        return name in _TYPE_FACTORIES
+    return False
 
 
 class Package:

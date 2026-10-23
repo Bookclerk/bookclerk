@@ -57,7 +57,7 @@ def demo_crate() -> dict[str, Any]:
         "0": item(
             0,
             "demo",
-            {"module": {"is_crate": True, "items": [1, 2, 3, 4, 5, 40, 41], "is_stripped": False}},
+            {"module": {"is_crate": True, "items": [1, 2, 3, 4, 5, 40, 41, 42], "is_stripped": False}},
             docs="Demo crate.\n\n# Overview\n\nBuild a [`Mux`] with [`open`].",
             links={"`Mux`": 10, "`open`": 20},
         ),
@@ -106,6 +106,8 @@ def demo_crate() -> dict[str, Any]:
         "32": {**item(32, "decode", fn([["self", {"borrowed_ref": {"lifetime": None, "is_mutable": False, "type": {"generic": "Self"}}}]], output={"primitive": "bool"})), "visibility": "default"},
         # pub use other::*; (a module outside this crate's index)
         "41": item(41, None, {"use": {"source": "other", "name": "other", "id": 60, "is_glob": True}}),
+        # pub use proto::*; (proto is also a public module)
+        "42": item(42, None, {"use": {"source": "proto", "name": "proto", "id": 3, "is_glob": True}}),
         "40": item(40, "LIMIT", {"constant": {"type": {"primitive": "usize"}, "const": {"expr": "64", "value": None, "is_literal": True}}}),
     }
     # `pub use` of an item defined in this crate under a private module: the
@@ -264,6 +266,14 @@ class RenderTest(unittest.TestCase):
         page = self.pages["demo/index.md"]
         order = [page.index(f"\n## {s}\n") for s in ("Re-exports", "Modules", "Structs", "Enums", "Functions", "Constants")]
         self.assertEqual(order, sorted(order))
+
+    def test_glob_of_a_public_module_links_to_its_page(self) -> None:
+        root = self.pages["demo/index.md"]
+        # `pub use proto::*` lists the items; proto's own page documents them.
+        self.assertIn("- [`proto::Frame`](proto.md#frame)\n- [`proto::Codec`](proto.md#codec)", root)
+        self.assertNotIn("### Frame", root)
+        self.assertIn("### Frame", self.pages["demo/proto.md"])
+        self.assertIn("### Codec", self.pages["demo/proto.md"])
 
     def test_trait_page(self) -> None:
         page = self.pages["demo/proto.md"]

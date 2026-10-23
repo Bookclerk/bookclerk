@@ -164,6 +164,20 @@ class PackageTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "__all__ is not built from string literals"):
                 pm.render(Path(tmp), ["pkg"])
 
+    def test_type_aliases_without_all_are_public(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="python-api-markdown-") as tmp:
+            (Path(tmp) / "pkg").mkdir()
+            (Path(tmp) / "pkg/__init__.py").write_text(
+                "from typing import Callable, TypeVar, Union\n"
+                "DbValue = Union[int, str]\nId = str | int\nT = TypeVar('T')\n"
+                "Hook = Callable[[int], None]\nMode = 3\nhelper = dict()\n"
+            )
+            page = dict(pm.render(Path(tmp), ["pkg"]))["pkg.md"]
+            for name in ("DbValue", "Id", "T", "Hook"):
+                self.assertIn(f"### {name}\n", page)
+            self.assertNotIn("### Mode", page)
+            self.assertNotIn("### helper", page)
+
     def test_unreadable_all_change_is_an_error(self) -> None:
         with tempfile.TemporaryDirectory(prefix="python-api-markdown-") as tmp:
             (Path(tmp) / "pkg").mkdir()
