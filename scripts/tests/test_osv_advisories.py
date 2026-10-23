@@ -219,6 +219,31 @@ class RepositoryMapTest(unittest.TestCase):
             self.assertIn(key, self.config.artifacts, key)
             artifact = self.config.artifacts[key]
             self.assertEqual((artifact.ecosystem, artifact.package), (spec["ecosystem"], spec["package"]), key)
+            shipped = tomllib.loads((ROOT / "shipped-artifacts.toml").read_text(encoding="utf-8"))
+            self.assertEqual(
+                shipped["artifacts"][key].get("crate_manifest"), spec.get("crate_manifest"), f"{key} crate_manifest"
+            )
+
+    def test_unpublished_crate_keeps_the_declared_ecosystem(self) -> None:
+        # bookclerk-plugin-sdk has `publish = false` today; this flips to
+        # `rust` (and this test needs updating) once it can be published.
+        sdk = self.config.artifacts["rust-sdk"]
+        self.assertEqual((sdk.ecosystem, sdk.package_ecosystem), ("other", "other"))
+
+    def test_publishable_crate_reports_rust(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Cargo.toml").write_text('[workspace.package]\npublish = false\n', encoding="utf-8")
+            for name, publish in (("open", ""), ("closed", "publish = false\n"), ("listed", 'publish = ["crates-io"]\n'),
+                                  ("inherit", "publish.workspace = true\n"), ("none", "publish = []\n")):
+                (root / name).mkdir()
+                (root / name / "Cargo.toml").write_text(f'[package]\nname = "{name}"\n{publish}', encoding="utf-8")
+            got = {n: adv.triage.published_ecosystem("other", f"{n}/Cargo.toml", root)
+                   for n in ("open", "closed", "listed", "inherit", "none")}
+            self.assertEqual(
+                got, {"open": "rust", "closed": "other", "listed": "rust", "inherit": "other", "none": "other"}
+            )
+            self.assertEqual(adv.triage.published_ecosystem("npm", "", root), "npm")
 
     def test_python_sdk_has_no_runtime_dependencies(self) -> None:
         # Bookclerk's Python SDK ships with zero runtime dependencies, so no
@@ -532,7 +557,7 @@ class SeverityTest(unittest.TestCase):
         )
         merged = adv.with_alias_meta(rustsec, [ghsa])
         self.assertEqual(adv.severity_fields(merged), {"severity": "critical"})
-        self.assertEqual(adv.cwe_ids(merged), ["CWE-787"])
+        self.assertEqual(adv.cwe_ids(merged), ["CWE-1395", "CWE-787"])
         cvss = dict(ghsa, severity=[{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}])
         self.assertIn("cvss_vector_string", adv.severity_fields(adv.with_alias_meta(rustsec, [cvss])))
         self.assertEqual(adv.severity_fields(rustsec), {"severity": "medium"})
@@ -544,7 +569,45 @@ class SeverityTest(unittest.TestCase):
             [("RUSTSEC-9", "Cargo.lock", "code-scanning"), ("GHSA-9", "Cargo.lock", "dependabot")],
             {"RUSTSEC-9": adv.with_alias_meta(rustsec, []), "GHSA-9": adv.with_alias_meta(ghsa, [])},
         )
-        self.assertEqual(adv.cwe_ids(groups[0].record), ["CWE-787"])
+        self.assertEqual(adv.cwe_ids(groups[0].record), ["CWE-1395", "CWE-787"])
+
+
+class RustSecFieldsTest(unittest.TestCase):
+    def _rustsec(self, **specific: Any) -> dict[str, Any]:
+        record = _record("RUSTSEC-7", "zip", "crates.io", "9.0.0")
+        record["affected"][0]["database_specific"] = specific
+        return record
+
+    def test_categories_and_informational_map_to_cwes(self) -> None:
+        record = self._rustsec(categories=["privilege-escalation", "crypto-failure", "unknown-category"])
+        self.assertEqual(adv.cwe_ids(record), ["CWE-1395", "CWE-269", "CWE-327"])
+        unmaintained = self._rustsec(categories=[], informational="unmaintained")
+        self.assertEqual(adv.cwe_ids(unmaintained), ["CWE-1104", "CWE-1395"])
+        self.assertEqual(adv.cwe_ids(_record("GHSA-1", "zip", "crates.io", "9.0.0")), ["CWE-1395"])
+
+    def test_rustsec_vector_then_informational_low(self) -> None:
+        vector = "CVSS:3.1/AV:L/AC:L/PR:L/UI:R/S:U/C:H/I:H/A:H"
+        self.assertEqual(adv.severity_fields(self._rustsec(cvss=vector)), {"cvss_vector_string": vector})
+        # Only CVSS 3.1 vectors are sent.
+        old = self._rustsec(cvss="CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H")
+        self.assertEqual(adv.severity_fields(old), {"severity": "medium"})
+        unmaintained = self._rustsec(informational="unmaintained")
+        self.assertTrue(adv.informational(unmaintained))
+        self.assertEqual(adv.severity_fields(unmaintained), {"severity": "low"})
+        # A GHSA level outranks the informational default.
+        leveled = adv.with_alias_meta(
+            unmaintained, [_record("GHSA-2", "zip", "crates.io", "9.0.0", database_specific={"severity": "HIGH"})]
+        )
+        self.assertEqual(adv.severity_fields(leveled), {"severity": "high"})
+
+    def test_mixed_records_are_not_informational(self) -> None:
+        mixed = self._rustsec(informational="unmaintained")
+        mixed["affected"].append(
+            {"package": {"ecosystem": "crates.io", "name": "zip"}, "database_specific": {"categories": []}}
+        )
+        self.assertFalse(adv.informational(mixed))
+        self.assertFalse(adv.informational(_record("GHSA-3", "zip", "crates.io", "9.0.0")))
+        self.assertEqual(adv.severity_fields(mixed), {"severity": "medium"})
 
 
 class FilingTest(unittest.TestCase):
@@ -630,6 +693,18 @@ class FilingTest(unittest.TestCase):
         self.assertEqual(changes["vulnerabilities"][0]["vulnerable_version_range"], "<= v0.2.0")
         self.assertIn("v0.2.0", changes["description"])
 
+    def test_range_fill_survives_an_ecosystem_change(self) -> None:
+        # A draft filed while the crate was unpublished names `other`; the
+        # fresh body says `rust` once it can be published.
+        body = {"description": "x", "vulnerabilities": [
+            {"package": {"ecosystem": "rust", "name": "bookclerk-plugin-sdk"}, "vulnerable_version_range": "<= v0.2.0"}
+        ]}
+        draft = {"description": "x", "vulnerabilities": [
+            {"package": {"ecosystem": "other", "name": "bookclerk-plugin-sdk"}, "vulnerable_version_range": None}
+        ]}
+        changes = adv.triage.draft_changes(draft, body)
+        self.assertEqual(changes["vulnerabilities"][0]["vulnerable_version_range"], "<= v0.2.0")
+
     def test_open_draft_no_longer_affected_is_reported(self) -> None:
         draft = self._as_draft(self._host_body())
         self.state["on_record"] = [list(m) for m in adv.MARKER_RE.findall(draft["description"])]
@@ -694,7 +769,7 @@ class FilingTest(unittest.TestCase):
         self.assertEqual(host["vulnerabilities"][0]["vulnerable_version_range"], "<= v0.2.0")
         self.assertEqual(host["cvss_vector_string"], "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N")
         self.assertNotIn("severity", host)
-        self.assertEqual(host["cwe_ids"], ["CWE-400"])
+        self.assertEqual(host["cwe_ids"], ["CWE-1395", "CWE-400"])
         self.assertIn("<!-- osv-advisory: RUSTSEC-2 other/bookclerk -->", host["description"])
         self.assertIn("<!-- osv-advisory: GHSA-time other/bookclerk -->", host["description"])
         self.assertEqual(

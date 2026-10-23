@@ -29,7 +29,10 @@ not_shipped = [
 # affected-package entry. `version` is the top of the proposed affected
 # range: `release-tag` for artifacts released with the host (named by the
 # newest published release tag), or a manifest whose `version` field is the
-# package's published version.
+# package's published version. `crate_manifest` names the `Cargo.toml` of a
+# crate meant for crates.io: once that crate can be published (its `publish`
+# is no longer `false`), the affected-package entry says `rust` instead of
+# `ecosystem` on its own; markers keep `ecosystem`, so open drafts still match.
 [artifacts.bookclerk]
 title = "Bookclerk host binaries, platform and optional guests, web UI"
 ecosystem = "other"
@@ -40,6 +43,7 @@ version = "release-tag"
 title = "Rust plugin SDK (bookclerk-plugin-sdk crate)"
 ecosystem = "other"
 package = "bookclerk-plugin-sdk"
+crate_manifest = "crates/bookclerk-plugin-sdk/Cargo.toml"
 version = "release-tag"
 
 [artifacts.plugin-sdk-npm]

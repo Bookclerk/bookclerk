@@ -18,6 +18,8 @@
 
 # Shipped artifacts a crash can affect. `ecosystem` and `package` go into the
 # advisory's affected-package entry; neither is on a public registry yet.
+# `crate_manifest` switches the entry to `rust` once that crate can be
+# published (see shipped-artifacts.toml).
 # Keys and packages must match shipped-artifacts.toml, which declares every
 # shipped artifact (scripts/tests/test_osv_advisories.py).
 [artifacts.bookclerk]
@@ -30,6 +32,7 @@ package = "bookclerk"
 # The Rust plugin SDK third-party plugins build against.
 ecosystem = "other"
 package = "bookclerk-plugin-sdk"
+crate_manifest = "crates/bookclerk-plugin-sdk/Cargo.toml"
 
 [targets.sql_parse]
 crate = "bookclerk-plugin-abi"
