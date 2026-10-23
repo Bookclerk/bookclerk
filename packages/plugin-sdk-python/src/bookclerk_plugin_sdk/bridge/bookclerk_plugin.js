@@ -1408,7 +1408,7 @@ async function canonicalExecuteRequestHash(request) {
     requestHash: "",
     deadlineUnixMs: 0
   };
-  const bytes = encodeExecuteRequest(canonical);
+  const bytes = new Uint8Array(encodeExecuteRequest(canonical));
   if (globalThis.crypto?.subtle) {
     const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
     return hexBytes(new Uint8Array(digest));

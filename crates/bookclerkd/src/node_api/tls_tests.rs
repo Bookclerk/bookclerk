@@ -170,7 +170,7 @@ fn localhost_tls() -> (
 
     let generated = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
     let cert = generated.cert.der().clone();
-    let key = PrivatePkcs8KeyDer::from(generated.key_pair.serialize_der());
+    let key = PrivatePkcs8KeyDer::from(generated.signing_key.serialize_der());
     let mut server = ServerConfig::builder_with_provider(super::provider())
         .with_safe_default_protocol_versions()
         .unwrap()
