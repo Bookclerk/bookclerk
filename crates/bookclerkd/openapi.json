@@ -97,6 +97,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -117,6 +127,16 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -184,6 +204,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -226,6 +256,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -254,6 +294,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -300,6 +350,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -356,11 +416,21 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -405,11 +475,21 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -478,6 +558,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -543,6 +633,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -615,6 +715,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -654,6 +764,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -718,7 +838,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -733,6 +853,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -792,7 +922,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -807,6 +937,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -883,7 +1023,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -898,6 +1038,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -956,7 +1106,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -971,6 +1121,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -1029,7 +1189,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1044,6 +1204,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -1596,6 +1766,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1662,6 +1842,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1718,7 +1908,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1743,6 +1933,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -1809,6 +2009,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -1889,6 +2099,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1952,6 +2172,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -2039,6 +2269,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2095,7 +2335,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2120,6 +2360,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -2179,7 +2429,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2204,6 +2454,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -2263,7 +2523,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2288,6 +2548,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -2347,7 +2617,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2372,6 +2642,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -2447,7 +2727,7 @@
             }
           },
           "403": {
-            "description": "The caller may not scan these accounts.",
+            "description": "The caller may not scan these accounts. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2482,6 +2762,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ScanPlanResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -2557,7 +2847,7 @@
             }
           },
           "403": {
-            "description": "The caller may not acquire for these accounts.",
+            "description": "The caller may not acquire for these accounts. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2602,6 +2892,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -2660,7 +2960,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2705,6 +3005,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -2753,7 +3063,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2768,6 +3078,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -2839,6 +3159,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2897,7 +3227,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2912,6 +3242,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -2983,6 +3323,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3041,7 +3391,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3056,6 +3406,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -3127,6 +3487,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3185,7 +3555,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3220,6 +3590,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -3284,7 +3664,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3319,6 +3699,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -3411,6 +3801,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3481,7 +3881,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3506,6 +3906,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -3589,7 +3999,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3624,6 +4034,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -3698,7 +4118,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3723,6 +4143,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -3785,7 +4215,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3810,6 +4240,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -3884,7 +4324,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3909,6 +4349,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -3983,7 +4433,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4008,6 +4458,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -4079,6 +4539,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4137,7 +4607,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4162,6 +4632,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -4254,6 +4734,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4313,7 +4803,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4338,6 +4828,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -4412,7 +4912,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4437,6 +4937,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -4510,7 +5020,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4535,6 +5045,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -4603,6 +5123,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -4683,7 +5213,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4718,6 +5248,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -4792,7 +5332,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4827,6 +5367,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -4890,7 +5440,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4915,6 +5465,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -4978,7 +5538,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5003,6 +5563,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -5074,6 +5644,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5134,7 +5714,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5159,6 +5739,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -5222,7 +5812,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5257,6 +5847,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -5320,7 +5920,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5345,6 +5945,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -5408,7 +6018,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5506,7 +6116,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5531,6 +6141,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -5594,6 +6214,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5654,7 +6284,17 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`output.*` keys were sent with a stale `expected_output_revision`, or another write won; the body's `current_revision` is the revision to retry against (`revision_conflict`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -5669,6 +6309,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -5762,6 +6412,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5842,7 +6502,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5867,6 +6527,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -5955,6 +6625,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6017,7 +6697,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6032,6 +6712,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -6085,7 +6775,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6100,6 +6790,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -6141,11 +6841,21 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -6214,6 +6924,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6278,7 +6998,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6303,6 +7023,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -6374,6 +7104,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -6451,7 +7191,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6476,6 +7216,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -6547,6 +7297,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -6632,6 +7392,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6694,7 +7464,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6719,6 +7489,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -6786,7 +7566,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6811,6 +7591,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -6968,6 +7758,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7026,7 +7826,7 @@
             }
           },
           "403": {
-            "description": "The caller is not an active library user, or a clerk join lacks the Owner role or a passed step-up (`step_up_required`).",
+            "description": "The caller is not an active library user, or a clerk join lacks the Owner role or a passed step-up (`step_up_required`). A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7061,6 +7861,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -7104,7 +7914,7 @@
             }
           },
           "403": {
-            "description": "The caller is not an active library user, or not an Owner (`owner_required`).",
+            "description": "The caller is not an active library user, or not an Owner (`owner_required`). A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7129,6 +7939,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -7200,6 +8020,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7261,7 +8091,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7276,6 +8106,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -7342,7 +8182,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7357,6 +8197,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -7431,6 +8281,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7492,7 +8352,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7507,6 +8367,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -7575,7 +8445,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7600,6 +8470,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -7675,6 +8555,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7737,7 +8627,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7752,6 +8642,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -7863,6 +8763,16 @@
                 "schema": {}
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7937,6 +8847,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7999,6 +8919,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -8113,6 +9043,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -8177,8 +9117,28 @@
               }
             }
           },
+          "403": {
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The lookup failed.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -8250,8 +9210,28 @@
               }
             }
           },
+          "403": {
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The lookup failed.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -8518,6 +9498,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -8589,8 +9579,28 @@
               }
             }
           },
+          "403": {
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The lookup failed.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -8662,8 +9672,28 @@
               }
             }
           },
+          "403": {
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The lookup failed.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -8735,8 +9765,28 @@
               }
             }
           },
+          "403": {
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The lookup failed.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -8793,6 +9843,16 @@
           },
           "500": {
             "description": "The request could not be read or written.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -8862,8 +9922,28 @@
               }
             }
           },
+          "403": {
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The request could not be read or written.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -8927,7 +10007,7 @@
             }
           },
           "403": {
-            "description": "The request belongs to someone else.",
+            "description": "The request belongs to someone else. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -8948,6 +10028,16 @@
           },
           "500": {
             "description": "The request could not be read or written.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -9011,6 +10101,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -9049,6 +10149,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -9100,6 +10220,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -9158,7 +10288,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9173,6 +10303,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -9239,11 +10379,21 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -9310,7 +10460,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9325,6 +10475,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -9369,11 +10529,21 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -9452,6 +10622,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -9498,6 +10678,16 @@
           },
           "500": {
             "description": "The request could not be read or written.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -9567,8 +10757,28 @@
               }
             }
           },
+          "403": {
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The request could not be read or written.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -9953,6 +11163,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -10014,7 +11234,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10029,6 +11249,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -10106,7 +11336,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10131,6 +11361,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -10208,7 +11448,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10233,6 +11473,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -10316,7 +11566,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10341,6 +11591,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -10373,6 +11633,16 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -10413,6 +11683,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -10474,6 +11754,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -10554,6 +11844,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -10622,6 +11922,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -10653,6 +11963,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -10696,6 +12016,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -10762,7 +12092,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10777,6 +12107,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -10831,6 +12171,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -10878,11 +12228,21 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -10943,11 +12303,21 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -11010,7 +12380,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11025,6 +12395,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -11113,6 +12493,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -11174,6 +12564,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -11207,7 +12607,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11222,6 +12622,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -11282,11 +12692,21 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -11345,6 +12765,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -11388,11 +12818,21 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -11453,7 +12893,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11468,6 +12908,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -11516,6 +12966,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -11561,11 +13021,21 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -11611,6 +13081,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -11675,7 +13155,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11690,6 +13170,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -11756,7 +13246,7 @@
             }
           },
           "403": {
-            "description": "The transport is not allowed.",
+            "description": "The transport is not allowed. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11771,6 +13261,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -11812,6 +13312,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -11868,7 +13378,7 @@
             }
           },
           "403": {
-            "description": "The transport is not allowed.",
+            "description": "The transport is not allowed. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11883,6 +13393,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -11952,6 +13472,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -12003,6 +13533,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -12253,6 +13793,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -12276,6 +13826,16 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -12316,6 +13876,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -12360,6 +13930,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -12379,6 +13959,26 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -12414,6 +14014,16 @@
                 }
               }
             }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -12438,6 +14048,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SourcesResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -12503,6 +14123,26 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -12559,6 +14199,26 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -12604,6 +14264,26 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "deprecated": true,
@@ -12637,6 +14317,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -12675,6 +14375,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -12741,6 +14451,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }

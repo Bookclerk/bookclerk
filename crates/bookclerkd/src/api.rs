@@ -1353,7 +1353,7 @@ pub(crate) async fn api_timeout_middleware(req: Request, next: Next) -> Response
 /// True for a host's streamed file upload, `PUT
 /// /api/node/v1/uploads/{upload_id}/files/{index}`, the one request that
 /// runs without the API deadline ([`api_timeout_middleware`]).
-fn is_streamed_upload(method: &axum::http::Method, path: &str) -> bool {
+pub(crate) fn is_streamed_upload(method: &axum::http::Method, path: &str) -> bool {
     *method == axum::http::Method::PUT
         && path
             .strip_prefix(bookclerk_node_proto::UPLOADS_PATH)
@@ -3295,6 +3295,7 @@ async fn get_settings(
     responses(
         (status = 200, description = "The settings after the change.", body = SettingsResponse),
         (status = 400, description = "A key is unknown or a value is invalid.", body = crate::http_error::ErrorJson),
+        (status = 409, description = "`output.*` keys were sent with a stale `expected_output_revision`, or another write won; the body's `current_revision` is the revision to retry against (`revision_conflict`)."),
         (status = 500, description = "The settings could not be written.", body = crate::http_error::ErrorJson),
     ),
 )]

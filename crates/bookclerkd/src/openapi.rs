@@ -460,6 +460,7 @@ pub fn document() -> OpenApi {
         .get_or_insert_with(Default::default)
         .schemas
         .insert(API_ERROR.to_string(), api_error_schema());
+    add_middleware_refusals(&mut doc);
     fill_untyped_content(&mut doc);
     doc
 }
@@ -483,6 +484,100 @@ fn api_error_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>
         .property("status", ObjectBuilder::new().schema_type(Type::Integer).description(Some("The HTTP status, repeated.")))
         .build()
         .into()
+}
+
+/// States the outcomes the router's outer layers produce before a handler
+/// answers: the 504 [`crate::api::api_timeout_middleware`] returns when an
+/// `/api/` request runs past its budget (every route but the streamed
+/// upload `PUT`), and the 403 [`crate::csrf::require_csrf_for_cookie_api`]
+/// returns for a cookie-carrying `/api/` write whose `Origin` or `Referer`
+/// does not match (every write but the exempt sign-in routes, and only where
+/// a session cookie can be the credential).
+///
+/// # Arguments
+///
+/// * `doc` - The document, after every group is added.
+fn add_middleware_refusals(doc: &mut OpenApi) {
+    use axum::http::Method;
+    use utoipa::openapi::schema::{ObjectBuilder, Type};
+    use utoipa::openapi::{ContentBuilder, RefOr, ResponseBuilder};
+    const CSRF: &str = "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.";
+    for (path, item) in doc.paths.paths.iter_mut() {
+        if !path.starts_with("/api/") {
+            continue;
+        }
+        let ops = [
+            (Method::GET, item.get.as_mut()),
+            (Method::PUT, item.put.as_mut()),
+            (Method::POST, item.post.as_mut()),
+            (Method::DELETE, item.delete.as_mut()),
+            (Method::PATCH, item.patch.as_mut()),
+        ];
+        for (method, op) in ops {
+            let Some(op) = op else { continue };
+            if !crate::api::is_streamed_upload(&method, path) {
+                op.responses
+                    .responses
+                    .entry("504".to_string())
+                    .or_insert_with(|| {
+                        ResponseBuilder::new()
+                            .description("The request ran past the API's time budget.")
+                            .content(
+                                "text/plain",
+                                ContentBuilder::new()
+                                    .schema(Some(ObjectBuilder::new().schema_type(Type::String)))
+                                    .build(),
+                            )
+                            .build()
+                            .into()
+                    });
+            }
+            let writes = matches!(
+                method,
+                Method::PUT | Method::POST | Method::DELETE | Method::PATCH
+            );
+            if !writes || crate::csrf::is_csrf_exempt(path) || !accepts_cookie(op) {
+                continue;
+            }
+            match op.responses.responses.get_mut("403") {
+                Some(RefOr::T(response)) => {
+                    response.description = format!("{} {CSRF}", response.description);
+                }
+                Some(RefOr::Ref(_)) => {}
+                None => {
+                    op.responses.responses.insert(
+                        "403".to_string(),
+                        ResponseBuilder::new().description(CSRF).build().into(),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// True when a session cookie can be the operation's credential: it names a
+/// cookie scheme, or it is open (a browser still sends its cookies).
+///
+/// # Arguments
+///
+/// * `op` - The operation, with its security stated.
+///
+/// # Returns
+///
+/// Whether the CSRF check can apply.
+fn accepts_cookie(op: &Operation) -> bool {
+    let requirements = op.security.as_deref().unwrap_or_default();
+    requirements.is_empty()
+        || requirements.iter().any(|requirement| {
+            serde_json::to_value(requirement)
+                .ok()
+                .and_then(|value| value.as_object().cloned())
+                .is_some_and(|schemes| {
+                    schemes.is_empty()
+                        || schemes.contains_key(OPERATOR_SESSION)
+                        || schemes.contains_key(PORTAL_SESSION)
+                })
+        })
 }
 
 /// Gives every request or response media type without a schema one, so
@@ -723,6 +818,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The outer layers' refusals are stated: the API timeout's 504 on every
+    /// `/api/` route but the streamed upload, and the CSRF 403 on cookie
+    /// writes but not on the exempt sign-in routes.
+    #[test]
+    fn middleware_refusals_are_stated() {
+        let doc = document_value();
+        for (method, path, op) in operations(&doc) {
+            if !path.starts_with("/api/") {
+                continue;
+            }
+            let streamed =
+                method == "put" && path == "/api/node/v1/uploads/{upload_id}/files/{index}";
+            assert_eq!(
+                op["responses"].get("504").is_some(),
+                !streamed,
+                "{method} {path} 504"
+            );
+        }
+        let csrf = |method: &str, path: &str| {
+            doc["paths"][path][method]["responses"]["403"]["description"]
+                .as_str()
+                .is_some_and(|d| d.contains("`Origin` or `Referer`"))
+        };
+        assert!(csrf("patch", "/api/preferences"));
+        assert!(csrf("post", "/api/auth/logout"));
+        assert!(!csrf("post", "/api/auth/login"));
+        assert!(!csrf("get", "/api/preferences"));
     }
 
     /// Every request and response media type carries a schema, so generated
