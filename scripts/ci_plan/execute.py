@@ -181,6 +181,11 @@ BUILD_SUBCOMMANDS = frozenset({"build", "build-app", "check", "clippy", "install
 BUILD_ONLY_JOBS = frozenset({"check", "test", "native-gateway", "release"})
 # Prerequisites kept in build-only runs (staging and installs only feed tests).
 BUILD_PREREQS = frozenset({"build", "ensure_workerd"})
+# Set to "true" by a build-only job whose dependency cache key is already
+# saved (ci.yml "Skip the build when the saved cache is current"): the build
+# would save nothing, so its checks issue no commands. Ignored outside
+# build-only runs, so it can never skip a test.
+SAVED_CACHE_CURRENT_ENV = "CI_SAVED_CACHE_CURRENT"
 
 
 class ExecError(Exception):
@@ -814,14 +819,23 @@ def execution_plan(artifact: Mapping[str, Any]) -> Plan:
     return plan_from_dict(artifact["execution"])
 
 
-def planned_commands(artifact: Mapping[str, Any], check: str, ctx: Context) -> list[tuple[str, Command]]:
-    """``(key, command)`` pairs: prerequisites first, then the check."""
+def planned_commands(
+    artifact: Mapping[str, Any], check: str, ctx: Context, *, saved_cache_current: bool = False
+) -> list[tuple[str, Command]]:
+    """``(key, command)`` pairs: prerequisites first, then the check.
+
+    ``saved_cache_current`` (the job's cache key is already saved) empties a
+    build-only run's list, since its builds exist only to save that cache; it
+    has no effect on any other run.
+    """
     plan = execution_plan(artifact)
     if check not in CHECK_JOB:
         raise ExecError(f"unknown check `{check}`")
     if not plan.selected(check):
         raise ExecError(f"check `{check}` is not in this run's execution plan")
     build_only = bool(artifact.get("build_only"))
+    if build_only and saved_cache_current:
+        return []
     out: list[tuple[str, Command]] = []
     for prereq in plan.prereqs(check):
         if build_only and prereq["kind"] not in BUILD_PREREQS:
@@ -897,12 +911,25 @@ def _run_one(cmd: Command, ctx: Context) -> None:
         raise ExecError(f"{cmd.label}: `{' '.join(cmd.argv)}` exited {proc.returncode}")
 
 
-def run_check(artifact: Mapping[str, Any], check: str, ctx: Context, *, dry_run: bool = False) -> None:
-    """Runs ``check`` with its prerequisites (each prerequisite once per execution)."""
+def run_check(
+    artifact: Mapping[str, Any],
+    check: str,
+    ctx: Context,
+    *,
+    dry_run: bool = False,
+    saved_cache_current: bool = False,
+) -> None:
+    """Runs ``check`` with its prerequisites (each prerequisite once per execution).
+
+    ``saved_cache_current`` is passed to :func:`planned_commands`.
+    """
     # Validated before any path join. Checks that share this artifact share
     # the directory; a new resolve gets a new id and cannot see these markers.
     markers = ctx.tmp / "ci-exec-prereqs" / require_execution_id(artifact)
-    for key, cmd in planned_commands(artifact, check, ctx):
+    commands = planned_commands(artifact, check, ctx, saved_cache_current=saved_cache_current)
+    if not commands and artifact.get("build_only") and saved_cache_current:
+        print(f"::notice::{check}: the saved dependency cache is current; nothing to build")
+    for key, cmd in commands:
         env_note = " ".join(f"{k}={v}" for k, v in sorted(cmd.env.items()) if k != "PATH")
         line = f"{cmd.label}: {' '.join(cmd.argv)}" + (f"  [{env_note}]" if env_note else "")
         if dry_run:
@@ -993,6 +1020,7 @@ __all__ = [
     "Context",
     "ExecError",
     "PlanError",
+    "SAVED_CACHE_CURRENT_ENV",
     "SCHEMA_VERSION",
     "artifact_summary",
     "build_only_command",

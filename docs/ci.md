@@ -36,6 +36,18 @@ tested that exact commit. The push run resolves with `--build-only`
 Caches are saved only on `main` (merge-group refs cannot share theirs), so
 this run is what keeps pull-request and queue runs warm.
 
+A dependency cache key covers `Cargo.lock`, the manifests, the toolchain and
+the CI environment, not the repository's own sources, and an existing key is
+never saved again. Most merges therefore leave every key unchanged, and their
+build would save nothing. Each build-only job first looks up its own key
+(`lookup-only`, run only when `CI_BUILD_ONLY` is true). On a hit it sets
+`CI_SAVED_CACHE_CURRENT=true`, skips restoring the cache, and `ci-exec.py run`
+issues no commands. The Linux `native-gateway` child always skips, because the
+`test` job saves the Linux `debug` cache. A changed lockfile or toolchain, or
+an evicted cache, misses the lookup and builds as before.
+`ci-exec.py` ignores the variable outside build-only runs, so it can never
+skip a test.
+
 ### Test runner and retries
 
 `rust_test` runs under [cargo-nextest](https://nexte.st/) (installed pinned in

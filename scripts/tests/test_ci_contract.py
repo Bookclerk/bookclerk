@@ -247,6 +247,36 @@ class WorkflowContractTests(unittest.TestCase):
                         savers.add(name)
         self.assertEqual(savers, set(BUILD_ONLY_JOBS))
 
+    def test_build_only_jobs_skip_when_their_saved_cache_is_current(self) -> None:
+        """Each cache-saving job looks its own key up first and skips the build on a hit."""
+        from ci_plan.execute import BUILD_ONLY_JOBS, SAVED_CACHE_CURRENT_ENV
+
+        self.assertEqual(
+            self.wf["env"]["CI_BUILD_ONLY"],
+            "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}",
+        )
+        for name in BUILD_ONLY_JOBS:
+            with self.subTest(job=name):
+                steps = self.jobs[name]["steps"]
+                caches = [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith("Swatinem/rust-cache@")]
+                self.assertEqual(len(caches), 2)
+                lookup, skip, cache = steps[caches[0]], steps[caches[0] + 1], steps[caches[1]]
+                self.assertEqual(caches[1], caches[0] + 2, "lookup, skip and cache steps must be adjacent")
+                self.assertEqual(lookup["uses"], cache["uses"])
+                self.assertIs(lookup["with"]["lookup-only"], True)
+                self.assertIs(lookup["with"]["save-if"], False)
+                # Same key inputs, or the lookup would answer for another key.
+                for key in ("shared-key", "env-vars", "workspaces", "prefix-key", "key"):
+                    self.assertEqual(lookup["with"].get(key), cache["with"].get(key), key)
+                self.assertTrue(lookup["if"].startswith("env.CI_BUILD_ONLY == 'true'"), lookup["if"])
+                self.assertEqual(lookup["id"], "saved")
+                self.assertTrue(skip["if"].startswith("steps.saved.outputs.cache-hit == 'true'"), skip["if"])
+                self.assertIn(f'echo "{SAVED_CACHE_CURRENT_ENV}=true" >> "$GITHUB_ENV"', skip["run"])
+                self.assertIn(f"env.{SAVED_CACHE_CURRENT_ENV} != 'true'", cache["if"])
+                # Anything beyond the hit may only widen the skip within build-only runs.
+                rest = skip["if"].removeprefix("steps.saved.outputs.cache-hit == 'true'")
+                self.assertIn(rest, ("", " || (env.CI_BUILD_ONLY == 'true' && runner.os == 'Linux')"))
+
     def test_fail_fast_job_is_merge_group_only_and_alone_can_cancel(self) -> None:
         job = self.jobs[FAIL_FAST_JOB]
         self.assertEqual(job["if"], "github.event_name == 'merge_group' || inputs.private-head")
