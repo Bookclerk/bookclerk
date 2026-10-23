@@ -7,7 +7,7 @@
 #
 # Worker deploy: .github/workflows/diagnostics-collector-deploy.yml
 # Collector URL: https://diagnostics.<DOMAIN> when variable DOMAIN is set,
-# otherwise repository variable DIAGNOSTICS_COLLECTOR_BASE_URL (the
+# otherwise Actions variable DIAGNOSTICS_COLLECTOR_BASE_URL (the
 # workers.dev URL the deploy stores)
 #
 # Copilot auth (aligned with GitHub Agentic Workflows guidance):

@@ -8,7 +8,8 @@ Opt-in crash / error-burst reporting for Bookclerk operators. Product docs:
 The collector is served on `https://diagnostics.<DOMAIN>` when the `DOMAIN`
 Actions variable is set (`bookclerk.app` upstream). A fork without a domain
 gets its Cloudflare account's workers.dev URL instead, which the deploy stores
-in repository variable `DIAGNOSTICS_COLLECTOR_BASE_URL`. Build Bookclerk with
+in Actions variable `DIAGNOSTICS_COLLECTOR_BASE_URL` (organization first, then
+repository). Build Bookclerk with
 that URL baked in:
 
 ```bash

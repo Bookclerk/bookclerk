@@ -20,10 +20,12 @@
 #   DOMAIN unset (a fork with its own Cloudflare account): the account's
 #     workers.dev subdomain, read from the deploy output. Readers cannot
 #     derive that, so it is stored in repository variable
-#     DIAGNOSTICS_COLLECTOR_BASE_URL. GITHUB_TOKEN cannot write repository
-#     variables; the write uses the automation App (AUTOMATION_APP_CLIENT_ID /
-#     AUTOMATION_APP_PRIVATE_KEY, App permission "Variables: write") when its
-#     secrets are set, and otherwise prints the `gh variable set` command.
+#     DIAGNOSTICS_COLLECTOR_BASE_URL, on the organization when possible and
+#     otherwise on the repository. GITHUB_TOKEN cannot write variables; the
+#     write uses the automation App (AUTOMATION_APP_CLIENT_ID /
+#     AUTOMATION_APP_PRIVATE_KEY, organization and/or repository permission
+#     "Variables: write") when its secrets are set, and otherwise prints the
+#     `gh variable set` command.
 #
 # https://github.com/cloudflare/wrangler-action
 # GITHUB_TOKEN permission keys:
@@ -199,4 +201,22 @@ jobs:
         env:
           URL: ${{ steps.url.outputs.url }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: gh variable set DIAGNOSTICS_COLLECTOR_BASE_URL --repo "$GITHUB_REPOSITORY" --body "$URL"
+        run: |
+          set -euo pipefail
+          name=DIAGNOSTICS_COLLECTOR_BASE_URL
+          owner="${GITHUB_REPOSITORY%%/*}"
+          # Prefer the organization (like DOMAIN); a user-owned fork, or an App
+          # without the organization "Variables" permission, falls back to
+          # the repository.
+          if gh variable set "$name" --org "$owner" --visibility all --body "$URL"; then
+            echo "Stored $name on organization $owner"
+            # A repository variable overrides the organization one, so keep a
+            # stale one from shadowing the new URL.
+            if gh variable get "$name" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh variable set "$name" --repo "$GITHUB_REPOSITORY" --body "$URL"
+              echo "Updated the repository's own $name too"
+            fi
+          else
+            echo "::notice::Organization variable write failed; storing $name on the repository"
+            gh variable set "$name" --repo "$GITHUB_REPOSITORY" --body "$URL"
+          fi
