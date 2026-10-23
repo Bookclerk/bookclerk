@@ -29,7 +29,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/login": {
@@ -66,7 +66,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/signin": {
@@ -88,7 +88,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/tray-handoff/prepare": {
@@ -116,7 +116,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/tray-handoff": {
@@ -147,7 +147,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/me": {
@@ -170,8 +170,18 @@
             "description": "The caller is not signed in."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/live": {
@@ -192,8 +202,18 @@
             "description": "The Origin is not allowed."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/elevate": {
@@ -229,8 +249,18 @@
             "description": "The caller may not do this."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       },
       "delete": {
         "tags": [
@@ -301,8 +331,18 @@
             "description": "An Owner already exists."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/password": {
@@ -341,8 +381,18 @@
             "description": "The caller may not do this."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       },
       "post": {
         "tags": [
@@ -377,7 +427,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/users": {
@@ -404,8 +454,18 @@
             "description": "The caller may not do this."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       },
       "post": {
         "tags": [
@@ -445,8 +505,18 @@
             "description": "The login is taken."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/users/{id}": {
@@ -488,8 +558,18 @@
             "description": "No such user."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       },
       "patch": {
         "tags": [
@@ -541,8 +621,18 @@
             "description": "No such user."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/users/{id}/claim-ticket": {
@@ -583,8 +673,18 @@
             "description": "No such user."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/users/{id}/reset-password": {
@@ -625,8 +725,18 @@
             "description": "No such user."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/status": {
@@ -670,7 +780,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator or Owner."
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
     "/scan": {
@@ -720,7 +830,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator or Owner."
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
     "/acquire": {
@@ -770,7 +880,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator or Owner."
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
     "/jobs": {
@@ -817,7 +927,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator or Owner."
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
     "/jobs/{id}/cancel": {
@@ -872,7 +982,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator or Owner."
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
     "/integrations/{id}/scan": {
@@ -992,7 +1102,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator or Owner."
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
     "/api/status": {
@@ -1035,7 +1145,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator or Owner."
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
     "/api/jobs": {
@@ -1081,7 +1191,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator or Owner."
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
     "/api/jobs/{id}/cancel": {
@@ -1145,7 +1255,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator or Owner."
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
     "/api/events": {
@@ -1191,7 +1301,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator or Owner."
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
     "/api/events/deliveries": {
@@ -1248,7 +1358,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator or Owner."
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
     "/api/queues": {
@@ -1294,7 +1404,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator or Owner."
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
     "/api/queues/{name}": {
@@ -1358,7 +1468,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator or Owner."
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
     "/api/events/deliveries/{id}/retry": {
@@ -1422,7 +1532,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator or Owner."
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
     "/api/events/deliveries/{id}/acknowledge": {
@@ -1486,7 +1596,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator or Owner."
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
     "/api/events/deliveries/{id}/cancel": {
@@ -1550,7 +1660,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator or Owner."
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
     "/api/events/deliveries/{id}/resume": {
@@ -1614,7 +1724,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator or Owner."
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
     "/api/library/scan": {
@@ -1714,7 +1824,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator or Owner."
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
     "/api/library/acquire": {
@@ -1824,7 +1934,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator or Owner."
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
     "/api/discover/sync-listening": {
@@ -1907,7 +2017,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator or Owner."
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
     "/api/config/reload": {
@@ -3907,7 +4017,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in user who owns at least one node."
+        "x-bookclerk-access": "The operator, a signed-in Owner, Administrator or Host, or a user who owns at least one node."
       }
     },
     "/api/config/nodes/{node_id}": {
@@ -3964,7 +4074,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in user who owns at least one node."
+        "x-bookclerk-access": "The operator, a signed-in Owner, Administrator or Host, or a user who owns at least one node."
       }
     },
     "/api/config/clerks": {
@@ -4007,7 +4117,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in user who owns at least one node."
+        "x-bookclerk-access": "The operator, a signed-in Owner, Administrator or Host, or a user who owns at least one node."
       }
     },
     "/api/config/nodes/{node_id}/runtime": {
@@ -4074,7 +4184,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in user who owns at least one node."
+        "x-bookclerk-access": "The operator, a signed-in Owner, Administrator or Host, or a user who owns at least one node."
       }
     },
     "/api/cluster/status": {
@@ -4117,7 +4227,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, or a signed-in user who owns at least one node."
+        "x-bookclerk-access": "The operator, a signed-in Owner, Administrator or Host, or a user who owns at least one node."
       }
     },
     "/api/config/node-invites": {
@@ -6405,7 +6515,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/oidc/authorize": {
@@ -6489,7 +6599,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       },
       "post": {
         "tags": [
@@ -6518,8 +6628,18 @@
             "description": "The caller is not signed in."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/oidc/token": {
@@ -6558,7 +6678,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/oidc/userinfo": {
@@ -6582,7 +6702,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/oidc/revoke": {
@@ -6608,7 +6728,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/oidc/clients": {
@@ -6883,7 +7003,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/oidc/identities": {
@@ -6909,8 +7029,18 @@
             "description": "The caller may not do this."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/oidc/login": {
@@ -6943,7 +7073,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/oidc/elevate": {
@@ -6981,8 +7111,18 @@
             "description": "Too many attempts; try later."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/oidc/callback": {
@@ -7039,7 +7179,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       },
       "post": {
         "tags": [
@@ -7066,7 +7206,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/oidc/config": {
@@ -7172,8 +7312,18 @@
             "description": "The caller may not do this."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/passkeys/register/begin": {
@@ -7209,8 +7359,18 @@
             "description": "The caller may not do this."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/passkeys/register/finish": {
@@ -7249,8 +7409,18 @@
             "description": "The caller may not do this."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/passkeys/{id}": {
@@ -7301,8 +7471,18 @@
             "description": "No such passkey for this user."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/passkeys/login/begin": {
@@ -7339,7 +7519,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/passkeys/login/finish": {
@@ -7373,7 +7553,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/passkeys/elevate/begin": {
@@ -7399,8 +7579,18 @@
             "description": "The caller may not do this."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/passkeys/elevate/finish": {
@@ -7436,8 +7626,18 @@
             "description": "The caller may not do this."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/totp/login": {
@@ -7474,7 +7674,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/totp/enroll/begin": {
@@ -7510,8 +7710,18 @@
             "description": "The caller may not do this."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/totp/enroll/finish": {
@@ -7550,8 +7760,18 @@
             "description": "The caller may not do this."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/totp": {
@@ -7577,8 +7797,18 @@
             "description": "The caller may not do this."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       },
       "delete": {
         "tags": [
@@ -7612,8 +7842,18 @@
             "description": "The caller may not do this."
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/auth/mfa-policy": {
@@ -7732,7 +7972,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/node/v1/info": {
@@ -7759,7 +7999,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/node/v1/enroll/oauth": {
@@ -7802,7 +8042,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/node/v1/connect": {
@@ -7827,7 +8067,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/node/v1/artifacts/{sha256}": {
@@ -7863,7 +8103,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/node/v1/uploads/{upload_id}/files/{index}": {
@@ -7930,7 +8170,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/node/v1/uploads/{upload_id}/commit": {
@@ -7981,7 +8221,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/openapi.json": {
@@ -8000,7 +8240,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/portal/redeem": {
@@ -8041,7 +8281,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/portal/login/integration": {
@@ -8092,7 +8332,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/portal/logout": {
@@ -8108,7 +8348,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/portal/me": {
@@ -8140,8 +8380,12 @@
             }
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/portal/sources": {
@@ -8164,7 +8408,7 @@
           }
         },
         "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/portal/sources/{id}/login": {
@@ -8225,8 +8469,12 @@
             }
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/portal/sources/{id}/oauth/start": {
@@ -8277,8 +8525,12 @@
             }
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/portal/libro/login": {
@@ -8319,8 +8571,12 @@
           }
         },
         "deprecated": true,
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/portal/audible/start": {
@@ -8351,8 +8607,12 @@
           }
         },
         "deprecated": true,
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/portal/connections": {
@@ -8384,8 +8644,12 @@
             }
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/api/portal/sources/{source}/connections/{account_id}/revoke": {
@@ -8446,8 +8710,12 @@
             }
           }
         },
-        "security": [],
-        "x-bookclerk-access": "No auth layer; the handler checks the caller itself."
+        "security": [
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     }
   },
@@ -14123,7 +14391,7 @@
         "type": "apiKey",
         "in": "cookie",
         "name": "bookclerk_portal_session",
-        "description": "A library user's browser session, set by a sign-in route. Cookie-authenticated writes also need the CSRF header."
+        "description": "A library user's browser session, set by a sign-in route. Cookie-authenticated writes must send an `Origin` (or `Referer`) matching the daemon's public origin or its host."
       }
     }
   },

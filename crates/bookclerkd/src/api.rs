@@ -1143,7 +1143,7 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     };
 
     // The document is built from the same route groups the router serves.
-    let openapi_doc = Arc::new(crate::openapi::document());
+    let openapi_doc = crate::openapi::shared_document();
     let mut app: Router = Router::new();
     for group in route_groups() {
         let (routes, _) = guarded(group.routes, group.access, &state)
@@ -1165,10 +1165,7 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     // SPA Accounts / claim APIs (Path=/ portal session cookie).
     app = app.nest(
         "/api/portal",
-        portal_spa_routes()
-            .with_state(portal_state)
-            .split_for_parts()
-            .0,
+        bookclerk_integrations::portal_spa_router(portal_state),
     );
 
     let invite_index = ui_dist.as_ref().map(|d| d.join("index.html"));

@@ -1046,6 +1046,7 @@ pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
 #[utoipa::path(
     get,
     path = "/api/auth/me",
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "Who the caller is (operator, portal user, or impersonation).", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
@@ -1941,6 +1942,7 @@ pub struct ImpersonateRequest {
     post,
     path = "/api/auth/elevate",
     request_body = ElevateRequest,
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "Elevated; the response sets a short-lived operator cookie.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
@@ -2304,6 +2306,7 @@ const USER_LIST_LISTENING_WITHIN: ChronoDuration = ChronoDuration::minutes(30);
 #[utoipa::path(
     get,
     path = "/api/users",
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "The library's users.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
@@ -2413,6 +2416,7 @@ fn last_owner_response() -> Response {
     path = "/api/users/{id}",
     params(("id" = i64, Path, description = "User id.")),
     request_body = PatchUserRequest,
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "The user after the change.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
@@ -2539,6 +2543,7 @@ pub async fn patch_user(
     post,
     path = "/api/users/{id}/claim-ticket",
     params(("id" = i64, Path, description = "User id.")),
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "A fresh claim ticket.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
@@ -2591,6 +2596,7 @@ pub async fn create_user_claim_ticket(
     post,
     path = "/api/users/{id}/reset-password",
     params(("id" = i64, Path, description = "User id.")),
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "The password was cleared; a claim ticket for the reset.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
@@ -2655,6 +2661,7 @@ pub async fn reset_user_password(
     delete,
     path = "/api/users/{id}",
     params(("id" = i64, Path, description = "User id.")),
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "The user and their personal data were deleted.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
@@ -2749,6 +2756,7 @@ pub struct BootstrapRequest {
     post,
     path = "/api/auth/bootstrap",
     request_body = BootstrapRequest,
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "The first Owner was created.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
@@ -2874,6 +2882,7 @@ fn default_true() -> bool {
     post,
     path = "/api/users",
     request_body = CreateUserRequest,
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "The new user, with an invite link when one was asked for.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
@@ -3060,6 +3069,7 @@ pub struct SetPasswordRequest {
     put,
     path = "/api/auth/password",
     request_body = SetPasswordRequest,
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "The password was set and other sessions revoked.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),

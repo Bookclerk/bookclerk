@@ -188,6 +188,7 @@ fn refusal(status: StatusCode, error: &str) -> Response {
 #[utoipa::path(
     get,
     path = "/api/live",
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 101, description = "Switching to the live-updates WebSocket."),
         (status = 401, description = "The caller is not signed in."),

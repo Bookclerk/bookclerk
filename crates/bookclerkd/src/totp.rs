@@ -327,6 +327,7 @@ struct ReauthBody {
 #[utoipa::path(
     get,
     path = "/api/auth/totp",
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "Whether TOTP is on for the caller.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
@@ -346,6 +347,7 @@ async fn totp_status(
     post,
     path = "/api/auth/totp/enroll/begin",
     request_body = ReauthBody,
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "A pending secret, its otpauth URL and a QR code SVG.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
@@ -392,6 +394,7 @@ struct EnrollFinish {
     post,
     path = "/api/auth/totp/enroll/finish",
     request_body = EnrollFinish,
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "TOTP is on.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
@@ -437,6 +440,7 @@ async fn enroll_finish(
     delete,
     path = "/api/auth/totp",
     request_body = ReauthBody,
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "TOTP is off.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),

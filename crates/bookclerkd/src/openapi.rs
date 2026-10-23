@@ -88,14 +88,16 @@ impl Access {
     /// One sentence naming who may call the route.
     fn rule(self) -> &'static str {
         match self {
-            Access::Public => "No auth layer; the handler checks the caller itself.",
+            Access::Public => {
+                "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+            }
             Access::Operator => "The operator (token or session) only.",
             Access::OperatorOrAdministrator => {
-                "The operator, or a signed-in Administrator or Owner."
+                "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
             }
             Access::OperatorOrOwner => "The operator, or a signed-in Owner.",
             Access::OperatorOrNodeOwner => {
-                "The operator, or a signed-in user who owns at least one node."
+                "The operator, a signed-in Owner, Administrator or Host, or a user who owns at least one node."
             }
             Access::OperatorOrUser => "The operator, or any signed-in user.",
             Access::OperatorOrPortal => "The operator, or any library session.",
@@ -132,7 +134,7 @@ fn security_schemes() -> [(&'static str, SecurityScheme); 3] {
             PORTAL_SESSION,
             SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::with_description(
                 PORTAL_SESSION_COOKIE,
-                "A library user's browser session, set by a sign-in route. Cookie-authenticated writes also need the CSRF header.",
+                "A library user's browser session, set by a sign-in route. Cookie-authenticated writes must send an `Origin` (or `Referer`) matching the daemon's public origin or its host.",
             ))),
         ),
     ]
@@ -383,6 +385,16 @@ pub fn document() -> OpenApi {
     doc
 }
 
+/// The document, built once per process and shared by every router.
+///
+/// # Returns
+///
+/// The same [`document`] each call.
+pub fn shared_document() -> Arc<OpenApi> {
+    static DOCUMENT: std::sync::OnceLock<Arc<OpenApi>> = std::sync::OnceLock::new();
+    DOCUMENT.get_or_init(|| Arc::new(document())).clone()
+}
+
 /// Serves the OpenAPI document.
 #[utoipa::path(
     get,
@@ -396,7 +408,7 @@ pub async fn get_openapi(
 }
 
 /// The document as pretty JSON, as `bookclerkd --print-openapi` prints it
-/// and `docs/api/openapi.json` holds it.
+/// and `crates/bookclerkd/openapi.json` holds it.
 ///
 /// # Returns
 ///
@@ -477,12 +489,43 @@ mod tests {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("openapi.json");
         let committed = std::fs::read_to_string(&path).unwrap_or_default();
         let current = document_json().expect("the document serializes");
+        // A version bump alone does not make the committed copy stale.
+        let without_version = |text: &str| {
+            let mut value: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+            if let Some(info) = value.get_mut("info").and_then(|i| i.as_object_mut()) {
+                info.remove("version");
+            }
+            value
+        };
         assert!(
-            committed == current,
+            without_version(&committed) == without_version(&current),
             "{} is stale; regenerate it with \
              `cargo run -p bookclerkd -- --print-openapi > crates/bookclerkd/openapi.json`",
             path.display()
         );
+    }
+
+    /// A route without an auth layer that refuses callers who are not signed
+    /// in states the credentials it reads, so clients send them.
+    #[test]
+    fn handler_checked_routes_state_their_security() {
+        let doc = document_value();
+        for (method, path, op) in operations(&doc) {
+            let refuses_anonymous =
+                op["responses"]["401"]["description"] == "The caller is not signed in.";
+            if refuses_anonymous {
+                assert!(
+                    op["security"].as_array().is_some_and(|s| !s.is_empty()),
+                    "{method} {path} needs a signed-in caller but its security is empty"
+                );
+            }
+        }
+    }
+
+    /// The live socket is documented at the path its re-auth checks use.
+    #[test]
+    fn the_live_socket_path_matches_its_constant() {
+        assert!(document_value()["paths"][crate::live::LIVE_PATH]["get"].is_object());
     }
 
     /// Every operation has a tag and an operation id no other one shares.
@@ -548,6 +591,61 @@ mod tests {
         );
     }
 
+    /// Drops every `#[cfg(test)]` item from Rust source: the attribute and
+    /// the item after it, up to its `;` or its balanced `{ … }`.
+    ///
+    /// # Arguments
+    ///
+    /// * `text` - A source file.
+    ///
+    /// # Returns
+    ///
+    /// The source without test items. Braces inside strings are counted
+    /// too, which is close enough for the route scan.
+    fn without_test_items(text: &str) -> String {
+        const ATTR: &str = "#[cfg(test)]";
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(at) = rest.find(ATTR) {
+            out.push_str(&rest[..at]);
+            let item = &rest[at + ATTR.len()..];
+            let semi = item.find(';');
+            let brace = item.find('{');
+            let end = match (semi, brace) {
+                (Some(semi), Some(brace)) if semi < brace => semi + 1,
+                (_, Some(brace)) => {
+                    let mut depth = 0usize;
+                    let mut end = item.len();
+                    for (i, c) in item[brace..].char_indices() {
+                        match c {
+                            '{' => depth += 1,
+                            '}' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    end = brace + i + 1;
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    end
+                }
+                (Some(semi), None) => semi + 1,
+                (None, None) => item.len(),
+            };
+            rest = &item[end..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    #[test]
+    fn test_items_are_dropped_and_the_rest_kept() {
+        let text = "a\n#[cfg(test)]\nmod t;\nb\n#[cfg(test)]\nmod u { fn f() { x } }\nc\n";
+        assert_eq!(without_test_items(text), "a\n\nb\n\nc\n");
+    }
+
     /// The only routes registered outside an `OpenApiRouter` are the ones
     /// [`UNDOCUMENTED_ROUTES`] lists, so a new endpoint cannot skip the
     /// document. Test modules and `*_tests.rs` files are not scanned.
@@ -572,7 +670,7 @@ mod tests {
                         continue;
                     }
                     let text = std::fs::read_to_string(&path).expect("read source");
-                    let code = text.split("#[cfg(test)]").next().unwrap_or("");
+                    let code = without_test_items(&text);
                     let rel = path
                         .strip_prefix(&root)
                         .expect("under root")

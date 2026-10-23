@@ -340,6 +340,7 @@ async fn logout(State(state): State<PortalState>, headers: HeaderMap) -> Respons
     operation_id = "portal_me",
     get,
     path = "/me",
+    security(("portalSession" = [])),
     responses(
         (status = 200, description = "The signed-in identity.", body = MeResponse),
         (status = 401, description = "The caller is not signed in.", body = PortalErrorBody),
@@ -487,6 +488,7 @@ struct PasswordLoginBody {
     path = "/sources/{id}/login",
     params(("id" = String, Path, description = "Source plugin id.")),
     request_body = PasswordLoginBody,
+    security(("portalSession" = [])),
     responses(
         (status = 200, description = "The account was connected.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in.", body = PortalErrorBody),
@@ -557,6 +559,7 @@ async fn source_password_login(
     post,
     path = "/sources/{id}/oauth/start",
     params(("id" = String, Path, description = "Source plugin id.")),
+    security(("portalSession" = [])),
     responses(
         (status = 200, description = "The browser login URL.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in.", body = PortalErrorBody),
@@ -588,6 +591,7 @@ async fn source_oauth_start(
     post,
     path = "/libro/login",
     request_body = PasswordLoginBody,
+    security(("portalSession" = [])),
     responses(
         (status = 200, description = "The account was connected.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in.", body = PortalErrorBody),
@@ -607,6 +611,7 @@ async fn libro_login_legacy(
     operation_id = "portal_audible_start",
     post,
     path = "/audible/start",
+    security(("portalSession" = [])),
     responses(
         (status = 200, description = "The browser login URL.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in.", body = PortalErrorBody),
@@ -683,6 +688,7 @@ async fn start_source_oauth_session(
     operation_id = "portal_connections",
     get,
     path = "/connections",
+    security(("portalSession" = [])),
     responses(
         (status = 200, description = "Store accounts linked to the caller.", body = ConnectionsResponse),
         (status = 401, description = "The caller is not signed in.", body = PortalErrorBody),
@@ -770,6 +776,7 @@ struct ConnectionInfo {
     post,
     path = "/sources/{source}/connections/{account_id}/revoke",
     params(("source" = String, Path, description = "Source plugin id."), ("account_id" = String, Path, description = "Store account id.")),
+    security(("portalSession" = [])),
     responses(
         (status = 200, description = "The account was unlinked.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in.", body = PortalErrorBody),

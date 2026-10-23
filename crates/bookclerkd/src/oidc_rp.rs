@@ -988,6 +988,7 @@ async fn put_oidc_config(
 #[utoipa::path(
     get,
     path = "/api/auth/oidc/identities",
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "The caller's linked identities.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
@@ -1065,6 +1066,7 @@ async fn login_start(
     get,
     path = "/api/auth/oidc/elevate",
     params(ProviderQuery),
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 302, description = "Redirects to the identity provider for re-authentication."),
         (status = 401, description = "The caller is not signed in."),

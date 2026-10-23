@@ -210,6 +210,7 @@ pub struct ConsentBody {
     post,
     path = "/oidc/authorize",
     request_body(content = ConsentBody, content_type = "application/x-www-form-urlencoded"),
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 302, description = "Redirects to the client with a code or `access_denied`."),
         (status = 400, description = "The request is invalid."),
