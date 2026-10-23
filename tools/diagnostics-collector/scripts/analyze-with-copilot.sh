@@ -7,6 +7,8 @@
 # The model therefore never holds a token, a shell or a file it could leak.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 REPORTS_FILE=${1:?usage: analyze-with-copilot.sh reports.json}
 REPO=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}
 
@@ -147,85 +149,13 @@ set +e
 status=$?
 set -e
 
-# Validate the plan and turn it into issue files: at most 5 issues, fixed
-# labels, only report IDs that are in this batch (an issue needs at least
-# one), bounded sizes, and no @-mentions, cross-references or forged Report
-# IDs sections.
+# Validate the plan and turn it into issue files (validate_plan.py has the
+# rules and fails when a non-empty plan holds no valid issue).
 ISSUES_DIR="$WORK_DIR/issues"
 mkdir -p "$ISSUES_DIR"
 planned=0
 if [[ $status -eq 0 ]]; then
-  if python3 -I - "$PLAN_FILE" "$DATA_FILE" "$ISSUES_DIR" <<'PY'
-import json, pathlib, re, sys
-
-plan_path, data_path, out_dir = sys.argv[1:4]
-text = pathlib.Path(plan_path).read_text(encoding="utf-8", errors="replace")
-known = {
-    r["report_id"]
-    for r in json.loads(pathlib.Path(data_path).read_text())
-    if isinstance(r.get("report_id"), str)
-}
-
-# Take the first JSON object with an "issues" key, wherever it sits in the reply.
-decoder, plan = json.JSONDecoder(), None
-for i, ch in enumerate(text):
-    if ch != "{":
-        continue
-    try:
-        obj, _ = decoder.raw_decode(text, i)
-    except json.JSONDecodeError:
-        continue
-    if isinstance(obj, dict) and "issues" in obj:
-        plan = obj
-        break
-if plan is None or not isinstance(plan["issues"], list):
-    sys.exit("reply has no JSON plan")
-
-def defang(s: str) -> str:
-    # Break @user / @org/team mentions, #123 / owner/repo#123 / GH-123
-    # references and links to other issues or pull requests.
-    s = re.sub(r"(?i)https?://(?:[a-z0-9-]+\.)*github\.com\S*", "[link removed]", s)
-    s = re.sub(r"@(?=[A-Za-z0-9])", "@\u200b", s)
-    s = re.sub(r"(?i)\bGH-(?=\d)", "GH-\u200b", s)
-    return re.sub(r"#(?=\d)", "#\u200b", s)
-
-def write(path: pathlib.Path, value: str) -> None:
-    path.write_text(value, encoding="utf-8", errors="replace")
-
-n = 0
-for issue in plan["issues"][:5]:
-    if not isinstance(issue, dict):
-        continue
-    title, body, ids = issue.get("title"), issue.get("body"), issue.get("report_ids")
-    if not isinstance(title, str) or not isinstance(body, str) or not isinstance(ids, list):
-        continue
-    ids = list(dict.fromkeys(i for i in ids if isinstance(i, str) and i in known))
-    if not ids:
-        continue
-    title = " ".join(title.split())
-    if not title.startswith("[diagnostics] "):
-        title = "[diagnostics] " + title
-    # Only the script writes the Report IDs section.
-    body = re.sub(r"(?im)^\s*#+\s*report ids\b.*$", "", body[:8000])
-    labels = "diagnostics,bug" if issue.get("bug") is True else "diagnostics"
-    out = pathlib.Path(out_dir) / str(n)
-    out.mkdir()
-    write(out / "title", defang(title[:120]))
-    write(out / "labels", labels)
-    write(
-        out / "body",
-        "<!-- bookclerk-diagnostics: copilot triage -->\n"
-        + defang(body)
-        + "\n\n### Report IDs\n"
-        + "".join(f"- `{i}`\n" for i in ids),
-    )
-    n += 1
-
-# An empty plan is a decision; a non-empty one with nothing valid is a bad
-# reply, so let the fallback issue track the batch.
-if plan["issues"] and n == 0:
-    sys.exit("plan has no valid issues")
-PY
+  if python3 -I "$SCRIPT_DIR/validate_plan.py" "$PLAN_FILE" "$DATA_FILE" "$ISSUES_DIR"
   then
     planned=$(find "$ISSUES_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)
   else
