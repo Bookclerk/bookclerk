@@ -78,11 +78,13 @@ versions.
   the site was built with (`main` and every release tag); the default
   version's prefixed URLs redirect to `/docs/<path>`.
 - `<path>` is the file's path without `.md`; a directory's `README.md` is
-  `<dir>/`. The other spelling and old `.html` URLs redirect.
+  `<dir>/`. The other spelling and old `.html` URLs redirect, and `<dir>/`
+  without a README goes to `<dir>/index` (rustdoc's crate pages).
 - Only refs in the version list and paths of plain segments (letters,
   digits, `.`, `_`, `-`, none starting with `.`) are fetched, from
   `raw.githubusercontent.com` with redirects refused. Files over 4 MB are
-  refused, and a failing fetch is a 503, never a partial page.
+  refused (also when the body has no length and runs past it), and a failing
+  fetch is a 503, never a partial page.
 - Each page is rendered into the shell `build.mjs` bakes from `src/doc.html`
   (`%%name%%` holes take escaped values, `<!--name-->` markers take the
   rendered parts). Links between docs stay in the same version, links to
@@ -90,10 +92,17 @@ versions.
   Markdown is shown as text.
 - Caching: GitHub responses and rendered pages are cached at the edge, for
   a day for release tags (which never move), five minutes for `main` and a
-  minute for missing files.
+  minute for missing files. Rendered pages are keyed by the version's ref
+  and a hash of the shell, so a deploy (a new release, sidebar or template)
+  starts fresh; browsers keep any docs page for five minutes, since each
+  carries the version picker.
 - The sidebar, `sitemap.xml` and `llms.txt` come from the `docs/` the site
   is built with (the newest release tag's, else `main`'s), so a new doc
-  appears there on the next deploy.
+  appears there on the next deploy. Every version shares that sidebar; a
+  doc that exists in one version only is still reachable by its links.
+- Only the default version is indexed: pages of `main` (once a release
+  exists) and of older releases are sent with `X-Robots-Tag: noindex`. The
+  picker lists the newest 100 releases.
 
 ## Search engines, link previews and agents
 

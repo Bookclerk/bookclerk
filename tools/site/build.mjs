@@ -30,6 +30,7 @@
 // Every value is validated before it reaches a template, and every template
 // value is HTML-escaped.
 
+import { createHash } from "node:crypto";
 import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -151,9 +152,10 @@ function displayDate(iso) {
  * @returns {{release: {tag: string, date: string} | null, commit: string,
  *   builtOn: string, origin: string, docsTags: string[]}}
  *   `release` is null when no release exists yet. `docsTags` are the release
- *   tags with docs, newest first, starting with the release's tag.
- * @throws {Error} When a value is present but malformed, a release tag
- *   comes without its date, or there are more than MAX_DOCS_VERSIONS tags.
+ *   tags with docs, newest first, starting with the release's tag, at most
+ *   MAX_DOCS_VERSIONS of them.
+ * @throws {Error} When a value is present but malformed, or a release tag
+ *   comes without its date.
  */
 export function readState(env) {
   const tag = (env.SITE_RELEASE_TAG ?? "").trim();
@@ -185,10 +187,8 @@ export function readState(env) {
   if (!DATE_RE.test(date)) {
     throw new Error(`SITE_RELEASE_DATE must be YYYY-MM-DD when a release tag is set, got ${JSON.stringify(date)}`);
   }
-  const docsTags = [...new Set([tag, ...listed])];
-  if (docsTags.length > MAX_DOCS_VERSIONS) {
-    throw new Error(`SITE_DOCS_VERSIONS lists ${docsTags.length} tags; the picker holds at most ${MAX_DOCS_VERSIONS}`);
-  }
+  // The picker keeps the newest MAX_DOCS_VERSIONS tags; older ones drop off.
+  const docsTags = [...new Set([tag, ...listed])].slice(0, MAX_DOCS_VERSIONS);
   return { release: { tag, date }, commit, builtOn, origin, docsTags };
 }
 
@@ -409,7 +409,9 @@ export function buildDocsShell(context, partials, rendered, versions) {
   for (const marker of SHELL_MARKERS) {
     if (html.split(`<!--${marker}-->`).length !== 2) throw new Error(`docs shell needs exactly one <!--${marker}-->`);
   }
-  return { html, origin: context.values.origin, repository: REPOSITORY_URL, versions, nav: rendered.nav };
+  const shell = { html, origin: context.values.origin, repository: REPOSITORY_URL, versions, nav: rendered.nav };
+  const id = createHash("sha256").update(JSON.stringify(shell)).digest("hex").slice(0, 16);
+  return { id, ...shell };
 }
 
 /**

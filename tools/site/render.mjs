@@ -498,6 +498,8 @@ export function fillShell(shell, values, markers) {
  * Everything build.mjs bakes into the Worker for docs pages.
  *
  * @typedef {object} DocsShell
+ * @property {string} id A hash of the rest of the shell, so caches keyed by
+ *   it drop pages from an earlier deploy.
  * @property {string} html src/doc.html rendered for the site, with
  *   SHELL_VALUES holes and SHELL_MARKERS markers left to fill.
  * @property {string} origin The site's origin.

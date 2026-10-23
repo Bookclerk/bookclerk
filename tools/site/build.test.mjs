@@ -249,6 +249,10 @@ test("the docs versions follow the releases", () => {
   ]);
   assert.throws(() => readState({ ...REL, SITE_DOCS_VERSIONS: "v0.1.0 ../main" }), /SITE_DOCS_VERSIONS/);
   assert.throws(() => readState({ ...PRE, SITE_DOCS_VERSIONS: "v0.1.0" }), /SITE_RELEASE_TAG/);
+  const many = Array.from({ length: 150 }, (_, i) => `v0.${149 - i}.0`);
+  const capped = readState({ ...REL, SITE_RELEASE_TAG: "v0.149.0", SITE_DOCS_VERSIONS: many.join(" ") });
+  assert.equal(capped.docsTags.length, 100);
+  assert.equal(capped.docsTags[99], "v0.50.0", "the newest tags are kept");
 });
 
 test("the docs shell has every hole and marker the Worker fills, once", () => {

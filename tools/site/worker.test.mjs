@@ -165,9 +165,9 @@ test("docsTarget reads versions and paths", () => {
     { ref: "main", label: "Development (main)", base: "/docs/v/main/" },
   ];
   const [latest, main] = versions;
-  assert.deepEqual(docsTarget("/docs/", versions), { kind: "page", version: latest, keys: ["README"] });
+  assert.deepEqual(docsTarget("/docs/", versions), { kind: "page", version: latest, keys: ["README", "index"] });
   assert.deepEqual(docsTarget("/docs/plugins", versions), { kind: "page", version: latest, keys: ["plugins", "plugins/README"] });
-  assert.deepEqual(docsTarget("/docs/api/", versions), { kind: "page", version: latest, keys: ["api/README", "api"] });
+  assert.deepEqual(docsTarget("/docs/api/", versions), { kind: "page", version: latest, keys: ["api/README", "api/index", "api"] });
   assert.deepEqual(docsTarget("/docs/plugins.md", versions), { kind: "markdown", version: latest, keys: ["plugins"] });
   assert.deepEqual(docsTarget("/docs/v/main/sql-contract/v1", versions), {
     kind: "page",
@@ -284,7 +284,8 @@ test("a browser gets the doc in the site's page, with its version and sidebar", 
   assert.equal(res.status, 200);
   assert.match(res.headers.get("Content-Type"), /^text\/html/);
   assert.equal(res.headers.get("Vary"), "Accept");
-  assert.equal(res.headers.get("Cache-Control"), "public, max-age=86400");
+  assert.equal(res.headers.get("Cache-Control"), "public, max-age=300, s-maxage=86400");
+  assert.equal(res.headers.get("X-Robots-Tag"), null);
   assert.equal(res.headers.get("Link"), '<https://bookclerk.app/docs/plugins.md>; rel="alternate"; type="text/markdown"');
   const html = await res.text();
   assert.match(html, /^<!doctype html>/);
@@ -308,7 +309,8 @@ test("a browser gets the doc in the site's page, with its version and sidebar", 
 
 test("main's docs say they are the development version and link within main", async () => {
   const res = await get("/docs/v/main/plugins", BROWSER);
-  assert.equal(res.headers.get("Cache-Control"), "public, max-age=300");
+  assert.equal(res.headers.get("Cache-Control"), "public, max-age=300, s-maxage=300");
+  assert.equal(res.headers.get("X-Robots-Tag"), "noindex", "only the default version is indexed");
   const html = await res.text();
   assert.match(html, /class="doc-note"/);
   assert.match(html, /<a href="\/docs\/v\/main\/plugins" aria-current="page">/);
@@ -323,6 +325,15 @@ test("generated pages render without a source link and keep links inside the tre
   assert.match(html, /<h2 id="thing">/);
 });
 
+test("a directory whose entry page is index serves it", async () => {
+  const dir = await get("/docs/api/rust/demo/", BROWSER);
+  assert.equal(dir.status, 301);
+  assert.equal(dir.headers.get("Location"), "https://bookclerk.app/docs/api/rust/demo/index");
+  const old = await get("/docs/api/rust/demo/index.html", BROWSER);
+  assert.equal(old.status, 301);
+  assert.equal(old.headers.get("Location"), "https://bookclerk.app/docs/api/rust/demo/");
+});
+
 test("raw HTML in a doc is shown as text", async () => {
   // docs/cluster-hosts.md says "Let **<branch>** join".
   assert.match(await (await get("/docs/cluster-hosts", BROWSER)).text(), /&lt;branch&gt;/);
@@ -331,15 +342,28 @@ test("raw HTML in a doc is shown as text", async () => {
 test("a failing or oversized docs repository answer is a 503, not a page", async () => {
   const down = async () => new Response("oops", { status: 502 });
   const big = async () => new Response("x", { headers: { "Content-Length": String(MAX_DOC_BYTES + 1) } });
-  for (const fetcher of [down, big, async () => Promise.reject(new Error("network"))]) {
+  // No Content-Length: the body is cut off once it passes the cap.
+  const chunk = new Uint8Array(1024 * 1024);
+  let sent = 0;
+  const endless = async () =>
+    new Response(
+      new ReadableStream({
+        pull(controller) {
+          sent += chunk.byteLength;
+          controller.enqueue(chunk);
+        },
+      }),
+    );
+  for (const fetcher of [down, big, endless, async () => Promise.reject(new Error("network"))]) {
     const req = new Request("https://bookclerk.app/docs/plugins", { headers: { Accept: BROWSER } });
     const res = await handle(req, env, { shell, fetch: fetcher });
     assert.equal(res.status, 503);
     assert.equal(res.headers.get("Cache-Control"), "no-store");
   }
+  assert.ok(sent <= MAX_DOC_BYTES + 2 * chunk.byteLength, `read ${sent} bytes`);
 });
 
-test("rendered pages are cached per path and format", async () => {
+test("rendered pages are cached per deploy, version, path and format", async () => {
   const store = new Map();
   const cache = {
     match: async (req) => store.get(req.url)?.clone(),
@@ -354,7 +378,8 @@ test("rendered pages are cached per path and format", async () => {
     await Promise.all(pending);
   }
   assert.equal(fetched.length, 1);
-  assert.deepEqual([...store.keys()], ["https://bookclerk.app/docs/plugins?format=html"]);
+  assert.deepEqual([...store.keys()], [`https://bookclerk.app/docs/plugins?format=html&ref=v0.2.0&shell=${shell.id}`]);
+  assert.match(shell.id, /^[0-9a-f]{16}$/);
   const head = await handle(new Request("https://bookclerk.app/docs/plugins", { method: "HEAD", headers: { Accept: BROWSER } }), env, deps);
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");

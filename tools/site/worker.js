@@ -78,6 +78,23 @@ const MAIN_TTL = 5 * 60;
 const MISSING_TTL = 60;
 
 /**
+ * Browser cache lifetime of a rendered docs page, in seconds. Every page
+ * carries the deploy's version picker and sidebar, so browsers keep it no
+ * longer than main's pages even when the edge keeps it for a day.
+ */
+const BROWSER_TTL = MAIN_TTL;
+
+/**
+ * Edge cache lifetime of a docs version's files and pages.
+ *
+ * @param {string} ref The docs version's git ref.
+ * @returns {number} Seconds: MAIN_TTL for main, TAG_TTL for a release tag.
+ */
+function ttlFor(ref) {
+  return ref === "main" ? MAIN_TTL : TAG_TTL;
+}
+
+/**
  * Reads how strongly an Accept header asks for Markdown and for HTML.
  *
  * The most specific range that matches decides, as RFC 9110 says: an HTML
@@ -199,7 +216,7 @@ export function docsTarget(pathname, versions) {
     return { kind: "redirect", location: version.base + page };
   }
   if (rest === "" || rest.endsWith("/")) {
-    const keys = [`${rest}README`];
+    const keys = [`${rest}README`, `${rest}index`];
     if (rest !== "") keys.push(rest.slice(0, -1));
     return { kind: "page", version, keys };
   }
@@ -218,7 +235,7 @@ export function docsTarget(pathname, versions) {
  *   MAX_DOC_BYTES.
  */
 export async function fetchDoc(ref, key, fetcher) {
-  const ttl = ref === "main" ? MAIN_TTL : TAG_TTL;
+  const ttl = ttlFor(ref);
   const response = await fetcher(`${DOCS_RAW_BASE}${ref}/${key}.md`, {
     redirect: "error",
     cf: { cacheEverything: true, cacheTtlByStatus: { "200-299": ttl, 404: MISSING_TTL, "500-599": 0 } },
@@ -227,9 +244,40 @@ export async function fetchDoc(ref, key, fetcher) {
   if (!response.ok) throw new Error(`docs repository answered ${response.status} for ${ref}/${key}.md`);
   const declared = Number(response.headers.get("Content-Length") ?? "0");
   if (declared > MAX_DOC_BYTES) throw new Error(`${ref}/${key}.md is ${declared} bytes`);
-  const body = await response.arrayBuffer();
-  if (body.byteLength > MAX_DOC_BYTES) throw new Error(`${ref}/${key}.md is ${body.byteLength} bytes`);
-  return new TextDecoder("utf-8", { fatal: false }).decode(body);
+  return new TextDecoder("utf-8", { fatal: false }).decode(await readCapped(response, `${ref}/${key}.md`));
+}
+
+/**
+ * Reads a response body, giving up as soon as it passes MAX_DOC_BYTES, so a
+ * body without Content-Length cannot make the Worker buffer it whole.
+ *
+ * @param {Response} response The docs repository's answer.
+ * @param {string} name The file, for the error message.
+ * @returns {Promise<Uint8Array>} The body.
+ * @throws {Error} When the body is over MAX_DOC_BYTES.
+ */
+async function readCapped(response, name) {
+  if (response.body === null) return new Uint8Array(0);
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > MAX_DOC_BYTES) {
+      await reader.cancel();
+      throw new Error(`${name} is over ${MAX_DOC_BYTES} bytes`);
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
 }
 
 /**
@@ -304,9 +352,14 @@ async function serveDocs(request, url, deps) {
   if (target.kind === "redirect") return redirect(url, target.location);
   if (target.kind === "missing") return notFound(url, request.method, wantsMarkdown, deps.assets);
 
-  // Rendered pages are cached by version, path and format; the query string
-  // is not part of a docs page, so it is left out of the key.
-  const cacheKey = new Request(`${url.origin}${url.pathname}?format=${wantsMarkdown ? "md" : "html"}`);
+  // Rendered pages are cached by deploy, version, path and format: the shell
+  // id changes whenever the picker, sidebar or page template does, and the ref
+  // changes what `/docs/<path>` holds after a release. The query string is
+  // not part of a docs page, so it is left out of the key.
+  const format = wantsMarkdown ? "md" : "html";
+  const cacheKey = new Request(
+    `${url.origin}${url.pathname}?format=${format}&ref=${encodeURIComponent(target.version.ref)}&shell=${encodeURIComponent(deps.shell.id)}`,
+  );
   if (deps.cache) {
     const hit = await deps.cache.match(cacheKey);
     if (hit) return request.method === "HEAD" ? new Response(null, hit) : hit;
@@ -335,9 +388,12 @@ async function serveDocs(request, url, deps) {
   const page = docUrl(key, version.base);
   if (target.kind === "page" && page !== url.pathname) return redirect(url, page);
 
-  const ttl = version.ref === "main" ? MAIN_TTL : TAG_TTL;
   const rendered = renderDocPage(deps.shell, source, key, { ref: version.ref, base: version.base });
-  const common = { "Cache-Control": `public, max-age=${ttl}`, Vary: "Accept" };
+  /** @type {Record<string, string>} */
+  const common = { "Cache-Control": `public, max-age=${BROWSER_TTL}, s-maxage=${ttlFor(version.ref)}`, Vary: "Accept" };
+  // Only the default version is for search engines; older releases and main
+  // (once a release exists) are reachable but not indexed.
+  if (version !== deps.shell.versions[0]) common["X-Robots-Tag"] = "noindex";
   const response = wantsMarkdown
     ? withHeaders(new Response(rendered.markdown), { ...common, "Content-Type": MARKDOWN_CONTENT_TYPE, Link: `<${url.origin}${page}>; rel="canonical"` })
     : withHeaders(new Response(rendered.html), {
