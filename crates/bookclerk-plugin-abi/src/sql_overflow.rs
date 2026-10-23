@@ -141,7 +141,7 @@ fn wrap_integer_arith(
         || site.lhs.end > sql.len()
         || site.rhs.end > sql.len()
         || site.lhs.start >= site.lhs.end
-        || site.rhs.start > site.rhs.end
+        || site.rhs.start >= site.rhs.end
         || site.full.start >= site.full.end
         || !sql.is_char_boundary(site.full.start)
         || !sql.is_char_boundary(site.full.end)
