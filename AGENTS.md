@@ -56,8 +56,11 @@ Untrusted input ([ADR](docs/adr/untrusted-input-fuzzing.md)):
   `cargo-fuzz` target in `fuzz/`, a seed corpus in `fuzz/corpus/<target>/`
   and a replay test in the owning crate, in the same pull request that adds
   or widens the boundary. Targets assert the boundary's invariant against an
-  independent oracle where one exists, not only "no panic". The boundary
-  list lives in [`docs/ci.md`](docs/ci.md#fuzzing); keep it current.
+  independent oracle where one exists, not only "no panic". A boundary in
+  non-Rust tooling (CI scripts, Workers) instead ships with a sans-IO
+  parser, seed corpus, replay test and fuzzing in its own language, checked
+  against an oracle (ADR decision 6). The boundary list lives in
+  [`docs/ci.md`](docs/ci.md#fuzzing); keep it current.
 - Write boundary parsing sans-IO (a function over a byte slice or a state
   machine fed by one) so the fuzzer and the unit tests drive the same code
   the server does.
