@@ -13,7 +13,7 @@ import { build, docsVersions, escapeHtml, inlineLogo, jsonLd, readState, render,
 const PRE = { SITE_COMMIT: "b6adae4d0123456789abcdef0123456789abcdef", SITE_BUILT_ON: "2026-10-23" };
 
 /** Release state after a first release. */
-const REL = { ...PRE, SITE_RELEASE_TAG: "v0.1.0", SITE_RELEASE_DATE: "2026-12-01" };
+const REL = { ...PRE, SITE_RELEASE_TAG: "v0.1.0", SITE_RELEASE_DATE: "2026-12-01", SITE_DOCS_VERSIONS: "v0.1.0" };
 
 /**
  * Builds the site into a temporary directory.
@@ -83,9 +83,12 @@ test("render fails on unknown names instead of leaving holes", () => {
   assert.throws(() => render("{{ spaced }}", ctx, {}), /unrendered/);
 });
 
-test("repository links follow the release tag", () => {
+test("repository links follow the docs' release tag", () => {
   assert.match(templateContext(readState(PRE)).values.blobBase, /\/blob\/[0-9a-f]{7,40}\/$/);
   assert.match(templateContext(readState(REL)).values.blobBase, /\/blob\/v0\.1\.0\/$/);
+  const unpublished = templateContext(readState({ ...REL, SITE_DOCS_VERSIONS: "" }));
+  assert.match(unpublished.values.blobBase, /\/blob\/[0-9a-f]{7,40}\/$/);
+  assert.equal(unpublished.values.docsVersion, "Development (main)");
 });
 
 test("inlineLogo keeps the wordmark recolorable and drops editor attributes", () => {
@@ -241,7 +244,9 @@ test("home and download pages have Markdown versions that keep their sections", 
 
 test("the docs versions follow the releases", () => {
   assert.deepEqual(docsVersions(readState(PRE)), [{ ref: "main", label: "Development (main)", base: "/docs/" }]);
-  const state = readState({ ...REL, SITE_RELEASE_TAG: "v0.2.0", SITE_DOCS_VERSIONS: "v0.2.0\nv0.1.0" });
+  // A release whose docs are not published yet leaves /docs/ on main.
+  assert.deepEqual(docsVersions(readState({ ...REL, SITE_DOCS_VERSIONS: "" })), [{ ref: "main", label: "Development (main)", base: "/docs/" }]);
+  const state = readState({ ...REL, SITE_RELEASE_TAG: "v0.3.0", SITE_DOCS_VERSIONS: "v0.2.0\nv0.1.0" });
   assert.deepEqual(docsVersions(state), [
     { ref: "v0.2.0", label: "v0.2.0 (latest)", base: "/docs/" },
     { ref: "main", label: "Development (main)", base: "/docs/v/main/" },

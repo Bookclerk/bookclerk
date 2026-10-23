@@ -27,7 +27,7 @@ instead of `main`'s.
 | --- | --- |
 | `SITE_RELEASE_TAG` | newest release tag (`v1.2.3`); empty means no release |
 | `SITE_RELEASE_DATE` | that release's date, `YYYY-MM-DD` |
-| `SITE_DOCS_VERSIONS` | every release tag, whitespace-separated, newest first, for the docs version picker; needs `SITE_RELEASE_TAG` |
+| `SITE_DOCS_VERSIONS` | the release tags whose docs bookclerk-docs has tagged, whitespace-separated, newest first, for the docs version picker; needs `SITE_RELEASE_TAG` |
 | `SITE_COMMIT` | commit the site is built from |
 | `SITE_BUILT_ON` | build date, `YYYY-MM-DD` (default: today) |
 | `SITE_ORIGIN` | `https://<host>` the site is served from, for canonical and preview URLs (default `https://bookclerk.app`) |
@@ -73,8 +73,10 @@ generated API reference under `api/`. The Worker reads pages from it rather
 than deploying them, so the Worker's size does not grow with the number of
 versions.
 
-- `/docs/<path>` is the default version: the newest release, or `main`
-  before the first release. `/docs/v/<ref>/<path>` is any other version
+- `/docs/<path>` is the default version: the newest release whose docs are
+  published, or `main` before that. A release's docs are tagged by
+  `docs-publish` after the release event, and `site-deploy` runs again when
+  that finishes. `/docs/v/<ref>/<path>` is any other version
   the site was built with (`main` and every release tag); the default
   version's prefixed URLs redirect to `/docs/<path>`.
 - `<path>` is the file's path without `.md`; a directory's `README.md` is

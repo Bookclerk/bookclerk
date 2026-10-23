@@ -19,9 +19,11 @@
 //                      unset means "no release yet", which renders every
 //                      pre-release notice
 //   SITE_RELEASE_DATE  that release's publish date, YYYY-MM-DD
-//   SITE_DOCS_VERSIONS every published release tag, whitespace-separated,
-//                      newest first; each gets docs at /docs/v/<tag>/ (the
-//                      newest release is also /docs/)
+//   SITE_DOCS_VERSIONS the published release tags that bookclerk-docs has a
+//                      tag for, whitespace-separated, newest first; each gets
+//                      docs at /docs/v/<tag>/ and the first is also /docs/.
+//                      A release whose docs are not published yet is left
+//                      out, and with none listed /docs/ stays on main
 //   SITE_COMMIT        commit the site is built from (7-40 hex digits)
 //   SITE_BUILT_ON      build date, YYYY-MM-DD (defaults to today, UTC)
 //   SITE_ORIGIN        origin the site is served from, for canonical and
@@ -152,8 +154,8 @@ function displayDate(iso) {
  * @returns {{release: {tag: string, date: string} | null, commit: string,
  *   builtOn: string, origin: string, docsTags: string[]}}
  *   `release` is null when no release exists yet. `docsTags` are the release
- *   tags with docs, newest first, starting with the release's tag, at most
- *   MAX_DOCS_VERSIONS of them.
+ *   tags with published docs, newest first, at most MAX_DOCS_VERSIONS of
+ *   them; the newest release is not among them until its docs are.
  * @throws {Error} When a value is present but malformed, or a release tag
  *   comes without its date.
  */
@@ -188,7 +190,7 @@ export function readState(env) {
     throw new Error(`SITE_RELEASE_DATE must be YYYY-MM-DD when a release tag is set, got ${JSON.stringify(date)}`);
   }
   // The picker keeps the newest MAX_DOCS_VERSIONS tags; older ones drop off.
-  const docsTags = [...new Set([tag, ...listed])].slice(0, MAX_DOCS_VERSIONS);
+  const docsTags = [...new Set(listed)].slice(0, MAX_DOCS_VERSIONS);
   return { release: { tag, date }, commit, builtOn, origin, docsTags };
 }
 
@@ -197,12 +199,12 @@ export function readState(env) {
  *
  * @param {ReturnType<typeof readState>} state Validated release state.
  * @returns {{ref: string, label: string, base: string}[]} The default
- *   version (served at `/docs/`: the newest release, else main) first, then
- *   main and older releases under `/docs/v/<ref>/`.
+ *   version (served at `/docs/`: the newest release with published docs,
+ *   else main) first, then main and older releases under `/docs/v/<ref>/`.
  */
 export function docsVersions(state) {
   const dev = { ref: "main", label: "Development (main)" };
-  if (state.release === null) return [{ ...dev, base: "/docs/" }];
+  if (state.docsTags.length === 0) return [{ ...dev, base: "/docs/" }];
   const [latest, ...older] = state.docsTags;
   return [
     { ref: latest, label: `${latest} (latest)`, base: "/docs/" },
@@ -222,7 +224,8 @@ export function templateContext(state) {
   const short = state.commit.slice(0, 7);
   // Source links follow the commit the docs came from, so line anchors and
   // moved files stay right until the next deploy.
-  const ref = state.release ? state.release.tag : state.commit;
+  const docsTag = state.docsTags[0] ?? null;
+  const ref = docsTag ?? state.commit;
   return {
     values: {
       origin: state.origin,
@@ -236,7 +239,7 @@ export function templateContext(state) {
       pluginsUrl: "/docs/plugins",
       architectureUrl: "/docs/architecture",
       blobBase: `${REPOSITORY_URL}/blob/${ref}/`,
-      docsVersion: state.release ? state.release.tag : "Development (main)",
+      docsVersion: docsTag ?? "Development (main)",
       releasesUrl: `${REPOSITORY_URL}/releases`,
       releaseTag: state.release?.tag ?? "",
       releaseDate: state.release ? displayDate(state.release.date) : "",

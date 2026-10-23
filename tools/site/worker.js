@@ -5,9 +5,9 @@
 // wrangler.toml runs this script first only for page paths (`run_worker_first`);
 // stylesheets, images and the like are served straight from the assets.
 //
-// Docs: `/docs/<path>` is the default docs version (the newest release, else
-// main) and `/docs/v/<ref>/<path>` any other version the site was built with
-// (main and every release tag). Each page is read from
+// Docs: `/docs/<path>` is the default docs version (the newest release with
+// published docs, else main) and `/docs/v/<ref>/<path>` any other version the
+// site was built with (main and every published release tag). Each page is read from
 // raw.githubusercontent.com/Bookclerk/bookclerk-docs at that ref and rendered
 // with render.mjs into the shell build.mjs baked (generated/docs-shell.json).
 // Only refs in the shell's version list and paths made of plain segments are
