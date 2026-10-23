@@ -67,7 +67,7 @@ def assert_publishable(case: unittest.TestCase, issues: list, label: str) -> Non
     for issue in issues:
         case.assertTrue(issue.title.startswith("[diagnostics] "), label)
         case.assertNotIn("\n", issue.title, label)
-        case.assertLessEqual(len(issue.title), 400, label)
+        case.assertLessEqual(len(issue.title), 120, label)
         case.assertIn(issue.labels, {"diagnostics", "diagnostics,bug"}, label)
         marker, newline, rest = issue.body.partition("\n")
         case.assertTrue(re.fullmatch(r"<!-- bookclerk-diagnostics: [a-z -]+ -->", marker), label)
@@ -122,6 +122,8 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(fenced[0].labels, "diagnostics,bug")
         self.assertEqual(fenced[0].body.lower().count("report ids"), 1)
         self.assertEqual(len(run(load("oversized_plan.txt"))), 5)
+        expanding = json.dumps({"issues": [{"title": "<a" * 200, "body": "b", "report_ids": sorted(KNOWN)}]})
+        self.assertEqual(len(run(expanding)[0].title), 120)
         injected = run(load("injection_plan.txt"))[0]
         self.assertIn("[link removed]", injected.body)
 

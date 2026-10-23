@@ -141,7 +141,7 @@ def plan_issues(text: str, known: set[str]) -> list[Issue]:
         body = re.sub(r"(?im)^\s*#+\s*report ids\b.*$", "", body[:MAX_BODY_CHARS])
         out.append(
             Issue(
-                title=defang(title[:MAX_TITLE_CHARS]),
+                title=defang(title)[:MAX_TITLE_CHARS],
                 labels="diagnostics,bug" if issue.get("bug") is True else "diagnostics",
                 body=MARKER
                 + "\n"
