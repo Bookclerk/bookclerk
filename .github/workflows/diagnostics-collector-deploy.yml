@@ -12,11 +12,20 @@
 #   DIAGNOSTICS_B2_APPLICATION_KEY
 #   DIAGNOSTICS_B2_BUCKET_ID
 #
-# Organization variable DOMAIN (default bookclerk.app): the Worker is
-# served on the custom domain diagnostics.<DOMAIN>, whose zone must be in
-# the Cloudflare account. On success, stores https://diagnostics.<DOMAIN>
-# in repository variable DIAGNOSTICS_COLLECTOR_BASE_URL (ingest workflow + CI
-# release builds).
+# Where the Worker is served:
+#   DOMAIN set (organization or repository variable): the custom domain
+#     diagnostics.<DOMAIN>, whose zone must be in the Cloudflare account.
+#     Readers (ingest workflow, CI release builds) derive the same URL from
+#     DOMAIN, so nothing is written back.
+#   DOMAIN unset (a fork with its own Cloudflare account): the account's
+#     workers.dev subdomain, read from the deploy output. Readers cannot
+#     derive that, so it is stored in Actions variable
+#     DIAGNOSTICS_COLLECTOR_BASE_URL, on the organization when possible and
+#     otherwise on the repository. GITHUB_TOKEN cannot write variables; the
+#     write uses the automation App (AUTOMATION_APP_CLIENT_ID /
+#     AUTOMATION_APP_PRIVATE_KEY, organization and/or repository permission
+#     "Variables: write") when its secrets are set, and otherwise prints the
+#     `gh variable set` command.
 #
 # https://github.com/cloudflare/wrangler-action
 # GITHUB_TOKEN permission keys:
@@ -33,10 +42,8 @@ on:
 
 # Least privilege for GITHUB_TOKEN:
 #   contents → checkout
-#   actions → `gh variable set DIAGNOSTICS_COLLECTOR_BASE_URL` (Actions variables API)
 permissions:
   contents: read
-  actions: write
 
 concurrency:
   group: diagnostics-collector-deploy
@@ -78,12 +85,19 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-      - name: Route the Worker to its custom domain
+      - name: Route the Worker
         id: route
         env:
-          DOMAIN: ${{ vars.DOMAIN || 'bookclerk.app' }}
+          DOMAIN: ${{ vars.DOMAIN }}
         run: |
           set -euo pipefail
+          if [ -z "$DOMAIN" ]; then
+            # No custom domain: serve on the account's workers.dev subdomain.
+            sed -i 's/^workers_dev = false$/workers_dev = true/' wrangler.toml
+            grep -qx 'workers_dev = true' wrangler.toml
+            echo "mode=workers_dev" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # [[ =~ ]] matches the whole value, so a trailing newline is rejected.
           hostname_re='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
           if [[ ! "$DOMAIN" =~ $hostname_re ]]; then
@@ -92,6 +106,7 @@ jobs:
           fi
           host="diagnostics.${DOMAIN}"
           printf '\n[[routes]]\npattern = "%s"\ncustom_domain = true\n' "$host" >> wrangler.toml
+          echo "mode=custom_domain" >> "$GITHUB_OUTPUT"
           echo "url=https://${host}" >> "$GITHUB_OUTPUT"
 
       - name: Deploy Worker
@@ -113,11 +128,98 @@ jobs:
           B2_BUCKET_ID: ${{ secrets.DIAGNOSTICS_B2_BUCKET_ID }}
           REPORT_API_KEY: ${{ secrets.DIAGNOSTICS_REPORT_API_KEY }}
 
-      - name: Set collector URL repository variable
+      - name: Resolve the collector URL
+        id: url
         env:
-          URL: ${{ steps.route.outputs.url }}
-          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ steps.route.outputs.mode }}
+          ROUTE_URL: ${{ steps.route.outputs.url }}
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment-url }}
         run: |
           set -euo pipefail
-          echo "Collector URL: $URL"
-          gh variable set DIAGNOSTICS_COLLECTOR_BASE_URL --body "$URL"
+          if [ "$MODE" = custom_domain ]; then
+            url="$ROUTE_URL"
+          else
+            url="${DEPLOYMENT_URL%/}"
+            # <worker name from wrangler.toml>.<account subdomain>.workers.dev
+            workers_dev_re='^https://[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.workers\.dev$'
+            if [[ ! "$url" =~ $workers_dev_re ]]; then
+              echo "::error::Deploy did not report a workers.dev URL: $url"
+              exit 1
+            fi
+          fi
+          echo "Collector URL: $url"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Check the collector answers
+        env:
+          URL: ${{ steps.url.outputs.url }}
+        run: |
+          set -euo pipefail
+          # A new custom domain or workers.dev subdomain can take a few
+          # minutes to answer; allow about six.
+          for attempt in 1 2 3 4 5 6 7 8; do
+            if body=$(curl -fsS --max-time 10 "$URL/health"); then
+              echo "$body"
+              exit 0
+            fi
+            [ "$attempt" -lt 8 ] && sleep $((attempt * 10))
+          done
+          echo "::error::$URL/health did not answer after deploy"
+          exit 1
+
+      # Only the workers.dev URL needs storing; DOMAIN readers derive theirs.
+      - name: Check whether the collector URL variable needs writing
+        id: record
+        if: steps.route.outputs.mode == 'workers_dev'
+        env:
+          URL: ${{ steps.url.outputs.url }}
+          CURRENT: ${{ vars.DIAGNOSTICS_COLLECTOR_BASE_URL }}
+          HAS_APP: ${{ secrets.AUTOMATION_APP_CLIENT_ID != '' && secrets.AUTOMATION_APP_PRIVATE_KEY != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$CURRENT" = "$URL" ]; then
+            echo "DIAGNOSTICS_COLLECTOR_BASE_URL is already $URL"
+            echo "write=false" >> "$GITHUB_OUTPUT"
+          elif [ "$HAS_APP" = true ]; then
+            echo "write=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Set the collector URL by hand: gh variable set DIAGNOSTICS_COLLECTOR_BASE_URL --repo $GITHUB_REPOSITORY --body $URL"
+            echo "write=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The installation-token API has no Variables permission to request
+      # (only listed permissions can be narrowed to), so the token carries the
+      # installation's permissions; it is used for this one write and revoked
+      # when the job ends.
+      - name: Mint variable-write token
+        id: app-token
+        if: steps.record.outputs.write == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+
+      - name: Store the collector URL
+        if: steps.record.outputs.write == 'true'
+        env:
+          URL: ${{ steps.url.outputs.url }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          name=DIAGNOSTICS_COLLECTOR_BASE_URL
+          owner="${GITHUB_REPOSITORY%%/*}"
+          # Prefer the organization (like DOMAIN); a user-owned fork, or an App
+          # without the organization "Variables" permission, falls back to
+          # the repository.
+          if gh variable set "$name" --org "$owner" --visibility all --body "$URL"; then
+            echo "Stored $name on organization $owner"
+            # A repository variable overrides the organization one, so keep a
+            # stale one from shadowing the new URL.
+            if gh variable get "$name" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh variable set "$name" --repo "$GITHUB_REPOSITORY" --body "$URL"
+              echo "Updated the repository's own $name too"
+            fi
+          else
+            echo "::notice::Organization variable write failed; storing $name on the repository"
+            gh variable set "$name" --repo "$GITHUB_REPOSITORY" --body "$URL"
+          fi

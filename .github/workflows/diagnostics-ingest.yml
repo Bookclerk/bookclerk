@@ -8,7 +8,9 @@
 #     never in Bookclerk builds.
 #
 # Worker deploy: .github/workflows/diagnostics-collector-deploy.yml
-# Collector URL: repository variable DIAGNOSTICS_COLLECTOR_BASE_URL (set by deploy)
+# Collector URL: https://diagnostics.<DOMAIN> when variable DOMAIN is set,
+# otherwise Actions variable DIAGNOSTICS_COLLECTOR_BASE_URL (the
+# workers.dev URL the deploy stores)
 #
 # Permission names:
 #   https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#repository-permissions
@@ -57,13 +59,24 @@ jobs:
       - name: Resolve collector base URL
         id: collector
         env:
-          BASE: ${{ vars.DIAGNOSTICS_COLLECTOR_BASE_URL }}
+          DOMAIN: ${{ vars.DOMAIN }}
+          STORED: ${{ vars.DIAGNOSTICS_COLLECTOR_BASE_URL }}
         run: |
           set -euo pipefail
-          BASE="${BASE%/}"
-          if [ -z "$BASE" ]; then
-            echo "::error::DIAGNOSTICS_COLLECTOR_BASE_URL is unset — run diagnostics-collector-deploy on main first"
-            exit 1
+          if [ -n "$DOMAIN" ]; then
+            # [[ =~ ]] matches the whole value, so a trailing newline is rejected.
+            hostname_re='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
+            if [[ ! "$DOMAIN" =~ $hostname_re ]]; then
+              echo "::error::DOMAIN is not a lowercase hostname: $DOMAIN"
+              exit 1
+            fi
+            BASE="https://diagnostics.${DOMAIN}"
+          else
+            BASE="${STORED%/}"
+            if [ -z "$BASE" ]; then
+              echo "::error::Set DOMAIN, or run diagnostics-collector-deploy to store DIAGNOSTICS_COLLECTOR_BASE_URL"
+              exit 1
+            fi
           fi
           echo "Using collector URL: $BASE"
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
