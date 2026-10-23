@@ -244,37 +244,48 @@ function describe(tokens) {
   return sections.length === 0 ? "" : shorten(`Covers ${sections.join(", ")}.`);
 }
 
+/** An inline link's target and optional title: `](target "title")`. */
+const INLINE_LINK_RE = /\]\(([^()\s<>]+)((?:\s+(?:"[^"]*"|'[^']*'))?)\)/g;
+
+/** A link reference definition: `[label]: target`. */
+const REFERENCE_DEF_RE = /^( {0,3}\[[^\]]+\]:[ \t]*)(\S+)/gm;
+
 /**
  * Rewrites a doc's Markdown source for publishing beside its page.
  *
- * Only link targets change, and only those markdown-it parsed as links, so
- * code samples are left alone.
+ * Link targets in inline links and reference definitions are rewritten
+ * whole; fenced code blocks and inline code spans are left alone.
  *
  * @param {string} source The doc's Markdown.
- * @param {import("markdown-it/lib/token.mjs").default[]} tokens Its parsed tokens.
  * @param {string} docKey The doc's key.
  * @param {Set<string>} keys Every doc on the site.
  * @param {string} blobBase See {@link rewriteLink}.
  * @returns {string} The Markdown with doc links pointing at the other
  *   Markdown copies and repository links pointing at GitHub.
  */
-function siteMarkdown(source, tokens, docKey, keys, blobBase) {
-  const hrefs = new Set();
-  const visit = (list) => {
-    for (const t of list) {
-      if (t.type === "link_open") hrefs.add(t.attrGet("href") ?? "");
-      if (t.children) visit(t.children);
-    }
-  };
-  visit(tokens);
-  let out = source;
-  for (const href of hrefs) {
-    const to = rewriteLink(href, docKey, keys, blobBase, docMarkdownUrl);
-    if (to === href) continue;
-    // Inline links `](href` and reference definitions `]: href`.
-    out = out.replaceAll(`](${href}`, `](${to}`).replaceAll(`]: ${href}`, `]: ${to}`);
-  }
-  return out;
+export function siteMarkdown(source, docKey, keys, blobBase) {
+  const rewrite = (text) =>
+    text
+      .replace(INLINE_LINK_RE, (_, href, title) => `](${rewriteLink(href, docKey, keys, blobBase, docMarkdownUrl)}${title})`)
+      .replace(REFERENCE_DEF_RE, (_, head, href) => head + rewriteLink(href, docKey, keys, blobBase, docMarkdownUrl));
+  // Odd-numbered pieces of a split on backtick runs are inline code.
+  const outsideCode = (line) =>
+    line
+      .split(/(`+[^`]*`+)/)
+      .map((piece, i) => (i % 2 === 1 ? piece : rewrite(piece)))
+      .join("");
+  let fence = null;
+  return source
+    .split("\n")
+    .map((line) => {
+      const marker = line.match(/^ {0,3}(`{3,}|~{3,})/);
+      if (marker && (fence === null || marker[1].startsWith(fence))) {
+        fence = fence === null ? marker[1] : null;
+        return line;
+      }
+      return fence === null ? outsideCode(line) : line;
+    })
+    .join("\n");
 }
 
 /**
@@ -302,8 +313,7 @@ export function renderDocs(docsRoot, blobBase) {
     const title = heading ? heading[1].replace(/`/g, "") : key;
     const md = renderer(key, keys, blobBase);
     const tokens = md.parse(source, {});
-    // Before rendering, which rewrites the link tokens in place.
-    const markdown = siteMarkdown(source, tokens, key, keys, blobBase);
+    const markdown = siteMarkdown(source, key, keys, blobBase);
     return {
       key,
       title,

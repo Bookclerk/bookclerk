@@ -2,7 +2,7 @@
 // rendered pages in both release states. Run with `npm test`.
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -55,7 +55,6 @@ test("readState rejects malformed values", () => {
     { ...PRE, SITE_ORIGIN: "https://bookclerk.app/" },
     { ...PRE, SITE_ORIGIN: "https://Bookclerk.app" },
     { ...PRE, SITE_ORIGIN: "https://bookclerk.app\"><script>" },
-    { ...PRE, SITE_API_DOCS: "/nonexistent/api" },
   ]) {
     assert.throws(() => readState(env), Error, JSON.stringify(env));
   }
@@ -125,7 +124,6 @@ test("the build publishes pages, styles, headers and brand assets", () => {
       assert.ok(site.files.includes(name), name);
     }
     assert.match(site.page("_headers"), /Content-Security-Policy: default-src 'none'/);
-    assert.ok(site.page("docs/api/index.html").includes("This build has none"));
   } finally {
     site.done();
   }
@@ -134,7 +132,6 @@ test("the build publishes pages, styles, headers and brand assets", () => {
 test("readState defaults the origin and accepts another", () => {
   assert.equal(readState(PRE).origin, "https://bookclerk.app");
   assert.equal(readState({ ...PRE, SITE_ORIGIN: "https://staging.bookclerk.app" }).origin, "https://staging.bookclerk.app");
-  assert.equal(readState(PRE).apiDocs, null);
 });
 
 test("jsonLd cannot close its script element", () => {
@@ -204,31 +201,5 @@ test("crawler and agent files list the site", () => {
     assert.ok(!/\]\((?!https?:|\/|#|mailto:)[^)]*\.md/.test(md));
   } finally {
     site.done();
-  }
-});
-
-test("generated API references are published and listed", () => {
-  const api = mkdtempSync(join(tmpdir(), "bookclerk-api-"));
-  try {
-    for (const file of ["rust/bookclerk_plugin_sdk/index.html", "rust/static.files/main.js", "typescript/index.html", "python/index.html"]) {
-      mkdirSync(join(api, file, ".."), { recursive: true });
-      writeFileSync(join(api, file), "<!doctype html><title>x</title>");
-    }
-    const site = built({ ...PRE, SITE_API_DOCS: api });
-    try {
-      const index = site.page("docs/api/index.html");
-      assert.ok(index.includes('<a href="/docs/api/rust/bookclerk_plugin_sdk/">bookclerk-plugin-sdk</a>'));
-      assert.ok(index.includes("Rust plugin SDK"));
-      assert.ok(!index.includes("Internals, for contributors"));
-      assert.ok(index.includes('<a href="/docs/api/typescript/">'));
-      assert.ok(!index.includes("/docs/api/ui/"));
-      assert.ok(site.page("docs/api/rust/static.files/main.js").length > 0);
-      assert.ok(site.page("sitemap.xml").includes("/docs/api/python/</loc>"));
-      assert.ok(site.page("llms.txt").includes("/docs/api/rust/bookclerk_plugin_sdk/"));
-    } finally {
-      site.done();
-    }
-  } finally {
-    rmSync(api, { recursive: true, force: true });
   }
 });

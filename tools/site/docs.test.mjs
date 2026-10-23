@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { build } from "./build.mjs";
-import { docFile, docUrl, markdownFiles, rewriteLink, slugify } from "./docs.mjs";
+import { docFile, docUrl, markdownFiles, rewriteLink, siteMarkdown, slugify } from "./docs.mjs";
 
 /** GitHub prefix used by the link tests. */
 const BLOB = "https://github.com/Bookclerk/bookclerk/blob/main/";
@@ -102,4 +102,23 @@ test("raw HTML in a doc is shown as text", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("Markdown copies rewrite whole link targets outside code", () => {
+  const md = [
+    "See [media](media.md#codecs \"Media\") and [dir](../examples/echo/) and [file](../examples/echo/plugin.toml).",
+    "Inline `[x](media.md)` stays.",
+    "```md",
+    "[y](media.md)",
+    "```",
+    "[ref]: plugins.md",
+  ].join("\n");
+  const out = siteMarkdown(md, "plugins", KEYS, BLOB).split("\n");
+  assert.equal(
+    out[0],
+    'See [media](/docs/media.md#codecs "Media") and [dir](https://github.com/Bookclerk/bookclerk/tree/main/examples/echo/) and [file](https://github.com/Bookclerk/bookclerk/blob/main/examples/echo/plugin.toml).',
+  );
+  assert.equal(out[1], "Inline `[x](media.md)` stays.");
+  assert.equal(out[3], "[y](media.md)");
+  assert.equal(out[5], "[ref]: /docs/plugins.md");
 });

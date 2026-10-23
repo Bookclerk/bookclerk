@@ -17,14 +17,11 @@
 //   SITE_BUILT_ON      build date, YYYY-MM-DD (defaults to today, UTC)
 //   SITE_ORIGIN        origin the site is served from, for canonical and
 //                      preview URLs (default https://bookclerk.app)
-//   SITE_API_DOCS      optional directory of generated API reference
-//                      (scripts/generate-api-docs.sh output: rust/,
-//                      typescript/, python/), published under /docs/api/
 //
 // Every value is validated before it reaches a template, and every template
 // value is HTML-escaped.
 
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -68,14 +65,6 @@ const PAGES = [
 
 /** Files copied verbatim from src/ to dist/. */
 const STATIC_FILES = ["site.css", "_headers", "social-card.png"];
-
-/** Generated API references SITE_API_DOCS may hold, by directory name. */
-const API_REFERENCES = [
-  { dir: "rust", title: "Rust crates", generator: "rustdoc" },
-  { dir: "typescript", title: "TypeScript plugin SDK", generator: "TypeDoc" },
-  { dir: "python", title: "Python plugin SDK", generator: "pdoc" },
-  { dir: "ui", title: "Web UI library", generator: "TypeDoc" },
-];
 
 /** Brand assets copied from assets/brand/ (source path, published name). */
 const BRAND_FILES = [
@@ -138,9 +127,8 @@ function displayDate(iso) {
  *
  * @param {Record<string, string | undefined>} env Usually `process.env`.
  * @returns {{release: {tag: string, date: string} | null, commit: string,
- *   builtOn: string, origin: string, apiDocs: string | null}}
- *   `release` is null when no release exists yet; `apiDocs` is null when no
- *   API reference is published.
+ *   builtOn: string, origin: string}}
+ *   `release` is null when no release exists yet.
  * @throws {Error} When a value is present but malformed, or a release tag
  *   comes without its date.
  */
@@ -150,7 +138,6 @@ export function readState(env) {
   const commit = (env.SITE_COMMIT ?? "").trim().toLowerCase();
   const builtOn = (env.SITE_BUILT_ON ?? "").trim() || new Date().toISOString().slice(0, 10);
   const origin = (env.SITE_ORIGIN ?? "").trim() || DEFAULT_ORIGIN;
-  const apiDocs = (env.SITE_API_DOCS ?? "").trim() || null;
 
   if (!COMMIT_RE.test(commit)) {
     throw new Error(`SITE_COMMIT must be 7-40 lowercase hex digits, got ${JSON.stringify(commit)}`);
@@ -161,11 +148,8 @@ export function readState(env) {
   if (!ORIGIN_RE.test(origin)) {
     throw new Error(`SITE_ORIGIN must be https://<lowercase hostname>, got ${JSON.stringify(origin)}`);
   }
-  if (apiDocs !== null && !(existsSync(apiDocs) && statSync(apiDocs).isDirectory())) {
-    throw new Error(`SITE_API_DOCS is not a directory: ${JSON.stringify(apiDocs)}`);
-  }
   if (tag === "") {
-    return { release: null, commit, builtOn, origin, apiDocs };
+    return { release: null, commit, builtOn, origin };
   }
   if (!TAG_RE.test(tag)) {
     throw new Error(`SITE_RELEASE_TAG must look like v1.2.3, got ${JSON.stringify(tag)}`);
@@ -173,7 +157,7 @@ export function readState(env) {
   if (!DATE_RE.test(date)) {
     throw new Error(`SITE_RELEASE_DATE must be YYYY-MM-DD when a release tag is set, got ${JSON.stringify(date)}`);
   }
-  return { release: { tag, date }, commit, builtOn, origin, apiDocs };
+  return { release: { tag, date }, commit, builtOn, origin };
 }
 
 /**
@@ -388,79 +372,6 @@ function docJsonLd(context, doc) {
 }
 
 /**
- * Copies the generated API references into dist/docs/api/.
- *
- * @param {string | null} apiDocs SITE_API_DOCS, already validated.
- * @param {string} outDir Output directory.
- * @returns {{title: string, generator: string, entries: {name: string, url: string}[]}[]}
- *   Each published reference with its entry pages; empty when `apiDocs` is
- *   null or holds none of API_REFERENCES.
- */
-function copyApiReferences(apiDocs, outDir) {
-  if (apiDocs === null) return [];
-  const published = [];
-  for (const ref of API_REFERENCES) {
-    const from = join(apiDocs, ref.dir);
-    if (!existsSync(from)) continue;
-    let entries;
-    if (ref.dir === "rust") {
-      // rustdoc writes one directory per crate and no workspace index.
-      entries = readdirSync(from)
-        .filter((name) => /^[a-z0-9_]+$/.test(name) && existsSync(join(from, name, "index.html")))
-        .sort()
-        .map((name) => ({ name: name.replaceAll("_", "-"), url: `/docs/api/rust/${name}/` }));
-      if (entries.length === 0) continue;
-    } else {
-      if (!existsSync(join(from, "index.html"))) continue;
-      entries = [{ name: ref.title, url: `/docs/api/${ref.dir}/` }];
-    }
-    cpSync(from, join(outDir, "docs", "api", ref.dir), { recursive: true });
-    published.push({ title: ref.title, generator: ref.generator, entries });
-  }
-  return published;
-}
-
-/** Rust crates plugin authors build against, shown first on /docs/api/. */
-const SDK_CRATES = ["bookclerk-plugin-sdk", "bookclerk-plugin-abi", "bookclerk-plugin-manifest"];
-
-/**
- * Lists the published API references, for the top of /docs/api/.
- *
- * The plugin SDKs come first; the other workspace crates and the web UI
- * library are internals, listed in a collapsed group for contributors.
- *
- * @param {ReturnType<typeof copyApiReferences>} references Published references.
- * @returns {string} HTML, or a note that the reference is built at deploy
- *   time when none was published.
- */
-function apiIndexHtml(references) {
-  if (references.length === 0) {
-    return '<p class="doc-note" role="note">The generated reference is published with each deploy of this site. This build has none.</p>';
-  }
-  const link = (e) => `<a href="${escapeHtml(e.url)}">${escapeHtml(e.name)}</a>`;
-  const card = (title, generator, entries) =>
-    `<div class="api-card"><h3>${escapeHtml(title)}</h3><p class="faint">${escapeHtml(generator)}</p><ul>${entries.map((e) => `<li>${link(e)}</li>`).join("")}</ul></div>`;
-  const cards = [];
-  const internals = [];
-  for (const ref of references) {
-    if (ref.title === "Rust crates") {
-      const sdk = ref.entries.filter((e) => SDK_CRATES.includes(e.name));
-      if (sdk.length > 0) cards.push(card("Rust plugin SDK", ref.generator, sdk));
-      internals.push(...ref.entries.filter((e) => !SDK_CRATES.includes(e.name)));
-    } else if (ref.title === "Web UI library") {
-      internals.push(...ref.entries);
-    } else {
-      cards.push(card(ref.title, ref.generator, ref.entries));
-    }
-  }
-  const more =
-    internals.length === 0
-      ? ""
-      : `<details class="api-internals"><summary>Internals, for contributors (${internals.length})</summary><ul>${internals.map((e) => `<li>${link(e)}</li>`).join("")}</ul></details>`;
-  return `<section class="api-index" aria-labelledby="api-browse"><h2 id="api-browse">Browse the reference</h2><div class="api-cards">${cards.join("")}</div>${more}</section>`;
-}
-
-/**
  * Renders the repository's docs/ into dist/docs/, each with a Markdown copy.
  *
  * The rendered Markdown goes in after templating, so `{{` in a doc's code
@@ -469,11 +380,9 @@ function apiIndexHtml(references) {
  * @param {ReturnType<typeof templateContext>} context Site-wide values.
  * @param {Record<string, string>} partials Partial templates by name.
  * @param {string} outDir Output directory.
- * @param {ReturnType<typeof copyApiReferences>} references Published API
- *   references, listed on the api/README page.
  * @returns {ReturnType<typeof renderDocs>} The rendered docs and sidebar.
  */
-function buildDocs(context, partials, outDir, references) {
+function buildDocs(context, partials, outDir) {
   const rendered = renderDocs(join(REPO_ROOT, "docs"), context.values.blobBase);
   const { nav, docs } = rendered;
   const template = readFileSync(join(HERE, "src", "doc.html"), "utf8");
@@ -501,11 +410,10 @@ function buildDocs(context, partials, outDir, references) {
         return `<h2>${escapeHtml(group.title)}</h2><ul>${links}</ul>`;
       })
       .join("\n");
-    const body = doc.key === "api/README" ? apiIndexHtml(references) + doc.html : doc.html;
     const html = render(template, page, partials)
       .replace(JSONLD_MARKER, () => jsonLd(docJsonLd(context, doc)))
       .replace(NAV_MARKER, () => navHtml)
-      .replace(BODY_MARKER, () => body);
+      .replace(BODY_MARKER, () => doc.html);
     const file = join(outDir, docFile(doc.key));
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, html);
@@ -515,15 +423,24 @@ function buildDocs(context, partials, outDir, references) {
 }
 
 /**
+ * Escapes text for the label of a Markdown link.
+ *
+ * @param {string} text Plain text.
+ * @returns {string} The text with backslashes and square brackets escaped.
+ */
+function markdownLinkText(text) {
+  return text.replace(/[\\[\]]/g, "\\$&");
+}
+
+/**
  * Writes llms.txt (an index of the docs for language models, per
  * https://llmstxt.org) and llms-full.txt (every doc in one file).
  *
  * @param {ReturnType<typeof templateContext>} context Site-wide values.
  * @param {ReturnType<typeof renderDocs>} rendered The docs and sidebar.
- * @param {ReturnType<typeof copyApiReferences>} references Published API references.
  * @param {string} outDir Output directory.
  */
-function writeLlmsTxt(context, rendered, references, outDir) {
+function writeLlmsTxt(context, rendered, outDir) {
   const { origin, docsVersion, repo } = context.values;
   const byKey = new Map(rendered.docs.map((d) => [d.key, d]));
   const status = context.flags.prerelease
@@ -545,12 +462,7 @@ function writeLlmsTxt(context, rendered, references, outDir) {
     if (i === 0) lines.push(`- [Overview](${origin}${docMarkdownUrl("README")}): How the documentation is organized`);
     for (const key of group.keys) {
       const doc = byKey.get(key);
-      lines.push(`- [${doc.title}](${origin}${docMarkdownUrl(key)})${doc.description ? `: ${doc.description}` : ""}`);
-    }
-    if (group.title === "Contributing") {
-      for (const ref of references) {
-        for (const e of ref.entries) lines.push(`- [${ref.title}: ${e.name}](${origin}${e.url}): Generated API reference (${ref.generator}, HTML)`);
-      }
+      lines.push(`- [${markdownLinkText(doc.title)}](${origin}${docMarkdownUrl(key)})${doc.description ? `: ${doc.description}` : ""}`);
     }
     lines.push("");
   }
@@ -589,8 +501,7 @@ function writeCrawlerFiles(context, paths, outDir) {
  * @returns {string[]} Published top-level file names, sorted.
  */
 export function build(env, outDir) {
-  const state = readState(env);
-  const context = templateContext(state);
+  const context = templateContext(readState(env));
   const src = join(HERE, "src");
   const partials = {};
   for (const file of readdirSync(join(src, "partials"))) {
@@ -606,39 +517,16 @@ export function build(env, outDir) {
     writeFileSync(join(outDir, page.file), html.replace(JSONLD_MARKER, () => jsonLd(page.path === "/" ? homeJsonLd(context) : null)));
     if (page.indexable) indexable.push(page.path);
   }
-  const references = copyApiReferences(state.apiDocs, outDir);
-  const rendered = buildDocs(context, partials, outDir, references);
+  const rendered = buildDocs(context, partials, outDir);
   indexable.push(...rendered.docs.map((d) => docUrl(d.key)));
-  indexable.push(...references.flatMap((r) => r.entries.map((e) => e.url)));
   writeCrawlerFiles(context, indexable, outDir);
-  writeLlmsTxt(context, rendered, references, outDir);
+  writeLlmsTxt(context, rendered, outDir);
   for (const file of STATIC_FILES) cpSync(join(src, file), join(outDir, file));
   for (const [from, to] of BRAND_FILES) cpSync(join(REPO_ROOT, "assets/brand", from), join(outDir, to));
   return readdirSync(outDir).sort();
 }
 
-/**
- * Counts the files under a directory.
- *
- * @param {string} dir Directory to walk.
- * @returns {number} Files in it and its subdirectories.
- */
-function countFiles(dir) {
-  return readdirSync(dir, { withFileTypes: true }).reduce((n, e) => n + (e.isDirectory() ? countFiles(join(dir, e.name)) : 1), 0);
-}
-
-/**
- * Files a Worker version may serve on the Workers Free plan; Workers Paid
- * allows 100,000. https://developers.cloudflare.com/workers/platform/limits/#static-assets
- */
-const FREE_PLAN_ASSET_LIMIT = 20_000;
-
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const out = join(HERE, "dist");
-  build(process.env, out);
-  const total = countFiles(out);
-  console.log(`built ${total} files into dist/`);
-  if (total > FREE_PLAN_ASSET_LIMIT * 0.9) {
-    console.warn(`::warning::dist/ holds ${total} files; the Workers Free plan serves at most ${FREE_PLAN_ASSET_LIMIT} per version`);
-  }
+  const files = build(process.env, join(HERE, "dist"));
+  console.log(`built ${files.length} files into dist/`);
 }
