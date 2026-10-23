@@ -180,10 +180,16 @@ class Artifact:
     Attributes:
         key: Key in `shipped-artifacts.toml` (and `fuzz/boundaries.toml`).
         title: Human description for advisory bodies and the report.
-        ecosystem: GitHub advisory ecosystem (`other`, `npm`, `pip`).
+        ecosystem: GitHub advisory ecosystem the map declares (`other`,
+            `npm`, `pip`). Advisory markers keep using it, so a draft is
+            still found after `published_ecosystem` changes.
         package: Package name in the advisory.
         version: `release-tag`, or a repository-relative manifest whose
             `version` is the package's published version.
+        published_ecosystem: Ecosystem of the advisory's affected-package
+            entry: `rust` once the artifact's `crate_manifest` crate can be
+            published, otherwise `ecosystem`
+            (`triage.published_ecosystem`).
     """
 
     key: str
@@ -191,11 +197,17 @@ class Artifact:
     ecosystem: str
     package: str
     version: str
+    published_ecosystem: str = ""
 
     @property
     def advisory_key(self) -> str:
         """The `<ecosystem>/<package>` key used in advisory markers."""
         return f"{self.ecosystem}/{self.package}"
+
+    @property
+    def package_ecosystem(self) -> str:
+        """The ecosystem for the advisory's affected-package entry."""
+        return self.published_ecosystem or self.ecosystem
 
 
 @dataclass(frozen=True)
@@ -275,6 +287,9 @@ def load_config(path: Path = CONFIG) -> Config:
             ecosystem=spec["ecosystem"],
             package=spec["package"],
             version=spec["version"],
+            published_ecosystem=triage.published_ecosystem(
+                spec["ecosystem"], spec.get("crate_manifest", ""), path.parent
+            ),
         )
         for key, spec in doc.get("artifacts", {}).items()
     }
@@ -1659,7 +1674,7 @@ def render_advisory(
         "cwe_ids": cwe_ids(group.record),
         "vulnerabilities": [
             {
-                "package": {"ecosystem": artifact.ecosystem, "name": artifact.package},
+                "package": {"ecosystem": artifact.package_ecosystem, "name": artifact.package},
                 "vulnerable_version_range": f"<= {version}" if version else None,
                 "patched_versions": None,
                 "vulnerable_functions": [],

@@ -219,6 +219,31 @@ class RepositoryMapTest(unittest.TestCase):
             self.assertIn(key, self.config.artifacts, key)
             artifact = self.config.artifacts[key]
             self.assertEqual((artifact.ecosystem, artifact.package), (spec["ecosystem"], spec["package"]), key)
+            shipped = tomllib.loads((ROOT / "shipped-artifacts.toml").read_text(encoding="utf-8"))
+            self.assertEqual(
+                shipped["artifacts"][key].get("crate_manifest"), spec.get("crate_manifest"), f"{key} crate_manifest"
+            )
+
+    def test_unpublished_crate_keeps_the_declared_ecosystem(self) -> None:
+        # bookclerk-plugin-sdk has `publish = false` today; this flips to
+        # `rust` (and this test needs updating) once it can be published.
+        sdk = self.config.artifacts["rust-sdk"]
+        self.assertEqual((sdk.ecosystem, sdk.package_ecosystem), ("other", "other"))
+
+    def test_publishable_crate_reports_rust(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Cargo.toml").write_text('[workspace.package]\npublish = false\n', encoding="utf-8")
+            for name, publish in (("open", ""), ("closed", "publish = false\n"), ("listed", 'publish = ["crates-io"]\n'),
+                                  ("inherit", "publish.workspace = true\n"), ("none", "publish = []\n")):
+                (root / name).mkdir()
+                (root / name / "Cargo.toml").write_text(f'[package]\nname = "{name}"\n{publish}', encoding="utf-8")
+            got = {n: adv.triage.published_ecosystem("other", f"{n}/Cargo.toml", root)
+                   for n in ("open", "closed", "listed", "inherit", "none")}
+            self.assertEqual(
+                got, {"open": "rust", "closed": "other", "listed": "rust", "inherit": "other", "none": "other"}
+            )
+            self.assertEqual(adv.triage.published_ecosystem("npm", "", root), "npm")
 
     def test_python_sdk_has_no_runtime_dependencies(self) -> None:
         # Bookclerk's Python SDK ships with zero runtime dependencies, so no
@@ -667,6 +692,18 @@ class FilingTest(unittest.TestCase):
         changes = gh.updated[0][1]
         self.assertEqual(changes["vulnerabilities"][0]["vulnerable_version_range"], "<= v0.2.0")
         self.assertIn("v0.2.0", changes["description"])
+
+    def test_range_fill_survives_an_ecosystem_change(self) -> None:
+        # A draft filed while the crate was unpublished names `other`; the
+        # fresh body says `rust` once it can be published.
+        body = {"description": "x", "vulnerabilities": [
+            {"package": {"ecosystem": "rust", "name": "bookclerk-plugin-sdk"}, "vulnerable_version_range": "<= v0.2.0"}
+        ]}
+        draft = {"description": "x", "vulnerabilities": [
+            {"package": {"ecosystem": "other", "name": "bookclerk-plugin-sdk"}, "vulnerable_version_range": None}
+        ]}
+        changes = adv.triage.draft_changes(draft, body)
+        self.assertEqual(changes["vulnerabilities"][0]["vulnerable_version_range"], "<= v0.2.0")
 
     def test_open_draft_no_longer_affected_is_reported(self) -> None:
         draft = self._as_draft(self._host_body())
