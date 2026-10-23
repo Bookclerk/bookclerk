@@ -2794,7 +2794,10 @@ const SVG_LOGO_CSP: &str = "default-src 'none'; img-src data: blob:; style-src '
     path = "/api/plugins/{kind}/{id}/logo",
     params(("kind" = String, Path, description = "Plugin kind (`source`, `destination`, `integration`, …)."), ("id" = String, Path, description = "Plugin id.")),
     responses(
-        (status = 200, description = "The logo (PNG, or SVG served with a restrictive CSP).", content_type = "image/png"),
+        (status = 200, description = "The logo (PNG, or SVG served with a restrictive CSP).", content(
+            (crate::openapi::BinaryBody = "image/png"),
+            (crate::openapi::BinaryBody = "image/svg+xml"),
+        )),
         (status = 404, description = "The plugin has no logo.", body = crate::http_error::ErrorJson),
     ),
 )]

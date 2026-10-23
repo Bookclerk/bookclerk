@@ -1100,6 +1100,7 @@ async fn record_written(
 #[utoipa::path(
     put,
     path = "/api/node/v1/uploads/{upload_id}/files/{index}",
+    security(("uploadToken" = [])),
     params(("upload_id" = String, Path, description = "Upload id."), ("index" = u32, Path, description = "File index in the upload.")),
     request_body(content = crate::openapi::BinaryBody, content_type = "application/octet-stream"),
     responses(
@@ -1223,6 +1224,7 @@ pub async fn put_file(
 #[utoipa::path(
     post,
     path = "/api/node/v1/uploads/{upload_id}/commit",
+    security(("uploadToken" = [])),
     params(("upload_id" = String, Path, description = "Upload id.")),
     request_body = bookclerk_node_proto::UploadCommitRequest,
     responses(

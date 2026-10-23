@@ -48,6 +48,7 @@ fn is_sha256_hex(raw: &str) -> bool {
 #[utoipa::path(
     get,
     path = "/api/node/v1/artifacts/{sha256}",
+    security(("nodeSignature" = [])),
     params(("sha256" = String, Path, description = "Archive digest, lowercase hex.")),
     responses(
         (status = 200, description = "The plugin archive.", body = crate::openapi::BinaryBody, content_type = "application/octet-stream"),

@@ -664,8 +664,10 @@ pub async fn signin_methods(State(state): State<Arc<AppState>>) -> Result<Respon
     security(("operatorToken" = [])),
     responses(
         (status = 200, description = "A single-use tray ticket.", body = serde_json::Value),
+        (status = 204, description = "Operator authentication is off, so no ticket is needed."),
         (status = 401, description = "The Bearer token is missing or wrong."),
         (status = 403, description = "The request did not come straight from loopback."),
+        (status = 429, description = "Too many failed attempts from this client; retry after `Retry-After` seconds."),
     ),
 )]
 pub async fn tray_handoff_prepare(

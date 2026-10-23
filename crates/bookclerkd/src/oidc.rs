@@ -613,6 +613,7 @@ async fn mint_tokens(
 #[utoipa::path(
     get,
     path = "/oidc/userinfo",
+    security(("oidcAccessToken" = [])),
     responses(
         (status = 200, description = "Claims for the token's user.", body = serde_json::Value),
         (status = 401, description = "The access token is missing or invalid."),

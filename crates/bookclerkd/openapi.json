@@ -108,11 +108,17 @@
               }
             }
           },
+          "204": {
+            "description": "Operator authentication is off, so no ticket is needed."
+          },
           "401": {
             "description": "The Bearer token is missing or wrong."
           },
           "403": {
             "description": "The request did not come straight from loopback."
+          },
+          "429": {
+            "description": "Too many failed attempts from this client; retry after `Retry-After` seconds."
           }
         },
         "security": [
@@ -3850,7 +3856,16 @@
           "200": {
             "description": "The logo (PNG, or SVG served with a restrictive CSP).",
             "content": {
-              "image/png": {}
+              "image/png": {
+                "schema": {
+                  "$ref": "#/components/schemas/BinaryBody"
+                }
+              },
+              "image/svg+xml": {
+                "schema": {
+                  "$ref": "#/components/schemas/BinaryBody"
+                }
+              }
             }
           },
           "404": {
@@ -5214,7 +5229,12 @@
           "200": {
             "description": "The cover.",
             "content": {
-              "image/jpeg": {}
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
             }
           },
           "404": {
@@ -6817,7 +6837,11 @@
             "description": "The access token is missing or invalid."
           }
         },
-        "security": [],
+        "security": [
+          {
+            "oidcAccessToken": []
+          }
+        ],
         "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
@@ -8225,7 +8249,11 @@
             "description": "No such archive, or the node API is not mounted."
           }
         },
-        "security": [],
+        "security": [
+          {
+            "nodeSignature": []
+          }
+        ],
         "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
@@ -8287,7 +8315,11 @@
             "description": "The file was refused (`refused`): not in the upload, a size or content mismatch, or the destinations changed."
           }
         },
-        "security": [],
+        "security": [
+          {
+            "uploadToken": []
+          }
+        ],
         "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
@@ -8338,7 +8370,11 @@
             "description": "No such upload, or the node API is not mounted."
           }
         },
-        "security": [],
+        "security": [
+          {
+            "uploadToken": []
+          }
+        ],
         "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
@@ -8353,7 +8389,9 @@
           "200": {
             "description": "The OpenAPI 3.1 document for this daemon's version.",
             "content": {
-              "application/json": {}
+              "application/json": {
+                "schema": {}
+              }
             }
           }
         },
@@ -15111,6 +15149,17 @@
       }
     },
     "securitySchemes": {
+      "nodeSignature": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Authorization",
+        "description": "A node's signed request, as `Authorization: Bookclerk-Node <node_id> <issued_at> <signature>` with the node's identity key."
+      },
+      "oidcAccessToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "An access token from this daemon's OIDC token endpoint (`POST /oidc/token`), as `Authorization: Bearer <token>`."
+      },
       "operatorSession": {
         "type": "apiKey",
         "in": "cookie",
@@ -15127,6 +15176,12 @@
         "in": "cookie",
         "name": "bookclerk_portal_session",
         "description": "A library user's browser session, set by a sign-in route. Cookie-authenticated writes must send an `Origin` (or `Referer`) matching the daemon's public origin or its host."
+      },
+      "uploadToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Authorization",
+        "description": "The token of an upload grant, as `Authorization: Bookclerk-Upload <token>`."
       }
     }
   },

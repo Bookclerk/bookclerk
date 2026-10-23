@@ -37,6 +37,15 @@ const OPERATOR_SESSION: &str = "operatorSession";
 /// Security scheme: a library user's (portal) browser session cookie.
 const PORTAL_SESSION: &str = "portalSession";
 
+/// Security scheme: a node's signed `Authorization: Bookclerk-Node …` header.
+const NODE_SIGNATURE: &str = "nodeSignature";
+
+/// Security scheme: an upload grant's `Authorization: Bookclerk-Upload …` header.
+const UPLOAD_TOKEN: &str = "uploadToken";
+
+/// Security scheme: an access token this daemon issued as an OIDC provider.
+const OIDC_ACCESS_TOKEN: &str = "oidcAccessToken";
+
 /// Who a route group admits, as enforced by its auth layer.
 ///
 /// The variants mirror the `require_*` middleware in [`crate::auth`]; the
@@ -109,8 +118,10 @@ impl Access {
 ///
 /// # Returns
 ///
-/// (name, scheme) for the operator Bearer token and the two session cookies.
-fn security_schemes() -> [(&'static str, SecurityScheme); 3] {
+/// (name, scheme) for the operator Bearer token, the two session cookies, and
+/// the credentials single routes check themselves: node signatures, upload
+/// tokens and OIDC access tokens.
+fn security_schemes() -> [(&'static str, SecurityScheme); 6] {
     [
         (
             OPERATOR_TOKEN,
@@ -136,6 +147,31 @@ fn security_schemes() -> [(&'static str, SecurityScheme); 3] {
                 PORTAL_SESSION_COOKIE,
                 "A library user's browser session, set by a sign-in route. Cookie-authenticated writes must send an `Origin` (or `Referer`) matching the daemon's public origin or its host.",
             ))),
+        ),
+        (
+            NODE_SIGNATURE,
+            SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::with_description(
+                "Authorization",
+                "A node's signed request, as `Authorization: Bookclerk-Node <node_id> <issued_at> <signature>` with the node's identity key.",
+            ))),
+        ),
+        (
+            UPLOAD_TOKEN,
+            SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::with_description(
+                "Authorization",
+                "The token of an upload grant, as `Authorization: Bookclerk-Upload <token>`.",
+            ))),
+        ),
+        (
+            OIDC_ACCESS_TOKEN,
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .description(Some(
+                        "An access token from this daemon's OIDC token endpoint (`POST /oidc/token`), as `Authorization: Bearer <token>`.",
+                    ))
+                    .build(),
+            ),
         ),
     ]
 }
@@ -382,7 +418,53 @@ pub fn document() -> OpenApi {
         }
     }
     doc.tags = Some(tags);
+    fill_untyped_content(&mut doc);
     doc
+}
+
+/// Gives every request or response media type without a schema one, so
+/// generated clients keep the body: any JSON value for JSON (a body not
+/// typed yet), bytes for everything else.
+///
+/// # Arguments
+///
+/// * `doc` - The document, after every group is added.
+fn fill_untyped_content(doc: &mut OpenApi) {
+    use utoipa::openapi::schema::{ObjectBuilder, SchemaFormat, SchemaType, Type};
+    use utoipa::openapi::{KnownFormat, RefOr};
+    let fill = |media: &str, content: &mut utoipa::openapi::Content| {
+        if content.schema.is_some() {
+            return;
+        }
+        let schema = if media.starts_with("application/json") {
+            ObjectBuilder::new().schema_type(SchemaType::AnyValue)
+        } else {
+            ObjectBuilder::new()
+                .schema_type(Type::String)
+                .format(Some(SchemaFormat::KnownFormat(KnownFormat::Binary)))
+        };
+        content.schema = Some(RefOr::T(schema.build().into()));
+    };
+    for item in doc.paths.paths.values_mut() {
+        for op in operations_mut(item) {
+            if let Some(RefOr::T(body)) = op.request_body.as_mut() {
+                for (media, content) in body.content.iter_mut() {
+                    if let RefOr::T(content) = content {
+                        fill(media, content);
+                    }
+                }
+            }
+            for response in op.responses.responses.values_mut() {
+                if let RefOr::T(response) = response {
+                    for (media, content) in response.content.iter_mut() {
+                        if let RefOr::T(content) = content {
+                            fill(media, content);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// A request body of raw bytes (a file upload), documented as
@@ -551,6 +633,9 @@ mod tests {
             let refuses_anonymous = [
                 "The caller is not signed in.",
                 "The Bearer token is missing or wrong.",
+                "The node signature is missing or wrong.",
+                "The upload token is missing or wrong.",
+                "The access token is missing or invalid.",
             ]
             .iter()
             .any(|d| op["responses"]["401"]["description"] == *d);
@@ -559,6 +644,30 @@ mod tests {
                     op["security"].as_array().is_some_and(|s| !s.is_empty()),
                     "{method} {path} needs a signed-in caller but its security is empty"
                 );
+            }
+        }
+    }
+
+    /// Every request and response media type carries a schema, so generated
+    /// clients keep the body instead of modelling it as empty.
+    #[test]
+    fn every_media_type_has_a_schema() {
+        let doc = document_value();
+        for (method, path, op) in operations(&doc) {
+            let bodies = std::iter::once(("request", &op["requestBody"])).chain(
+                op["responses"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .map(|(s, r)| (s.as_str(), r)),
+            );
+            for (status, body) in bodies {
+                for (media, content) in body["content"].as_object().into_iter().flatten() {
+                    assert!(
+                        content.get("schema").is_some(),
+                        "{method} {path} {status} {media} has no schema"
+                    );
+                }
             }
         }
     }
