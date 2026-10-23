@@ -49,8 +49,9 @@ impl OverflowDialect {
 ///
 /// # Errors
 ///
-/// Returns when a site is empty, past `sql`, not on a UTF-8 boundary, or cannot
-/// be wrapped as the recorded operator.
+/// Returns when a site is empty, past `sql`, not on a UTF-8 boundary, cannot
+/// be wrapped as the recorded operator, or has a boundary strictly inside an
+/// inner site it does not enclose.
 pub fn apply_integer_overflow(
     dialect: OverflowDialect,
     sql: &str,
@@ -72,43 +73,50 @@ pub fn apply_integer_overflow(
             ));
         }
         let wrapped = wrap_integer_arith(dialect, &out, &site)?;
-        let old_len = site.full.end - site.full.start;
-        let repl_end = site.full.end;
         out.replace_range(site.full.start..site.full.end, &wrapped);
         for later in sites.iter_mut().skip(i + 1) {
-            later.full = shift_span(later.full, repl_end, old_len, wrapped.len())?;
-            later.lhs = shift_span(later.lhs, repl_end, old_len, wrapped.len())?;
-            later.rhs = shift_span(later.rhs, repl_end, old_len, wrapped.len())?;
+            later.full = shift_span(later.full, site.full, wrapped.len())?;
+            later.lhs = shift_span(later.lhs, site.full, wrapped.len())?;
+            later.rhs = shift_span(later.rhs, site.full, wrapped.len())?;
         }
     }
     Ok(out)
 }
 
-/// Moves a span boundary past a replaced range to its offset in the new SQL.
+/// Moves a span's boundaries across one replaced range to their offsets in
+/// the new SQL.
 ///
 /// A wrap renders only the operands, so it can be shorter than the site it
 /// replaces when the site holds comments or whitespace between them
-/// (`id --<long comment>\n- 1`). Boundaries at or past `repl_end` move by
-/// `new_len - old_len` in either direction; earlier ones stay. Outer sites are
-/// applied after inner ones, so their boundaries never fall strictly inside
-/// the replaced range.
+/// (`id --<long comment>\n- 1`). Boundaries at or past `replaced.end` move by
+/// `new_len - (replaced.end - replaced.start)` in either direction; boundaries
+/// at or before `replaced.start` stay. Outer sites are applied after inner
+/// ones, so a sound proof never puts a boundary strictly inside the replaced
+/// range; one that does (an overlapping or repeated site) is refused, since
+/// it would no longer point at the text it named.
 ///
 /// # Arguments
 ///
 /// * `span` - a later site's span in the SQL before the replacement.
-/// * `repl_end` - byte offset where the replaced range ended.
-/// * `old_len` - byte length of the replaced range.
+/// * `replaced` - the byte range that was replaced.
 /// * `new_len` - byte length of its replacement.
 ///
 /// # Errors
 ///
-/// Returns when a moved boundary would underflow or overflow `usize`.
-fn shift_span(span: SqlSpan, repl_end: usize, old_len: usize, new_len: usize) -> Result<SqlSpan> {
+/// Returns when a boundary falls strictly inside `replaced`, or a moved
+/// boundary would overflow `usize`.
+fn shift_span(span: SqlSpan, replaced: SqlSpan, new_len: usize) -> Result<SqlSpan> {
     let shift = |pos: usize| -> Result<usize> {
-        if pos < repl_end {
+        if pos <= replaced.start {
             return Ok(pos);
         }
-        pos.checked_sub(old_len)
+        if pos < replaced.end {
+            return Err(PluginError::internal(
+                "INTEGER overflow site overlaps an inner site it does not enclose",
+            ));
+        }
+        (pos - replaced.end)
+            .checked_add(replaced.start)
             .and_then(|base| base.checked_add(new_len))
             .ok_or_else(|| PluginError::internal("INTEGER overflow site shift is out of range"))
     };
@@ -133,6 +141,7 @@ fn wrap_integer_arith(
         || site.lhs.end > sql.len()
         || site.rhs.end > sql.len()
         || site.lhs.start >= site.lhs.end
+        || site.rhs.start > site.rhs.end
         || site.full.start >= site.full.end
         || !sql.is_char_boundary(site.full.start)
         || !sql.is_char_boundary(site.full.end)
@@ -283,5 +292,32 @@ mod tests {
         assert!(out.contains("(SELECT (id) AS a, (1) AS b) _bc_ov"), "{out}");
         assert!(out.ends_with("AS a, (2) AS b) _bc_ov)"), "{out}");
         assert_eq!(out.matches("_bc_ov").count(), 2, "{out}");
+    }
+
+    #[test]
+    fn repeated_site_after_shorter_wrap_is_refused() {
+        // A repeated site would keep an operand boundary inside the range the
+        // first copy replaced; refuse it instead of slicing stale offsets.
+        let inner = format!("id --{}\n- 1", "x".repeat(400));
+        let sql = format!("SELECT {inner}");
+        let start = "SELECT ".len();
+        let site = IntegerArithSite {
+            full: SqlSpan {
+                start,
+                end: sql.len(),
+            },
+            lhs: SqlSpan {
+                start,
+                end: start + 2,
+            },
+            rhs: SqlSpan {
+                start: sql.len() - 1,
+                end: sql.len(),
+            },
+            kind: IntegerArithKind::Sub,
+        };
+        let err =
+            apply_integer_overflow(OverflowDialect::SqliteFamily, &sql, &[site, site]).unwrap_err();
+        assert!(err.to_string().contains("overlaps"), "{err}");
     }
 }
