@@ -203,3 +203,28 @@ test("crawler and agent files list the site", () => {
     site.done();
   }
 });
+
+test("home and download pages have Markdown versions that keep their sections", () => {
+  for (const env of [PRE, REL]) {
+    const site = built(env);
+    try {
+      for (const [html, md] of [
+        ["index.html", "index.md"],
+        ["download.html", "download.md"],
+      ]) {
+        const page = site.page(html);
+        const markdown = site.page(md);
+        assert.match(page, new RegExp(`<link rel="alternate" type="text/markdown" href="/${md}"`));
+        assert.doesNotMatch(markdown, /\{\{|<[a-z]/);
+        const sections = [...page.matchAll(/<h2[^>]*>([^<]+)<\/h2>/g)].map((m) => m[1]);
+        assert.ok(sections.length > 0, html);
+        for (const title of sections) assert.ok(markdown.includes(`## ${title}`), `${md} lacks "## ${title}"`);
+      }
+      assert.equal(site.page("index.md").includes("Pre-release"), env === PRE);
+      assert.match(site.page("404.md"), /^# We could not find that page/);
+      assert.doesNotMatch(site.page("404.html"), /rel="alternate" type="text\/markdown"/);
+    } finally {
+      site.done();
+    }
+  }
+});

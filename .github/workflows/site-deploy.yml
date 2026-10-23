@@ -1,5 +1,6 @@
-# Build and deploy the bookclerk.app website (tools/site) as the static-assets
-# Cloudflare Worker `bookclerk-site` via wrangler-action.
+# Build and deploy the bookclerk.app website (tools/site) as the Cloudflare
+# Worker `bookclerk-site` (static assets plus a small script that serves
+# Markdown to `Accept: text/markdown` requests) via wrangler-action.
 #
 # Runs when the site, the docs or the brand assets change on main, when a
 # release is published (the site shows the newest release and drops its

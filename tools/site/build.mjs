@@ -49,18 +49,37 @@ const SUMMARY =
  * `path` is the page's URL path, `title` and `description` fill its
  * `<title>`, description and preview tags, and `indexable` is false for pages
  * search engines should skip (no canonical link, `noindex`, not in the
- * sitemap).
+ * sitemap). `markdown` is the page's Markdown version, rendered from the
+ * template of the same name to the same name in dist/; the Worker serves it
+ * to requests that ask for `text/markdown` (worker.js). `alternate` is false
+ * when the page should not advertise it with `rel="alternate"`.
  */
 const PAGES = [
-  { file: "index.html", path: "/", title: "Bookclerk: every purchase, properly placed", description: SUMMARY, indexable: true },
+  {
+    file: "index.html",
+    path: "/",
+    title: "Bookclerk: every purchase, properly placed",
+    description: SUMMARY,
+    indexable: true,
+    markdown: "/index.md",
+  },
   {
     file: "download.html",
     path: "/download",
     title: "Download Bookclerk",
     description: "Get Bookclerk, the self-hosted audiobook library manager for your Audible, Libro.fm, Chirp and GraphicAudio purchases.",
     indexable: true,
+    markdown: "/download.md",
   },
-  { file: "404.html", path: "/404", title: "Page not found · Bookclerk", description: "This page is not on the shelf.", indexable: false },
+  {
+    file: "404.html",
+    path: "/404",
+    title: "Page not found · Bookclerk",
+    description: "This page is not on the shelf.",
+    indexable: false,
+    markdown: "/404.md",
+    alternate: false,
+  },
 ];
 
 /** Files copied verbatim from src/ to dist/. */
@@ -275,9 +294,10 @@ const JSONLD_MARKER = "<!--jsonld-->";
  *
  * @param {ReturnType<typeof templateContext>} context Site-wide values.
  * @param {{path: string, title: string, description: string, indexable: boolean,
- *   type?: string, markdown?: string}} page The page: URL path, title,
- *   description, whether search engines may index it, Open Graph type
- *   (default `website`) and the URL of its Markdown copy, if any.
+ *   type?: string, markdown?: string, alternate?: boolean}} page The page:
+ *   URL path, title, description, whether search engines may index it, Open
+ *   Graph type (default `website`), the URL of its Markdown copy, if any, and
+ *   whether to link that copy with `rel="alternate"` (default true).
  * @param {Record<string, string>} [extra] More values the page's template reads.
  * @returns {ReturnType<typeof templateContext>} The context for that page.
  */
@@ -292,7 +312,7 @@ function pageContext(context, page, extra = {}) {
       pageType: page.type ?? "website",
       markdownUrl: page.markdown ?? "",
     },
-    flags: { ...context.flags, indexable: page.indexable, markdown: page.markdown !== undefined },
+    flags: { ...context.flags, indexable: page.indexable, markdown: page.markdown !== undefined && page.alternate !== false },
   };
 }
 
@@ -453,7 +473,7 @@ function writeLlmsTxt(context, rendered, outDir) {
     "",
     `> ${SUMMARY} It is free, self-hosted software (GNU GPL v3 or later) with a command-line tool, a daemon with a web interface, and a plugin system for stores and destinations.`,
     "",
-    `${status} Each doc below is Markdown; the same page as HTML is at the URL without \`.md\`. Source code: ${repo}. Every doc in one file: ${origin}/llms-full.txt.`,
+    `${status} Each doc below is Markdown; the same page as HTML is at the URL without \`.md\`. Source code: ${repo}. Every doc in one file: ${origin}/llms-full.txt. Every page also answers a request with \`Accept: text/markdown\` in Markdown; the home and download pages are at ${origin}/index.md and ${origin}/download.md.`,
     "",
   ];
   const groups = rendered.nav.map((g) => ({ title: g.title, keys: g.pages.map((p) => p.key) }));
@@ -517,6 +537,12 @@ export function build(env, outDir) {
   for (const page of PAGES) {
     const html = render(readFileSync(join(src, page.file), "utf8"), pageContext(context, page), partials);
     writeFileSync(join(outDir, page.file), html.replace(JSONLD_MARKER, () => jsonLd(page.path === "/" ? homeJsonLd(context) : null)));
+    if (page.markdown) {
+      // Template values are validated tags, dates, commit ids and URLs, so
+      // HTML escaping leaves them unchanged in Markdown too.
+      const md = render(readFileSync(join(src, page.markdown.slice(1)), "utf8"), pageContext(context, page), partials);
+      writeFileSync(join(outDir, page.markdown.slice(1)), md);
+    }
     if (page.indexable) indexable.push(page.path);
   }
   const rendered = buildDocs(context, partials, outDir);
