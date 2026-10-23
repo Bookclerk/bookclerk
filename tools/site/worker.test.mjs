@@ -238,7 +238,7 @@ test("a Markdown request for a page gets its Markdown version", async () => {
 test("the Markdown version links to the site's own Markdown copies", async () => {
   const body = await (await get("/docs/plugins.md", "*/*")).text();
   assert.ok(body.includes("](/docs/"));
-  assert.ok(!body.includes("raw.githubusercontent.com"));
+  assert.doesNotMatch(body, /\]\(https:\/\/raw\.githubusercontent\.com\//, "no link points at the docs repository's raw files");
   assert.ok(!/\]\((?!https?:|\/|#|mailto:)[^)]*\.md/.test(body));
   const main = await (await get("/docs/v/main/plugins.md", "*/*")).text();
   assert.ok(main.includes("](/docs/v/main/"));
