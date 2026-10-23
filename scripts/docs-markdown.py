@@ -11,6 +11,8 @@ The tree holds ``docs/`` as it is, plus the generated API reference under
 - ``api/rust/``: every workspace library crate, from rustdoc JSON (a pinned
   nightly) rendered by ``rustdoc_markdown.py``, grouped into the plugin SDK,
   plugins, host internals and development crates;
+- ``api/web/``: the daemon's HTTP API, from its committed OpenAPI document
+  (``crates/bookclerkd/openapi.json``) rendered by ``openapi_markdown.py``;
 - ``api/ui/``: the web UI library, like the TypeScript SDK.
 
 `scripts/docs-publish.py` commits the tree to the docs repository. Every
@@ -38,7 +40,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-import python_api_markdown  # noqa: E402  (sibling module, needs the path above)
+import openapi_markdown  # noqa: E402  (sibling module, needs the path above)
+import python_api_markdown  # noqa: E402
 import rustdoc_markdown  # noqa: E402
 DEFAULT_SCRATCH = ROOT / "target" / "docs-markdown"
 DEFAULT_OUT = DEFAULT_SCRATCH / "out"
@@ -71,6 +74,8 @@ TYPEDOC_MARKDOWN_OPTIONS = (
     "table",
     "--useCodeBlocks",
 )
+# The daemon's OpenAPI document, regenerated and checked by bookclerkd's tests.
+OPENAPI_DOCUMENT = "crates/bookclerkd/openapi.json"
 PYTHON_SDK = "packages/plugin-sdk-python"
 PYTHON_PACKAGE = "bookclerk_plugin_sdk"
 
@@ -658,6 +663,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skip-rust", action="store_true")
     parser.add_argument("--skip-typescript", action="store_true")
     parser.add_argument("--skip-python", action="store_true")
+    parser.add_argument("--skip-web", action="store_true")
     args = parser.parse_args(argv)
 
     try:
@@ -678,6 +684,13 @@ def main(argv: list[str] | None = None) -> int:
         if not args.skip_python:
             modules = build_python(ROOT / PYTHON_SDK / "src", api / "python")
             print(f"==> Python: {len(modules)} modules")
+
+        if not args.skip_web:
+            try:
+                operations = openapi_markdown.render(ROOT / OPENAPI_DOCUMENT, api / "web")
+            except (OSError, openapi_markdown.OpenApiError) as err:
+                raise BuildError(f"web API: {err}") from err
+            print(f"==> Web API: {operations} operations")
 
         if not args.skip_rust:
             json_dir = args.rust_json_dir.resolve() if args.rust_json_dir else build_rust_json(scratch / "cargo-target")
