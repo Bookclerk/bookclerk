@@ -3519,7 +3519,7 @@ async fn patch_settings(
     path = "/api/config/reload",
     responses(
         (status = 200, description = "The configuration was reloaded.", body = ActionResponse),
-        (status = 500, description = "The reload failed; the old configuration stays live.", body = ActionResponse),
+        (status = 500, description = "The reload failed; the old configuration stays live.", body = crate::http_error::ErrorJson),
     ),
 )]
 async fn reload_config(
@@ -3576,7 +3576,7 @@ pub(crate) async fn apply_migrated_database_plugin(
     request_body = DatabaseMigrateRequest,
     responses(
         (status = 200, description = "The rows were copied.", body = ActionResponse),
-        (status = 400, description = "The target is invalid.", body = ActionResponse),
+        (status = 400, description = "The target is invalid.", body = crate::http_error::ErrorJson),
         (status = 500, description = "The copy failed.", body = crate::http_error::ErrorJson),
     ),
 )]
@@ -4327,7 +4327,7 @@ async fn list_queues(
     params(("name" = String, Path, description = "Queue name.")),
     responses(
         (status = 200, description = "The queue.", body = QueueDetail),
-        (status = 404, description = "No such queue.", body = crate::http_error::ErrorJson),
+        (status = 400, description = "The queue name is invalid.", body = crate::http_error::ErrorJson),
         (status = 500, description = "The outbox could not be read.", body = crate::http_error::ErrorJson),
     ),
 )]
@@ -4410,7 +4410,7 @@ async fn list_event_deliveries(
     params(("id" = String, Path, description = "Delivery id.")),
     responses(
         (status = 200, description = "The delivery was queued again.", body = ActionResponse),
-        (status = 404, description = "No such delivery, or it is not in a state this applies to.", body = ActionResponse),
+        (status = 404, description = "No such delivery, or it is not in a state this applies to.", body = crate::http_error::ErrorJson),
         (status = 500, description = "The outbox could not be read or written.", body = crate::http_error::ErrorJson),
     ),
 )]
@@ -4441,7 +4441,7 @@ async fn retry_event_delivery(
     params(("id" = String, Path, description = "Delivery id.")),
     responses(
         (status = 200, description = "The delivery was acknowledged.", body = ActionResponse),
-        (status = 404, description = "No such delivery, or it is not in a state this applies to.", body = ActionResponse),
+        (status = 404, description = "No such delivery, or it is not in a state this applies to.", body = crate::http_error::ErrorJson),
         (status = 500, description = "The outbox could not be read or written.", body = crate::http_error::ErrorJson),
     ),
 )]
@@ -4469,7 +4469,7 @@ async fn ack_event_delivery(
     params(("id" = String, Path, description = "Delivery id.")),
     responses(
         (status = 200, description = "The delivery was cancelled or asked to stop.", body = ActionResponse),
-        (status = 404, description = "No such delivery, or it is not in a state this applies to.", body = ActionResponse),
+        (status = 404, description = "No such delivery, or it is not in a state this applies to.", body = crate::http_error::ErrorJson),
         (status = 500, description = "The outbox could not be read or written.", body = crate::http_error::ErrorJson),
     ),
 )]
@@ -4500,7 +4500,7 @@ async fn cancel_event_delivery(
     params(("id" = String, Path, description = "Delivery id.")),
     responses(
         (status = 200, description = "The delivery was resumed.", body = ActionResponse),
-        (status = 404, description = "No such delivery, or it is not in a state this applies to.", body = ActionResponse),
+        (status = 404, description = "No such delivery, or it is not in a state this applies to.", body = crate::http_error::ErrorJson),
         (status = 500, description = "The outbox could not be read or written.", body = crate::http_error::ErrorJson),
     ),
 )]

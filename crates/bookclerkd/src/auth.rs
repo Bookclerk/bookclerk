@@ -713,7 +713,7 @@ pub async fn tray_handoff_prepare(
     path = "/api/auth/tray-handoff",
     params(TrayHandoffQuery),
     responses(
-        (status = 303, description = "Redirects into the app with a localhost operator session."),
+        (status = 307, description = "Redirects into the app with a localhost operator session."),
         (status = 403, description = "The ticket is missing, used or not from loopback."),
     ),
 )]

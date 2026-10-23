@@ -734,7 +734,7 @@ pub(crate) struct InstanceConfigView {
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub(crate) struct PlacementView {
     /// Nodes that should run the instance.
-    #[schema(value_type = Object)]
+    #[schema(schema_with = crate::openapi::replicas_schema)]
     pub replicas: bookclerk_library::control_plane::Replicas,
     /// Label constraints every chosen node must satisfy.
     pub constraints: Vec<String>,
@@ -1837,7 +1837,7 @@ pub async fn put_node_owner(
 pub(crate) struct PutPluginPlacement {
     /// Nodes that should run the instance: a number (0 stops every
     /// replica) or `"all"`.
-    #[schema(value_type = Object)]
+    #[schema(schema_with = crate::openapi::replicas_schema)]
     replicas: bookclerk_library::control_plane::Replicas,
     /// Label constraints (`name`, `name=value`, `!name`).
     #[serde(default)]

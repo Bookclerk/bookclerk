@@ -143,7 +143,7 @@
           }
         ],
         "responses": {
-          "303": {
+          "307": {
             "description": "Redirects into the app with a localhost operator session."
           },
           "403": {
@@ -1440,8 +1440,8 @@
               }
             }
           },
-          "404": {
-            "description": "No such queue.",
+          "400": {
+            "description": "The queue name is invalid.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1509,7 +1509,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ActionResponse"
+                  "$ref": "#/components/schemas/ErrorJson"
                 }
               }
             }
@@ -1573,7 +1573,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ActionResponse"
+                  "$ref": "#/components/schemas/ErrorJson"
                 }
               }
             }
@@ -1637,7 +1637,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ActionResponse"
+                  "$ref": "#/components/schemas/ErrorJson"
                 }
               }
             }
@@ -1701,7 +1701,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ActionResponse"
+                  "$ref": "#/components/schemas/ErrorJson"
                 }
               }
             }
@@ -2047,7 +2047,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ActionResponse"
+                  "$ref": "#/components/schemas/ErrorJson"
                 }
               }
             }
@@ -3500,6 +3500,9 @@
           },
           "502": {
             "description": "The library could not be reached."
+          },
+          "504": {
+            "description": "The library is slow to answer; the join goes on in the background (`join_pending`). Poll the join state instead of retrying."
           }
         },
         "security": [
@@ -3905,7 +3908,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ActionResponse"
+                  "$ref": "#/components/schemas/ErrorJson"
                 }
               }
             }
@@ -6449,7 +6452,21 @@
           "200": {
             "description": "The avatar.",
             "content": {
-              "image/jpeg": {}
+              "image/jpeg": {
+                "schema": {
+                  "$ref": "#/components/schemas/BinaryBody"
+                }
+              },
+              "image/png": {
+                "schema": {
+                  "$ref": "#/components/schemas/BinaryBody"
+                }
+              },
+              "image/webp": {
+                "schema": {
+                  "$ref": "#/components/schemas/BinaryBody"
+                }
+              }
             }
           },
           "404": {
@@ -8153,16 +8170,19 @@
         "operationId": "get_connect",
         "responses": {
           "101": {
-            "description": "Switching to the host-node WebSocket."
+            "description": "Switching to the host-node WebSocket. The node's signature is checked in the first frames; a wrong one closes the socket."
           },
-          "401": {
-            "description": "The node signature is missing or wrong."
+          "400": {
+            "description": "The request does not offer the node subprotocol (`subprotocol_required`)."
           },
           "403": {
             "description": "The transport is not allowed."
           },
           "404": {
             "description": "The node API is not mounted."
+          },
+          "503": {
+            "description": "Too many handshakes are in flight (`handshakes_busy`); retry after `Retry-After`."
           }
         },
         "security": [],
@@ -8191,7 +8211,11 @@
           "200": {
             "description": "The plugin archive.",
             "content": {
-              "application/octet-stream": {}
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/BinaryBody"
+                }
+              }
             }
           },
           "401": {
@@ -8259,8 +8283,8 @@
           "404": {
             "description": "No such upload, or the node API is not mounted."
           },
-          "413": {
-            "description": "The file is larger than declared."
+          "422": {
+            "description": "The file was refused (`refused`): not in the upload, a size or content mismatch, or the destinations changed."
           }
         },
         "security": [],
@@ -8405,17 +8429,7 @@
             }
           },
           "400": {
-            "description": "The request is invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PortalErrorBody"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "The integration refused the login.",
+            "description": "The request is invalid, or the integration refused the login.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8783,8 +8797,8 @@
               }
             }
           },
-          "401": {
-            "description": "The caller is not signed in.",
+          "400": {
+            "description": "The account is not linked to this identity.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8793,8 +8807,8 @@
               }
             }
           },
-          "404": {
-            "description": "No such linked account.",
+          "401": {
+            "description": "The caller is not signed in.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11589,8 +11603,19 @@
         ],
         "properties": {
           "replicas": {
-            "type": "object",
-            "description": "Nodes that should run the instance."
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "all"
+                ]
+              }
+            ],
+            "description": "A replica count (0 stops every replica) or `\"all\"`."
           },
           "constraints": {
             "type": "array",
@@ -13002,8 +13027,19 @@
         ],
         "properties": {
           "replicas": {
-            "type": "object",
-            "description": "Nodes that should run the instance: a number (0 stops every\nreplica) or `\"all\"`."
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "all"
+                ]
+              }
+            ],
+            "description": "A replica count (0 stops every replica) or `\"all\"`."
           },
           "constraints": {
             "type": "array",

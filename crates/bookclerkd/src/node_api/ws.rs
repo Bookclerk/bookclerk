@@ -348,10 +348,11 @@ fn offers_subprotocol(headers: &axum::http::HeaderMap) -> bool {
     get,
     path = "/api/node/v1/connect",
     responses(
-        (status = 101, description = "Switching to the host-node WebSocket."),
-        (status = 401, description = "The node signature is missing or wrong."),
+        (status = 101, description = "Switching to the host-node WebSocket. The node's signature is checked in the first frames; a wrong one closes the socket."),
+        (status = 400, description = "The request does not offer the node subprotocol (`subprotocol_required`)."),
         (status = 403, description = "The transport is not allowed."),
         (status = 404, description = "The node API is not mounted."),
+        (status = 503, description = "Too many handshakes are in flight (`handshakes_busy`); retry after `Retry-After`."),
     ),
 )]
 pub async fn get_connect(State(state): State<Arc<AppState>>, request: Request) -> Response {

@@ -538,7 +538,11 @@ pub async fn delete_avatar(
     path = "/api/users/{id}/avatar",
     params(("id" = i64, Path, description = "User id.")),
     responses(
-        (status = 200, description = "The avatar.", content_type = "image/jpeg"),
+        (status = 200, description = "The avatar.", content(
+            (crate::openapi::BinaryBody = "image/jpeg"),
+            (crate::openapi::BinaryBody = "image/png"),
+            (crate::openapi::BinaryBody = "image/webp"),
+        )),
         (status = 404, description = "The user has no avatar."),
     ),
 )]

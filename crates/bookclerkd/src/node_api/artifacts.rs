@@ -50,7 +50,7 @@ fn is_sha256_hex(raw: &str) -> bool {
     path = "/api/node/v1/artifacts/{sha256}",
     params(("sha256" = String, Path, description = "Archive digest, lowercase hex.")),
     responses(
-        (status = 200, description = "The plugin archive.", content_type = "application/octet-stream"),
+        (status = 200, description = "The plugin archive.", body = crate::openapi::BinaryBody, content_type = "application/octet-stream"),
         (status = 401, description = "The node signature is missing or wrong."),
         (status = 404, description = "No such archive, or the node API is not mounted."),
     ),

@@ -1106,7 +1106,7 @@ async fn record_written(
         (status = 200, description = "The file was stored.", body = serde_json::Value),
         (status = 401, description = "The upload token is missing or wrong."),
         (status = 404, description = "No such upload, or the node API is not mounted."),
-        (status = 413, description = "The file is larger than declared."),
+        (status = 422, description = "The file was refused (`refused`): not in the upload, a size or content mismatch, or the destinations changed."),
     ),
 )]
 pub async fn put_file(

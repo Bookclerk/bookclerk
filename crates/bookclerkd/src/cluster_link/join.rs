@@ -793,6 +793,7 @@ pub struct InviteBody {
         (status = 400, description = "The body is invalid."),
         (status = 500, description = "The configuration could not be read or written."),
         (status = 502, description = "The library could not be reached."),
+        (status = 504, description = "The library is slow to answer; the join goes on in the background (`join_pending`). Poll the join state instead of retrying."),
     ),
 )]
 pub async fn post_join_invite(

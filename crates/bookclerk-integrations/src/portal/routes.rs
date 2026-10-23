@@ -253,8 +253,7 @@ struct IntegrationLoginBody {
     request_body = IntegrationLoginBody,
     responses(
         (status = 200, description = "Signed in through the integration.", body = serde_json::Value),
-        (status = 400, description = "The request is invalid.", body = PortalErrorBody),
-        (status = 401, description = "The integration refused the login.", body = PortalErrorBody),
+        (status = 400, description = "The request is invalid, or the integration refused the login.", body = PortalErrorBody),
     ),
 )]
 async fn login_integration(
@@ -780,7 +779,7 @@ struct ConnectionInfo {
     responses(
         (status = 200, description = "The account was unlinked.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in.", body = PortalErrorBody),
-        (status = 404, description = "No such linked account.", body = PortalErrorBody),
+        (status = 400, description = "The account is not linked to this identity.", body = PortalErrorBody),
     ),
 )]
 async fn revoke_connection(

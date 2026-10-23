@@ -396,6 +396,32 @@ pub struct BinaryBody(
     Vec<u8>,
 );
 
+/// The schema of a placement's `replicas`: a replica count (0 stops every
+/// replica) or `"all"`, as [`bookclerk_library::control_plane::Replicas`]
+/// serializes.
+///
+/// # Returns
+///
+/// A `oneOf` of a non-negative integer and the string `all`.
+pub fn replicas_schema() -> utoipa::openapi::schema::Schema {
+    use utoipa::openapi::schema::{ObjectBuilder, OneOfBuilder, Schema, Type};
+    let count = ObjectBuilder::new()
+        .schema_type(Type::Integer)
+        .minimum(Some(0));
+    let all = ObjectBuilder::new()
+        .schema_type(Type::String)
+        .enum_values(Some(["all"]));
+    Schema::OneOf(
+        OneOfBuilder::new()
+            .item(count)
+            .item(all)
+            .description(Some(
+                "A replica count (0 stops every replica) or `\"all\"`.",
+            ))
+            .build(),
+    )
+}
+
 /// The document, built once per process and shared by every router.
 ///
 /// # Returns
