@@ -733,7 +733,9 @@ export async function canonicalExecuteRequestHash(request: ExecuteRequest): Prom
     requestHash: "",
     deadlineUnixMs: 0,
   };
-  const bytes = encodeExecuteRequest(canonical);
+  // Copy into a fresh ArrayBuffer: WebCrypto's BufferSource rejects views that
+  // may be backed by a SharedArrayBuffer.
+  const bytes = new Uint8Array(encodeExecuteRequest(canonical));
   if (globalThis.crypto?.subtle) {
     const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
     return hexBytes(new Uint8Array(digest));

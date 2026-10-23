@@ -436,9 +436,10 @@ struct SelfSigned {
 /// The SPKI pin of a key pair.
 fn spki_pin(key_pair: &rcgen::KeyPair) -> String {
     use base64::Engine as _;
+    use rcgen::PublicKeyData as _;
     use sha2::Digest as _;
     base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(sha2::Sha256::digest(key_pair.public_key_der()))
+        .encode(sha2::Sha256::digest(key_pair.subject_public_key_info()))
 }
 
 /// Loads the self-signed certificate, generating it on first use.
@@ -480,8 +481,8 @@ fn load_or_create_self_signed(
         });
     }
     let generated = rcgen::generate_simple_self_signed(names)?;
-    let pin = spki_pin(&generated.key_pair);
-    let key = generated.key_pair.serialize_der();
+    let pin = spki_pin(&generated.signing_key);
+    let key = generated.signing_key.serialize_der();
     write_private(&key_path, &key)?;
     write_private(&cert_path, generated.cert.der())?;
     write_private(&names_path, listed.as_bytes())?;
