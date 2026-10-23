@@ -730,7 +730,11 @@ RustSec categories and informational kinds, which RustSec records carry
 instead), the verdict and its evidence
 (saying so when reachability is unproven), and a proposed range up to the
 highest release tag (or, for the TypeScript and Python SDKs, the version in
-their manifest) for a maintainer to confirm. A later run that finds the same advisory never files
+their manifest) for a maintainer to confirm. The affected package's
+ecosystem is the one `shipped-artifacts.toml` declares (`other` for
+packages on no public registry), except that an artifact with a
+`crate_manifest` is filed as `rust` once that crate's `publish` allows
+crates.io; markers keep the declared ecosystem. A later run that finds the same advisory never files
 a second draft: while the first is still a draft it rewrites only the
 automated part of its description (between the
 `<!-- bookclerk-auto: begin … -->` and `<!-- bookclerk-auto: end -->`
