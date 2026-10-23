@@ -8,20 +8,14 @@
 {{> header}}
 <main id="main" class="wrap docs-layout">
   <nav class="docs-nav" aria-label="Documentation">
-    <details class="version-picker">
-      <summary><span class="faint">Version</span> <strong>{{docsVersion}}</strong>{{#prerelease}} <span class="badge unstable-badge">unstable</span>{{/prerelease}}</summary>
-      <ul>
-        <li><a href="/docs/" aria-current="true"><strong>{{docsVersion}}</strong><span class="faint">From {{docsRef}}</span></a></li>
-        {{#prerelease}}<li class="faint">Each major release will keep its own docs here, taken from its release tag.</li>{{/prerelease}}
-      </ul>
-    </details>
-    <a class="docs-home" href="/docs/">Overview</a>
+    <!--doc-versions-->
+    <a class="docs-home" href="%%docsBase%%">Overview</a>
     <!--doc-nav-->
   </nav>
   <article class="doc">
-    {{#prerelease}}<p class="doc-note" role="note">These docs describe the development version. They change with every merge and may cover features that are not finished.</p>{{/prerelease}}
+    <!--doc-note-->
     <!--doc-body-->
-    <p class="doc-source faint">Source: <a href="{{docSourceUrl}}">{{docSource}}</a> at {{docsRef}} · <a href="{{markdownUrl}}" type="text/markdown">View as Markdown</a></p>
+    <!--doc-footer-->
   </article>
 </main>
 {{> footer}}

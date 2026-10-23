@@ -7,24 +7,33 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { build, escapeHtml, inlineLogo, jsonLd, readState, render, templateContext } from "./build.mjs";
+import { build, docsVersions, escapeHtml, inlineLogo, jsonLd, readState, render, templateContext } from "./build.mjs";
 
 /** Release state of a repository with no release yet. */
 const PRE = { SITE_COMMIT: "b6adae4d0123456789abcdef0123456789abcdef", SITE_BUILT_ON: "2026-10-23" };
 
 /** Release state after a first release. */
-const REL = { ...PRE, SITE_RELEASE_TAG: "v0.1.0", SITE_RELEASE_DATE: "2026-12-01" };
+const REL = { ...PRE, SITE_RELEASE_TAG: "v0.1.0", SITE_RELEASE_DATE: "2026-12-01", SITE_DOCS_VERSIONS: "v0.1.0" };
 
 /**
  * Builds the site into a temporary directory.
  *
  * @param {Record<string, string>} env Release state.
- * @returns {{files: string[], page: (name: string) => string, done: () => void}}
+ * @returns {{files: string[], page: (name: string) => string, shell: () => object, done: () => void}}
+ *   The published files, a reader for one of them, the docs shell and a
+ *   clean-up.
  */
 function built(env) {
-  const dir = mkdtempSync(join(tmpdir(), "bookclerk-site-"));
-  const files = build(env, dir);
-  return { files, page: (name) => readFileSync(join(dir, name), "utf8"), done: () => rmSync(dir, { recursive: true, force: true }) };
+  const root = mkdtempSync(join(tmpdir(), "bookclerk-site-"));
+  const dir = join(root, "dist");
+  const shellFile = join(root, "docs-shell.json");
+  const files = build(env, dir, shellFile);
+  return {
+    files,
+    page: (name) => readFileSync(join(dir, name), "utf8"),
+    shell: () => JSON.parse(readFileSync(shellFile, "utf8")),
+    done: () => rmSync(root, { recursive: true, force: true }),
+  };
 }
 
 test("escapeHtml escapes markup and quotes", () => {
@@ -74,9 +83,12 @@ test("render fails on unknown names instead of leaving holes", () => {
   assert.throws(() => render("{{ spaced }}", ctx, {}), /unrendered/);
 });
 
-test("repository links follow the release tag", () => {
+test("repository links follow the docs' release tag", () => {
   assert.match(templateContext(readState(PRE)).values.blobBase, /\/blob\/[0-9a-f]{7,40}\/$/);
   assert.match(templateContext(readState(REL)).values.blobBase, /\/blob\/v0\.1\.0\/$/);
+  const unpublished = templateContext(readState({ ...REL, SITE_DOCS_VERSIONS: "" }));
+  assert.match(unpublished.values.blobBase, /\/blob\/[0-9a-f]{7,40}\/$/);
+  assert.equal(unpublished.values.docsVersion, "Development (main)");
 });
 
 test("inlineLogo keeps the wordmark recolorable and drops editor attributes", () => {
@@ -157,12 +169,13 @@ test("pages carry search and preview metadata", () => {
     assert.match(missing, /<meta name="robots" content="noindex">/);
     assert.ok(!missing.includes('rel="canonical"'));
 
-    const doc = site.page("docs/plugins.html");
-    assert.match(doc, /<link rel="canonical" href="https:\/\/example.org\/docs\/plugins">/);
-    assert.match(doc, /<link rel="alternate" type="text\/markdown" href="\/docs\/plugins.md"/);
-    assert.match(doc, /<meta property="og:type" content="article">/);
-    const description = doc.match(/<meta name="description" content="([^"]*)">/)[1];
-    assert.ok(description.length > 40 && description.length <= 160, description);
+    // Docs pages are filled in by the Worker (worker.test.mjs checks them).
+    const shell = site.shell();
+    assert.equal(shell.origin, "https://example.org");
+    assert.match(shell.html, /<link rel="canonical" href="https:\/\/example.org%%pagePath%%">/);
+    assert.match(shell.html, /<link rel="alternate" type="text\/markdown" href="%%markdownUrl%%"/);
+    assert.match(shell.html, /<meta property="og:type" content="article">/);
+    assert.ok(!site.files.includes("docs"), "docs pages are not static files");
   } finally {
     site.done();
   }
@@ -193,12 +206,12 @@ test("crawler and agent files list the site", () => {
     assert.match(llms, /^- \[[^\]]+\]\(https:\/\/bookclerk.app\/docs\/plugins.md\): \S/m);
     assert.match(llms, /^## Optional$/m);
     assert.ok(llms.includes("unstable development version"));
-    assert.ok(site.page("llms-full.txt").includes("Source: https://bookclerk.app/docs/plugins.md"));
-
-    // The Markdown copy links to other copies and to GitHub, never to bare .md paths.
-    const md = site.page("docs/plugins.md");
-    assert.ok(md.includes("](/docs/"));
-    assert.ok(!/\]\((?!https?:|\/|#|mailto:)[^)]*\.md/.test(md));
+    assert.match(llms, /^- \[Rust plugin SDK\]\(https:\/\/bookclerk.app\/docs\/api\/rust\/bookclerk_plugin_sdk\/index.md\)$/m);
+    const full = site.page("llms-full.txt");
+    assert.ok(full.includes("Source: https://bookclerk.app/docs/plugins.md"));
+    // Links in the combined file point at the site, never at bare .md paths.
+    assert.ok(full.includes("](/docs/"));
+    assert.ok(!/\]\((?!https?:|\/|#|mailto:)[^)]*\.md/.test(full));
   } finally {
     site.done();
   }
@@ -226,5 +239,42 @@ test("home and download pages have Markdown versions that keep their sections", 
     } finally {
       site.done();
     }
+  }
+});
+
+test("the docs versions follow the releases", () => {
+  assert.deepEqual(docsVersions(readState(PRE)), [{ ref: "main", label: "Development (main)", base: "/docs/" }]);
+  // A release whose docs are not published yet leaves /docs/ on main.
+  assert.deepEqual(docsVersions(readState({ ...REL, SITE_DOCS_VERSIONS: "" })), [{ ref: "main", label: "Development (main)", base: "/docs/" }]);
+  const state = readState({ ...REL, SITE_RELEASE_TAG: "v0.3.0", SITE_DOCS_VERSIONS: "v0.2.0\nv0.1.0" });
+  assert.deepEqual(docsVersions(state), [
+    { ref: "v0.2.0", label: "v0.2.0 (latest)", base: "/docs/" },
+    { ref: "main", label: "Development (main)", base: "/docs/v/main/" },
+    { ref: "v0.1.0", label: "v0.1.0", base: "/docs/v/v0.1.0/" },
+  ]);
+  assert.throws(() => readState({ ...REL, SITE_DOCS_VERSIONS: "v0.1.0 ../main" }), /SITE_DOCS_VERSIONS/);
+  assert.throws(() => readState({ ...PRE, SITE_DOCS_VERSIONS: "v0.1.0" }), /SITE_RELEASE_TAG/);
+  const many = Array.from({ length: 150 }, (_, i) => `v0.${149 - i}.0`);
+  const capped = readState({ ...REL, SITE_RELEASE_TAG: "v0.149.0", SITE_DOCS_VERSIONS: many.join(" ") });
+  assert.equal(capped.docsTags.length, 100);
+  assert.equal(capped.docsTags[99], "v0.50.0", "the newest tags are kept");
+});
+
+test("the docs shell has every hole and marker the Worker fills, once", () => {
+  const site = built(REL);
+  try {
+    const shell = site.shell();
+    for (const marker of ["jsonld", "doc-versions", "doc-nav", "doc-note", "doc-body", "doc-footer"]) {
+      assert.equal(shell.html.split(`<!--${marker}-->`).length, 2, marker);
+    }
+    assert.ok(!shell.html.includes("{{"));
+    assert.equal(shell.versions[0].ref, "v0.1.0");
+    const api = shell.nav.find((g) => g.title === "API reference");
+    assert.deepEqual(
+      api.pages.map((p) => p.key),
+      ["api/README", "api/typescript/README", "api/python/README", "api/rust/bookclerk_plugin_sdk/index", "api/rust/README"],
+    );
+  } finally {
+    site.done();
   }
 });

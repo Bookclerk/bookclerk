@@ -1,11 +1,16 @@
 # Build and deploy the bookclerk.app website (tools/site) as the Cloudflare
-# Worker `bookclerk-site` (static assets plus a small script that serves
+# Worker `bookclerk-site` (static assets plus a script that renders /docs/
+# from the Bookclerk/bookclerk-docs repository at request time and serves
 # Markdown to `Accept: text/markdown` requests) via wrangler-action.
 #
 # Runs when the site, the docs or the brand assets change on main, when a
 # release is published (the site shows the newest release and drops its
-# pre-release notices), and by hand. The site renders docs/ as /docs/: from
-# main until the first release, then from the newest release tag.
+# pre-release notices), when docs-publish has tagged a release's docs in
+# bookclerk-docs (the release joins the docs version picker), and by hand.
+# /docs/ shows the newest release whose docs are published, else main;
+# /docs/v/<ref>/ shows main and every other published release. The docs themselves
+# are not deployed: the build reads docs/ only for the sidebar, sitemap.xml
+# and llms.txt.
 #
 # GitHub repository secrets:
 #   CLOUDFLARE_API_TOKEN   scoped to the Worker `bookclerk-site` (Workers,
@@ -33,6 +38,11 @@ on:
       - ".github/workflows/site-deploy.yml"
   release:
     types: [published]
+  # docs-publish tags a release's docs after the release event, usually after
+  # this workflow has run for it; redeploy then so the release's docs appear.
+  workflow_run:
+    workflows: [docs-publish]
+    types: [completed]
   workflow_dispatch:
 
 # Least privilege for GITHUB_TOKEN:
@@ -46,6 +56,11 @@ concurrency:
 
 jobs:
   deploy:
+    # Of docs-publish runs, only a successful release publish changes the
+    # docs versions; main's publishes need no redeploy.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'release')
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -89,6 +104,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          DOCS_REPO: ${{ github.repository_owner }}/bookclerk-docs
         run: |
           set -euo pipefail
           # 404 means no release yet; any other failure stops the deploy
@@ -109,25 +125,46 @@ jobs:
             echo "::error::Unexpected release tag: $tag"
             exit 1
           fi
-          echo "Release: ${tag:-none}"
+          # Every published, non-prerelease release whose docs bookclerk-docs
+          # has tagged, newest first, for the docs version picker. A release
+          # whose docs are still being published is left out until the
+          # workflow_run redeploy. build.mjs checks each tag's shape again.
+          tags=""
+          if [[ -n "$tag" ]]; then
+            published=$(gh api --paginate "repos/${DOCS_REPO}/tags?per_page=100" --jq '.[].name')
+            releases=$(gh api --paginate "repos/${REPO}/releases?per_page=100" \
+              --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name')
+            tags=$(grep -Fxf <(printf '%s\n' "$published") <<<"$releases" | tr '\n' ' ' || true)
+          fi
+          tag_re='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          for t in $tags; do
+            if [[ ! "$t" =~ $tag_re ]]; then
+              echo "::error::Unexpected release tag: $t"
+              exit 1
+            fi
+          done
+          docs_tag="${tags%% *}"
+          echo "Release: ${tag:-none}; docs versions: ${tags:-none}"
           {
             echo "tag=${tag}"
             echo "date=${date}"
+            echo "tags=${tags}"
+            echo "docs_tag=${docs_tag}"
           } >> "$GITHUB_OUTPUT"
 
-      # Once a release exists the docs come from its tag, whatever commit the
-      # site itself is built from.
+      # Once a release's docs are published the sidebar, sitemap and llms.txt
+      # come from its tag's docs, whatever commit the site is built from.
       - name: Use the release's docs
-        if: steps.release.outputs.tag != ''
+        if: steps.release.outputs.docs_tag != ''
         env:
-          TAG: ${{ steps.release.outputs.tag }}
+          TAG: ${{ steps.release.outputs.docs_tag }}
         run: |
           set -euo pipefail
           git fetch --depth=1 origin "refs/tags/${TAG}:refs/tags/${TAG}"
           rm -rf ../../docs
           git checkout "refs/tags/${TAG}" -- ../../docs
 
-      # After the docs swap, so the link check covers the docs deployed.
+      # After the docs swap, so the link check covers the docs listed.
       - name: Test the site generator
         run: npm test
 
@@ -135,6 +172,7 @@ jobs:
         env:
           SITE_RELEASE_TAG: ${{ steps.release.outputs.tag }}
           SITE_RELEASE_DATE: ${{ steps.release.outputs.date }}
+          SITE_DOCS_VERSIONS: ${{ steps.release.outputs.tags }}
           SITE_ORIGIN: https://${{ vars.DOMAIN || 'bookclerk.app' }}
         run: |
           set -euo pipefail

@@ -1,10 +1,16 @@
 // Builds the static bookclerk.app website into dist/.
 //
-// The site is plain HTML and CSS with no client-side scripts. Its only npm
-// packages are build and deploy tooling: markdown-it (docs.mjs) and wrangler.
-// Beside the pages it writes what search engines, link previews and agents
-// read: canonical and Open Graph tags, JSON-LD, sitemap.xml, robots.txt,
-// llms.txt / llms-full.txt and a Markdown copy of every doc.
+// The site is plain HTML and CSS with no client-side scripts. Its npm
+// packages are markdown-it (render.mjs, bundled into the Worker) and
+// wrangler. Beside the pages it writes what search engines, link previews and
+// agents read: canonical and Open Graph tags, JSON-LD, sitemap.xml,
+// robots.txt and llms.txt / llms-full.txt.
+//
+// Docs pages are not written here: the Worker renders them from the docs
+// repository at request time (worker.js). The build bakes what the Worker
+// needs for that into generated/docs-shell.json: src/doc.html rendered for
+// this site with the per-page parts left as holes, the sidebar, and the list
+// of docs versions.
 //
 // Release state comes from the environment, set by
 // .github/workflows/site-deploy.yml:
@@ -13,6 +19,11 @@
 //                      unset means "no release yet", which renders every
 //                      pre-release notice
 //   SITE_RELEASE_DATE  that release's publish date, YYYY-MM-DD
+//   SITE_DOCS_VERSIONS the published release tags that bookclerk-docs has a
+//                      tag for, whitespace-separated, newest first; each gets
+//                      docs at /docs/v/<tag>/ and the first is also /docs/.
+//                      A release whose docs are not published yet is left
+//                      out, and with none listed /docs/ stays on main
 //   SITE_COMMIT        commit the site is built from (7-40 hex digits)
 //   SITE_BUILT_ON      build date, YYYY-MM-DD (defaults to today, UTC)
 //   SITE_ORIGIN        origin the site is served from, for canonical and
@@ -21,11 +32,15 @@
 // Every value is validated before it reaches a template, and every template
 // value is HTML-escaped.
 
+import { createHash } from "node:crypto";
 import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { docFile, docMarkdownUrl, docUrl, NAV, renderDocs } from "./docs.mjs";
+import { docMarkdownUrl, docUrl, GENERATED_TITLES, NAV, renderDocs } from "./docs.mjs";
+import { escapeHtml, jsonLd, SHELL_MARKERS, SHELL_VALUES } from "./render.mjs";
+
+export { escapeHtml, jsonLd };
 
 /** Directory holding this script. */
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -109,26 +124,17 @@ const COMMIT_RE = /^[0-9a-f]{7,40}$/;
 /** An https origin with a lowercase hostname and no port or path. */
 const ORIGIN_RE = /^https:\/\/([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
+/** Most release tags the docs version picker lists. */
+const MAX_DOCS_VERSIONS = 100;
+
+/** Where the build writes the docs shell the Worker imports (see top). */
+export const DOCS_SHELL_FILE = join(HERE, "generated", "docs-shell.json");
+
 /** How deep partials may include other partials. */
 const MAX_PARTIAL_DEPTH = 3;
 
 /** Month names for human-readable dates. */
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-/**
- * Escapes text for an HTML element body or a double-quoted attribute.
- *
- * @param {string} value Raw text.
- * @returns {string} The text with `& < > " '` replaced by entities.
- */
-export function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
 
 /**
  * Formats a YYYY-MM-DD date as "23 Oct 2026".
@@ -146,8 +152,10 @@ function displayDate(iso) {
  *
  * @param {Record<string, string | undefined>} env Usually `process.env`.
  * @returns {{release: {tag: string, date: string} | null, commit: string,
- *   builtOn: string, origin: string}}
- *   `release` is null when no release exists yet.
+ *   builtOn: string, origin: string, docsTags: string[]}}
+ *   `release` is null when no release exists yet. `docsTags` are the release
+ *   tags with published docs, newest first, at most MAX_DOCS_VERSIONS of
+ *   them; the newest release is not among them until its docs are.
  * @throws {Error} When a value is present but malformed, or a release tag
  *   comes without its date.
  */
@@ -157,6 +165,7 @@ export function readState(env) {
   const commit = (env.SITE_COMMIT ?? "").trim().toLowerCase();
   const builtOn = (env.SITE_BUILT_ON ?? "").trim() || new Date().toISOString().slice(0, 10);
   const origin = (env.SITE_ORIGIN ?? "").trim() || DEFAULT_ORIGIN;
+  const listed = (env.SITE_DOCS_VERSIONS ?? "").split(/\s+/).filter((t) => t !== "");
 
   if (!COMMIT_RE.test(commit)) {
     throw new Error(`SITE_COMMIT must be 7-40 lowercase hex digits, got ${JSON.stringify(commit)}`);
@@ -167,8 +176,12 @@ export function readState(env) {
   if (!ORIGIN_RE.test(origin)) {
     throw new Error(`SITE_ORIGIN must be https://<lowercase hostname>, got ${JSON.stringify(origin)}`);
   }
+  for (const t of listed) {
+    if (!TAG_RE.test(t)) throw new Error(`SITE_DOCS_VERSIONS must hold tags like v1.2.3, got ${JSON.stringify(t)}`);
+  }
   if (tag === "") {
-    return { release: null, commit, builtOn, origin };
+    if (listed.length > 0) throw new Error("SITE_DOCS_VERSIONS is set but SITE_RELEASE_TAG is not");
+    return { release: null, commit, builtOn, origin, docsTags: [] };
   }
   if (!TAG_RE.test(tag)) {
     throw new Error(`SITE_RELEASE_TAG must look like v1.2.3, got ${JSON.stringify(tag)}`);
@@ -176,7 +189,28 @@ export function readState(env) {
   if (!DATE_RE.test(date)) {
     throw new Error(`SITE_RELEASE_DATE must be YYYY-MM-DD when a release tag is set, got ${JSON.stringify(date)}`);
   }
-  return { release: { tag, date }, commit, builtOn, origin };
+  // The picker keeps the newest MAX_DOCS_VERSIONS tags; older ones drop off.
+  const docsTags = [...new Set(listed)].slice(0, MAX_DOCS_VERSIONS);
+  return { release: { tag, date }, commit, builtOn, origin, docsTags };
+}
+
+/**
+ * Lists the docs versions the site serves.
+ *
+ * @param {ReturnType<typeof readState>} state Validated release state.
+ * @returns {{ref: string, label: string, base: string}[]} The default
+ *   version (served at `/docs/`: the newest release with published docs,
+ *   else main) first, then main and older releases under `/docs/v/<ref>/`.
+ */
+export function docsVersions(state) {
+  const dev = { ref: "main", label: "Development (main)" };
+  if (state.docsTags.length === 0) return [{ ...dev, base: "/docs/" }];
+  const [latest, ...older] = state.docsTags;
+  return [
+    { ref: latest, label: `${latest} (latest)`, base: "/docs/" },
+    { ...dev, base: "/docs/v/main/" },
+    ...older.map((t) => ({ ref: t, label: t, base: `/docs/v/${t}/` })),
+  ];
 }
 
 /**
@@ -190,7 +224,8 @@ export function templateContext(state) {
   const short = state.commit.slice(0, 7);
   // Source links follow the commit the docs came from, so line anchors and
   // moved files stay right until the next deploy.
-  const ref = state.release ? state.release.tag : state.commit;
+  const docsTag = state.docsTags[0] ?? null;
+  const ref = docsTag ?? state.commit;
   return {
     values: {
       origin: state.origin,
@@ -204,8 +239,7 @@ export function templateContext(state) {
       pluginsUrl: "/docs/plugins",
       architectureUrl: "/docs/architecture",
       blobBase: `${REPOSITORY_URL}/blob/${ref}/`,
-      docsVersion: state.release ? state.release.tag : "Development (main)",
-      docsRef: state.release ? state.release.tag : short,
+      docsVersion: docsTag ?? "Development (main)",
       releasesUrl: `${REPOSITORY_URL}/releases`,
       releaseTag: state.release?.tag ?? "",
       releaseDate: state.release ? displayDate(state.release.date) : "",
@@ -280,12 +314,6 @@ export function inlineLogo(svg) {
     .trim();
 }
 
-/** Marker in src/doc.html replaced by the sidebar after templating. */
-const NAV_MARKER = "<!--doc-nav-->";
-
-/** Marker in src/doc.html replaced by the rendered doc after templating. */
-const BODY_MARKER = "<!--doc-body-->";
-
 /** Marker in the head partial replaced by the page's JSON-LD after templating. */
 const JSONLD_MARKER = "<!--jsonld-->";
 
@@ -314,18 +342,6 @@ function pageContext(context, page, extra = {}) {
     },
     flags: { ...context.flags, indexable: page.indexable, markdown: page.markdown !== undefined && page.alternate !== false },
   };
-}
-
-/**
- * Serializes structured data for a `<script type="application/ld+json">`.
- *
- * @param {object | null} data A schema.org JSON-LD object, or null for none.
- * @returns {string} The script element, with `<` escaped so the JSON can
- *   never close it; empty when `data` is null.
- */
-export function jsonLd(data) {
-  if (data === null) return "";
-  return `<script type="application/ld+json">${JSON.stringify(data).replaceAll("<", "\\u003c")}</script>`;
 }
 
 /**
@@ -362,86 +378,43 @@ function homeJsonLd(context) {
 }
 
 /**
- * The schema.org description of one doc page.
+ * Renders the docs page shell the Worker fills for every docs page.
  *
- * @param {ReturnType<typeof templateContext>} context Site-wide values.
- * @param {{key: string, title: string, description: string}} doc The doc.
- * @returns {object} A JSON-LD `@graph` with the TechArticle and its
- *   breadcrumb trail (Docs › title).
- */
-function docJsonLd(context, doc) {
-  const { origin } = context.values;
-  const url = origin + docUrl(doc.key);
-  const crumbs = [{ name: "Docs", item: `${origin}/docs/` }];
-  if (doc.key !== "README") crumbs.push({ name: doc.title, item: url });
-  return {
-    "@context": "https://schema.org",
-    "@graph": [
-      {
-        "@type": "TechArticle",
-        headline: doc.title,
-        ...(doc.description ? { description: doc.description } : {}),
-        url,
-        inLanguage: "en",
-        isPartOf: { "@id": `${origin}/#website` },
-      },
-      {
-        "@type": "BreadcrumbList",
-        itemListElement: crumbs.map((c, i) => ({ "@type": "ListItem", position: i + 1, name: c.name, item: c.item })),
-      },
-    ],
-  };
-}
-
-/**
- * Renders the repository's docs/ into dist/docs/, each with a Markdown copy.
- *
- * The rendered Markdown goes in after templating, so `{{` in a doc's code
- * samples is never read as template syntax.
+ * Per-page values become `%%name%%` holes, which HTML escaping leaves as
+ * they are, and per-page HTML goes where src/doc.html and the head partial
+ * have `<!--name-->` markers (render.mjs fills both).
  *
  * @param {ReturnType<typeof templateContext>} context Site-wide values.
  * @param {Record<string, string>} partials Partial templates by name.
- * @param {string} outDir Output directory.
- * @returns {ReturnType<typeof renderDocs>} The rendered docs and sidebar.
+ * @param {ReturnType<typeof renderDocs>} rendered The local docs, for the sidebar.
+ * @param {ReturnType<typeof docsVersions>} versions The docs versions served.
+ * @returns {import("./render.mjs").DocsShell} The shell.
+ * @throws {Error} When the rendered template has a hole or marker render.mjs
+ *   does not fill, or lacks one it does.
  */
-function buildDocs(context, partials, outDir) {
-  const rendered = renderDocs(join(REPO_ROOT, "docs"), context.values.blobBase);
-  const { nav, docs } = rendered;
+export function buildDocsShell(context, partials, rendered, versions) {
   const template = readFileSync(join(HERE, "src", "doc.html"), "utf8");
-  for (const doc of docs) {
-    const page = pageContext(
-      context,
-      {
-        path: docUrl(doc.key),
-        title: `${doc.title} · Bookclerk docs`,
-        description: doc.description || `${doc.title}: Bookclerk documentation.`,
-        indexable: true,
-        type: "article",
-        markdown: docMarkdownUrl(doc.key),
-      },
-      { docSource: doc.source, docSourceUrl: context.values.blobBase + doc.source },
-    );
-    const navHtml = nav
-      .map((group) => {
-        const links = group.pages
-          .map((p) => {
-            const current = p.key === doc.key ? ' aria-current="page"' : "";
-            return `<li><a href="${escapeHtml(docUrl(p.key))}"${current}>${escapeHtml(p.title)}</a></li>`;
-          })
-          .join("");
-        return `<h2>${escapeHtml(group.title)}</h2><ul>${links}</ul>`;
-      })
-      .join("\n");
-    const html = render(template, page, partials)
-      .replace(JSONLD_MARKER, () => jsonLd(docJsonLd(context, doc)))
-      .replace(NAV_MARKER, () => navHtml)
-      .replace(BODY_MARKER, () => doc.html);
-    const file = join(outDir, docFile(doc.key));
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, html);
-    writeFileSync(join(outDir, docMarkdownUrl(doc.key).slice(1)), doc.markdown);
+  const hole = (name) => `%%${name}%%`;
+  const page = pageContext(context, {
+    path: hole("pagePath"),
+    title: hole("pageTitle"),
+    description: hole("pageDescription"),
+    indexable: true,
+    type: "article",
+    markdown: hole("markdownUrl"),
+  });
+  const html = render(template, page, partials);
+  const holes = new Set([...html.matchAll(/%%([A-Za-z]+)%%/g)].map((m) => m[1]));
+  const unknown = [...holes].filter((h) => !SHELL_VALUES.includes(h));
+  if (unknown.length > 0 || html.replace(/%%[A-Za-z]+%%/g, "").includes("%%")) {
+    throw new Error(`docs shell has holes render.mjs does not fill: ${unknown.join(", ") || "stray %%"}`);
   }
-  return rendered;
+  for (const marker of SHELL_MARKERS) {
+    if (html.split(`<!--${marker}-->`).length !== 2) throw new Error(`docs shell needs exactly one <!--${marker}-->`);
+  }
+  const shell = { html, origin: context.values.origin, repository: REPOSITORY_URL, versions, nav: rendered.nav };
+  const id = createHash("sha256").update(JSON.stringify(shell)).digest("hex").slice(0, 16);
+  return { id, ...shell };
 }
 
 /**
@@ -476,22 +449,23 @@ function writeLlmsTxt(context, rendered, outDir) {
     `${status} Each doc below is Markdown; the same page as HTML is at the URL without \`.md\`. Source code: ${repo}. Every doc in one file: ${origin}/llms-full.txt. Every page also answers a request with \`Accept: text/markdown\` in Markdown; the home and download pages are at ${origin}/index.md and ${origin}/download.md.`,
     "",
   ];
-  const groups = rendered.nav.map((g) => ({ title: g.title, keys: g.pages.map((p) => p.key) }));
+  const groups = rendered.nav;
   const designAt = groups.findIndex((g) => g.title === NAV[NAV.length - 1].title);
   for (const [i, group] of groups.entries()) {
     // llms.txt reserves "Optional" for links a reader can skip.
     lines.push(`## ${i === designAt ? "Optional" : group.title}`, "");
     if (i === 0) lines.push(`- [Overview](${origin}${docMarkdownUrl("README")}): How the documentation is organized`);
-    for (const key of group.keys) {
-      const doc = byKey.get(key);
-      lines.push(`- [${markdownLinkText(doc.title)}](${origin}${docMarkdownUrl(key)})${doc.description ? `: ${doc.description}` : ""}`);
+    for (const { key, title } of group.pages) {
+      const description = byKey.get(key)?.description ?? "";
+      lines.push(`- [${markdownLinkText(title)}](${origin}${docMarkdownUrl(key)})${description ? `: ${description}` : ""}`);
     }
     lines.push("");
   }
   writeFileSync(join(outDir, "llms.txt"), lines.join("\n"));
 
+  // The generated API reference is too large for one file; llms.txt links it.
   const full = [`# Bookclerk documentation (${docsVersion})`, "", `> ${SUMMARY}`, ""];
-  for (const key of ["README", ...groups.flatMap((g) => g.keys)]) {
+  for (const key of ["README", ...groups.flatMap((g) => g.pages.map((p) => p.key)).filter((k) => byKey.has(k))]) {
     const doc = byKey.get(key);
     full.push("---", "", `Source: ${origin}${docMarkdownUrl(key)}`, "", doc.markdown.trim(), "");
   }
@@ -520,10 +494,12 @@ function writeCrawlerFiles(context, paths, outDir) {
  *
  * @param {Record<string, string | undefined>} env Release state (see top).
  * @param {string} outDir Output directory; replaced entirely.
+ * @param {string} [shellFile] Where to write the docs shell (JSON).
  * @returns {string[]} Published top-level file names, sorted.
  */
-export function build(env, outDir) {
-  const context = templateContext(readState(env));
+export function build(env, outDir, shellFile = DOCS_SHELL_FILE) {
+  const state = readState(env);
+  const context = templateContext(state);
   const src = join(HERE, "src");
   const partials = {};
   for (const file of readdirSync(join(src, "partials"))) {
@@ -545,8 +521,10 @@ export function build(env, outDir) {
     }
     if (page.indexable) indexable.push(page.path);
   }
-  const rendered = buildDocs(context, partials, outDir);
-  indexable.push(...rendered.docs.map((d) => docUrl(d.key)));
+  const rendered = renderDocs(join(REPO_ROOT, "docs"), context.values.blobBase, GENERATED_TITLES);
+  indexable.push(docUrl("README"), ...rendered.nav.flatMap((g) => g.pages.map((p) => docUrl(p.key))));
+  mkdirSync(dirname(shellFile), { recursive: true });
+  writeFileSync(shellFile, JSON.stringify(buildDocsShell(context, partials, rendered, docsVersions(state))));
   writeCrawlerFiles(context, indexable, outDir);
   writeLlmsTxt(context, rendered, outDir);
   for (const file of STATIC_FILES) cpSync(join(src, file), join(outDir, file));
