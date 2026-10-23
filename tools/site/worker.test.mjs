@@ -372,6 +372,7 @@ test("a failing or oversized docs repository answer is a 503, not a page", async
     );
   const moved = async (url, init) => {
     assertWorkersFetchInit(init);
+    assert.equal(init.redirect, "manual");
     return new Response(null, { status: 302, headers: { Location: "https://example.com/" } });
   };
   for (const fetcher of [down, big, endless, moved, async () => Promise.reject(new Error("network"))]) {
@@ -404,6 +405,12 @@ test("the docs-unavailable page keeps the site's look and links to the doc on Gi
   assert.equal(md.status, 503);
   assert.equal(md.headers.get("Content-Type"), "text/markdown; charset=utf-8");
   assert.match(await md.text(), /<https:\/\/github\.com\/Bookclerk\/bookclerk-docs\/blob\/v0\.2\.0\/api\/README\.md>/);
+
+  // When the first key is missing and the next one fails, GitHub gets the one that failed.
+  const missingThenDown = async (url) => (url.endsWith("/plugins.md") ? new Response("404: Not Found", { status: 404 }) : down());
+  const later = await (await handle(new Request("https://bookclerk.app/docs/plugins", { headers: { Accept: BROWSER } }), env, { shell, fetch: missingThenDown })).text();
+  assert.ok(later.includes('href="https://github.com/Bookclerk/bookclerk-docs/blob/v0.2.0/plugins/README.md"'), "links the key that failed");
+  assert.ok(later.includes('href="/docs/plugins"'), "tries the page's own URL again");
 
   const head = await handle(new Request("https://bookclerk.app/docs/plugins", { method: "HEAD" }), env, { shell, fetch: down });
   assert.equal(head.status, 503);

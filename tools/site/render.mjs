@@ -569,14 +569,16 @@ export const DOCS_REPOSITORY_URL = "https://github.com/Bookclerk/bookclerk-docs"
  * to the same doc on GitHub so the reader is not stuck.
  *
  * @param {DocsShell} shell The baked page shell.
- * @param {string} key The doc's most likely key (path without `.md`).
- * @param {{ref: string, base: string}} at The docs version: its ref and its
- *   URL prefix.
+ * @param {string} key The doc's most likely key (path without `.md`), for
+ *   the page's own links.
+ * @param {{ref: string, base: string, githubKey?: string}} at The docs
+ *   version: its ref and its URL prefix, and the key the GitHub link names
+ *   (default: `key`).
  * @returns {{html: string, markdown: string}} The full HTML page and its
  *   Markdown version.
  */
 export function renderUnavailablePage(shell, key, at) {
-  const github = `${DOCS_REPOSITORY_URL}/blob/${at.ref}/${key}.md`;
+  const github = `${DOCS_REPOSITORY_URL}/blob/${at.ref}/${at.githubKey ?? key}.md`;
   const all = `${DOCS_REPOSITORY_URL}/tree/${at.ref}`;
   const body = [
     '<span class="eyebrow">Temporarily off the shelf</span>',
