@@ -41,6 +41,17 @@ SITE_COMMIT=$(git rev-parse HEAD) npm run build      # writes dist/ and generate
 npx wrangler dev                                       # docs pages need network access to GitHub
 ```
 
+## Audit
+
+CI runs Lighthouse and axe-core on every pull request that changes the site
+(`audit/`, see `docs/ci.md#website-checks`). It serves `dist/` through the
+Worker with docs read from this checkout's `docs/`, so it needs no network:
+
+```bash
+SITE_COMMIT=$(git rev-parse HEAD) npm run build
+cd audit && npm ci && node audit.mjs      # --chrome <path> or CHROME_PATH picks the browser
+```
+
 ## Layout
 
 - `src/*.html` – pages. `{{name}}` inserts an escaped value, `{{> name}}` a

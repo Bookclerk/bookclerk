@@ -47,6 +47,7 @@ from ci_plan.plan import (  # noqa: E402
     ALL_CHECKS,
     E2E_PACKAGE,
     JOB_CHECKS,
+    STEP_GATED_JOBS,
     build_plan,
     discover_guests,
     glob_match,
@@ -162,11 +163,37 @@ class WorkspaceModelTests(unittest.TestCase):
 
 
 class ScenarioTests(unittest.TestCase):
-    def test_docs_only_runs_nothing(self) -> None:
+    def test_docs_only_runs_only_the_site_link_check(self) -> None:
         p = plan("docs/architecture.md", "docs/README.md")
         self.assertFalse(p.full_suite)
-        self.assertEqual(p.checks, {})
-        self.assertFalse(any(p.jobs.values()))
+        self.assertEqual(sorted(p.checks), ["site_test"])
+        self.assertEqual({j for j, on in p.jobs.items() if on}, {"site"})
+
+    def test_site_only_runs_the_site_checks(self) -> None:
+        p = plan("tools/site/worker.js", "tools/site/src/site.css")
+        self.assertFalse(p.full_suite, p.reasons)
+        self.assertEqual(sorted(p.checks), ["site_audit", "site_test"])
+        self.assertEqual({j for j, on in p.jobs.items() if on}, {"site"})
+
+    def test_brand_assets_run_the_site_checks(self) -> None:
+        p = plan("assets/brand/README.md")
+        self.assertFalse(p.full_suite, p.reasons)
+        self.assertEqual(sorted(p.checks), ["site_audit", "site_test"])
+
+    def test_collector_only_runs_its_tests(self) -> None:
+        p = plan("tools/diagnostics-collector/worker.js")
+        self.assertFalse(p.full_suite, p.reasons)
+        self.assertEqual(sorted(p.checks), ["collector_test"])
+
+    def test_other_tools_paths_stay_full_suite(self) -> None:
+        self.assertTrue(plan("tools/new-tool/main.js").full_suite)
+
+    def test_site_audit_builds_the_checked_out_commit(self) -> None:
+        art = artifact(plan("tools/site/worker.js"))
+        argv = {c.label: c for _, c in planned_commands(art, "site_audit", CTX)}
+        build = argv["npm run build (tools/site)"]
+        self.assertEqual(build.env["SITE_COMMIT"], art["checkout_sha"])
+        self.assertEqual(argv["Lighthouse + axe-core (tools/site/audit)"].argv[:2], ["node", "audit.mjs"])
 
     def test_ui_only(self) -> None:
         p = plan("ui/src/App.tsx")
@@ -1035,7 +1062,7 @@ class ExecutionTests(unittest.TestCase):
             set(out),
             {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode"}
             | {f"job_{j.replace('-', '_')}" for j in JOB_CHECKS}
-            | {f"check_{c}" for c in JOB_CHECKS["check"]},
+            | {f"check_{c}" for j in STEP_GATED_JOBS for c in JOB_CHECKS[j]},
         )
 
     def test_validate(self) -> None:

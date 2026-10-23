@@ -84,6 +84,11 @@ ABI_SYNC_PATHS = frozenset(
     }
 )
 DOCS_PREFIX = "docs/"
+# The bookclerk.app website (Worker, generator and its tests), the brand
+# assets its build copies, and the diagnostics collector Worker.
+SITE_PREFIX = "tools/site/"
+BRAND_PREFIX = "assets/brand/"
+COLLECTOR_PREFIX = "tools/diagnostics-collector/"
 # Prose outside `docs/` that no build, test or script reads.
 DOC_FILES = frozenset(
     {
@@ -116,6 +121,7 @@ KNOWN_TOP_LEVEL = frozenset(
         "packages",
         "scripts",
         "third_party",
+        "tools",
         "ui",
         "AGENTS.md",
         "Cargo.lock",
@@ -172,9 +178,17 @@ JOB_CHECKS: dict[str, tuple[str, ...]] = {
     "windows-cluster": ("windows_cluster",),
     # ubuntu-latest VM build, then docker run --memory=1g --memory-swap=1g --cpus=1.
     "envelope": ("envelope",),
+    # The Workers outside the Cargo workspace: the website's generator and
+    # Worker tests, its Lighthouse and axe-core audit, and the diagnostics
+    # collector's tests. No Rust toolchain.
+    "site": ("site_test", "site_audit", "collector_test"),
 }
 CHECK_JOB = {check: job for job, checks in JOB_CHECKS.items() for check in checks}
 ALL_CHECKS = tuple(CHECK_JOB)
+
+# Jobs that run each selected check as its own step, gated by a
+# ``check_<name>`` plan output.
+STEP_GATED_JOBS = ("check", "site")
 
 # Checks in the ``check`` (lint and docs) job that need no Cargo toolchain.
 NON_CARGO_CHECKS = frozenset({"ui", "python_sdk"})
@@ -621,6 +635,9 @@ class _Surfaces:
         self.ts_sdk: list[str] = []
         self.python_sdk: list[str] = []
         self.abi: list[str] = []
+        self.site: list[str] = []
+        self.collector: list[str] = []
+        self.docs: list[str] = []
         self.e2e_full: list[str] = []
         self.e2e_ids: dict[str, str] = {}
         self.release_full: list[str] = []
@@ -725,6 +742,15 @@ def build_plan(
         if path in ABI_SYNC_PATHS:
             surf.abi.append(path)
             classified = True
+        if path.startswith(SITE_PREFIX) or path.startswith(BRAND_PREFIX):
+            surf.site.append(path)
+            classified = True
+        if path.startswith(COLLECTOR_PREFIX):
+            surf.collector.append(path)
+            classified = True
+        if path.startswith(DOCS_PREFIX):
+            # The site's tests check the links in the docs it publishes.
+            surf.docs.append(path)
         if path.startswith(DOCS_PREFIX) or path in DOC_FILES or path.startswith(PLAN_JOB_TEST_PREFIX):
             classified = True
         if path.startswith(FUZZ_SELF_SELECTING_PREFIXES):
@@ -859,6 +885,14 @@ def _select_checks(
         _select(plan, "python_sdk", abi_why)
     for check, paths in surf.fixture_checks.items():
         _select(plan, check, [f"shared fixture {p}" for p in paths])
+
+    site_why = [f"path {p}" for p in surf.site]
+    if site_why or surf.docs:
+        _select(plan, "site_test", site_why + [f"site links into {p}" for p in surf.docs])
+    if site_why:
+        _select(plan, "site_audit", site_why)
+    if surf.collector:
+        _select(plan, "collector_test", [f"path {p}" for p in surf.collector])
 
     ui_why = [f"path {p}" for p in surf.ui]
     if UI_HOST_PACKAGE in compiled:
