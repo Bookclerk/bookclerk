@@ -160,7 +160,9 @@ Each changed path (renames contribute old and new paths) is classified:
 | Declared `test_input` / `fixture` | Consumer tests (fixtures skip the owner's compile propagation) |
 | Declared `test_guests` executable changed | Launching package's tests re-run (no propagation) |
 | `ui/`, `packages/plugin-sdk*/`, ABI scripts | UI, SDK ABI and API-doc checks |
-| `docs/**` | Nothing beyond the plan job's always-on lint tests |
+| `docs/**` | The website tests (`site_test`), whose link check covers the docs the site publishes |
+| `tools/site/**`, `assets/brand/**` | The website tests and audit (`site_test`, `site_audit`) |
+| `tools/diagnostics-collector/**` | The collector's tests (`collector_test`) |
 | Root `Cargo.toml` / `Cargo.lock`, toolchain, `.cargo/`, workflows, the planner, `fuzz/Cargo.*`, unknown or unclassified paths, planner errors | **Full suite** |
 | `fuzz/corpus/<target>/**`, `fuzz/oracles/<target>.rs` | Owning crate's tests (declared `test_input`; an undeclared corpus or oracle is unclassified) |
 | `fuzz/fuzz_targets/**`, `fuzz/dictionaries/**` | Nothing here; the ClusterFuzzLite workflows select themselves by path |
@@ -261,6 +263,7 @@ when a step matches no test. Name such tests `postgres_*`.
 | `postgres 16/17/18` | An owning package's unit tests are affected (library, db-guest, postgres guest, plugin-host RPC LIKE) | Only the owners' steps, on every supported major |
 | `windows cluster startup + identity` | A `[windows_cluster].paths` input changed, or the full suite | On `windows-latest` only: identity create, restart/binding, and different-cluster rejection, then the full `cluster_secret_startup` target with the sqlite guest, jail, `bookclerk-workerd`, and pinned `workerd` |
 | `small-VPS envelope` | A `[envelope].paths` input changed (harness, seed, search rebuild, library book page, books HTTP handler), or the full suite | On the `ubuntu-latest` VM, release-build the hosts and compile the seed. `docker run --memory=1g --memory-swap=1g --cpus=1 ubuntu:24.04` then runs the seed, daemon, and load. `small-vps.sh` reads `memory.max` and `cpu.max` and refuses to record numbers when they are `max` or looser than 1 GiB / one core. It drops build and object file cache and writes `envelope-metrics.json` even when a later step fails. Books routes must return 200, `q=Title` must hit the rebuilt index, and daemon anonymous memory (`RssAnon` when `/proc/<pid>/status` reports it, otherwise `memory.stat` `anon`, or `memory.current` when anon is absent) stays under 256 MiB after idle and during the API windows. `memory.peak` is recorded and not gated: the container cannot reset it, so the lifetime peak includes the seed. One `cpu.max` core means 1 media worker. Latency is recorded and not gated. `available_parallelism` (daemon `logical_cpus`) is recorded separately from the affinity mask |
+| `website + collector Workers` | `tools/site/**` or `assets/brand/**` (site tests and audit), `docs/**` (site tests only), `tools/diagnostics-collector/**` (collector tests), or the full suite | `site_test`: `npm test` in `tools/site` (generator, Worker and the docs link check). `site_audit`: Lighthouse and axe-core on the built site (see [Website checks](#website-checks)). `collector_test`: `npm test` in `tools/diagnostics-collector`. No Rust toolchain |
 | `CI Gate` | Always | Stable required check (see contract above) |
 
 OSV scanning remains a separate workflow/gate. A green OSV job that applies
@@ -847,6 +850,29 @@ the renderer for any change in the format. The nightly may predate the workspace
 `rust-version`, so the build passes `--ignore-rust-version`; it only produces
 documentation.
 
+### Website checks
+
+`site_audit` (`tools/site/audit/audit.mjs`) builds the site, serves it
+through the real Worker under `wrangler dev`, and audits it with the
+runner's Chrome. Docs pages are read from this checkout's `docs/` through a
+local server (`tools/site/audit/entry.mjs`), not from the docs repository,
+so the audit covers the docs as the pull request has them and needs no
+network. A docs key the local server fails renders the docs-unavailable page.
+
+| Pages | Lighthouse (mobile and desktop) |
+| --- | --- |
+| `/`, `/download`, `/docs/getting-started`, `/docs/ci` | performance ≥ 90, accessibility 100, best practices ≥ 95, SEO 100, CLS ≤ 0.05 |
+| 404 and docs-unavailable | accessibility 100 (their SEO and best-practice misses, such as the status code and `noindex`, are intended) |
+
+A run that misses only on performance is repeated once and the better run
+kept, since lab scores vary on shared runners. axe-core then checks every
+page in light and dark color schemes at 1350 and 390 px against WCAG 2.0 to
+2.2 A/AA and its best-practice rules, and any violation fails the check. The
+results table goes to the job summary; a failed audit uploads the Lighthouse
+reports as the `site-audit` artifact. Locally: `npm run build` in
+`tools/site`, then `npm ci && node audit.mjs` in `tools/site/audit`
+(`--chrome <path>` or `CHROME_PATH` picks the browser).
+
 ## Cloudflare Worker deploys
 
 Two workflows deploy Workers with `wrangler deploy`, sharing the repository
@@ -890,7 +916,9 @@ old one behind; keep the names as they are.
 
 | Change | Jobs after `plan` | Notes |
 | --- | --- | --- |
-| `docs/**` only | none | `CI Gate` passes with every job skipped |
+| `docs/**` only | website + collector Workers (`site_test` only) | the site's link check covers the docs it publishes |
+| `tools/site/**` only | website + collector Workers (`site_test`, `site_audit`) | no Rust toolchain |
+| `tools/diagnostics-collector/**` only | website + collector Workers (`collector_test`) | no Rust toolchain |
 | `README.md`, `AGENTS.md`, other top-level prose, `config/config.example.toml`, `scripts/tests/**` | none | the plan job runs the planner and lint tests on every event |
 | `ui/**` only | `fmt / clippy / docs` (UI + UI API docs) | no Rust toolchain checks |
 | `crates/bookclerk-cli/src/**` | check, test (`-p bookclerk-cli`), release (`bookclerk-cli`) | no postgres, no E2E |

@@ -1,0 +1,16 @@
+{
+  "name": "bookclerk-site-audit",
+  "private": true,
+  "description": "Lighthouse and axe-core audit of the bookclerk.app website, run by CI against a local wrangler dev server",
+  "type": "module",
+  "scripts": {
+    "audit": "node audit.mjs",
+    "test": "node --test audit.test.mjs"
+  },
+  "devDependencies": {
+    "axe-core": "4.14.0",
+    "chrome-launcher": "1.2.2",
+    "lighthouse": "13.5.0",
+    "playwright-core": "1.64.1"
+  }
+}
