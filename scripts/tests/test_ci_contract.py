@@ -738,6 +738,33 @@ def step_selects(step: dict, test: dict) -> bool:
     return any(f in name for f in step["filters"])
 
 
+class DiagnosticsReportKeyTests(unittest.TestCase):
+    """The collector's report key must never reach a Bookclerk build.
+
+    Releases bake only the collector URL. ``REPORT_API_KEY`` (Worker) /
+    ``DIAGNOSTICS_REPORT_API_KEY`` (Actions) authorizes reading and triaging
+    every report, so no crate may name it and no build step may receive it.
+    """
+
+    KEY_NAMES = ("REPORT_API_KEY", "DIAGNOSTICS_REPORT_API_KEY")
+
+    def test_no_crate_names_the_report_key(self) -> None:
+        for path in (REPO / "crates").rglob("*"):
+            if path.suffix not in {".rs", ".toml", ".ts", ".js", ".json", ".py"}:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for name in self.KEY_NAMES:
+                self.assertNotIn(name, text, f"{path} names {name}")
+
+    def test_only_diagnostics_workflows_receive_the_report_key(self) -> None:
+        allowed = {"diagnostics-collector-deploy.yml", "diagnostics-ingest.yml"}
+        for path in (REPO / ".github" / "workflows").glob("*.yml"):
+            if path.name in allowed:
+                continue
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn("DIAGNOSTICS_REPORT_API_KEY", text, path.name)
+
+
 class PostgresTestSelectionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

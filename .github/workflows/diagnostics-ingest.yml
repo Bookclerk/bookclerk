@@ -160,7 +160,7 @@ jobs:
         run: tools/diagnostics-collector/scripts/triage-and-file.sh /tmp/diagnostics-batch/report.json
 
       - name: Persist pull cursor
-        # Advance even if Copilot analysis fails so the same batch is not re-pulled daily.
+        # Advance even if triage fails so the same batch is not re-pulled daily.
         if: ${{ always() && steps.pull.outcome == 'success' && steps.pull.outputs.next_since != '' && steps.pull.outputs.next_since != '0' }}
         env:
           NEXT: ${{ steps.pull.outputs.next_since }}
