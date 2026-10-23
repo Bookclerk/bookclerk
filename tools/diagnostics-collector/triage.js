@@ -7,8 +7,8 @@
  *
  * Budget: Workers AI bills in neurons, with 10,000 free per account per UTC
  * day. Every call first reserves its worst case (input estimate plus the
- * output cap) against TRIAGE_DAILY_NEURONS in the TriageBudget Durable
- * Object, then settles to what the call actually used. A call that would
+ * output cap) against TRIAGE_DAILY_NEURONS in the TRIAGE_BUDGET KV
+ * namespace, then settles to what the call actually used. A call that would
  * pass the cap is refused before the model runs.
  */
 
@@ -115,31 +115,53 @@ function positiveInt(raw, fallback) {
   return Number.isSafeInteger(n) && n > 0 ? n : fallback;
 }
 
+/** KV key prefix for the per-day neuron total. */
+const BUDGET_KEY_PREFIX = "triage-neurons:";
+
+/** How long a day's total is kept, in seconds (past the UTC day it counts). */
+const BUDGET_TTL_SECONDS = 2 * 24 * 60 * 60;
+
 /**
- * Daily neuron ledger over a Durable Object's SQLite storage. The Worker's
- * TriageBudget object wraps one of these; a single instance (named
- * "global") serializes every reservation, so concurrent triage calls cannot
- * overspend together.
+ * Daily neuron ledger in Workers KV: one key per UTC day holding the day's
+ * spent and reserved neurons, expiring after two days.
+ *
+ * KV has no atomic increment, so two calls racing could both fit under the
+ * cap. Triage runs from one workflow under a concurrency group, and one call
+ * costs at most a few hundred neurons, so a lost update stays far below the
+ * gap between the cap and the free allocation.
  */
 export class BudgetLedger {
   /**
-   * @param {SqlStorage} sql Durable Object SQLite handle.
+   * @param {KVNamespace} kv The TRIAGE_BUDGET namespace.
    */
-  constructor(sql) {
-    /** SQLite handle holding one row per UTC day. */
-    this.sql = sql;
-    sql.exec("CREATE TABLE IF NOT EXISTS spend (day TEXT PRIMARY KEY, neurons INTEGER NOT NULL)");
+  constructor(kv) {
+    /** Namespace holding one total per UTC day. */
+    this.kv = kv;
   }
 
   /**
    * Neurons recorded for a day.
    *
    * @param {string} day `YYYY-MM-DD` (UTC).
-   * @returns {number} Spent and reserved neurons.
+   * @returns {Promise<number>} Spent and reserved neurons (0 when unset or
+   *   unreadable).
    */
-  spent(day) {
-    const row = this.sql.exec("SELECT neurons FROM spend WHERE day = ?", day).toArray()[0];
-    return row ? Number(row.neurons) : 0;
+  async spent(day) {
+    const n = Number(await this.kv.get(BUDGET_KEY_PREFIX + day));
+    return Number.isSafeInteger(n) && n > 0 ? n : 0;
+  }
+
+  /**
+   * Records a day's total.
+   *
+   * @param {string} day `YYYY-MM-DD` (UTC).
+   * @param {number} neurons New total.
+   * @returns {Promise<void>}
+   */
+  async write(day, neurons) {
+    await this.kv.put(BUDGET_KEY_PREFIX + day, String(neurons), {
+      expirationTtl: BUDGET_TTL_SECONDS,
+    });
   }
 
   /**
@@ -148,21 +170,15 @@ export class BudgetLedger {
    * @param {string} day `YYYY-MM-DD` (UTC).
    * @param {number} neurons Worst-case cost of the call.
    * @param {number} cap Daily cap.
-   * @returns {{ok: boolean, spent: number}} Whether it was reserved, and the
-   *   day's total afterwards.
+   * @returns {Promise<{ok: boolean, spent: number}>} Whether it was reserved,
+   *   and the day's total afterwards.
    */
-  reserve(day, neurons, cap) {
-    const spent = this.spent(day);
+  async reserve(day, neurons, cap) {
+    const spent = await this.spent(day);
     if (spent + neurons > cap) {
       return { ok: false, spent };
     }
-    this.sql.exec(
-      "INSERT INTO spend (day, neurons) VALUES (?, ?) ON CONFLICT(day) DO UPDATE SET neurons = neurons + excluded.neurons",
-      day,
-      neurons,
-    );
-    // Older days are no longer needed.
-    this.sql.exec("DELETE FROM spend WHERE day < ?", day);
+    await this.write(day, spent + neurons);
     return { ok: true, spent: spent + neurons };
   }
 
@@ -172,16 +188,12 @@ export class BudgetLedger {
    * @param {string} day Day the reservation was made on.
    * @param {number} reserved Neurons reserved.
    * @param {number} actual Neurons used.
-   * @returns {number} The day's total afterwards.
+   * @returns {Promise<number>} The day's total afterwards.
    */
-  settle(day, reserved, actual) {
-    this.sql.exec(
-      "UPDATE spend SET neurons = MAX(0, neurons - ? + ?) WHERE day = ?",
-      reserved,
-      actual,
-      day,
-    );
-    return this.spent(day);
+  async settle(day, reserved, actual) {
+    const total = Math.max(0, (await this.spent(day)) - reserved + actual);
+    await this.write(day, total);
+    return total;
   }
 }
 
@@ -189,7 +201,7 @@ export class BudgetLedger {
  * Handles POST /triage once the caller is authenticated.
  *
  * @param {Request} request Body: the sanitized JSON array of reports.
- * @param {object} env Bindings: AI, TRIAGE_BUDGET; vars TRIAGE_MODEL,
+ * @param {object} env Bindings: AI, TRIAGE_BUDGET (KV); vars TRIAGE_MODEL,
  *   TRIAGE_DAILY_NEURONS.
  * @param {{now?: () => number}} [opts] Clock override for tests.
  * @returns {Promise<Response>} 200 with `{plan_text, model, neurons, spent_today, cap}`,
@@ -242,7 +254,7 @@ export async function handleTriage(request, env, opts = {}) {
   }
   const reserved = neuronsFor(rates, inputBound, MAX_OUTPUT_TOKENS);
   const day = utcDay(now());
-  const budget = env.TRIAGE_BUDGET.get(env.TRIAGE_BUDGET.idFromName("global"));
+  const budget = new BudgetLedger(env.TRIAGE_BUDGET);
   const reservation = await budget.reserve(day, reserved, cap);
   if (!reservation.ok) {
     return json(

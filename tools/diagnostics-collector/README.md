@@ -59,7 +59,7 @@ and/or repository permission "Variables: write"); without those secrets the run 
 
 Takes the sanitized batch the ingest workflow builds and returns a Workers AI
 issue plan (`plan_text`) plus the neurons it used. Bindings: `AI` and the
-`TriageBudget` Durable Object (`TRIAGE_BUDGET`), which caps spend per UTC day
+`TRIAGE_BUDGET` KV namespace (created on first deploy), which caps spend per UTC day
 at `TRIAGE_DAILY_NEURONS`; see [`docs/diagnostics.md`](../../docs/diagnostics.md#triage).
 
 ## Bookclerk client

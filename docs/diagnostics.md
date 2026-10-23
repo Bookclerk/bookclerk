@@ -73,10 +73,16 @@ links removed, and mentions and issue references defanged.
 Spend is capped per UTC day by `TRIAGE_DAILY_NEURONS` (default 2,000, a fifth
 of the account's 10,000 free Workers AI neurons a day; values above 9,000 are
 clamped so a typo cannot reach paid usage). Each call reserves its
-worst case (input bytes plus the 2,048-token output cap) in the `TriageBudget`
-Durable Object before the model runs and settles to the reported usage after;
-a call that would pass the cap gets `429`, and ingest files one issue listing
-the report IDs instead. A typical batch costs a few hundred neurons.
+worst case (input bytes plus the 2,048-token output cap) in the
+`TRIAGE_BUDGET` KV namespace (one key per UTC day, expiring after two days)
+before the model runs and settles to the reported usage after; a call that
+would pass the cap gets `429`, and ingest files one issue listing the report
+IDs instead. A call costs at most a few hundred neurons. KV has no atomic
+increment, so two racing calls could both fit under the cap; ingest runs under
+one concurrency group, and a lost update stays far inside the gap between the
+cap and the free allocation. Wrangler creates the namespace on the first
+deploy (the binding has no id), so the Cloudflare API token needs Workers KV
+Storage edit as well as Workers AI.
 
 `REPORT_API_KEY` exists only as a Worker secret and the
 `DIAGNOSTICS_REPORT_API_KEY` Actions secret. Bookclerk builds carry only the

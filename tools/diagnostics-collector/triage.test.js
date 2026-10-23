@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { DatabaseSync } from "node:sqlite";
 import {
   BudgetLedger,
   DEFAULT_DAILY_NEURONS,
@@ -13,21 +12,25 @@ import {
   utcDay,
 } from "./triage.js";
 
-/** Durable Object `sql` stand-in over an in-memory SQLite database. */
-function fakeSql() {
-  const db = new DatabaseSync(":memory:");
+/** KV namespace stand-in over a Map, recording put options. */
+function fakeKv() {
+  const map = new Map();
   return {
-    exec(query, ...args) {
-      const stmt = db.prepare(query);
-      const rows = stmt.columns().length ? stmt.all(...args) : (stmt.run(...args), []);
-      return { toArray: () => rows };
+    map,
+    async get(key) {
+      return map.has(key) ? map.get(key).value : null;
+    },
+    async put(key, value, opts) {
+      map.set(key, { value, opts });
     },
   };
 }
 
-/** TRIAGE_BUDGET namespace stand-in backed by one ledger. */
-function fakeBudget(ledger = new BudgetLedger(fakeSql())) {
-  return { ledger, idFromName: () => "global", get: () => ledger };
+/** TRIAGE_BUDGET stand-in with a ledger view for assertions. */
+function fakeBudget() {
+  const kv = fakeKv();
+  kv.ledger = new BudgetLedger(kv);
+  return kv;
 }
 
 const BATCH = [{ report_id: "11111111-1111-4111-8111-111111111111", events: [] }];
@@ -39,24 +42,34 @@ function triageRequest(body) {
 }
 
 describe("BudgetLedger", () => {
-  it("reserves under the cap and refuses past it", () => {
-    const ledger = new BudgetLedger(fakeSql());
-    assert.deepEqual(ledger.reserve("2026-10-23", 600, 1000), { ok: true, spent: 600 });
-    assert.deepEqual(ledger.reserve("2026-10-23", 500, 1000), { ok: false, spent: 600 });
-    assert.deepEqual(ledger.reserve("2026-10-23", 400, 1000), { ok: true, spent: 1000 });
+  it("reserves under the cap and refuses past it", async () => {
+    const ledger = new BudgetLedger(fakeKv());
+    assert.deepEqual(await ledger.reserve("2026-10-23", 600, 1000), { ok: true, spent: 600 });
+    assert.deepEqual(await ledger.reserve("2026-10-23", 500, 1000), { ok: false, spent: 600 });
+    assert.deepEqual(await ledger.reserve("2026-10-23", 400, 1000), { ok: true, spent: 1000 });
   });
 
-  it("settles a reservation to the actual cost", () => {
-    const ledger = new BudgetLedger(fakeSql());
-    ledger.reserve("2026-10-23", 600, 1000);
-    assert.equal(ledger.settle("2026-10-23", 600, 150), 150);
+  it("settles a reservation to the actual cost", async () => {
+    const ledger = new BudgetLedger(fakeKv());
+    await ledger.reserve("2026-10-23", 600, 1000);
+    assert.equal(await ledger.settle("2026-10-23", 600, 150), 150);
+    assert.equal(await ledger.settle("2026-10-23", 900, 0), 0);
   });
 
-  it("starts each UTC day empty and drops older days", () => {
-    const ledger = new BudgetLedger(fakeSql());
-    ledger.reserve("2026-10-23", 900, 1000);
-    assert.deepEqual(ledger.reserve("2026-10-24", 900, 1000), { ok: true, spent: 900 });
-    assert.equal(ledger.spent("2026-10-23"), 0);
+  it("keys each UTC day separately and lets old days expire", async () => {
+    const kv = fakeKv();
+    const ledger = new BudgetLedger(kv);
+    await ledger.reserve("2026-10-23", 900, 1000);
+    assert.deepEqual(await ledger.reserve("2026-10-24", 900, 1000), { ok: true, spent: 900 });
+    for (const { opts } of kv.map.values()) {
+      assert.ok(opts.expirationTtl >= 24 * 60 * 60);
+    }
+  });
+
+  it("reads a missing or corrupt total as zero", async () => {
+    const kv = fakeKv();
+    await kv.put("triage-neurons:2026-10-23", "garbage");
+    assert.equal(await new BudgetLedger(kv).spent("2026-10-23"), 0);
   });
 });
 
@@ -124,7 +137,7 @@ describe("handleTriage", () => {
     const res = await handleTriage(triageRequest(BATCH), env, { now: () => NOW });
     const body = await res.json();
     assert.ok(body.neurons > 0);
-    assert.equal(budget.ledger.spent(utcDay(NOW)), body.neurons);
+    assert.equal(await budget.ledger.spent(utcDay(NOW)), body.neurons);
   });
 
   it("keeps the reservation when the model call fails", async () => {
@@ -139,7 +152,7 @@ describe("handleTriage", () => {
     };
     const res = await handleTriage(triageRequest(BATCH), env, { now: () => NOW });
     assert.equal(res.status, 502);
-    assert.ok(budget.ledger.spent(utcDay(NOW)) > 0);
+    assert.ok(await budget.ledger.spent(utcDay(NOW)) > 0);
   });
 
   it("refuses an unknown model, a bad batch and an oversized batch", async () => {
@@ -174,7 +187,7 @@ describe("handleTriage", () => {
       const env = { TRIAGE_BUDGET: budget, AI: { run: async () => ({ response: "{}", usage }) } };
       const body = await (await handleTriage(triageRequest(BATCH), env, { now: () => NOW })).json();
       assert.ok(body.neurons > 0, JSON.stringify(usage));
-      assert.equal(budget.ledger.spent(utcDay(NOW)), body.neurons);
+      assert.equal(await budget.ledger.spent(utcDay(NOW)), body.neurons);
     }
   });
 
