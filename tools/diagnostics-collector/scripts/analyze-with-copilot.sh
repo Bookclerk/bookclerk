@@ -28,7 +28,8 @@ PROMPT_FILE=$(mktemp)
 PLAN_FILE=$(mktemp)
 # Copilot runs in an empty directory so its own file tools see nothing.
 WORK_DIR=$(mktemp -d)
-trap 'rm -rf "$DATA_FILE" "$PROMPT_FILE" "$PLAN_FILE" "$WORK_DIR"' EXIT
+ERR_FILE=$(mktemp)
+trap 'rm -rf "$DATA_FILE" "$PROMPT_FILE" "$PLAN_FILE" "$WORK_DIR" "$ERR_FILE"' EXIT
 
 # Cap by complete JSON array elements (never mid-object) so Copilot always gets valid JSON.
 jq -c '
@@ -94,9 +95,11 @@ TASK:
    - title: starts with "[diagnostics] ", at most 120 characters
    - bug: true only if it is clearly a defect
    - report_ids: every report_id for that cluster (copied exactly from the data)
-   - body: Markdown with a short summary, suspected area of code, redacted
-     evidence snippets, suggested next steps, and OS/arch/distro/rustc when
-     present (the script adds the Report IDs section itself)
+   - body: Markdown with a short summary, suspected area of code, suggested
+     next steps, and OS/arch/distro/rustc when present. The issue is public:
+     describe the failure in your own words and do not copy report fields,
+     paths, hostnames or messages verbatim. The script adds the Report IDs
+     section itself.
 4. If reports are empty noise or duplicates of an obvious already-known class
    with no actionable signal, plan no issue.
 5. Prefer quality over quantity.
@@ -113,7 +116,8 @@ EOF
 
 # Auth: prefer GITHUB_TOKEN when the workflow grants copilot-requests: write
 # (GitHub Agentic Workflows / org billing). COPILOT_GITHUB_TOKEN is an optional
-# personal-repo PAT fallback — when set it overrides the workflow token.
+# personal-repo PAT fallback — when set Copilot uses it instead (gh below
+# always uses the workflow token).
 if [[ -n "${COPILOT_GITHUB_TOKEN:-}" ]]; then
   echo "Copilot auth: COPILOT_GITHUB_TOKEN (PAT fallback)"
 elif [[ -n "${GITHUB_TOKEN:-}" ]]; then
@@ -126,24 +130,27 @@ fi
 : "${GH_TOKEN:=${GITHUB_TOKEN:-}}"
 export GH_TOKEN
 
-# No shell, no MCP servers, no writes, no temp dir, and an empty working
-# directory: even a fully injected model can only shape the JSON it returns.
+# Only the CLI's own documentation tool is exposed (an allowlist, so a newer
+# CLI cannot add tools here), with no MCP servers, writes or temp dir and an
+# empty working directory: even a fully injected model can only shape the
+# JSON it returns.
 set +e
 (
   cd "$WORK_DIR"
   env -u GH_TOKEN copilot -s -p "$(cat "$PROMPT_FILE")" \
-    --excluded-tools bash \
+    --available-tools fetch_copilot_cli_documentation \
     --disable-builtin-mcps \
     --deny-tool 'shell' \
     --deny-tool 'write' \
     --disallow-temp-dir
-) >"$PLAN_FILE" 2>/tmp/copilot-diag.err
+) >"$PLAN_FILE" 2>"$ERR_FILE"
 status=$?
 set -e
 
 # Validate the plan and turn it into issue files: at most 5 issues, fixed
-# labels, only report IDs that are in this batch, bounded sizes, and no
-# @-mentions or cross-references that would notify people.
+# labels, only report IDs that are in this batch (an issue needs at least
+# one), bounded sizes, and no @-mentions, cross-references or forged Report
+# IDs sections.
 ISSUES_DIR="$WORK_DIR/issues"
 mkdir -p "$ISSUES_DIR"
 planned=0
@@ -153,41 +160,66 @@ import json, pathlib, re, sys
 
 plan_path, data_path, out_dir = sys.argv[1:4]
 text = pathlib.Path(plan_path).read_text(encoding="utf-8", errors="replace")
-start, end = text.find("{"), text.rfind("}")
-if start < 0 or end < start:
-    sys.exit("plan is not JSON")
-plan = json.loads(text[start : end + 1])
-known = {str(r.get("report_id")) for r in json.loads(pathlib.Path(data_path).read_text())}
-issues = plan.get("issues")
-if not isinstance(issues, list):
-    sys.exit("plan has no issues list")
+known = {
+    r["report_id"]
+    for r in json.loads(pathlib.Path(data_path).read_text())
+    if isinstance(r.get("report_id"), str)
+}
+
+# Take the first JSON object with an "issues" key, wherever it sits in the reply.
+decoder, plan = json.JSONDecoder(), None
+for i, ch in enumerate(text):
+    if ch != "{":
+        continue
+    try:
+        obj, _ = decoder.raw_decode(text, i)
+    except json.JSONDecodeError:
+        continue
+    if isinstance(obj, dict) and "issues" in obj:
+        plan = obj
+        break
+if plan is None or not isinstance(plan["issues"], list):
+    sys.exit("reply has no JSON plan")
 
 def defang(s: str) -> str:
-    # Break @user / @org/team mentions and #123 / owner/repo#123 references.
-    s = re.sub(r"@(?=[A-Za-z0-9])", "@​", s)
-    return re.sub(r"#(?=\d)", "#​", s)
+    # Break @user / @org/team mentions, #123 / owner/repo#123 / GH-123
+    # references and links to other issues or pull requests.
+    s = re.sub(r"https?://github\.com/\S*", "[link removed]", s)
+    s = re.sub(r"@(?=[A-Za-z0-9])", "@\u200b", s)
+    s = re.sub(r"(?i)\bGH-(?=\d)", "GH-\u200b", s)
+    return re.sub(r"#(?=\d)", "#\u200b", s)
 
-for n, issue in enumerate(issues[:5]):
+def write(path: pathlib.Path, value: str) -> None:
+    path.write_text(value, encoding="utf-8", errors="replace")
+
+n = 0
+for issue in plan["issues"][:5]:
     if not isinstance(issue, dict):
         continue
-    title, body = issue.get("title"), issue.get("body")
-    if not isinstance(title, str) or not isinstance(body, str):
+    title, body, ids = issue.get("title"), issue.get("body"), issue.get("report_ids")
+    if not isinstance(title, str) or not isinstance(body, str) or not isinstance(ids, list):
+        continue
+    ids = list(dict.fromkeys(i for i in ids if isinstance(i, str) and i in known))
+    if not ids:
         continue
     title = " ".join(title.split())
     if not title.startswith("[diagnostics] "):
         title = "[diagnostics] " + title
-    ids = [i for i in issue.get("report_ids") or [] if isinstance(i, str) and i in known]
+    # Only the script writes the Report IDs section.
+    body = re.sub(r"(?im)^\s*#+\s*report ids\b.*$", "", body[:8000])
     labels = "diagnostics,bug" if issue.get("bug") is True else "diagnostics"
-    out = pathlib.Path(out_dir) / f"{n}"
+    out = pathlib.Path(out_dir) / str(n)
     out.mkdir()
-    (out / "title").write_text(defang(title[:120]))
-    (out / "labels").write_text(labels)
-    (out / "body").write_text(
+    write(out / "title", defang(title[:120]))
+    write(out / "labels", labels)
+    write(
+        out / "body",
         "<!-- bookclerk-diagnostics: copilot triage -->\n"
-        + defang(body[:20000])
+        + defang(body)
         + "\n\n### Report IDs\n"
-        + "".join(f"- `{i}`\n" for i in ids)
+        + "".join(f"- `{i}`\n" for i in ids),
     )
+    n += 1
 PY
   then
     planned=$(find "$ISSUES_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)
@@ -199,18 +231,25 @@ fi
 if [[ $status -eq 0 ]]; then
   if [[ $planned -gt 0 ]]; then
     gh label create diagnostics --color "0E8A16" --description "Automated diagnostics reports" 2>/dev/null || true
+    gh label create bug --color "d73a4a" --description "Something isn't working" 2>/dev/null || true
   fi
+  # File every planned issue even if one fails, then fail the step.
+  failed=0
   for dir in "$ISSUES_DIR"/*/; do
     [[ -d "$dir" ]] || continue
     gh issue create --repo "$REPO" \
       --title "$(cat "$dir/title")" \
       --label "$(cat "$dir/labels")" \
-      --body-file "$dir/body"
+      --body-file "$dir/body" || failed=1
   done
   echo "Copilot planned ${planned} issue(s) for ${count} report(s)."
+  if [[ $failed -ne 0 ]]; then
+    echo "::error::Some planned diagnostics issues could not be filed" >&2
+    exit 1
+  fi
 else
   echo "Copilot CLI failed or returned no valid plan; creating a single fallback issue via gh." >&2
-  cat /tmp/copilot-diag.err >&2 || true
+  cat "$ERR_FILE" >&2 || true
   if [[ -z "${GH_TOKEN:-}" ]]; then
     echo "gh fallback requires GITHUB_TOKEN (or GH_TOKEN) with issues: write" >&2
     exit 1
