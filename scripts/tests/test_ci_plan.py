@@ -1453,6 +1453,19 @@ class RunnerLayoutTests(unittest.TestCase):
         )
         self.assertIn(["cargo", "build-app", "--release", "--platform"], [c.argv for _, c in planned_commands(art, "release", CTX)])
 
+    def test_current_saved_cache_skips_only_build_only_commands(self) -> None:
+        art = self.build_only_artifact()
+        for check in plan_from_dict(art["execution"]).checks:
+            with self.subTest(check=check):
+                self.assertEqual(planned_commands(art, check, CTX, saved_cache_current=True), [])
+        # Never skips anything outside a build-only run.
+        pr = artifact(plan("crates/bookclerk-cli/src/main.rs"))
+        for check in plan_from_dict(pr["execution"]).checks:
+            with self.subTest(check=check):
+                self.assertEqual(
+                    planned_commands(pr, check, CTX, saved_cache_current=True), planned_commands(pr, check, CTX)
+                )
+
     def test_build_only_keeps_bench_compiles(self) -> None:
         bench = ["cargo", "bench", "-p", "bookclerk-naming", "--benches", "--no-run"]
         kept = build_only_command(Command("bench targets build", bench))

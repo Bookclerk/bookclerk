@@ -49,6 +49,9 @@ env:
   # selective prediction is recorded in the plan summary for audit. "1" = jobs
   # and checks follow the prediction. merge_group / main always --force-full.
   SELECTIVE_CI: "1"
+  # A push to main compiles only, to save the dependency caches (the plan
+  # job's resolve step adds --build-only on the same condition).
+  CI_BUILD_ONLY: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
   # Quiet cargo on an unpublished OSV remediation bump: "Compiling <crate>
   # <version>" lines would show the bump in the public log.
   CARGO_TERM_QUIET: ${{ inputs.private-head && 'true' || 'false' }}
@@ -261,8 +264,28 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends capnproto
 
+      # Build-only main push: the dependency cache key covers Cargo.lock, the
+      # manifests, the toolchain and the CI env, not this repository's
+      # sources, so on most merges this job's key is already saved and the
+      # build would save nothing. Skip it then (docs/ci.md#build-only-main-pushes).
+      - name: Look up the saved cache
+        id: saved
+        if: env.CI_BUILD_ONLY == 'true' && needs.plan.outputs.check_needs_cargo == 'true'
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: lint
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          cache-on-failure: true
+          lookup-only: true
+          save-if: false
+
+      - name: Skip the build when the saved cache is current
+        if: steps.saved.outputs.cache-hit == 'true'
+        shell: bash
+        run: echo "CI_SAVED_CACHE_CURRENT=true" >> "$GITHUB_ENV"
+
       - name: Cache cargo
-        if: needs.plan.outputs.check_needs_cargo == 'true'
+        if: needs.plan.outputs.check_needs_cargo == 'true' && env.CI_SAVED_CACHE_CURRENT != 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: lint
@@ -354,7 +377,28 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends capnproto
 
+      # Build-only main push: the dependency cache key covers Cargo.lock, the
+      # manifests, the toolchain and the CI env, not this repository's
+      # sources, so on most merges this job's key is already saved and the
+      # build would save nothing. Skip it then (docs/ci.md#build-only-main-pushes).
+      - name: Look up the saved cache
+        id: saved
+        if: env.CI_BUILD_ONLY == 'true'
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: debug
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          cache-on-failure: true
+          lookup-only: true
+          save-if: false
+
+      - name: Skip the build when the saved cache is current
+        if: steps.saved.outputs.cache-hit == 'true'
+        shell: bash
+        run: echo "CI_SAVED_CACHE_CURRENT=true" >> "$GITHUB_ENV"
+
       - name: Cache cargo
+        if: env.CI_SAVED_CACHE_CURRENT != 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: debug
@@ -455,7 +499,28 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends capnproto
 
+      # Build-only main push: the dependency cache key covers Cargo.lock, the
+      # manifests, the toolchain and the CI env, not this repository's
+      # sources, so on most merges this job's key is already saved and the
+      # build would save nothing. Skip it then (docs/ci.md#build-only-main-pushes).
+      - name: Look up the saved cache
+        id: saved
+        if: env.CI_BUILD_ONLY == 'true'
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: release
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          cache-on-failure: true
+          lookup-only: true
+          save-if: false
+
+      - name: Skip the build when the saved cache is current
+        if: steps.saved.outputs.cache-hit == 'true'
+        shell: bash
+        run: echo "CI_SAVED_CACHE_CURRENT=true" >> "$GITHUB_ENV"
+
       - name: Cache cargo
+        if: env.CI_SAVED_CACHE_CURRENT != 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: release
@@ -558,7 +623,30 @@ jobs:
           toolchain: stable
           components: clippy
 
+      # Build-only main push: the dependency cache key covers Cargo.lock, the
+      # manifests, the toolchain and the CI env, not this repository's
+      # sources, so on most merges this job's key is already saved and the
+      # build would save nothing. Skip it then (docs/ci.md#build-only-main-pushes).
+      # Linux never saves here (the test job saves its debug cache), so a
+      # build-only Linux child always skips.
+      - name: Look up the saved cache
+        id: saved
+        if: env.CI_BUILD_ONLY == 'true' && runner.os != 'Linux'
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: debug
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          cache-on-failure: true
+          lookup-only: true
+          save-if: false
+
+      - name: Skip the build when the saved cache is current
+        if: steps.saved.outputs.cache-hit == 'true' || (env.CI_BUILD_ONLY == 'true' && runner.os == 'Linux')
+        shell: bash
+        run: echo "CI_SAVED_CACHE_CURRENT=true" >> "$GITHUB_ENV"
+
       - name: Cache cargo
+        if: env.CI_SAVED_CACHE_CURRENT != 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: debug

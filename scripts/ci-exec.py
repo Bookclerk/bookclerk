@@ -29,6 +29,7 @@ if str(_SCRIPTS) not in sys.path:
 from ci_plan.execute import (  # noqa: E402
     ARTIFACT_NAME,
     Context,
+    SAVED_CACHE_CURRENT_ENV,
     ExecError,
     artifact_summary,
     gate,
@@ -122,7 +123,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"plan ok: mode={artifact['mode']} run={artifact['run_id']} sha={artifact['checkout_sha']}")
             return 0
         if args.cmd in ("run", "show"):
-            run_check(artifact, args.check, Context.from_env(WORKSPACE), dry_run=args.cmd == "show")
+            run_check(
+                artifact,
+                args.check,
+                Context.from_env(WORKSPACE),
+                dry_run=args.cmd == "show",
+                saved_cache_current=os.environ.get(SAVED_CACHE_CURRENT_ENV) == "true",
+            )
             return 0
         if args.cmd == "gate":
             if not args.needs_json:
