@@ -113,6 +113,23 @@ GHSA_SEVERITY = {
 }
 SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 CWE_RE = re.compile(r"^CWE-\d+$")
+# Every draft is a vulnerable third-party component shipped in Bookclerk.
+CWE_VULNERABLE_DEPENDENCY = "CWE-1395"
+# CWEs for RustSec advisory categories (`affected[].database_specific.categories`),
+# which RustSec records carry instead of CWE ids.
+RUSTSEC_CATEGORY_CWES = {
+    "code-execution": "CWE-94",
+    "crypto-failure": "CWE-327",
+    "denial-of-service": "CWE-400",
+    "file-disclosure": "CWE-552",
+    "format-injection": "CWE-74",
+    "memory-corruption": "CWE-119",
+    "memory-exposure": "CWE-200",
+    "privilege-escalation": "CWE-269",
+    "thread-safety": "CWE-362",
+}
+# CWEs for RustSec informational kinds (`affected[].database_specific.informational`).
+RUSTSEC_INFORMATIONAL_CWES = {"unmaintained": "CWE-1104"}
 # Environment variables that hold tokens; never passed to child processes.
 TOKEN_VARS = ("GH_TOKEN", "ALERTS_TOKEN", "GITHUB_TOKEN")
 # Key under which `fetch` keeps the severity and CWE data of every alias
@@ -1428,13 +1445,41 @@ def _metas(record: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(metas, key=lambda m: 0 if str(m.get("id", "")).startswith("GHSA-") else 1)
 
 
+def _rustsec_specifics(record: dict[str, Any]) -> list[dict[str, Any]]:
+    """Returns the `database_specific` objects of a record's `affected` entries.
+
+    RustSec records keep `categories`, `cvss` and `informational` there
+    rather than at the top level. `merge_aliases` folds every alias's
+    `affected` entries into the merged record, so this covers them all.
+    """
+    affected = record.get("affected")
+    return [
+        entry["database_specific"]
+        for entry in (affected if isinstance(affected, list) else [])
+        if isinstance(entry, dict) and isinstance(entry.get("database_specific"), dict)
+    ]
+
+
+def informational(record: dict[str, Any]) -> bool:
+    """Reports whether every RustSec entry of a record is informational.
+
+    True for notices such as `unmaintained` or `unsound`, which report no
+    vulnerability; False when the record has no RustSec entry or any entry
+    is a vulnerability.
+    """
+    specifics = _rustsec_specifics(record)
+    kinds = [s.get("informational") for s in specifics if "informational" in s]
+    return bool(kinds) and len(kinds) == len(specifics) and all(isinstance(k, str) and k for k in kinds)
+
+
 def severity_fields(record: dict[str, Any]) -> dict[str, Any]:
     """Copies the upstream severity for the advisory body.
 
     A CVSS 3.1 vector is preferred (from the GHSA record when there is one,
-    since GitHub reviewed it; other CVSS versions are not sent, as the
-    advisory API may refuse them), then the highest GHSA severity level,
-    then medium.
+    since GitHub reviewed it, then the RustSec entry's own vector; other
+    CVSS versions are not sent, as the advisory API may refuse them), then
+    the highest GHSA severity level, then low for an informational notice
+    (`informational`), then medium.
 
     Args:
         record: The merged record.
@@ -1450,22 +1495,46 @@ def severity_fields(record: dict[str, Any]) -> dict[str, Any]:
             score = item.get("score")
             if item.get("type") == "CVSS_V3" and isinstance(score, str) and score.startswith("CVSS:3.1/"):
                 return {"cvss_vector_string": score}
+    for specific in _rustsec_specifics(record):
+        score = specific.get("cvss")
+        if isinstance(score, str) and score.startswith("CVSS:3.1/"):
+            return {"cvss_vector_string": score}
     levels = []
     for meta in metas:
         specific = meta.get("database_specific")
         level = str(specific.get("severity") if isinstance(specific, dict) else "").upper()
         if level in GHSA_SEVERITY:
             levels.append(GHSA_SEVERITY[level])
-    return {"severity": max(levels, key=SEVERITY_RANK.__getitem__) if levels else "medium"}
+    if levels:
+        return {"severity": max(levels, key=SEVERITY_RANK.__getitem__)}
+    return {"severity": "low" if informational(record) else "medium"}
 
 
 def cwe_ids(record: dict[str, Any]) -> list[str]:
-    """Copies the upstream CWE ids from every alias record."""
-    found: set[str] = set()
+    """Collects the CWE ids for a draft.
+
+    Args:
+        record: The merged record.
+
+    Returns:
+        `CWE_VULNERABLE_DEPENDENCY`, the upstream CWE ids of every alias
+        record (GHSA `database_specific.cwe_ids`), and the CWEs that
+        `RUSTSEC_CATEGORY_CWES` and `RUSTSEC_INFORMATIONAL_CWES` give for the
+        RustSec entries' categories and informational kind, sorted.
+    """
+    found = {CWE_VULNERABLE_DEPENDENCY}
     for meta in _metas(record):
         specific = meta.get("database_specific")
         cwes = specific.get("cwe_ids") if isinstance(specific, dict) else None
         found.update(c for c in cwes or [] if isinstance(c, str) and CWE_RE.match(c))
+    for specific in _rustsec_specifics(record):
+        categories = specific.get("categories")
+        for category in categories if isinstance(categories, list) else []:
+            if isinstance(category, str) and category in RUSTSEC_CATEGORY_CWES:
+                found.add(RUSTSEC_CATEGORY_CWES[category])
+        kind = specific.get("informational")
+        if isinstance(kind, str) and kind in RUSTSEC_INFORMATIONAL_CWES:
+            found.add(RUSTSEC_INFORMATIONAL_CWES[kind])
     return sorted(found)
 
 

@@ -722,8 +722,12 @@ draft (it is not filed again) or ignored in `osv-scanner.toml`.
 A draft carries the upstream ids (each as a hidden
 `<!-- osv-advisory: <id> <ecosystem>/<package> -->` marker, so it is never
 filed twice and a draft a maintainer closed is not filed again), the locked
-and first fixed versions, CVSS (or the highest GHSA severity) and CWE ids
-from the upstream records and their aliases, the verdict and its evidence
+and first fixed versions, the severity (a CVSS 3.1 vector from the GHSA
+record or the RustSec entry, else the highest GHSA severity, else low for an
+informational notice such as "unmaintained" and medium otherwise), CWE ids
+(CWE-1395 for every draft, the GHSA records' CWE ids, and CWEs mapped from
+RustSec categories and informational kinds, which RustSec records carry
+instead), the verdict and its evidence
 (saying so when reachability is unproven), and a proposed range up to the
 highest release tag (or, for the TypeScript and Python SDKs, the version in
 their manifest) for a maintainer to confirm. A later run that finds the same advisory never files

@@ -532,7 +532,7 @@ class SeverityTest(unittest.TestCase):
         )
         merged = adv.with_alias_meta(rustsec, [ghsa])
         self.assertEqual(adv.severity_fields(merged), {"severity": "critical"})
-        self.assertEqual(adv.cwe_ids(merged), ["CWE-787"])
+        self.assertEqual(adv.cwe_ids(merged), ["CWE-1395", "CWE-787"])
         cvss = dict(ghsa, severity=[{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}])
         self.assertIn("cvss_vector_string", adv.severity_fields(adv.with_alias_meta(rustsec, [cvss])))
         self.assertEqual(adv.severity_fields(rustsec), {"severity": "medium"})
@@ -544,7 +544,45 @@ class SeverityTest(unittest.TestCase):
             [("RUSTSEC-9", "Cargo.lock", "code-scanning"), ("GHSA-9", "Cargo.lock", "dependabot")],
             {"RUSTSEC-9": adv.with_alias_meta(rustsec, []), "GHSA-9": adv.with_alias_meta(ghsa, [])},
         )
-        self.assertEqual(adv.cwe_ids(groups[0].record), ["CWE-787"])
+        self.assertEqual(adv.cwe_ids(groups[0].record), ["CWE-1395", "CWE-787"])
+
+
+class RustSecFieldsTest(unittest.TestCase):
+    def _rustsec(self, **specific: Any) -> dict[str, Any]:
+        record = _record("RUSTSEC-7", "zip", "crates.io", "9.0.0")
+        record["affected"][0]["database_specific"] = specific
+        return record
+
+    def test_categories_and_informational_map_to_cwes(self) -> None:
+        record = self._rustsec(categories=["privilege-escalation", "crypto-failure", "unknown-category"])
+        self.assertEqual(adv.cwe_ids(record), ["CWE-1395", "CWE-269", "CWE-327"])
+        unmaintained = self._rustsec(categories=[], informational="unmaintained")
+        self.assertEqual(adv.cwe_ids(unmaintained), ["CWE-1104", "CWE-1395"])
+        self.assertEqual(adv.cwe_ids(_record("GHSA-1", "zip", "crates.io", "9.0.0")), ["CWE-1395"])
+
+    def test_rustsec_vector_then_informational_low(self) -> None:
+        vector = "CVSS:3.1/AV:L/AC:L/PR:L/UI:R/S:U/C:H/I:H/A:H"
+        self.assertEqual(adv.severity_fields(self._rustsec(cvss=vector)), {"cvss_vector_string": vector})
+        # Only CVSS 3.1 vectors are sent.
+        old = self._rustsec(cvss="CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H")
+        self.assertEqual(adv.severity_fields(old), {"severity": "medium"})
+        unmaintained = self._rustsec(informational="unmaintained")
+        self.assertTrue(adv.informational(unmaintained))
+        self.assertEqual(adv.severity_fields(unmaintained), {"severity": "low"})
+        # A GHSA level outranks the informational default.
+        leveled = adv.with_alias_meta(
+            unmaintained, [_record("GHSA-2", "zip", "crates.io", "9.0.0", database_specific={"severity": "HIGH"})]
+        )
+        self.assertEqual(adv.severity_fields(leveled), {"severity": "high"})
+
+    def test_mixed_records_are_not_informational(self) -> None:
+        mixed = self._rustsec(informational="unmaintained")
+        mixed["affected"].append(
+            {"package": {"ecosystem": "crates.io", "name": "zip"}, "database_specific": {"categories": []}}
+        )
+        self.assertFalse(adv.informational(mixed))
+        self.assertFalse(adv.informational(_record("GHSA-3", "zip", "crates.io", "9.0.0")))
+        self.assertEqual(adv.severity_fields(mixed), {"severity": "medium"})
 
 
 class FilingTest(unittest.TestCase):
@@ -694,7 +732,7 @@ class FilingTest(unittest.TestCase):
         self.assertEqual(host["vulnerabilities"][0]["vulnerable_version_range"], "<= v0.2.0")
         self.assertEqual(host["cvss_vector_string"], "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N")
         self.assertNotIn("severity", host)
-        self.assertEqual(host["cwe_ids"], ["CWE-400"])
+        self.assertEqual(host["cwe_ids"], ["CWE-1395", "CWE-400"])
         self.assertIn("<!-- osv-advisory: RUSTSEC-2 other/bookclerk -->", host["description"])
         self.assertIn("<!-- osv-advisory: GHSA-time other/bookclerk -->", host["description"])
         self.assertEqual(
