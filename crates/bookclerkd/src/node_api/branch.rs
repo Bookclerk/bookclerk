@@ -204,6 +204,7 @@ const MAX_OAUTH_ENROLL_BODY_BYTES: usize = 16 * 1024;
         (status = 401, description = "The code or verifier is wrong."),
         (status = 403, description = "The transport is not allowed."),
         (status = 404, description = "The node API is not mounted."),
+        (status = 503, description = "The enrollment could not be recorded; try again (`enrollment_unavailable`)."),
     ),
 )]
 pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Request) -> Response {

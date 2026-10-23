@@ -405,6 +405,16 @@
               }
             }
           },
+          "400": {
+            "description": "Operator auth is off, or the password is empty.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "401": {
             "description": "The caller is not signed in.",
             "content": {
@@ -417,6 +427,16 @@
           },
           "403": {
             "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The caller is already an operator.",
             "content": {
               "application/json": {
                 "schema": {
@@ -461,6 +481,16 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The session is not an elevated one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
               }
             }
           },
@@ -526,6 +556,16 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The email is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
               }
             }
           },
@@ -637,6 +677,16 @@
               }
             }
           },
+          "404": {
+            "description": "No such user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -688,6 +738,16 @@
           },
           "401": {
             "description": "The login or password is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The account is disabled (`account_disabled`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -941,6 +1001,16 @@
               }
             }
           },
+          "409": {
+            "description": "The user is the last Owner or Administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -1034,6 +1104,16 @@
           },
           "404": {
             "description": "No such user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The login name or email is taken by another user.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4616,6 +4696,16 @@
               }
             }
           },
+          "404": {
+            "description": "A local package is missing its `package.json` or `archive.tar.gz`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "409": {
             "description": "The version is already installed.",
             "content": {
@@ -4628,6 +4718,16 @@
           },
           "500": {
             "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The package catalog could not be reached or answered badly.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5920,7 +6020,17 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The caller's role does not allow this route, or the library refused the sign-in (`denied`). A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The sign-in is unknown, already used, or older than ten minutes; start again (`join_expired`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -6117,6 +6227,16 @@
           },
           "403": {
             "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "This install is not a branch of that library (`not_found`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -6706,6 +6826,16 @@
               }
             }
           },
+          "409": {
+            "description": "The migration target matches more than one database plugin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The copy failed.",
             "content": {
@@ -6761,6 +6891,16 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Operator auth is off.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
               }
             }
           },
@@ -7485,6 +7625,16 @@
           },
           "500": {
             "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The node API's certificate pin is not available yet (`node_api_pin_unavailable`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -8361,6 +8511,16 @@
               }
             }
           },
+          "404": {
+            "description": "This install is not a branch of that library (`not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The configuration could not be read or written.",
             "content": {
@@ -9040,6 +9200,16 @@
               "text/plain": {
                 "schema": {
                   "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Discover is shutting down; try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             }
@@ -9996,6 +10166,16 @@
               }
             }
           },
+          "400": {
+            "description": "Only open wishlist items can be removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "401": {
             "description": "No signed-in caller.",
             "content": {
@@ -10098,6 +10278,16 @@
               "text/plain": {
                 "schema": {
                   "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Discover is shutting down; try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             }
@@ -10216,6 +10406,16 @@
           },
           "403": {
             "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The user has no sign-in identity.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10380,6 +10580,26 @@
           },
           "403": {
             "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The caller's user no longer exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The email is used by another account (`email_in_use`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -11243,6 +11463,16 @@
               }
             }
           },
+          "409": {
+            "description": "A client with this id already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The configuration could not be read or written.",
             "content": {
@@ -11459,6 +11689,16 @@
           },
           "404": {
             "description": "No such client.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The client is provided by a plugin; disable it instead.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12312,6 +12552,16 @@
               }
             }
           },
+          "409": {
+            "description": "The passkey is already registered.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -12819,6 +13069,16 @@
           },
           "403": {
             "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "TOTP is already on.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13389,6 +13649,16 @@
           },
           "404": {
             "description": "The node API is not mounted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The enrollment could not be recorded; try again (`enrollment_unavailable`).",
             "content": {
               "application/json": {
                 "schema": {

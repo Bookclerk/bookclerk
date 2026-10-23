@@ -352,6 +352,7 @@ async fn totp_status(
         (status = 200, description = "A pending secret, its otpauth URL and a QR code SVG.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
+        (status = 409, description = "TOTP is already on."),
     ),
 )]
 async fn enroll_begin(

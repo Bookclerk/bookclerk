@@ -449,6 +449,8 @@ const CALLBACK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
         (status = 400, description = "The body is invalid."),
         (status = 500, description = "The configuration could not be read or written."),
         (status = 502, description = "The library could not be reached."),
+        (status = 410, description = "The sign-in is unknown, already used, or older than ten minutes; start again (`join_expired`)."),
+        (status = 403, description = "The caller's role does not allow this route, or the library refused the sign-in (`denied`)."),
     ),
 )]
 pub async fn post_join_callback(
@@ -878,6 +880,7 @@ pub struct LeaveBody {
         (status = 400, description = "The body is invalid."),
         (status = 500, description = "The configuration could not be read or written."),
         (status = 409, description = "This install has not joined a library."),
+        (status = 404, description = "This install is not a branch of that library (`not_found`)."),
     ),
 )]
 pub async fn post_join_leave(
@@ -965,6 +968,7 @@ pub async fn get_join_sharing(
         (status = 403, description = "The caller may not do this."),
         (status = 400, description = "The body is invalid."),
         (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "This install is not a branch of that library (`not_found`)."),
     ),
 )]
 pub async fn post_join_sharing(

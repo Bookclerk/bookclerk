@@ -1951,6 +1951,8 @@ pub struct ImpersonateRequest {
         (status = 200, description = "Elevated; the response sets a short-lived operator cookie.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "Operator auth is off, or the password is empty."),
+        (status = 409, description = "The caller is already an operator."),
     ),
 )]
 pub async fn elevate(
@@ -2106,6 +2108,7 @@ pub(crate) async fn issue_portal_session(
         (status = 200, description = "Elevation ended.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "The session is not an elevated one."),
     ),
 )]
 pub async fn elevate_end(
@@ -2153,6 +2156,7 @@ pub async fn elevate_end(
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
         (status = 404, description = "No such user."),
+        (status = 400, description = "Operator auth is off."),
     ),
 )]
 pub async fn impersonate(
@@ -2429,6 +2433,7 @@ fn last_owner_response() -> Response {
         (status = 403, description = "The caller may not do this."),
         (status = 400, description = "A value is invalid."),
         (status = 404, description = "No such user."),
+        (status = 409, description = "The login name or email is taken by another user."),
     ),
 )]
 pub async fn patch_user(
@@ -2673,6 +2678,7 @@ pub async fn reset_user_password(
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
         (status = 404, description = "No such user."),
+        (status = 409, description = "The user is the last Owner or Administrator."),
     ),
 )]
 pub async fn delete_user(
@@ -2768,6 +2774,7 @@ pub struct BootstrapRequest {
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
         (status = 409, description = "An Owner already exists."),
+        (status = 400, description = "The email is invalid."),
     ),
 )]
 pub async fn bootstrap(
@@ -2995,6 +3002,7 @@ pub struct PasswordLoginRequest {
         (status = 200, description = "Signed in (portal session cookie), or a TOTP challenge.", body = serde_json::Value),
         (status = 401, description = "The login or password is wrong."),
         (status = 429, description = "Too many attempts; retry after `Retry-After` seconds.", headers(("Retry-After" = u64, description = "Seconds to wait before retrying."))),
+        (status = 403, description = "The account is disabled (`account_disabled`)."),
     ),
 )]
 pub async fn password_login(
@@ -3081,6 +3089,7 @@ pub struct SetPasswordRequest {
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
         (status = 400, description = "The password is too weak or the request is invalid."),
+        (status = 404, description = "No such user."),
     ),
 )]
 pub async fn set_password(
@@ -3338,6 +3347,7 @@ fn user_json(user: &bookclerk_library::UserRecord) -> serde_json::Value {
         (status = 200, description = "The caller's sessions.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
+        (status = 404, description = "The user has no sign-in identity."),
     ),
 )]
 pub async fn list_sessions(

@@ -331,6 +331,8 @@ pub(crate) async fn require_self_user_id(
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
         (status = 400, description = "A value is invalid."),
+        (status = 404, description = "The caller's user no longer exists."),
+        (status = 409, description = "The email is used by another account (`email_in_use`)."),
     ),
 )]
 pub async fn patch_profile(

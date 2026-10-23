@@ -211,6 +211,8 @@ pub(crate) struct PostPluginInstall {
         (status = 400, description = "The body is invalid."),
         (status = 500, description = "The configuration could not be read or written."),
         (status = 409, description = "The version is already installed."),
+        (status = 404, description = "A local package is missing its `package.json` or `archive.tar.gz`."),
+        (status = 502, description = "The package catalog could not be reached or answered badly."),
     ),
 )]
 pub async fn post_plugin_install(

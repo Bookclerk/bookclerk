@@ -143,6 +143,7 @@ pub(crate) struct PostNodeInvite {
         (status = 400, description = "The body is invalid."),
         (status = 500, description = "The configuration could not be read or written."),
         (status = 409, description = "Host enrollment is off."),
+        (status = 503, description = "The node API's certificate pin is not available yet (`node_api_pin_unavailable`)."),
     ),
 )]
 pub async fn post_node_invite(

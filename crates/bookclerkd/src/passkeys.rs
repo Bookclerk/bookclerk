@@ -308,6 +308,7 @@ struct CeremonyFinish {
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
         (status = 400, description = "The attestation is invalid."),
+        (status = 409, description = "The passkey is already registered."),
     ),
 )]
 async fn register_finish(

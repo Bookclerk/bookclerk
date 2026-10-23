@@ -3582,6 +3582,7 @@ pub(crate) async fn apply_migrated_database_plugin(
         (status = 200, description = "The rows were copied.", body = ActionResponse),
         (status = 400, description = "The target is invalid.", body = crate::http_error::ErrorJson),
         (status = 500, description = "The copy failed.", body = crate::http_error::ErrorJson),
+        (status = 409, description = "The migration target matches more than one database plugin."),
     ),
 )]
 async fn migrate_database(
@@ -4945,6 +4946,7 @@ struct CatalogSearchQuery {
         (status = 200, description = "The Discover feed.", body = bookclerk_discover::DiscoverFeed),
         (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain"),
         (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain"),
+        (status = 503, description = "Discover is shutting down; try again."),
     ),
 )]
 async fn discover_recommendations(
@@ -5518,6 +5520,7 @@ async fn create_wishlist(
         (status = 404, description = "No such request.", body = String, content_type = "text/plain"),
         (status = 401, description = "No signed-in caller.", body = String, content_type = "text/plain"),
         (status = 500, description = "The request could not be read or written.", body = String, content_type = "text/plain"),
+        (status = 400, description = "Only open wishlist items can be removed."),
     ),
 )]
 async fn delete_wishlist(
@@ -5590,6 +5593,7 @@ fn hydrate_queue_wishers(wishers: &mut [QueueWisher], files: Option<&Path>) {
     responses(
         (status = 200, description = "Open requests, ranked.", body = Vec<bookclerk_discover::RankedQueueEntry>),
         (status = 500, description = "The queue could not be ranked.", body = String, content_type = "text/plain"),
+        (status = 503, description = "Discover is shutting down; try again."),
     ),
 )]
 async fn list_request_queue(

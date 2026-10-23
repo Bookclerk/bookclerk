@@ -1314,6 +1314,7 @@ async fn list_clients(
         (status = 200, description = "The client; a confidential client's secret appears once.", body = serde_json::Value),
         (status = 400, description = "The body is invalid."),
         (status = 500, description = "The configuration could not be read or written."),
+        (status = 409, description = "A client with this id already exists."),
     ),
 )]
 async fn create_client(
@@ -1441,6 +1442,7 @@ async fn update_client(
         (status = 400, description = "The body is invalid."),
         (status = 500, description = "The configuration could not be read or written."),
         (status = 404, description = "No such client."),
+        (status = 409, description = "The client is provided by a plugin; disable it instead."),
     ),
 )]
 async fn delete_client(
