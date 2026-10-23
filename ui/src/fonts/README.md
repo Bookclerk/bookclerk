@@ -2,7 +2,8 @@
 
 Bundled by Vite from `../index.css`, so the web UI never loads fonts from
 Google or any other third-party origin. All are SIL Open Font License 1.1;
-the licenses ship beside the files.
+the license texts live in `ui/public/fonts/`, so Vite copies them into the
+build output (`/fonts/OFL-*.txt`) next to the bundled font files.
 
 | File | Family | Weights | Upstream |
 | --- | --- | --- | --- |
