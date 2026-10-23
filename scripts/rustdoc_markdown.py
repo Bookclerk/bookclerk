@@ -64,6 +64,9 @@ SECTIONS = (
 )
 # Compiler-internal marker traits left out of "Implements" lists.
 HIDDEN_TRAITS = frozenset({"StructuralPartialEq", "StructuralEq"})
+
+# The attribute that declares each rustdoc MacroKind of procedural macro.
+PROC_MACRO_ATTRIBUTES = {"bang": "proc_macro", "attr": "proc_macro_attribute", "derive": "proc_macro_derive"}
 SECTION_KINDS = frozenset(kind for kind, _, _ in SECTIONS)
 
 FENCE_RE = re.compile(r"^(\s*)(```+|~~~+)(.*)$")
@@ -474,7 +477,7 @@ def _rust_fence(info: str) -> bool:
     return not words or all(w in RUST_FENCE_WORDS for w in words)
 
 
-def _code_spans(line: str) -> list[tuple[int, int]]:
+def code_spans(line: str) -> list[tuple[int, int]]:
     """Return the ``(start, end)`` offsets of inline code spans in a line.
 
     Args:
@@ -593,11 +596,11 @@ def _rewrite_links(line: str, ctx: DocContext) -> str:
             return m.group(0)
         return f"[{m.group(1)}]({href})" if href else m.group(1)
 
-    spans = _code_spans(line)
+    spans = code_spans(line)
     line = INLINE_RE.sub(inline, line)
-    spans = _code_spans(line)
+    spans = code_spans(line)
     line = REFERENCE_RE.sub(reference, line)
-    spans = _code_spans(line)
+    spans = code_spans(line)
     return SHORTCUT_RE.sub(shortcut, line)
 
 
@@ -872,7 +875,6 @@ class Renderer:
         self.crates = dict(crates)
         self.pages = {name: collect_pages(crate) for name, crate in self.crates.items()}
         self.placement = Placement()
-        self._plans: dict[str, list[tuple[str, Json, str]]] = {}
         for name, pages in self.pages.items():
             for page in pages:
                 self._plan(self.crates[name], page)
@@ -900,7 +902,6 @@ class Renderer:
             page: The page.
         """
         anchors = Anchors()
-        plan: list[tuple[str, Json, str]] = []
         anchors.take(page.title)
         for heading in _doc_headings(page.module.get("docs")):
             anchors.take(heading)
@@ -917,11 +918,13 @@ class Renderer:
             for entry in entries:
                 anchor = anchors.take(entry.name)
                 self._record(crate, entry.item["id"], (page.file, anchor))
-                plan.append((anchor, entry.item, entry.name))
                 for heading in _doc_headings(entry.item.get("docs")):
                     anchors.take(heading)
+                # Field and variant docs come next on the page (_fields).
+                for documented in self._documented_fields(crate, entry)[1]:
+                    for heading in _doc_headings(documented["docs"]):
+                        anchors.take(heading)
                 self._plan_members(crate, page, entry, anchors)
-        self._plans[page.file] = plan
 
     def _plan_members(self, crate: Crate, page: Page, entry: Entry, anchors: Anchors) -> None:
         """Assign anchors to an item's fields, variants and methods.
@@ -1058,7 +1061,6 @@ class Renderer:
                 label = f"`{r.source}`" + (f" as `{r.name}`" if _path_name(r.source) != r.name else "")
                 lines.append(f"- [{label}]({href})" if href else f"- {label}")
             lines.append("")
-        plan = iter(self._plans[page.file])
         for kind, title, _ in SECTIONS:
             entries = page.entries.get(kind, [])
             if not entries:
@@ -1073,7 +1075,6 @@ class Renderer:
                 lines.append("")
                 continue
             for entry in entries:
-                next(plan)
                 lines += self._item(crate, entry, resolve)
         return "\n".join(lines).rstrip() + "\n"
 
@@ -1138,7 +1139,8 @@ class Renderer:
             return render_fn(name, inner, True)
         if kind in ("struct", "union"):
             head, where = render_generics(inner.get("generics", {}))
-            k = inner.get("kind", "unit")
+            # A union has its fields directly; only a struct has a kind.
+            k = {"plain": {"fields": inner.get("fields", [])}} if kind == "union" else inner.get("kind", "unit")
             if k == "unit":
                 return f"pub {kind} {name}{head}{where};"
             if "tuple" in k:
@@ -1147,7 +1149,7 @@ class Renderer:
                     f = crate.item(fid) if fid is not None else None
                     fields.append(f"pub {render_type(f['inner']['struct_field'])}" if f and f.get("visibility") == "public" else "/* private */")
                 return f"pub struct {name}{head}({', '.join(fields)}){where};"
-            fields = inner.get("fields") if kind == "union" else k["plain"]["fields"]
+            fields = k["plain"]["fields"]
             stripped = (k.get("plain") or {}).get("has_stripped_fields", inner.get("has_stripped_fields", False))
             body = []
             for fid in fields:
@@ -1179,7 +1181,8 @@ class Renderer:
                 m = crate.item(mid)
                 if m is not None:
                     body.append("    " + self._assoc(m, trait_item=True).replace("\n", "\n    ") + ";")
-            return f"pub {unsafe}{auto}trait {name}{head}{bounds}{where} {{\n" + "\n".join(body) + "\n}" if body else f"pub trait {name}{head}{bounds}{where} {{}}"
+            decl = f"pub {unsafe}{auto}trait {name}{head}{bounds}{where}"
+            return f"{decl} {{\n" + "\n".join(body) + "\n}" if body else f"{decl} {{}}"
         if kind == "type_alias":
             head, where = render_generics(inner.get("generics", {}))
             return f"pub type {name}{head}{where} = {render_type(inner['type'])};"
@@ -1191,7 +1194,8 @@ class Renderer:
         if kind == "macro":
             return inner if isinstance(inner, str) else f"macro_rules! {name} {{ ... }}"
         if kind == "proc_macro":
-            return f"#[proc_macro_{inner.get('kind', 'derive')}] {name}"
+            attribute = PROC_MACRO_ATTRIBUTES.get(inner.get("kind", "derive"), "proc_macro_derive")
+            return f"#[{attribute}] {name}"
         return name
 
     def _variant(self, crate: Crate, variant: Json) -> str:
@@ -1261,6 +1265,24 @@ class Renderer:
         Returns:
             Markdown lines (none when nothing is documented).
         """
+        title, fields = self._documented_fields(crate, entry)
+        rows = []
+        for f in fields:
+            text = rewrite_docs(f["docs"], DocContext(f.get("links", {}), resolve, 5)).replace("\n", "\n  ")
+            rows.append(f"- `{f['name']}`: {text}")
+        return [f"**{title}**", "", *rows, ""] if rows else []
+
+    def _documented_fields(self, crate: Crate, entry: Entry) -> tuple[str, list[Json]]:
+        """List the fields or variants :meth:`_fields` renders.
+
+        Args:
+            crate: The item's crate.
+            entry: The item.
+
+        Returns:
+            ``Fields`` or ``Variants``, and the documented public fields of a
+            struct or union, or the documented variants of an enum, in order.
+        """
         item = entry.item
         kind = kind_of(item)
         ids: list[int] = []
@@ -1269,17 +1291,18 @@ class Renderer:
             k = item["inner"]["struct"].get("kind", "unit")
             if isinstance(k, dict) and "plain" in k:
                 ids = k["plain"]["fields"]
+        elif kind == "union":
+            ids = item["inner"]["union"].get("fields", [])
         elif kind == "enum":
             ids = item["inner"]["enum"]["variants"]
             title = "Variants"
-        rows = []
+        out = []
         for fid in ids:
             f = crate.item(fid)
-            if f is None or not f.get("docs") or (kind == "struct" and f.get("visibility") != "public"):
+            if f is None or not f.get("docs") or (kind != "enum" and f.get("visibility") != "public"):
                 continue
-            text = rewrite_docs(f["docs"], DocContext(f.get("links", {}), resolve, 5)).replace("\n", "\n  ")
-            rows.append(f"- `{f['name']}`: {text}")
-        return [f"**{title}**", "", *rows, ""] if rows else []
+            out.append(f)
+        return title, out
 
     def _methods(self, crate: Crate, entry: Entry, resolve: Any) -> list[str]:
         """Render inherent methods, or a trait's items.

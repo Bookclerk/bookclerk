@@ -205,12 +205,18 @@ class TreeTest(unittest.TestCase):
         (project / "README.md").write_text("# SDK\n\nIntro.\n")
         (project / "modules.md").write_text("# SDK\n\n## Modules\n\n- [cli](cli.md)\n- [workerd](workerd.md)\n")
         (project / "cli.md").write_text("# cli\n\nBack to [the SDK](modules.md).\n")
+        (project / "a" / "b").mkdir(parents=True)
+        (project / "a" / "b" / "deep.md").write_text("[up](../../modules.md#cli) [other](../modules.md) [keep](other/modules.md)\n")
         dm.fold_module_index(project)
         self.assertFalse((project / "modules.md").exists())
         self.assertEqual(
             (project / "README.md").read_text(), "# SDK\n\nIntro.\n\n## Modules\n\n- [cli](cli.md)\n- [workerd](workerd.md)\n"
         )
         self.assertIn("(README.md)", (project / "cli.md").read_text())
+        # Any depth, with or without an anchor; other files named modules.md stay.
+        self.assertEqual(
+            (project / "a" / "b" / "deep.md").read_text(), "[up](../../README.md#modules) [other](../modules.md) [keep](other/modules.md)\n"
+        )
 
     def test_broken_links_in_the_tree_and_out_of_the_api_reference(self) -> None:
         out = self.base / "out"

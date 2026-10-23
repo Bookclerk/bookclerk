@@ -126,13 +126,23 @@ def demo_crate() -> dict[str, Any]:
 
 
 def other_crate() -> dict[str, Any]:
-    """A crate ``other`` with one struct."""
+    """A crate ``other``: a struct, a union, a struct whose field docs have a
+    heading, an empty unsafe trait, a constant and two procedural macros."""
     return {
         "root": 0,
         "format_version": 56,
         "index": {
-            "0": item(0, "other", {"module": {"is_crate": True, "items": [1], "is_stripped": False}}),
+            "0": item(0, "other", {"module": {"is_crate": True, "items": [1, 2, 5, 7, 8, 9, 10], "is_stripped": False}}),
             "1": item(1, "Thing", {"struct": {"kind": "unit", "generics": NO_GENERICS, "impls": []}}, docs="A thing."),
+            "2": item(2, "Pair", {"union": {"generics": NO_GENERICS, "has_stripped_fields": False, "fields": [3, 4], "impls": []}}, docs="Two views."),
+            "3": item(3, "word", {"struct_field": {"primitive": "u32"}}, docs="As a word."),
+            "4": item(4, "bytes", {"struct_field": {"array": {"type": {"primitive": "u8"}, "len": "4"}}}),
+            "5": item(5, "Gauge", {"struct": {"kind": {"plain": {"fields": [6], "has_stripped_fields": False}}, "generics": NO_GENERICS, "impls": []}}, docs="A gauge."),
+            "6": item(6, "level", {"struct_field": {"primitive": "u8"}}, docs="Level.\n\n# Limit\n\nAt most [`LIMIT`]."),
+            "7": item(7, "Marker", {"trait": {"is_auto": False, "is_unsafe": True, "is_dyn_compatible": True, "items": [], "generics": NO_GENERICS, "bounds": [], "implementations": []}}),
+            "8": item(8, "LIMIT", {"constant": {"type": {"primitive": "u8"}, "const": {"expr": "10", "value": None, "is_literal": True}}}),
+            "9": item(9, "make", {"proc_macro": {"kind": "bang", "helpers": []}}),
+            "10": item(10, "tagged", {"proc_macro": {"kind": "attr", "helpers": []}}),
         },
         "paths": {"1": {"crate_id": 0, "path": ["other", "Thing"], "kind": "struct"}},
         "external_crates": {},
@@ -251,6 +261,21 @@ class RenderTest(unittest.TestCase):
         self.assertIn("pub trait Codec: Send {\n    fn decode(&self) -> bool;\n}", page)
         self.assertIn("#### Codec::decode", page)
         self.assertIn("pub struct Frame;", page)
+
+    def test_unions_traits_and_macros(self) -> None:
+        page = self.pages["other/index.md"]
+        self.assertIn("pub union Pair {\n    pub word: u32,\n    pub bytes: [u8; 4],\n}", page)
+        self.assertIn("**Fields**\n\n- `word`: As a word.", page)
+        self.assertIn("pub unsafe trait Marker {}", page)
+        self.assertIn("#[proc_macro] make", page)
+        self.assertIn("#[proc_macro_attribute] tagged", page)
+
+    def test_field_doc_headings_are_counted(self) -> None:
+        # The field's "Limit" heading comes first on the page, so the
+        # constant is the second "limit" anchor.
+        page = self.pages["other/index.md"]
+        self.assertLess(page.index("Limit"), page.index("### LIMIT"))
+        self.assertIn("| [`LIMIT`](#limit-1) |", page)
 
     def test_load_crates_checks_the_format(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rustdoc-markdown-") as tmp:

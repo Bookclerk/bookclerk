@@ -27,17 +27,31 @@ FILES = {
 
         from ._consts import VERSION
         from .worker import Worker, run
+        from .worker import LIMIT as MAX_JOBS
+        from .worker import Unlisted
 
-        __all__ = ["VERSION", "Worker", "run"]
+        try:
+            from ._fast import encode
+        except ImportError:
+            from ._consts import encode
+
+        __all__ = ["VERSION", "Worker", "run"] + ["MAX_JOBS"]
+        __all__ += ["Unlisted", "encode"]
         ''',
     "pkg/_consts.py": '''
         VERSION: str = "3"
         """ABI version the package speaks."""
+
+
+        def encode(value: str) -> bytes:
+            """Encode a value for the wire."""
         ''',
     "pkg/worker.py": '''
         """Workers and how to run them."""
 
         import json
+
+        __all__ = ["LIMIT", "Worker", "run"]
 
         LIMIT = 8
         """Most jobs at once."""
@@ -94,6 +108,10 @@ FILES = {
 
         def _helper() -> None:
             pass
+
+
+        class Unlisted:
+            """Defined here but left out of this module's __all__."""
         ''',
 }
 
@@ -126,6 +144,20 @@ class PackageTest(unittest.TestCase):
         # A name from a public module links there.
         self.assertIn("- [`Worker`](pkg.worker.md#worker) from `pkg.worker`", page)
         self.assertIn("- [`run`](pkg.worker.md#run) from `pkg.worker`", page)
+        # An alias links to the name the item is documented under.
+        self.assertIn("- [`MAX_JOBS` (`LIMIT`)](pkg.worker.md#limit) from `pkg.worker`", page)
+        # Not documented by its own module, so documented here.
+        self.assertIn("### Unlisted\n", page)
+        self.assertNotIn("(pkg.worker.md#unlisted)", page)
+        # Imported in a try block.
+        self.assertIn("### encode\n", page)
+
+    def test_non_literal_all_is_an_error(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="python-api-markdown-") as tmp:
+            (Path(tmp) / "pkg").mkdir()
+            (Path(tmp) / "pkg/__init__.py").write_text("from . import other\n__all__ = other.__all__\n")
+            with self.assertRaisesRegex(ValueError, "__all__ is not built from string literals"):
+                pm.render(Path(tmp), ["pkg"])
 
     def test_module_page(self) -> None:
         page = self.pages["pkg.worker.md"]
@@ -149,8 +181,9 @@ class PackageTest(unittest.TestCase):
         self.assertNotIn("\n\n\n", page)
 
     def test_module_summary(self) -> None:
-        self.assertEqual(pm.module_summary(self.src, "pkg.worker"), "Workers and how to run them.")
-        self.assertEqual(pm.module_summary(self.src, "pkg.missing"), "")
+        package = pm.Package(self.src, ["pkg", "pkg.worker"])
+        self.assertEqual(package.summary("pkg.worker"), "Workers and how to run them.")
+        self.assertEqual(package.summary("pkg.missing"), "")
 
 
 if __name__ == "__main__":

@@ -94,7 +94,8 @@ RUST_GROUP_OF = {
 }
 
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
-CODE_SPAN_RE = re.compile(r"(`+)(?:(?!\1).)+?\1")
+# A link to TypeDoc's modules.md, at any depth, with an optional anchor.
+MODULES_LINK_RE = re.compile(r"\]\(((?:\.\./)*)modules\.md(#[^)\s]*)?\)")
 LINK_RE = re.compile(r"(?<!!)\[(?:[^\[\]]|\[[^\]]*\])*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 
 
@@ -418,9 +419,17 @@ def fold_module_index(project_out: Path) -> None:
     text = readme.read_text(encoding="utf-8").rstrip()
     readme.write_text(text + "\n\n## Modules\n\n" + "\n".join(entries) + "\n", encoding="utf-8")
     modules.unlink()
+    target = modules.resolve()
     for md in project_out.rglob("*.md"):
         page = md.read_text(encoding="utf-8")
-        new = page.replace("(modules.md)", "(README.md)").replace("(../modules.md)", "(../README.md)")
+
+        def point_at_readme(match: re.Match[str], md: Path = md) -> str:
+            rel, anchor = match.group(1), match.group(2)
+            if (md.parent / f"{rel}modules.md").resolve() != target:
+                return match.group(0)
+            return f"]({rel}README.md{'#modules' if anchor else ''})"
+
+        new = MODULES_LINK_RE.sub(point_at_readme, page)
         if new != page:
             md.write_text(new, encoding="utf-8")
 
@@ -515,10 +524,18 @@ def build_python(src: Path, out: Path) -> list[str]:
 
     Returns:
         The modules rendered.
+
+    Raises:
+        BuildError: A module's ``__all__`` cannot be read without importing it.
     """
     out.mkdir(parents=True, exist_ok=True)
     modules = python_modules(src, PYTHON_PACKAGE)
-    for rel, text in python_api_markdown.render(src, modules).items():
+    try:
+        package = python_api_markdown.Package(src, modules)
+        pages = package.render_all()
+    except ValueError as err:
+        raise BuildError(f"Python SDK: {err}") from err
+    for rel, text in pages.items():
         (out / rel).write_text(text, encoding="utf-8")
     lines = [
         "# Python plugin SDK",
@@ -532,21 +549,9 @@ def build_python(src: Path, out: Path) -> list[str]:
     for module in modules:
         page = out / f"{module}.md"
         if page.is_file():
-            lines.append(f"| [`{module}`]({module}.md) | {python_api_markdown.module_summary(src, module)} |")
+            lines.append(f"| [`{module}`]({module}.md) | {package.summary(module)} |")
     (out / "README.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return modules
-
-
-def _code_spans(line: str) -> list[tuple[int, int]]:
-    """Return the ``(start, end)`` offsets of inline code spans in a line.
-
-    Args:
-        line: One Markdown line.
-
-    Returns:
-        Offsets, end exclusive.
-    """
-    return [m.span() for m in CODE_SPAN_RE.finditer(line)]
 
 
 # api/README.md, in order: (section, [(page under api/, title, description)]).
@@ -615,7 +620,7 @@ def broken_links(out: Path) -> list[str]:
                 continue
             if in_fence:
                 continue
-            spans = _code_spans(line)
+            spans = rustdoc_markdown.code_spans(line)
             for match in LINK_RE.finditer(line):
                 if any(s <= match.start() < e for s, e in spans):
                     continue

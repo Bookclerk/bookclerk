@@ -20,9 +20,11 @@ from __future__ import annotations
 import ast
 import re
 import textwrap
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from rustdoc_markdown import slug
 
 SECTION_RE = re.compile(
     r"^(Args|Arguments|Parameters|Params|Keyword Args|Keyword Arguments|Other Parameters|Returns|Return|Yields|Yield|"
@@ -56,21 +58,6 @@ FENCE_RE = re.compile(r"^\s*(```|~~~)")
 DOCTEST_RE = re.compile(r"^\s*>>> ")
 
 
-def slug(heading: str) -> str:
-    """Return the GitHub-style anchor for a heading.
-
-    Args:
-        heading: Heading text, without the leading ``#`` marks.
-
-    Returns:
-        Lowercased text with punctuation other than ``-`` and ``_`` removed
-        and spaces turned into ``-``.
-    """
-    text = re.sub(r"[`*]", "", heading).strip().lower()
-    text = re.sub(r"[^\w\- ]", "", text)
-    return text.replace(" ", "-")
-
-
 @dataclass
 class Member:
     """A documented name on a module page.
@@ -98,13 +85,13 @@ class ModulePage:
         tree: The parsed module.
         members: Names documented here, in export order.
         links: Names exported here but documented on another page:
-            name -> dotted module of that page.
+            name here -> (dotted module of that page, name there).
     """
 
     module: str
     tree: ast.Module
     members: list[Member] = field(default_factory=list)
-    links: dict[str, str] = field(default_factory=dict)
+    links: dict[str, tuple[str, str]] = field(default_factory=dict)
 
     @property
     def file(self) -> str:
@@ -158,25 +145,109 @@ def _resolve_relative(module: str, is_package: bool, node: ast.ImportFrom) -> st
     return ".".join(parts)
 
 
+def _module_statements(tree: ast.Module) -> Iterator[ast.stmt]:
+    """Yield the statements that run at import time, in order.
+
+    Top-level statements, and those inside top-level ``if``, ``try`` and
+    ``with`` blocks (every branch, since which one runs is not known), but
+    not function or class bodies.
+
+    Args:
+        tree: The parsed module.
+
+    Yields:
+        Each statement.
+    """
+    yield from _walk_block(tree.body)
+
+
+def _walk_block(body: list[ast.stmt]) -> Iterator[ast.stmt]:
+    """Yield a block's statements and those of its nested import-time blocks.
+
+    Args:
+        body: Statements of one block.
+
+    Yields:
+        Each statement, then the statements of its ``if`` / ``try`` /
+        ``with`` branches.
+    """
+    for node in body:
+        yield node
+        blocks: list[list[ast.stmt]] = []
+        if isinstance(node, ast.If):
+            blocks = [node.body, node.orelse]
+        elif isinstance(node, (ast.Try, getattr(ast, "TryStar", ast.Try))):
+            blocks = [node.body, *(h.body for h in node.handlers), node.orelse, node.finalbody]
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            blocks = [node.body]
+        for block in blocks:
+            yield from _walk_block(block)
+
+
+def _literal_names(value: ast.expr) -> list[str]:
+    """Evaluate a list or tuple of strings, or several joined with ``+``.
+
+    Args:
+        value: The expression.
+
+    Returns:
+        The strings.
+
+    Raises:
+        ValueError: The expression is anything else.
+    """
+    if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
+        return _literal_names(value.left) + _literal_names(value.right)
+    literal = ast.literal_eval(value)
+    if not isinstance(literal, (list, tuple)) or not all(isinstance(v, str) for v in literal):
+        raise ValueError("not a list or tuple of strings")
+    return list(literal)
+
+
 def _all_names(tree: ast.Module) -> list[str] | None:
-    """Return a module's literal ``__all__``.
+    """Return a module's ``__all__``.
+
+    Handles ``__all__ = [...]`` (or a tuple, or literals joined with ``+``)
+    and later ``__all__ += [...]`` / ``__all__.extend([...])``.
 
     Args:
         tree: The parsed module.
 
     Returns:
-        The names, or None when there is no literal ``__all__``.
+        The names, or None when the module has no ``__all__``.
+
+    Raises:
+        ValueError: ``__all__`` is built from something other than literals,
+            which this renderer cannot read without importing the module.
     """
-    for node in tree.body:
-        targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
-        if any(isinstance(t, ast.Name) and t.id == "__all__" for t in targets) and node.value is not None:
-            try:
-                value = ast.literal_eval(node.value)
-            except ValueError:
-                return None
-            if isinstance(value, (list, tuple)):
-                return [str(v) for v in value]
-    return None
+    names: list[str] | None = None
+    for node in _module_statements(tree):
+        value: ast.expr | None = None
+        extend = False
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(t, ast.Name) and t.id == "__all__" for t in targets):
+                value = node.value
+        elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name) and node.target.id == "__all__":
+            value, extend = node.value, True
+        elif (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute)
+            and isinstance(node.value.func.value, ast.Name)
+            and node.value.func.value.id == "__all__"
+            and node.value.func.attr == "extend"
+            and len(node.value.args) == 1
+        ):
+            value, extend = node.value.args[0], True
+        if value is None:
+            continue
+        try:
+            found = _literal_names(value)
+        except ValueError as err:
+            raise ValueError(f"__all__ is not built from string literals (line {node.lineno})") from err
+        names = (names or []) + found if extend else found
+    return names
 
 
 def _definitions(tree: ast.Module) -> dict[str, ast.AST]:
@@ -189,7 +260,7 @@ def _definitions(tree: ast.Module) -> dict[str, ast.AST]:
         Name -> class, function or assignment node.
     """
     out: dict[str, ast.AST] = {}
-    for node in tree.body:
+    for node in _module_statements(tree):
         if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             out[node.name] = node
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
@@ -215,7 +286,7 @@ def _imports(module: str, is_package: bool, tree: ast.Module) -> dict[str, tuple
         Local name -> (source module, name there).
     """
     out = {}
-    for node in tree.body:
+    for node in _module_statements(tree):
         if isinstance(node, ast.ImportFrom):
             source = _resolve_relative(module, is_package, node)
             if source is None:
@@ -273,7 +344,7 @@ class Package:
             self._trees[module] = (ast.parse(path.read_text(encoding="utf-8"), filename=str(path)), path.name == "__init__.py")
         return self._trees[module]
 
-    def _lookup(self, module: str, name: str, depth: int = 0) -> tuple[str, ast.AST] | None:
+    def _lookup(self, module: str, name: str, depth: int = 0) -> tuple[str, str, ast.AST] | None:
         """Follow imports to the definition of ``module.name``.
 
         Args:
@@ -282,7 +353,8 @@ class Package:
             depth: Recursion guard.
 
         Returns:
-            (defining module, node), or None for names defined outside the package.
+            (defining module, name there, node), or None for names defined
+            outside the package.
         """
         parsed = self._tree(module)
         if parsed is None or depth > 8:
@@ -290,11 +362,30 @@ class Package:
         tree, is_package = parsed
         defs = _definitions(tree)
         if name in defs:
-            return module, defs[name]
+            return module, name, defs[name]
         imported = _imports(module, is_package, tree).get(name)
         if imported is None:
             return None
         return self._lookup(imported[0], imported[1], depth + 1)
+
+    def _exported(self, module: str) -> list[str]:
+        """List the names a module's page documents or links.
+
+        Args:
+            module: Dotted module.
+
+        Returns:
+            Its ``__all__``, else its public top-level definitions.
+        """
+        parsed = self._tree(module)
+        if parsed is None:
+            return []
+        tree, _ = parsed
+        names = _all_names(tree)
+        if names is not None:
+            return names
+        defs = _definitions(tree)
+        return [n for n, node in defs.items() if not n.startswith("_") and (not isinstance(node, (ast.Assign, ast.AnnAssign)) or _is_public_constant(n, node))]
 
     def _page(self, module: str) -> ModulePage:
         """Place one module's public names.
@@ -310,17 +401,15 @@ class Package:
             raise FileNotFoundError(module)
         tree, _ = parsed
         page = ModulePage(module, tree)
-        names = _all_names(tree)
-        defs = _definitions(tree)
-        if names is None:
-            names = [n for n, node in defs.items() if not n.startswith("_") and (not isinstance(node, (ast.Assign, ast.AnnAssign)) or _is_public_constant(n, node))]
-        for name in names:
+        for name in self._exported(module):
             found = self._lookup(module, name)
             if found is None:
                 continue
-            defined_in, node = found
-            if defined_in != module and defined_in in self.public:
-                page.links[name] = defined_in
+            defined_in, original, node = found
+            # Link only to a page that documents the name; otherwise it is
+            # documented here.
+            if defined_in != module and defined_in in self.public and original in self._exported(defined_in):
+                page.links[name] = (defined_in, original)
             else:
                 page.members.append(Member(name, node, defined_in, self._constant_doc(defined_in, node)))
         return page
@@ -344,6 +433,18 @@ class Package:
             if stmt is node and isinstance(nxt, ast.Expr) and isinstance(nxt.value, ast.Constant) and isinstance(nxt.value.value, str):
                 return textwrap.dedent(nxt.value.value).strip()
         return None
+
+    def summary(self, module: str) -> str:
+        """Return the first paragraph of a module's docstring on one line.
+
+        Args:
+            module: Dotted module name.
+
+        Returns:
+            The summary, or ``""`` for a module without a docstring or source.
+        """
+        parsed = self._tree(module)
+        return "" if parsed is None else _summary(ast.get_docstring(parsed[0]))
 
     def render_all(self) -> dict[str, str]:
         """Render every page.
@@ -407,9 +508,9 @@ class Package:
             lines.append("")
         if page.links:
             lines += ["## Re-exports", ""]
-            for name, target in page.links.items():
-                anchor = slug(name)
-                lines.append(f"- [`{name}`]({target}.md#{anchor}) from `{target}`")
+            for name, (target, original) in page.links.items():
+                shown = f"`{name}`" if name == original else f"`{name}` (`{original}`)"
+                lines.append(f"- [{shown}]({target}.md#{slug(original)}) from `{target}`")
             lines.append("")
         if classes:
             lines += ["## Classes", ""]
@@ -737,22 +838,6 @@ def _assignment(name: str, node: ast.AST) -> str:
         return f"{name} = {_short(ast.unparse(node.value))}"
     return _short(ast.unparse(node))
 
-
-
-def module_summary(src: Path, module: str) -> str:
-    """Return the first paragraph of a module's docstring on one line.
-
-    Args:
-        src: Directory holding the package.
-        module: Dotted module name.
-
-    Returns:
-        The summary, or ``""``.
-    """
-    path = _source_file(src, module)
-    if path is None:
-        return ""
-    return _summary(ast.get_docstring(ast.parse(path.read_text(encoding="utf-8"))))
 
 
 def render(src: Path, modules: Iterable[str]) -> Mapping[str, str]:

@@ -490,13 +490,14 @@ uv in `packages/plugin-sdk-python`, and GitHub Actions. `examples/` lockfiles
 are left out (reference plugins, never packaged); the full OSV scan still
 reports them.
 
-The Python SDK has no runtime dependencies. Its `uv.lock` pins the `dev`,
-`docs` and `docs-markdown` extras that the `python_sdk` check,
-`generate-api-docs.sh --python` and [docs publishing](#docs-publishing)
-install (`uv sync --locked --no-install-project`, which fails when the
-lockfile is out of date with `pyproject.toml`; the SDK is imported from `src/`
-rather than built, so its unlocked build backend never runs), so OSV scans
-them and a runtime dependency added later is scanned from the start. After
+The Python SDK has no runtime dependencies. Its `uv.lock` pins the `dev`
+and `docs` extras that the `python_sdk` check and
+`generate-api-docs.sh --python` install (`uv sync --locked --no-install-project`,
+which fails when the lockfile is out of date with `pyproject.toml`; the SDK is
+imported from `src/` rather than built, so its unlocked build backend never
+runs), so OSV scans them and a runtime dependency added later is scanned from
+the start. [Docs publishing](#docs-publishing) reads the SDK's source with the
+standard library and installs nothing. After
 changing `pyproject.toml` dependencies, run `uv lock` in
 `packages/plugin-sdk-python`.
 
