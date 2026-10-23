@@ -1030,7 +1030,7 @@ async fn list_identities(
     responses(
         (status = 302, description = "Redirects to the identity provider."),
         (status = 400, description = "The provider is unknown or disabled."),
-        (status = 429, description = "Too many attempts; try later."),
+        (status = 429, description = "Too many attempts; retry after `Retry-After` seconds.", headers(("Retry-After" = u64, description = "Seconds to wait before retrying."))),
     ),
 )]
 async fn login_start(
@@ -1072,7 +1072,7 @@ async fn login_start(
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
         (status = 400, description = "The provider is unknown or disabled."),
-        (status = 429, description = "Too many attempts; try later."),
+        (status = 429, description = "Too many attempts; retry after `Retry-After` seconds.", headers(("Retry-After" = u64, description = "Seconds to wait before retrying."))),
     ),
 )]
 async fn elevate_start(

@@ -1110,7 +1110,7 @@ async fn record_written(
         (status = 404, description = "No such upload, or the node API is not mounted."),
         (status = 409, description = "The upload lost its fence to a newer one (`lost`).", body = bookclerk_node_proto::UploadAnswer),
         (status = 421, description = "This node is not the upload's receiving node (`misdirected`).", body = bookclerk_node_proto::UploadAnswer),
-        (status = 422, description = "The file was refused (`refused`): not in the upload, a size or content mismatch, or the destinations changed.", body = bookclerk_node_proto::UploadAnswer),
+        (status = 422, description = "The file was refused (`refused`): not in the upload (`unknown_file`), a size or content mismatch (`size_mismatch`, `content_mismatch`), the destinations changed (`destinations_changed`), or a granted storage key now belongs to another title or writer (`key_taken`).", body = bookclerk_node_proto::UploadAnswer),
         (status = 503, description = "Storage or the upload record is unavailable, or the file lock timed out; retry (`unavailable`).", body = bookclerk_node_proto::UploadAnswer),
     ),
 )]

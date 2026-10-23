@@ -352,7 +352,7 @@ fn offers_subprotocol(headers: &axum::http::HeaderMap) -> bool {
         (status = 400, description = "The request does not offer the node subprotocol (`subprotocol_required`)."),
         (status = 403, description = "The transport is not allowed."),
         (status = 404, description = "The node API is not mounted."),
-        (status = 503, description = "Too many handshakes are in flight (`handshakes_busy`); retry after `Retry-After`."),
+        (status = 503, description = "Too many handshakes are in flight (`handshakes_busy`); retry after `Retry-After` seconds.", headers(("Retry-After" = u64, description = "Seconds to wait before retrying."))),
     ),
 )]
 pub async fn get_connect(State(state): State<Arc<AppState>>, request: Request) -> Response {

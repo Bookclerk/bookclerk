@@ -79,7 +79,17 @@
             }
           },
           "429": {
-            "description": "Too many attempts; try later.",
+            "description": "Too many attempts; retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before retrying."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -157,6 +167,16 @@
           },
           "429": {
             "description": "Too many failed attempts from this client; retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before retrying."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -583,7 +603,17 @@
             }
           },
           "429": {
-            "description": "Too many attempts; try later.",
+            "description": "Too many attempts; retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before retrying."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -10389,7 +10419,17 @@
             }
           },
           "429": {
-            "description": "Too many attempts; try later.",
+            "description": "Too many attempts; retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before retrying."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -10456,7 +10496,17 @@
             }
           },
           "429": {
-            "description": "Too many attempts; try later.",
+            "description": "Too many attempts; retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before retrying."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -11770,7 +11820,17 @@
             }
           },
           "503": {
-            "description": "Too many handshakes are in flight (`handshakes_busy`); retry after `Retry-After`.",
+            "description": "Too many handshakes are in flight (`handshakes_busy`); retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before retrying."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -11943,7 +12003,7 @@
             }
           },
           "422": {
-            "description": "The file was refused (`refused`): not in the upload, a size or content mismatch, or the destinations changed.",
+            "description": "The file was refused (`refused`): not in the upload (`unknown_file`), a size or content mismatch (`size_mismatch`, `content_mismatch`), the destinations changed (`destinations_changed`), or a granted storage key now belongs to another title or writer (`key_taken`).",
             "content": {
               "application/json": {
                 "schema": {

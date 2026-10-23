@@ -508,7 +508,7 @@ struct LoginResponse {
         (status = 200, description = "Signed in; the response sets the operator session cookie.", body = serde_json::Value),
         (status = 401, description = "The token is wrong."),
         (status = 403, description = "An Owner exists, so operator sign-in is off (`operator_login_disabled`); sign in as a user.", body = crate::http_error::ErrorJson),
-        (status = 429, description = "Too many attempts; try later."),
+        (status = 429, description = "Too many attempts; retry after `Retry-After` seconds.", headers(("Retry-After" = u64, description = "Seconds to wait before retrying."))),
     ),
 )]
 pub async fn login(
@@ -668,7 +668,7 @@ pub async fn signin_methods(State(state): State<Arc<AppState>>) -> Result<Respon
         (status = 204, description = "Operator authentication is off, so no ticket is needed."),
         (status = 401, description = "The Bearer token is missing or wrong."),
         (status = 403, description = "The request did not come straight from loopback."),
-        (status = 429, description = "Too many failed attempts from this client; retry after `Retry-After` seconds."),
+        (status = 429, description = "Too many failed attempts from this client; retry after `Retry-After` seconds.", headers(("Retry-After" = u64, description = "Seconds to wait before retrying."))),
     ),
 )]
 pub async fn tray_handoff_prepare(
@@ -2992,7 +2992,7 @@ pub struct PasswordLoginRequest {
     responses(
         (status = 200, description = "Signed in (portal session cookie), or a TOTP challenge.", body = serde_json::Value),
         (status = 401, description = "The login or password is wrong."),
-        (status = 429, description = "Too many attempts; try later."),
+        (status = 429, description = "Too many attempts; retry after `Retry-After` seconds.", headers(("Retry-After" = u64, description = "Seconds to wait before retrying."))),
     ),
 )]
 pub async fn password_login(
