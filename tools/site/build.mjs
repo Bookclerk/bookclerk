@@ -169,7 +169,9 @@ export function readState(env) {
  */
 export function templateContext(state) {
   const short = state.commit.slice(0, 7);
-  const ref = state.release ? state.release.tag : "main";
+  // Source links follow the commit the docs came from, so line anchors and
+  // moved files stay right until the next deploy.
+  const ref = state.release ? state.release.tag : state.commit;
   return {
     values: {
       origin: state.origin,

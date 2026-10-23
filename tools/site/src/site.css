@@ -72,7 +72,7 @@ img, svg { max-width: 100%; }
 .skip:focus { left: 16px; top: 16px; z-index: 10; background: var(--paper); padding: 8px 12px; }
 
 .muted { color: color-mix(in srgb, var(--ink) 72%, transparent); }
-.faint { color: color-mix(in srgb, var(--ink) 62%, transparent); }
+.faint { color: color-mix(in srgb, var(--ink) 72%, transparent); }
 
 .eyebrow {
   font: 600 12px/16px var(--font-sans);
@@ -170,7 +170,7 @@ img, svg { max-width: 100%; }
 .catalog-card .card-title { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; border-bottom: 2px solid var(--brick); padding-bottom: 8px; }
 .catalog-card .card-title strong { font: 700 22px/28px var(--font-display); }
 .catalog-card dl { margin: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 10px 16px; }
-.catalog-card dt { color: color-mix(in srgb, var(--ink) 62%, transparent); }
+.catalog-card dt { color: color-mix(in srgb, var(--ink) 72%, transparent); }
 .catalog-card dd { margin: 0; overflow-wrap: anywhere; }
 .stamp {
   position: absolute;
@@ -316,7 +316,7 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
 /* Documentation */
 .docs-layout { display: flex; flex-wrap: wrap; gap: 32px 56px; padding-block: 32px 80px; align-items: flex-start; }
 .docs-nav { flex: 1 1 220px; max-width: 280px; min-width: 0; display: flex; flex-direction: column; gap: 8px; font-size: 15px; line-height: 22px; }
-.docs-nav h2 { font: 600 12px/16px var(--font-sans); letter-spacing: 0.12em; text-transform: uppercase; color: color-mix(in srgb, var(--ink) 62%, transparent); margin: 20px 0 6px; padding-inline: 10px; }
+.docs-nav h2 { font: 600 12px/16px var(--font-sans); letter-spacing: 0.12em; text-transform: uppercase; color: color-mix(in srgb, var(--ink) 72%, transparent); margin: 20px 0 6px; padding-inline: 10px; }
 .docs-nav ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .docs-nav a { display: block; padding: 5px 10px; border-radius: 6px; color: var(--ink); text-decoration: none; }
 .docs-nav a:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); }

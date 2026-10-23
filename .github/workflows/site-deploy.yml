@@ -49,7 +49,12 @@ jobs:
       run:
         working-directory: tools/site
     steps:
+      # A release builds the current site from main (the tag may predate it)
+      # and takes only the docs from the tag, below.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'release' && github.event.repository.default_branch || '' }}
+          persist-credentials: false
 
       - name: Require deploy secrets
         env:
@@ -74,9 +79,6 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      - name: Test the site generator
-        run: npm test
 
       # The newest published, non-prerelease release; none yet means the
       # site renders its pre-release notices. build.mjs validates both values.
@@ -112,9 +114,9 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       # Once a release exists the docs come from its tag, whatever commit the
-      # site itself is built from. A build of that tag already has them.
+      # site itself is built from.
       - name: Use the release's docs
-        if: steps.release.outputs.tag != '' && github.ref != format('refs/tags/{0}', steps.release.outputs.tag)
+        if: steps.release.outputs.tag != ''
         env:
           TAG: ${{ steps.release.outputs.tag }}
         run: |
@@ -123,14 +125,20 @@ jobs:
           rm -rf ../../docs
           git checkout "refs/tags/${TAG}" -- ../../docs
 
+      # After the docs swap, so the link check covers the docs deployed.
+      - name: Test the site generator
+        run: npm test
+
       - name: Build the site
         env:
           SITE_RELEASE_TAG: ${{ steps.release.outputs.tag }}
           SITE_RELEASE_DATE: ${{ steps.release.outputs.date }}
-          SITE_COMMIT: ${{ github.sha }}
           SITE_ORIGIN: https://${{ vars.DOMAIN || 'bookclerk.app' }}
         run: |
           set -euo pipefail
+          # The checked-out commit: on a release that is main, not the tag.
+          SITE_COMMIT=$(git rev-parse HEAD)
+          export SITE_COMMIT
           SITE_BUILT_ON=$(date -u +%F) npm run build
 
       - name: Route the Worker to its custom domain

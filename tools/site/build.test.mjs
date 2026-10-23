@@ -75,7 +75,7 @@ test("render fails on unknown names instead of leaving holes", () => {
 });
 
 test("repository links follow the release tag", () => {
-  assert.match(templateContext(readState(PRE)).values.blobBase, /\/blob\/main\/$/);
+  assert.match(templateContext(readState(PRE)).values.blobBase, /\/blob\/[0-9a-f]{7,40}\/$/);
   assert.match(templateContext(readState(REL)).values.blobBase, /\/blob\/v0\.1\.0\/$/);
 });
 
