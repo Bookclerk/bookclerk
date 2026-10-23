@@ -59,10 +59,34 @@
             }
           },
           "401": {
-            "description": "The token is wrong."
+            "description": "The token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "An Owner exists, so operator sign-in is off (`operator_login_disabled`); sign in as a user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "429": {
-            "description": "Too many attempts; try later."
+            "description": "Too many attempts; try later.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -112,13 +136,34 @@
             "description": "Operator authentication is off, so no ticket is needed."
           },
           "401": {
-            "description": "The Bearer token is missing or wrong."
+            "description": "The Bearer token is missing or wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The request did not come straight from loopback."
+            "description": "The request did not come straight from loopback.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "429": {
-            "description": "Too many failed attempts from this client; retry after `Retry-After` seconds."
+            "description": "Too many failed attempts from this client; retry after `Retry-After` seconds.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -153,7 +198,14 @@
             "description": "Redirects into the app with a localhost operator session."
           },
           "403": {
-            "description": "The ticket is missing, used or not from loopback."
+            "description": "The ticket is missing, used or not from loopback.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -177,7 +229,14 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -206,10 +265,24 @@
             "description": "Switching to the live-updates WebSocket."
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The Origin is not allowed."
+            "description": "The Origin is not allowed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -253,10 +326,24 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -288,10 +375,24 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -332,13 +433,34 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "409": {
-            "description": "An Owner already exists."
+            "description": "An Owner already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -382,13 +504,34 @@
             }
           },
           "400": {
-            "description": "The password is too weak or the request is invalid."
+            "description": "The password is too weak or the request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -430,10 +573,24 @@
             }
           },
           "401": {
-            "description": "The login or password is wrong."
+            "description": "The login or password is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "429": {
-            "description": "Too many attempts; try later."
+            "description": "Too many attempts; try later.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -458,10 +615,24 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -503,16 +674,44 @@
             }
           },
           "400": {
-            "description": "The request is invalid."
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "409": {
-            "description": "The login is taken."
+            "description": "The login is taken.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -559,13 +758,34 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such user."
+            "description": "No such user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -619,16 +839,44 @@
             }
           },
           "400": {
-            "description": "A value is invalid."
+            "description": "A value is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such user."
+            "description": "No such user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -674,13 +922,34 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such user."
+            "description": "No such user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -726,13 +995,34 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such user."
+            "description": "No such user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2087,10 +2377,24 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2129,10 +2433,24 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2163,10 +2481,24 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2205,10 +2537,24 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2239,10 +2585,24 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2281,16 +2641,44 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such plugin."
+            "description": "No such plugin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "409": {
-            "description": "The instance id is taken."
+            "description": "The instance id is taken.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2332,16 +2720,44 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such instance."
+            "description": "No such instance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "409": {
-            "description": "The instance is a default or still deployed."
+            "description": "The instance is a default or still deployed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2383,13 +2799,34 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such instance."
+            "description": "No such instance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2440,13 +2877,34 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such instance."
+            "description": "No such instance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2507,16 +2965,44 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such instance."
+            "description": "No such instance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "409": {
-            "description": "The instance is placed by the scheduler."
+            "description": "The instance is placed by the scheduler.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2568,13 +3054,34 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such instance."
+            "description": "No such instance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2614,13 +3121,34 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such instance."
+            "description": "No such instance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2672,13 +3200,34 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such node, or not one the caller administers."
+            "description": "No such node, or not one the caller administers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2730,13 +3279,34 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such node, or not one the caller administers."
+            "description": "No such node, or not one the caller administers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2767,10 +3337,24 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2809,13 +3393,34 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "409": {
-            "description": "The version is already installed."
+            "description": "The version is already installed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2857,13 +3462,34 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such plugin."
+            "description": "No such plugin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2903,13 +3529,34 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such plugin."
+            "description": "No such plugin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2961,13 +3608,34 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such plugin."
+            "description": "No such plugin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3018,13 +3686,34 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such plugin."
+            "description": "No such plugin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3055,10 +3744,24 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3116,16 +3819,44 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such cluster."
+            "description": "No such cluster.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "502": {
-            "description": "The owner cluster could not be reached."
+            "description": "The owner cluster could not be reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3177,16 +3908,44 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such cluster."
+            "description": "No such cluster.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "502": {
-            "description": "The owner cluster could not be reached."
+            "description": "The owner cluster could not be reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3227,13 +3986,34 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such consent."
+            "description": "No such consent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3274,13 +4054,34 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such consent."
+            "description": "No such consent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3311,10 +4112,24 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3355,13 +4170,34 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "502": {
-            "description": "The library could not be reached."
+            "description": "The library could not be reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3402,16 +4238,44 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "409": {
-            "description": "A join is already in progress or done."
+            "description": "A join is already in progress or done.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "502": {
-            "description": "The library could not be reached."
+            "description": "The library could not be reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3452,13 +4316,34 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "502": {
-            "description": "The library could not be reached."
+            "description": "The library could not be reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3499,16 +4384,44 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "502": {
-            "description": "The library could not be reached."
+            "description": "The library could not be reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "504": {
-            "description": "The library is slow to answer; the join goes on in the background (`join_pending`). Poll the join state instead of retrying."
+            "description": "The library is slow to answer; the join goes on in the background (`join_pending`). Poll the join state instead of retrying.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3549,13 +4462,34 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "409": {
-            "description": "This install has not joined a library."
+            "description": "This install has not joined a library.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3977,13 +4911,34 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such user."
+            "description": "No such user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4012,10 +4967,24 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4046,16 +5015,44 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4100,19 +5097,54 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such node, or not one the caller administers."
+            "description": "No such node, or not one the caller administers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4146,16 +5178,44 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4210,19 +5270,54 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such node, or not one the caller administers."
+            "description": "No such node, or not one the caller administers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4256,16 +5351,44 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4310,16 +5433,44 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4362,19 +5513,54 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "409": {
-            "description": "Host enrollment is off."
+            "description": "Host enrollment is off.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4419,19 +5605,54 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such link."
+            "description": "No such link.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4548,13 +5769,34 @@
             }
           },
           "400": {
-            "description": "The authorize parameters are invalid."
+            "description": "The authorize parameters are invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4596,13 +5838,34 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4636,10 +5899,24 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4673,16 +5950,44 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4724,16 +6029,44 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4777,16 +6110,44 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4820,16 +6181,44 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4871,16 +6260,44 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4926,19 +6343,54 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such host."
+            "description": "No such host.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4973,10 +6425,24 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5019,16 +6485,44 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6239,10 +7733,24 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6288,13 +7796,34 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such session."
+            "description": "No such session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6338,13 +7867,34 @@
             }
           },
           "400": {
-            "description": "A value is invalid."
+            "description": "A value is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6388,16 +7938,44 @@
             }
           },
           "400": {
-            "description": "The image is not JPEG, PNG or WebP."
+            "description": "The image is not JPEG, PNG or WebP.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "413": {
-            "description": "The image is too large."
+            "description": "The image is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6429,10 +8007,24 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6490,7 +8082,14 @@
             }
           },
           "404": {
-            "description": "The user has no avatar."
+            "description": "The user has no avatar.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6731,7 +8330,14 @@
             "description": "Redirects to sign-in, the consent page, or the client."
           },
           "400": {
-            "description": "The request is invalid."
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -6758,10 +8364,24 @@
             "description": "Redirects to the client with a code or `access_denied`."
           },
           "400": {
-            "description": "The request is invalid."
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6807,10 +8427,24 @@
             }
           },
           "400": {
-            "description": "The grant is invalid or unsupported."
+            "description": "The grant is invalid or unsupported.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The client failed to authenticate."
+            "description": "The client failed to authenticate.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -6834,7 +8468,14 @@
             }
           },
           "401": {
-            "description": "The access token is missing or invalid."
+            "description": "The access token is missing or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6888,10 +8529,24 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6933,10 +8588,24 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6991,13 +8660,34 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such client."
+            "description": "No such client.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7030,18 +8720,56 @@
             }
           }
         ],
+        "requestBody": {
+          "description": "Optional; only `current_password` is read, to confirm an Owner outside the recent sign-in window.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/OidcClientWrite"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
         "responses": {
           "204": {
             "description": "The client was deleted."
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such client."
+            "description": "No such client.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7102,13 +8830,34 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such client."
+            "description": "No such client.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7163,10 +8912,24 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7206,10 +8969,24 @@
             "description": "Redirects to the identity provider."
           },
           "400": {
-            "description": "The provider is unknown or disabled."
+            "description": "The provider is unknown or disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "429": {
-            "description": "Too many attempts; try later."
+            "description": "Too many attempts; try later.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -7239,16 +9016,44 @@
             "description": "Redirects to the identity provider for re-authentication."
           },
           "400": {
-            "description": "The provider is unknown or disabled."
+            "description": "The provider is unknown or disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "429": {
-            "description": "Too many attempts; try later."
+            "description": "Too many attempts; try later.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7315,7 +9120,14 @@
             "description": "Redirects into the app, signed in."
           },
           "400": {
-            "description": "The state or code is invalid."
+            "description": "The state or code is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -7342,7 +9154,14 @@
             "description": "Redirects into the app, signed in."
           },
           "400": {
-            "description": "The state or code is invalid."
+            "description": "The state or code is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -7409,10 +9228,24 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7446,10 +9279,24 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7493,10 +9340,24 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7540,13 +9401,34 @@
             }
           },
           "400": {
-            "description": "The attestation is invalid."
+            "description": "The attestation is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7602,13 +9484,34 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such passkey for this user."
+            "description": "No such passkey for this user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7652,10 +9555,24 @@
             }
           },
           "400": {
-            "description": "The request is invalid."
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "429": {
-            "description": "Too many attempts; try later."
+            "description": "Too many attempts; try later.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -7689,7 +9606,14 @@
             }
           },
           "401": {
-            "description": "The assertion is invalid."
+            "description": "The assertion is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -7713,10 +9637,24 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7760,10 +9698,24 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7807,10 +9759,24 @@
             }
           },
           "401": {
-            "description": "The challenge or code is wrong."
+            "description": "The challenge or code is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "429": {
-            "description": "Too many attempts; try later."
+            "description": "Too many attempts; try later.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -7844,10 +9810,24 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7891,13 +9871,34 @@
             }
           },
           "400": {
-            "description": "The code is wrong."
+            "description": "The code is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7931,10 +9932,24 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7976,10 +9991,24 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in."
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The caller may not do this."
+            "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -8052,10 +10081,24 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "500": {
-            "description": "The configuration could not be read or written."
+            "description": "The configuration could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -8099,16 +10142,44 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The link is unknown, used or expired."
+            "description": "The link is unknown, used or expired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The transport is not allowed."
+            "description": "The transport is not allowed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "The node API is not mounted."
+            "description": "The node API is not mounted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -8132,10 +10203,24 @@
             }
           },
           "403": {
-            "description": "The transport is not allowed."
+            "description": "The transport is not allowed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "The node API is not mounted."
+            "description": "The node API is not mounted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -8169,16 +10254,44 @@
             }
           },
           "400": {
-            "description": "The body is invalid."
+            "description": "The body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The code or verifier is wrong."
+            "description": "The code or verifier is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The transport is not allowed."
+            "description": "The transport is not allowed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "The node API is not mounted."
+            "description": "The node API is not mounted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -8197,16 +10310,44 @@
             "description": "Switching to the host-node WebSocket. The node's signature is checked in the first frames; a wrong one closes the socket."
           },
           "400": {
-            "description": "The request does not offer the node subprotocol (`subprotocol_required`)."
+            "description": "The request does not offer the node subprotocol (`subprotocol_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The transport is not allowed."
+            "description": "The transport is not allowed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "The node API is not mounted."
+            "description": "The node API is not mounted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "503": {
-            "description": "Too many handshakes are in flight (`handshakes_busy`); retry after `Retry-After`."
+            "description": "Too many handshakes are in flight (`handshakes_busy`); retry after `Retry-After`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [],
@@ -8243,10 +10384,24 @@
             }
           },
           "401": {
-            "description": "The node signature is missing or wrong."
+            "description": "The node signature is missing or wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such archive, or the node API is not mounted."
+            "description": "No such archive, or the node API is not mounted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -8306,13 +10461,34 @@
             }
           },
           "401": {
-            "description": "The upload token is missing or wrong."
+            "description": "The upload token is missing or wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such upload, or the node API is not mounted."
+            "description": "No such upload, or the node API is not mounted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "422": {
-            "description": "The file was refused (`refused`): not in the upload, a size or content mismatch, or the destinations changed."
+            "description": "The file was refused (`refused`): not in the upload, a size or content mismatch, or the destinations changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -8361,13 +10537,34 @@
             }
           },
           "400": {
-            "description": "The body is invalid or files are missing."
+            "description": "The body is invalid or files are missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "401": {
-            "description": "The upload token is missing or wrong."
+            "description": "The upload token is missing or wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           },
           "404": {
-            "description": "No such upload, or the node API is not mounted."
+            "description": "No such upload, or the node API is not mounted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
+              }
+            }
           }
         },
         "security": [

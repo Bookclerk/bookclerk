@@ -507,6 +507,7 @@ struct LoginResponse {
     responses(
         (status = 200, description = "Signed in; the response sets the operator session cookie.", body = serde_json::Value),
         (status = 401, description = "The token is wrong."),
+        (status = 403, description = "An Owner exists, so operator sign-in is off (`operator_login_disabled`); sign in as a user.", body = crate::http_error::ErrorJson),
         (status = 429, description = "Too many attempts; try later."),
     ),
 )]

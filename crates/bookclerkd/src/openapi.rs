@@ -424,14 +424,16 @@ pub fn document() -> OpenApi {
 
 /// Gives every request or response media type without a schema one, so
 /// generated clients keep the body: any JSON value for JSON (a body not
-/// typed yet), bytes for everything else.
+/// typed yet), bytes for everything else. An error response declared
+/// without a body gets the `ErrorJson` body that
+/// [`crate::http_error::brand_error_responses`] writes for it.
 ///
 /// # Arguments
 ///
 /// * `doc` - The document, after every group is added.
 fn fill_untyped_content(doc: &mut OpenApi) {
     use utoipa::openapi::schema::{ObjectBuilder, SchemaFormat, SchemaType, Type};
-    use utoipa::openapi::{KnownFormat, RefOr};
+    use utoipa::openapi::{ContentBuilder, KnownFormat, Ref, RefOr};
     let fill = |media: &str, content: &mut utoipa::openapi::Content| {
         if content.schema.is_some() {
             return;
@@ -454,8 +456,19 @@ fn fill_untyped_content(doc: &mut OpenApi) {
                     }
                 }
             }
-            for response in op.responses.responses.values_mut() {
+            for (status, response) in op.responses.responses.iter_mut() {
                 if let RefOr::T(response) = response {
+                    let is_error = status.starts_with('4') || status.starts_with('5');
+                    if is_error && response.content.is_empty() {
+                        response.content.insert(
+                            "application/json".to_string(),
+                            RefOr::T(
+                                ContentBuilder::new()
+                                    .schema(Some(Ref::from_schema_name("ErrorJson")))
+                                    .build(),
+                            ),
+                        );
+                    }
                     for (media, content) in response.content.iter_mut() {
                         if let RefOr::T(content) = content {
                             fill(media, content);
@@ -672,6 +685,25 @@ mod tests {
         }
     }
 
+    /// Every error response has a body: its own, or the `ErrorJson` the
+    /// error middleware writes for a bare status.
+    #[test]
+    fn error_responses_have_a_body() {
+        let doc = document_value();
+        for (method, path, op) in operations(&doc) {
+            for (status, response) in op["responses"].as_object().into_iter().flatten() {
+                if status.starts_with('4') || status.starts_with('5') {
+                    assert!(
+                        response["content"]
+                            .as_object()
+                            .is_some_and(|c| !c.is_empty()),
+                        "{method} {path} {status} has no body"
+                    );
+                }
+            }
+        }
+    }
+
     /// A handler that reads a JSON body declares it, so generated clients
     /// can send it.
     #[test]
@@ -706,7 +738,9 @@ mod tests {
                         };
                         let sig_end = rest[fn_at..].find('{').map_or(rest.len(), |i| fn_at + i);
                         let signature = &rest[fn_at..sig_end];
-                        if signature.contains(": Json<") && !attr.contains("request_body") {
+                        let reads_json =
+                            signature.contains(": Json<") || signature.contains(": Option<Json<");
+                        if reads_json && !attr.contains("request_body") {
                             let name = signature[3..]
                                 .split(['(', '<'])
                                 .next()

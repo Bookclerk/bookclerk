@@ -1429,6 +1429,10 @@ async fn update_client(
     delete,
     path = "/api/auth/oidc/clients/{client_id}",
     params(("client_id" = String, Path, description = "Client id.")),
+    request_body(
+        content = Option<OidcClientWrite>,
+        description = "Optional; only `current_password` is read, to confirm an Owner outside the recent sign-in window.",
+    ),
     responses(
         (status = 204, description = "The client was deleted."),
         (status = 400, description = "The body is invalid."),
