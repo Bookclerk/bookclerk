@@ -1097,6 +1097,23 @@ async fn record_written(
 }
 
 /// `PUT /api/node/v1/uploads/{upload_id}/files/{index}`.
+#[utoipa::path(
+    put,
+    path = "/api/node/v1/uploads/{upload_id}/files/{index}",
+    security(("uploadToken" = [])),
+    params(("upload_id" = String, Path, description = "Upload id."), ("index" = u32, Path, description = "File index in the upload.")),
+    request_body(content = crate::openapi::BinaryBody, content_type = "application/octet-stream"),
+    responses(
+        (status = 200, description = "The file was stored (`received`).", body = bookclerk_node_proto::UploadAnswer),
+        (status = 401, description = "The upload token is missing or wrong (`unauthorized`).", body = bookclerk_node_proto::UploadAnswer),
+        (status = 403, description = "The connection's transport is refused (`transport_insecure`)."),
+        (status = 404, description = "No such upload, or the node API is not mounted."),
+        (status = 409, description = "The upload lost its fence to a newer one (`lost`).", body = bookclerk_node_proto::UploadAnswer),
+        (status = 421, description = "This node is not the upload's receiving node (`misdirected`).", body = bookclerk_node_proto::UploadAnswer),
+        (status = 422, description = "The file was refused (`refused`): not in the upload (`unknown_file`), a size or content mismatch (`size_mismatch`, `content_mismatch`), the destinations changed (`destinations_changed`), or a granted storage key now belongs to another title or writer (`key_taken`).", body = bookclerk_node_proto::UploadAnswer),
+        (status = 503, description = "Storage or the upload record is unavailable, or the file lock timed out; retry (`unavailable`).", body = bookclerk_node_proto::UploadAnswer),
+    ),
+)]
 pub async fn put_file(
     State(state): State<Arc<AppState>>,
     Path((upload_id, index)): Path<(String, String)>,
@@ -1208,6 +1225,23 @@ pub async fn put_file(
 }
 
 /// `POST /api/node/v1/uploads/{upload_id}/commit`.
+#[utoipa::path(
+    post,
+    path = "/api/node/v1/uploads/{upload_id}/commit",
+    security(("uploadToken" = [])),
+    params(("upload_id" = String, Path, description = "Upload id.")),
+    request_body = bookclerk_node_proto::UploadCommitRequest,
+    responses(
+        (status = 200, description = "The upload was committed to the destinations (`committed`).", body = bookclerk_node_proto::UploadAnswer),
+        (status = 401, description = "The upload token is missing or wrong (`unauthorized`).", body = bookclerk_node_proto::UploadAnswer),
+        (status = 403, description = "The connection's transport is refused (`transport_insecure`)."),
+        (status = 404, description = "No such upload, or the node API is not mounted."),
+        (status = 409, description = "The upload lost its fence to a newer one (`lost`).", body = bookclerk_node_proto::UploadAnswer),
+        (status = 421, description = "This node is not the upload's receiving node (`misdirected`).", body = bookclerk_node_proto::UploadAnswer),
+        (status = 422, description = "The commit was refused (`refused`): an invalid body, missing files, or the destinations changed.", body = bookclerk_node_proto::UploadAnswer),
+        (status = 503, description = "Storage or the upload record is unavailable; retry (`unavailable`).", body = bookclerk_node_proto::UploadAnswer),
+    ),
+)]
 pub async fn post_commit(
     State(state): State<Arc<AppState>>,
     Path(upload_id): Path<String>,

@@ -105,6 +105,15 @@ fn plugin_json(
 }
 
 /// `GET /api/config/plugins`: every installed plugin.
+#[utoipa::path(
+    get,
+    path = "/api/config/plugins",
+    responses(
+        (status = 200, description = "Every installed plugin.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+    ),
+)]
 pub async fn get_plugins(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, Response> {
@@ -127,6 +136,17 @@ pub async fn get_plugins(
 
 /// `GET /api/config/plugins/{key}`: one installed plugin with its pinned
 /// settings schema.
+#[utoipa::path(
+    get,
+    path = "/api/config/plugins/{key}",
+    params(("key" = String, Path, description = "Plugin key.")),
+    responses(
+        (status = 200, description = "The plugin with its pinned versions.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "No such plugin."),
+    ),
+)]
 pub async fn get_plugin(
     State(state): State<Arc<AppState>>,
     Path(key): Path<String>,
@@ -162,7 +182,7 @@ pub async fn get_plugin(
 
 /// `POST /api/config/plugins` body: exactly one of `coordinate` or
 /// `package` (a directory name under `plugin-packages/`).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct PostPluginInstall {
     /// Registry coordinate (`cargo:…@v`, `registry:…#name@v`).
     #[serde(default)]
@@ -182,6 +202,19 @@ pub(crate) struct PostPluginInstall {
 }
 
 /// `POST /api/config/plugins`: install (and maybe activate) a version.
+#[utoipa::path(
+    post,
+    path = "/api/config/plugins",
+    request_body = PostPluginInstall,
+    responses(
+        (status = 200, description = "The installed version.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 409, description = "The version is already installed."),
+        (status = 404, description = "A local package is missing its `package.json` or `archive.tar.gz`."),
+        (status = 502, description = "The package catalog could not be reached or answered badly."),
+    ),
+)]
 pub async fn post_plugin_install(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PostPluginInstall>,
@@ -266,13 +299,25 @@ pub async fn post_plugin_install(
 }
 
 /// `PUT /api/config/plugins/{key}/active` body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct PutActiveVersion {
     /// Installed version to activate.
     version: String,
 }
 
 /// `PUT /api/config/plugins/{key}/active`: activate, update, or roll back.
+#[utoipa::path(
+    put,
+    path = "/api/config/plugins/{key}/active",
+    params(("key" = String, Path, description = "Plugin key.")),
+    request_body = PutActiveVersion,
+    responses(
+        (status = 200, description = "The active version after the change.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "No such plugin."),
+    ),
+)]
 pub async fn put_active_version(
     State(state): State<Arc<AppState>>,
     Path(key): Path<String>,
@@ -301,6 +346,17 @@ pub async fn put_active_version(
 
 /// `DELETE /api/config/plugins/{key}`: uninstall the plugin (active version
 /// cleared, placements dropped, every deployment `absent`).
+#[utoipa::path(
+    delete,
+    path = "/api/config/plugins/{key}",
+    params(("key" = String, Path, description = "Plugin key.")),
+    responses(
+        (status = 200, description = "The plugin was uninstalled.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "No such plugin."),
+    ),
+)]
 pub async fn delete_plugin_install(
     State(state): State<Arc<AppState>>,
     Path(key): Path<String>,
@@ -329,6 +385,17 @@ pub async fn delete_plugin_install(
 
 /// `POST /api/config/plugins/{key}/versions/{version}/approve`: record the
 /// version's requested consent as approved for every node.
+#[utoipa::path(
+    post,
+    path = "/api/config/plugins/{key}/versions/{version}/approve",
+    params(("key" = String, Path, description = "Plugin key."), ("version" = String, Path, description = "Semver version.")),
+    responses(
+        (status = 200, description = "The version's grant was approved.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "No such plugin."),
+    ),
+)]
 pub async fn approve_plugin_version(
     State(state): State<Arc<AppState>>,
     Path((key, version)): Path<(String, String)>,

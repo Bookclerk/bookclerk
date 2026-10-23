@@ -53,7 +53,7 @@ fn is_mutating(method: &Method) -> bool {
 }
 
 /// True for login, redeem, bootstrap, and IdP callback paths that cannot send Origin.
-fn is_csrf_exempt(path: &str) -> bool {
+pub(crate) fn is_csrf_exempt(path: &str) -> bool {
     matches!(
         path,
         "/api/auth/login"

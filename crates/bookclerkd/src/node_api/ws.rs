@@ -344,6 +344,17 @@ fn offers_subprotocol(headers: &axum::http::HeaderMap) -> bool {
 /// `GET /api/node/v1/connect`: upgrade to the host-node socket after the
 /// transport check. 403 `transport_insecure` for a refused connection,
 /// 400 `subprotocol_required` without [`SUBPROTOCOL`].
+#[utoipa::path(
+    get,
+    path = "/api/node/v1/connect",
+    responses(
+        (status = 101, description = "Switching to the host-node WebSocket. The node's signature is checked in the first frames; a wrong one closes the socket."),
+        (status = 400, description = "The request does not offer the node subprotocol (`subprotocol_required`)."),
+        (status = 403, description = "The transport is not allowed."),
+        (status = 404, description = "The node API is not mounted."),
+        (status = 503, description = "Too many handshakes are in flight (`handshakes_busy`); retry after `Retry-After` seconds.", headers(("Retry-After" = u64, description = "Seconds to wait before retrying."))),
+    ),
+)]
 pub async fn get_connect(State(state): State<Arc<AppState>>, request: Request) -> Response {
     let (mut parts, _body) = request.into_parts();
     if let Err(refused) = super::check_transport(&state, &mut parts, "connect").await {

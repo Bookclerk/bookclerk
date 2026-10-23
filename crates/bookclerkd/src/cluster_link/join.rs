@@ -182,6 +182,15 @@ fn default_branch_name() -> String {
 }
 
 /// `GET /api/config/join`.
+#[utoipa::path(
+    get,
+    path = "/api/config/join",
+    responses(
+        (status = 200, description = "Whether this install has joined a library, and its state.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+    ),
+)]
 pub async fn get_join_status(State(state): State<Arc<AppState>>) -> Response {
     let library = state.library_snapshot().await;
     let links = match list_cluster_links(&library).await {
@@ -216,7 +225,7 @@ pub async fn get_join_status(State(state): State<Arc<AppState>>) -> Response {
 }
 
 /// `POST /api/config/join/inspect` body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InspectBody {
     /// The library's address (`https://owner.example`, `owner.lan:8443`).
@@ -224,6 +233,17 @@ pub struct InspectBody {
 }
 
 /// `POST /api/config/join/inspect`.
+#[utoipa::path(
+    post,
+    path = "/api/config/join/inspect",
+    request_body = InspectBody,
+    responses(
+        (status = 200, description = "What the library says about itself.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 502, description = "The library could not be reached."),
+    ),
+)]
 pub async fn post_join_inspect(
     State(state): State<Arc<AppState>>,
     Json(body): Json<InspectBody>,
@@ -240,7 +260,7 @@ pub async fn post_join_inspect(
 }
 
 /// `POST /api/config/join/start` body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StartBody {
     /// The library's address.
@@ -258,6 +278,18 @@ pub struct StartBody {
 }
 
 /// `POST /api/config/join/start`.
+#[utoipa::path(
+    post,
+    path = "/api/config/join/start",
+    request_body = StartBody,
+    responses(
+        (status = 200, description = "The library's sign-in URL to open.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 502, description = "The library could not be reached."),
+        (status = 409, description = "A join is already in progress or done."),
+    ),
+)]
 pub async fn post_join_start(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -354,7 +386,7 @@ pub async fn post_join_start(
 }
 
 /// `POST /api/config/join/callback` body.
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CallbackBody {
     /// The code from the library.
@@ -408,6 +440,19 @@ const CALLBACK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// redeem fails for a reason a retry can fix (answered as 502
 /// `join_retry`; the page offers Try again with the same code), and ended
 /// on success, refusal, or anything else.
+#[utoipa::path(
+    post,
+    path = "/api/config/join/callback",
+    request_body = CallbackBody,
+    responses(
+        (status = 200, description = "The join completed.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 502, description = "The library could not be reached."),
+        (status = 410, description = "The sign-in is unknown, already used, or older than ten minutes; start again (`join_expired`)."),
+        (status = 403, description = "The caller's role does not allow this route, or the library refused the sign-in (`denied`)."),
+    ),
+)]
 pub async fn post_join_callback(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CallbackBody>,
@@ -730,7 +775,7 @@ async fn join_as_clerk(
 }
 
 /// `POST /api/config/join/invite` body.
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InviteBody {
     /// The whole branch invite (`https://<library>/enroll#bcn1...`).
@@ -741,6 +786,18 @@ pub struct InviteBody {
 /// link is redeemed once and dropped; it is never logged or echoed. A
 /// library slower than [`REDEEM_TIMEOUT`] is answered 504 `join_pending`
 /// while the join carries on and starts its client when it lands.
+#[utoipa::path(
+    post,
+    path = "/api/config/join/invite",
+    request_body = InviteBody,
+    responses(
+        (status = 200, description = "The join completed.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 502, description = "The library could not be reached."),
+        (status = 504, description = "The library is slow to answer; the join goes on in the background (`join_pending`). Poll the join state instead of retrying."),
+    ),
+)]
 pub async fn post_join_invite(
     State(state): State<Arc<AppState>>,
     Json(body): Json<InviteBody>,
@@ -804,7 +861,7 @@ pub async fn post_join_invite(
 }
 
 /// `POST /api/config/join/leave` body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LeaveBody {
     /// The library (owner cluster id) to leave.
@@ -814,6 +871,18 @@ pub struct LeaveBody {
 /// `POST /api/config/join/leave`: Leave library. The leave runs on its own
 /// task, so a request cut short (the client gone, or the API deadline)
 /// still records it once the library has been told.
+#[utoipa::path(
+    post,
+    path = "/api/config/join/leave",
+    request_body = LeaveBody,
+    responses(
+        (status = 200, description = "Leaving started.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 409, description = "This install has not joined a library."),
+        (status = 404, description = "This install is not a branch of that library (`not_found`)."),
+    ),
+)]
 pub async fn post_join_leave(
     State(state): State<Arc<AppState>>,
     Json(body): Json<LeaveBody>,
@@ -846,7 +915,7 @@ pub async fn post_join_leave(
 }
 
 /// `POST /api/config/join/sharing` body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SharingBody {
     /// The library (owner cluster id).
@@ -860,6 +929,17 @@ pub struct SharingBody {
 /// `GET /api/config/join/sharing`: Settings → Library for the operator or
 /// an Owner: every library this install is a branch of, with its two
 /// sharing settings (`{clusters: [...]}`).
+#[utoipa::path(
+    get,
+    path = "/api/config/join/sharing",
+    responses(
+        (status = 200, description = "The branch's sharing settings.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+    ),
+)]
 pub async fn get_join_sharing(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
@@ -878,6 +958,19 @@ pub async fn get_join_sharing(
 /// `POST /api/config/join/sharing`: Settings → Library's two sharing
 /// settings for one library this install is a branch of. The operator or
 /// an Owner (verified from the stored role); anyone else gets 403.
+#[utoipa::path(
+    post,
+    path = "/api/config/join/sharing",
+    request_body = SharingBody,
+    responses(
+        (status = 200, description = "The sharing settings after the change.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "This install is not a branch of that library (`not_found`)."),
+    ),
+)]
 pub async fn post_join_sharing(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,

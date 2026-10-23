@@ -26,7 +26,7 @@ const AVATAR_KINDS: &[(&str, &str)] = &[
 const DISPLAY_NAME_MAX: usize = 80;
 
 /// JSON body for `PATCH /api/auth/profile`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PatchProfileRequest {
     /// Replacement display name; empty or whitespace clears the field.
     #[serde(default)]
@@ -322,6 +322,19 @@ pub(crate) async fn require_self_user_id(
 }
 
 /// Updates the caller's display name and/or email.
+#[utoipa::path(
+    patch,
+    path = "/api/auth/profile",
+    request_body = PatchProfileRequest,
+    responses(
+        (status = 200, description = "The profile after the change.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "A value is invalid."),
+        (status = 404, description = "The caller's user no longer exists."),
+        (status = 409, description = "The email is used by another account (`email_in_use`)."),
+    ),
+)]
 pub async fn patch_profile(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -409,6 +422,18 @@ pub async fn patch_profile(
 }
 
 /// Accepts a JPEG/PNG/WebP upload and stores it under `files_dir/avatars`.
+#[utoipa::path(
+    put,
+    path = "/api/auth/profile/avatar",
+    request_body(content = crate::openapi::BinaryBody, content_type = "image/*"),
+    responses(
+        (status = 200, description = "The avatar was stored.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "The image is not JPEG, PNG or WebP."),
+        (status = 413, description = "The image is too large."),
+    ),
+)]
 pub async fn put_avatar(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -475,6 +500,15 @@ pub async fn put_avatar(
 }
 
 /// Removes the caller's stored avatar, if any.
+#[utoipa::path(
+    delete,
+    path = "/api/auth/profile/avatar",
+    responses(
+        (status = 200, description = "The avatar was removed.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+    ),
+)]
 pub async fn delete_avatar(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -501,6 +535,19 @@ pub async fn delete_avatar(
 }
 
 /// Serves a stored avatar JPEG for any authenticated household member.
+#[utoipa::path(
+    get,
+    path = "/api/users/{id}/avatar",
+    params(("id" = i64, Path, description = "User id.")),
+    responses(
+        (status = 200, description = "The avatar.", content(
+            (crate::openapi::BinaryBody = "image/jpeg"),
+            (crate::openapi::BinaryBody = "image/png"),
+            (crate::openapi::BinaryBody = "image/webp"),
+        )),
+        (status = 404, description = "The user has no avatar."),
+    ),
+)]
 pub async fn get_avatar(
     State(state): State<Arc<AppState>>,
     AxumPath(user_id): AxumPath<i64>,

@@ -9,7 +9,9 @@ use crate::error::Result;
 use crate::identity::works_match;
 
 /// A purchase / catalog availability hint (optionally priced at view time).
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq, utoipa::ToSchema,
+)]
 pub struct PurchaseHint {
     /// Canonical storefront / plugin id (`audible`, `libro`, `chirp`, …).
     pub source: String,
@@ -128,7 +130,7 @@ impl PurchaseHint {
 }
 
 /// Inputs for view-time catalog + pricing lookup.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct PurchaseHintsQuery {
     /// Display title as shown on the storefront or library card.
     pub title: String,
@@ -155,7 +157,7 @@ pub struct PurchaseHintsQuery {
 }
 
 /// Priced catalog matches for one title, sorted best-first.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct PurchaseHintsResponse {
     /// Resolved purchase hints for this query.
     pub hints: Vec<PurchaseHint>,

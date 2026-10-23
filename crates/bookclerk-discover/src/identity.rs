@@ -12,7 +12,9 @@ use crate::candidates::StorefrontCandidate;
 use crate::recommend::Recommendation;
 
 /// One storefront edition of a work (for multi-store purchase links).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash)]
+#[derive(
+    Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash, utoipa::ToSchema,
+)]
 pub struct StoreEdition {
     /// Canonical storefront / plugin id (`audible`, `libro`, `chirp`, …).
     pub source: String,

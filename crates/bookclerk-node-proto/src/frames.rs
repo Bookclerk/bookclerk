@@ -824,7 +824,7 @@ impl UploadFile {
 }
 
 /// Body of `POST <UPLOADS_PATH><upload_id>/commit`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UploadCommitRequest {
     /// Complete the job with this commit (the job's closing upload).
@@ -836,7 +836,7 @@ pub struct UploadCommitRequest {
 }
 
 /// Answer of the upload endpoint (every status carries one).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct UploadAnswer {
     /// Stable outcome: `received`, `committed`, `lost`, `refused`,
     /// `misdirected`, `unauthorized`, `unavailable`.

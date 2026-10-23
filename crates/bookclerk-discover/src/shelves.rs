@@ -6,7 +6,7 @@ use crate::identity::recommendation_map_key;
 use crate::recommend::Recommendation;
 
 /// One horizontal Discover row (series to finish, more by author, …).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct DiscoverShelf {
     /// Stable identifier for this item.
     pub id: String,
@@ -19,7 +19,7 @@ pub struct DiscoverShelf {
 }
 
 /// A shelf kind the operator can ignore (all offered by default).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct ShelfKindInfo {
     /// Stable kind id (`finish_series`, `author`, `genre`, `from_store`, …).
     pub id: String,
@@ -28,7 +28,7 @@ pub struct ShelfKindInfo {
 }
 
 /// Full Discover page payload: ordered shelves of personalized candidates.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default, utoipa::ToSchema)]
 pub struct DiscoverFeed {
     /// Ordered horizontal shelves that make up the Discover page.
     pub shelves: Vec<DiscoverShelf>,

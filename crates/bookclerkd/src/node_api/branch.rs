@@ -166,6 +166,15 @@ async fn owner_info(state: &Arc<AppState>) -> Result<OwnerInfo, Response> {
 }
 
 /// `GET /api/node/v1/info`.
+#[utoipa::path(
+    get,
+    path = "/api/node/v1/info",
+    responses(
+        (status = 200, description = "What this library says about itself to a joining install.", body = serde_json::Value),
+        (status = 403, description = "The transport is not allowed."),
+        (status = 404, description = "The node API is not mounted."),
+    ),
+)]
 pub async fn get_info(State(state): State<Arc<AppState>>, request: Request) -> Response {
     let (mut parts, _body) = request.into_parts();
     if let Err(refused) = check_transport(&state, &mut parts, "info").await {
@@ -185,6 +194,19 @@ const MAX_OAUTH_ENROLL_BODY_BYTES: usize = 16 * 1024;
 /// connection, 403 `enrollment_refused` for a code that does not redeem
 /// (unknown, used, expired, another client's, a wrong verifier or
 /// redirect URI, enrollment off, or the user no longer active).
+#[utoipa::path(
+    post,
+    path = "/api/node/v1/enroll/oauth",
+    request_body = bookclerk_node_proto::OAuthEnrollRequest,
+    responses(
+        (status = 200, description = "The branch is enrolled; its node credential.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 401, description = "The code or verifier is wrong."),
+        (status = 403, description = "The transport is not allowed."),
+        (status = 404, description = "The node API is not mounted."),
+        (status = 503, description = "The enrollment could not be recorded; try again (`enrollment_unavailable`)."),
+    ),
+)]
 pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Request) -> Response {
     let (mut parts, body) = request.into_parts();
     if let Err(refused) = check_transport(&state, &mut parts, "enroll_oauth").await {
@@ -509,7 +531,8 @@ mod scope_tests {
 
 /// The authorization request a consent is for (the query `/oidc/authorize`
 /// forwarded to `/join/approve`).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
+#[into_params(parameter_in = Query)]
 pub struct BranchAuthorizeParams {
     /// Must be [`BRANCH_CLIENT_ID`].
     pub client_id: String,
@@ -662,6 +685,19 @@ async fn consenting_user(
 /// `GET /api/auth/branch-consent?<authorize params>`: what the consent page
 /// shows. 400 `invalid_request` for a malformed request (the page then
 /// shows the problem and never redirects).
+#[utoipa::path(
+    get,
+    path = "/api/auth/branch-consent",
+    params(BranchAuthorizeParams),
+    security(("portalSession" = []), ("operatorSession" = [])),
+    responses(
+        (status = 200, description = "What the consent page shows.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller is not a library user (`user_required`; an operator session counts only while impersonating) or the account is inactive."),
+        (status = 400, description = "The authorize parameters are invalid."),
+        (status = 503, description = "The library could not be read; try again."),
+    ),
+)]
 pub async fn get_branch_consent(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
@@ -758,7 +794,7 @@ async fn connection_view(
 }
 
 /// A fresh second factor for a clerk consent. `Debug` prints no code.
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(tag = "method", rename_all = "lowercase")]
 pub enum StepUp {
     /// A current authenticator code.
@@ -792,7 +828,7 @@ impl std::fmt::Debug for StepUp {
 pub(crate) const CLERK_STEP_UP_KIND: &str = "clerk_step_up";
 
 /// `POST /api/auth/branch-consent` body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct BranchConsentBody {
     /// The authorization request.
     #[serde(flatten)]
@@ -811,6 +847,21 @@ pub struct BranchConsentBody {
 /// the URL to send the browser to: the branch's callback with a code (or
 /// `error=access_denied`). Approving needs an active signed-in user, host
 /// enrollment on, and a connection the transport policy allows.
+#[utoipa::path(
+    post,
+    path = "/api/auth/branch-consent",
+    request_body = BranchConsentBody,
+    security(("portalSession" = []), ("operatorSession" = [])),
+    responses(
+        (status = 200, description = "`{redirect}` back to the branch.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller is not an active library user, or a clerk join lacks the Owner role or a passed step-up (`step_up_required`)."),
+        (status = 400, description = "The body is invalid."),
+        (status = 409, description = "This library's database cannot be shared with a clerk (`database_not_shareable`)."),
+        (status = 429, description = "Too many wrong step-up codes; wait a few minutes (`step_up_locked`)."),
+        (status = 503, description = "The library could not be read; try again."),
+    ),
+)]
 pub async fn post_branch_consent(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
@@ -1058,6 +1109,18 @@ async fn check_clerk_consent(
 /// `POST /api/auth/branch-consent/step-up`: starts a passkey step-up for a
 /// clerk consent (an Owner with a passkey). Answers the WebAuthn request
 /// options with a `challenge_id` to send back in the consent's `step_up`.
+#[utoipa::path(
+    post,
+    path = "/api/auth/branch-consent/step-up",
+    security(("portalSession" = []), ("operatorSession" = [])),
+    responses(
+        (status = 200, description = "Passkey request options.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller is not an active library user, or not an Owner (`owner_required`)."),
+        (status = 404, description = "The account has no passkey (`no_passkey`)."),
+        (status = 503, description = "The library could not be read, or the passkey check could not start."),
+    ),
+)]
 pub async fn post_branch_consent_step_up(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
@@ -1117,6 +1180,17 @@ pub(crate) async fn require_branch_admin(
 /// `GET /api/config/branches`: this library's join settings: whether new
 /// branches may join, the transport mode, and the SPKI fingerprint a
 /// joining operator confirms in `self_signed` mode.
+#[utoipa::path(
+    get,
+    path = "/api/config/branches",
+    responses(
+        (status = 200, description = "The library's join settings and branches.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+    ),
+)]
 pub async fn get_branches(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
@@ -1182,7 +1256,7 @@ async fn branches_json(
 }
 
 /// `POST /api/config/branches/titles/remove` body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RemoveBranchTitles {
     /// Only this branch's entries; every branch's when absent.
@@ -1192,6 +1266,18 @@ pub struct RemoveBranchTitles {
 
 /// `POST /api/config/branches/titles/remove`: removes the entries of
 /// titles from a branch that stopped sharing or left. Delivered files stay.
+#[utoipa::path(
+    post,
+    path = "/api/config/branches/titles/remove",
+    request_body = RemoveBranchTitles,
+    responses(
+        (status = 200, description = "The branch's titles were removed.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+    ),
+)]
 pub async fn post_remove_branch_titles(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
@@ -1220,7 +1306,7 @@ pub async fn post_remove_branch_titles(
 }
 
 /// `PUT /api/config/branches` body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PutBranches {
     /// "Let new branches join" (`core.host_enrollment.enabled`).
@@ -1228,6 +1314,18 @@ pub struct PutBranches {
 }
 
 /// `PUT /api/config/branches`: turn "Let new branches join" on or off.
+#[utoipa::path(
+    put,
+    path = "/api/config/branches",
+    request_body = PutBranches,
+    responses(
+        (status = 200, description = "The settings after the change.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+    ),
+)]
 pub async fn put_branches(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
