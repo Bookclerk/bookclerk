@@ -2,6 +2,9 @@
 //
 // The site is plain HTML and CSS with no client-side scripts. Its only npm
 // packages are build and deploy tooling: markdown-it (docs.mjs) and wrangler.
+// Beside the pages it writes what search engines, link previews and agents
+// read: canonical and Open Graph tags, JSON-LD, sitemap.xml, robots.txt,
+// llms.txt / llms-full.txt and a Markdown copy of every doc.
 //
 // Release state comes from the environment, set by
 // .github/workflows/site-deploy.yml:
@@ -12,15 +15,20 @@
 //   SITE_RELEASE_DATE  that release's publish date, YYYY-MM-DD
 //   SITE_COMMIT        commit the site is built from (7-40 hex digits)
 //   SITE_BUILT_ON      build date, YYYY-MM-DD (defaults to today, UTC)
+//   SITE_ORIGIN        origin the site is served from, for canonical and
+//                      preview URLs (default https://bookclerk.app)
+//   SITE_API_DOCS      optional directory of generated API reference
+//                      (scripts/generate-api-docs.sh output: rust/,
+//                      typescript/, python/), published under /docs/api/
 //
 // Every value is validated before it reaches a template, and every template
 // value is HTML-escaped.
 
-import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { docFile, docUrl, renderDocs } from "./docs.mjs";
+import { docFile, docMarkdownUrl, docUrl, NAV, renderDocs } from "./docs.mjs";
 
 /** Directory holding this script. */
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -31,11 +39,43 @@ const REPO_ROOT = join(HERE, "..", "..");
 /** GitHub repository the site links to. */
 export const REPOSITORY_URL = "https://github.com/Bookclerk/bookclerk";
 
-/** Pages rendered from src/<name> to dist/<name>. */
-const PAGES = ["index.html", "download.html", "404.html"];
+/** Origin used when SITE_ORIGIN is unset. */
+const DEFAULT_ORIGIN = "https://bookclerk.app";
+
+/** One-sentence summary of Bookclerk, shared by the home page, JSON-LD and llms.txt. */
+const SUMMARY =
+  "Bookclerk gathers the audiobooks you have bought from Audible, Libro.fm, Chirp and GraphicAudio into one library on your own computer, and keeps copies you control.";
+
+/**
+ * Pages rendered from src/<file> to dist/<file>.
+ *
+ * `path` is the page's URL path, `title` and `description` fill its
+ * `<title>`, description and preview tags, and `indexable` is false for pages
+ * search engines should skip (no canonical link, `noindex`, not in the
+ * sitemap).
+ */
+const PAGES = [
+  { file: "index.html", path: "/", title: "Bookclerk: every purchase, properly placed", description: SUMMARY, indexable: true },
+  {
+    file: "download.html",
+    path: "/download",
+    title: "Download Bookclerk",
+    description: "Get Bookclerk, the self-hosted audiobook library manager for your Audible, Libro.fm, Chirp and GraphicAudio purchases.",
+    indexable: true,
+  },
+  { file: "404.html", path: "/404", title: "Page not found · Bookclerk", description: "This page is not on the shelf.", indexable: false },
+];
 
 /** Files copied verbatim from src/ to dist/. */
-const STATIC_FILES = ["site.css", "_headers", "robots.txt"];
+const STATIC_FILES = ["site.css", "_headers", "social-card.png"];
+
+/** Generated API references SITE_API_DOCS may hold, by directory name. */
+const API_REFERENCES = [
+  { dir: "rust", title: "Rust crates", generator: "rustdoc" },
+  { dir: "typescript", title: "TypeScript plugin SDK", generator: "TypeDoc" },
+  { dir: "python", title: "Python plugin SDK", generator: "pdoc" },
+  { dir: "ui", title: "Web UI library", generator: "TypeDoc" },
+];
 
 /** Brand assets copied from assets/brand/ (source path, published name). */
 const BRAND_FILES = [
@@ -57,6 +97,9 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** An abbreviated or full git commit id. */
 const COMMIT_RE = /^[0-9a-f]{7,40}$/;
+
+/** An https origin with a lowercase hostname and no port or path. */
+const ORIGIN_RE = /^https:\/\/([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
 /** How deep partials may include other partials. */
 const MAX_PARTIAL_DEPTH = 3;
@@ -94,8 +137,10 @@ function displayDate(iso) {
  * Validates the release state from the environment.
  *
  * @param {Record<string, string | undefined>} env Usually `process.env`.
- * @returns {{release: {tag: string, date: string} | null, commit: string, builtOn: string}}
- *   `release` is null when no release exists yet.
+ * @returns {{release: {tag: string, date: string} | null, commit: string,
+ *   builtOn: string, origin: string, apiDocs: string | null}}
+ *   `release` is null when no release exists yet; `apiDocs` is null when no
+ *   API reference is published.
  * @throws {Error} When a value is present but malformed, or a release tag
  *   comes without its date.
  */
@@ -104,6 +149,8 @@ export function readState(env) {
   const date = (env.SITE_RELEASE_DATE ?? "").trim();
   const commit = (env.SITE_COMMIT ?? "").trim().toLowerCase();
   const builtOn = (env.SITE_BUILT_ON ?? "").trim() || new Date().toISOString().slice(0, 10);
+  const origin = (env.SITE_ORIGIN ?? "").trim() || DEFAULT_ORIGIN;
+  const apiDocs = (env.SITE_API_DOCS ?? "").trim() || null;
 
   if (!COMMIT_RE.test(commit)) {
     throw new Error(`SITE_COMMIT must be 7-40 lowercase hex digits, got ${JSON.stringify(commit)}`);
@@ -111,8 +158,14 @@ export function readState(env) {
   if (!DATE_RE.test(builtOn)) {
     throw new Error(`SITE_BUILT_ON must be YYYY-MM-DD, got ${JSON.stringify(builtOn)}`);
   }
+  if (!ORIGIN_RE.test(origin)) {
+    throw new Error(`SITE_ORIGIN must be https://<lowercase hostname>, got ${JSON.stringify(origin)}`);
+  }
+  if (apiDocs !== null && !(existsSync(apiDocs) && statSync(apiDocs).isDirectory())) {
+    throw new Error(`SITE_API_DOCS is not a directory: ${JSON.stringify(apiDocs)}`);
+  }
   if (tag === "") {
-    return { release: null, commit, builtOn };
+    return { release: null, commit, builtOn, origin, apiDocs };
   }
   if (!TAG_RE.test(tag)) {
     throw new Error(`SITE_RELEASE_TAG must look like v1.2.3, got ${JSON.stringify(tag)}`);
@@ -120,7 +173,7 @@ export function readState(env) {
   if (!DATE_RE.test(date)) {
     throw new Error(`SITE_RELEASE_DATE must be YYYY-MM-DD when a release tag is set, got ${JSON.stringify(date)}`);
   }
-  return { release: { tag, date }, commit, builtOn };
+  return { release: { tag, date }, commit, builtOn, origin, apiDocs };
 }
 
 /**
@@ -135,6 +188,8 @@ export function templateContext(state) {
   const ref = state.release ? state.release.tag : "main";
   return {
     values: {
+      origin: state.origin,
+      socialImage: `${state.origin}/social-card.png`,
       repo: REPOSITORY_URL,
       commit: short,
       commitUrl: `${REPOSITORY_URL}/commit/${state.commit}`,
@@ -226,8 +281,187 @@ const NAV_MARKER = "<!--doc-nav-->";
 /** Marker in src/doc.html replaced by the rendered doc after templating. */
 const BODY_MARKER = "<!--doc-body-->";
 
+/** Marker in the head partial replaced by the page's JSON-LD after templating. */
+const JSONLD_MARKER = "<!--jsonld-->";
+
 /**
- * Renders the repository's docs/ into dist/docs/.
+ * Adds one page's metadata to the site-wide template context.
+ *
+ * @param {ReturnType<typeof templateContext>} context Site-wide values.
+ * @param {{path: string, title: string, description: string, indexable: boolean,
+ *   type?: string, markdown?: string}} page The page: URL path, title,
+ *   description, whether search engines may index it, Open Graph type
+ *   (default `website`) and the URL of its Markdown copy, if any.
+ * @param {Record<string, string>} [extra] More values the page's template reads.
+ * @returns {ReturnType<typeof templateContext>} The context for that page.
+ */
+function pageContext(context, page, extra = {}) {
+  return {
+    values: {
+      ...context.values,
+      ...extra,
+      pageTitle: page.title,
+      pageDescription: page.description,
+      pageUrl: context.values.origin + page.path,
+      pageType: page.type ?? "website",
+      markdownUrl: page.markdown ?? "",
+    },
+    flags: { ...context.flags, indexable: page.indexable, markdown: page.markdown !== undefined },
+  };
+}
+
+/**
+ * Serializes structured data for a `<script type="application/ld+json">`.
+ *
+ * @param {object | null} data A schema.org JSON-LD object, or null for none.
+ * @returns {string} The script element, with `<` escaped so the JSON can
+ *   never close it; empty when `data` is null.
+ */
+export function jsonLd(data) {
+  if (data === null) return "";
+  return `<script type="application/ld+json">${JSON.stringify(data).replaceAll("<", "\\u003c")}</script>`;
+}
+
+/**
+ * The schema.org description of the site and of Bookclerk itself, for the
+ * home page.
+ *
+ * @param {ReturnType<typeof templateContext>} context Site-wide values.
+ * @returns {object} A JSON-LD `@graph` with the WebSite and the
+ *   SoftwareApplication.
+ */
+function homeJsonLd(context) {
+  const { origin, releaseTag, socialImage } = context.values;
+  return {
+    "@context": "https://schema.org",
+    "@graph": [
+      { "@type": "WebSite", "@id": `${origin}/#website`, name: "Bookclerk", url: `${origin}/`, inLanguage: "en" },
+      {
+        "@type": "SoftwareApplication",
+        name: "Bookclerk",
+        description: SUMMARY,
+        url: `${origin}/`,
+        image: socialImage,
+        applicationCategory: "MultimediaApplication",
+        operatingSystem: "Windows, macOS, Linux",
+        license: "https://www.gnu.org/licenses/gpl-3.0.html",
+        isAccessibleForFree: true,
+        offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+        downloadUrl: `${origin}/download`,
+        ...(releaseTag ? { softwareVersion: releaseTag.slice(1) } : {}),
+        sameAs: [REPOSITORY_URL],
+      },
+    ],
+  };
+}
+
+/**
+ * The schema.org description of one doc page.
+ *
+ * @param {ReturnType<typeof templateContext>} context Site-wide values.
+ * @param {{key: string, title: string, description: string}} doc The doc.
+ * @returns {object} A JSON-LD `@graph` with the TechArticle and its
+ *   breadcrumb trail (Docs › title).
+ */
+function docJsonLd(context, doc) {
+  const { origin } = context.values;
+  const url = origin + docUrl(doc.key);
+  const crumbs = [{ name: "Docs", item: `${origin}/docs/` }];
+  if (doc.key !== "README") crumbs.push({ name: doc.title, item: url });
+  return {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "TechArticle",
+        headline: doc.title,
+        ...(doc.description ? { description: doc.description } : {}),
+        url,
+        inLanguage: "en",
+        isPartOf: { "@id": `${origin}/#website` },
+      },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: crumbs.map((c, i) => ({ "@type": "ListItem", position: i + 1, name: c.name, item: c.item })),
+      },
+    ],
+  };
+}
+
+/**
+ * Copies the generated API references into dist/docs/api/.
+ *
+ * @param {string | null} apiDocs SITE_API_DOCS, already validated.
+ * @param {string} outDir Output directory.
+ * @returns {{title: string, generator: string, entries: {name: string, url: string}[]}[]}
+ *   Each published reference with its entry pages; empty when `apiDocs` is
+ *   null or holds none of API_REFERENCES.
+ */
+function copyApiReferences(apiDocs, outDir) {
+  if (apiDocs === null) return [];
+  const published = [];
+  for (const ref of API_REFERENCES) {
+    const from = join(apiDocs, ref.dir);
+    if (!existsSync(from)) continue;
+    let entries;
+    if (ref.dir === "rust") {
+      // rustdoc writes one directory per crate and no workspace index.
+      entries = readdirSync(from)
+        .filter((name) => /^[a-z0-9_]+$/.test(name) && existsSync(join(from, name, "index.html")))
+        .sort()
+        .map((name) => ({ name: name.replaceAll("_", "-"), url: `/docs/api/rust/${name}/` }));
+      if (entries.length === 0) continue;
+    } else {
+      if (!existsSync(join(from, "index.html"))) continue;
+      entries = [{ name: ref.title, url: `/docs/api/${ref.dir}/` }];
+    }
+    cpSync(from, join(outDir, "docs", "api", ref.dir), { recursive: true });
+    published.push({ title: ref.title, generator: ref.generator, entries });
+  }
+  return published;
+}
+
+/** Rust crates plugin authors build against, shown first on /docs/api/. */
+const SDK_CRATES = ["bookclerk-plugin-sdk", "bookclerk-plugin-abi", "bookclerk-plugin-manifest"];
+
+/**
+ * Lists the published API references, for the top of /docs/api/.
+ *
+ * The plugin SDKs come first; the other workspace crates and the web UI
+ * library are internals, listed in a collapsed group for contributors.
+ *
+ * @param {ReturnType<typeof copyApiReferences>} references Published references.
+ * @returns {string} HTML, or a note that the reference is built at deploy
+ *   time when none was published.
+ */
+function apiIndexHtml(references) {
+  if (references.length === 0) {
+    return '<p class="doc-note" role="note">The generated reference is published with each deploy of this site. This build has none.</p>';
+  }
+  const link = (e) => `<a href="${escapeHtml(e.url)}">${escapeHtml(e.name)}</a>`;
+  const card = (title, generator, entries) =>
+    `<div class="api-card"><h3>${escapeHtml(title)}</h3><p class="faint">${escapeHtml(generator)}</p><ul>${entries.map((e) => `<li>${link(e)}</li>`).join("")}</ul></div>`;
+  const cards = [];
+  const internals = [];
+  for (const ref of references) {
+    if (ref.title === "Rust crates") {
+      const sdk = ref.entries.filter((e) => SDK_CRATES.includes(e.name));
+      if (sdk.length > 0) cards.push(card("Rust plugin SDK", ref.generator, sdk));
+      internals.push(...ref.entries.filter((e) => !SDK_CRATES.includes(e.name)));
+    } else if (ref.title === "Web UI library") {
+      internals.push(...ref.entries);
+    } else {
+      cards.push(card(ref.title, ref.generator, ref.entries));
+    }
+  }
+  const more =
+    internals.length === 0
+      ? ""
+      : `<details class="api-internals"><summary>Internals, for contributors (${internals.length})</summary><ul>${internals.map((e) => `<li>${link(e)}</li>`).join("")}</ul></details>`;
+  return `<section class="api-index" aria-labelledby="api-browse"><h2 id="api-browse">Browse the reference</h2><div class="api-cards">${cards.join("")}</div>${more}</section>`;
+}
+
+/**
+ * Renders the repository's docs/ into dist/docs/, each with a Markdown copy.
  *
  * The rendered Markdown goes in after templating, so `{{` in a doc's code
  * samples is never read as template syntax.
@@ -235,21 +469,27 @@ const BODY_MARKER = "<!--doc-body-->";
  * @param {ReturnType<typeof templateContext>} context Site-wide values.
  * @param {Record<string, string>} partials Partial templates by name.
  * @param {string} outDir Output directory.
- * @returns {number} How many docs were written.
+ * @param {ReturnType<typeof copyApiReferences>} references Published API
+ *   references, listed on the api/README page.
+ * @returns {ReturnType<typeof renderDocs>} The rendered docs and sidebar.
  */
-function buildDocs(context, partials, outDir) {
-  const { nav, docs } = renderDocs(join(REPO_ROOT, "docs"), context.values.blobBase);
+function buildDocs(context, partials, outDir, references) {
+  const rendered = renderDocs(join(REPO_ROOT, "docs"), context.values.blobBase);
+  const { nav, docs } = rendered;
   const template = readFileSync(join(HERE, "src", "doc.html"), "utf8");
   for (const doc of docs) {
-    const page = {
-      values: {
-        ...context.values,
-        docTitle: doc.title,
-        docSource: doc.source,
-        docSourceUrl: context.values.blobBase + doc.source,
+    const page = pageContext(
+      context,
+      {
+        path: docUrl(doc.key),
+        title: `${doc.title} · Bookclerk docs`,
+        description: doc.description || `${doc.title}: Bookclerk documentation.`,
+        indexable: true,
+        type: "article",
+        markdown: docMarkdownUrl(doc.key),
       },
-      flags: context.flags,
-    };
+      { docSource: doc.source, docSourceUrl: context.values.blobBase + doc.source },
+    );
     const navHtml = nav
       .map((group) => {
         const links = group.pages
@@ -261,12 +501,84 @@ function buildDocs(context, partials, outDir) {
         return `<h2>${escapeHtml(group.title)}</h2><ul>${links}</ul>`;
       })
       .join("\n");
-    const html = render(template, page, partials).replace(NAV_MARKER, () => navHtml).replace(BODY_MARKER, () => doc.html);
+    const body = doc.key === "api/README" ? apiIndexHtml(references) + doc.html : doc.html;
+    const html = render(template, page, partials)
+      .replace(JSONLD_MARKER, () => jsonLd(docJsonLd(context, doc)))
+      .replace(NAV_MARKER, () => navHtml)
+      .replace(BODY_MARKER, () => body);
     const file = join(outDir, docFile(doc.key));
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, html);
+    writeFileSync(join(outDir, docMarkdownUrl(doc.key).slice(1)), doc.markdown);
   }
-  return docs.length;
+  return rendered;
+}
+
+/**
+ * Writes llms.txt (an index of the docs for language models, per
+ * https://llmstxt.org) and llms-full.txt (every doc in one file).
+ *
+ * @param {ReturnType<typeof templateContext>} context Site-wide values.
+ * @param {ReturnType<typeof renderDocs>} rendered The docs and sidebar.
+ * @param {ReturnType<typeof copyApiReferences>} references Published API references.
+ * @param {string} outDir Output directory.
+ */
+function writeLlmsTxt(context, rendered, references, outDir) {
+  const { origin, docsVersion, repo } = context.values;
+  const byKey = new Map(rendered.docs.map((d) => [d.key, d]));
+  const status = context.flags.prerelease
+    ? "Bookclerk has not had a release yet: these docs describe the unstable development version on main."
+    : `These docs describe Bookclerk ${docsVersion}.`;
+  const lines = [
+    "# Bookclerk",
+    "",
+    `> ${SUMMARY} It is free, self-hosted software (GNU GPL v3 or later) with a command-line tool, a daemon with a web interface, and a plugin system for stores and destinations.`,
+    "",
+    `${status} Each doc below is Markdown; the same page as HTML is at the URL without \`.md\`. Source code: ${repo}. Every doc in one file: ${origin}/llms-full.txt.`,
+    "",
+  ];
+  const groups = rendered.nav.map((g) => ({ title: g.title, keys: g.pages.map((p) => p.key) }));
+  const designAt = groups.findIndex((g) => g.title === NAV[NAV.length - 1].title);
+  for (const [i, group] of groups.entries()) {
+    // llms.txt reserves "Optional" for links a reader can skip.
+    lines.push(`## ${i === designAt ? "Optional" : group.title}`, "");
+    if (i === 0) lines.push(`- [Overview](${origin}${docMarkdownUrl("README")}): How the documentation is organized`);
+    for (const key of group.keys) {
+      const doc = byKey.get(key);
+      lines.push(`- [${doc.title}](${origin}${docMarkdownUrl(key)})${doc.description ? `: ${doc.description}` : ""}`);
+    }
+    if (group.title === "Contributing") {
+      for (const ref of references) {
+        for (const e of ref.entries) lines.push(`- [${ref.title}: ${e.name}](${origin}${e.url}): Generated API reference (${ref.generator}, HTML)`);
+      }
+    }
+    lines.push("");
+  }
+  writeFileSync(join(outDir, "llms.txt"), lines.join("\n"));
+
+  const full = [`# Bookclerk documentation (${docsVersion})`, "", `> ${SUMMARY}`, ""];
+  for (const key of ["README", ...groups.flatMap((g) => g.keys)]) {
+    const doc = byKey.get(key);
+    full.push("---", "", `Source: ${origin}${docMarkdownUrl(key)}`, "", doc.markdown.trim(), "");
+  }
+  writeFileSync(join(outDir, "llms-full.txt"), full.join("\n"));
+}
+
+/**
+ * Writes sitemap.xml and robots.txt.
+ *
+ * @param {ReturnType<typeof templateContext>} context Site-wide values.
+ * @param {string[]} paths URL paths of every indexable page.
+ * @param {string} outDir Output directory.
+ */
+function writeCrawlerFiles(context, paths, outDir) {
+  const { origin } = context.values;
+  const urls = paths.map((p) => `  <url><loc>${escapeHtml(origin + p)}</loc></url>`).join("\n");
+  writeFileSync(
+    join(outDir, "sitemap.xml"),
+    `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`,
+  );
+  writeFileSync(join(outDir, "robots.txt"), `User-agent: *\nAllow: /\n\nSitemap: ${origin}/sitemap.xml\n`);
 }
 
 /**
@@ -274,10 +586,11 @@ function buildDocs(context, partials, outDir) {
  *
  * @param {Record<string, string | undefined>} env Release state (see top).
  * @param {string} outDir Output directory; replaced entirely.
- * @returns {string[]} Published file names, sorted.
+ * @returns {string[]} Published top-level file names, sorted.
  */
 export function build(env, outDir) {
-  const context = templateContext(readState(env));
+  const state = readState(env);
+  const context = templateContext(state);
   const src = join(HERE, "src");
   const partials = {};
   for (const file of readdirSync(join(src, "partials"))) {
@@ -287,16 +600,45 @@ export function build(env, outDir) {
 
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
+  const indexable = [];
   for (const page of PAGES) {
-    writeFileSync(join(outDir, page), render(readFileSync(join(src, page), "utf8"), context, partials));
+    const html = render(readFileSync(join(src, page.file), "utf8"), pageContext(context, page), partials);
+    writeFileSync(join(outDir, page.file), html.replace(JSONLD_MARKER, () => jsonLd(page.path === "/" ? homeJsonLd(context) : null)));
+    if (page.indexable) indexable.push(page.path);
   }
-  buildDocs(context, partials, outDir);
+  const references = copyApiReferences(state.apiDocs, outDir);
+  const rendered = buildDocs(context, partials, outDir, references);
+  indexable.push(...rendered.docs.map((d) => docUrl(d.key)));
+  indexable.push(...references.flatMap((r) => r.entries.map((e) => e.url)));
+  writeCrawlerFiles(context, indexable, outDir);
+  writeLlmsTxt(context, rendered, references, outDir);
   for (const file of STATIC_FILES) cpSync(join(src, file), join(outDir, file));
   for (const [from, to] of BRAND_FILES) cpSync(join(REPO_ROOT, "assets/brand", from), join(outDir, to));
   return readdirSync(outDir).sort();
 }
 
+/**
+ * Counts the files under a directory.
+ *
+ * @param {string} dir Directory to walk.
+ * @returns {number} Files in it and its subdirectories.
+ */
+function countFiles(dir) {
+  return readdirSync(dir, { withFileTypes: true }).reduce((n, e) => n + (e.isDirectory() ? countFiles(join(dir, e.name)) : 1), 0);
+}
+
+/**
+ * Files a Worker version may serve on the Workers Free plan; Workers Paid
+ * allows 100,000. https://developers.cloudflare.com/workers/platform/limits/#static-assets
+ */
+const FREE_PLAN_ASSET_LIMIT = 20_000;
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const files = build(process.env, join(HERE, "dist"));
-  console.log(`built ${files.length} files into dist/`);
+  const out = join(HERE, "dist");
+  build(process.env, out);
+  const total = countFiles(out);
+  console.log(`built ${total} files into dist/`);
+  if (total > FREE_PLAN_ASSET_LIMIT * 0.9) {
+    console.warn(`::warning::dist/ holds ${total} files; the Workers Free plan serves at most ${FREE_PLAN_ASSET_LIMIT} per version`);
+  }
 }

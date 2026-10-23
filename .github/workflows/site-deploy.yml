@@ -3,8 +3,10 @@
 #
 # Runs when the site, the docs or the brand assets change on main, when a
 # release is published (the site shows the newest release and drops its
-# pre-release notices), and by hand. The site renders docs/ as /docs/: from
-# main until the first release, then from the newest release tag.
+# pre-release notices), and by hand. The site renders docs/ as /docs/ and
+# publishes the generated API reference (scripts/generate-api-docs.sh) under
+# /docs/api/: both from main until the first release, then from the newest
+# release tag.
 #
 # GitHub repository secrets:
 #   CLOUDFLARE_API_TOKEN   scoped to the Worker `bookclerk-site` (Workers
@@ -41,6 +43,14 @@ permissions:
 concurrency:
   group: site-deploy
   cancel-in-progress: false
+
+# Same values as ci.yml, so the API reference build can restore CI's cargo
+# cache.
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: "-D warnings"
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   deploy:
@@ -111,23 +121,67 @@ jobs:
             echo "date=${date}"
           } >> "$GITHUB_OUTPUT"
 
-      # Once a release exists the docs come from its tag, whatever commit the
-      # site itself is built from. A build of that tag already has them.
-      - name: Use the release's docs
-        if: steps.release.outputs.tag != '' && github.ref != format('refs/tags/{0}', steps.release.outputs.tag)
+      # Once a release exists the docs and the API reference come from its
+      # tag, whatever commit the site itself is built from. A build of that
+      # tag already has them. The tag's tree goes in a worktree so the API
+      # reference is generated from the tag's code.
+      - name: Check out the release
+        id: source
         env:
           TAG: ${{ steps.release.outputs.tag }}
+          ON_TAG: ${{ github.ref == format('refs/tags/{0}', steps.release.outputs.tag) }}
         run: |
           set -euo pipefail
-          git fetch --depth=1 origin "refs/tags/${TAG}:refs/tags/${TAG}"
-          rm -rf ../../docs
-          git checkout "refs/tags/${TAG}" -- ../../docs
+          root="$GITHUB_WORKSPACE"
+          if [[ -n "$TAG" && "$ON_TAG" != "true" ]]; then
+            git fetch --depth=1 origin "refs/tags/${TAG}:refs/tags/${TAG}"
+            root="$RUNNER_TEMP/release"
+            git worktree add --detach "$root" "refs/tags/${TAG}"
+            rm -rf ../../docs
+            cp -R "$root/docs" ../../docs
+          fi
+          echo "root=${root}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.11.32"
+          enable-cache: false
+
+      - name: Install capnproto
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends capnproto
+
+      # Read-only: restores the lint job's cache from main, never saves.
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: lint
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          save-if: false
+
+      # rustdoc, TypeDoc and pdoc into <root>/docs/api/{rust,typescript,ui,python}.
+      - name: Generate the API reference
+        env:
+          SOURCE_ROOT: ${{ steps.source.outputs.root }}
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          set -euo pipefail
+          "$SOURCE_ROOT/scripts/generate-api-docs.sh" --all
 
       - name: Build the site
         env:
           SITE_RELEASE_TAG: ${{ steps.release.outputs.tag }}
           SITE_RELEASE_DATE: ${{ steps.release.outputs.date }}
           SITE_COMMIT: ${{ github.sha }}
+          SITE_ORIGIN: https://${{ vars.DOMAIN || 'bookclerk.app' }}
+          SITE_API_DOCS: ${{ steps.source.outputs.root }}/docs/api
         run: |
           set -euo pipefail
           SITE_BUILT_ON=$(date -u +%F) npm run build

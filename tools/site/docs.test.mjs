@@ -1,13 +1,14 @@
 // Tests for docs.mjs and the rendered /docs/ pages. Run with `npm test`.
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { build } from "./build.mjs";
-import { docFile, docUrl, rewriteLink, slugify } from "./docs.mjs";
+import { docFile, docUrl, markdownFiles, rewriteLink, slugify } from "./docs.mjs";
 
 /** GitHub prefix used by the link tests. */
 const BLOB = "https://github.com/Bookclerk/bookclerk/blob/main/";
@@ -67,9 +68,10 @@ test("every doc renders, and every link on the site resolves", () => {
     const urlOf = (f) => ("/" + relative(dir, f).split(sep).join("/")).replace(/index\.html$/, "").replace(/\.html$/, "");
     const ids = new Map(pages.map((f) => [urlOf(f), new Set([...readFileSync(f, "utf8").matchAll(/ id="([^"]+)"/g)].map((m) => m[1]))]));
 
-    const docsSource = new URL("../../docs/", import.meta.url);
-    const count = (d) => readdirSync(d).reduce((n, e) => n + (statSync(new URL(e, d)).isDirectory() ? count(new URL(`${e}/`, d)) : e.endsWith(".md") ? 1 : 0), 0);
-    assert.equal(pages.filter((f) => urlOf(f).startsWith("/docs/")).length, count(docsSource));
+    const sources = markdownFiles(fileURLToPath(new URL("../../docs/", import.meta.url)));
+    assert.ok(sources.length > 30);
+    assert.equal(pages.filter((f) => urlOf(f).startsWith("/docs/")).length, sources.length);
+    for (const source of sources) assert.ok(existsSync(join(dir, "docs", source)), `no Markdown copy of ${source}`);
 
     const broken = [];
     for (const f of pages) {
@@ -77,7 +79,10 @@ test("every doc renders, and every link on the site resolves", () => {
       assert.ok(!html.includes("<!--doc-"), `unfilled marker in ${urlOf(f)}`);
       for (const [, href] of html.matchAll(/href="(\/[^"]*)"/g)) {
         const [path, hash] = href.split("#");
-        if (/\.(css|ico|png|svg|webmanifest)$/.test(path)) continue;
+        if (/\.(css|ico|png|svg|webmanifest|md|txt|xml)$/.test(path)) {
+          if (!existsSync(join(dir, path))) broken.push(`${urlOf(f)} -> ${href} (no file)`);
+          continue;
+        }
         if (!ids.has(path)) broken.push(`${urlOf(f)} -> ${href}`);
         else if (hash && !ids.get(path).has(hash)) broken.push(`${urlOf(f)} -> ${href} (no anchor)`);
       }

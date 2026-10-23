@@ -5,6 +5,10 @@
 // main. Raw HTML in Markdown is not rendered (it is shown as text), so docs
 // that mention placeholders such as <branch> read correctly and nothing in a
 // doc can add markup the site's CSP would have to trust.
+//
+// Each doc is also published as Markdown beside its page (/docs/<key>.md),
+// with links rewritten the same way, for readers and agents that prefer the
+// source text.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, posix, relative, sep } from "node:path";
@@ -50,16 +54,24 @@ export const NAV = [
 ];
 
 /**
- * Lists every Markdown file under a directory.
+ * Directories under docs/ that scripts/generate-api-docs.sh fills with
+ * generated (gitignored) API reference. Their Markdown is generator output,
+ * not docs; build.mjs publishes the trees as they are.
+ */
+export const GENERATED_DIRS = ["api/rust", "api/typescript", "api/ui", "api/python"];
+
+/**
+ * Lists every Markdown file under a directory, skipping GENERATED_DIRS.
  *
  * @param {string} root The docs directory.
  * @returns {string[]} Paths relative to `root`, POSIX separators, sorted.
  */
-function markdownFiles(root) {
+export function markdownFiles(root) {
   const out = [];
   const walk = (dir) => {
     for (const name of readdirSync(dir)) {
       const full = join(dir, name);
+      if (GENERATED_DIRS.includes(relative(root, full).split(sep).join("/"))) continue;
       if (statSync(full).isDirectory()) walk(full);
       else if (name.endsWith(".md")) out.push(relative(root, full).split(sep).join("/"));
     }
@@ -79,6 +91,16 @@ export function docUrl(key) {
   if (key === "README") return "/docs/";
   if (key.endsWith("/README")) return `/docs/${key.slice(0, -"README".length)}`;
   return `/docs/${key}`;
+}
+
+/**
+ * The site URL of a doc's Markdown copy.
+ *
+ * @param {string} key Docs path without `.md`.
+ * @returns {string} `/docs/<key>.md`; the index is `/docs/README.md`.
+ */
+export function docMarkdownUrl(key) {
+  return `/docs/${key}.md`;
 }
 
 /**
@@ -116,10 +138,12 @@ export function slugify(text) {
  * @param {Set<string>} keys Every doc on the site.
  * @param {string} blobBase GitHub URL prefix for files at the site's ref,
  *   ending in `/blob/<ref>/`.
+ * @param {(key: string) => string} [urlFor] Site URL of another doc:
+ *   {@link docUrl} for pages, {@link docMarkdownUrl} for Markdown copies.
  * @returns {string} A site URL for another doc, a GitHub URL for any other
  *   repository file, or the link unchanged when it is absolute or an anchor.
  */
-export function rewriteLink(href, docKey, keys, blobBase) {
+export function rewriteLink(href, docKey, keys, blobBase, urlFor = docUrl) {
   if (href === "" || href.startsWith("#") || /^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("//")) {
     return href;
   }
@@ -129,9 +153,9 @@ export function rewriteLink(href, docKey, keys, blobBase) {
   const target = posix.normalize(posix.join("docs", posix.dirname(docKey), decodeURI(path)));
   if (target.startsWith("docs/") && target.endsWith(".md")) {
     const key = target.slice("docs/".length, -".md".length);
-    if (keys.has(key)) return docUrl(key) + hash;
+    if (keys.has(key)) return urlFor(key) + hash;
   }
-  if (target === "docs" || target === "docs/") return "/docs/" + hash;
+  if (target === "docs" || target === "docs/") return urlFor("README") + hash;
   if (target.startsWith("..")) return href;
   // posix.normalize keeps a trailing slash, which marks a directory.
   const base = target.endsWith("/") ? blobBase.replace(/\/blob\//, "/tree/") : blobBase;
@@ -172,15 +196,98 @@ function renderer(docKey, keys, blobBase) {
   return md;
 }
 
+/** Longest page description, in characters, before it is shortened. */
+const DESCRIPTION_MAX = 160;
+
+/**
+ * Plain text of an inline token's children.
+ *
+ * @param {import("markdown-it/lib/token.mjs").default} inline An `inline` token.
+ * @returns {string} Its text and code spans, whitespace collapsed.
+ */
+function inlineText(inline) {
+  return inline.children
+    .filter((t) => t.type === "text" || t.type === "code_inline" || t.type === "softbreak")
+    .map((t) => (t.type === "softbreak" ? " " : t.content))
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Cuts text at a word boundary.
+ *
+ * @param {string} text Plain text.
+ * @returns {string} The text, or at most DESCRIPTION_MAX characters of it
+ *   ending in an ellipsis.
+ */
+function shorten(text) {
+  if (text.length <= DESCRIPTION_MAX) return text;
+  const cut = text.slice(0, DESCRIPTION_MAX - 1);
+  return `${cut.slice(0, cut.lastIndexOf(" ")).replace(/[\s,;:.]+$/, "")}…`;
+}
+
+/**
+ * Summarizes a doc for search results and link previews.
+ *
+ * @param {import("markdown-it/lib/token.mjs").default[]} tokens The doc's
+ *   parsed tokens.
+ * @returns {string} The doc's introduction (its first top-level paragraph,
+ *   when that comes before the first section heading), else a list of its
+ *   sections; shortened (see shorten). Empty when it has neither.
+ */
+function describe(tokens) {
+  const firstSection = tokens.findIndex((t) => t.type === "heading_open" && t.tag !== "h1");
+  const intro = tokens.findIndex((t) => t.type === "paragraph_open" && t.level === 0);
+  if (intro !== -1 && (firstSection === -1 || intro < firstSection)) return shorten(inlineText(tokens[intro + 1]));
+  const sections = tokens.flatMap((t, i) => (t.type === "heading_open" && t.tag === "h2" ? [inlineText(tokens[i + 1])] : []));
+  return sections.length === 0 ? "" : shorten(`Covers ${sections.join(", ")}.`);
+}
+
+/**
+ * Rewrites a doc's Markdown source for publishing beside its page.
+ *
+ * Only link targets change, and only those markdown-it parsed as links, so
+ * code samples are left alone.
+ *
+ * @param {string} source The doc's Markdown.
+ * @param {import("markdown-it/lib/token.mjs").default[]} tokens Its parsed tokens.
+ * @param {string} docKey The doc's key.
+ * @param {Set<string>} keys Every doc on the site.
+ * @param {string} blobBase See {@link rewriteLink}.
+ * @returns {string} The Markdown with doc links pointing at the other
+ *   Markdown copies and repository links pointing at GitHub.
+ */
+function siteMarkdown(source, tokens, docKey, keys, blobBase) {
+  const hrefs = new Set();
+  const visit = (list) => {
+    for (const t of list) {
+      if (t.type === "link_open") hrefs.add(t.attrGet("href") ?? "");
+      if (t.children) visit(t.children);
+    }
+  };
+  visit(tokens);
+  let out = source;
+  for (const href of hrefs) {
+    const to = rewriteLink(href, docKey, keys, blobBase, docMarkdownUrl);
+    if (to === href) continue;
+    // Inline links `](href` and reference definitions `]: href`.
+    out = out.replaceAll(`](${href}`, `](${to}`).replaceAll(`]: ${href}`, `]: ${to}`);
+  }
+  return out;
+}
+
 /**
  * Reads and renders every doc.
  *
  * @param {string} docsRoot The repository's docs/ directory.
  * @param {string} blobBase See {@link rewriteLink}.
  * @returns {{nav: {title: string, pages: {key: string, title: string}[]}[],
- *   docs: {key: string, title: string, source: string, html: string}[]}}
+ *   docs: {key: string, title: string, description: string, source: string,
+ *   html: string, markdown: string}[]}}
  *   The sidebar (only docs that exist) and each doc's title (its first `#`
- *   heading, else its path), source path and HTML body.
+ *   heading, else its path), summary (see describe), source path, HTML body
+ *   and Markdown copy (see siteMarkdown).
  * @throws {Error} When the docs index (`README.md`) is missing.
  */
 export function renderDocs(docsRoot, blobBase) {
@@ -193,7 +300,18 @@ export function renderDocs(docsRoot, blobBase) {
     const source = readFileSync(join(docsRoot, file), "utf8");
     const heading = source.match(/^#\s+(.+?)\s*#*\s*$/m);
     const title = heading ? heading[1].replace(/`/g, "") : key;
-    return { key, title, source: `docs/${file}`, html: renderer(key, keys, blobBase).render(source) };
+    const md = renderer(key, keys, blobBase);
+    const tokens = md.parse(source, {});
+    // Before rendering, which rewrites the link tokens in place.
+    const markdown = siteMarkdown(source, tokens, key, keys, blobBase);
+    return {
+      key,
+      title,
+      description: describe(tokens),
+      source: `docs/${file}`,
+      html: md.renderer.render(tokens, md.options, {}),
+      markdown,
+    };
   });
   const byKey = new Map(docs.map((d) => [d.key, d]));
 

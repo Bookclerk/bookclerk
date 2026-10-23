@@ -2,7 +2,6 @@
 <html lang="en">
 <head>
 {{> head}}
-<title>{{docTitle}} · Bookclerk docs</title>
 </head>
 <body>
 {{> ribbon}}
@@ -22,7 +21,7 @@
   <article class="doc">
     {{#prerelease}}<p class="doc-note" role="note">These docs describe the development version. They change with every merge and may cover features that are not finished.</p>{{/prerelease}}
     <!--doc-body-->
-    <p class="doc-source faint">Source: <a href="{{docSourceUrl}}">{{docSource}}</a> at {{docsRef}}</p>
+    <p class="doc-source faint">Source: <a href="{{docSourceUrl}}">{{docSource}}</a> at {{docsRef}} · <a href="{{markdownUrl}}" type="text/markdown">View as Markdown</a></p>
   </article>
 </main>
 {{> footer}}

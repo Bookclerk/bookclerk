@@ -348,6 +348,16 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
 .doc th { font-weight: 600; background: color-mix(in srgb, var(--parchment) 50%, transparent); }
 .doc-note { padding: 12px 16px; border-radius: 8px; background: color-mix(in srgb, var(--brick) 10%, var(--paper)); border: 1px solid color-mix(in srgb, var(--brick) 20%, transparent); font-size: 15px; line-height: 22px; }
 .doc-source { margin-top: 3em; padding-top: 16px; border-top: 1px solid color-mix(in srgb, var(--ink) 12%, transparent); font-size: 14px; }
+.api-index { margin: 0 0 2.4em; }
+.api-index h2 { margin-top: 0; }
+.api-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-top: 16px; }
+.api-card { padding: 16px 20px; border: 1px solid var(--fold); border-radius: 8px; background: var(--index-card); }
+.api-card h3 { font-size: 19px; line-height: 26px; }
+.api-card p { font-size: 14px; }
+.api-card ul { margin: 8px 0 0; padding-left: 1.2em; }
+.api-internals { margin-top: 16px; }
+.api-internals summary { cursor: pointer; font-weight: 600; }
+.api-internals ul { columns: 2 220px; margin-top: 8px; }
 
 @media (max-width: 900px) {
   .docs-nav { max-width: none; flex-basis: 100%; }
