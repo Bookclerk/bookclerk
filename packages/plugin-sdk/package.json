@@ -60,6 +60,7 @@
     "esbuild": "0.28.2",
     "oxlint": "^1.88.0",
     "typedoc": "^0.28.20",
+    "typedoc-plugin-markdown": "^4.13.1",
     "typescript": "^5.8.2"
   },
   "keywords": [
