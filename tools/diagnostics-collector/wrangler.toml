@@ -10,6 +10,21 @@ workers_dev = false
 [vars]
 # Used by GET /report to resolve the latest stable release baseline.
 GITHUB_REPOSITORY = "Bookclerk/bookclerk"
+# POST /triage: model and neuron cap per UTC day (the account gets 10,000
+# free neurons a day across all Workers AI use; this keeps triage to a fifth).
+TRIAGE_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8-fast"
+TRIAGE_DAILY_NEURONS = "2000"
+
+[ai]
+binding = "AI"
+
+[[durable_objects.bindings]]
+name = "TRIAGE_BUDGET"
+class_name = "TriageBudget"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TriageBudget"]
 
 [secrets]
 required = [

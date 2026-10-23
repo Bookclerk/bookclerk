@@ -3,6 +3,9 @@
  *
  * POST /submit  — clients send redacted JSON; validated + enriched → B2
  * GET  /report  — GitHub Action pulls new objects since `since` (secret key)
+ * POST /triage  — GitHub Action sends the sanitized batch; Workers AI returns
+ *                 an issue plan, under a daily neuron budget (secret key; see
+ *                 triage.js)
  * GET  /health  — liveness
  *
  * Object layout: diagnostics/<version>/<report_id>.json
@@ -19,8 +22,17 @@
  *
  * Vars:
  *   GITHUB_REPOSITORY       — owner/repo for releases/latest (e.g. Bookclerk/bookclerk)
+ *   TRIAGE_MODEL            — optional; Workers AI model for /triage
+ *   TRIAGE_DAILY_NEURONS    — optional; /triage neuron cap per UTC day
+ *
+ * Bindings: AI (Workers AI), TRIAGE_BUDGET (TriageBudget Durable Object).
+ *
+ * REPORT_API_KEY only ever lives in the Worker and the GitHub Actions
+ * secrets; Bookclerk builds carry the collector URL, never this key.
  */
 
+import { DurableObject } from "cloudflare:workers";
+import { BudgetLedger, handleTriage } from "./triage.js";
 import {
   extractVersionFromKey,
   normalizeVersion,
@@ -54,12 +66,52 @@ export default {
         return handleReport(request, env, url);
       }
 
+      if (request.method === "POST" && path === "/triage") {
+        if (!requireReportAuth(request, env)) {
+          return json({ error: "unauthorized" }, 401);
+        }
+        return handleTriage(request, env);
+      }
+
       return json({ error: "not found" }, 404);
     } catch (err) {
       return json({ error: "internal error" }, 500);
     }
   },
 };
+
+/** Durable Object holding the /triage neuron ledger (see triage.js). */
+export class TriageBudget extends DurableObject {
+  /**
+   * @param {DurableObjectState} ctx State with SQLite storage.
+   * @param {object} env Worker bindings.
+   */
+  constructor(ctx, env) {
+    super(ctx, env);
+    /** Ledger over this object's SQLite storage. */
+    this.ledger = new BudgetLedger(ctx.storage.sql);
+  }
+
+  /**
+   * @param {string} day UTC day.
+   * @param {number} neurons Worst-case cost.
+   * @param {number} cap Daily cap.
+   * @returns {{ok: boolean, spent: number}} Reservation result.
+   */
+  reserve(day, neurons, cap) {
+    return this.ledger.reserve(day, neurons, cap);
+  }
+
+  /**
+   * @param {string} day UTC day.
+   * @param {number} reserved Neurons reserved.
+   * @param {number} actual Neurons used.
+   * @returns {number} The day's total.
+   */
+  settle(day, reserved, actual) {
+    return this.ledger.settle(day, reserved, actual);
+  }
+}
 
 async function handleSubmit(request, env) {
   const len = Number(request.headers.get("content-length") || "0");
