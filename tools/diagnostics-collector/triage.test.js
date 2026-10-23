@@ -4,8 +4,9 @@ import { DatabaseSync } from "node:sqlite";
 import {
   BudgetLedger,
   DEFAULT_DAILY_NEURONS,
+  MAX_DAILY_NEURONS,
   MAX_OUTPUT_TOKENS,
-  MODEL_NEURONS,
+  MODELS,
   handleTriage,
   inputTokenBound,
   neuronsFor,
@@ -90,7 +91,7 @@ describe("handleTriage", () => {
     const res = await handleTriage(triageRequest(BATCH), env, { now: () => NOW });
     assert.equal(res.status, 200);
     const body = await res.json();
-    const rates = MODEL_NEURONS[body.model];
+    const rates = MODELS[body.model];
     assert.equal(body.plan_text, '{"issues":[]}');
     assert.equal(body.neurons, neuronsFor(rates, 1000, 100));
     assert.equal(body.spent_today, body.neurons);
@@ -155,6 +156,44 @@ describe("handleTriage", () => {
     assert.equal((await handleTriage(triageRequest({ a: 1 }), env)).status, 400);
     const big = [{ report_id: "x", blob: "a".repeat(200 * 1024) }];
     assert.equal((await handleTriage(triageRequest(big), env)).status, 413);
+  });
+
+  it("clamps the daily cap below the free allocation", async () => {
+    const env = {
+      TRIAGE_BUDGET: fakeBudget(),
+      TRIAGE_DAILY_NEURONS: "50000",
+      AI: { run: async () => ({ response: "{}", usage: { prompt_tokens: 1, completion_tokens: 1 } }) },
+    };
+    const body = await (await handleTriage(triageRequest(BATCH), env, { now: () => NOW })).json();
+    assert.equal(body.cap, MAX_DAILY_NEURONS);
+  });
+
+  it("does not trust null or negative usage", async () => {
+    for (const usage of [{ prompt_tokens: null, completion_tokens: 0 }, { prompt_tokens: -500, completion_tokens: 1 }]) {
+      const budget = fakeBudget();
+      const env = { TRIAGE_BUDGET: budget, AI: { run: async () => ({ response: "{}", usage }) } };
+      const body = await (await handleTriage(triageRequest(BATCH), env, { now: () => NOW })).json();
+      assert.ok(body.neurons > 0, JSON.stringify(usage));
+      assert.equal(budget.ledger.spent(utcDay(NOW)), body.neurons);
+    }
+  });
+
+  it("reads OpenAI-style replies", async () => {
+    const env = {
+      TRIAGE_BUDGET: fakeBudget(),
+      AI: { run: async () => ({ choices: [{ message: { content: '{"issues":[]}' } }] }) },
+    };
+    const body = await (await handleTriage(triageRequest(BATCH), env, { now: () => NOW })).json();
+    assert.equal(body.plan_text, '{"issues":[]}');
+  });
+
+  it("sizes the batch as the model sees it", async () => {
+    // Under the body limit as sent, over it once re-serialized.
+    const n = Math.floor((150 * 1024) / 5);
+    const raw = `[{"report_id":"x","f":[${Array(n).fill("1e20").join(",")}]}]`;
+    assert.ok(raw.length < 160 * 1024);
+    const env = { TRIAGE_BUDGET: fakeBudget(), AI: { run: async () => ({ response: "" }) } };
+    assert.equal((await handleTriage(triageRequest(raw), env)).status, 413);
   });
 
   it("is unavailable without its bindings", async () => {

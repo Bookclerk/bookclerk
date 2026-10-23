@@ -50,8 +50,8 @@ jq -c '
         | map({
             level,
             target,
-            message: ((.message // "") | .[0:500]),
-            fields: ((.fields // []) | .[0:20])
+            message: ((.message | strings) // "" | .[0:500]),
+            fields: ((.fields | arrays) // [] | .[0:20])
           }))
     })
 ' "$REPORTS_FILE" \
@@ -143,9 +143,12 @@ if plan is None or not isinstance(plan["issues"], list):
     sys.exit("reply has no JSON plan")
 
 def defang(s: str) -> str:
-    # Break @user / @org/team mentions, #123 / owner/repo#123 / GH-123
-    # references and links to other issues or pull requests.
-    s = re.sub(r"https?://github\.com/\S*", "[link removed]", s)
+    # Drop every link (the model may be steered by a report into adding
+    # phishing or tracking links), and break @user / @org/team mentions and
+    # #123 / owner/repo#123 / GH-123 references.
+    s = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", s)
+    s = re.sub(r"(?i)\b(?:https?|ftp)://\S+|\bwww\.\S+", "[link removed]", s)
+    s = re.sub(r"(?i)<\s*(?:a|img)\b[^>]*>", "", s)
     s = re.sub(r"@(?=[A-Za-z0-9])", "@\u200b", s)
     s = re.sub(r"(?i)\bGH-(?=\d)", "GH-\u200b", s)
     return re.sub(r"#(?=\d)", "#\u200b", s)

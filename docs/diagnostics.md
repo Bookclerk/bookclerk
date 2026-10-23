@@ -63,14 +63,16 @@ operators can pull the full object from B2 for manual review.
 
 `diagnostics-ingest` sends the sanitized batch to the collector's `POST /triage`
 (same key as `/report`). The Worker asks a small Workers AI model
-(`TRIAGE_MODEL`, default `@cf/meta/llama-3.1-8b-instruct-fp8-fast`) for an
+(`TRIAGE_MODEL`, default `@cf/ibm-granite/granite-4.0-h-micro`, 131k-token
+context) for an
 issue plan as JSON. The model has no tools, so a crafted report can at most
 shape that plan. The workflow then validates it before anything is filed: at
 most five issues, fixed labels, only report IDs from the batch, bounded sizes,
-and mentions, issue references and github.com links defanged.
+links removed, and mentions and issue references defanged.
 
 Spend is capped per UTC day by `TRIAGE_DAILY_NEURONS` (default 2,000, a fifth
-of the account's 10,000 free Workers AI neurons a day). Each call reserves its
+of the account's 10,000 free Workers AI neurons a day; values above 9,000 are
+clamped so a typo cannot reach paid usage). Each call reserves its
 worst case (input bytes plus the 2,048-token output cap) in the `TriageBudget`
 Durable Object before the model runs and settles to the reported usage after;
 a call that would pass the cap gets `429`, and ingest files one issue listing

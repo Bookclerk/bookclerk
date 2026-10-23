@@ -12,22 +12,33 @@
  * pass the cap is refused before the model runs.
  */
 
-/** Default model; any other must be listed in MODEL_NEURONS. */
-export const DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8-fast";
+/** Default model; any other must be listed in MODELS. */
+export const DEFAULT_MODEL = "@cf/ibm-granite/granite-4.0-h-micro";
 
 /**
- * Neurons per million input and output tokens, from the Workers AI pricing
- * page. A model missing here cannot be budgeted, so it is refused.
+ * Models triage may use: neurons per million input and output tokens (from
+ * the Workers AI pricing page) and the context window in tokens. A model
+ * missing here cannot be budgeted or sized, so it is refused.
  */
-export const MODEL_NEURONS = {
-  "@cf/meta/llama-3.1-8b-instruct-fp8-fast": { input: 4119, output: 34868 },
-  "@cf/meta/llama-3.2-3b-instruct": { input: 4625, output: 30475 },
-  "@cf/qwen/qwen3-30b-a3b-fp8": { input: 4625, output: 30475 },
-  "@cf/ibm-granite/granite-4.0-h-micro": { input: 1542, output: 10158 },
+export const MODELS = {
+  "@cf/ibm-granite/granite-4.0-h-micro": { input: 1542, output: 10158, context: 131000 },
 };
 
 /** Default daily cap: a fifth of the account's free daily neurons. */
 export const DEFAULT_DAILY_NEURONS = 2000;
+
+/**
+ * Hard ceiling on the daily cap, below the account's 10,000 free neurons
+ * (shared with any other Workers AI use), so a mistyped setting cannot
+ * spend into paid usage.
+ */
+export const MAX_DAILY_NEURONS = 9000;
+
+/**
+ * Tokens added around the measured text: the model's chat template and
+ * message headers. Generous, so the bound stays an upper bound.
+ */
+export const TEMPLATE_OVERHEAD_TOKENS = 256;
 
 /** Largest batch the workflow may send, in UTF-8 bytes. */
 export const MAX_TRIAGE_BODY_BYTES = 160 * 1024;
@@ -70,8 +81,8 @@ export function utcDay(nowMs) {
 
 /**
  * Upper bound on the input tokens of a text, for reserving before the call.
- * Tokenizers produce at most about one token per UTF-8 byte for this data,
- * so the byte count never under-reserves.
+ * The byte-level BPE tokenizers these models use emit at most one token per
+ * UTF-8 byte; callers add TEMPLATE_OVERHEAD_TOKENS for the chat template.
  *
  * @param {string} text Prompt text.
  * @returns {number} Token estimate.
@@ -191,11 +202,14 @@ export async function handleTriage(request, env, opts = {}) {
     return json({ error: "triage not configured" }, 503);
   }
   const model = String(env.TRIAGE_MODEL || DEFAULT_MODEL);
-  const rates = MODEL_NEURONS[model];
+  const rates = Object.hasOwn(MODELS, model) ? MODELS[model] : null;
   if (!rates) {
     return json({ error: "triage model has no known neuron rate" }, 503);
   }
-  const cap = positiveInt(env.TRIAGE_DAILY_NEURONS, DEFAULT_DAILY_NEURONS);
+  const cap = Math.min(
+    positiveInt(env.TRIAGE_DAILY_NEURONS, DEFAULT_DAILY_NEURONS),
+    MAX_DAILY_NEURONS,
+  );
 
   const len = Number(request.headers.get("content-length") || "0");
   if (len > MAX_TRIAGE_BODY_BYTES) {
@@ -215,12 +229,18 @@ export async function handleTriage(request, env, opts = {}) {
     return json({ error: "batch must be a non-empty array" }, 400);
   }
 
-  const data = JSON.stringify(batch);
-  const reserved = neuronsFor(
-    rates,
-    inputTokenBound(SYSTEM_PROMPT) + inputTokenBound(data),
-    MAX_OUTPUT_TOKENS,
-  );
+  const userMessage = `UNTRUSTED_DATA_BEGIN\n${JSON.stringify(batch)}\nUNTRUSTED_DATA_END`;
+  // Re-serializing can grow the batch (e.g. 1e20 becomes 21 digits), so size
+  // what the model will actually see.
+  if (new TextEncoder().encode(userMessage).byteLength > MAX_TRIAGE_BODY_BYTES) {
+    return json({ error: "batch too large" }, 413);
+  }
+  const inputBound =
+    inputTokenBound(SYSTEM_PROMPT) + inputTokenBound(userMessage) + TEMPLATE_OVERHEAD_TOKENS;
+  if (inputBound + MAX_OUTPUT_TOKENS > rates.context) {
+    return json({ error: "batch too large for the triage model" }, 413);
+  }
+  const reserved = neuronsFor(rates, inputBound, MAX_OUTPUT_TOKENS);
   const day = utcDay(now());
   const budget = env.TRIAGE_BUDGET.get(env.TRIAGE_BUDGET.idFromName("global"));
   const reservation = await budget.reserve(day, reserved, cap);
@@ -236,7 +256,7 @@ export async function handleTriage(request, env, opts = {}) {
     result = await env.AI.run(model, {
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: `UNTRUSTED_DATA_BEGIN\n${data}\nUNTRUSTED_DATA_END` },
+        { role: "user", content: userMessage },
       ],
       max_tokens: MAX_OUTPUT_TOKENS,
       temperature: 0.2,
@@ -247,16 +267,19 @@ export async function handleTriage(request, env, opts = {}) {
   }
 
   const usage = result && typeof result === "object" ? result.usage : null;
-  const promptTokens = Number(usage?.prompt_tokens);
-  const completionTokens = Number(usage?.completion_tokens);
-  // Without usage figures, keep the worst-case reservation.
+  const count = (v) => (Number.isSafeInteger(v) && v >= 0 ? v : null);
+  const promptTokens = count(usage?.prompt_tokens);
+  const completionTokens = count(usage?.completion_tokens);
+  // Without trustworthy usage figures, keep the worst-case reservation. A
+  // reported cost above the reservation is recorded as reported.
   const actual =
-    Number.isFinite(promptTokens) && Number.isFinite(completionTokens)
-      ? Math.min(reserved, neuronsFor(rates, promptTokens, completionTokens))
+    promptTokens !== null && completionTokens !== null
+      ? neuronsFor(rates, promptTokens, completionTokens)
       : reserved;
   const spentToday = await budget.settle(day, reserved, actual);
 
-  const response = result?.response;
+  // Older models answer in `response`; OpenAI-style ones in `choices`.
+  const response = result?.response ?? result?.choices?.[0]?.message?.content;
   const planText = typeof response === "string" ? response : JSON.stringify(response ?? "");
   return json({ plan_text: planText, model, neurons: actual, spent_today: spentToday, cap });
 }

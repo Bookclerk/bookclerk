@@ -16,7 +16,7 @@
  *
  * Secrets (set by deploy workflow from GitHub secrets):
  *   B2_KEY_ID, B2_APPLICATION_KEY, B2_BUCKET_ID
- *   REPORT_API_KEY          — required for /report
+ *   REPORT_API_KEY          — required for /report and /triage
  *   CLIENT_IP_HASH_SALT     — optional; enables hashed client IP in enrichment
  *   GITHUB_TOKEN            — optional; higher GitHub API rate limits
  *
