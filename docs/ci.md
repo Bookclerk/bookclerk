@@ -490,13 +490,14 @@ uv in `packages/plugin-sdk-python`, and GitHub Actions. `examples/` lockfiles
 are left out (reference plugins, never packaged); the full OSV scan still
 reports them.
 
-The Python SDK has no runtime dependencies. Its `uv.lock` pins the `dev`,
-`docs` and `docs-markdown` extras that the `python_sdk` check,
-`generate-api-docs.sh --python` and [docs publishing](#docs-publishing)
-install (`uv sync --locked --no-install-project`, which fails when the
-lockfile is out of date with `pyproject.toml`; the SDK is imported from `src/`
-rather than built, so its unlocked build backend never runs), so OSV scans
-them and a runtime dependency added later is scanned from the start. After
+The Python SDK has no runtime dependencies. Its `uv.lock` pins the `dev`
+and `docs` extras that the `python_sdk` check and
+`generate-api-docs.sh --python` install (`uv sync --locked --no-install-project`,
+which fails when the lockfile is out of date with `pyproject.toml`; the SDK is
+imported from `src/` rather than built, so its unlocked build backend never
+runs), so OSV scans them and a runtime dependency added later is scanned from
+the start. [Docs publishing](#docs-publishing) reads the SDK's source with the
+standard library and installs nothing. After
 changing `pyproject.toml` dependencies, run `uv lock` in
 `packages/plugin-sdk-python`.
 
@@ -777,14 +778,25 @@ step with this one, as Markdown that the website and agents read:
   skipped it), the release's build is committed beside `main`, parented on
   its head without moving it, and that commit is tagged. An existing tag is
   never moved.
-- The tree is `docs/` as it is, plus `api/`: the Rust reference (rustdoc JSON
-  from a pinned nightly, converted by `cargo-doc-md`, with rustdoc's
-  intra-doc links turned into Markdown links), TypeDoc's Markdown theme for
-  `@bookclerk/plugin-sdk` and `ui/src/lib` (`typedoc-plugin-markdown`, a dev
-  dependency of both), and `pydoc-markdown` for the Python SDK (the
-  `docs-markdown` extra in `uv.lock`). Every relative link to a file in the
-  tree must resolve, and links in `api/` must stay inside the tree, or the
-  build fails.
+- The tree is `docs/` as it is, plus `api/`, whose index lists the plugin
+  SDKs first (TypeScript, Python, Rust), then the web API, then the Rust
+  crates and the web UI library:
+  - TypeScript: TypeDoc's Markdown theme for `@bookclerk/plugin-sdk` and
+    `ui/src/lib` (`typedoc-plugin-markdown`, a dev dependency of both), one
+    page per module, without source links or breadcrumbs.
+  - Python: `scripts/python_api_markdown.py` reads the SDK with `ast` (it
+    imports nothing) and renders each public module's `__all__`, with
+    Google-style sections as lists and cross-references as links.
+  - Rust: `scripts/rustdoc_markdown.py` renders rustdoc JSON for every
+    workspace library from a pinned nightly, one page per public module.
+    Items re-exported from private modules are documented where they are
+    re-exported, signatures are rebuilt from the JSON, doc headings sit
+    under their item, and intra-doc links come from rustdoc's own link
+    table. `api/rust/README.md` groups the crates (plugin interface,
+    plugins, host internals, development).
+
+  Every relative link to a file in the tree must resolve, and links in
+  `api/` must stay inside the tree, or the build fails.
 
 The `build` job has no secrets and a read-only token; it runs
 `scripts/docs-markdown.py` and uploads the tree as an artifact. The `publish`
@@ -806,13 +818,13 @@ To build the tree locally (it lands in `target/docs-markdown/out/`):
 
 ```bash
 rustup toolchain install nightly-2025-11-15 --profile minimal
-cargo +nightly-2025-11-15 install cargo-doc-md --version 0.11.0 --locked
 python3 scripts/docs-markdown.py
 ```
 
-The nightly is pinned because `cargo-doc-md` 0.11 reads rustdoc JSON format
-56; bump `RUST_NIGHTLY` and `RUST_JSON_FORMAT` in the script, the converter
-version and the workflow together. The nightly may predate the workspace's
+The nightly is pinned because rustdoc's JSON format changes between
+nightlies and `rustdoc_markdown.py` reads format 56; bump `RUST_NIGHTLY` and
+`RUST_JSON_FORMAT` in `docs-markdown.py` and the workflow together, and adjust
+the renderer for any change in the format. The nightly may predate the workspace's
 `rust-version`, so the build passes `--ignore-rust-version`; it only produces
 documentation.
 

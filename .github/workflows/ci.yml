@@ -161,6 +161,8 @@ jobs:
           "$PY" scripts/tests/test_fuzz_crash_triage.py
           "$PY" scripts/tests/test_osv_advisories.py
           "$PY" scripts/tests/test_docs_markdown.py
+          "$PY" scripts/tests/test_rustdoc_markdown.py
+          "$PY" scripts/tests/test_python_api_markdown.py
           "$PY" scripts/tests/test_docs_publish.py
 
       - name: Database plugin isolation
