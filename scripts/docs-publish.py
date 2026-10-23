@@ -432,6 +432,30 @@ class DocsRepo:
         """
         self._call("PATCH", f"/git/refs/heads/{branch}", {"sha": sha, "force": False})
 
+    def tag_target(self, tag: str) -> str | None:
+        """Return the commit a tag points at, following annotated tags.
+
+        Args:
+            tag: Tag name.
+
+        Returns:
+            The commit id, or None when the tag does not exist.
+
+        Raises:
+            PublishError: Reading the tag failed for another reason.
+        """
+        status, data = self._request("GET", f"/repos/{self.repo}/git/ref/tags/{validate_tag(tag)}", None)
+        # 404: no such tag; 409: the repository has no commits at all.
+        if status in (404, 409):
+            return None
+        if status != 200 or not isinstance(data, dict):
+            raise PublishError(f"reading tags/{tag}: HTTP {status}")
+        target = data["object"]
+        # An annotated tag points at a tag object; follow it to the commit.
+        while target.get("type") == "tag":
+            target = self._call("GET", f"/git/tags/{validate_sha(target['sha'])}")["object"]
+        return validate_sha(target["sha"])
+
     def tag_commit(self, tag: str, sha: str) -> bool:
         """Create a lightweight tag, never moving an existing one.
 
@@ -457,16 +481,12 @@ class DocsRepo:
             raise PublishError(failure)
         # 422 is also what an invalid sha gets, so only an existing tag
         # explains it; otherwise report the original error.
-        ref_status, existing = self._request("GET", f"/repos/{self.repo}/git/ref/tags/{tag}", None)
-        if ref_status != 200 or not isinstance(existing, dict):
+        target = self.tag_target(tag)
+        if target is None:
             raise PublishError(failure)
-        target = existing["object"]
-        # An annotated tag points at a tag object; follow it to the commit.
-        while target.get("type") == "tag":
-            target = self._call("GET", f"/git/tags/{validate_sha(target['sha'])}")["object"]
-        if target["sha"] == sha:
+        if target == sha:
             return False
-        raise PublishError(f"tag {tag} already points at {target['sha']}, not {sha}")
+        raise PublishError(f"tag {tag} already points at {target}, not {sha}")
 
     def find_source_commit(self, branch: str, source_commit: str) -> str | None:
         """Find the commit on ``branch`` whose trailer names ``source_commit``.
@@ -605,8 +625,22 @@ def publish_release(
 
     Returns:
         A one-line summary of what happened.
+
+    Raises:
+        PublishError: The tag already exists on a commit built from another
+            source commit.
     """
     validate_tag(tag)
+    # A rerun finds the tag from the first run, which may be on a commit
+    # beside main; accept it when it was built from the same source.
+    existing = repo.tag_target(tag)
+    if existing is not None:
+        existing_source = source_commit_of(repo.commit(existing).get("message", ""))
+        if existing_source != source_commit:
+            raise PublishError(
+                f"tag {tag} already points at {existing}, built from {existing_source}, not {source_commit}"
+            )
+        return f"{tag} already tagged at {existing} (Source-Commit {source_commit})"
     head = repo.branch_head(branch) or repo.initialize(branch)
     found = repo.find_source_commit(branch, source_commit)
     if found is None:

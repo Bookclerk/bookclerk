@@ -231,6 +231,16 @@ class PublishTest(unittest.TestCase):
         self.assertEqual(tag_commit["parents"], [head])
         self.assertEqual(dp.source_commit_of(tag_commit["message"]), SHA_C)
 
+    def test_rerunning_a_release_tagged_beside_main_reuses_its_tag(self) -> None:
+        dp.publish_main(self.repo, "main", self.write({"README.md": "# Main\n"}), SRC, SHA_A)
+        files = self.write({"README.md": "# Release\n"})
+        dp.publish_release(self.repo, "main", files, SRC, SHA_C, "v1.0.0")
+        tagged = self.gh.refs["tags/v1.0.0"]
+        commits = len(self.gh.commits)
+        self.assertIn("already tagged", dp.publish_release(self.repo, "main", files, SRC, SHA_C, "v1.0.0"))
+        self.assertEqual(self.gh.refs["tags/v1.0.0"], tagged)
+        self.assertEqual(len(self.gh.commits), commits)
+
     def test_an_existing_tag_is_never_moved(self) -> None:
         files = self.write({"README.md": "# Docs\n"})
         dp.publish_main(self.repo, "main", files, SRC, SHA_A)
