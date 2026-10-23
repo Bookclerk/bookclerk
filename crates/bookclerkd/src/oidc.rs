@@ -617,6 +617,8 @@ async fn mint_tokens(
     responses(
         (status = 200, description = "Claims for the token's user.", body = serde_json::Value),
         (status = 401, description = "The access token is missing or invalid."),
+        (status = 403, description = "The token's user is disabled."),
+        (status = 500, description = "The user could not be read."),
     ),
 )]
 async fn userinfo(

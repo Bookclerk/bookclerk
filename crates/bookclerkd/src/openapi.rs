@@ -28,6 +28,10 @@ use crate::auth::{PORTAL_SESSION_COOKIE, SESSION_COOKIE};
 /// Path the document is served at.
 pub const OPENAPI_PATH: &str = "/api/openapi.json";
 
+/// Schema of an error response declared without a body: an object with at
+/// least an `error` slug.
+const API_ERROR: &str = "ApiError";
+
 /// Security scheme: the operator token as `Authorization: Bearer <token>`.
 const OPERATOR_TOKEN: &str = "operatorToken";
 
@@ -279,8 +283,41 @@ fn operations_mut(item: &mut PathItem) -> Vec<&mut Operation> {
 /// * `access` - Who the group's auth layer admits.
 /// * `prefix` - Where the group is nested (`""` when merged at the root).
 fn add_group(doc: &mut OpenApi, mut group: OpenApi, access: Access, prefix: &str) {
+    use utoipa::openapi::ResponseBuilder;
     for item in group.paths.paths.values_mut() {
         for op in operations_mut(item) {
+            // The auth layer answers before the handler runs: 401 without a
+            // credential, and 403 when the caller's role falls short (every
+            // layer but the any-session one checks a role).
+            let refusals: &[(&str, &str)] = match access {
+                Access::Public => &[],
+                Access::OperatorOrPortal => &[(
+                    "401",
+                    "The caller is not signed in, or the credential is wrong.",
+                )],
+                Access::Operator
+                | Access::OperatorOrAdministrator
+                | Access::OperatorOrOwner
+                | Access::OperatorOrNodeOwner
+                | Access::OperatorOrUser => &[
+                    (
+                        "401",
+                        "The caller is not signed in, or the credential is wrong.",
+                    ),
+                    ("403", "The caller's role does not allow this route."),
+                ],
+            };
+            for (status, description) in refusals {
+                op.responses
+                    .responses
+                    .entry((*status).to_string())
+                    .or_insert_with(|| {
+                        ResponseBuilder::new()
+                            .description(*description)
+                            .build()
+                            .into()
+                    });
+            }
             if op.security.is_none() {
                 op.security = Some(
                     access
@@ -383,8 +420,9 @@ pub fn document() -> OpenApi {
                 .description(Some(
                     "The HTTP API of `bookclerkd`, the Bookclerk daemon: the web interface, the CLI and \
                      other nodes use it. Request bodies are JSON (`Content-Type: application/json`; \
-                     send `{}` for defaults) unless a route says otherwise. Errors without a body of \
-                     their own are `{\"error\", \"message\", \"status\"}` (`ErrorJson`).",
+                     send `{}` for defaults) unless a route says otherwise. Error responses are JSON \
+                     objects with an `error` slug (`ApiError`); bare statuses get \
+                     `{\"error\", \"message\", \"status\"}` (`ErrorJson`).",
                 ))
                 .license(Some(LicenseBuilder::new().name(env!("CARGO_PKG_LICENSE")).build()))
                 .build(),
@@ -418,15 +456,41 @@ pub fn document() -> OpenApi {
         }
     }
     doc.tags = Some(tags);
+    doc.components
+        .get_or_insert_with(Default::default)
+        .schemas
+        .insert(API_ERROR.to_string(), api_error_schema());
     fill_untyped_content(&mut doc);
     doc
+}
+
+/// The [`API_ERROR`] schema: `error` always, `message` and `status` when the
+/// error middleware wrote the body, and whatever else a handler adds.
+///
+/// # Returns
+///
+/// The schema.
+fn api_error_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+    use utoipa::openapi::schema::{ObjectBuilder, Type};
+    ObjectBuilder::new()
+        .schema_type(Type::Object)
+        .description(Some(
+            "An error. `error` is a stable slug; bodies the error middleware writes also carry `message` and `status`, and some routes add fields of their own.",
+        ))
+        .property("error", ObjectBuilder::new().schema_type(Type::String).description(Some("Stable machine slug.")))
+        .required("error")
+        .property("message", ObjectBuilder::new().schema_type(Type::String).description(Some("Explanation for people.")))
+        .property("status", ObjectBuilder::new().schema_type(Type::Integer).description(Some("The HTTP status, repeated.")))
+        .build()
+        .into()
 }
 
 /// Gives every request or response media type without a schema one, so
 /// generated clients keep the body: any JSON value for JSON (a body not
 /// typed yet), bytes for everything else. An error response declared
-/// without a body gets the `ErrorJson` body that
-/// [`crate::http_error::brand_error_responses`] writes for it.
+/// without a body gets [`API_ERROR`]: the `ErrorJson` that
+/// [`crate::http_error::brand_error_responses`] writes for a bare status,
+/// or a handler's own `{"error", …}` body.
 ///
 /// # Arguments
 ///
@@ -464,7 +528,7 @@ fn fill_untyped_content(doc: &mut OpenApi) {
                             "application/json".to_string(),
                             RefOr::T(
                                 ContentBuilder::new()
-                                    .schema(Some(Ref::from_schema_name("ErrorJson")))
+                                    .schema(Some(Ref::from_schema_name(API_ERROR)))
                                     .build(),
                             ),
                         );

@@ -311,7 +311,7 @@ async fn login_integration(
     post,
     path = "/logout",
     responses(
-        (status = 200, description = "Signed out; the cookie is cleared."),
+        (status = 200, description = "Signed out (`{\"ok\": true}`); the cookie is cleared.", body = serde_json::Value),
     ),
 )]
 async fn logout(State(state): State<PortalState>, headers: HeaderMap) -> Response {
