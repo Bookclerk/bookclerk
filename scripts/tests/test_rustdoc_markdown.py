@@ -127,13 +127,14 @@ def demo_crate() -> dict[str, Any]:
 
 def other_crate() -> dict[str, Any]:
     """A crate ``other``: a struct, a union, a struct whose field docs have a
-    heading, an empty unsafe trait, a constant and two procedural macros."""
+    heading, an empty unsafe trait, a constant, two procedural macros and an
+    enum with a struct variant that docs link to."""
     return {
         "root": 0,
         "format_version": 56,
         "index": {
-            "0": item(0, "other", {"module": {"is_crate": True, "items": [1, 2, 5, 7, 8, 9, 10], "is_stripped": False}}),
-            "1": item(1, "Thing", {"struct": {"kind": "unit", "generics": NO_GENERICS, "impls": []}}, docs="A thing."),
+            "0": item(0, "other", {"module": {"is_crate": True, "items": [1, 2, 5, 7, 8, 9, 10, 11], "is_stripped": False}}),
+            "1": item(1, "Thing", {"struct": {"kind": "unit", "generics": NO_GENERICS, "impls": []}}, docs="A thing; see [`Signal::Hello`] and its [`node`](Signal::Hello::node).", links={"`Signal::Hello`": 12, "Signal::Hello::node": 13}),
             "2": item(2, "Pair", {"union": {"generics": NO_GENERICS, "has_stripped_fields": False, "fields": [3, 4], "impls": []}}, docs="Two views."),
             "3": item(3, "word", {"struct_field": {"primitive": "u32"}}, docs="As a word."),
             "4": item(4, "bytes", {"struct_field": {"array": {"type": {"primitive": "u8"}, "len": "4"}}}),
@@ -143,6 +144,10 @@ def other_crate() -> dict[str, Any]:
             "8": item(8, "LIMIT", {"constant": {"type": {"primitive": "u8"}, "const": {"expr": "10", "value": None, "is_literal": True}}}),
             "9": item(9, "make", {"proc_macro": {"kind": "bang", "helpers": []}}),
             "10": item(10, "tagged", {"proc_macro": {"kind": "attr", "helpers": []}}),
+            "11": item(11, "Signal", {"enum": {"generics": NO_GENERICS, "has_stripped_variants": False, "variants": [12], "impls": []}}, docs="A signal."),
+            "12": item(12, "Hello", {"variant": {"kind": {"struct": {"fields": [13, 14], "has_stripped_fields": False}}, "discriminant": None}}),
+            "13": item(13, "node", {"struct_field": {"primitive": "u64"}}, docs="Sender's node id."),
+            "14": item(14, "resume", {"struct_field": {"primitive": "bool"}}),
         },
         "paths": {"1": {"crate_id": 0, "path": ["other", "Thing"], "kind": "struct"}},
         "external_crates": {},
@@ -276,6 +281,14 @@ class RenderTest(unittest.TestCase):
         page = self.pages["other/index.md"]
         self.assertLess(page.index("Limit"), page.index("### LIMIT"))
         self.assertIn("| [`LIMIT`](#limit-1) |", page)
+
+    def test_struct_variant_fields_and_variant_links(self) -> None:
+        page = self.pages["other/index.md"]
+        # The variant has no docs of its own but lists its documented field.
+        self.assertIn("**Variants**\n\n- `Hello`\n  - `node`: Sender's node id.\n", page)
+        self.assertNotIn("`resume`:", page)
+        # Links to a variant and to its field land on the enum.
+        self.assertIn("see [`Signal::Hello`](#signal) and its [`node`](#signal).", page)
 
     def test_load_crates_checks_the_format(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rustdoc-markdown-") as tmp:

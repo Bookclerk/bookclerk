@@ -679,6 +679,24 @@ def kind_of(item: Json) -> str:
     return next(iter(item["inner"]))
 
 
+def _variant_field_ids(variant: Json) -> list[int]:
+    """Return the field ids of a tuple or struct enum variant.
+
+    Args:
+        variant: A rustdoc variant item.
+
+    Returns:
+        The ids in declaration order; stripped (hidden) tuple fields are
+        left out, and a unit variant has none.
+    """
+    k = variant["inner"]["variant"].get("kind", "plain")
+    if isinstance(k, dict) and "struct" in k:
+        return list(k["struct"]["fields"])
+    if isinstance(k, dict) and "tuple" in k:
+        return [fid for fid in k["tuple"] if fid is not None]
+    return []
+
+
 @dataclass
 class Entry:
     """An item documented on a module page.
@@ -920,10 +938,17 @@ class Renderer:
                 self._record(crate, entry.item["id"], (page.file, anchor))
                 for heading in _doc_headings(entry.item.get("docs")):
                     anchors.take(heading)
+                # Fields and variants have no heading of their own: a link
+                # to one lands on the item that lists it.
+                for member_id in self._field_ids(crate, entry.item):
+                    self._record(crate, member_id, (page.file, anchor))
                 # Field and variant docs come next on the page (_fields).
                 for documented in self._documented_fields(crate, entry)[1]:
-                    for heading in _doc_headings(documented["docs"]):
+                    for heading in _doc_headings(documented.get("docs")):
                         anchors.take(heading)
+                    for nested in self._variant_fields(crate, documented):
+                        for heading in _doc_headings(nested["docs"]):
+                            anchors.take(heading)
                 self._plan_members(crate, page, entry, anchors)
 
     def _plan_members(self, crate: Crate, page: Page, entry: Entry, anchors: Anchors) -> None:
@@ -1268,9 +1293,62 @@ class Renderer:
         title, fields = self._documented_fields(crate, entry)
         rows = []
         for f in fields:
-            text = rewrite_docs(f["docs"], DocContext(f.get("links", {}), resolve, 5)).replace("\n", "\n  ")
-            rows.append(f"- `{f['name']}`: {text}")
+            text = rewrite_docs(f.get("docs") or "", DocContext(f.get("links", {}), resolve, 5)).replace("\n", "\n  ")
+            rows.append(f"- `{f['name']}`: {text}" if text else f"- `{f['name']}`")
+            for nested in self._variant_fields(crate, f):
+                inner = rewrite_docs(nested["docs"], DocContext(nested.get("links", {}), resolve, 5)).replace("\n", "\n    ")
+                rows.append(f"  - `{nested['name']}`: {inner}")
         return [f"**{title}**", "", *rows, ""] if rows else []
+
+    def _field_ids(self, crate: Crate, item: Json) -> list[int]:
+        """List the ids of an item's fields and variants, documented or not.
+
+        Args:
+            crate: The item's crate.
+            item: A struct, union or enum.
+
+        Returns:
+            Field ids of a struct or union; variant ids of an enum followed by
+            the fields of its tuple and struct variants. Empty for other kinds.
+        """
+        kind = kind_of(item)
+        if kind == "struct":
+            k = item["inner"]["struct"].get("kind", "unit")
+            if isinstance(k, dict) and "plain" in k:
+                return list(k["plain"]["fields"])
+            if isinstance(k, dict) and "tuple" in k:
+                return [fid for fid in k["tuple"] if fid is not None]
+            return []
+        if kind == "union":
+            return list(item["inner"]["union"].get("fields", []))
+        if kind != "enum":
+            return []
+        out: list[int] = []
+        for vid in item["inner"]["enum"]["variants"]:
+            out.append(vid)
+            variant = crate.item(vid)
+            if variant is not None:
+                out += _variant_field_ids(variant)
+        return out
+
+    def _variant_fields(self, crate: Crate, variant: Json) -> list[Json]:
+        """List the documented fields of a tuple or struct enum variant.
+
+        Args:
+            crate: The variant's crate.
+            variant: A variant item (any other item yields nothing).
+
+        Returns:
+            The fields that carry docs, in declaration order.
+        """
+        if kind_of(variant) != "variant":
+            return []
+        out = []
+        for fid in _variant_field_ids(variant):
+            f = crate.item(fid)
+            if f is not None and f.get("docs"):
+                out.append(f)
+        return out
 
     def _documented_fields(self, crate: Crate, entry: Entry) -> tuple[str, list[Json]]:
         """List the fields or variants :meth:`_fields` renders.
@@ -1281,7 +1359,8 @@ class Renderer:
 
         Returns:
             ``Fields`` or ``Variants``, and the documented public fields of a
-            struct or union, or the documented variants of an enum, in order.
+            struct or union, or the variants of an enum that carry docs or
+            have documented fields, in order.
         """
         item = entry.item
         kind = kind_of(item)
@@ -1299,9 +1378,11 @@ class Renderer:
         out = []
         for fid in ids:
             f = crate.item(fid)
-            if f is None or not f.get("docs") or (kind != "enum" and f.get("visibility") != "public"):
+            if f is None or (kind != "enum" and f.get("visibility") != "public"):
                 continue
-            out.append(f)
+            # A variant without docs of its own still lists its documented fields.
+            if f.get("docs") or self._variant_fields(crate, f):
+                out.append(f)
         return title, out
 
     def _methods(self, crate: Crate, entry: Entry, resolve: Any) -> list[str]:
