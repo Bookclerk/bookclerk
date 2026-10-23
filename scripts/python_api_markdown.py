@@ -184,6 +184,10 @@ def _walk_block(body: list[ast.stmt]) -> Iterator[ast.stmt]:
             yield from _walk_block(block)
 
 
+#: ``ast.TypeAlias`` (PEP 695 ``type X = ...``) where this Python has it.
+_TYPE_ALIAS: tuple[type, ...] = (ast.TypeAlias,) if hasattr(ast, "TypeAlias") else ()
+
+
 def _literal_names(value: ast.expr) -> list[str]:
     """Evaluate a list or tuple of strings, or several joined with ``+``.
 
@@ -208,7 +212,8 @@ def _all_names(tree: ast.Module) -> list[str] | None:
     """Return a module's ``__all__``.
 
     Handles ``__all__ = [...]`` (or a tuple, or literals joined with ``+``)
-    and later ``__all__ += [...]`` / ``__all__.extend([...])``.
+    and later ``__all__ += [...]`` / ``__all__.extend([...])`` /
+    ``__all__.append("...")``.
 
     Args:
         tree: The parsed module.
@@ -236,10 +241,15 @@ def _all_names(tree: ast.Module) -> list[str] | None:
             and isinstance(node.value.func, ast.Attribute)
             and isinstance(node.value.func.value, ast.Name)
             and node.value.func.value.id == "__all__"
-            and node.value.func.attr == "extend"
-            and len(node.value.args) == 1
         ):
-            value, extend = node.value.args[0], True
+            call = node.value
+            if call.func.attr == "extend" and len(call.args) == 1 and not call.keywords:
+                value, extend = call.args[0], True
+            elif call.func.attr == "append" and len(call.args) == 1 and not call.keywords:
+                value, extend = ast.List(elts=[call.args[0]], ctx=ast.Load()), True
+            else:
+                # insert, remove, clear, ...: the result cannot be read safely.
+                raise ValueError(f"__all__ is changed with .{call.func.attr}() (line {node.lineno})")
         if value is None:
             continue
         try:
@@ -415,7 +425,7 @@ class Package:
         return page
 
     def _constant_doc(self, module: str, node: ast.AST) -> str | None:
-        """Return the string literal that follows a constant's assignment.
+        """Return the string literal that follows a constant's assignment or a ``type`` alias.
 
         Args:
             module: The module defining it.
@@ -425,7 +435,7 @@ class Package:
             The cleaned string, or None for other nodes.
         """
         parsed = self._tree(module)
-        if parsed is None or not isinstance(node, (ast.Assign, ast.AnnAssign)):
+        if parsed is None or not isinstance(node, (ast.Assign, ast.AnnAssign, *_TYPE_ALIAS)):
             return None
         body = parsed[0].body
         for i, stmt in enumerate(body[:-1]):
@@ -504,7 +514,10 @@ class Package:
         if len(rows) > 1:
             lines += ["| Name | Kind | Summary |", "| --- | --- | --- |"]
             for m, kind in rows:
-                lines.append(f"| [`{m.name}`](#{slug(m.name)}) | {kind} | {_summary(m.doc if isinstance(m.node, (ast.Assign, ast.AnnAssign)) else ast.get_docstring(m.node))} |")
+                # ast.get_docstring only takes classes, functions and modules;
+                # constants and `type` aliases carry their doc on the member.
+                doc = ast.get_docstring(m.node) if isinstance(m.node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) else m.doc
+                lines.append(f"| [`{m.name}`](#{slug(m.name)}) | {kind} | {_summary(doc)} |")
             lines.append("")
         if page.links:
             lines += ["## Re-exports", ""]

@@ -715,7 +715,7 @@ class ReExport:
     """A re-export of an item this crate does not document itself.
 
     Attributes:
-        name: The name it is reachable under.
+        name: The name it is reachable under (``*`` for a glob).
         target_id: The id the ``use`` points at (this crate's JSON ids).
         source: The ``use`` source as written.
     """
@@ -836,6 +836,10 @@ class _PageWalk:
             if use.get("is_glob"):
                 if target is not None and kind_of(target) == "module" and depth < 8:
                     self._visit(page, names, target["inner"]["module"]["items"], depth + 1)
+                else:
+                    # Another crate's module (or an enum's variants): list the
+                    # glob itself so readers know the names exist.
+                    page.reexports.append(ReExport("*", use.get("id"), f"{use['source']}::*"))
                 continue
             if target is not None and kind_of(target) != "use":
                 self._add(page, names, use["name"], target)
@@ -1083,7 +1087,8 @@ class Renderer:
             lines += ["## Re-exports", ""]
             for r in page.reexports:
                 href = resolve(r.target_id) if r.target_id is not None else None
-                label = f"`{r.source}`" + (f" as `{r.name}`" if _path_name(r.source) != r.name else "")
+                renamed = r.name != "*" and _path_name(r.source) != r.name
+                label = f"`{r.source}`" + (f" as `{r.name}`" if renamed else "")
                 lines.append(f"- [{label}]({href})" if href else f"- {label}")
             lines.append("")
         for kind, title, _ in SECTIONS:

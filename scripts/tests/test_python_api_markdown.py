@@ -56,6 +56,11 @@ FILES = {
         LIMIT = 8
         """Most jobs at once."""
 
+        type Pair = tuple[int, int]
+        """Two job ids."""
+
+        __all__.append("Pair")
+
         _hidden = 1
 
 
@@ -159,6 +164,13 @@ class PackageTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "__all__ is not built from string literals"):
                 pm.render(Path(tmp), ["pkg"])
 
+    def test_unreadable_all_change_is_an_error(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="python-api-markdown-") as tmp:
+            (Path(tmp) / "pkg").mkdir()
+            (Path(tmp) / "pkg/__init__.py").write_text('__all__ = ["a", "b"]\n__all__.remove("b")\n')
+            with self.assertRaisesRegex(ValueError, r"__all__ is changed with \.remove\(\)"):
+                pm.render(Path(tmp), ["pkg"])
+
     def test_module_page(self) -> None:
         page = self.pages["pkg.worker.md"]
         self.assertNotIn("_hidden", page)
@@ -168,6 +180,8 @@ class PackageTest(unittest.TestCase):
         self.assertNotIn("json\n", page.split("## Classes")[0].split("| --- |")[0])
         self.assertIn("| [`Worker`](#worker) | class | Does the work. |", page)
         self.assertIn("| [`LIMIT`](#limit) | constant | Most jobs at once. |", page)
+        # Added with __all__.append; a `type` alias summarizes its own doc.
+        self.assertIn("| [`Pair`](#pair) | constant | Two job ids. |", page)
         self.assertIn("```python\nclass Worker(Base)\n```", page)
         self.assertIn("**Attributes**\n\n- `name`: Display name.", page)
         self.assertIn("#### Worker.handle\n\n```python\ndef handle(self, job: dict[str, int], *, retry: bool=False) -> int\n```", page)

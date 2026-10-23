@@ -57,7 +57,7 @@ def demo_crate() -> dict[str, Any]:
         "0": item(
             0,
             "demo",
-            {"module": {"is_crate": True, "items": [1, 2, 3, 4, 5, 40], "is_stripped": False}},
+            {"module": {"is_crate": True, "items": [1, 2, 3, 4, 5, 40, 41], "is_stripped": False}},
             docs="Demo crate.\n\n# Overview\n\nBuild a [`Mux`] with [`open`].",
             links={"`Mux`": 10, "`open`": 20},
         ),
@@ -104,6 +104,8 @@ def demo_crate() -> dict[str, Any]:
         "30": item(30, "Frame", {"struct": {"kind": "unit", "generics": NO_GENERICS, "impls": []}}, docs="One frame."),
         "31": item(31, "Codec", {"trait": {"is_auto": False, "is_unsafe": False, "is_dyn_compatible": True, "items": [32], "generics": NO_GENERICS, "bounds": [{"trait_bound": {"trait": {"path": "Send", "id": 94, "args": None}, "generic_params": [], "modifier": "none"}}], "implementations": []}}),
         "32": {**item(32, "decode", fn([["self", {"borrowed_ref": {"lifetime": None, "is_mutable": False, "type": {"generic": "Self"}}}]], output={"primitive": "bool"})), "visibility": "default"},
+        # pub use other::*; (a module outside this crate's index)
+        "41": item(41, None, {"use": {"source": "other", "name": "other", "id": 60, "is_glob": True}}),
         "40": item(40, "LIMIT", {"constant": {"type": {"primitive": "usize"}, "const": {"expr": "64", "value": None, "is_literal": True}}}),
     }
     # `pub use` of an item defined in this crate under a private module: the
@@ -254,6 +256,8 @@ class RenderTest(unittest.TestCase):
         self.assertIn("pub const LIMIT: usize = 64;", page)
         self.assertIn("- [`proto`](proto.md): Wire protocol.", page)
         self.assertIn("- [`other::Thing`](../other/index.md#thing)", page)
+        # A glob the walk cannot expand is still listed.
+        self.assertIn("- `other::*`\n", page)
         self.assertIn("| [`Mux`](#mux) | struct | A multiplexer. |", page)
 
     def test_section_order(self) -> None:
