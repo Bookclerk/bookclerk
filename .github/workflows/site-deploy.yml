@@ -8,8 +8,8 @@
 # main until the first release, then from the newest release tag.
 #
 # GitHub repository secrets:
-#   CLOUDFLARE_API_TOKEN   scoped to the Worker `bookclerk-site` (Workers
-#                          Scripts edit) and the DOMAIN zone (Workers Routes
+#   CLOUDFLARE_API_TOKEN   scoped to the Worker `bookclerk-site` (Workers,
+#                          Editor role) and the DOMAIN zone (Workers Routes
 #                          edit, for the custom domain); see
 #                          docs/ci.md#cloudflare-worker-deploys
 #   CLOUDFLARE_ACCOUNT_ID

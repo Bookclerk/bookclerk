@@ -828,22 +828,28 @@ secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`:
 
 `DOMAIN` is the organization variable (default `bookclerk.app`).
 
-The API token is scoped to the Workers by name, so it needs these permissions
-for each Worker the workflows deploy:
+The API token is scoped to the Workers by name, so it needs, for each Worker
+the workflows deploy:
 
-- **Workers Scripts: Edit**, scoped to the Worker itself (resource
-  `bookclerk-site`, `bookclerk-diagnostics`).
-- **Workers Routes: Edit** on the `<DOMAIN>` zone, for the custom domain.
+- The **Workers** permission with the **Editor** role, scoped to
+  *Individual Workers* and naming the Worker (`bookclerk-site`,
+  `bookclerk-diagnostics`). This is the current Workers permission; the
+  legacy *Workers Scripts: Edit* maps to Editor on all Workers, which is
+  broader than the deploys need.
+- **Zone → Workers Routes → Edit** (Write in the API reference) on the
+  `<DOMAIN>` zone, for the custom domain.
 
-A token scoped to named Workers cannot create a Worker that does not exist
-yet, so the first deploy of a new Worker needs one of these:
+Editor cannot create a Worker; creating one takes the **Admin** role on the
+Workers product. So the first deploy of a new Worker needs one of these:
 
 1. Create the Worker in the Cloudflare dashboard first, under its exact name
    (an empty "Hello World" Worker is fine; the first deploy replaces it), then
-   add it to the token's Worker-scoped permission; or
-2. Temporarily give the token account-level **Workers Scripts: Edit** (or
-   Workers Admin), run the first deploy, then remove that permission again
-   and add the new Worker to the Worker-scoped one.
+   add it to the token's Individual Workers scope; or
+2. Temporarily give the token the Workers Admin role, run the first deploy,
+   then remove it again and add the new Worker to the Individual Workers
+   scope.
+
+See [Workers roles and permissions](https://developers.cloudflare.com/workers/authorization/workers/).
 
 After that, only the two permissions above are needed. Renaming a Worker in
 `wrangler.toml` creates a new Worker, so it repeats this step and leaves the
