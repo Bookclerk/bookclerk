@@ -54,7 +54,7 @@ const SUMMARY =
  * to requests that ask for `text/markdown` (worker.js). `alternate` is false
  * when the page should not advertise it with `rel="alternate"`.
  */
-const PAGES = [
+export const PAGES = [
   {
     file: "index.html",
     path: "/",

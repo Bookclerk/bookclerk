@@ -34,12 +34,15 @@ const HTML_TYPES = new Set(["text/html", "application/xhtml+xml"]);
 const MARKDOWN_CONTENT_TYPE = "text/markdown; charset=utf-8";
 
 /** Pages outside /docs/ that have a Markdown version: path -> Markdown file. */
-const PAGE_MARKDOWN = new Map([
+export const PAGE_MARKDOWN = new Map([
   ["/", "/index.md"],
   ["/index.html", "/index.md"],
   ["/download", "/download.md"],
   ["/download.html", "/download.md"],
 ]);
+
+/** Request headers passed on when fetching a Markdown version. */
+const CONDITIONAL_HEADERS = ["If-None-Match", "If-Modified-Since"];
 
 /** Markdown version of the not-found page. */
 const NOT_FOUND_MARKDOWN = "/404.md";
@@ -50,15 +53,18 @@ const DOC_PATH_RE = /^\/docs\/(?:[A-Za-z0-9_-][A-Za-z0-9._-]*\/)*(?:[A-Za-z0-9_-
 /**
  * Reads how strongly an Accept header asks for Markdown and for HTML.
  *
- * Wildcards (`*\/*`, `text/*`) count for HTML only, so a browser or a generic
- * client keeps getting HTML.
+ * The most specific range that matches decides, as RFC 9110 says: an HTML
+ * type listed by name overrides `text/*`, which overrides `*\/*`. Wildcards
+ * count for HTML only, so a browser or a generic client keeps getting HTML.
  *
  * @param {string | null} accept The request's Accept header.
- * @returns {{markdown: number, html: number}} The highest quality value (0-1)
- *   given to a Markdown type and to an HTML type or wildcard.
+ * @returns {{markdown: number, html: number}} The quality value (0-1) given
+ *   to Markdown and to HTML.
  */
 export function acceptWeights(accept) {
-  const weights = { markdown: 0, html: 0 };
+  let markdown = 0;
+  /** Highest q per specificity: 2 = an HTML type by name, 1 = text/*, 0 = *\/*. */
+  const html = [null, null, null];
   for (const part of (accept ?? "").split(",")) {
     const [rawType, ...params] = part.split(";");
     const type = rawType.trim().toLowerCase();
@@ -68,13 +74,14 @@ export function acceptWeights(accept) {
       const [key, value] = param.split("=").map((s) => s.trim().toLowerCase());
       if (key === "q") {
         const parsed = Number(value);
-        q = Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : 0;
+        q = value !== "" && Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : 0;
       }
     }
-    if (MARKDOWN_TYPES.has(type)) weights.markdown = Math.max(weights.markdown, q);
-    else if (HTML_TYPES.has(type) || type === "*/*" || type === "text/*") weights.html = Math.max(weights.html, q);
+    const rank = HTML_TYPES.has(type) ? 2 : type === "text/*" ? 1 : type === "*/*" ? 0 : -1;
+    if (MARKDOWN_TYPES.has(type)) markdown = Math.max(markdown, q);
+    else if (rank >= 0) html[rank] = Math.max(html[rank] ?? 0, q);
   }
-  return weights;
+  return { markdown, html: html[2] ?? html[1] ?? html[0] ?? 0 };
 }
 
 /**
@@ -94,11 +101,16 @@ export function prefersMarkdown(accept) {
  *
  * @param {string} pathname The request path.
  * @returns {string | null} The `.md` asset path, or null when the path is not
- *   a page (an asset, or already Markdown).
+ *   a page (an asset, or already Markdown). A `/docs/<name>/` path maps to
+ *   `<name>/README.md`; handle() falls back to `<name>.md`.
  */
 export function markdownPath(pathname) {
   if (PAGE_MARKDOWN.has(pathname)) return PAGE_MARKDOWN.get(pathname);
-  if (!DOC_PATH_RE.test(pathname) || pathname.endsWith(".md")) return null;
+  if (!DOC_PATH_RE.test(pathname)) return null;
+  // A file with an extension (`.md`, `.svg`, …) is not a page; only `.html`
+  // names one.
+  const last = pathname.slice(pathname.lastIndexOf("/") + 1);
+  if (last.includes(".") && !last.endsWith(".html")) return null;
   if (pathname.endsWith("/")) return `${pathname}README.md`;
   if (pathname.endsWith("/index.html")) return `${pathname.slice(0, -"index.html".length)}README.md`;
   if (pathname.endsWith(".html")) return `${pathname.slice(0, -".html".length)}.md`;
@@ -118,6 +130,20 @@ export function htmlPath(pathname) {
   if (!pathname.startsWith("/docs/") || !pathname.endsWith(".md") || !DOC_PATH_RE.test(pathname)) return null;
   if (pathname.endsWith("/README.md")) return pathname.slice(0, -"README.md".length);
   return pathname.slice(0, -".md".length);
+}
+
+/**
+ * Lists the Markdown files that can hold a page, most likely first.
+ *
+ * @param {string} md Output of markdownPath().
+ * @returns {string[]} `md`, then for `/docs/<name>.md` the directory's
+ *   `README.md` (a directory linked without its slash), or for
+ *   `/docs/<name>/README.md` the file `<name>.md` (a doc linked with a slash).
+ */
+export function markdownCandidates(md) {
+  if (!md.startsWith("/docs/") || md === "/docs/README.md") return [md];
+  if (md.endsWith("/README.md")) return [md, `${md.slice(0, -"/README.md".length)}.md`];
+  return [md, `${md.slice(0, -".md".length)}/README.md`];
 }
 
 /**
@@ -162,24 +188,27 @@ export async function handle(request, env) {
   const md = isRead ? markdownPath(url.pathname) : null;
 
   if (md !== null && prefersMarkdown(request.headers.get("Accept"))) {
-    const assetInit = { method: request.method, headers: { Accept: MARKDOWN_CONTENT_TYPE } };
-    let mdFile = md;
-    let found = await env.ASSETS.fetch(new URL(mdFile, url), assetInit);
-    if (!found.ok && !md.endsWith("/README.md") && md.startsWith("/docs/")) {
-      // `/docs/<dir>` without the trailing slash: the directory's README.
-      mdFile = `${md.slice(0, -".md".length)}/README.md`;
-      found = await env.ASSETS.fetch(new URL(mdFile, url), assetInit);
+    // Keep conditional headers so agents can revalidate with an ETag.
+    const headers = new Headers({ Accept: MARKDOWN_CONTENT_TYPE });
+    for (const name of CONDITIONAL_HEADERS) {
+      const value = request.headers.get(name);
+      if (value !== null) headers.set(name, value);
     }
-    if (found.ok) {
-      const page = htmlPath(mdFile) ?? url.pathname;
-      return withHeaders(found, {
-        "Content-Type": MARKDOWN_CONTENT_TYPE,
-        Vary: varyAccept(found.headers),
-        Link: `<${url.origin}${page}>; rel="canonical"`,
-      });
+    const assetInit = { method: request.method, headers };
+    for (const candidate of markdownCandidates(md)) {
+      const found = await env.ASSETS.fetch(new URL(candidate, url), assetInit);
+      if (found.ok || found.status === 304) {
+        const page = htmlPath(candidate) ?? url.pathname;
+        return withHeaders(found, {
+          "Content-Type": MARKDOWN_CONTENT_TYPE,
+          Vary: varyAccept(found.headers),
+          Link: `<${url.origin}${page}>; rel="canonical"`,
+        });
+      }
     }
-    const missing = await env.ASSETS.fetch(new URL(NOT_FOUND_MARKDOWN, url), assetInit);
-    return withHeaders(missing, { "Content-Type": MARKDOWN_CONTENT_TYPE, Vary: "Accept", "X-Robots-Tag": "noindex" }, 404);
+    const missing = await env.ASSETS.fetch(new URL(NOT_FOUND_MARKDOWN, url), { method: request.method });
+    const notFound = missing.ok ? missing : new Response("# Not found\n");
+    return withHeaders(notFound, { "Content-Type": MARKDOWN_CONTENT_TYPE, Vary: "Accept", "X-Robots-Tag": "noindex" }, 404);
   }
 
   const response = await env.ASSETS.fetch(request);
@@ -191,8 +220,11 @@ export async function handle(request, env) {
     }
     return withHeaders(response, headers);
   }
+  if (isRead && url.pathname === NOT_FOUND_MARKDOWN) {
+    return withHeaders(response, { "Content-Type": MARKDOWN_CONTENT_TYPE, "X-Robots-Tag": "noindex" });
+  }
   const page = isRead ? htmlPath(url.pathname) : null;
-  if (page !== null && response.ok) {
+  if (page !== null && (response.ok || response.status === 304)) {
     // A Markdown copy requested by name: point search engines at the page.
     return withHeaders(response, { "Content-Type": MARKDOWN_CONTENT_TYPE, Link: `<${url.origin}${page}>; rel="canonical"` });
   }

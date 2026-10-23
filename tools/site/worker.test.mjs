@@ -8,8 +8,11 @@ import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { after, before, test } from "node:test";
 
-import { build } from "./build.mjs";
-import { acceptWeights, handle, htmlPath, markdownPath, prefersMarkdown, SECURITY_HEADERS } from "./worker.js";
+import { build, PAGES } from "./build.mjs";
+import { acceptWeights, handle, htmlPath, markdownCandidates, markdownPath, PAGE_MARKDOWN, prefersMarkdown, SECURITY_HEADERS } from "./worker.js";
+
+/** This directory. */
+const HERE = new URL(".", import.meta.url).pathname;
 
 /** Release state of a repository with no release yet. */
 const ENV = { SITE_COMMIT: "b6adae4d0123456789abcdef0123456789abcdef", SITE_BUILT_ON: "2026-10-23" };
@@ -72,6 +75,13 @@ test("acceptWeights reads quality values and counts wildcards as HTML", () => {
   assert.deepEqual(acceptWeights(null), { markdown: 0, html: 0 });
 });
 
+test("acceptWeights lets a named type override a wildcard", () => {
+  assert.deepEqual(acceptWeights("text/markdown;q=0.5, text/html;q=0, */*;q=0.8"), { markdown: 0.5, html: 0 });
+  assert.deepEqual(acceptWeights("text/*;q=0.9, text/html;q=0.1, text/markdown;q=0.5"), { markdown: 0.5, html: 0.1 });
+  assert.deepEqual(acceptWeights("text/*;q=0.3, */*"), { markdown: 0, html: 0.3 });
+  assert.equal(prefersMarkdown("text/markdown;q=0.5, text/html;q=0, */*;q=0.8"), true);
+});
+
 test("prefersMarkdown only when Markdown ranks at least as high as HTML", () => {
   assert.equal(prefersMarkdown("text/markdown"), true);
   assert.equal(prefersMarkdown("text/markdown, text/html;q=0.9"), true);
@@ -95,6 +105,41 @@ test("markdownPath maps pages to their Markdown versions", () => {
   assert.equal(markdownPath("/site.css"), null);
   assert.equal(markdownPath("/docs/../worker.js"), null);
   assert.equal(markdownPath("/docs/.hidden"), null);
+  assert.equal(markdownPath("/docs/img/diagram.svg"), null);
+  assert.equal(markdownPath("/docs/llms.txt"), null);
+});
+
+test("markdownCandidates tries the other spelling of a doc path", () => {
+  assert.deepEqual(markdownCandidates("/index.md"), ["/index.md"]);
+  assert.deepEqual(markdownCandidates("/docs/README.md"), ["/docs/README.md"]);
+  assert.deepEqual(markdownCandidates("/docs/api.md"), ["/docs/api.md", "/docs/api/README.md"]);
+  assert.deepEqual(markdownCandidates("/docs/plugins/README.md"), ["/docs/plugins/README.md", "/docs/plugins.md"]);
+});
+
+test("every page with a Markdown version runs the Worker and is mapped", () => {
+  const toml = readFileSync(join(HERE, "wrangler.toml"), "utf8");
+  const routes = JSON.parse(toml.match(/^run_worker_first = (\[.*\])$/m)[1]);
+  assert.ok(routes.includes("/docs/*"));
+  for (const page of PAGES.filter((p) => p.markdown)) {
+    assert.ok(routes.includes(page.markdown), `${page.markdown} not in run_worker_first`);
+    if (page.alternate === false) continue;
+    assert.equal(PAGE_MARKDOWN.get(page.path), page.markdown, page.path);
+    assert.ok(routes.includes(page.path), `${page.path} not in run_worker_first`);
+  }
+  for (const path of PAGE_MARKDOWN.keys()) assert.ok(routes.includes(path), `${path} not in run_worker_first`);
+});
+
+test("the Worker sends the same security headers as src/_headers", () => {
+  const block = readFileSync(join(HERE, "src", "_headers"), "utf8").split(/\n\s*\n/)[0];
+  const fromFile = Object.fromEntries(
+    block
+      .split("\n")
+      .slice(1)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => [line.slice(0, line.indexOf(":")), line.slice(line.indexOf(":") + 1).trim()]),
+  );
+  assert.deepEqual(fromFile, SECURITY_HEADERS);
 });
 
 test("htmlPath maps Markdown versions back to their pages", () => {
@@ -112,6 +157,7 @@ test("a Markdown request for a page gets its Markdown version", async () => {
     ["/download", "# Get Bookclerk", "/download"],
     ["/docs/", "# ", "/docs/"],
     ["/docs/getting-started", "# ", "/docs/getting-started"],
+    ["/docs/getting-started/", "# ", "/docs/getting-started"],
     ["/docs/api", "# ", "/docs/api/"],
   ]) {
     const res = await get(path, "text/markdown");
@@ -150,6 +196,30 @@ test("a Markdown copy fetched by name points back at its page", async () => {
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("Content-Type"), "text/markdown; charset=utf-8");
   assert.equal(res.headers.get("Link"), '<https://bookclerk.app/docs/plugins>; rel="canonical"');
+});
+
+test("Markdown files fetched by name point at their pages", async () => {
+  const home = await get("/index.md", "*/*");
+  assert.equal(home.headers.get("Link"), '<https://bookclerk.app/>; rel="canonical"');
+  const missing = await get("/404.md", "*/*");
+  assert.equal(missing.headers.get("X-Robots-Tag"), "noindex");
+  assert.equal(missing.headers.get("Content-Type"), "text/markdown; charset=utf-8");
+});
+
+test("a Markdown request passes conditional headers to the assets", async () => {
+  const seen = [];
+  const spy = {
+    ASSETS: {
+      fetch: async (input, init) => {
+        seen.push(new Headers(init?.headers).get("If-None-Match"));
+        return new Response(null, { status: 304, headers: { ETag: '"abc"' } });
+      },
+    },
+  };
+  const req = new Request("https://bookclerk.app/docs/plugins", { headers: { Accept: "text/markdown", "If-None-Match": '"abc"' } });
+  const res = await handle(req, spy);
+  assert.equal(res.status, 304);
+  assert.deepEqual(seen, ['"abc"']);
 });
 
 test("other methods are passed to the assets unchanged", async () => {
