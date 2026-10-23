@@ -1,0 +1,182 @@
+# Publish the docs, with the generated API reference as Markdown, to the docs
+# repository (Bookclerk/bookclerk-docs).
+#
+# The docs repository's `main` mirrors this repository's `main`: each landed
+# commit becomes one docs commit with a `Source-Commit:` trailer naming it
+# (bursts of merges collapse to the newest). A published release tags the
+# docs commit built from the release's commit with the same tag name. See
+# docs/ci.md#docs-publishing.
+#
+# Two jobs, so the build never holds a credential:
+#   build    no secrets, read-only token: scripts/docs-markdown.py writes
+#            docs/ plus the Rust, TypeScript and Python API reference as
+#            Markdown, uploaded as an artifact.
+#   publish  mints the automation App token for the docs repository only
+#            (contents: write) and runs scripts/docs-publish.py, which commits
+#            the artifact through the Git Data API, so commits are signed by
+#            GitHub as the App. No code from the build runs here.
+#
+# Secrets: AUTOMATION_APP_CLIENT_ID, AUTOMATION_APP_PRIVATE_KEY (the App
+# needs contents write on the docs repository).
+name: docs-publish
+
+on:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One main publish at a time, the newest winning; releases never cancel.
+  group: docs-publish-${{ github.event_name == 'release' && github.event.release.tag_name || 'main' }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
+
+env:
+  DOCS_REPO: bookclerk-docs
+
+jobs:
+  build:
+    name: build Markdown docs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # A release event checks out the release's commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Pinned with RUST_NIGHTLY in scripts/docs-markdown.py: the nightly
+      # whose rustdoc JSON format cargo-doc-md reads.
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: nightly-2025-11-15
+
+      - name: Check the toolchain pin
+        run: |
+          set -euo pipefail
+          grep -q '^RUST_NIGHTLY = "nightly-2025-11-15"$' scripts/docs-markdown.py \
+            || { echo "::error::nightly pin differs from scripts/docs-markdown.py"; exit 1; }
+
+      - name: Install capnproto
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends capnproto
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: docs-markdown
+          workspaces: ". -> target/docs-markdown/cargo-target"
+          cache-bin: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install cargo-doc-md
+        run: cargo +nightly-2025-11-15 install cargo-doc-md --version 0.11.0 --locked
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            ui/package-lock.json
+            packages/plugin-sdk/package-lock.json
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.11.32"
+          enable-cache: false
+
+      - name: Build the Markdown docs
+        env:
+          SHA: ${{ github.sha }}
+        run: python3 scripts/docs-markdown.py --revision "$SHA"
+
+      # The output marker is a dotfile and stays behind.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: docs-markdown
+          path: target/docs-markdown/out
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: publish to the docs repository
+    needs: build
+    # A manual run publishes only from main.
+    if: github.event_name == 'release' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # Only the publish script, from the default branch, so a release built
+      # from an older tag still publishes with the current script.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: scripts/docs-publish.py
+          sparse-checkout-cone-mode: false
+
+      # A main build that main has already moved past must not overwrite the
+      # newer docs: the newer push's run publishes those. (Concurrency only
+      # cancels runs still queued or in progress, not one that is about to
+      # publish.)
+      - name: Check this is still main's tip
+        id: current
+        if: github.event_name != 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          tip=$(gh api "repos/$SOURCE_REPO/git/ref/heads/main" --jq .object.sha)
+          if [[ "$tip" == "$SHA" ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "main is now at $tip; skipping the publish of $SHA." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - if: github.event_name == 'release' || steps.current.outputs.publish == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: docs-markdown
+          path: ${{ runner.temp }}/docs-markdown
+
+      - name: Mint the docs repository token
+        id: token
+        if: github.event_name == 'release' || steps.current.outputs.publish == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ env.DOCS_REPO }}
+          permission-contents: write
+
+      - name: Publish
+        if: github.event_name == 'release' || steps.current.outputs.publish == 'true'
+        env:
+          DOCS_TOKEN: ${{ steps.token.outputs.token }}
+          EVENT: ${{ github.event_name }}
+          OWNER: ${{ github.repository_owner }}
+          SOURCE_REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          TAG: ${{ github.event.release.tag_name }}
+          DIR: ${{ runner.temp }}/docs-markdown
+        run: |
+          set -euo pipefail
+          args=(--dir "$DIR" --repo "$OWNER/$DOCS_REPO" --source-repo "$SOURCE_REPO" --source-commit "$SHA")
+          if [[ "$EVENT" == "release" ]]; then
+            python3 scripts/docs-publish.py release "${args[@]}" --tag "$TAG" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            python3 scripts/docs-publish.py main "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi

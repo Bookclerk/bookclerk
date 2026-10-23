@@ -18,6 +18,9 @@ dev = ["pytest>=8.0", "ruff>=0.11"]
 # this extra from uv.lock into a throwaway venv). After changing any dependency
 # here, run `uv lock` and commit uv.lock.
 docs = ["pdoc>=15"]
+# Markdown API reference for the published docs repository
+# (`scripts/docs-markdown.py`). Same rule: run `uv lock` after changing it.
+docs-markdown = ["pydoc-markdown>=4.8"]
 
 [project.scripts]
 bookclerk-plugin = "bookclerk_plugin_sdk.cli:main"

@@ -160,6 +160,8 @@ jobs:
           "$PY" scripts/tests/test_osv_remediate.py
           "$PY" scripts/tests/test_fuzz_crash_triage.py
           "$PY" scripts/tests/test_osv_advisories.py
+          "$PY" scripts/tests/test_docs_markdown.py
+          "$PY" scripts/tests/test_docs_publish.py
 
       - name: Database plugin isolation
         run: python3 scripts/tests/test_db_plugin_isolation.py -q

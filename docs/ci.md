@@ -489,8 +489,9 @@ uv in `packages/plugin-sdk-python`, and GitHub Actions. `examples/` lockfiles
 are left out (reference plugins, never packaged); the full OSV scan still
 reports them.
 
-The Python SDK has no runtime dependencies. Its `uv.lock` pins the `dev` and
-`docs` extras that the `python_sdk` check and `generate-api-docs.sh --python`
+The Python SDK has no runtime dependencies. Its `uv.lock` pins the `dev`,
+`docs` and `docs-markdown` extras that the `python_sdk` check,
+`generate-api-docs.sh --python` and [docs publishing](#docs-publishing)
 install (`uv sync --locked --no-install-project`, which fails when the
 lockfile is out of date with `pyproject.toml`; the SDK is imported from `src/`
 rather than built, so its unlocked build backend never runs), so OSV scans
@@ -555,6 +556,7 @@ App as [Dependabot auto-merge](#dependabot-auto-merge) instead of
 | `osv-remediate.yml` | reads OSV code-scanning alerts; `deps/osv-remediation` branch, pull request, auto-merge |
 | `cflite-batch.yml` | `fuzz-crash` issues for oracle failures; draft repository security advisories for crashes ([triage](#fuzz-crash-triage)) |
 | `osv-advisories.yml` | reads OSV code-scanning and Dependabot alerts; draft repository security advisories ([verdicts](#osv-advisories)) |
+| `docs-publish.yml` | commits and release tags on the `bookclerk-docs` repository ([docs publishing](#docs-publishing)) |
 
 The probes share `.github/actions/api-drift-report`: one open issue per source
 (found by a hidden `<!-- api-drift:<source> -->` marker and updated in place,
@@ -583,7 +585,8 @@ attributed to the App.
    - **Metadata: read** (always granted)
 
    **Workflows** is not needed: none of these pull requests touch
-   `.github/workflows/`.
+   `.github/workflows/`. Install the App on `bookclerk-docs` as well, with
+   the same Contents permission, for `docs-publish.yml`.
 2. Add two **Actions** secrets (Settings → Secrets and variables → Actions).
    Scheduled runs do not receive the Dependabot copies:
    - `AUTOMATION_APP_CLIENT_ID`: the App's client ID.
@@ -755,6 +758,62 @@ Logs print counts only. A new shipped artifact, or a new lockfile, goes into
 `shipped-artifacts.toml` in the pull request that adds it. Cutting the fix
 release automatically is a documented future goal, not built yet (see the
 ADR).
+
+### Docs publishing
+
+`docs-publish.yml` keeps the separate public repository
+[`Bookclerk/bookclerk-docs`](https://github.com/Bookclerk/bookclerk-docs) in
+step with this one, as Markdown that the website and agents read:
+
+- Its `main` mirrors this repository's `main`. Every push to `main` builds
+  the tree and commits it there with a `Source-Commit: <sha>` trailer naming
+  the commit it was built from. Runs share one concurrency group that cancels
+  the older run, so a burst of merges publishes only the newest commit, and a
+  run whose commit is no longer the tip of `main` when it reaches the publish
+  step skips it. A build identical to the docs `main` adds no commit.
+- A published release tags the docs commit whose trailer names the release's
+  commit with the same tag name. When no `main` commit matches (a burst
+  skipped it), the release's build is committed beside `main`, parented on
+  its head without moving it, and that commit is tagged. An existing tag is
+  never moved.
+- The tree is `docs/` as it is, plus `api/`: the Rust reference (rustdoc JSON
+  from a pinned nightly, converted by `cargo-doc-md`, with rustdoc's
+  intra-doc links turned into Markdown links), TypeDoc's Markdown theme for
+  `@bookclerk/plugin-sdk` and `ui/src/lib` (`typedoc-plugin-markdown`, a dev
+  dependency of both), and `pydoc-markdown` for the Python SDK (the
+  `docs-markdown` extra in `uv.lock`). Every relative link to a file in the
+  tree must resolve, and links in `api/` must stay inside the tree, or the
+  build fails.
+
+The `build` job has no secrets and a read-only token; it runs
+`scripts/docs-markdown.py` and uploads the tree as an artifact. The `publish`
+job checks out only `scripts/docs-publish.py` from the default branch, mints
+the [Automation App](#automation-app) token for `bookclerk-docs` alone
+(contents: write), and writes one commit through the Git Data API, so GitHub
+signs it as the App. A manual run publishes only from `main`. The publish
+script refuses redirects, so the token is only sent to `api.github.com`.
+
+`docs-markdown.py` clears its output before each build, so it refuses a
+scratch root (`--scratch-root`, default `target/docs-markdown/`) that is not
+strictly inside the repository's `target/` or the system temp directory, an
+output directory that is not strictly inside the scratch root, and an
+existing output directory that lacks the marker file it writes. The filesystem root, the
+home directory, the repository root, `/mnt` and `/tmp` are refused as either
+the output or the scratch root.
+
+To build the tree locally (it lands in `target/docs-markdown/out/`):
+
+```bash
+rustup toolchain install nightly-2025-11-15 --profile minimal
+cargo +nightly-2025-11-15 install cargo-doc-md --version 0.11.0 --locked
+python3 scripts/docs-markdown.py
+```
+
+The nightly is pinned because `cargo-doc-md` 0.11 reads rustdoc JSON format
+56; bump `RUST_NIGHTLY` and `RUST_JSON_FORMAT` in the script, the converter
+version and the workflow together. The nightly may predate the workspace's
+`rust-version`, so the build passes `--ignore-rust-version`; it only produces
+documentation.
 
 ## Expected PR feedback (when `SELECTIVE_CI=1`)
 

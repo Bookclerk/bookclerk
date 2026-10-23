@@ -115,5 +115,6 @@ artifact = "plugin-sdk-python"
 lockfile = "packages/plugin-sdk-python/uv.lock"
 evidence = "pip"
 manifest = "packages/plugin-sdk-python/pyproject.toml"
-# Extras that hold development tooling only (tests, lint, API docs).
-dev_extras = ["dev", "docs"]
+# Extras that hold development tooling only (tests, lint, API docs, the
+# Markdown API reference).
+dev_extras = ["dev", "docs", "docs-markdown"]
