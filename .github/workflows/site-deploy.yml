@@ -1,9 +1,10 @@
 # Build and deploy the bookclerk.app website (tools/site) as the static-assets
 # Cloudflare Worker `bookclerk-site` via wrangler-action.
 #
-# Runs when the site or the brand assets change on main, when a release is
-# published (the site shows the newest release and drops its pre-release
-# notices), and by hand.
+# Runs when the site, the docs or the brand assets change on main, when a
+# release is published (the site shows the newest release and drops its
+# pre-release notices), and by hand. The site renders docs/ as /docs/: from
+# main until the first release, then from the newest release tag.
 #
 # GitHub repository secrets:
 #   CLOUDFLARE_API_TOKEN   scoped to the Worker `bookclerk-site` (Workers
@@ -25,6 +26,7 @@ on:
     branches: [main]
     paths:
       - "tools/site/**"
+      - "docs/**"
       - "assets/brand/**"
       - ".github/workflows/site-deploy.yml"
   release:
@@ -97,11 +99,29 @@ jobs:
             cat gh-err.txt >&2
             exit 1
           fi
+          # Same shape build.mjs enforces; checked here too because the next
+          # step passes the tag to git.
+          if [[ -n "$tag" && ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Unexpected release tag: $tag"
+            exit 1
+          fi
           echo "Release: ${tag:-none}"
           {
             echo "tag=${tag}"
             echo "date=${date}"
           } >> "$GITHUB_OUTPUT"
+
+      # Once a release exists the docs come from its tag, whatever commit the
+      # site itself is built from. A build of that tag already has them.
+      - name: Use the release's docs
+        if: steps.release.outputs.tag != '' && github.ref != format('refs/tags/{0}', steps.release.outputs.tag)
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          rm -rf ../../docs
+          git checkout "refs/tags/${TAG}" -- ../../docs
 
       - name: Build the site
         env:

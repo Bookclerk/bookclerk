@@ -70,9 +70,9 @@ test("render fails on unknown names instead of leaving holes", () => {
   assert.throws(() => render("{{ spaced }}", ctx, {}), /unrendered/);
 });
 
-test("docs links follow the release tag", () => {
-  assert.match(templateContext(readState(PRE)).values.docsUrl, /\/blob\/main\/docs\/README\.md$/);
-  assert.match(templateContext(readState(REL)).values.docsUrl, /\/blob\/v0\.1\.0\/docs\/README\.md$/);
+test("repository links follow the release tag", () => {
+  assert.match(templateContext(readState(PRE)).values.blobBase, /\/blob\/main\/$/);
+  assert.match(templateContext(readState(REL)).values.blobBase, /\/blob\/v0\.1\.0\/$/);
 });
 
 test("inlineLogo keeps the wordmark recolorable and drops editor attributes", () => {

@@ -1,7 +1,7 @@
 // Builds the static bookclerk.app website into dist/.
 //
-// Dependency-free on purpose: the site is plain HTML and CSS, so the only npm
-// package in this directory is wrangler (deploy tooling).
+// The site is plain HTML and CSS with no client-side scripts. Its only npm
+// packages are build and deploy tooling: markdown-it (docs.mjs) and wrangler.
 //
 // Release state comes from the environment, set by
 // .github/workflows/site-deploy.yml:
@@ -19,6 +19,8 @@
 import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { docFile, docUrl, renderDocs } from "./docs.mjs";
 
 /** Directory holding this script. */
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -137,10 +139,13 @@ export function templateContext(state) {
       commit: short,
       commitUrl: `${REPOSITORY_URL}/commit/${state.commit}`,
       builtOn: displayDate(state.builtOn),
-      docsUrl: `${REPOSITORY_URL}/blob/${ref}/docs/README.md`,
-      gettingStartedUrl: `${REPOSITORY_URL}/blob/${ref}/docs/getting-started.md`,
-      pluginsUrl: `${REPOSITORY_URL}/blob/${ref}/docs/plugins.md`,
-      architectureUrl: `${REPOSITORY_URL}/blob/${ref}/docs/architecture.md`,
+      docsUrl: "/docs/",
+      gettingStartedUrl: "/docs/getting-started",
+      pluginsUrl: "/docs/plugins",
+      architectureUrl: "/docs/architecture",
+      blobBase: `${REPOSITORY_URL}/blob/${ref}/`,
+      docsVersion: state.release ? state.release.tag : "Development (main)",
+      docsRef: state.release ? state.release.tag : short,
       releasesUrl: `${REPOSITORY_URL}/releases`,
       releaseTag: state.release?.tag ?? "",
       releaseDate: state.release ? displayDate(state.release.date) : "",
@@ -215,6 +220,55 @@ export function inlineLogo(svg) {
     .trim();
 }
 
+/** Marker in src/doc.html replaced by the sidebar after templating. */
+const NAV_MARKER = "<!--doc-nav-->";
+
+/** Marker in src/doc.html replaced by the rendered doc after templating. */
+const BODY_MARKER = "<!--doc-body-->";
+
+/**
+ * Renders the repository's docs/ into dist/docs/.
+ *
+ * The rendered Markdown goes in after templating, so `{{` in a doc's code
+ * samples is never read as template syntax.
+ *
+ * @param {ReturnType<typeof templateContext>} context Site-wide values.
+ * @param {Record<string, string>} partials Partial templates by name.
+ * @param {string} outDir Output directory.
+ * @returns {number} How many docs were written.
+ */
+function buildDocs(context, partials, outDir) {
+  const { nav, docs } = renderDocs(join(REPO_ROOT, "docs"), context.values.blobBase);
+  const template = readFileSync(join(HERE, "src", "doc.html"), "utf8");
+  for (const doc of docs) {
+    const page = {
+      values: {
+        ...context.values,
+        docTitle: doc.title,
+        docSource: doc.source,
+        docSourceUrl: context.values.blobBase + doc.source,
+      },
+      flags: context.flags,
+    };
+    const navHtml = nav
+      .map((group) => {
+        const links = group.pages
+          .map((p) => {
+            const current = p.key === doc.key ? ' aria-current="page"' : "";
+            return `<li><a href="${escapeHtml(docUrl(p.key))}"${current}>${escapeHtml(p.title)}</a></li>`;
+          })
+          .join("");
+        return `<h2>${escapeHtml(group.title)}</h2><ul>${links}</ul>`;
+      })
+      .join("\n");
+    const html = render(template, page, partials).replace(NAV_MARKER, () => navHtml).replace(BODY_MARKER, () => doc.html);
+    const file = join(outDir, docFile(doc.key));
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, html);
+  }
+  return docs.length;
+}
+
 /**
  * Builds the whole site.
  *
@@ -236,6 +290,7 @@ export function build(env, outDir) {
   for (const page of PAGES) {
     writeFileSync(join(outDir, page), render(readFileSync(join(src, page), "utf8"), context, partials));
   }
+  buildDocs(context, partials, outDir);
   for (const file of STATIC_FILES) cpSync(join(src, file), join(outDir, file));
   for (const [from, to] of BRAND_FILES) cpSync(join(REPO_ROOT, "assets/brand", from), join(outDir, to));
   return readdirSync(outDir).sort();
