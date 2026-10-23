@@ -12,7 +12,9 @@
 // with render.mjs into the shell build.mjs baked (generated/docs-shell.json).
 // Only refs in the shell's version list and paths made of plain segments are
 // fetched, responses over MAX_DOC_BYTES are refused, and rendered pages are
-// cached at the edge (tags for a day, main for five minutes).
+// cached at the edge (tags for a day, main for five minutes). When the docs
+// repository cannot be read, the reader gets a 503 page in the site's look
+// that links to the same doc on GitHub.
 //
 // Content negotiation: when the Accept header ranks `text/markdown` (or
 // `text/x-markdown`) at least as high as HTML, `/`, `/download` and
@@ -24,7 +26,7 @@
 // The script reads only the request's method, path and Accept header, and
 // fetches only from its own assets and the docs repository.
 
-import { docMarkdownUrl, docUrl, renderDocPage } from "./render.mjs";
+import { docMarkdownUrl, docUrl, renderDocPage, renderUnavailablePage } from "./render.mjs";
 
 /** Response headers every page gets; the same policy as src/_headers. */
 export const SECURITY_HEADERS = {
@@ -231,16 +233,19 @@ export function docsTarget(pathname, versions) {
  * @param {typeof fetch} fetcher `fetch`, or a stand-in in tests.
  * @returns {Promise<string | null>} The Markdown, or null when the file does
  *   not exist at that ref.
- * @throws {Error} When the docs repository fails or the file is over
- *   MAX_DOC_BYTES.
+ * @throws {Error} When the docs repository fails or redirects, or the file
+ *   is over MAX_DOC_BYTES.
  */
 export async function fetchDoc(ref, key, fetcher) {
   const ttl = ttlFor(ref);
   const response = await fetcher(`${DOCS_RAW_BASE}${ref}/${key}.md`, {
-    redirect: "error",
+    // The Workers runtime rejects `redirect: "error"` outright, so redirects
+    // are taken as answers and refused below.
+    redirect: "manual",
     cf: { cacheEverything: true, cacheTtlByStatus: { "200-299": ttl, 404: MISSING_TTL, "500-599": 0 } },
   });
   if (response.status === 404) return null;
+  if (response.status >= 300 && response.status < 400) throw new Error(`docs repository redirected ${ref}/${key}.md`);
   if (!response.ok) throw new Error(`docs repository answered ${response.status} for ${ref}/${key}.md`);
   const declared = Number(response.headers.get("Content-Length") ?? "0");
   if (declared > MAX_DOC_BYTES) throw new Error(`${ref}/${key}.md is ${declared} bytes`);
@@ -378,9 +383,14 @@ async function serveDocs(request, url, deps) {
     }
   } catch (err) {
     console.error(`docs fetch failed: ${err instanceof Error ? err.message : String(err)}`);
-    const body = wantsMarkdown ? "# Docs unavailable\n\nThe docs could not be loaded. Try again in a minute.\n" : "The docs could not be loaded. Try again in a minute.";
-    const type = wantsMarkdown ? MARKDOWN_CONTENT_TYPE : "text/plain; charset=utf-8";
-    return withHeaders(new Response(body), { "Content-Type": type, "Retry-After": "60", "Cache-Control": "no-store" }, 503);
+    const page = renderUnavailablePage(deps.shell, target.keys[0], { ref: version.ref, base: version.base });
+    const body = request.method === "HEAD" ? null : wantsMarkdown ? page.markdown : page.html;
+    const type = wantsMarkdown ? MARKDOWN_CONTENT_TYPE : "text/html; charset=utf-8";
+    return withHeaders(
+      new Response(body),
+      { "Content-Type": type, "Retry-After": "60", "Cache-Control": "no-store", Vary: "Accept", "X-Robots-Tag": "noindex" },
+      503,
+    );
   }
   if (key === null) return notFound(url, request.method, wantsMarkdown, deps.assets);
 
