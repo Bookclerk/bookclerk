@@ -43,7 +43,9 @@ impl OverflowDialect {
 ///
 /// Sites are applied **innermost-first** (`full.end`, then reverse `full.start`)
 /// so right-nested `1 + abs(n)` rewrites the `abs` call before the outer add.
-/// After each wrap, remaining (outer) sites shift by the inserted byte count.
+/// After each wrap, remaining (outer) sites shift by the byte count the wrap
+/// added or removed; a wrap drops comments between operands, so it can be
+/// shorter than its site.
 ///
 /// # Errors
 ///
@@ -71,36 +73,49 @@ pub fn apply_integer_overflow(
         }
         let wrapped = wrap_integer_arith(dialect, &out, &site)?;
         let old_len = site.full.end - site.full.start;
-        if wrapped.len() < old_len {
-            return Err(PluginError::internal(
-                "INTEGER overflow wrap shrank the site",
-            ));
-        }
-        let delta = wrapped.len() - old_len;
         let repl_end = site.full.end;
         out.replace_range(site.full.start..site.full.end, &wrapped);
         for later in sites.iter_mut().skip(i + 1) {
-            later.full = shift_span(later.full, repl_end, delta);
-            later.lhs = shift_span(later.lhs, repl_end, delta);
-            later.rhs = shift_span(later.rhs, repl_end, delta);
+            later.full = shift_span(later.full, repl_end, old_len, wrapped.len())?;
+            later.lhs = shift_span(later.lhs, repl_end, old_len, wrapped.len())?;
+            later.rhs = shift_span(later.rhs, repl_end, old_len, wrapped.len())?;
         }
     }
     Ok(out)
 }
 
-pub(crate) fn shift_span(span: SqlSpan, repl_end: usize, delta: usize) -> SqlSpan {
-    SqlSpan {
-        start: if span.start >= repl_end {
-            span.start.saturating_add(delta)
-        } else {
-            span.start
-        },
-        end: if span.end >= repl_end {
-            span.end.saturating_add(delta)
-        } else {
-            span.end
-        },
-    }
+/// Moves a span boundary past a replaced range to its offset in the new SQL.
+///
+/// A wrap renders only the operands, so it can be shorter than the site it
+/// replaces when the site holds comments or whitespace between them
+/// (`id --<long comment>\n- 1`). Boundaries at or past `repl_end` move by
+/// `new_len - old_len` in either direction; earlier ones stay. Outer sites are
+/// applied after inner ones, so their boundaries never fall strictly inside
+/// the replaced range.
+///
+/// # Arguments
+///
+/// * `span` - a later site's span in the SQL before the replacement.
+/// * `repl_end` - byte offset where the replaced range ended.
+/// * `old_len` - byte length of the replaced range.
+/// * `new_len` - byte length of its replacement.
+///
+/// # Errors
+///
+/// Returns when a moved boundary would underflow or overflow `usize`.
+fn shift_span(span: SqlSpan, repl_end: usize, old_len: usize, new_len: usize) -> Result<SqlSpan> {
+    let shift = |pos: usize| -> Result<usize> {
+        if pos < repl_end {
+            return Ok(pos);
+        }
+        pos.checked_sub(old_len)
+            .and_then(|base| base.checked_add(new_len))
+            .ok_or_else(|| PluginError::internal("INTEGER overflow site shift is out of range"))
+    };
+    Ok(SqlSpan {
+        start: shift(span.start)?,
+        end: shift(span.end)?,
+    })
 }
 
 /// Renders one INTEGER overflow CASE wrap for `site`.
@@ -217,5 +232,56 @@ mod tests {
         );
         assert!(postgres.contains("BIGINT"), "{postgres}");
         assert!(sqlite.contains("INTEGER"), "{sqlite}");
+    }
+
+    #[test]
+    fn shorter_wrap_shifts_enclosing_site_back() {
+        // Found by the guest_sql_authz fuzz target: a long `--` comment between
+        // the operands of an INTEGER `-` made the wrap shorter than its site,
+        // and the typed lowering refused an admitted statement.
+        let comment = "x".repeat(400);
+        let inner = format!("id --{comment}\n- 1");
+        let sql = format!("SELECT ({inner}) + 2");
+        let inner_start = "SELECT (".len();
+        let inner_end = inner_start + inner.len();
+        let sub = IntegerArithSite {
+            full: SqlSpan {
+                start: inner_start,
+                end: inner_end,
+            },
+            lhs: SqlSpan {
+                start: inner_start,
+                end: inner_start + 2,
+            },
+            rhs: SqlSpan {
+                start: inner_end - 1,
+                end: inner_end,
+            },
+            kind: IntegerArithKind::Sub,
+        };
+        let add = IntegerArithSite {
+            full: SqlSpan {
+                start: inner_start - 1,
+                end: sql.len(),
+            },
+            lhs: SqlSpan {
+                start: inner_start - 1,
+                end: inner_end + 1,
+            },
+            rhs: SqlSpan {
+                start: sql.len() - 1,
+                end: sql.len(),
+            },
+            kind: IntegerArithKind::Add,
+        };
+        let out = apply_integer_overflow(OverflowDialect::SqliteFamily, &sql, &[add, sub]).unwrap();
+        assert!(!out.contains(&comment), "{out}");
+        assert!(
+            out.starts_with("SELECT (SELECT CASE WHEN a IS NULL OR b IS NULL THEN a + b"),
+            "{out}"
+        );
+        assert!(out.contains("(SELECT (id) AS a, (1) AS b) _bc_ov"), "{out}");
+        assert!(out.ends_with("AS a, (2) AS b) _bc_ov)"), "{out}");
+        assert_eq!(out.matches("_bc_ov").count(), 2, "{out}");
     }
 }
