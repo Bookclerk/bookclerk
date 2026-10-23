@@ -28,6 +28,11 @@ package = "bookclerkd"
 paths = ["assets/brand/svg/bookclerk-logo.svg"]
 
 # Files outside a package directory read by that package's tests.
+# The OpenAPI route-coverage test scans the portal's route sources.
+[[test_input]]
+package = "bookclerkd"
+paths = ["crates/bookclerk-integrations/src/portal/**"]
+
 [[test_input]]
 package = "bookclerk-plugin-manifest"
 paths = ["examples/plugins-echo-native-rust/plugin.toml"]
