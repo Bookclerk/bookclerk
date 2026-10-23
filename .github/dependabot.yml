@@ -30,6 +30,15 @@ updates:
     cooldown:
       default-days: 7
 
+  # Deploy tooling (wrangler) for the bookclerk.app website.
+  - package-ecosystem: npm
+    directory: "/tools/site"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+
   # Web UI bundled into ui/dist and served by bookclerkd.
   - package-ecosystem: npm
     directory: "/ui"

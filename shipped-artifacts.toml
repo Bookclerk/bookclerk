@@ -21,6 +21,7 @@ not_shipped = [
   { path = "examples/plugins-echo-workerd-ts/package-lock.json", why = "reference example, never packaged" },
   { path = "examples/plugins-echo-native-python/requirements-dev.txt", why = "reference example, dev tooling" },
   { path = "scripts/tests/requirements.txt", why = "CI test tooling" },
+  { path = "tools/site/package-lock.json", why = "website deploy tooling (wrangler); the site is static HTML with no npm dependencies" },
 ]
 
 # Shipped artifacts. `ecosystem` and `package` go into the advisory's
