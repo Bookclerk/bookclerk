@@ -100,6 +100,9 @@ export const PAGES = [
 /** Files copied verbatim from src/ to dist/. */
 const STATIC_FILES = ["site.css", "_headers", "social-card.png"];
 
+/** Web fonts and their licenses copied from src/fonts/ to dist/fonts/ (see src/fonts/README.md). */
+const FONT_FILE = /^(?:[a-z0-9-]+\.woff2|OFL-[a-z0-9]+\.txt)$/;
+
 /** Brand assets copied from assets/brand/ (source path, published name). */
 const BRAND_FILES = [
   ["svg/bookclerk-mark.svg", "bookclerk-mark.svg"],
@@ -528,6 +531,10 @@ export function build(env, outDir, shellFile = DOCS_SHELL_FILE) {
   writeCrawlerFiles(context, indexable, outDir);
   writeLlmsTxt(context, rendered, outDir);
   for (const file of STATIC_FILES) cpSync(join(src, file), join(outDir, file));
+  mkdirSync(join(outDir, "fonts"));
+  for (const file of readdirSync(join(src, "fonts"))) {
+    if (FONT_FILE.test(file)) cpSync(join(src, "fonts", file), join(outDir, "fonts", file));
+  }
   for (const [from, to] of BRAND_FILES) cpSync(join(REPO_ROOT, "assets/brand", from), join(outDir, to));
   return readdirSync(outDir).sort();
 }

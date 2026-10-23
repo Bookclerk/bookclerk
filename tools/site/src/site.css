@@ -1,5 +1,26 @@
 /* bookclerk.app styles. Tokens mirror ui/src/index.css (assets/brand/README.md). */
 
+/* Web fonts, served from this site (OFL; see fonts/README.md). Each family is
+   split into latin and latin-ext files so a page downloads only what it uses. */
+@font-face { font-family: "Source Sans 3"; font-style: normal; font-weight: 200 900; font-display: swap; src: url("/fonts/source-sans-3-v20-latin-ext.woff2") format("woff2"); unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: "Source Sans 3"; font-style: normal; font-weight: 200 900; font-display: swap; src: url("/fonts/source-sans-3-v20-latin.woff2") format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "Literata"; font-style: normal; font-weight: 400 900; font-display: swap; src: url("/fonts/literata-v40-latin-ext.woff2") format("woff2"); unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: "Literata"; font-style: normal; font-weight: 400 900; font-display: swap; src: url("/fonts/literata-v40-latin.woff2") format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("/fonts/ibm-plex-mono-v20-400-latin-ext.woff2") format("woff2"); unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("/fonts/ibm-plex-mono-v20-400-latin.woff2") format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url("/fonts/ibm-plex-mono-v20-500-latin-ext.woff2") format("woff2"); unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url("/fonts/ibm-plex-mono-v20-500-latin.woff2") format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+
+/* Local fallbacks scaled to the web fonts' width and line metrics, so text
+   keeps its line breaks when the web font arrives and the page does not shift.
+   Values come from fonts/README.md; Liberation and Arimo/Tinos/Cousine are
+   metric-compatible with the Windows and macOS fonts named first. */
+@font-face { font-family: "Source Sans 3 Fallback"; font-weight: 400; src: local("Arial"), local("ArialMT"), local("Liberation Sans"), local("Arimo"); size-adjust: 93.12%; ascent-override: 109.97%; descent-override: 42.96%; line-gap-override: 0%; }
+@font-face { font-family: "Source Sans 3 Fallback"; font-weight: 600 700; src: local("Arial Bold"), local("Arial-BoldMT"), local("Liberation Sans Bold"), local("Arimo Bold"); size-adjust: 90.38%; ascent-override: 113.29%; descent-override: 44.26%; line-gap-override: 0%; }
+@font-face { font-family: "Literata Fallback"; font-weight: 400 500; src: local("Times New Roman"), local("TimesNewRomanPSMT"), local("Liberation Serif"), local("Tinos"); size-adjust: 119.61%; ascent-override: 98.40%; descent-override: 25.75%; line-gap-override: 0%; }
+@font-face { font-family: "Literata Fallback"; font-weight: 600 700; src: local("Times New Roman Bold"), local("TimesNewRomanPS-BoldMT"), local("Liberation Serif Bold"), local("Tinos Bold"); size-adjust: 117.64%; ascent-override: 100.05%; descent-override: 26.18%; line-gap-override: 0%; }
+@font-face { font-family: "IBM Plex Mono Fallback"; src: local("Courier New"), local("CourierNewPSMT"), local("Liberation Mono"), local("Cousine"); size-adjust: 99.98%; ascent-override: 102.52%; descent-override: 27.50%; line-gap-override: 0%; }
+
 :root {
   --paper: #fbf7ee;
   --parchment: #f3e5c6;
@@ -16,9 +37,9 @@
   --band-bg: #0b3553;
   --band-fg: #f3e5c6;
   --band-accent: #5aa8a2;
-  --font-display: "Literata", "Iowan Old Style", "Palatino Linotype", Palatino, serif;
-  --font-sans: "Source Sans 3", "Segoe UI", Candara, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  --font-display: "Literata", "Literata Fallback", "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+  --font-sans: "Source Sans 3", "Source Sans 3 Fallback", "Segoe UI", Candara, sans-serif;
+  --font-mono: "IBM Plex Mono", "IBM Plex Mono Fallback", ui-monospace, Menlo, Consolas, monospace;
   --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
   color-scheme: light;
 }
@@ -120,7 +141,7 @@ img, svg { max-width: 100%; }
   line-height: 22px;
 }
 .ribbon .wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding-block: 10px; }
-.ribbon .badge { background: var(--brick); color: var(--paper); }
+.ribbon .badge { background: var(--brick-text); color: var(--paper); }
 .ribbon a { color: var(--ink); font-weight: 600; }
 
 /* Header */
@@ -249,7 +270,7 @@ pre {
   font-size: 14px;
   line-height: 24px;
 }
-pre .comment { color: color-mix(in srgb, var(--code-fg) 55%, transparent); }
+pre .comment { color: color-mix(in srgb, var(--code-fg) 65%, transparent); }
 code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, transparent); padding: 1px 5px; border-radius: 4px; }
 
 /* FAQ */

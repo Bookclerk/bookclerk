@@ -106,6 +106,8 @@ test("a pre-release build says so on every page", () => {
     for (const name of ["index.html", "download.html", "404.html"]) {
       const html = site.page(name);
       assert.ok(html.includes('<span class="badge">Pre-release</span>'), name);
+      // A landmark, so screen-reader users can find and skip the notice.
+      assert.ok(html.includes('<aside class="ribbon" aria-label="Pre-release notice">'), name);
       assert.ok(html.includes("b6adae4"), name);
       assert.ok(!html.includes("{{"), name);
     }
@@ -136,6 +138,28 @@ test("the build publishes pages, styles, headers and brand assets", () => {
       assert.ok(site.files.includes(name), name);
     }
     assert.match(site.page("_headers"), /Content-Security-Policy: default-src 'none'/);
+  } finally {
+    site.done();
+  }
+});
+
+test("pages load fonts from the site itself, and every font they name is published", () => {
+  const site = built(PRE);
+  try {
+    const css = site.page("site.css");
+    const named = [...css.matchAll(/url\("\/fonts\/([^"]+)"\)/g)].map((m) => m[1]);
+    assert.ok(named.length > 0);
+    for (const name of ["index.html", "download.html", "404.html"]) {
+      const html = site.page(name);
+      // No third-party origin may block rendering or learn who visits.
+      assert.ok(!/fonts\.(googleapis|gstatic)\.com/.test(html), name);
+      for (const [, font] of html.matchAll(/<link rel="preload" href="\/fonts\/([^"]+)"/g)) assert.ok(named.includes(font), `${name}: ${font}`);
+    }
+    for (const font of named) assert.ok(site.page(`fonts/${font}`).length > 0, font);
+    for (const license of ["OFL-sourcesans3.txt", "OFL-literata.txt", "OFL-ibmplexmono.txt"]) {
+      assert.match(site.page(`fonts/${license}`), /SIL Open Font License/);
+    }
+    assert.match(site.page("_headers"), /\/fonts\/\*\n  Cache-Control: public, max-age=31536000, immutable/);
   } finally {
     site.done();
   }
