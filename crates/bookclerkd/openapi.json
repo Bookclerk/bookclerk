@@ -9702,15 +9702,19 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "An operator token was sent, or the user is disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           }
         },
         "security": [
-          {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
           {
             "portalSession": []
           }
@@ -10374,12 +10378,6 @@
         },
         "security": [
           {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
-          {
             "portalSession": []
           }
         ],
@@ -10517,12 +10515,6 @@
           }
         },
         "security": [
-          {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
           {
             "portalSession": []
           }
@@ -11040,6 +11032,36 @@
               }
             }
           },
+          "401": {
+            "description": "No user has this login name or email.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user is disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The user has no usable passkeys.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "429": {
             "description": "Too many attempts; try later.",
             "content": {
@@ -11081,8 +11103,28 @@
               }
             }
           },
+          "400": {
+            "description": "The challenge is unknown or expired, or the credential is malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "401": {
             "description": "The assertion is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user is disabled.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11131,6 +11173,16 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "The caller has no passkeys.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -11164,6 +11216,16 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The challenge is unknown or expired, or the credential is malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
               }
             }
           },

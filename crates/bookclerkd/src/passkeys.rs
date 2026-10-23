@@ -404,6 +404,9 @@ struct LoginBegin {
     responses(
         (status = 200, description = "WebAuthn request options.", body = serde_json::Value),
         (status = 400, description = "The request is invalid."),
+        (status = 401, description = "No user has this login name or email."),
+        (status = 403, description = "The user is disabled."),
+        (status = 404, description = "The user has no usable passkeys."),
         (status = 429, description = "Too many attempts; try later."),
     ),
 )]
@@ -503,7 +506,9 @@ async fn login_begin_inner(
     request_body = CeremonyFinish,
     responses(
         (status = 200, description = "Signed in; the response sets the portal session cookie.", body = serde_json::Value),
+        (status = 400, description = "The challenge is unknown or expired, or the credential is malformed."),
         (status = 401, description = "The assertion is invalid."),
+        (status = 403, description = "The user is disabled."),
     ),
 )]
 async fn login_finish(
@@ -567,6 +572,7 @@ async fn login_finish(
         (status = 200, description = "WebAuthn request options.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
+        (status = 404, description = "The caller has no passkeys."),
     ),
 )]
 async fn elevate_begin(
@@ -617,6 +623,7 @@ async fn elevate_begin(
     security(("portalSession" = [])),
     responses(
         (status = 200, description = "Elevated; the response sets a short-lived operator cookie.", body = serde_json::Value),
+        (status = 400, description = "The challenge is unknown or expired, or the credential is malformed."),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
     ),
