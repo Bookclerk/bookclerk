@@ -794,6 +794,10 @@ step with this one, as Markdown that the website and agents read:
     under their item, and intra-doc links come from rustdoc's own link
     table. `api/rust/README.md` groups the crates (plugin interface,
     plugins, host internals, development).
+  - Web API: `scripts/openapi_markdown.py` renders `bookclerkd`'s committed
+    OpenAPI document (`crates/bookclerkd/openapi.json`) as an index of
+    routes and credentials, one page per route group with each route's
+    access rule, parameters, body and responses, and a page of schemas.
 
   Every relative link to a file in the tree must resolve, and links in
   `api/` must stay inside the tree, or the build fails.

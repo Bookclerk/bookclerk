@@ -9,8 +9,8 @@
 #
 # Two jobs, so the build never holds a credential:
 #   build    no secrets, read-only token: scripts/docs-markdown.py writes
-#            docs/ plus the TypeScript, Python and Rust API reference as
-#            Markdown, uploaded as an artifact.
+#            docs/ plus the TypeScript, Python, Rust and web API reference
+#            as Markdown, uploaded as an artifact.
 #   publish  mints the automation App token for the docs repository only
 #            (contents: write) and runs scripts/docs-publish.py, which commits
 #            the artifact through the Git Data API, so commits are signed by
