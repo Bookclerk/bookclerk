@@ -373,8 +373,12 @@ async function serveDocs(request, url, deps) {
   const { version } = target;
   let key = null;
   let source = null;
+  // The last key asked for, so the unavailable page links on GitHub to the
+  // file that could not be read rather than one already known to be missing.
+  let attempted = target.keys[0];
   try {
     for (const candidate of target.keys) {
+      attempted = candidate;
       source = await fetchDoc(version.ref, candidate, deps.fetch);
       if (source !== null) {
         key = candidate;
@@ -383,7 +387,7 @@ async function serveDocs(request, url, deps) {
     }
   } catch (err) {
     console.error(`docs fetch failed: ${err instanceof Error ? err.message : String(err)}`);
-    const page = renderUnavailablePage(deps.shell, target.keys[0], { ref: version.ref, base: version.base });
+    const page = renderUnavailablePage(deps.shell, target.keys[0], { ref: version.ref, base: version.base, githubKey: attempted });
     const body = request.method === "HEAD" ? null : wantsMarkdown ? page.markdown : page.html;
     const type = wantsMarkdown ? MARKDOWN_CONTENT_TYPE : "text/html; charset=utf-8";
     return withHeaders(
