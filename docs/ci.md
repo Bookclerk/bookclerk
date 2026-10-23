@@ -484,7 +484,8 @@ example after adding the secrets), comment `@dependabot rebase`.
 
 Version updates (`.github/dependabot.yml`, weekly, 7-day cooldown) cover
 every lockfile of a shipped artifact or its build: Cargo at the workspace
-root, npm in `ui/`, `packages/plugin-sdk` and `tools/diagnostics-collector`,
+root, npm in `ui/`, `packages/plugin-sdk`, `tools/diagnostics-collector` and
+`tools/site`,
 uv in `packages/plugin-sdk-python`, and GitHub Actions. `examples/` lockfiles
 are left out (reference plugins, never packaged); the full OSV scan still
 reports them.

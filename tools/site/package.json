@@ -1,0 +1,16 @@
+{
+  "name": "bookclerk-site",
+  "private": true,
+  "description": "The bookclerk.app website and documentation: static pages served by a Cloudflare Worker",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test build.test.mjs docs.test.mjs worker.test.mjs",
+    "deploy": "wrangler deploy",
+    "dev": "node build.mjs && wrangler dev"
+  },
+  "devDependencies": {
+    "markdown-it": "^14.3.3",
+    "wrangler": "^4.151.0"
+  }
+}

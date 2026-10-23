@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+{{> head}}
+</head>
+<body>
+{{> ribbon}}
+{{> header}}
+<main id="main">
+
+<section class="wrap page-head">
+  <h1>Get Bookclerk</h1>
+  {{#prerelease}}<p class="muted">There is no stable release yet. When the first version ships, installers for each system will appear here. Until then you can try the development version if you are comfortable building it yourself.</p>{{/prerelease}}
+  {{#released}}<p class="muted">The current release is {{releaseTag}}. Download it for your system from the release page on GitHub.</p>{{/released}}
+</section>
+
+<section class="wrap" style="padding-bottom:48px">
+  <div class="status-card">
+    <div class="cell">
+      <span class="label faint">Latest release</span>
+      {{#prerelease}}<span class="value">None yet</span>
+      <span class="muted">Watch the GitHub repository to hear when the first release is out.</span>{{/prerelease}}
+      {{#released}}<span class="value">{{releaseTag}}</span>
+      <span class="muted">Released {{releaseDate}}</span>{{/released}}
+    </div>
+    <div class="cell">
+      <span class="label faint">Development version</span>
+      <span class="mono"><a href="{{commitUrl}}">{{commit}}</a></span>
+      <span class="muted">Built {{builtOn}} · <span class="unstable">unstable</span></span>
+    </div>
+    {{#prerelease}}<a class="btn btn-secondary" href="{{repo}}">Watch on GitHub</a>{{/prerelease}}
+    {{#released}}<a class="btn btn-primary" href="{{releaseUrl}}">Download {{releaseTag}}</a>{{/released}}
+  </div>
+</section>
+
+{{#prerelease}}<section class="wrap" style="padding-bottom:56px;display:flex;flex-direction:column;gap:20px" aria-labelledby="installers">
+  <h2 id="installers" style="font-size:28px;line-height:36px">Installers</h2>
+  <div class="grid4">
+    <div class="platform"><strong>Windows</strong><span class="muted">Windows 10 and 11, 64-bit</span><span class="badge">Available at first release</span></div>
+    <div class="platform"><strong>macOS</strong><span class="muted">Apple silicon and Intel</span><span class="badge">Available at first release</span></div>
+    <div class="platform"><strong>Linux</strong><span class="muted">x86-64 and ARM64, with a systemd service</span><span class="badge">Available at first release</span></div>
+    <div class="platform"><strong>Docker</strong><span class="muted">An image for servers and NAS boxes</span><span class="badge">Available at first release</span></div>
+  </div>
+</section>
+{{/prerelease}}
+
+<section class="tinted" aria-labelledby="try">
+  <div class="wrap section" style="gap:24px">
+    <div class="section-head">
+      <h2 id="try" style="font-size:28px;line-height:36px">Build the development version</h2>
+      <p class="muted">You need <a href="https://rustup.rs/">Rust</a>, <a href="https://nodejs.org/">Node.js</a> and git. This builds Bookclerk from the latest code and starts it; the library then opens at <code class="inline">http://localhost:8787</code>.</p>
+    </div>
+<pre><code>git clone {{repo}}
+cd bookclerk
+cargo dev</code></pre>
+    <p><a href="{{gettingStartedUrl}}">Read the full getting started guide</a></p>
+  </div>
+</section>
+
+{{#prerelease}}<section id="pre-release" class="wrap section faq" aria-labelledby="pre-title">
+  <div class="section-head"><h2 id="pre-title" style="font-size:28px;line-height:36px">What pre-release means</h2></div>
+  <ul class="caveats">
+    <li><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/></svg><span>Settings and the library format can change between updates. An update may ask you to start a fresh library.</span></li>
+    <li><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/></svg><span>Keep your own backup of anything Bookclerk downloads until there is a stable release.</span></li>
+    <li><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/></svg><span>Features described on this site may be unfinished or missing in the build you try.</span></li>
+    <li><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/></svg><span>Please report problems on <a href="{{repo}}/issues">GitHub</a>. Reports from early users shape the first release.</span></li>
+  </ul>
+</section>
+{{/prerelease}}
+
+</main>
+{{> footer}}
+</body>
+</html>

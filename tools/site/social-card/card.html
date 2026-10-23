@@ -1,0 +1,49 @@
+<!doctype html>
+<!--
+  Source of src/social-card.png, the 1200×630 preview image link previews
+  (Open Graph, X, chat apps) show for bookclerk.app. Re-render it after
+  changing this file: see README.md, "Social preview image".
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&amp;family=Literata:opsz,wght@7..72,700&amp;family=Source+Sans+3:wght@400;600&amp;display=block">
+<style>
+  html, body { margin: 0; }
+  body {
+    width: 1200px; height: 630px; overflow: hidden; box-sizing: border-box;
+    background: #fbf7ee; color: #0b3553; font-family: "Source Sans 3", sans-serif;
+    display: grid; grid-template-columns: 1fr 400px; gap: 56px; align-items: center;
+    padding: 0 80px; border-bottom: 18px solid #0b3553;
+  }
+  .logo { width: 330px; display: block; margin-bottom: 44px; }
+  h1 { font: 700 64px/1.08 "Literata", serif; margin: 0 0 24px; letter-spacing: -0.01em; }
+  p { font-size: 28px; line-height: 1.4; margin: 0; color: #1a4a6b; }
+  .card {
+    background: #fffdf7; border: 1px solid #e7d3ac; border-radius: 6px; padding: 30px 32px;
+    box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+    transform: rotate(1.5deg); font-size: 21px;
+  }
+  .card strong { display: block; font: 700 27px/1.2 "Literata", serif; border-bottom: 2px solid #c84a34; padding-bottom: 10px; margin-bottom: 18px; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 10px 18px; margin: 0; }
+  dt { color: #6a7d8c; } dd { margin: 0; }
+  .stamp { display: inline-block; margin-top: 22px; font: 500 16px "IBM Plex Mono", monospace; letter-spacing: 0.08em; color: #3d7f7a; border: 2px solid #3d7f7a; border-radius: 4px; padding: 4px 10px; transform: rotate(-4deg); }
+</style>
+</head>
+<body>
+  <div>
+    <img class="logo" src="../../../assets/brand/svg/bookclerk-logo.svg" alt="Bookclerk">
+    <h1>Every purchase, properly placed.</h1>
+    <p>Your audiobooks from every store, in one library you own.</p>
+  </div>
+  <div class="card">
+    <strong>The Long Way Home</strong>
+    <dl>
+      <dt>Store</dt><dd>Libro.fm</dd>
+      <dt>Format</dt><dd>M4B, 14 chapters</dd>
+      <dt>Shelved</dt><dd>Audiobooks / Fiction</dd>
+    </dl>
+    <span class="stamp">OWNED COPY</span>
+  </div>
+</body>
+</html>
