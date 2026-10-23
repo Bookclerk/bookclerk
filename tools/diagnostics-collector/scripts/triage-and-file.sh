@@ -184,6 +184,11 @@ for issue in plan["issues"][:5]:
         + "".join(f"- `{i}`\n" for i in ids),
     )
     n += 1
+
+# An empty plan is a decision; a non-empty one with nothing valid is a bad
+# reply, so let the fallback issue track the batch.
+if plan["issues"] and n == 0:
+    sys.exit("plan has no valid issues")
 PY
   then
     planned=$(find "$ISSUES_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)
