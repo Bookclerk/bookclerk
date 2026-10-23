@@ -815,6 +815,39 @@ version and the workflow together. The nightly may predate the workspace's
 `rust-version`, so the build passes `--ignore-rust-version`; it only produces
 documentation.
 
+## Cloudflare Worker deploys
+
+Two workflows deploy Workers with `wrangler deploy`, sharing the repository
+secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`:
+
+| Workflow | Worker | Custom domain |
+|----------|--------|---------------|
+| `site-deploy.yml` | `bookclerk-site` | `<DOMAIN>` |
+| `diagnostics-collector-deploy.yml` | `bookclerk-diagnostics` | `diagnostics.<DOMAIN>` |
+
+`DOMAIN` is the organization variable (default `bookclerk.app`).
+
+The API token is scoped to the Workers by name, so it needs these permissions
+for each Worker the workflows deploy:
+
+- **Workers Scripts: Edit**, scoped to the Worker itself (resource
+  `bookclerk-site`, `bookclerk-diagnostics`).
+- **Workers Routes: Edit** on the `<DOMAIN>` zone, for the custom domain.
+
+A token scoped to named Workers cannot create a Worker that does not exist
+yet, so the first deploy of a new Worker needs one of these:
+
+1. Create the Worker in the Cloudflare dashboard first, under its exact name
+   (an empty "Hello World" Worker is fine; the first deploy replaces it), then
+   add it to the token's Worker-scoped permission; or
+2. Temporarily give the token account-level **Workers Scripts: Edit** (or
+   Workers Admin), run the first deploy, then remove that permission again
+   and add the new Worker to the Worker-scoped one.
+
+After that, only the two permissions above are needed. Renaming a Worker in
+`wrangler.toml` creates a new Worker, so it repeats this step and leaves the
+old one behind; keep the names as they are.
+
 ## Expected PR feedback (when `SELECTIVE_CI=1`)
 
 | Change | Jobs after `plan` | Notes |

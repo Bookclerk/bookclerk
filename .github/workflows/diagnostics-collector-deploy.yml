@@ -2,7 +2,10 @@
 # tools/diagnostics-collector changes on main.
 #
 # GitHub repository secrets:
-#   CLOUDFLARE_API_TOKEN
+#   CLOUDFLARE_API_TOKEN   scoped to the Worker `bookclerk-diagnostics` (Workers
+#                          Scripts edit) and the DOMAIN zone (Workers Routes
+#                          edit); the first deploy needs the Worker to exist,
+#                          see docs/ci.md#cloudflare-worker-deploys
 #   CLOUDFLARE_ACCOUNT_ID
 #   DIAGNOSTICS_REPORT_API_KEY   → Worker REPORT_API_KEY (+ ingest workflow)
 #   DIAGNOSTICS_B2_KEY_ID
