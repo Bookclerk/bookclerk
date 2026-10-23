@@ -688,11 +688,13 @@ async fn consenting_user(
     get,
     path = "/api/auth/branch-consent",
     params(BranchAuthorizeParams),
+    security(("portalSession" = []), ("operatorSession" = [])),
     responses(
         (status = 200, description = "What the consent page shows.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
+        (status = 403, description = "The caller is not a library user (`user_required`; an operator session counts only while impersonating) or the account is inactive."),
         (status = 400, description = "The authorize parameters are invalid."),
+        (status = 503, description = "The library could not be read; try again."),
     ),
 )]
 pub async fn get_branch_consent(
@@ -848,11 +850,15 @@ pub struct BranchConsentBody {
     post,
     path = "/api/auth/branch-consent",
     request_body = BranchConsentBody,
+    security(("portalSession" = []), ("operatorSession" = [])),
     responses(
         (status = 200, description = "`{redirect}` back to the branch.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
+        (status = 403, description = "The caller is not an active library user, or a clerk join lacks the Owner role or a passed step-up (`step_up_required`)."),
         (status = 400, description = "The body is invalid."),
+        (status = 409, description = "This library's database cannot be shared with a clerk (`database_not_shareable`)."),
+        (status = 429, description = "Too many wrong step-up codes; wait a few minutes (`step_up_locked`)."),
+        (status = 503, description = "The library could not be read; try again."),
     ),
 )]
 pub async fn post_branch_consent(
@@ -1105,10 +1111,13 @@ async fn check_clerk_consent(
 #[utoipa::path(
     post,
     path = "/api/auth/branch-consent/step-up",
+    security(("portalSession" = []), ("operatorSession" = [])),
     responses(
         (status = 200, description = "Passkey request options.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
+        (status = 403, description = "The caller is not an active library user, or not an Owner (`owner_required`)."),
+        (status = 404, description = "The account has no passkey (`no_passkey`)."),
+        (status = 503, description = "The library could not be read, or the passkey check could not start."),
     ),
 )]
 pub async fn post_branch_consent_step_up(

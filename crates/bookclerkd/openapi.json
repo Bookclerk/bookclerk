@@ -417,9 +417,6 @@
         },
         "security": [
           {
-            "operatorToken": []
-          },
-          {
             "operatorSession": []
           }
         ],
@@ -489,9 +486,6 @@
           },
           {
             "operatorSession": []
-          },
-          {
-            "portalSession": []
           }
         ],
         "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
@@ -6159,9 +6153,6 @@
         },
         "security": [
           {
-            "operatorToken": []
-          },
-          {
             "operatorSession": []
           }
         ],
@@ -6959,7 +6950,17 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller is not a library user (`user_required`; an operator session counts only while impersonating) or the account is inactive.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The library could not be read; try again.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6971,13 +6972,10 @@
         },
         "security": [
           {
-            "operatorToken": []
+            "portalSession": []
           },
           {
             "operatorSession": []
-          },
-          {
-            "portalSession": []
           }
         ],
         "x-bookclerk-access": "The operator, or any signed-in user."
@@ -7028,7 +7026,37 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller is not an active library user, or a clerk join lacks the Owner role or a passed step-up (`step_up_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This library's database cannot be shared with a clerk (`database_not_shareable`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many wrong step-up codes; wait a few minutes (`step_up_locked`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The library could not be read; try again.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7040,13 +7068,10 @@
         },
         "security": [
           {
-            "operatorToken": []
+            "portalSession": []
           },
           {
             "operatorSession": []
-          },
-          {
-            "portalSession": []
           }
         ],
         "x-bookclerk-access": "The operator, or any signed-in user."
@@ -7079,7 +7104,27 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller is not an active library user, or not an Owner (`owner_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The account has no passkey (`no_passkey`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The library could not be read, or the passkey check could not start.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7091,13 +7136,10 @@
         },
         "security": [
           {
-            "operatorToken": []
+            "portalSession": []
           },
           {
             "operatorSession": []
-          },
-          {
-            "portalSession": []
           }
         ],
         "x-bookclerk-access": "The operator, or any signed-in user."
@@ -11391,7 +11433,7 @@
             }
           },
           "400": {
-            "description": "The code is wrong.",
+            "description": "No enrollment is pending; start one first.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11401,7 +11443,7 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in.",
+            "description": "The caller is not signed in, or the code is wrong (`invalid_code`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -11412,6 +11454,16 @@
           },
           "403": {
             "description": "The caller may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "TOTP is already on.",
             "content": {
               "application/json": {
                 "schema": {

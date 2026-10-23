@@ -397,9 +397,10 @@ struct EnrollFinish {
     security(("portalSession" = [])),
     responses(
         (status = 200, description = "TOTP is on.", body = serde_json::Value),
-        (status = 401, description = "The caller is not signed in."),
+        (status = 400, description = "No enrollment is pending; start one first."),
+        (status = 401, description = "The caller is not signed in, or the code is wrong (`invalid_code`)."),
         (status = 403, description = "The caller may not do this."),
-        (status = 400, description = "The code is wrong."),
+        (status = 409, description = "TOTP is already on."),
     ),
 )]
 async fn enroll_finish(

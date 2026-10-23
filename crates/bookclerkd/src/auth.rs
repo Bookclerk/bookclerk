@@ -2101,6 +2101,7 @@ pub(crate) async fn issue_portal_session(
 #[utoipa::path(
     delete,
     path = "/api/auth/elevate",
+    security(("operatorSession" = [])),
     responses(
         (status = 200, description = "Elevation ended.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
@@ -2251,6 +2252,7 @@ pub async fn impersonate(
 #[utoipa::path(
     delete,
     path = "/api/auth/impersonate",
+    security(("operatorSession" = [])),
     responses(
         (status = 200, description = "Impersonation ended.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
@@ -2760,7 +2762,7 @@ pub struct BootstrapRequest {
     post,
     path = "/api/auth/bootstrap",
     request_body = BootstrapRequest,
-    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
+    security(("operatorToken" = []), ("operatorSession" = [])),
     responses(
         (status = 200, description = "The first Owner was created.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
