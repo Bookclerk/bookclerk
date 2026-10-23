@@ -10,13 +10,14 @@
 //! `POST /api/node/v1/enroll/oauth` (`crate::node_api::branch`), never at
 //! the token endpoint.
 
+use crate::openapi::{Access, RouteGroup};
 use std::sync::Arc;
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use axum::extract::{Path, Query, RawQuery, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
-use axum::{Form, Json, Router};
+use axum::{Form, Json};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use bookclerk_library::hash_token;
@@ -38,40 +39,30 @@ const REFRESH_TTL_DAYS: i64 = 30;
 /// Authorization-code lifetime in seconds; codes are single-use.
 const CODE_TTL_SECS: i64 = 300;
 
-/// Mounts discovery, authorize, token, userinfo, revoke, and client admin APIs.
-pub fn router(state: Arc<AppState>) -> Router {
-    let protocol = Router::new()
-        .route(
-            "/.well-known/openid-configuration",
-            get(openid_configuration),
-        )
-        .route("/oidc/authorize", get(authorize).post(authorize_consent))
-        .route("/oidc/token", post(token))
-        .route("/oidc/userinfo", get(userinfo))
-        .route("/oidc/revoke", post(revoke))
-        .with_state(state.clone());
-    let admin = Router::new()
-        .route(
-            "/api/auth/oidc/clients",
-            get(list_clients).post(create_client),
-        )
-        .route(
-            "/api/auth/oidc/clients/{client_id}",
-            axum::routing::put(update_client).delete(delete_client),
-        )
-        .route(
-            "/api/auth/oidc/clients/{client_id}/rotate-secret",
-            post(rotate_client_secret),
-        )
-        .route_layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            crate::auth::require_operator_or_owner_auth,
-        ))
-        .with_state(state);
-    protocol.merge(admin)
+/// Discovery, authorize, token, userinfo and revoke (public: the protocol
+/// authenticates its own callers), then client admin (operator or Owner).
+///
+/// # Returns
+///
+/// The two groups, protocol first.
+pub(crate) fn route_groups() -> Vec<RouteGroup> {
+    let protocol = OpenApiRouter::new()
+        .routes(routes!(openid_configuration))
+        .routes(routes!(authorize, authorize_consent))
+        .routes(routes!(token))
+        .routes(routes!(userinfo))
+        .routes(routes!(revoke));
+    let admin = OpenApiRouter::new()
+        .routes(routes!(list_clients, create_client))
+        .routes(routes!(update_client, delete_client))
+        .routes(routes!(rotate_client_secret));
+    vec![
+        RouteGroup::new(protocol, Access::Public),
+        RouteGroup::new(admin, Access::OperatorOrOwner),
+    ]
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// OIDC discovery document served at `/.well-known/openid-configuration`.
 struct DiscoveryDocument {
     /// Issuer origin used as `iss` in minted JWTs (`public_origin` or loopback).
@@ -101,6 +92,13 @@ struct DiscoveryDocument {
 }
 
 /// Serves the OIDC discovery document for registered clients.
+#[utoipa::path(
+    get,
+    path = "/.well-known/openid-configuration",
+    responses(
+        (status = 200, description = "The OIDC discovery document.", body = DiscoveryDocument),
+    ),
+)]
 async fn openid_configuration(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -122,7 +120,8 @@ async fn openid_configuration(
     })
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 /// Query parameters for `GET /oidc/authorize` (authorization-code + PKCE).
 pub struct AuthorizeQuery {
     /// Registered OIDC client id (must exist in the library store).
@@ -142,6 +141,15 @@ pub struct AuthorizeQuery {
 }
 
 /// Starts the authorization-code flow; unauthenticated users are sent to SPA login.
+#[utoipa::path(
+    get,
+    path = "/oidc/authorize",
+    params(AuthorizeQuery),
+    responses(
+        (status = 302, description = "Redirects to sign-in, the consent page, or the client."),
+        (status = 400, description = "The request is invalid."),
+    ),
+)]
 async fn authorize(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -176,7 +184,7 @@ fn branch_authorize(raw: &str) -> Result<Response, StatusCode> {
     Ok(Redirect::to(&format!("/join/approve?{raw}")).into_response())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Form body for `POST /oidc/authorize` after the user grants or denies consent.
 pub struct ConsentBody {
     /// Registered OIDC client id (must exist in the library store).
@@ -198,6 +206,16 @@ pub struct ConsentBody {
 }
 
 /// Completes consent: deny redirects with `access_denied`, grant issues a code.
+#[utoipa::path(
+    post,
+    path = "/oidc/authorize",
+    request_body(content = ConsentBody, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 302, description = "Redirects to the client with a code or `access_denied`."),
+        (status = 400, description = "The request is invalid."),
+        (status = 401, description = "The caller is not signed in."),
+    ),
+)]
 async fn authorize_consent(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -341,7 +359,7 @@ async fn require_user_session(
     Ok(Some(user_id))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// `application/x-www-form-urlencoded` body for `POST /oidc/token`.
 pub struct TokenForm {
     /// Grant: `authorization_code` or `refresh_token`; anything else is 400.
@@ -360,7 +378,7 @@ pub struct TokenForm {
     pub refresh_token: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Successful token-endpoint JSON (access, optional refresh, and ID tokens).
 struct TokenResponse {
     /// HS256 JWT access token bound to the User (`token_use=access`).
@@ -379,6 +397,16 @@ struct TokenResponse {
 }
 
 /// Dispatches token grants; unknown `grant_type` values return 400.
+#[utoipa::path(
+    post,
+    path = "/oidc/token",
+    request_body(content = TokenForm, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 200, description = "Tokens.", body = TokenResponse),
+        (status = 400, description = "The grant is invalid or unsupported."),
+        (status = 401, description = "The client failed to authenticate."),
+    ),
+)]
 async fn token(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -581,6 +609,14 @@ async fn mint_tokens(
 }
 
 /// Returns `sub` / `name` / `preferred_username` for a valid access JWT.
+#[utoipa::path(
+    get,
+    path = "/oidc/userinfo",
+    responses(
+        (status = 200, description = "Claims for the token's user.", body = serde_json::Value),
+        (status = 401, description = "The access token is missing or invalid."),
+    ),
+)]
 async fn userinfo(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -628,7 +664,7 @@ async fn userinfo(
     Ok(Json(body))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Form body for `POST /oidc/revoke` (RFC 7009-style refresh-token revoke).
 pub struct RevokeForm {
     /// Token to revoke; treated as a refresh token (hashed before lookup).
@@ -638,6 +674,14 @@ pub struct RevokeForm {
 }
 
 /// Best-effort refresh-token revoke; always returns 200 per RFC 7009.
+#[utoipa::path(
+    post,
+    path = "/oidc/revoke",
+    request_body(content = RevokeForm, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 200, description = "Always 200 (RFC 7009)."),
+    ),
+)]
 async fn revoke(State(state): State<Arc<AppState>>, Form(form): Form<RevokeForm>) -> StatusCode {
     let library = state.library_snapshot().await;
     let _ = library
@@ -1179,7 +1223,7 @@ fn client_view(
     body
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Body for creating or updating a Bookclerk-as-IdP client.
 struct OidcClientWrite {
     /// Public client_id (create only; path wins on update).
@@ -1234,6 +1278,15 @@ async fn require_client_admin(
 }
 
 /// Owner/operator list of Bookclerk-as-IdP clients (secrets never included).
+#[utoipa::path(
+    get,
+    path = "/api/auth/oidc/clients",
+    responses(
+        (status = 200, description = "Registered clients (no secrets).", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+    ),
+)]
 async fn list_clients(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, Response> {
@@ -1248,6 +1301,16 @@ async fn list_clients(
 }
 
 /// Create a client; confidential clients return the generated secret once.
+#[utoipa::path(
+    post,
+    path = "/api/auth/oidc/clients",
+    request_body = OidcClientWrite,
+    responses(
+        (status = 200, description = "The client; a confidential client's secret appears once.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+    ),
+)]
 async fn create_client(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1298,6 +1361,18 @@ async fn create_client(
 }
 
 /// Update redirects, name, scopes, and public/confidential mode (no secret echo unless rotating).
+#[utoipa::path(
+    put,
+    path = "/api/auth/oidc/clients/{client_id}",
+    params(("client_id" = String, Path, description = "Client id.")),
+    request_body = OidcClientWrite,
+    responses(
+        (status = 200, description = "The client after the change.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "No such client."),
+    ),
+)]
 async fn update_client(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1348,6 +1423,17 @@ async fn update_client(
 }
 
 /// Delete a registered client.
+#[utoipa::path(
+    delete,
+    path = "/api/auth/oidc/clients/{client_id}",
+    params(("client_id" = String, Path, description = "Client id.")),
+    responses(
+        (status = 204, description = "The client was deleted."),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "No such client."),
+    ),
+)]
 async fn delete_client(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1383,7 +1469,7 @@ async fn delete_client(
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Optional password for rotating a confidential client's secret.
 struct RotateSecretBody {
     /// Required for a non-elevated Owner whose portal session is older than 15 minutes.
@@ -1392,6 +1478,18 @@ struct RotateSecretBody {
 }
 
 /// Mint a new secret for a confidential client; plaintext is returned once.
+#[utoipa::path(
+    post,
+    path = "/api/auth/oidc/clients/{client_id}/rotate-secret",
+    params(("client_id" = String, Path, description = "Client id.")),
+    request_body = Option<RotateSecretBody>,
+    responses(
+        (status = 200, description = "The new secret (shown once).", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "No such client."),
+    ),
+)]
 async fn rotate_client_secret(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

@@ -43,7 +43,7 @@ pub const CLERK_BOOTSTRAP_VERSION: u32 = 1;
 pub const DEK_LEN: usize = 32;
 
 /// How a joining install connects to a library.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ConnectionType {
     /// A host node: its own database, work over the node socket (default).

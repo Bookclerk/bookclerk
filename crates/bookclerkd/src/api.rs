@@ -11,12 +11,12 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, patch, post, put};
+use axum::routing::get;
 use axum::Json;
 use axum::Router;
 use bookclerk_acquire::sidecar_key;
 use bookclerk_config::{Config, ListenAddrs};
-use bookclerk_integrations::{portal_spa_router, IntegrationRegistry, PortalState};
+use bookclerk_integrations::{portal_spa_routes, IntegrationRegistry, PortalState};
 use bookclerk_library::control_plane::ScanRequester;
 use bookclerk_library::{
     hash_token, AcquireStatus, BookRecord, ClaimTicketRecord, JobRecord, JobTrigger, LibraryError,
@@ -44,12 +44,15 @@ use tower_http::normalize_path::NormalizePathLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 use tracing::Level;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 use crate::auth::{self, OperatorAuthState};
 use crate::http_error;
 use crate::jobs::{
     enqueue_acquire, enqueue_integration_scan, enqueue_listen_sync, enqueue_scan, AdmitJob,
 };
+use crate::openapi::{Access, DocumentedGroup, RouteGroup};
 
 /// Shared daemon state.
 pub struct AppState {
@@ -155,7 +158,7 @@ struct InvitePageState {
     index: Option<PathBuf>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, utoipa::ToSchema)]
 /// Query string for `GET /invite`.
 struct InviteQuery {
     /// Opaque one-time claim ticket from the magic link.
@@ -280,7 +283,7 @@ async fn serve_invite_spa(index: &Path) -> Response {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 /// Snapshot of one queued or running control-plane job.
 pub struct JobInfo {
     /// Opaque job id returned to the client when the job is accepted.
@@ -311,14 +314,14 @@ pub struct JobInfo {
     pub finished_at: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Liveness payload for unauthenticated `GET /health`.
 struct HealthResponse {
     /// Always `ok` when the process can serve HTTP.
     status: &'static str,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Library and daemon snapshot for `GET /api/status`.
 struct StatusResponse {
     /// Count of configured store accounts.
@@ -343,7 +346,7 @@ struct StatusResponse {
     events: EventQueueStatus,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Outbox delivery counts for `GET /api/status`.
 struct EventQueueStatus {
     /// Pending deliveries without a suspend checkpoint.
@@ -370,7 +373,7 @@ struct EventQueueStatus {
     handler_latency_ms_avg: Option<i64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// One `config.toml` key/value pair from a settings PATCH.
 struct SettingsUpdate {
     /// Dotted config key; rejected unless it passes the settings allowlist.
@@ -379,7 +382,7 @@ struct SettingsUpdate {
     value: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Body for `PATCH /api/settings`.
 struct PatchSettingsRequest {
     /// Key/value pairs to validate, persist, and reload.
@@ -391,7 +394,7 @@ struct PatchSettingsRequest {
     expected_output_revision: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// One selectable value for a Settings dropdown.
 struct PluginSettingChoice {
     /// Stored config value; empty string means use the plugin default.
@@ -400,7 +403,7 @@ struct PluginSettingChoice {
     label: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// One editable setting shown in the Settings UI.
 struct PluginSettingOption {
     /// Dotted `config.toml` key for this option.
@@ -422,7 +425,7 @@ struct PluginSettingOption {
     secret_set: Option<bool>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Settings UI group for one discovered or loaded plugin.
 struct PluginSettingsGroup {
     /// Plugin id (`audible`, `sqlite`, and similar).
@@ -464,7 +467,7 @@ struct PluginSettingsGroup {
     present_on: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Settings page payload: file values, effective runtime, and plugin groups.
 struct SettingsResponse {
     /// Values as written in config.toml (and env overlays), plus `output.*`
@@ -487,7 +490,7 @@ struct SettingsResponse {
     output_revision: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Optional branding shown on the plugin consent dialog.
 struct PluginConsentBrand {
     /// Display name from the portal brand or plugin manifest.
@@ -502,7 +505,7 @@ struct PluginConsentBrand {
     logo: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Host-capped resource defaults shown on the consent dialog.
 struct PluginConsentLimits {
     /// Requested workerd CPU budget in milliseconds.
@@ -537,7 +540,7 @@ struct PluginConsentLimits {
 }
 
 /// Operator-facing grant JSON: CPU as cores (not Spec percent).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct PluginGrantView {
     /// Canonical provenance-qualified PluginKey.
@@ -549,6 +552,7 @@ struct PluginGrantView {
     /// Event types the operator approved the plugin to publish.
     producers: Vec<String>,
     /// Approved event-consumer subscriptions.
+    #[schema(value_type = Vec<Object>)]
     consumers: Vec<GrantedEventConsumer>,
     /// Approved job trigger types.
     jobs: Vec<String>,
@@ -607,7 +611,7 @@ struct PluginGrantView {
 }
 
 /// Operator-facing TCP grant (`host` + `ports`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct TcpGrantView {
     /// Hostname or `*.` wildcard.
@@ -670,7 +674,7 @@ impl PluginGrantView {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Consent dialog payload for one plugin.
 struct PluginConsentResponse {
     /// Plugin id whose grant is being reviewed.
@@ -697,7 +701,7 @@ struct PluginConsentResponse {
     limits: PluginConsentLimits,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Body for `POST /api/plugins/{id}/consent`.
 struct PluginConsentApproveRequest {
     /// Must be true; a false value is rejected with 400.
@@ -707,7 +711,7 @@ struct PluginConsentApproveRequest {
     grant: Option<PluginGrantOverride>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 /// Operator-supplied grant fields that replace matching request values.
 struct PluginGrantOverride {
@@ -739,7 +743,7 @@ struct PluginGrantOverride {
     extra_processes: Option<u32>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Generic mutation result with success flag, message, and optional job id.
 struct ActionResponse {
     /// True when the action was accepted or completed.
@@ -753,7 +757,7 @@ struct ActionResponse {
     error: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, utoipa::ToSchema)]
 /// Optional body for `POST /api/library/scan`.
 pub struct ScanRequest {
     /// When set, scan this account even if `scan_enabled` is false.
@@ -762,7 +766,7 @@ pub struct ScanRequest {
     pub plugin_instance_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, utoipa::ToSchema)]
 /// Optional body for `POST /api/library/acquire`.
 pub struct AcquireRequestBody {
     /// Audible ASIN filter; first of uuid/asin/isbn/product_id wins.
@@ -789,14 +793,14 @@ pub struct AcquireRequestBody {
     pub pdf_only: bool,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, utoipa::ToSchema)]
 /// Optional body for `POST /integrations/{id}/scan`.
 pub struct IntegrationScanRequest {
     /// When true, the integration rescans even if it considers itself current.
     pub force: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Body for copying library rows between database plugins.
 struct DatabaseMigrateRequest {
     /// Source plugin id. Defaults to the active `[database].plugin` before reload.
@@ -814,7 +818,8 @@ struct DatabaseMigrateRequest {
     apply: bool,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 /// Query string for `GET /api/library/books`.
 struct BooksQuery {
     /// Restrict results to this store account id.
@@ -829,7 +834,7 @@ struct BooksQuery {
     offset: Option<usize>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Paginated library listing.
 struct BooksResponse {
     /// Current page of title records.
@@ -842,6 +847,292 @@ struct BooksResponse {
     offset: usize,
 }
 
+/// Every documented route group served under the root, with who may call it.
+///
+/// The groups carry no state or auth layers: [`router`] wraps each in the
+/// middleware its [`Access`] names ([`guarded`]), and the OpenAPI document
+/// ([`documented_groups`]) reads the same groups, so a served route always
+/// has its spec entry and states the access that is enforced.
+///
+/// # Returns
+///
+/// The groups from this module and the auth, OIDC, passkey and TOTP modules.
+// The legacy aliases are deprecated in the document and still served.
+#[allow(deprecated)]
+pub(crate) fn route_groups() -> Vec<RouteGroup> {
+    // Use `route_layer` (not `layer`) for auth, so auth never wraps the
+    // router's fallback: `.layer(auth)` made unmatched paths, including `/`
+    // when the GUI dist was missing, return a bare 401 instead of serving the
+    // SPA or the branded 404.
+    let operator_or_admin = OpenApiRouter::new()
+        .routes(routes!(legacy_status))
+        .routes(routes!(legacy_scan))
+        .routes(routes!(legacy_acquire))
+        .routes(routes!(legacy_list_jobs))
+        .routes(routes!(legacy_cancel_job))
+        .routes(routes!(trigger_integration_scan))
+        .routes(routes!(status))
+        .routes(routes!(list_jobs))
+        .routes(routes!(cancel_job))
+        .routes(routes!(list_events))
+        .routes(routes!(list_event_deliveries))
+        .routes(routes!(list_queues))
+        .routes(routes!(inspect_queue))
+        .routes(routes!(retry_event_delivery))
+        .routes(routes!(ack_event_delivery))
+        .routes(routes!(cancel_event_delivery))
+        .routes(routes!(resume_event_delivery))
+        .routes(routes!(trigger_scan))
+        .routes(routes!(trigger_acquire))
+        .routes(routes!(sync_listening));
+
+    let operator_only = OpenApiRouter::new()
+        .routes(routes!(reload_config))
+        .routes(routes!(
+            crate::config_authority::get_events_domain,
+            crate::config_authority::put_events_domain
+        ))
+        .routes(routes!(
+            crate::config_authority::get_output_domain,
+            crate::config_authority::put_output_domain
+        ))
+        .routes(routes!(
+            crate::config_authority::get_plugin_instances,
+            crate::config_authority::post_plugin_instance
+        ))
+        .routes(routes!(
+            crate::config_authority::delete_plugin_instance_route
+        ))
+        .routes(routes!(
+            crate::config_authority::get_plugin_instance_config,
+            crate::config_authority::put_plugin_instance_config
+        ))
+        .routes(routes!(crate::config_authority::put_plugin_deployment))
+        .routes(routes!(
+            crate::config_authority::put_plugin_placement_route,
+            crate::config_authority::delete_plugin_placement_route
+        ))
+        .routes(routes!(crate::config_authority::put_node_labels))
+        .routes(routes!(crate::config_authority::put_node_owner))
+        .routes(routes!(
+            crate::plugin_installs::get_plugins,
+            crate::plugin_installs::post_plugin_install
+        ))
+        .routes(routes!(
+            crate::plugin_installs::get_plugin,
+            crate::plugin_installs::delete_plugin_install
+        ))
+        .routes(routes!(crate::plugin_installs::put_active_version))
+        .routes(routes!(crate::plugin_installs::approve_plugin_version))
+        .routes(routes!(crate::cluster_link::api::get_cluster_consents))
+        .routes(routes!(crate::cluster_link::api::post_cluster_scan))
+        .routes(routes!(crate::cluster_link::api::post_cluster_jobs))
+        .routes(routes!(
+            crate::cluster_link::api::post_cluster_consent_approve
+        ))
+        .routes(routes!(
+            crate::cluster_link::api::post_cluster_consent_revoke
+        ))
+        // Join a library / Leave library (the welcome screen and wizard).
+        .routes(routes!(crate::cluster_link::join::get_join_status))
+        .routes(routes!(crate::cluster_link::join::post_join_inspect))
+        .routes(routes!(crate::cluster_link::join::post_join_start))
+        .routes(routes!(crate::cluster_link::join::post_join_callback))
+        .routes(routes!(crate::cluster_link::join::post_join_invite))
+        .routes(routes!(crate::cluster_link::join::post_join_leave))
+        .routes(routes!(get_settings, patch_settings))
+        .routes(routes!(get_plugin_consent, post_plugin_consent))
+        .routes(routes!(get_plugin_logo))
+        .routes(routes!(migrate_database))
+        .routes(routes!(auth::impersonate, auth::impersonate_end))
+        .routes(routes!(auth::elevate_end));
+
+    // Node administration: operators see and edit every node; a user who
+    // owns nodes (Host, Administrator, Owner) sees and edits only those. An
+    // Owner also sees and removes every owner node (the clerks).
+    let node_admin = OpenApiRouter::new()
+        .routes(routes!(crate::config_authority::get_nodes))
+        .routes(routes!(crate::config_authority::delete_owner_node))
+        // Settings → Clerks: every owner node for the operator or an Owner.
+        .routes(routes!(crate::config_authority::get_clerks))
+        .routes(routes!(crate::config_authority::put_node_runtime))
+        .routes(routes!(crate::config_authority::get_cluster_status));
+
+    // Host enrollment links: any signed-in user acts for themselves; the
+    // library lets the operator or an Owner act for others.
+    let user_scoped = OpenApiRouter::new()
+        .routes(routes!(
+            crate::node_api::get_node_invites,
+            crate::node_api::post_node_invite
+        ))
+        .routes(routes!(crate::node_api::delete_node_invite))
+        // A branch's sign-in consent ("Let <branch> join <library> as
+        // yours?"): a signed-in user, never the operator alone.
+        .routes(routes!(
+            crate::node_api::branch::get_branch_consent,
+            crate::node_api::branch::post_branch_consent
+        ))
+        // A clerk consent's fresh passkey step (an Owner with a passkey).
+        .routes(routes!(
+            crate::node_api::branch::post_branch_consent_step_up
+        ))
+        // Settings → Branches: the library's join settings (operator or
+        // Owner; the handler checks).
+        .routes(routes!(
+            crate::node_api::branch::get_branches,
+            crate::node_api::branch::put_branches
+        ))
+        .routes(routes!(crate::node_api::branch::post_remove_branch_titles))
+        // Settings → Library's two sharing settings on a branch (operator
+        // or Owner; the handler checks).
+        .routes(routes!(
+            crate::cluster_link::join::get_join_sharing,
+            crate::cluster_link::join::post_join_sharing
+        ))
+        // The library lets the operator or an Owner revoke any host and
+        // anyone else only the hosts they own.
+        .routes(routes!(crate::node_api::delete_node_credential))
+        // Any user reads the switch; the handler lets only the operator or
+        // an active Owner change it.
+        .routes(routes!(
+            crate::node_api::get_host_enrollment,
+            crate::node_api::put_host_enrollment
+        ));
+
+    let shared = OpenApiRouter::new()
+        .routes(routes!(list_books))
+        .routes(routes!(get_book))
+        .routes(routes!(get_book_cover))
+        .routes(routes!(discover_recommendations))
+        .routes(routes!(discover_purchase_hints))
+        .routes(routes!(discover_purchase_hints_batch))
+        .routes(routes!(discover_catalog_search))
+        .routes(routes!(discover_title_meta))
+        .routes(routes!(discover_title_meta_batch))
+        .routes(routes!(discover_title_reviews))
+        .routes(routes!(list_wishlist, create_wishlist))
+        .routes(routes!(delete_wishlist))
+        .routes(routes!(list_request_queue))
+        .routes(routes!(auth::logout))
+        .routes(routes!(auth::list_sessions))
+        .routes(routes!(auth::revoke_session))
+        .routes(routes!(crate::profile::patch_profile))
+        .routes(routes!(
+            crate::profile::put_avatar,
+            crate::profile::delete_avatar
+        ))
+        .routes(routes!(crate::profile::get_avatar))
+        .routes(routes!(get_preferences, patch_preferences));
+
+    // `/api/auth/me` stays public so the SPA bootstrap can probe session state
+    // without a bare middleware 401 (which some browsers render as an error
+    // document). The handler itself reports operator / portal / anonymous.
+    let public = OpenApiRouter::new()
+        .routes(routes!(health))
+        .routes(routes!(auth::login))
+        .routes(routes!(auth::signin_methods))
+        .routes(routes!(auth::tray_handoff_prepare))
+        .routes(routes!(auth::tray_handoff))
+        .routes(routes!(auth::me))
+        // The SPA's live socket checks Origin and the caller itself.
+        .routes(routes!(crate::live::get_live))
+        .routes(routes!(auth::elevate))
+        .routes(routes!(auth::bootstrap))
+        .routes(routes!(auth::password_login, auth::set_password))
+        .routes(routes!(auth::list_users, auth::create_user))
+        .routes(routes!(auth::patch_user, auth::delete_user))
+        .routes(routes!(auth::create_user_claim_ticket))
+        .routes(routes!(auth::reset_user_password));
+
+    let mut groups = vec![
+        RouteGroup::new(public, Access::Public),
+        RouteGroup::new(operator_or_admin, Access::OperatorOrAdministrator),
+        RouteGroup::new(operator_only, Access::Operator),
+        RouteGroup::new(node_admin, Access::OperatorOrNodeOwner),
+        RouteGroup::new(user_scoped, Access::OperatorOrUser),
+        RouteGroup::new(shared, Access::OperatorOrPortal),
+    ];
+    // OIDC authorization server (ABS / third-party user tokens).
+    groups.extend(crate::oidc::route_groups());
+    // Optional upstream OIDC/OAuth relying party (identity broker).
+    groups.extend(crate::oidc_rp::route_groups());
+    // WebAuthn passkeys (login + Owner elevate).
+    groups.extend(crate::passkeys::route_groups());
+    // TOTP MFA + host second-factor policy.
+    groups.extend(crate::totp::route_groups());
+    groups
+}
+
+/// Wraps a route group in the auth middleware its access names.
+///
+/// # Arguments
+///
+/// * `routes` - The group.
+/// * `access` - Who may call it.
+/// * `state` - Daemon state the middleware reads.
+///
+/// # Returns
+///
+/// The group with its auth layer on its routes only (`route_layer`).
+fn guarded(
+    routes: OpenApiRouter<Arc<AppState>>,
+    access: Access,
+    state: &Arc<AppState>,
+) -> OpenApiRouter<Arc<AppState>> {
+    let state = state.clone();
+    match access {
+        Access::Public => routes,
+        Access::Operator => routes.route_layer(middleware::from_fn_with_state(
+            state,
+            auth::require_operator_auth,
+        )),
+        Access::OperatorOrAdministrator => routes.route_layer(middleware::from_fn_with_state(
+            state,
+            auth::require_operator_or_administrator_auth,
+        )),
+        Access::OperatorOrOwner => routes.route_layer(middleware::from_fn_with_state(
+            state,
+            auth::require_operator_or_owner_auth,
+        )),
+        Access::OperatorOrNodeOwner => routes.route_layer(middleware::from_fn_with_state(
+            state,
+            auth::require_operator_or_node_owner_auth,
+        )),
+        Access::OperatorOrUser => routes.route_layer(middleware::from_fn_with_state(
+            state,
+            auth::require_operator_or_user_auth,
+        )),
+        Access::OperatorOrPortal => routes.route_layer(middleware::from_fn_with_state(
+            state,
+            auth::require_operator_or_portal_auth,
+        )),
+    }
+}
+
+/// The route groups the OpenAPI document covers, in document order.
+///
+/// # Returns
+///
+/// [`route_groups`], the node API, this document's own route and the
+/// Accounts (portal) routes nested at `/api/portal`.
+pub(crate) fn documented_groups() -> Vec<DocumentedGroup> {
+    let mut out: Vec<DocumentedGroup> = route_groups()
+        .into_iter()
+        .map(|g| DocumentedGroup::new(g.routes, g.access))
+        .collect();
+    out.push(DocumentedGroup::new(
+        crate::node_api::node_routes(),
+        Access::Public,
+    ));
+    out.push(DocumentedGroup::new(
+        OpenApiRouter::<Arc<utoipa::openapi::OpenApi>>::new()
+            .routes(routes!(crate::openapi::get_openapi)),
+        Access::Public,
+    ));
+    out.push(DocumentedGroup::new(portal_spa_routes(), Access::Public).nested("/api/portal"));
+    out
+}
+
 /// Build the HTTP router (API + optional static UI + SPA portal APIs).
 pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     let portal_state = PortalState {
@@ -851,358 +1142,34 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         sources: state.sources.clone(),
     };
 
-    // Use `route_layer` (not `layer`) so auth never wraps the router's fallback.
-    // `.layer(auth)` made unmatched paths — including `/` when the GUI dist was
-    // missing — return a bare 401 instead of serving the SPA / branded 404.
-    let operator_or_admin = Router::new()
-        .route("/status", get(status))
-        .route("/scan", post(trigger_scan))
-        .route("/acquire", post(trigger_acquire))
-        .route("/jobs", get(list_jobs))
-        .route("/jobs/{id}/cancel", post(cancel_job))
-        .route("/integrations/{id}/scan", post(trigger_integration_scan))
-        .route("/api/status", get(status))
-        .route("/api/jobs", get(list_jobs))
-        .route("/api/jobs/{id}/cancel", post(cancel_job))
-        .route("/api/events", get(list_events))
-        .route("/api/events/deliveries", get(list_event_deliveries))
-        .route("/api/queues", get(list_queues))
-        .route("/api/queues/{name}", get(inspect_queue))
-        .route(
-            "/api/events/deliveries/{id}/retry",
-            post(retry_event_delivery),
-        )
-        .route(
-            "/api/events/deliveries/{id}/acknowledge",
-            post(ack_event_delivery),
-        )
-        .route(
-            "/api/events/deliveries/{id}/cancel",
-            post(cancel_event_delivery),
-        )
-        .route(
-            "/api/events/deliveries/{id}/resume",
-            post(resume_event_delivery),
-        )
-        .route("/api/library/scan", post(trigger_scan))
-        .route("/api/library/acquire", post(trigger_acquire))
-        .route("/api/discover/sync-listening", post(sync_listening))
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth::require_operator_or_administrator_auth,
-        ))
-        .with_state(state.clone());
-
-    let operator_only = Router::new()
-        .route("/api/config/reload", post(reload_config))
-        .route(
-            "/api/config/domains/core.events",
-            get(crate::config_authority::get_events_domain)
-                .put(crate::config_authority::put_events_domain),
-        )
-        .route(
-            "/api/config/domains/core.output",
-            get(crate::config_authority::get_output_domain)
-                .put(crate::config_authority::put_output_domain),
-        )
-        .route(
-            "/api/config/plugin-instances",
-            get(crate::config_authority::get_plugin_instances)
-                .post(crate::config_authority::post_plugin_instance),
-        )
-        .route(
-            "/api/config/plugin-instances/{id}",
-            delete(crate::config_authority::delete_plugin_instance_route),
-        )
-        .route(
-            "/api/config/plugin-instances/{id}/config",
-            get(crate::config_authority::get_plugin_instance_config)
-                .put(crate::config_authority::put_plugin_instance_config),
-        )
-        .route(
-            "/api/config/plugin-instances/{id}/deployments/{node_id}",
-            put(crate::config_authority::put_plugin_deployment),
-        )
-        .route(
-            "/api/config/plugin-instances/{id}/placement",
-            put(crate::config_authority::put_plugin_placement_route)
-                .delete(crate::config_authority::delete_plugin_placement_route),
-        )
-        .route(
-            "/api/config/nodes/{node_id}/labels",
-            put(crate::config_authority::put_node_labels),
-        )
-        .route(
-            "/api/config/nodes/{node_id}/owner",
-            put(crate::config_authority::put_node_owner),
-        )
-        .route(
-            "/api/config/plugins",
-            get(crate::plugin_installs::get_plugins)
-                .post(crate::plugin_installs::post_plugin_install),
-        )
-        .route(
-            "/api/config/plugins/{key}",
-            get(crate::plugin_installs::get_plugin)
-                .delete(crate::plugin_installs::delete_plugin_install),
-        )
-        .route(
-            "/api/config/plugins/{key}/active",
-            put(crate::plugin_installs::put_active_version),
-        )
-        .route(
-            "/api/config/plugins/{key}/versions/{version}/approve",
-            post(crate::plugin_installs::approve_plugin_version),
-        )
-        .route(
-            "/api/config/cluster-consents",
-            get(crate::cluster_link::api::get_cluster_consents),
-        )
-        .route(
-            "/api/config/clusters/{cluster_id}/scan",
-            post(crate::cluster_link::api::post_cluster_scan),
-        )
-        .route(
-            "/api/config/clusters/{cluster_id}/jobs",
-            post(crate::cluster_link::api::post_cluster_jobs),
-        )
-        .route(
-            "/api/config/cluster-consents/approve",
-            post(crate::cluster_link::api::post_cluster_consent_approve),
-        )
-        .route(
-            "/api/config/cluster-consents/revoke",
-            post(crate::cluster_link::api::post_cluster_consent_revoke),
-        )
-        // Join a library / Leave library (the welcome screen and wizard).
-        .route(
-            "/api/config/join",
-            get(crate::cluster_link::join::get_join_status),
-        )
-        .route(
-            "/api/config/join/inspect",
-            post(crate::cluster_link::join::post_join_inspect),
-        )
-        .route(
-            "/api/config/join/start",
-            post(crate::cluster_link::join::post_join_start),
-        )
-        .route(
-            "/api/config/join/callback",
-            post(crate::cluster_link::join::post_join_callback),
-        )
-        .route(
-            "/api/config/join/invite",
-            post(crate::cluster_link::join::post_join_invite),
-        )
-        .route(
-            "/api/config/join/leave",
-            post(crate::cluster_link::join::post_join_leave),
-        )
-        .route("/api/settings", get(get_settings).patch(patch_settings))
-        .route(
-            "/api/plugins/{id}/consent",
-            get(get_plugin_consent).post(post_plugin_consent),
-        )
-        .route("/api/plugins/{kind}/{id}/logo", get(get_plugin_logo))
-        .route("/api/database/migrate", post(migrate_database))
-        .route(
-            "/api/auth/impersonate",
-            post(auth::impersonate).delete(auth::impersonate_end),
-        )
-        .route("/api/auth/elevate", delete(auth::elevate_end))
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth::require_operator_auth,
-        ))
-        .with_state(state.clone());
-
-    // Node administration: operators see and edit every node; a user who
-    // owns nodes (Host, Administrator, Owner) sees and edits only those. An
-    // Owner also sees and removes every owner node (the clerks).
-    let node_admin = Router::new()
-        .route("/api/config/nodes", get(crate::config_authority::get_nodes))
-        .route(
-            "/api/config/nodes/{node_id}",
-            delete(crate::config_authority::delete_owner_node),
-        )
-        // Settings → Clerks: every owner node for the operator or an Owner.
-        .route(
-            "/api/config/clerks",
-            get(crate::config_authority::get_clerks),
-        )
-        .route(
-            "/api/config/nodes/{node_id}/runtime",
-            put(crate::config_authority::put_node_runtime),
-        )
-        .route(
-            "/api/cluster/status",
-            get(crate::config_authority::get_cluster_status),
-        )
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth::require_operator_or_node_owner_auth,
-        ))
-        .with_state(state.clone());
-
-    // Host enrollment links: any signed-in user acts for themselves; the
-    // library lets the operator or an Owner act for others.
-    let user_scoped = Router::new()
-        .route(
-            "/api/config/node-invites",
-            get(crate::node_api::get_node_invites).post(crate::node_api::post_node_invite),
-        )
-        .route(
-            "/api/config/node-invites/{id}",
-            delete(crate::node_api::delete_node_invite),
-        )
-        // A branch's sign-in consent ("Let <branch> join <library> as
-        // yours?"): a signed-in user, never the operator alone.
-        .route(
-            "/api/auth/branch-consent",
-            get(crate::node_api::branch::get_branch_consent)
-                .post(crate::node_api::branch::post_branch_consent),
-        )
-        // A clerk consent's fresh passkey step (an Owner with a passkey).
-        .route(
-            "/api/auth/branch-consent/step-up",
-            post(crate::node_api::branch::post_branch_consent_step_up),
-        )
-        // Settings → Branches: the library's join settings (operator or
-        // Owner; the handler checks).
-        .route(
-            "/api/config/branches",
-            get(crate::node_api::branch::get_branches).put(crate::node_api::branch::put_branches),
-        )
-        .route(
-            "/api/config/branches/titles/remove",
-            post(crate::node_api::branch::post_remove_branch_titles),
-        )
-        // Settings → Library's two sharing settings on a branch (operator
-        // or Owner; the handler checks).
-        .route(
-            "/api/config/join/sharing",
-            get(crate::cluster_link::join::get_join_sharing)
-                .post(crate::cluster_link::join::post_join_sharing),
-        )
-        // The library lets the operator or an Owner revoke any host and
-        // anyone else only the hosts they own.
-        .route(
-            "/api/config/node-credentials/{node_id}",
-            delete(crate::node_api::delete_node_credential),
-        )
-        // Any user reads the switch; the handler lets only the operator or
-        // an active Owner change it.
-        .route(
-            "/api/config/host-enrollment",
-            get(crate::node_api::get_host_enrollment).put(crate::node_api::put_host_enrollment),
-        )
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth::require_operator_or_user_auth,
-        ))
-        .with_state(state.clone());
-
-    let shared = Router::new()
-        .route("/api/library/books", get(list_books))
-        .route("/api/library/books/{uuid}", get(get_book))
-        .route("/api/library/books/{uuid}/cover", get(get_book_cover))
-        .route(
-            "/api/discover/recommendations",
-            get(discover_recommendations),
-        )
-        .route(
-            "/api/discover/purchase-hints",
-            post(discover_purchase_hints),
-        )
-        .route(
-            "/api/discover/purchase-hints/batch",
-            post(discover_purchase_hints_batch),
-        )
-        .route("/api/discover/search", get(discover_catalog_search))
-        .route("/api/discover/title-meta", post(discover_title_meta))
-        .route(
-            "/api/discover/title-meta/batch",
-            post(discover_title_meta_batch),
-        )
-        .route("/api/discover/title-reviews", post(discover_title_reviews))
-        .route("/api/wishlist", get(list_wishlist).post(create_wishlist))
-        .route("/api/wishlist/{uuid}", delete(delete_wishlist))
-        .route("/api/request-queue", get(list_request_queue))
-        .route("/api/auth/logout", post(auth::logout))
-        .route("/api/auth/sessions", get(auth::list_sessions))
-        .route("/api/auth/sessions/{id}", delete(auth::revoke_session))
-        .route("/api/auth/profile", patch(crate::profile::patch_profile))
-        .route(
-            "/api/auth/profile/avatar",
-            put(crate::profile::put_avatar).delete(crate::profile::delete_avatar),
-        )
-        .route("/api/users/{id}/avatar", get(crate::profile::get_avatar))
-        .route(
-            "/api/preferences",
-            get(get_preferences).patch(patch_preferences),
-        )
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth::require_operator_or_portal_auth,
-        ))
-        .with_state(state.clone());
-
-    // `/api/auth/me` stays public so the SPA bootstrap can probe session state
-    // without a bare middleware 401 (which some browsers render as an error
-    // document). The handler itself reports operator / portal / anonymous.
-    let mut app = Router::new()
-        .route("/health", get(health))
-        .route("/api/auth/login", post(auth::login))
-        .route("/api/auth/signin", get(auth::signin_methods))
-        .route(
-            "/api/auth/tray-handoff/prepare",
-            post(auth::tray_handoff_prepare),
-        )
-        .route("/api/auth/tray-handoff", get(auth::tray_handoff))
-        .route("/api/auth/me", get(auth::me))
-        // The SPA's live socket checks Origin and the caller itself.
-        .route(crate::live::LIVE_PATH, get(crate::live::get_live))
-        .route("/api/auth/elevate", post(auth::elevate))
-        .route("/api/auth/bootstrap", post(auth::bootstrap))
-        .route(
-            "/api/auth/password",
-            post(auth::password_login).put(auth::set_password),
-        )
-        .route("/api/users", get(auth::list_users).post(auth::create_user))
-        .route(
-            "/api/users/{id}",
-            axum::routing::patch(auth::patch_user).delete(auth::delete_user),
-        )
-        .route(
-            "/api/users/{id}/claim-ticket",
-            post(auth::create_user_claim_ticket),
-        )
-        .route(
-            "/api/users/{id}/reset-password",
-            post(auth::reset_user_password),
-        )
-        .merge(operator_or_admin)
-        // Host-node enrollment and socket: never behind the cookie/auth
-        // layers; the transport policy runs first.
-        .merge(crate::node_api::node_router(state.clone()))
-        .merge(operator_only)
-        .merge(node_admin)
-        .merge(user_scoped)
-        .merge(shared)
-        .with_state(state.clone());
+    // The document is built from the same route groups the router serves.
+    let openapi_doc = Arc::new(crate::openapi::document());
+    let mut app: Router = Router::new();
+    for group in route_groups() {
+        let (routes, _) = guarded(group.routes, group.access, &state)
+            .with_state(state.clone())
+            .split_for_parts();
+        app = app.merge(routes);
+    }
+    // Host-node enrollment and socket: never behind the cookie/auth
+    // layers; the transport policy runs first.
+    app = app.merge(crate::node_api::node_router(state.clone()));
+    app = app.merge(
+        OpenApiRouter::new()
+            .routes(routes!(crate::openapi::get_openapi))
+            .with_state(openapi_doc)
+            .split_for_parts()
+            .0,
+    );
 
     // SPA Accounts / claim APIs (Path=/ portal session cookie).
-    app = app.nest("/api/portal", portal_spa_router(portal_state));
-
-    // OIDC authorization server (ABS / third-party user tokens).
-    app = app.merge(crate::oidc::router(state.clone()));
-    // Optional upstream OIDC/OAuth relying party (identity broker).
-    app = app.merge(crate::oidc_rp::router(state.clone()));
-    // WebAuthn passkeys (login + Owner elevate).
-    app = app.merge(crate::passkeys::router(state.clone()));
-    // TOTP MFA + host second-factor policy.
-    app = app.merge(crate::totp::router(state.clone()));
+    app = app.nest(
+        "/api/portal",
+        portal_spa_routes()
+            .with_state(portal_state)
+            .split_for_parts()
+            .0,
+    );
 
     let invite_index = ui_dist.as_ref().map(|d| d.join("index.html"));
     app = app.merge(
@@ -1469,6 +1436,13 @@ pub fn resolve_ui_dist() -> Option<PathBuf> {
 }
 
 /// Serves `GET /health` with a static `ok` payload for liveness probes.
+#[utoipa::path(
+    get,
+    path = "/health",
+    responses(
+        (status = 200, description = "The daemon is serving HTTP.", body = HealthResponse),
+    ),
+)]
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
 }
@@ -2818,6 +2792,15 @@ fn consent_required_response(plugin_id: &str, message: String, summary: Vec<Stri
 const SVG_LOGO_CSP: &str = "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'none'; object-src 'none'; sandbox";
 
 /// Serve an embedded `plugin.toml` `logo` file from under the plugin install root.
+#[utoipa::path(
+    get,
+    path = "/api/plugins/{kind}/{id}/logo",
+    params(("kind" = String, Path, description = "Plugin kind (`source`, `destination`, `integration`, …)."), ("id" = String, Path, description = "Plugin id.")),
+    responses(
+        (status = 200, description = "The logo (PNG, or SVG served with a restrictive CSP).", content_type = "image/png"),
+        (status = 404, description = "The plugin has no logo.", body = crate::http_error::ErrorJson),
+    ),
+)]
 async fn get_plugin_logo(
     State(state): State<Arc<AppState>>,
     AxumPath((kind, id)): AxumPath<(String, String)>,
@@ -3082,7 +3065,8 @@ fn vec_to_set(values: Vec<String>) -> BTreeSet<String> {
 }
 
 /// Optional query for provenance-qualified consent lookup.
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 struct PluginConsentQuery {
     /// Canonical PluginKey; when set, wins over the path alias.
     #[serde(default)]
@@ -3110,6 +3094,16 @@ fn resolve_consent_plugin<'a>(
 }
 
 /// Loads the consent dialog for one plugin, including coverage against the stored grant.
+#[utoipa::path(
+    get,
+    path = "/api/plugins/{id}/consent",
+    params(("id" = String, Path, description = "Plugin id."), PluginConsentQuery),
+    responses(
+        (status = 200, description = "What the plugin asks for and what is granted.", body = PluginConsentResponse),
+        (status = 404, description = "No such plugin.", body = crate::http_error::ErrorJson),
+        (status = 500, description = "The grant could not be read.", body = crate::http_error::ErrorJson),
+    ),
+)]
 async fn get_plugin_consent(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
@@ -3152,6 +3146,17 @@ async fn get_plugin_consent(
 }
 
 /// Persists an approved plugin grant after validating operator overrides.
+#[utoipa::path(
+    post,
+    path = "/api/plugins/{id}/consent",
+    params(("id" = String, Path, description = "Plugin id."), PluginConsentQuery),
+    responses(
+        (status = 200, description = "The grant was stored.", body = PluginConsentResponse),
+        (status = 400, description = "An override is not allowed.", body = crate::http_error::ErrorJson),
+        (status = 404, description = "No such plugin.", body = crate::http_error::ErrorJson),
+        (status = 500, description = "The grant could not be stored.", body = crate::http_error::ErrorJson),
+    ),
+)]
 async fn post_plugin_consent(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
@@ -3198,6 +3203,14 @@ async fn post_plugin_consent(
 }
 
 /// Returns file-backed and runtime-effective Settings plus per-plugin groups.
+#[utoipa::path(
+    get,
+    path = "/api/settings",
+    responses(
+        (status = 200, description = "The settings.", body = SettingsResponse),
+        (status = 500, description = "The settings could not be read.", body = crate::http_error::ErrorJson),
+    ),
+)]
 async fn get_settings(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<SettingsResponse>, StatusCode> {
@@ -3274,6 +3287,15 @@ async fn get_settings(
 }
 
 /// Validates, writes, and reloads allowlisted Settings keys under `reload_lock`.
+#[utoipa::path(
+    patch,
+    path = "/api/settings",
+    responses(
+        (status = 200, description = "The settings after the change.", body = SettingsResponse),
+        (status = 400, description = "A key is unknown or a value is invalid.", body = crate::http_error::ErrorJson),
+        (status = 500, description = "The settings could not be written.", body = crate::http_error::ErrorJson),
+    ),
+)]
 async fn patch_settings(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PatchSettingsRequest>,
@@ -3493,6 +3515,14 @@ async fn patch_settings(
 }
 
 /// Reloads `config.toml` and republishes daemon runtime without a process restart.
+#[utoipa::path(
+    post,
+    path = "/api/config/reload",
+    responses(
+        (status = 200, description = "The configuration was reloaded.", body = ActionResponse),
+        (status = 500, description = "The reload failed; the old configuration stays live.", body = ActionResponse),
+    ),
+)]
 async fn reload_config(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<ActionResponse>, StatusCode> {
@@ -3541,6 +3571,15 @@ pub(crate) async fn apply_migrated_database_plugin(
 }
 
 /// Copies library rows between database plugins and optionally switches `[database].plugin`.
+#[utoipa::path(
+    post,
+    path = "/api/database/migrate",
+    responses(
+        (status = 200, description = "The rows were copied.", body = ActionResponse),
+        (status = 400, description = "The target is invalid.", body = ActionResponse),
+        (status = 500, description = "The copy failed.", body = crate::http_error::ErrorJson),
+    ),
+)]
 async fn migrate_database(
     State(state): State<Arc<AppState>>,
     Json(body): Json<DatabaseMigrateRequest>,
@@ -3627,6 +3666,14 @@ async fn migrate_database(
 }
 
 /// Returns library counts, listen addresses, storage backends, and whether operator auth is on.
+#[utoipa::path(
+    get,
+    path = "/api/status",
+    responses(
+        (status = 200, description = "Library counts and daemon state.", body = StatusResponse),
+        (status = 500, description = "The library could not be read.", body = crate::http_error::ErrorJson),
+    ),
+)]
 async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusResponse>, StatusCode> {
     let library = state.library_snapshot().await;
     let accounts = library
@@ -3714,6 +3761,19 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
 /// scan-enabled account for operators, Owners and Administrators, and
 /// limits anyone else to the accounts they own. `job_id` is the first
 /// accepted (or already queued) job and `job_ids` lists every one.
+#[utoipa::path(
+    post,
+    path = "/api/library/scan",
+    request_body = Option<ScanRequest>,
+    responses(
+        (status = 200, description = "The scan jobs were accepted.", body = ScanPlanResponse),
+        (status = 400, description = "The body names no valid target.", body = ActionResponse),
+        (status = 403, description = "The caller may not scan these accounts.", body = ActionResponse),
+        (status = 409, description = "A scan is already pending or running.", body = ScanPlanResponse),
+        (status = 422, description = "No account matched.", body = ScanPlanResponse),
+        (status = 429, description = "The job queue is full.", body = ScanPlanResponse),
+    ),
+)]
 async fn trigger_scan(
     State(state): State<Arc<AppState>>,
     requester: Option<axum::Extension<ScanRequester>>,
@@ -3762,7 +3822,7 @@ async fn trigger_scan(
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Result of a planned scan or acquire: [`ActionResponse`] plus every job id.
 struct ScanPlanResponse {
     /// True when at least one job was accepted.
@@ -3882,6 +3942,20 @@ fn plan_response(kind: &str, admits: Vec<AdmitJob>) -> Response {
 /// not an Owner or Administrator to the accounts they own (one job per
 /// account when no title or account is named). `job_id` is the first
 /// accepted (or already queued) job and `job_ids` lists every one.
+#[utoipa::path(
+    post,
+    path = "/api/library/acquire",
+    request_body = Option<AcquireRequestBody>,
+    responses(
+        (status = 200, description = "The acquire jobs were accepted.", body = ActionResponse),
+        (status = 400, description = "The body names no valid title.", body = ActionResponse),
+        (status = 403, description = "The caller may not acquire for these accounts.", body = ActionResponse),
+        (status = 409, description = "The same acquire is already pending or running, or no node can run it.", body = ActionResponse),
+        (status = 429, description = "The job queue is full.", body = ActionResponse),
+        (status = 503, description = "Job admission is paused.", body = ActionResponse),
+        (status = 500, description = "The jobs could not be queued.", body = ActionResponse),
+    ),
+)]
 async fn trigger_acquire(
     State(state): State<Arc<AppState>>,
     requester: Option<axum::Extension<ScanRequester>>,
@@ -4018,6 +4092,14 @@ fn enqueue_error_response(err: anyhow::Error) -> Response {
 }
 
 /// Returns durable scan/acquire/listen_sync jobs, newest first.
+#[utoipa::path(
+    get,
+    path = "/api/jobs",
+    responses(
+        (status = 200, description = "Jobs, newest first.", body = Vec<JobInfo>),
+        (status = 500, description = "The job table could not be read.", body = crate::http_error::ErrorJson),
+    ),
+)]
 async fn list_jobs(State(state): State<Arc<AppState>>) -> Result<Json<Vec<JobInfo>>, StatusCode> {
     let library = state.library_snapshot().await;
     let jobs = library
@@ -4028,7 +4110,7 @@ async fn list_jobs(State(state): State<Arc<AppState>>) -> Result<Json<Vec<JobInf
 }
 
 /// Operator JSON for one `domain_events` row.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct DomainEventInfo {
     /// Event id.
@@ -4056,7 +4138,7 @@ struct DomainEventInfo {
 }
 
 /// Operator JSON for one queue on `GET /api/queues`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct QueueInfo {
     /// Queue name.
@@ -4076,7 +4158,7 @@ struct QueueInfo {
 }
 
 /// Operator JSON for `GET /api/queues/{name}`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct QueueDetail {
     /// Queue summary.
@@ -4089,7 +4171,7 @@ struct QueueDetail {
 }
 
 /// Operator JSON for one `event_deliveries` row.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct EventDeliveryInfo {
     /// Delivery id (`{event_id}:{plugin_id}`).
@@ -4127,7 +4209,8 @@ struct EventDeliveryInfo {
 }
 
 /// Optional `state=` filter for `GET /api/events/deliveries`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 struct EventDeliveryQuery {
     /// Delivery state (`dead_letter`, `pending`, …).
     state: Option<String>,
@@ -4151,6 +4234,14 @@ fn domain_event_info(e: bookclerk_library::DomainEventRecord) -> DomainEventInfo
 }
 
 /// Returns recent domain-event outbox rows, newest first.
+#[utoipa::path(
+    get,
+    path = "/api/events",
+    responses(
+        (status = 200, description = "Recent domain events, newest first.", body = Vec<DomainEventInfo>),
+        (status = 500, description = "The outbox could not be read.", body = crate::http_error::ErrorJson),
+    ),
+)]
 async fn list_events(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<DomainEventInfo>>, StatusCode> {
@@ -4194,6 +4285,14 @@ async fn queue_info(
 
 /// Returns every queue the outbox or the live catalog knows about, with
 /// delivery counters and the consumers subscribed to it.
+#[utoipa::path(
+    get,
+    path = "/api/queues",
+    responses(
+        (status = 200, description = "Every known queue.", body = Vec<QueueInfo>),
+        (status = 500, description = "The outbox could not be read.", body = crate::http_error::ErrorJson),
+    ),
+)]
 async fn list_queues(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<QueueInfo>>, StatusCode> {
@@ -4222,6 +4321,16 @@ async fn list_queues(
 }
 
 /// Returns one queue's counters, consumers, recent messages, and deliveries.
+#[utoipa::path(
+    get,
+    path = "/api/queues/{name}",
+    params(("name" = String, Path, description = "Queue name.")),
+    responses(
+        (status = 200, description = "The queue.", body = QueueDetail),
+        (status = 404, description = "No such queue.", body = crate::http_error::ErrorJson),
+        (status = 500, description = "The outbox could not be read.", body = crate::http_error::ErrorJson),
+    ),
+)]
 async fn inspect_queue(
     State(state): State<Arc<AppState>>,
     AxumPath(name): AxumPath<String>,
@@ -4273,6 +4382,15 @@ fn event_delivery_info(d: bookclerk_library::EventDeliveryRecord) -> EventDelive
 }
 
 /// Returns event deliveries, optionally filtered by `state`.
+#[utoipa::path(
+    get,
+    path = "/api/events/deliveries",
+    params(EventDeliveryQuery),
+    responses(
+        (status = 200, description = "Deliveries, newest first.", body = Vec<EventDeliveryInfo>),
+        (status = 500, description = "The outbox could not be read.", body = crate::http_error::ErrorJson),
+    ),
+)]
 async fn list_event_deliveries(
     State(state): State<Arc<AppState>>,
     Query(q): Query<EventDeliveryQuery>,
@@ -4286,6 +4404,16 @@ async fn list_event_deliveries(
 }
 
 /// Re-queue a dead-lettered delivery.
+#[utoipa::path(
+    post,
+    path = "/api/events/deliveries/{id}/retry",
+    params(("id" = String, Path, description = "Delivery id.")),
+    responses(
+        (status = 200, description = "The delivery was queued again.", body = ActionResponse),
+        (status = 404, description = "No such delivery, or it is not in a state this applies to.", body = ActionResponse),
+        (status = 500, description = "The outbox could not be read or written.", body = crate::http_error::ErrorJson),
+    ),
+)]
 async fn retry_event_delivery(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
@@ -4307,6 +4435,16 @@ async fn retry_event_delivery(
 }
 
 /// Acknowledge a dead-lettered delivery (no further retry).
+#[utoipa::path(
+    post,
+    path = "/api/events/deliveries/{id}/acknowledge",
+    params(("id" = String, Path, description = "Delivery id.")),
+    responses(
+        (status = 200, description = "The delivery was acknowledged.", body = ActionResponse),
+        (status = 404, description = "No such delivery, or it is not in a state this applies to.", body = ActionResponse),
+        (status = 500, description = "The outbox could not be read or written.", body = crate::http_error::ErrorJson),
+    ),
+)]
 async fn ack_event_delivery(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
@@ -4325,6 +4463,16 @@ async fn ack_event_delivery(
 }
 
 /// Cancel a pending delivery or request cooperative stop of a running one.
+#[utoipa::path(
+    post,
+    path = "/api/events/deliveries/{id}/cancel",
+    params(("id" = String, Path, description = "Delivery id.")),
+    responses(
+        (status = 200, description = "The delivery was cancelled or asked to stop.", body = ActionResponse),
+        (status = 404, description = "No such delivery, or it is not in a state this applies to.", body = ActionResponse),
+        (status = 500, description = "The outbox could not be read or written.", body = crate::http_error::ErrorJson),
+    ),
+)]
 async fn cancel_event_delivery(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
@@ -4346,6 +4494,16 @@ async fn cancel_event_delivery(
 }
 
 /// Resume a suspended delivery (wake now, next claim uses resume_pending).
+#[utoipa::path(
+    post,
+    path = "/api/events/deliveries/{id}/resume",
+    params(("id" = String, Path, description = "Delivery id.")),
+    responses(
+        (status = 200, description = "The delivery was resumed.", body = ActionResponse),
+        (status = 404, description = "No such delivery, or it is not in a state this applies to.", body = ActionResponse),
+        (status = 500, description = "The outbox could not be read or written.", body = crate::http_error::ErrorJson),
+    ),
+)]
 async fn resume_event_delivery(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
@@ -4367,6 +4525,16 @@ async fn resume_event_delivery(
 }
 
 /// Cancel a pending job or request cooperative stop of a running job.
+#[utoipa::path(
+    post,
+    path = "/api/jobs/{id}/cancel",
+    params(("id" = String, Path, description = "Job id.")),
+    responses(
+        (status = 200, description = "The job was cancelled or asked to stop.", body = ActionResponse),
+        (status = 404, description = "No such job.", body = crate::http_error::ErrorJson),
+        (status = 500, description = "The job could not be updated.", body = crate::http_error::ErrorJson),
+    ),
+)]
 async fn cancel_job(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
@@ -4384,7 +4552,109 @@ async fn cancel_job(
     }
 }
 
+/// Deprecated alias of `GET /api/status`.
+#[utoipa::path(
+    get,
+    path = "/status",
+    operation_id = "legacy_status",
+    responses(
+        (status = 200, description = "Library counts and daemon state.", body = StatusResponse),
+        (status = 500, description = "The library could not be read.", body = crate::http_error::ErrorJson),
+    ),
+)]
+#[deprecated(note = "legacy root alias; call the `/api/...` route instead")]
+async fn legacy_status(state: State<Arc<AppState>>) -> Result<Json<StatusResponse>, StatusCode> {
+    status(state).await
+}
+
+/// Deprecated alias of `POST /api/library/scan`.
+#[utoipa::path(
+    post,
+    path = "/scan",
+    operation_id = "legacy_scan",
+    request_body = Option<ScanRequest>,
+    responses(
+        (status = 200, description = "The scan jobs were accepted; see `POST /api/library/scan` for the other answers.", body = ScanPlanResponse),
+    ),
+)]
+#[deprecated(note = "legacy root alias; call the `/api/...` route instead")]
+async fn legacy_scan(
+    state: State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
+    body: Option<Json<ScanRequest>>,
+) -> Response {
+    trigger_scan(state, requester, body).await
+}
+
+/// Deprecated alias of `POST /api/library/acquire`.
+#[utoipa::path(
+    post,
+    path = "/acquire",
+    operation_id = "legacy_acquire",
+    request_body = Option<AcquireRequestBody>,
+    responses(
+        (status = 200, description = "The acquire jobs were accepted; see `POST /api/library/acquire` for the other answers.", body = ActionResponse),
+    ),
+)]
+#[deprecated(note = "legacy root alias; call the `/api/...` route instead")]
+async fn legacy_acquire(
+    state: State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
+    body: Option<Json<AcquireRequestBody>>,
+) -> Response {
+    trigger_acquire(state, requester, body).await
+}
+
+/// Deprecated alias of `GET /api/jobs`.
+#[utoipa::path(
+    get,
+    path = "/jobs",
+    operation_id = "legacy_list_jobs",
+    responses(
+        (status = 200, description = "Jobs, newest first.", body = Vec<JobInfo>),
+        (status = 500, description = "The job table could not be read.", body = crate::http_error::ErrorJson),
+    ),
+)]
+#[deprecated(note = "legacy root alias; call the `/api/...` route instead")]
+async fn legacy_list_jobs(state: State<Arc<AppState>>) -> Result<Json<Vec<JobInfo>>, StatusCode> {
+    list_jobs(state).await
+}
+
+/// Deprecated alias of `POST /api/jobs/{id}/cancel`.
+#[utoipa::path(
+    post,
+    path = "/jobs/{id}/cancel",
+    operation_id = "legacy_cancel_job",
+    params(("id" = String, Path, description = "Job id.")),
+    responses(
+        (status = 200, description = "The job was cancelled or asked to stop.", body = ActionResponse),
+        (status = 404, description = "No such job.", body = crate::http_error::ErrorJson),
+    ),
+)]
+#[deprecated(note = "legacy root alias; call the `/api/...` route instead")]
+async fn legacy_cancel_job(
+    state: State<Arc<AppState>>,
+    id: AxumPath<String>,
+) -> Result<Json<ActionResponse>, StatusCode> {
+    cancel_job(state, id).await
+}
+
 /// Enqueues a remote integration library scan; 404 if missing, 400 if unsupported.
+#[utoipa::path(
+    post,
+    path = "/integrations/{id}/scan",
+    params(("id" = String, Path, description = "Integration instance id.")),
+    request_body = Option<IntegrationScanRequest>,
+    responses(
+        (status = 200, description = "The job was accepted.", body = ActionResponse),
+        (status = 409, description = "The same job is already pending or running, or no node can run it.", body = ActionResponse),
+        (status = 429, description = "The job queue is full.", body = ActionResponse),
+        (status = 503, description = "Job admission is paused.", body = ActionResponse),
+        (status = 500, description = "The job could not be queued.", body = ActionResponse),
+        (status = 404, description = "No integration with this id.", body = crate::http_error::ErrorJson),
+        (status = 400, description = "The integration cannot scan a library.", body = crate::http_error::ErrorJson),
+    ),
+)]
 async fn trigger_integration_scan(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
@@ -4407,6 +4677,16 @@ async fn trigger_integration_scan(
 }
 
 /// Lists or searches library titles with optional account/status filters and pagination.
+#[utoipa::path(
+    get,
+    path = "/api/library/books",
+    params(BooksQuery),
+    responses(
+        (status = 200, description = "A page of titles.", body = BooksResponse),
+        (status = 400, description = "A filter is invalid.", body = serde_json::Value),
+        (status = 500, description = "The library could not be read.", body = serde_json::Value),
+    ),
+)]
 async fn list_books(
     State(state): State<Arc<AppState>>,
     _headers: HeaderMap,
@@ -4473,6 +4753,16 @@ fn books_query_error(err: impl std::fmt::Display) -> (StatusCode, Json<serde_jso
 }
 
 /// Returns one title by UUID, or 404 when it is absent.
+#[utoipa::path(
+    get,
+    path = "/api/library/books/{uuid}",
+    params(("uuid" = String, Path, description = "Title UUID.")),
+    responses(
+        (status = 200, description = "The title.", body = bookclerk_library::BookRecord),
+        (status = 404, description = "No such title.", body = crate::http_error::ErrorJson),
+        (status = 500, description = "The library could not be read.", body = crate::http_error::ErrorJson),
+    ),
+)]
 async fn get_book(
     State(state): State<Arc<AppState>>,
     AxumPath(uuid): AxumPath<String>,
@@ -4488,6 +4778,15 @@ async fn get_book(
 
 /// Serves the JPEG cover sidecar from the deployed local destination, or 404
 /// when no local destination runs on this node.
+#[utoipa::path(
+    get,
+    path = "/api/library/books/{uuid}/cover",
+    params(("uuid" = String, Path, description = "Title UUID.")),
+    responses(
+        (status = 200, description = "The cover.", content_type = "image/jpeg"),
+        (status = 404, description = "No such title, or it has no cover.", body = crate::http_error::ErrorJson),
+    ),
+)]
 async fn get_book_cover(
     State(state): State<Arc<AppState>>,
     AxumPath(uuid): AxumPath<String>,
@@ -4518,7 +4817,8 @@ async fn get_book_cover(
         .into_response())
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 /// Query string for `GET /api/discover/recommendations`.
 struct RecommendQuery {
     /// Maximum recommendations to return.
@@ -4536,7 +4836,7 @@ struct RecommendQuery {
     listening_providers: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Wishlist / title-request create body from Discover or the portal.
 struct CreateRequestBody {
     /// Required title text; empty values are rejected with 400.
@@ -4581,7 +4881,8 @@ struct CreateRequestBody {
     language: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 /// Query string for multi-store Discover catalog search.
 struct CatalogSearchQuery {
     /// Search text; queries shorter than two characters return an empty page.
@@ -4632,6 +4933,16 @@ struct CatalogSearchQuery {
 }
 
 /// Builds the Discover recommendation feed, skipping embed work on an empty library.
+#[utoipa::path(
+    get,
+    path = "/api/discover/recommendations",
+    params(RecommendQuery),
+    responses(
+        (status = 200, description = "The Discover feed.", body = bookclerk_discover::DiscoverFeed),
+        (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain"),
+        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain"),
+    ),
+)]
 async fn discover_recommendations(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -4751,6 +5062,15 @@ async fn discover_recommendations(
 }
 
 /// Resolves storefront price/availability for one title, forcing server-side preferred stores.
+#[utoipa::path(
+    post,
+    path = "/api/discover/purchase-hints",
+    responses(
+        (status = 200, description = "Prices and availability.", body = bookclerk_discover::PurchaseHintsResponse),
+        (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain"),
+        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain"),
+    ),
+)]
 async fn discover_purchase_hints(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -4766,7 +5086,7 @@ async fn discover_purchase_hints(
     Ok(Json(response))
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 /// Body for batched purchase-hint lookups (max 24 queries).
 struct PurchaseHintsBatchBody {
     #[serde(default)]
@@ -4774,7 +5094,7 @@ struct PurchaseHintsBatchBody {
     queries: Vec<bookclerk_discover::PurchaseHintsQuery>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 /// Parallel purchase-hint results aligned with the request queries.
 struct PurchaseHintsBatchResponse {
     /// One purchase-hint response per query, in request order.
@@ -4782,6 +5102,15 @@ struct PurchaseHintsBatchResponse {
 }
 
 /// Resolves up to 24 purchase-hint queries with caller-derived preferred stores.
+#[utoipa::path(
+    post,
+    path = "/api/discover/purchase-hints/batch",
+    responses(
+        (status = 200, description = "One result per query, in order.", body = PurchaseHintsBatchResponse),
+        (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain"),
+        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain"),
+    ),
+)]
 async fn discover_purchase_hints_batch(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -4837,6 +5166,15 @@ fn validate_purchase_hints_query(
 }
 
 /// Resolves Audnexus-style title metadata for one query.
+#[utoipa::path(
+    post,
+    path = "/api/discover/title-meta",
+    responses(
+        (status = 200, description = "The metadata, or null when nothing matched.", body = Option<bookclerk_discover::TitleMeta>),
+        (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain"),
+        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain"),
+    ),
+)]
 async fn discover_title_meta(
     State(state): State<Arc<AppState>>,
     Json(body): Json<bookclerk_discover::TitleMetaQuery>,
@@ -4850,6 +5188,15 @@ async fn discover_title_meta(
 }
 
 /// Fetches Audnexus reviews for an ASIN; rejects an empty ASIN with 400.
+#[utoipa::path(
+    post,
+    path = "/api/discover/title-reviews",
+    responses(
+        (status = 200, description = "A page of reviews.", body = bookclerk_discover::TitleReviewsPage),
+        (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain"),
+        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain"),
+    ),
+)]
 async fn discover_title_reviews(
     Json(body): Json<bookclerk_discover::TitleReviewsQuery>,
 ) -> Result<Json<bookclerk_discover::TitleReviewsPage>, (StatusCode, String)> {
@@ -4862,7 +5209,7 @@ async fn discover_title_reviews(
     Ok(Json(page))
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 /// Body for batched title-metadata lookups (max 24 queries).
 struct TitleMetaBatchBody {
     #[serde(default)]
@@ -4870,7 +5217,7 @@ struct TitleMetaBatchBody {
     queries: Vec<bookclerk_discover::TitleMetaQuery>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 /// Title-metadata results aligned with the request; failed items are `null`.
 struct TitleMetaBatchResponse {
     /// One optional metadata payload per query; enrichment errors become `None`.
@@ -4878,6 +5225,15 @@ struct TitleMetaBatchResponse {
 }
 
 /// Resolves up to 24 title-metadata queries without failing the whole batch on one error.
+#[utoipa::path(
+    post,
+    path = "/api/discover/title-meta/batch",
+    responses(
+        (status = 200, description = "One result per query, in order.", body = TitleMetaBatchResponse),
+        (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain"),
+        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain"),
+    ),
+)]
 async fn discover_title_meta_batch(
     State(state): State<Arc<AppState>>,
     Json(body): Json<TitleMetaBatchBody>,
@@ -4960,6 +5316,16 @@ async fn preferred_sources_for_caller(state: &AppState, headers: &HeaderMap) -> 
 }
 
 /// Runs a multi-store catalog search with a 15s wall budget and empty-query short circuit.
+#[utoipa::path(
+    get,
+    path = "/api/discover/search",
+    params(CatalogSearchQuery),
+    responses(
+        (status = 200, description = "A page of catalog results.", body = bookclerk_discover::CatalogSearchPage),
+        (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain"),
+        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain"),
+    ),
+)]
 async fn discover_catalog_search(
     State(state): State<Arc<AppState>>,
     Query(q): Query<CatalogSearchQuery>,
@@ -5088,6 +5454,15 @@ fn work_key_for_request(body: &CreateRequestBody) -> String {
 }
 
 /// Lists open wishlist rows for the caller (portal identity or operator-owned).
+#[utoipa::path(
+    get,
+    path = "/api/wishlist",
+    responses(
+        (status = 200, description = "The caller's open requests.", body = Vec<bookclerk_library::TitleRequestRecord>),
+        (status = 401, description = "No signed-in caller.", body = String, content_type = "text/plain"),
+        (status = 500, description = "The request could not be read or written.", body = String, content_type = "text/plain"),
+    ),
+)]
 async fn list_wishlist(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -5104,6 +5479,16 @@ async fn list_wishlist(
 }
 
 /// Creates a wishlist / title-request row for the authenticated caller.
+#[utoipa::path(
+    post,
+    path = "/api/wishlist",
+    responses(
+        (status = 200, description = "The new request.", body = bookclerk_library::TitleRequestRecord),
+        (status = 400, description = "The title is missing or invalid.", body = String, content_type = "text/plain"),
+        (status = 401, description = "No signed-in caller.", body = String, content_type = "text/plain"),
+        (status = 500, description = "The request could not be read or written.", body = String, content_type = "text/plain"),
+    ),
+)]
 async fn create_wishlist(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -5113,6 +5498,18 @@ async fn create_wishlist(
 }
 
 /// Cancels an open wishlist item the caller owns; others get 403.
+#[utoipa::path(
+    delete,
+    path = "/api/wishlist/{uuid}",
+    params(("uuid" = String, Path, description = "Request UUID.")),
+    responses(
+        (status = 200, description = "The cancelled request.", body = bookclerk_library::TitleRequestRecord),
+        (status = 403, description = "The request belongs to someone else.", body = String, content_type = "text/plain"),
+        (status = 404, description = "No such request.", body = String, content_type = "text/plain"),
+        (status = 401, description = "No signed-in caller.", body = String, content_type = "text/plain"),
+        (status = 500, description = "The request could not be read or written.", body = String, content_type = "text/plain"),
+    ),
+)]
 async fn delete_wishlist(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -5177,6 +5574,14 @@ fn hydrate_queue_wishers(wishers: &mut [QueueWisher], files: Option<&Path>) {
 }
 
 /// Ranks the shared open-request queue without warming ONNX embeddings.
+#[utoipa::path(
+    get,
+    path = "/api/request-queue",
+    responses(
+        (status = 200, description = "Open requests, ranked.", body = Vec<bookclerk_discover::RankedQueueEntry>),
+        (status = 500, description = "The queue could not be ranked.", body = String, content_type = "text/plain"),
+    ),
+)]
 async fn list_request_queue(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<bookclerk_discover::RankedQueueEntry>>, (StatusCode, String)> {
@@ -5414,6 +5819,18 @@ fn source_from_purchase_hint(
 }
 
 /// Enqueues a listening-progress sync; 400 when no capable integrations are loaded.
+#[utoipa::path(
+    post,
+    path = "/api/discover/sync-listening",
+    responses(
+        (status = 200, description = "The job was accepted.", body = ActionResponse),
+        (status = 409, description = "The same job is already pending or running, or no node can run it.", body = ActionResponse),
+        (status = 429, description = "The job queue is full.", body = ActionResponse),
+        (status = 503, description = "Job admission is paused.", body = ActionResponse),
+        (status = 500, description = "The job could not be queued.", body = ActionResponse),
+        (status = 400, description = "No listening-capable integration is enabled.", body = String, content_type = "text/plain"),
+    ),
+)]
 async fn sync_listening(State(state): State<Arc<AppState>>) -> Response {
     if state
         .integrations
@@ -5434,7 +5851,7 @@ async fn sync_listening(State(state): State<Arc<AppState>>) -> Response {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Normalized Discover/library preferences for the authenticated subject.
 struct PreferencesResponse {
     /// Landing view id (`library`, `discover`, …) after normalization.
@@ -5453,7 +5870,7 @@ struct PreferencesResponse {
     theme: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Partial preferences update; omitted fields keep their stored values.
 struct PatchPreferencesBody {
     /// Replacement landing view when set.
@@ -5483,6 +5900,15 @@ where
 }
 
 /// Loads preferences for the caller with a 3s timeout, creating defaults when missing.
+#[utoipa::path(
+    get,
+    path = "/api/preferences",
+    responses(
+        (status = 200, description = "The caller's preferences.", body = PreferencesResponse),
+        (status = 401, description = "No signed-in caller.", body = String, content_type = "text/plain"),
+        (status = 500, description = "The request could not be read or written.", body = String, content_type = "text/plain"),
+    ),
+)]
 async fn get_preferences(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -5508,6 +5934,16 @@ async fn get_preferences(
 }
 
 /// Merges a preferences PATCH onto the caller’s stored row and writes it back.
+#[utoipa::path(
+    patch,
+    path = "/api/preferences",
+    responses(
+        (status = 200, description = "The preferences after the change.", body = PreferencesResponse),
+        (status = 400, description = "A value is invalid.", body = String, content_type = "text/plain"),
+        (status = 401, description = "No signed-in caller.", body = String, content_type = "text/plain"),
+        (status = 500, description = "The request could not be read or written.", body = String, content_type = "text/plain"),
+    ),
+)]
 async fn patch_preferences(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

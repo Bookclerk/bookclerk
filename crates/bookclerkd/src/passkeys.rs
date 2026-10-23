@@ -3,13 +3,14 @@
 //! Passkeys are the User-plane hatch when an upstream IdP is down. The Operator
 //! token remains host break-glass and is never a passkey subject.
 
+use crate::openapi::{Access, RouteGroup};
 use std::sync::Arc;
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use axum::routing::{delete, get, post};
-use axum::{Json, Router};
+use axum::Json;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use bookclerk_library::{UserRole, UserStatus};
@@ -29,18 +30,23 @@ use crate::auth::{
     resolve_portal_caller_identity, timed_portal_identity_from_headers, ClientIp,
 };
 
-/// Passkey HTTP routes.
-pub fn router(state: Arc<AppState>) -> Router {
-    Router::new()
-        .route("/api/auth/passkeys", get(list_passkeys))
-        .route("/api/auth/passkeys/register/begin", post(register_begin))
-        .route("/api/auth/passkeys/register/finish", post(register_finish))
-        .route("/api/auth/passkeys/{id}", delete(delete_passkey))
-        .route("/api/auth/passkeys/login/begin", post(login_begin))
-        .route("/api/auth/passkeys/login/finish", post(login_finish))
-        .route("/api/auth/passkeys/elevate/begin", post(elevate_begin))
-        .route("/api/auth/passkeys/elevate/finish", post(elevate_finish))
-        .with_state(state)
+/// Passkey HTTP routes. They carry no auth layer: each handler resolves the
+/// session it needs.
+///
+/// # Returns
+///
+/// One public group.
+pub(crate) fn route_groups() -> Vec<RouteGroup> {
+    let routes = OpenApiRouter::new()
+        .routes(routes!(list_passkeys))
+        .routes(routes!(register_begin))
+        .routes(routes!(register_finish))
+        .routes(routes!(delete_passkey))
+        .routes(routes!(login_begin))
+        .routes(routes!(login_finish))
+        .routes(routes!(elevate_begin))
+        .routes(routes!(elevate_finish));
+    vec![RouteGroup::new(routes, Access::Public)]
 }
 
 /// Builds a WebAuthn relying party from `origin` (`rp_id` = host).
@@ -162,6 +168,15 @@ async fn require_user(
 }
 
 /// Lists this user's stored passkeys as `{ id, credential_id }` rows.
+#[utoipa::path(
+    get,
+    path = "/api/auth/passkeys",
+    responses(
+        (status = 200, description = "The caller's passkeys.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+    ),
+)]
 async fn list_passkeys(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -185,8 +200,9 @@ async fn list_passkeys(
     Ok(Json(serde_json::json!({ "passkeys": passkeys })))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Optional current password for step-up before register or delete.
+#[schema(as = PasskeyReauthBody)]
 struct ReauthBody {
     #[serde(default)]
     /// Password used for recent-reauth when the user already has a credential.
@@ -194,6 +210,16 @@ struct ReauthBody {
 }
 
 /// Starts passkey registration (skips reauth only for first local-only setup).
+#[utoipa::path(
+    post,
+    path = "/api/auth/passkeys/register/begin",
+    request_body = ReauthBody,
+    responses(
+        (status = 200, description = "WebAuthn creation options.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+    ),
+)]
 async fn register_begin(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -257,7 +283,7 @@ async fn register_begin(
     ceremony_json(&challenge_id, &ccr)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Browser attestation/assertion plus the challenge id from `begin`.
 struct CeremonyFinish {
     /// Server-issued challenge id (consumed once; 5-minute TTL).
@@ -270,6 +296,17 @@ struct CeremonyFinish {
 }
 
 /// Completes registration, stores the passkey, and revokes elevated operator sessions.
+#[utoipa::path(
+    post,
+    path = "/api/auth/passkeys/register/finish",
+    request_body = CeremonyFinish,
+    responses(
+        (status = 200, description = "The passkey was stored.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "The attestation is invalid."),
+    ),
+)]
 async fn register_finish(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -313,6 +350,18 @@ async fn register_finish(
 }
 
 /// Deletes one passkey after recent reauth; 404 when the id is not this user's.
+#[utoipa::path(
+    delete,
+    path = "/api/auth/passkeys/{id}",
+    params(("id" = i64, Path, description = "Passkey id.")),
+    request_body = ReauthBody,
+    responses(
+        (status = 200, description = "The passkey was deleted.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 404, description = "No such passkey for this user."),
+    ),
+)]
 async fn delete_passkey(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -336,7 +385,7 @@ async fn delete_passkey(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Login-name or email used to start a discoverable-less passkey login.
 struct LoginBegin {
     /// Login name or email looked up before issuing an authentication challenge.
@@ -344,6 +393,16 @@ struct LoginBegin {
 }
 
 /// Rate-limits and starts passkey login; records a failure on any error.
+#[utoipa::path(
+    post,
+    path = "/api/auth/passkeys/login/begin",
+    request_body = LoginBegin,
+    responses(
+        (status = 200, description = "WebAuthn request options.", body = serde_json::Value),
+        (status = 400, description = "The request is invalid."),
+        (status = 429, description = "Too many attempts; try later."),
+    ),
+)]
 async fn login_begin(
     State(state): State<Arc<AppState>>,
     ClientIp(client_key): ClientIp,
@@ -434,6 +493,15 @@ async fn login_begin_inner(
 }
 
 /// Verifies the assertion, updates the credential counter, and issues a portal session.
+#[utoipa::path(
+    post,
+    path = "/api/auth/passkeys/login/finish",
+    request_body = CeremonyFinish,
+    responses(
+        (status = 200, description = "Signed in; the response sets the portal session cookie.", body = serde_json::Value),
+        (status = 401, description = "The assertion is invalid."),
+    ),
+)]
 async fn login_finish(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -487,6 +555,15 @@ async fn login_finish(
 }
 
 /// Starts Owner elevation; 403 unless the signed-in user is an Owner with passkeys.
+#[utoipa::path(
+    post,
+    path = "/api/auth/passkeys/elevate/begin",
+    responses(
+        (status = 200, description = "WebAuthn request options.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+    ),
+)]
 async fn elevate_begin(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -528,6 +605,16 @@ async fn elevate_begin(
 }
 
 /// Completes Owner elevation only when the assertion is user-verified.
+#[utoipa::path(
+    post,
+    path = "/api/auth/passkeys/elevate/finish",
+    request_body = CeremonyFinish,
+    responses(
+        (status = 200, description = "Elevated; the response sets a short-lived operator cookie.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+    ),
+)]
 async fn elevate_finish(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

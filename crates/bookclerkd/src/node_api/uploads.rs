@@ -1097,6 +1097,18 @@ async fn record_written(
 }
 
 /// `PUT /api/node/v1/uploads/{upload_id}/files/{index}`.
+#[utoipa::path(
+    put,
+    path = "/api/node/v1/uploads/{upload_id}/files/{index}",
+    params(("upload_id" = String, Path, description = "Upload id."), ("index" = u32, Path, description = "File index in the upload.")),
+    request_body(content = Vec<u8>, content_type = "application/octet-stream"),
+    responses(
+        (status = 200, description = "The file was stored.", body = serde_json::Value),
+        (status = 401, description = "The upload token is missing or wrong."),
+        (status = 404, description = "No such upload, or the node API is not mounted."),
+        (status = 413, description = "The file is larger than declared."),
+    ),
+)]
 pub async fn put_file(
     State(state): State<Arc<AppState>>,
     Path((upload_id, index)): Path<(String, String)>,
@@ -1208,6 +1220,18 @@ pub async fn put_file(
 }
 
 /// `POST /api/node/v1/uploads/{upload_id}/commit`.
+#[utoipa::path(
+    post,
+    path = "/api/node/v1/uploads/{upload_id}/commit",
+    params(("upload_id" = String, Path, description = "Upload id.")),
+    request_body = bookclerk_node_proto::UploadCommitRequest,
+    responses(
+        (status = 200, description = "The upload was committed to the destinations.", body = serde_json::Value),
+        (status = 401, description = "The upload token is missing or wrong."),
+        (status = 404, description = "No such upload, or the node API is not mounted."),
+        (status = 400, description = "The body is invalid or files are missing."),
+    ),
+)]
 pub async fn post_commit(
     State(state): State<Arc<AppState>>,
     Path(upload_id): Path<String>,

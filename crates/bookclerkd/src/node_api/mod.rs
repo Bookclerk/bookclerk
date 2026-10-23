@@ -45,6 +45,7 @@ mod ws_tests;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use axum::extract::connect_info::ConnectInfo;
 use axum::extract::{Path, Query, Request, State};
@@ -98,7 +99,7 @@ fn link_json(link: &EnrollmentLink) -> serde_json::Value {
 }
 
 /// `POST /api/config/node-invites` body.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PostNodeInvite {
     /// User who will own the node. Defaults to the caller; the operator
@@ -131,6 +132,19 @@ pub(crate) struct PostNodeInvite {
 /// Returns 503 `node_api_pin_unavailable` in `self_signed` mode while the
 /// certificate's SPKI pin cannot be read (nothing is minted), and an error
 /// response when the library refuses the mint.
+#[utoipa::path(
+    post,
+    path = "/api/config/node-invites",
+    request_body = PostNodeInvite,
+    responses(
+        (status = 200, description = "The new link (shown once).", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 409, description = "Host enrollment is off."),
+    ),
+)]
 pub async fn post_node_invite(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
@@ -188,7 +202,8 @@ pub async fn post_node_invite(
 }
 
 /// `GET /api/config/node-invites` query.
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Debug, Default, serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 #[serde(deny_unknown_fields)]
 pub struct NodeInvitesQuery {
     /// Only the links for the calling user's own branches (an Owner's
@@ -199,6 +214,18 @@ pub struct NodeInvitesQuery {
 
 /// `GET /api/config/node-invites`: every link for the operator or an
 /// Owner; the caller's own links for anyone else, and with `?mine=true`.
+#[utoipa::path(
+    get,
+    path = "/api/config/node-invites",
+    params(NodeInvitesQuery),
+    responses(
+        (status = 200, description = "Enrollment links the caller may see.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+    ),
+)]
 pub async fn get_node_invites(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
@@ -222,6 +249,19 @@ pub async fn get_node_invites(
 }
 
 /// `DELETE /api/config/node-invites/{id}`: revoke an unredeemed link.
+#[utoipa::path(
+    delete,
+    path = "/api/config/node-invites/{id}",
+    params(("id" = String, Path, description = "Link id.")),
+    responses(
+        (status = 200, description = "The link was revoked.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "No such link."),
+    ),
+)]
 pub async fn delete_node_invite(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
@@ -256,39 +296,39 @@ async fn connection_info(state: &Arc<AppState>, parts: &mut Parts) -> ConnInfo {
     }
 }
 
+/// The node API routes, before state and layers: each request carries its
+/// own credential (a link secret, a node signature or an upload token), so
+/// they sit outside the cookie and operator auth layers.
+///
+/// # Returns
+///
+/// The routes, which [`node_router`] serves and the OpenAPI document lists.
+pub(crate) fn node_routes() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::new()
+        // The link secret is the credential; the transport policy runs first.
+        .routes(routes!(post_enroll))
+        // Joining with a sign-in: what the library says about itself, and
+        // the redeem of an approved code (code + PKCE verifier).
+        .routes(routes!(branch::get_info))
+        .routes(routes!(branch::post_enroll_oauth))
+        // Host-node socket: the node's Ed25519 key is the credential.
+        .routes(routes!(ws::get_connect))
+        // Owner plugin archives: a node-signed request is the credential.
+        .routes(routes!(artifacts::get_artifact))
+        // Streamed uploads from hosts: the sealed upload token is the
+        // credential.
+        .routes(routes!(uploads::put_file))
+        .routes(routes!(uploads::post_commit))
+}
+
 /// The node API routes, as every listener mounts them: outside the cookie
 /// and operator auth layers.
 pub fn node_router<S>(state: Arc<AppState>) -> axum::Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
-    axum::Router::new()
-        // The link secret is the credential; the transport policy runs first.
-        .route("/api/node/v1/enroll", axum::routing::post(post_enroll))
-        // Joining with a sign-in: what the library says about itself, and
-        // the redeem of an approved code (code + PKCE verifier).
-        .route("/api/node/v1/info", axum::routing::get(branch::get_info))
-        .route(
-            "/api/node/v1/enroll/oauth",
-            axum::routing::post(branch::post_enroll_oauth),
-        )
-        // Host-node socket: the node's Ed25519 key is the credential.
-        .route("/api/node/v1/connect", axum::routing::get(ws::get_connect))
-        // Owner plugin archives: a node-signed request is the credential.
-        .route(
-            "/api/node/v1/artifacts/{sha256}",
-            axum::routing::get(artifacts::get_artifact),
-        )
-        // Streamed uploads from hosts: the sealed upload token is the
-        // credential.
-        .route(
-            "/api/node/v1/uploads/{upload_id}/files/{index}",
-            axum::routing::put(uploads::put_file),
-        )
-        .route(
-            "/api/node/v1/uploads/{upload_id}/commit",
-            axum::routing::post(uploads::post_commit),
-        )
+    let (routes, _) = node_routes().split_for_parts();
+    routes
         // The API deadline travels with the routes, so the TLS-only listener
         // (which has no other layers) also drops a client that stalls its
         // request body. An upgraded socket outlives it: only the upgrade
@@ -371,6 +411,19 @@ fn credential_json(credential: &NodeCredential) -> serde_json::Value {
 /// Returns 404 when the node is unknown or not the caller's, 400 when the
 /// node has no host credential, 403 for a disabled user, and an error
 /// response when the write fails.
+#[utoipa::path(
+    delete,
+    path = "/api/config/node-credentials/{node_id}",
+    params(("node_id" = String, Path, description = "Node id.")),
+    responses(
+        (status = 200, description = "The host's credential was revoked.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "No such host."),
+    ),
+)]
 pub async fn delete_node_credential(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
@@ -384,7 +437,7 @@ pub async fn delete_node_credential(
 }
 
 /// `PUT /api/config/host-enrollment` body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PutHostEnrollment {
     /// Whether host nodes may enroll into this cluster.
@@ -401,6 +454,15 @@ pub(crate) struct PutHostEnrollment {
 /// # Errors
 ///
 /// Returns an error response when the switch cannot be read.
+#[utoipa::path(
+    get,
+    path = "/api/config/host-enrollment",
+    responses(
+        (status = 200, description = "Whether host nodes may enroll.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+    ),
+)]
 pub async fn get_host_enrollment(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, Response> {
@@ -429,6 +491,18 @@ pub async fn get_host_enrollment(
 ///
 /// Returns 403 when the caller is neither the operator nor an active Owner,
 /// and an error response when the switch cannot be written.
+#[utoipa::path(
+    put,
+    path = "/api/config/host-enrollment",
+    request_body = PutHostEnrollment,
+    responses(
+        (status = 200, description = "The switch after the change.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+    ),
+)]
 pub async fn put_host_enrollment(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
@@ -456,7 +530,7 @@ pub async fn put_host_enrollment(
 const MAX_ENROLL_BODY_BYTES: usize = 16 * 1024;
 
 /// `POST /api/node/v1/enroll` body. Keys are base64url without padding.
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct EnrollBody {
     /// Link id from the token.
@@ -489,6 +563,18 @@ fn decode_key(raw: &str) -> Option<Vec<u8>> {
 /// `{cluster_id, node_id}`; 403 `transport_insecure` when the connection
 /// fails the transport policy, 403 `enrollment_refused` for any link that
 /// does not redeem.
+#[utoipa::path(
+    post,
+    path = "/api/node/v1/enroll",
+    request_body = EnrollBody,
+    responses(
+        (status = 200, description = "The host is enrolled; its node credential.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 401, description = "The link is unknown, used or expired."),
+        (status = 403, description = "The transport is not allowed."),
+        (status = 404, description = "The node API is not mounted."),
+    ),
+)]
 pub async fn post_enroll(State(state): State<Arc<AppState>>, request: Request) -> Response {
     let (mut parts, body) = request.into_parts();
     if let Err(refused) = check_transport(&state, &mut parts, "enroll").await {

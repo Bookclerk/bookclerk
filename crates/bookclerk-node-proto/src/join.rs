@@ -84,7 +84,7 @@ pub struct OwnerInfo {
 
 /// `POST /api/node/v1/enroll/oauth` body. Keys are base64url without
 /// padding.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OAuthEnrollRequest {
     /// The authorization code from the callback.

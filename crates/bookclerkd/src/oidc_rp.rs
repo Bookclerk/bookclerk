@@ -4,14 +4,15 @@
 //! consume upstream IdPs, JIT/link Users, and mint portal sessions. The Operator
 //! account is never an OAuth subject.
 
+use crate::openapi::{Access, RouteGroup};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use axum::extract::{Form, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::get;
-use axum::{Json, Router};
+use axum::Json;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use bookclerk_config::{
@@ -92,32 +93,29 @@ fn sso_error_redirect(location: &'static str) -> Response {
     Redirect::to(location).into_response()
 }
 
-/// RP routes (`/api/auth/oidc/*`).
-pub fn router(state: Arc<AppState>) -> Router {
-    let public = Router::new()
-        .route("/api/auth/oidc/providers", get(list_providers))
-        .route("/api/auth/oidc/identities", get(list_identities))
-        .route("/api/auth/oidc/login", get(login_start))
-        .route("/api/auth/oidc/elevate", get(elevate_start))
-        .route(
-            "/api/auth/oidc/callback",
-            get(callback_get).post(callback_post),
-        )
-        .with_state(state.clone());
-    let config = Router::new()
-        .route(
-            "/api/auth/oidc/config",
-            get(get_oidc_config).put(put_oidc_config),
-        )
-        .route_layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            crate::auth::require_operator_or_owner_auth,
-        ))
-        .with_state(state);
-    public.merge(config)
+/// RP routes (`/api/auth/oidc/*`): the login flow is public (handlers check
+/// the session where they need one); broker settings need the operator or an
+/// Owner.
+///
+/// # Returns
+///
+/// The public group, then the settings group.
+pub(crate) fn route_groups() -> Vec<RouteGroup> {
+    let public = OpenApiRouter::new()
+        .routes(routes!(list_providers))
+        .routes(routes!(list_identities))
+        .routes(routes!(login_start))
+        .routes(routes!(elevate_start))
+        .routes(routes!(callback_get, callback_post));
+    let config = OpenApiRouter::new().routes(routes!(get_oidc_config, put_oidc_config));
+    vec![
+        RouteGroup::new(public, Access::Public),
+        RouteGroup::new(config, Access::OperatorOrOwner),
+    ]
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 /// Optional `?provider=` query on login and elevate starts.
 struct ProviderQuery {
     /// IdP id to start; omitted when the caller has only one enabled provider.
@@ -125,6 +123,13 @@ struct ProviderQuery {
 }
 
 /// Lists enabled IdPs for the login picker (id and display name only).
+#[utoipa::path(
+    get,
+    path = "/api/auth/oidc/providers",
+    responses(
+        (status = 200, description = "Enabled identity providers (id and name).", body = serde_json::Value),
+    ),
+)]
 async fn list_providers(State(state): State<Arc<AppState>>) -> Json<Value> {
     let cfg = state.config.read().await;
     let providers: Vec<Value> = cfg
@@ -146,7 +151,7 @@ async fn list_providers(State(state): State<Arc<AppState>>) -> Json<Value> {
     }))
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Operator-facing OIDC broker snapshot; secret material is never included.
 struct OidcConfigResponse {
     /// Whether the broker accepts new authorize starts.
@@ -176,7 +181,7 @@ struct OidcConfigResponse {
     providers: Vec<OidcProviderView>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// One IdP as shown to an operator (no client secret or Apple PEM).
 struct OidcProviderView {
     /// Stable provider id used in authorize URLs and sealed-row names.
@@ -194,6 +199,7 @@ struct OidcProviderView {
     /// OAuth scopes requested at authorize.
     scopes: Vec<String>,
     /// How a first login becomes a portal user (JIT, mapped role, allowlist, invite-only).
+    #[schema(value_type = String)]
     provision: OidcProvisionMode,
     /// Portal role used when no mapped claim matches (`member` by default).
     default_role: String,
@@ -223,7 +229,7 @@ struct OidcProviderView {
     secret_source: &'static str,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Operator PUT body that replaces the broker table (secrets omitted or replaced).
 struct OidcConfigPut {
     /// Whether the broker should accept authorize starts after this write.
@@ -242,7 +248,7 @@ struct OidcConfigPut {
     current_password: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// One IdP in a PUT: omit secret fields to keep, empty string to clear.
 struct OidcProviderPut {
     /// Stable provider id; also the logical name of the sealed client-secret row.
@@ -266,6 +272,7 @@ struct OidcProviderPut {
     scopes: Vec<String>,
     #[serde(default)]
     /// JIT, mapped-role, allowlist, or invite-only policy for first login.
+    #[schema(value_type = String)]
     provision: OidcProvisionMode,
     #[serde(default = "default_member_role")]
     /// Fallback portal role when no mapped claim matches.
@@ -657,6 +664,13 @@ async fn delete_named_oidc_secret(state: &AppState, name: &str) -> Result<(), St
 }
 
 /// Operator GET: broker settings plus secret-presence flags (never plaintext).
+#[utoipa::path(
+    get,
+    path = "/api/auth/oidc/config",
+    responses(
+        (status = 200, description = "Broker settings, with secrets as presence flags.", body = OidcConfigResponse),
+    ),
+)]
 async fn get_oidc_config(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -715,6 +729,16 @@ async fn get_oidc_config(
 }
 
 /// Operator PUT: writes next-generation sealed secrets, then publishes config.toml.
+#[utoipa::path(
+    put,
+    path = "/api/auth/oidc/config",
+    request_body = OidcConfigPut,
+    responses(
+        (status = 200, description = "The settings after the change.", body = OidcConfigResponse),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+    ),
+)]
 async fn put_oidc_config(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -961,6 +985,15 @@ async fn put_oidc_config(
 }
 
 /// Lists OIDC portal identities for the cookie-authenticated caller.
+#[utoipa::path(
+    get,
+    path = "/api/auth/oidc/identities",
+    responses(
+        (status = 200, description = "The caller's linked identities.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+    ),
+)]
 async fn list_identities(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -989,6 +1022,16 @@ async fn list_identities(
 }
 
 /// Starts an OIDC login authorize redirect, honoring login throttle.
+#[utoipa::path(
+    get,
+    path = "/api/auth/oidc/login",
+    params(ProviderQuery),
+    responses(
+        (status = 302, description = "Redirects to the identity provider."),
+        (status = 400, description = "The provider is unknown or disabled."),
+        (status = 429, description = "Too many attempts; try later."),
+    ),
+)]
 async fn login_start(
     State(state): State<Arc<AppState>>,
     ClientIp(client_key): ClientIp,
@@ -1018,6 +1061,18 @@ async fn login_start(
 }
 
 /// Starts an Owner re-auth elevate flow against a linked IdP (`prompt=login`).
+#[utoipa::path(
+    get,
+    path = "/api/auth/oidc/elevate",
+    params(ProviderQuery),
+    responses(
+        (status = 302, description = "Redirects to the identity provider for re-authentication."),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "The provider is unknown or disabled."),
+        (status = 429, description = "Too many attempts; try later."),
+    ),
+)]
 async fn elevate_start(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1139,7 +1194,8 @@ async fn start_authorize(
     Ok(response)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
+#[into_params(parameter_in = Query)]
 /// Query or form_post fields from the IdP callback.
 struct CallbackParams {
     /// Authorization code to exchange; required unless `error` is set.
@@ -1153,6 +1209,15 @@ struct CallbackParams {
 }
 
 /// GET callback (most IdPs); finishes the code exchange.
+#[utoipa::path(
+    get,
+    path = "/api/auth/oidc/callback",
+    params(CallbackParams),
+    responses(
+        (status = 302, description = "Redirects into the app, signed in."),
+        (status = 400, description = "The state or code is invalid."),
+    ),
+)]
 async fn callback_get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1162,6 +1227,15 @@ async fn callback_get(
 }
 
 /// POST callback (Apple `form_post`); finishes the code exchange.
+#[utoipa::path(
+    post,
+    path = "/api/auth/oidc/callback",
+    request_body(content = CallbackParams, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 302, description = "Redirects into the app, signed in."),
+        (status = 400, description = "The state or code is invalid."),
+    ),
+)]
 async fn callback_post(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

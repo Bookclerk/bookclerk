@@ -58,7 +58,7 @@ fn cursor_cache() -> &'static TtlCache<SearchCursorV1> {
 }
 
 /// One autocomplete / results-page hit (possibly spanning multiple storefronts).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct CatalogSearchHit {
     /// Stable map key for this work (`isbn:…`, `asin:…`, or soft title+author).
     pub work_key: String,
@@ -123,7 +123,7 @@ pub struct CatalogSearchHit {
 }
 
 /// Paged catalog-search response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct CatalogSearchPage {
     /// Ordered collection of child entries for this response.
     pub items: Vec<CatalogSearchHit>,

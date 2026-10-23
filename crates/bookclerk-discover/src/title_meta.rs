@@ -37,7 +37,7 @@ fn title_reviews_cache() -> &'static TtlCache<TitleReviewsPage> {
 }
 
 /// Query for public title metadata (Audnexus / Audible catalog).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct TitleMetaQuery {
     /// Display title as shown on the storefront or library card.
     #[serde(default)]
@@ -63,7 +63,7 @@ fn default_region() -> String {
 }
 
 /// Bibliographic fields suitable for an Audible-style detail panel.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct TitleMeta {
     /// Audible / Amazon ASIN when this edition is sold on Audible.
     pub asin: Option<String>,
@@ -154,7 +154,7 @@ fn default_reviews_sort() -> String {
 }
 
 /// One page of title reviews for infinite scroll.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct TitleReviewsPage {
     /// Audible / Amazon ASIN when this edition is sold on Audible.
     pub asin: String,
@@ -171,7 +171,7 @@ pub struct TitleReviewsPage {
 }
 
 /// One Audible customer review for the title detail panel.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct TitleReview {
     /// Stable identifier for this item.
     pub id: Option<String>,

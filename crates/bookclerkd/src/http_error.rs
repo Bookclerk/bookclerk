@@ -85,9 +85,9 @@ pub fn document_error(status: StatusCode, message: &'static str) -> Response {
     .into_response_for(false)
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// JSON error object (`error`, `message`, numeric `status`) for API clients.
-struct ErrorJson {
+pub(crate) struct ErrorJson {
     /// Machine slug (same as [`ErrorBody::code`]).
     error: &'static str,
     /// Operator-facing explanation.

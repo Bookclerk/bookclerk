@@ -28,6 +28,7 @@ mod node_queue;
 mod oidc;
 mod oidc_rp;
 mod oidc_verify;
+mod openapi;
 mod origin;
 mod passkeys;
 mod placement;
@@ -79,6 +80,11 @@ struct Args {
     /// (`127.0.0.1:8787,[::1]:8787`).
     #[arg(long, env = "BOOKCLERK_DAEMON_LISTEN")]
     listen: Option<String>,
+
+    /// Print the HTTP API's OpenAPI document (JSON) to stdout and exit,
+    /// without reading any configuration.
+    #[arg(long)]
+    print_openapi: bool,
 }
 
 /// How many more times the first start after a clerk join tries the
@@ -88,6 +94,10 @@ const CLERK_JOIN_OPEN_RETRIES: u32 = 3;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    if args.print_openapi {
+        print!("{}", openapi::document_json()?);
+        return Ok(());
+    }
     let mut config = Config::load(args.bookclerk_files, args.config)?;
     if let Some(listen) = args.listen {
         config.daemon.listen = ListenAddrs::parse_list(&listen)

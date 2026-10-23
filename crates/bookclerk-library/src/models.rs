@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Acquire / download state for a title.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AcquireStatus {
     /// Title has not been queued or downloaded yet.
@@ -519,7 +519,7 @@ pub struct AccountLinkRecord {
 }
 
 /// Book / library item (one ownership row per store product per account).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct BookRecord {
     /// Surrogate primary key assigned by the database.
     pub id: i64,
@@ -684,7 +684,7 @@ pub struct ListeningProgressRecord {
 }
 
 /// Wishlist row status (`open` while wishlisted; `cancelled` after un-wishlist).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RequestStatus {
     /// Wishlist item is still open (not fulfilled/cancelled).
@@ -717,7 +717,7 @@ impl RequestStatus {
 }
 
 /// Per-storefront catalog/pricing snapshot attached to a wishlist row.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, utoipa::ToSchema)]
 pub struct TitleRequestSourceRecord {
     /// Surrogate primary key assigned by the database.
     pub id: i64,
@@ -806,7 +806,7 @@ pub struct TitleRequestSourceRecord {
 }
 
 /// Storefront edition key for wishlist / queue payloads.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct WishlistStoreEdition {
     /// Content-source plugin id (`audible`, `libro`, …).
     pub source: String,
@@ -815,7 +815,7 @@ pub struct WishlistStoreEdition {
 }
 
 /// Snapshotted purchase link/price for a wishlist title.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, utoipa::ToSchema)]
 pub struct WishlistPurchaseHint {
     /// Content-source plugin id (`audible`, `libro`, …).
     pub source: String,
@@ -851,7 +851,7 @@ pub struct WishlistPurchaseHint {
 }
 
 /// Personal wishlist row (also contributes to the shared global queue while open).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct TitleRequestRecord {
     /// Surrogate primary key assigned by the database.
     pub id: i64,
@@ -926,7 +926,7 @@ pub struct TitleRequestRecord {
 }
 
 /// Compact wisher shown on the global queue (avatar + label).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct QueueWisher {
     /// First-party `users.id` when the portal identity is linked.
     #[serde(default, skip_serializing_if = "Option::is_none")]

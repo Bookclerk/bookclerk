@@ -2,11 +2,11 @@
 
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
 use axum::{Json, Router};
 use bookclerk_config::{session_cookie_flags, Config};
 use bookclerk_library::{
@@ -60,33 +60,37 @@ impl PortalState {
     }
 }
 
-/// SPA-facing portal API. Nest under `/api/portal`.
-///
-/// # Arguments
-///
-/// * `state` - Shared portal / handler state.
+/// The SPA Accounts / claim routes, before state: the daemon nests them at
+/// `/api/portal` and lists them in its OpenAPI document.
 ///
 /// # Returns
 ///
-/// `Router` result.
-pub fn portal_spa_router(state: PortalState) -> Router {
-    Router::new()
-        .route("/redeem", post(redeem))
-        .route("/login/integration", post(login_integration))
-        .route("/logout", post(logout))
-        .route("/me", get(me))
-        .route("/sources", get(sources))
-        .route("/sources/{id}/login", post(source_password_login))
-        .route("/sources/{id}/oauth/start", post(source_oauth_start))
+/// The routes, relative to their mount point.
+// The legacy aliases are deprecated in the document and still served.
+#[allow(deprecated)]
+pub fn portal_spa_routes() -> OpenApiRouter<PortalState> {
+    OpenApiRouter::new()
+        .routes(routes!(redeem))
+        .routes(routes!(login_integration))
+        .routes(routes!(logout))
+        .routes(routes!(me))
+        .routes(routes!(sources))
+        .routes(routes!(source_password_login))
+        .routes(routes!(source_oauth_start))
         // Legacy aliases kept for older SPA / smoke clients.
-        .route("/libro/login", post(libro_login_legacy))
-        .route("/audible/start", post(audible_start))
-        .route("/connections", get(connections))
-        .route(
-            "/sources/{source}/connections/{account_id}/revoke",
-            post(revoke_connection),
-        )
-        .with_state(state)
+        .routes(routes!(libro_login_legacy))
+        .routes(routes!(audible_start))
+        .routes(routes!(connections))
+        .routes(routes!(revoke_connection))
+}
+
+/// The SPA Accounts / claim routes with their state, ready to nest.
+///
+/// # Arguments
+///
+/// * `state` - Shared portal state.
+pub fn portal_spa_router(state: PortalState) -> Router {
+    portal_spa_routes().split_for_parts().0.with_state(state)
 }
 
 /// Resolve a portal identity from the request cookie, if present and valid.
@@ -107,7 +111,7 @@ pub async fn portal_identity_from_headers(
     identity_from_session(library, &raw).await.ok().flatten()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// JSON body for `POST /redeem` (claim ticket plus retry nonce).
 struct RedeemBody {
     /// Raw claim-ticket token to redeem into a portal session.
@@ -120,6 +124,16 @@ struct RedeemBody {
 }
 
 /// Redeems a claim ticket, optionally setting a first password, and sets the session cookie.
+#[utoipa::path(
+    operation_id = "portal_redeem",
+    post,
+    path = "/redeem",
+    request_body = RedeemBody,
+    responses(
+        (status = 200, description = "Signed in; the response sets the portal session cookie.", body = serde_json::Value),
+        (status = 400, description = "The ticket is invalid, used or expired.", body = PortalErrorBody),
+    ),
+)]
 async fn redeem(
     State(state): State<PortalState>,
     headers: HeaderMap,
@@ -220,7 +234,7 @@ async fn redeem(
     Ok(session_response(session, &state).await)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// JSON body for `POST /login/integration` (provider credential login).
 struct IntegrationLoginBody {
     /// Integration plugin id (must be enabled in config).
@@ -232,6 +246,17 @@ struct IntegrationLoginBody {
 }
 
 /// Authenticates against an enabled integration and mints a portal session.
+#[utoipa::path(
+    operation_id = "portal_login_integration",
+    post,
+    path = "/login/integration",
+    request_body = IntegrationLoginBody,
+    responses(
+        (status = 200, description = "Signed in through the integration.", body = serde_json::Value),
+        (status = 400, description = "The request is invalid.", body = PortalErrorBody),
+        (status = 401, description = "The integration refused the login.", body = PortalErrorBody),
+    ),
+)]
 async fn login_integration(
     State(state): State<PortalState>,
     Json(body): Json<IntegrationLoginBody>,
@@ -282,6 +307,14 @@ async fn login_integration(
 }
 
 /// Revokes the portal session row and clears the session cookie.
+#[utoipa::path(
+    operation_id = "portal_logout",
+    post,
+    path = "/logout",
+    responses(
+        (status = 200, description = "Signed out; the cookie is cleared."),
+    ),
+)]
 async fn logout(State(state): State<PortalState>, headers: HeaderMap) -> Response {
     if let Some(raw) = cookie_value(&headers, SESSION_COOKIE) {
         let library = state.library_snapshot().await;
@@ -303,6 +336,15 @@ async fn logout(State(state): State<PortalState>, headers: HeaderMap) -> Respons
 }
 
 /// Returns the signed-in portal identity, or 401 when the cookie is missing or expired.
+#[utoipa::path(
+    operation_id = "portal_me",
+    get,
+    path = "/me",
+    responses(
+        (status = 200, description = "The signed-in identity.", body = MeResponse),
+        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody),
+    ),
+)]
 async fn me(
     State(state): State<PortalState>,
     headers: HeaderMap,
@@ -315,7 +357,7 @@ async fn me(
     }))
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// JSON body for `GET /me`.
 struct MeResponse {
     /// Identity provider id (`local` or an integration plugin id).
@@ -328,6 +370,14 @@ struct MeResponse {
 
 /// Lists the deployed content sources (one per plugin, through its default
 /// instance) with portal auth mode, config options, and brand colors.
+#[utoipa::path(
+    operation_id = "portal_sources",
+    get,
+    path = "/sources",
+    responses(
+        (status = 200, description = "Deployed content sources.", body = SourcesResponse),
+    ),
+)]
 async fn sources(State(state): State<PortalState>) -> Json<SourcesResponse> {
     let sources = state.sources.read().await;
     let mut list = Vec::new();
@@ -365,14 +415,14 @@ async fn sources(State(state): State<PortalState>) -> Json<SourcesResponse> {
     Json(SourcesResponse { sources: list })
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// JSON body for `GET /sources`.
 struct SourcesResponse {
     /// Enabled storefronts the SPA may offer for connect / login.
     sources: Vec<SourceInfo>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// One enabled storefront as shown on the portal Accounts page.
 struct SourceInfo {
     /// Source plugin id (`audible`, `libro`, …).
@@ -388,7 +438,7 @@ struct SourceInfo {
     brand: BrandInfo,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// One storefront config option (key, label, allowed values).
 struct SourceConfigOptionInfo {
     /// Config table key (for example `container`).
@@ -399,7 +449,7 @@ struct SourceConfigOptionInfo {
     values: Vec<ConfigOptionValueInfo>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// One allowed value for a storefront config option.
 struct ConfigOptionValueInfo {
     /// Stored option value (for example `m4b`).
@@ -408,7 +458,7 @@ struct ConfigOptionValueInfo {
     label: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// CSS colors and logo href for a storefront or integration brand.
 struct BrandInfo {
     /// Background color (`#RRGGBB`).
@@ -421,7 +471,7 @@ struct BrandInfo {
     logo: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// JSON body for password-store connect (`email` + `password`).
 struct PasswordLoginBody {
     /// Store account email / username.
@@ -431,6 +481,18 @@ struct PasswordLoginBody {
 }
 
 /// Connects a password storefront, upserts the account, and links it to the signed-in identity.
+#[utoipa::path(
+    operation_id = "portal_source_password_login",
+    post,
+    path = "/sources/{id}/login",
+    params(("id" = String, Path, description = "Source plugin id.")),
+    request_body = PasswordLoginBody,
+    responses(
+        (status = 200, description = "The account was connected.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody),
+        (status = 400, description = "The login failed.", body = PortalErrorBody),
+    ),
+)]
 async fn source_password_login(
     State(state): State<PortalState>,
     headers: HeaderMap,
@@ -490,6 +552,17 @@ async fn source_password_login(
 }
 
 /// Starts interactive OAuth for an OAuth storefront and returns the browser login URL.
+#[utoipa::path(
+    operation_id = "portal_source_oauth_start",
+    post,
+    path = "/sources/{id}/oauth/start",
+    params(("id" = String, Path, description = "Source plugin id.")),
+    responses(
+        (status = 200, description = "The browser login URL.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody),
+        (status = 400, description = "The source does not use OAuth.", body = PortalErrorBody),
+    ),
+)]
 async fn source_oauth_start(
     State(state): State<PortalState>,
     headers: HeaderMap,
@@ -510,6 +583,17 @@ async fn source_oauth_start(
 }
 
 /// Legacy `POST /libro/login` alias that forwards to the Libro password-login handler.
+#[utoipa::path(
+    operation_id = "portal_libro_login_legacy",
+    post,
+    path = "/libro/login",
+    request_body = PasswordLoginBody,
+    responses(
+        (status = 200, description = "The account was connected.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody),
+    ),
+)]
+#[deprecated(note = "legacy alias; call the `/sources/{id}/...` route instead")]
 async fn libro_login_legacy(
     State(state): State<PortalState>,
     headers: HeaderMap,
@@ -519,6 +603,16 @@ async fn libro_login_legacy(
 }
 
 /// Legacy `POST /audible/start` alias that forwards to Audible OAuth start.
+#[utoipa::path(
+    operation_id = "portal_audible_start",
+    post,
+    path = "/audible/start",
+    responses(
+        (status = 200, description = "The browser login URL.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody),
+    ),
+)]
+#[deprecated(note = "legacy alias; call the `/sources/{id}/...` route instead")]
 async fn audible_start(
     State(state): State<PortalState>,
     headers: HeaderMap,
@@ -585,6 +679,15 @@ async fn start_source_oauth_session(
 }
 
 /// Lists store accounts linked to the signed-in identity, including disabled sources.
+#[utoipa::path(
+    operation_id = "portal_connections",
+    get,
+    path = "/connections",
+    responses(
+        (status = 200, description = "Store accounts linked to the caller.", body = ConnectionsResponse),
+        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody),
+    ),
+)]
 async fn connections(
     State(state): State<PortalState>,
     headers: HeaderMap,
@@ -631,14 +734,14 @@ async fn connections(
     Ok(Json(ConnectionsResponse { connections }))
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// JSON body for `GET /connections`.
 struct ConnectionsResponse {
     /// Linked store accounts the SPA may show or revoke.
     connections: Vec<ConnectionInfo>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// One linked store account on the portal Accounts page.
 struct ConnectionInfo {
     /// Store account id (unique within its source).
@@ -662,6 +765,17 @@ struct ConnectionInfo {
 ///
 /// The account is addressed by `(source, account_id)`: the same store id may
 /// exist under two plugins. `source` is the alias or plugin key of the link.
+#[utoipa::path(
+    operation_id = "portal_revoke_connection",
+    post,
+    path = "/sources/{source}/connections/{account_id}/revoke",
+    params(("source" = String, Path, description = "Source plugin id."), ("account_id" = String, Path, description = "Store account id.")),
+    responses(
+        (status = 200, description = "The account was unlinked.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody),
+        (status = 404, description = "No such linked account.", body = PortalErrorBody),
+    ),
+)]
 async fn revoke_connection(
     State(state): State<PortalState>,
     headers: HeaderMap,
@@ -846,11 +960,20 @@ impl From<crate::error::IntegrationError> for PortalError {
     }
 }
 
+/// JSON body of every portal error response.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct PortalErrorBody {
+    /// Operator-facing error text (no structured code).
+    pub error: String,
+}
+
 impl IntoResponse for PortalError {
     fn into_response(self) -> Response {
         (
             self.status,
-            Json(serde_json::json!({ "error": self.message })),
+            Json(PortalErrorBody {
+                error: self.message,
+            }),
         )
             .into_response()
     }

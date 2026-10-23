@@ -202,7 +202,7 @@ pub async fn reconcile_events(state: &AppState) -> anyhow::Result<()> {
 }
 
 /// JSON body for `PUT /api/config/domains/core.events`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PutEventsDomainRequest {
     /// Revision the caller read. A mismatch is a conflict.
     pub expected_revision: i64,
@@ -215,6 +215,15 @@ pub struct PutEventsDomainRequest {
 }
 
 /// `GET /api/config/domains/core.events`.
+#[utoipa::path(
+    get,
+    path = "/api/config/domains/core.events",
+    responses(
+        (status = 200, description = "The `core.events` settings.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+    ),
+)]
 pub async fn get_events_domain(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, Response> {
@@ -224,6 +233,16 @@ pub async fn get_events_domain(
 }
 
 /// `PUT /api/config/domains/core.events`.
+#[utoipa::path(
+    put,
+    path = "/api/config/domains/core.events",
+    request_body = PutEventsDomainRequest,
+    responses(
+        (status = 200, description = "The settings after the change.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+    ),
+)]
 pub async fn put_events_domain(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PutEventsDomainRequest>,
@@ -479,15 +498,25 @@ pub async fn reconcile_output(state: &AppState) -> anyhow::Result<()> {
 }
 
 /// JSON body for `PUT /api/config/domains/core.output`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PutOutputDomainRequest {
     /// Revision the caller read. A mismatch is a conflict.
     pub expected_revision: i64,
     /// Complete replacement document (schema version 1).
+    #[schema(value_type = Object)]
     pub document: OutputSettingsV1,
 }
 
 /// `GET /api/config/domains/core.output`.
+#[utoipa::path(
+    get,
+    path = "/api/config/domains/core.output",
+    responses(
+        (status = 200, description = "The `core.output` settings.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+    ),
+)]
 pub async fn get_output_domain(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, Response> {
@@ -497,6 +526,16 @@ pub async fn get_output_domain(
 }
 
 /// `PUT /api/config/domains/core.output`.
+#[utoipa::path(
+    put,
+    path = "/api/config/domains/core.output",
+    request_body = PutOutputDomainRequest,
+    responses(
+        (status = 200, description = "The settings after the change.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+    ),
+)]
 pub async fn put_output_domain(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PutOutputDomainRequest>,
@@ -654,7 +693,7 @@ pub(crate) async fn reconcile_deployments(state: &AppState) -> anyhow::Result<()
 }
 
 /// This node's view of one deployment row, with its latest observation.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub(crate) struct PluginDeploymentView {
     /// Deployment row id.
     pub deployment_id: String,
@@ -692,9 +731,10 @@ pub(crate) struct InstanceConfigView {
 
 /// Scheduler placement of one instance: the operator's intent and the last
 /// pass's result.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub(crate) struct PlacementView {
     /// Nodes that should run the instance.
+    #[schema(value_type = Object)]
     pub replicas: bookclerk_library::control_plane::Replicas,
     /// Label constraints every chosen node must satisfy.
     pub constraints: Vec<String>,
@@ -850,6 +890,15 @@ fn this_node_id(config: &bookclerk_config::Config) -> Result<String, Response> {
 }
 
 /// `GET /api/config/plugin-instances`.
+#[utoipa::path(
+    get,
+    path = "/api/config/plugin-instances",
+    responses(
+        (status = 200, description = "Every plugin instance with its deployments.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+    ),
+)]
 pub async fn get_plugin_instances(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, Response> {
@@ -866,7 +915,7 @@ pub async fn get_plugin_instances(
 }
 
 /// `POST /api/config/plugin-instances` body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct CreatePluginInstance {
     /// Canonical plugin key; the plugin must have a pinned schema.
     plugin_key: String,
@@ -882,6 +931,18 @@ pub(crate) struct CreatePluginInstance {
 /// `POST /api/config/plugin-instances`: a second (non-default) instance of
 /// a plugin, with an empty document so schema defaults apply. With
 /// `node_id`, the instance is local to that node.
+#[utoipa::path(
+    post,
+    path = "/api/config/plugin-instances",
+    request_body = CreatePluginInstance,
+    responses(
+        (status = 200, description = "The new instance.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "No such plugin."),
+        (status = 409, description = "The instance id is taken."),
+    ),
+)]
 pub async fn post_plugin_instance(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreatePluginInstance>,
@@ -923,6 +984,18 @@ pub async fn post_plugin_instance(
 
 /// `DELETE /api/config/plugin-instances/{id}`: removes an instance that has
 /// no deployment left.
+#[utoipa::path(
+    delete,
+    path = "/api/config/plugin-instances/{id}",
+    params(("id" = String, Path, description = "Plugin instance id.")),
+    responses(
+        (status = 200, description = "The instance was removed.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "No such instance."),
+        (status = 409, description = "The instance is a default or still deployed."),
+    ),
+)]
 pub async fn delete_plugin_instance_route(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
@@ -939,6 +1012,17 @@ pub async fn delete_plugin_instance_route(
 }
 
 /// `GET /api/config/plugin-instances/{id}/config`.
+#[utoipa::path(
+    get,
+    path = "/api/config/plugin-instances/{id}/config",
+    params(("id" = String, Path, description = "Plugin instance id.")),
+    responses(
+        (status = 200, description = "The instance's settings document (secrets as presence flags).", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "No such instance."),
+    ),
+)]
 pub async fn get_plugin_instance_config(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
@@ -996,16 +1080,18 @@ fn setting_value_json(value: &bookclerk_library::control_plane::SettingValue) ->
 }
 
 /// `PUT /api/config/plugin-instances/{id}/config` body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct PutPluginInstanceConfig {
     /// Revision the caller last observed.
     expected_revision: i64,
     /// Scalar settings. Secret values are not accepted here.
     #[serde(default)]
+    #[schema(value_type = Object)]
     settings: std::collections::BTreeMap<String, bookclerk_library::control_plane::SettingValue>,
     /// Secret refs to keep. Omitted refs are dropped from the document; the
     /// ciphertext stays sealed until the secret is overwritten.
     #[serde(default)]
+    #[schema(value_type = Vec<Object>)]
     secret_refs: Vec<bookclerk_library::control_plane::InstanceSecretRefV1>,
     /// Secret values to seal, keyed by the declared `secret` setting. Each
     /// is sealed into `encrypted_secrets` and referenced from the document;
@@ -1019,6 +1105,18 @@ pub(crate) struct PutPluginInstanceConfig {
 /// Operator principal only. The route is mounted on the operator router.
 /// The document is validated against the plugin's pinned schema, so this
 /// node does not need the guest installed.
+#[utoipa::path(
+    put,
+    path = "/api/config/plugin-instances/{id}/config",
+    params(("id" = String, Path, description = "Plugin instance id.")),
+    request_body = PutPluginInstanceConfig,
+    responses(
+        (status = 200, description = "The document after the change.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "No such instance."),
+    ),
+)]
 pub async fn put_plugin_instance_config(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
@@ -1103,7 +1201,7 @@ pub async fn put_plugin_instance_config(
 }
 
 /// `PUT /api/config/plugin-instances/{id}/deployments/{node_id}` body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct PutPluginDeployment {
     /// `present` or `absent`.
     desired: String,
@@ -1116,6 +1214,19 @@ pub(crate) struct PutPluginDeployment {
 
 /// `PUT /api/config/plugin-instances/{id}/deployments/{node_id}`: the
 /// Deployed switch. Creates the row when the node has none.
+#[utoipa::path(
+    put,
+    path = "/api/config/plugin-instances/{id}/deployments/{node_id}",
+    params(("id" = String, Path, description = "Plugin instance id."), ("node_id" = String, Path, description = "Node id.")),
+    request_body = PutPluginDeployment,
+    responses(
+        (status = 200, description = "The deployment after the change.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "No such instance."),
+        (status = 409, description = "The instance is placed by the scheduler."),
+    ),
+)]
 pub async fn put_plugin_deployment(
     State(state): State<Arc<AppState>>,
     axum::extract::Path((id, node_id)): axum::extract::Path<(String, String)>,
@@ -1269,6 +1380,17 @@ fn node_capabilities(caller: NodeAdminCaller) -> serde_json::Value {
 
 /// `GET /api/config/nodes`: every node for an operator; the caller's own
 /// nodes for a node owner.
+#[utoipa::path(
+    get,
+    path = "/api/config/nodes",
+    responses(
+        (status = 200, description = "The nodes the caller administers.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+    ),
+)]
 pub async fn get_nodes(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<NodeAdminCaller>,
@@ -1288,6 +1410,17 @@ pub async fn get_nodes(
 /// `GET /api/cluster/status`: cluster-wide health every node administrator
 /// may see (node counts, committed capacity, active jobs, delivery backlog),
 /// plus detail for the nodes the caller may see.
+#[utoipa::path(
+    get,
+    path = "/api/cluster/status",
+    responses(
+        (status = 200, description = "Cluster-wide node health.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+    ),
+)]
 pub async fn get_cluster_status(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<NodeAdminCaller>,
@@ -1466,6 +1599,17 @@ fn clerk_actor(caller: NodeAdminCaller) -> bookclerk_library::control_plane::Enr
 /// an Owner sees every one, as `DELETE /api/config/nodes/{node_id}` lets
 /// them remove any; another user only the ones they own, which the nodes
 /// listing already shows them. Branches are not listed.
+#[utoipa::path(
+    get,
+    path = "/api/config/clerks",
+    responses(
+        (status = 200, description = "This node and its clerks.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+    ),
+)]
 pub async fn get_clerks(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<NodeAdminCaller>,
@@ -1486,6 +1630,19 @@ pub async fn get_clerks(
 /// library's node list. The operator or an Owner may remove any; another
 /// user only one they own. A running node, this node, or a branch is
 /// refused (a branch is revoked instead).
+#[utoipa::path(
+    delete,
+    path = "/api/config/nodes/{node_id}",
+    params(("node_id" = String, Path, description = "Node id.")),
+    responses(
+        (status = 200, description = "The owner node was removed.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "No such node, or not one the caller administers."),
+    ),
+)]
 pub async fn delete_owner_node(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<NodeAdminCaller>,
@@ -1504,7 +1661,7 @@ pub async fn delete_owner_node(
 
 /// `PUT /api/config/nodes/{node_id}/runtime` body: any subset of the
 /// node's runtime document.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct PutNodeRuntime {
     /// Operator label.
     #[serde(default)]
@@ -1523,6 +1680,20 @@ pub(crate) struct PutNodeRuntime {
 /// `PUT /api/config/nodes/{node_id}/runtime`: edit a node's label, budgets,
 /// or drain switch. Applies at that node's next heartbeat. A node owner may
 /// edit only the nodes it owns.
+#[utoipa::path(
+    put,
+    path = "/api/config/nodes/{node_id}/runtime",
+    params(("node_id" = String, Path, description = "Node id.")),
+    request_body = PutNodeRuntime,
+    responses(
+        (status = 200, description = "The node's runtime settings after the change.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "No such node, or not one the caller administers."),
+    ),
+)]
 pub async fn put_node_runtime(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<NodeAdminCaller>,
@@ -1573,7 +1744,7 @@ pub async fn put_node_runtime(
 }
 
 /// `PUT /api/config/nodes/{node_id}/labels` body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct PutNodeLabels {
     /// The node's complete operator label set.
     labels: Vec<String>,
@@ -1581,6 +1752,18 @@ pub(crate) struct PutNodeLabels {
 
 /// `PUT /api/config/nodes/{node_id}/labels`: replace a node's placement
 /// labels. The scheduler re-plans on the wakeup this publishes.
+#[utoipa::path(
+    put,
+    path = "/api/config/nodes/{node_id}/labels",
+    params(("node_id" = String, Path, description = "Node id.")),
+    request_body = PutNodeLabels,
+    responses(
+        (status = 200, description = "The node's labels after the change.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "No such node, or not one the caller administers."),
+    ),
+)]
 pub async fn put_node_labels(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(node_id): axum::extract::Path<String>,
@@ -1608,7 +1791,7 @@ pub async fn put_node_labels(
 }
 
 /// `PUT /api/config/nodes/{node_id}/owner` body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct PutNodeOwner {
     /// User who owns the node, or `null` to clear.
     user_id: Option<i64>,
@@ -1617,6 +1800,18 @@ pub(crate) struct PutNodeOwner {
 /// `PUT /api/config/nodes/{node_id}/owner`: assign or clear a node's owner.
 /// The owner may then edit that node's runtime settings without operator
 /// authority.
+#[utoipa::path(
+    put,
+    path = "/api/config/nodes/{node_id}/owner",
+    params(("node_id" = String, Path, description = "Node id.")),
+    request_body = PutNodeOwner,
+    responses(
+        (status = 200, description = "The node's owner after the change.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "No such node, or not one the caller administers."),
+    ),
+)]
 pub async fn put_node_owner(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(node_id): axum::extract::Path<String>,
@@ -1638,10 +1833,11 @@ pub async fn put_node_owner(
 }
 
 /// `PUT /api/config/plugin-instances/{id}/placement` body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct PutPluginPlacement {
     /// Nodes that should run the instance: a number (0 stops every
     /// replica) or `"all"`.
+    #[schema(value_type = Object)]
     replicas: bookclerk_library::control_plane::Replicas,
     /// Label constraints (`name`, `name=value`, `!name`).
     #[serde(default)]
@@ -1653,6 +1849,18 @@ pub(crate) struct PutPluginPlacement {
 
 /// `PUT /api/config/plugin-instances/{id}/placement`: hand the instance's
 /// deployments to the scheduler with a replica count and constraints.
+#[utoipa::path(
+    put,
+    path = "/api/config/plugin-instances/{id}/placement",
+    params(("id" = String, Path, description = "Plugin instance id.")),
+    request_body = PutPluginPlacement,
+    responses(
+        (status = 200, description = "The scheduler now places the instance.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "No such instance."),
+    ),
+)]
 pub async fn put_plugin_placement_route(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
@@ -1688,6 +1896,17 @@ pub async fn put_plugin_placement_route(
 /// `DELETE /api/config/plugin-instances/{id}/placement`: return the
 /// instance to hand-managed deployments; its deployments stay as they
 /// are.
+#[utoipa::path(
+    delete,
+    path = "/api/config/plugin-instances/{id}/placement",
+    params(("id" = String, Path, description = "Plugin instance id.")),
+    responses(
+        (status = 200, description = "The instance is back to manual deployment.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "No such instance."),
+    ),
+)]
 pub async fn delete_plugin_placement_route(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,

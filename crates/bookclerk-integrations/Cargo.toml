@@ -26,6 +26,8 @@ tokio.workspace = true
 tower-http = { workspace = true, features = ["fs"] }
 tracing.workspace = true
 uuid.workspace = true
+utoipa.workspace = true
+utoipa-axum.workspace = true
 
 [dev-dependencies]
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }

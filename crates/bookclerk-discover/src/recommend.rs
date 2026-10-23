@@ -92,7 +92,7 @@ impl Default for RecommendOptions {
 }
 
 /// One ranked recommendation (typically an unowned storefront title).
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct Recommendation {
     /// Library `works.id` UUID when the recommendation is tied to an owned work.
     pub work_id: Option<String>,
@@ -175,7 +175,7 @@ fn wish_count_is_zero(n: &i64) -> bool {
 
 /// Global wishlist queue entry ranked by overall/operator recommend taste +
 /// heavy wish-count weight (shared order; not per-viewer personalized).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct RankedQueueEntry {
     /// Stable map key for this work (`isbn:…`, `asin:…`, or soft title+author).
     pub work_key: String,

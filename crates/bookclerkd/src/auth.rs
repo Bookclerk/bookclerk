@@ -376,7 +376,7 @@ impl OperatorAuthState {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// JSON body for `POST /api/auth/login` (operator token).
 pub struct LoginRequest {
     /// Operator token from the client; compared in constant time and never persisted.
@@ -500,6 +500,16 @@ struct LoginResponse {
 }
 
 /// Validates the operator token (throttled, constant-time) and issues a hashed session cookie.
+#[utoipa::path(
+    post,
+    path = "/api/auth/login",
+    request_body = LoginRequest,
+    responses(
+        (status = 200, description = "Signed in; the response sets the operator session cookie.", body = serde_json::Value),
+        (status = 401, description = "The token is wrong."),
+        (status = 429, description = "Too many attempts; try later."),
+    ),
+)]
 pub async fn login(
     State(state): State<Arc<AppState>>,
     ClientIp(client_key): ClientIp,
@@ -588,6 +598,13 @@ async fn spa_operator_token_allowed(
 /// # Errors
 ///
 /// Returns 500 when the owner-count query fails.
+#[utoipa::path(
+    get,
+    path = "/api/auth/signin",
+    responses(
+        (status = 200, description = "The sign-in methods this library offers.", body = serde_json::Value),
+    ),
+)]
 pub async fn signin_methods(State(state): State<Arc<AppState>>) -> Result<Response, StatusCode> {
     let library = state.library_snapshot().await;
     let operator_token = spa_operator_token_allowed(&library).await?;
@@ -641,6 +658,15 @@ pub async fn signin_methods(State(state): State<Arc<AppState>>) -> Result<Respon
 ///
 /// Returns 403 when the request is not a direct loopback call, 401 when Bearer
 /// does not match, or 429 when this client is locked out.
+#[utoipa::path(
+    post,
+    path = "/api/auth/tray-handoff/prepare",
+    responses(
+        (status = 200, description = "A single-use tray ticket.", body = serde_json::Value),
+        (status = 401, description = "The Bearer token is missing or wrong."),
+        (status = 403, description = "The request did not come straight from loopback."),
+    ),
+)]
 pub async fn tray_handoff_prepare(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -681,6 +707,15 @@ pub async fn tray_handoff_prepare(
 ///
 /// Returns 403 when the request is not a direct loopback call or the code does
 /// not match a still-valid ticket.
+#[utoipa::path(
+    get,
+    path = "/api/auth/tray-handoff",
+    params(TrayHandoffQuery),
+    responses(
+        (status = 303, description = "Redirects into the app with a localhost operator session."),
+        (status = 403, description = "The ticket is missing, used or not from loopback."),
+    ),
+)]
 pub async fn tray_handoff(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -721,7 +756,8 @@ pub async fn tray_handoff(
 }
 
 /// One-time `code` from prepare; extra query keys such as `token` are ignored.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub(crate) struct TrayHandoffQuery {
     /// Presented handoff code; missing or empty fails closed without consuming the slot.
     code: Option<String>,
@@ -964,6 +1000,13 @@ pub(crate) fn too_many_requests(retry_after: Duration) -> Response {
 }
 
 /// Revokes hashed operator and portal sessions and clears both cookies.
+#[utoipa::path(
+    post,
+    path = "/api/auth/logout",
+    responses(
+        (status = 200, description = "Signed out; both session cookies are cleared.", body = serde_json::Value),
+    ),
+)]
 pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let library = state.library_snapshot().await;
     if let Some(session_id) = session_id_from_headers(&headers) {
@@ -1000,6 +1043,14 @@ pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
 }
 
 /// Resolves the caller and returns `/me` JSON; unauthenticated callers get 401.
+#[utoipa::path(
+    get,
+    path = "/api/auth/me",
+    responses(
+        (status = 200, description = "Who the caller is (operator, portal user, or impersonation).", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+    ),
+)]
 pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl IntoResponse {
     let auth = state.auth_snapshot().await;
 
@@ -1871,14 +1922,14 @@ async fn impersonation_caller_identity(
     (role, can_acquire, Some(me_user), portal)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// JSON body for Owner password re-auth before issuing an elevated operator cookie.
 pub struct ElevateRequest {
     /// Owner account password (re-authentication).
     pub password: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// JSON body naming the first-party user to impersonate.
 pub struct ImpersonateRequest {
     /// Target `users.id` to impersonate.
@@ -1886,6 +1937,16 @@ pub struct ImpersonateRequest {
 }
 
 /// Owner portal session + password re-auth → short-lived elevated operator cookie.
+#[utoipa::path(
+    post,
+    path = "/api/auth/elevate",
+    request_body = ElevateRequest,
+    responses(
+        (status = 200, description = "Elevated; the response sets a short-lived operator cookie.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+    ),
+)]
 pub async fn elevate(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2031,6 +2092,15 @@ pub(crate) async fn issue_portal_session(
 }
 
 /// End elevation by revoking the elevated operator session cookie.
+#[utoipa::path(
+    delete,
+    path = "/api/auth/elevate",
+    responses(
+        (status = 200, description = "Elevation ended.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+    ),
+)]
 pub async fn elevate_end(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2067,6 +2137,17 @@ pub async fn elevate_end(
 }
 
 /// Operator (or elevated) session starts impersonating a User.
+#[utoipa::path(
+    post,
+    path = "/api/auth/impersonate",
+    request_body = ImpersonateRequest,
+    responses(
+        (status = 200, description = "The session now acts as the user.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 404, description = "No such user."),
+    ),
+)]
 pub async fn impersonate(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2161,6 +2242,15 @@ pub async fn impersonate(
 }
 
 /// Clear impersonation on the current operator session.
+#[utoipa::path(
+    delete,
+    path = "/api/auth/impersonate",
+    responses(
+        (status = 200, description = "Impersonation ended.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+    ),
+)]
 pub async fn impersonate_end(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2211,6 +2301,15 @@ const USER_LIST_LISTENING_WITHIN: ChronoDuration = ChronoDuration::minutes(30);
 /// Includes presence extras: non-expired portal sessions (`online` /
 /// `last_active_at`), durable `last_seen_at` (survives logout), unfinished
 /// listening within the last 30 minutes, and linked storefront accounts.
+#[utoipa::path(
+    get,
+    path = "/api/users",
+    responses(
+        (status = 200, description = "The library's users.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+    ),
+)]
 pub async fn list_users(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2270,7 +2369,7 @@ pub async fn list_users(
     Ok(Json(serde_json::json!({ "users": rows })))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Partial profile, role, or status patch for a first-party user.
 pub struct PatchUserRequest {
     #[serde(default)]
@@ -2309,6 +2408,19 @@ fn last_owner_response() -> Response {
 }
 
 /// Patch role/status/display/login for a first-party user (provisioner).
+#[utoipa::path(
+    patch,
+    path = "/api/users/{id}",
+    params(("id" = i64, Path, description = "User id.")),
+    request_body = PatchUserRequest,
+    responses(
+        (status = 200, description = "The user after the change.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "A value is invalid."),
+        (status = 404, description = "No such user."),
+    ),
+)]
 pub async fn patch_user(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2423,6 +2535,17 @@ pub async fn patch_user(
 }
 
 /// Mint a fresh local claim ticket for an active first-party user.
+#[utoipa::path(
+    post,
+    path = "/api/users/{id}/claim-ticket",
+    params(("id" = i64, Path, description = "User id.")),
+    responses(
+        (status = 200, description = "A fresh claim ticket.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 404, description = "No such user."),
+    ),
+)]
 pub async fn create_user_claim_ticket(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2464,6 +2587,17 @@ pub async fn create_user_claim_ticket(
 }
 
 /// Invalidate a user's password, revoke sessions, and mint a claim ticket for reset.
+#[utoipa::path(
+    post,
+    path = "/api/users/{id}/reset-password",
+    params(("id" = i64, Path, description = "User id.")),
+    responses(
+        (status = 200, description = "The password was cleared; a claim ticket for the reset.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 404, description = "No such user."),
+    ),
+)]
 pub async fn reset_user_password(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2517,6 +2651,17 @@ pub async fn reset_user_password(
 ///
 /// Operators/administrators may delete any user. Portal callers may delete
 /// only their own account (self-service).
+#[utoipa::path(
+    delete,
+    path = "/api/users/{id}",
+    params(("id" = i64, Path, description = "User id.")),
+    responses(
+        (status = 200, description = "The user and their personal data were deleted.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 404, description = "No such user."),
+    ),
+)]
 pub async fn delete_user(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2582,7 +2727,7 @@ pub async fn delete_user(
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Operator-only body for creating the first Owner when none exist.
 pub struct BootstrapRequest {
     #[serde(default)]
@@ -2600,6 +2745,17 @@ pub struct BootstrapRequest {
 }
 
 /// Operator-only bootstrap of the first Owner when none exist.
+#[utoipa::path(
+    post,
+    path = "/api/auth/bootstrap",
+    request_body = BootstrapRequest,
+    responses(
+        (status = 200, description = "The first Owner was created.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 409, description = "An Owner already exists."),
+    ),
+)]
 pub async fn bootstrap(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2685,7 +2841,7 @@ pub async fn bootstrap(
     })))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Provisioner body for creating a user and optional invite ticket.
 pub struct CreateUserRequest {
     #[serde(default)]
@@ -2714,6 +2870,18 @@ fn default_true() -> bool {
 }
 
 /// Owner/admin or operator creates a user and optional invite magic link.
+#[utoipa::path(
+    post,
+    path = "/api/users",
+    request_body = CreateUserRequest,
+    responses(
+        (status = 200, description = "The new user, with an invite link when one was asked for.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "The request is invalid."),
+        (status = 409, description = "The login is taken."),
+    ),
+)]
 pub async fn create_user(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2794,7 +2962,7 @@ pub async fn create_user(
     })))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// JSON body for local password login (login name or email plus password).
 pub struct PasswordLoginRequest {
     /// Login name or email.
@@ -2804,6 +2972,16 @@ pub struct PasswordLoginRequest {
 }
 
 /// Local password login → portal session cookie, or a TOTP challenge when enabled.
+#[utoipa::path(
+    post,
+    path = "/api/auth/password",
+    request_body = PasswordLoginRequest,
+    responses(
+        (status = 200, description = "Signed in (portal session cookie), or a TOTP challenge.", body = serde_json::Value),
+        (status = 401, description = "The login or password is wrong."),
+        (status = 429, description = "Too many attempts; try later."),
+    ),
+)]
 pub async fn password_login(
     State(state): State<Arc<AppState>>,
     ClientIp(client_key): ClientIp,
@@ -2864,7 +3042,7 @@ pub async fn password_login(
     issue_portal_session(&state, &library, &user, &headers, "password_login").await
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// JSON body for setting a password (self or provisioner target).
 pub struct SetPasswordRequest {
     /// New password; hashed before persist. Empty is rejected.
@@ -2878,6 +3056,17 @@ pub struct SetPasswordRequest {
 }
 
 /// Set password for self (portal) or target user (operator/admin); revokes sessions.
+#[utoipa::path(
+    put,
+    path = "/api/auth/password",
+    request_body = SetPasswordRequest,
+    responses(
+        (status = 200, description = "The password was set and other sessions revoked.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "The password is too weak or the request is invalid."),
+    ),
+)]
 pub async fn set_password(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -3126,6 +3315,15 @@ fn user_json(user: &bookclerk_library::UserRecord) -> serde_json::Value {
 }
 
 /// List sessions for the current principal only (not every operator session).
+#[utoipa::path(
+    get,
+    path = "/api/auth/sessions",
+    responses(
+        (status = 200, description = "The caller's sessions.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+    ),
+)]
 pub async fn list_sessions(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -3221,6 +3419,17 @@ async fn portal_session_rows(
 
 /// Revoke a session by id. Operators may revoke any operator session;
 /// portal users may only revoke their own.
+#[utoipa::path(
+    delete,
+    path = "/api/auth/sessions/{id}",
+    params(("id" = i64, Path, description = "Session id.")),
+    responses(
+        (status = 200, description = "The session was revoked.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 404, description = "No such session."),
+    ),
+)]
 pub async fn revoke_session(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

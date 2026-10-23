@@ -67,6 +67,15 @@ pub(crate) fn link_json(link: &ClusterLink) -> serde_json::Value {
 }
 
 /// `GET /api/config/cluster-consents`.
+#[utoipa::path(
+    get,
+    path = "/api/config/cluster-consents",
+    responses(
+        (status = 200, description = "Pending and granted cluster consents.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+    ),
+)]
 pub async fn get_cluster_consents(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, Response> {
@@ -82,7 +91,7 @@ pub async fn get_cluster_consents(
 }
 
 /// `POST /api/config/cluster-consents/approve` body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ApproveBody {
     /// Owner cluster id.
@@ -104,6 +113,17 @@ pub struct ApproveBody {
 }
 
 /// `POST /api/config/cluster-consents/approve`.
+#[utoipa::path(
+    post,
+    path = "/api/config/cluster-consents/approve",
+    request_body = ApproveBody,
+    responses(
+        (status = 200, description = "The consent was granted.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "No such consent."),
+    ),
+)]
 pub async fn post_cluster_consent_approve(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ApproveBody>,
@@ -159,7 +179,7 @@ fn approval_error_response(err: &RemoteApprovalError) -> Response {
 }
 
 /// `POST /api/config/cluster-consents/revoke` body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RevokeBody {
     /// Owner cluster id.
@@ -169,6 +189,17 @@ pub struct RevokeBody {
 }
 
 /// `POST /api/config/cluster-consents/revoke`.
+#[utoipa::path(
+    post,
+    path = "/api/config/cluster-consents/revoke",
+    request_body = RevokeBody,
+    responses(
+        (status = 200, description = "The consent was revoked.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 404, description = "No such consent."),
+    ),
+)]
 pub async fn post_cluster_consent_revoke(
     State(state): State<Arc<AppState>>,
     Json(body): Json<RevokeBody>,
@@ -190,7 +221,7 @@ pub async fn post_cluster_consent_revoke(
 }
 
 /// `POST /api/config/clusters/{cluster_id}/scan` body.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ClusterScanBody {
     /// Scan only this store account of the owner cluster.
@@ -202,7 +233,7 @@ pub struct ClusterScanBody {
 }
 
 /// `POST /api/config/clusters/{cluster_id}/jobs` body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ClusterJobsBody {
     /// Job ids on the owner cluster.
@@ -264,6 +295,19 @@ fn owner_refusal(answer: Option<bookclerk_node_proto::Frame>) -> Response {
 /// `POST /api/config/clusters/{cluster_id}/scan`: asks the owner cluster
 /// to queue a scan for this node's owner (H-5). The owner's planner decides
 /// what that user may scan; the answer lists the queued job ids.
+#[utoipa::path(
+    post,
+    path = "/api/config/clusters/{cluster_id}/scan",
+    params(("cluster_id" = String, Path, description = "Owner cluster id.")),
+    request_body = Option<ClusterScanBody>,
+    responses(
+        (status = 200, description = "The owner cluster accepted the scan.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 502, description = "The owner cluster could not be reached."),
+        (status = 404, description = "No such cluster."),
+    ),
+)]
 pub async fn post_cluster_scan(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(cluster_id): axum::extract::Path<String>,
@@ -316,6 +360,19 @@ pub async fn post_cluster_scan(
 
 /// `POST /api/config/clusters/{cluster_id}/jobs`: the owner's view of jobs
 /// this node may see (those it would be trusted to claim).
+#[utoipa::path(
+    post,
+    path = "/api/config/clusters/{cluster_id}/jobs",
+    params(("cluster_id" = String, Path, description = "Owner cluster id.")),
+    request_body = ClusterJobsBody,
+    responses(
+        (status = 200, description = "The owner's jobs for these accounts.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+        (status = 502, description = "The owner cluster could not be reached."),
+        (status = 404, description = "No such cluster."),
+    ),
+)]
 pub async fn post_cluster_jobs(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(cluster_id): axum::extract::Path<String>,

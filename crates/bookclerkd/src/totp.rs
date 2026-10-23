@@ -3,13 +3,14 @@
 //! Secrets are sealed in `encrypted_secrets` (`kind=totp`, `account_type=user`).
 //! Passkey sign-in is a separate second factor and does not require TOTP.
 
+use crate::openapi::{Access, RouteGroup};
 use std::sync::Arc;
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
-use axum::{Json, Router};
+use axum::Json;
 use bookclerk_library::{
     build_sealed_record, get_secret, secret_account_type, secret_kind, unseal_secret,
     upsert_secret, LibraryStore,
@@ -36,27 +37,24 @@ const TOTP_PRIMARY: &str = "primary";
 /// WebAuthn-challenge kind used between password login and TOTP verify.
 const TOTP_LOGIN_KIND: &str = "totp_login";
 
-/// TOTP HTTP routes (enroll is session-authenticated; login is public).
-pub fn router(state: Arc<AppState>) -> Router {
-    let public = Router::new()
-        .route("/api/auth/totp/login", post(login_verify))
-        .with_state(state.clone());
-    let policy = Router::new()
-        .route(
-            "/api/auth/mfa-policy",
-            get(get_mfa_policy).put(put_mfa_policy),
-        )
-        .route_layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            crate::auth::require_operator_or_owner_auth,
-        ))
-        .with_state(state.clone());
-    let enrolled = Router::new()
-        .route("/api/auth/totp/enroll/begin", post(enroll_begin))
-        .route("/api/auth/totp/enroll/finish", post(enroll_finish))
-        .route("/api/auth/totp", delete(disable_totp).get(totp_status))
-        .with_state(state);
-    public.merge(policy).merge(enrolled)
+/// TOTP HTTP routes: login is public, enrollment resolves the caller's
+/// session in its handlers, and the MFA policy needs the operator or an
+/// Owner.
+///
+/// # Returns
+///
+/// The login and enrollment group, then the policy group.
+pub(crate) fn route_groups() -> Vec<RouteGroup> {
+    let public = OpenApiRouter::new()
+        .routes(routes!(login_verify))
+        .routes(routes!(enroll_begin))
+        .routes(routes!(enroll_finish))
+        .routes(routes!(disable_totp, totp_status));
+    let policy = OpenApiRouter::new().routes(routes!(get_mfa_policy, put_mfa_policy));
+    vec![
+        RouteGroup::new(public, Access::Public),
+        RouteGroup::new(policy, Access::OperatorOrOwner),
+    ]
 }
 
 /// JSON error body for TOTP / MFA-policy handlers.
@@ -316,8 +314,9 @@ pub(crate) async fn after_password_verified(
     Ok(None)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Optional current password for enroll/disable step-up.
+#[schema(as = TotpReauthBody)]
 struct ReauthBody {
     #[serde(default)]
     /// Password used for recent-reauth when the user already has a credential.
@@ -325,6 +324,15 @@ struct ReauthBody {
 }
 
 /// GET `/api/auth/totp` — whether TOTP is confirmed for this user.
+#[utoipa::path(
+    get,
+    path = "/api/auth/totp",
+    responses(
+        (status = 200, description = "Whether TOTP is on for the caller.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+    ),
+)]
 async fn totp_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -334,6 +342,16 @@ async fn totp_status(
 }
 
 /// Starts TOTP enrollment: new pending secret, otpauth URL, and QR SVG.
+#[utoipa::path(
+    post,
+    path = "/api/auth/totp/enroll/begin",
+    request_body = ReauthBody,
+    responses(
+        (status = 200, description = "A pending secret, its otpauth URL and a QR code SVG.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+    ),
+)]
 async fn enroll_begin(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -362,7 +380,7 @@ async fn enroll_begin(
     })))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// First TOTP code that confirms the pending secret.
 struct EnrollFinish {
     /// Six-digit code from the authenticator app.
@@ -370,6 +388,17 @@ struct EnrollFinish {
 }
 
 /// Confirms the pending secret with a valid code and sets `users.totp_enabled`.
+#[utoipa::path(
+    post,
+    path = "/api/auth/totp/enroll/finish",
+    request_body = EnrollFinish,
+    responses(
+        (status = 200, description = "TOTP is on.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+        (status = 400, description = "The code is wrong."),
+    ),
+)]
 async fn enroll_finish(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -404,6 +433,16 @@ async fn enroll_finish(
 }
 
 /// Disables TOTP after recent reauth and deletes sealed secrets.
+#[utoipa::path(
+    delete,
+    path = "/api/auth/totp",
+    request_body = ReauthBody,
+    responses(
+        (status = 200, description = "TOTP is off.", body = serde_json::Value),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this."),
+    ),
+)]
 async fn disable_totp(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -423,7 +462,7 @@ async fn disable_totp(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// TOTP code plus the challenge id from password login.
 struct LoginVerify {
     /// Server-issued challenge id (5-minute TTL, single use).
@@ -433,6 +472,16 @@ struct LoginVerify {
 }
 
 /// Completes password+TOTP login and issues a portal session cookie.
+#[utoipa::path(
+    post,
+    path = "/api/auth/totp/login",
+    request_body = LoginVerify,
+    responses(
+        (status = 200, description = "Signed in; the response sets the portal session cookie.", body = serde_json::Value),
+        (status = 401, description = "The challenge or code is wrong."),
+        (status = 429, description = "Too many attempts; try later."),
+    ),
+)]
 async fn login_verify(
     State(state): State<Arc<AppState>>,
     ClientIp(client_key): ClientIp,
@@ -507,12 +556,19 @@ pub(crate) fn current_test_code(secret_b32: &str) -> String {
 }
 
 /// Current MFA policy (`require_second_factor`).
+#[utoipa::path(
+    get,
+    path = "/api/auth/mfa-policy",
+    responses(
+        (status = 200, description = "Whether a second factor is required.", body = serde_json::Value),
+    ),
+)]
 async fn get_mfa_policy(State(state): State<Arc<AppState>>) -> Json<Value> {
     let required = require_second_factor(&state).await;
     Json(serde_json::json!({ "require_second_factor": required }))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// PUT body for the host-wide second-factor policy.
 struct MfaPolicyPut {
     /// When true, password login requires TOTP or the user must use a passkey.
@@ -523,6 +579,16 @@ struct MfaPolicyPut {
 }
 
 /// Persists `daemon.auth.require_second_factor` to `config.toml`.
+#[utoipa::path(
+    put,
+    path = "/api/auth/mfa-policy",
+    request_body = MfaPolicyPut,
+    responses(
+        (status = 200, description = "The policy after the change.", body = serde_json::Value),
+        (status = 400, description = "The body is invalid."),
+        (status = 500, description = "The configuration could not be read or written."),
+    ),
+)]
 async fn put_mfa_policy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

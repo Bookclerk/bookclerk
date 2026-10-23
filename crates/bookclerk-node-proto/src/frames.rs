@@ -824,7 +824,7 @@ impl UploadFile {
 }
 
 /// Body of `POST <UPLOADS_PATH><upload_id>/commit`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UploadCommitRequest {
     /// Complete the job with this commit (the job's closing upload).

@@ -459,7 +459,7 @@ async fn oidc_authorize_hands_branch_requests_to_the_consent_page() {
     let _dek = crate::auth::tests::process_dek_lock().await;
     let files = tempfile::tempdir().unwrap();
     let (state, _store, member) = owner(&files).await;
-    let app = crate::oidc::router(Arc::clone(&state));
+    let app = crate::api::router(Arc::clone(&state), None);
     let v = verifier('a');
 
     // The token endpoint never takes (or burns) a branch code.
