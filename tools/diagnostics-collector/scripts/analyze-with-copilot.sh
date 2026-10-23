@@ -184,7 +184,7 @@ if plan is None or not isinstance(plan["issues"], list):
 def defang(s: str) -> str:
     # Break @user / @org/team mentions, #123 / owner/repo#123 / GH-123
     # references and links to other issues or pull requests.
-    s = re.sub(r"https?://github\.com/\S*", "[link removed]", s)
+    s = re.sub(r"(?i)https?://(?:[a-z0-9-]+\.)*github\.com\S*", "[link removed]", s)
     s = re.sub(r"@(?=[A-Za-z0-9])", "@\u200b", s)
     s = re.sub(r"(?i)\bGH-(?=\d)", "GH-\u200b", s)
     return re.sub(r"#(?=\d)", "#\u200b", s)
@@ -220,6 +220,11 @@ for issue in plan["issues"][:5]:
         + "".join(f"- `{i}`\n" for i in ids),
     )
     n += 1
+
+# An empty plan is a decision; a non-empty one with nothing valid is a bad
+# reply, so let the fallback issue track the batch.
+if plan["issues"] and n == 0:
+    sys.exit("plan has no valid issues")
 PY
   then
     planned=$(find "$ISSUES_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)
