@@ -3,8 +3,9 @@
 Deployed by **GitHub Actions** ([wrangler-action](https://github.com/cloudflare/wrangler-action)):
 [`.github/workflows/diagnostics-collector-deploy.yml`](../../.github/workflows/diagnostics-collector-deploy.yml).
 
-After deploy, `https://diagnostics.<DOMAIN>` is stored in repository variable
-**`DIAGNOSTICS_COLLECTOR_BASE_URL`**.
+The Worker is served on `https://diagnostics.<DOMAIN>` (organization variable
+`DOMAIN`, default `bookclerk.app`). The ingest workflow and CI release builds
+derive the URL from the same variable, so the deploy writes nothing back.
 
 | Method | Path | Who | Auth |
 |--------|------|-----|------|
@@ -42,8 +43,8 @@ key within that timestamp) so a truncated batch cannot skip same-ms siblings.
 
 ### Workflow token permissions
 
-Deploy uses `actions-variables: write` (not broad `actions: write`) so
-`GITHUB_TOKEN` can set `DIAGNOSTICS_COLLECTOR_BASE_URL`. Ingest uses
+Deploy needs only `contents: read`; after `wrangler deploy` it checks `/health`
+on the custom domain. Ingest uses
 `copilot-requests: write` + `issues: write` per
 [gh-aw Copilot auth guidance](https://github.com/github/gh-aw).
 
@@ -69,6 +70,6 @@ Override anytime with `collector_url` or runtime `BOOKCLERK_DIAGNOSTICS_COLLECTO
 ## Ingest
 
 [`.github/workflows/diagnostics-ingest.yml`](../../.github/workflows/diagnostics-ingest.yml) reads
-`DIAGNOSTICS_COLLECTOR_BASE_URL`.
+`https://diagnostics.<DOMAIN>`.
 
 See [`docs/diagnostics.md`](../../docs/diagnostics.md).

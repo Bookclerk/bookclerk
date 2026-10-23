@@ -14,9 +14,9 @@
 #
 # Organization variable DOMAIN (default bookclerk.app): the Worker is
 # served on the custom domain diagnostics.<DOMAIN>, whose zone must be in
-# the Cloudflare account. On success, stores https://diagnostics.<DOMAIN>
-# in repository variable DIAGNOSTICS_COLLECTOR_BASE_URL (ingest workflow + CI
-# release builds).
+# the Cloudflare account. Nothing is written back: the ingest workflow and CI
+# release builds derive https://diagnostics.<DOMAIN> from the same variable,
+# because GITHUB_TOKEN cannot write repository variables.
 #
 # https://github.com/cloudflare/wrangler-action
 # GITHUB_TOKEN permission keys:
@@ -33,10 +33,8 @@ on:
 
 # Least privilege for GITHUB_TOKEN:
 #   contents → checkout
-#   actions → `gh variable set DIAGNOSTICS_COLLECTOR_BASE_URL` (Actions variables API)
 permissions:
   contents: read
-  actions: write
 
 concurrency:
   group: diagnostics-collector-deploy
@@ -113,11 +111,19 @@ jobs:
           B2_BUCKET_ID: ${{ secrets.DIAGNOSTICS_B2_BUCKET_ID }}
           REPORT_API_KEY: ${{ secrets.DIAGNOSTICS_REPORT_API_KEY }}
 
-      - name: Set collector URL repository variable
+      - name: Check the collector answers on its domain
         env:
           URL: ${{ steps.route.outputs.url }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          echo "Collector URL: $URL"
-          gh variable set DIAGNOSTICS_COLLECTOR_BASE_URL --body "$URL"
+          # A new custom domain can take a moment to get its certificate.
+          for attempt in 1 2 3 4 5 6; do
+            if body=$(curl -fsS --max-time 10 "$URL/health"); then
+              echo "Collector URL: $URL"
+              echo "$body"
+              exit 0
+            fi
+            sleep $((attempt * 10))
+          done
+          echo "::error::$URL/health did not answer after deploy"
+          exit 1

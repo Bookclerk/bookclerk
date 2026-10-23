@@ -528,9 +528,11 @@ jobs:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' && !inputs.private-head }}
 
+      # The collector lives on diagnostics.<DOMAIN>
+      # (.github/workflows/diagnostics-collector-deploy.yml).
       - name: Build release binaries
         env:
-          BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL: ${{ vars.DIAGNOSTICS_COLLECTOR_BASE_URL }}
+          BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL: https://diagnostics.${{ vars.DOMAIN || 'bookclerk.app' }}
         run: python3 scripts/ci-exec.py run release
 
   confinement:
