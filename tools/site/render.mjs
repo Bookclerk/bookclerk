@@ -556,3 +556,65 @@ export function renderDocPage(shell, source, key, at) {
   );
   return { html, markdown: doc.markdown };
 }
+
+/** GitHub URL of the docs repository the Worker reads; readers are sent there when it cannot. */
+export const DOCS_REPOSITORY_URL = "https://github.com/Bookclerk/bookclerk-docs";
+
+/**
+ * Renders the page shown when a doc cannot be read from the docs repository.
+ *
+ * The page keeps the site's header and the version picker but leaves out the
+ * sidebar, whose links would fail the same way (and on a phone would push the
+ * message below the fold). It says the docs are unavailable for now and links
+ * to the same doc on GitHub so the reader is not stuck.
+ *
+ * @param {DocsShell} shell The baked page shell.
+ * @param {string} key The doc's most likely key (path without `.md`).
+ * @param {{ref: string, base: string}} at The docs version: its ref and its
+ *   URL prefix.
+ * @returns {{html: string, markdown: string}} The full HTML page and its
+ *   Markdown version.
+ */
+export function renderUnavailablePage(shell, key, at) {
+  const github = `${DOCS_REPOSITORY_URL}/blob/${at.ref}/${key}.md`;
+  const all = `${DOCS_REPOSITORY_URL}/tree/${at.ref}`;
+  const body = [
+    '<span class="eyebrow">Temporarily off the shelf</span>',
+    "<h1>The docs could not be loaded</h1>",
+    '<p class="muted">The site reads its documentation from GitHub, and that did not work just now. Try again in a minute, or read this page on GitHub in the meantime.</p>',
+    '<p class="btn-row">',
+    `<a class="btn btn-primary" href="${escapeHtml(github)}">Read this page on GitHub</a>`,
+    `<a class="btn btn-secondary" href="${escapeHtml(docUrl(key, at.base))}">Try again</a>`,
+    "</p>",
+    `<p class="muted">You can also <a href="${escapeHtml(all)}">browse all the docs on GitHub</a>.</p>`,
+  ].join("\n");
+  const html = fillShell(
+    shell.html,
+    {
+      pageTitle: "Docs unavailable · Bookclerk docs",
+      pageDescription: "The Bookclerk documentation could not be loaded right now.",
+      pagePath: docUrl(key, at.base),
+      markdownUrl: docMarkdownUrl(key, at.base),
+      docsBase: at.base,
+    },
+    {
+      jsonld: "",
+      "doc-versions": versionsHtml(shell.versions, at.ref, key),
+      "doc-nav": "",
+      "doc-note": "",
+      "doc-body": body,
+      "doc-footer": "",
+    },
+  );
+  const markdown = [
+    "# The docs could not be loaded",
+    "",
+    "The site reads its documentation from GitHub, and that did not work just now. Try again in a minute.",
+    "",
+    `Read this page on GitHub: <${github}>`,
+    "",
+    `Browse all the docs on GitHub: <${all}>`,
+    "",
+  ].join("\n");
+  return { html, markdown };
+}

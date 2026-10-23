@@ -60,6 +60,22 @@ const fetched = [];
 const REFS = new Set(["main", "v0.1.0", "v0.2.0"]);
 
 /**
+ * Fails as the Workers runtime does on fetch options it does not support.
+ *
+ * Node's fetch accepts `redirect: "error"`, but the Workers runtime throws a
+ * TypeError for anything other than "follow" or "manual", so a stand-in that
+ * accepted it would hide a Worker that fails on every docs request.
+ *
+ * @param {RequestInit} init Fetch options.
+ * @throws {TypeError} When `redirect` is not "follow" or "manual".
+ */
+function assertWorkersFetchInit(init) {
+  if (init.redirect !== undefined && init.redirect !== "follow" && init.redirect !== "manual") {
+    throw new TypeError(`Invalid redirect value ${init.redirect}`);
+  }
+}
+
+/**
  * Serves the repository's docs/ as raw.githubusercontent.com serves the docs
  * repository.
  *
@@ -69,7 +85,7 @@ const REFS = new Set(["main", "v0.1.0", "v0.2.0"]);
  */
 async function docsFetch(url, init) {
   fetched.push(url);
-  assert.equal(init.redirect, "error");
+  assertWorkersFetchInit(init);
   assert.ok(url.startsWith(DOCS_RAW_BASE), url);
   const [ref, ...rest] = url.slice(DOCS_RAW_BASE.length).split("/");
   const file = rest.join("/");
@@ -354,13 +370,44 @@ test("a failing or oversized docs repository answer is a 503, not a page", async
         },
       }),
     );
-  for (const fetcher of [down, big, endless, async () => Promise.reject(new Error("network"))]) {
+  const moved = async (url, init) => {
+    assertWorkersFetchInit(init);
+    return new Response(null, { status: 302, headers: { Location: "https://example.com/" } });
+  };
+  for (const fetcher of [down, big, endless, moved, async () => Promise.reject(new Error("network"))]) {
     const req = new Request("https://bookclerk.app/docs/plugins", { headers: { Accept: BROWSER } });
     const res = await handle(req, env, { shell, fetch: fetcher });
     assert.equal(res.status, 503);
     assert.equal(res.headers.get("Cache-Control"), "no-store");
   }
   assert.ok(sent <= MAX_DOC_BYTES + 2 * chunk.byteLength, `read ${sent} bytes`);
+});
+
+test("the docs-unavailable page keeps the site's look and links to the doc on GitHub", async () => {
+  const down = async () => new Response("oops", { status: 502 });
+  const page = await handle(new Request("https://bookclerk.app/docs/plugins", { headers: { Accept: BROWSER } }), env, { shell, fetch: down });
+  assert.equal(page.status, 503);
+  assert.equal(page.headers.get("Content-Type"), "text/html; charset=utf-8");
+  assert.equal(page.headers.get("Retry-After"), "60");
+  assert.equal(page.headers.get("X-Robots-Tag"), "noindex");
+  assert.equal(page.headers.get("Content-Security-Policy"), SECURITY_HEADERS["Content-Security-Policy"]);
+  const html = await page.text();
+  assert.match(html, /<link rel="stylesheet" href="\/site\.css/);
+  assert.match(html, /class="docs-nav"/);
+  assert.doesNotMatch(html, /<h2>Using Bookclerk<\/h2>/, "no sidebar links that would fail too");
+  assert.match(html, /<h1>The docs could not be loaded<\/h1>/);
+  assert.ok(html.includes('href="https://github.com/Bookclerk/bookclerk-docs/blob/v0.2.0/plugins.md"'), "links the doc on GitHub");
+  assert.ok(html.includes('href="https://github.com/Bookclerk/bookclerk-docs/tree/v0.2.0"'), "links every doc on GitHub");
+
+  // A directory names its README; Markdown readers get the same links.
+  const md = await handle(new Request("https://bookclerk.app/docs/api/", { headers: { Accept: "text/markdown" } }), env, { shell, fetch: down });
+  assert.equal(md.status, 503);
+  assert.equal(md.headers.get("Content-Type"), "text/markdown; charset=utf-8");
+  assert.match(await md.text(), /<https:\/\/github\.com\/Bookclerk\/bookclerk-docs\/blob\/v0\.2\.0\/api\/README\.md>/);
+
+  const head = await handle(new Request("https://bookclerk.app/docs/plugins", { method: "HEAD" }), env, { shell, fetch: down });
+  assert.equal(head.status, 503);
+  assert.equal(await head.text(), "");
 });
 
 test("rendered pages are cached per deploy, version, path and format", async () => {

@@ -84,9 +84,13 @@ versions.
   without a README goes to `<dir>/index` (rustdoc's crate pages).
 - Only refs in the version list and paths of plain segments (letters,
   digits, `.`, `_`, `-`, none starting with `.`) are fetched, from
-  `raw.githubusercontent.com` with redirects refused. Files over 4 MB are
-  refused (also when the body has no length and runs past it), and a failing
-  fetch is a 503, never a partial page.
+  `raw.githubusercontent.com` with redirects refused (`redirect: "manual"`
+  and any 3xx is an error; the Workers runtime throws on
+  `redirect: "error"`). Files over 4 MB are refused (also when the body has
+  no length and runs past it), and a failing fetch is a 503, never a partial
+  page: the "docs could not be loaded" page in the site's look (Markdown for
+  Markdown readers), linking to the same doc in the docs repository on
+  GitHub, with `Retry-After: 60`, `no-store` and `noindex`.
 - Each page is rendered into the shell `build.mjs` bakes from `src/doc.html`
   (`%%name%%` holes take escaped values, `<!--name-->` markers take the
   rendered parts). Links between docs stay in the same version, links to
