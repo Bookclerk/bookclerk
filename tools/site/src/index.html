@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+{{> head}}
+</head>
+<body>
+{{> ribbon}}
+{{> header}}
+<main id="main">
+
+<section class="wrap hero">
+  <div class="hero-copy">
+    <span class="eyebrow">Your audiobooks, in one library you own</span>
+    <h1>Every purchase, properly placed.</h1>
+    <p class="lede muted">Bookclerk gathers the audiobooks you have bought from Audible, Libro.fm, Chirp and GraphicAudio into one catalog on your own computer, keeps copies you control, and shelves them where your player already looks.</p>
+    <div class="btn-row">
+      {{#prerelease}}<a class="btn btn-primary" href="/download">Try the preview</a>{{/prerelease}}
+      {{#released}}<a class="btn btn-primary" href="/download">Download {{releaseTag}}</a>{{/released}}
+      <a class="btn btn-secondary" href="#how">See how it works</a>
+    </div>
+    <p class="faint">Free and open source. Runs on Linux, macOS and Windows.</p>
+  </div>
+  <div class="hero-art" aria-hidden="true">
+    <div class="back"></div>
+    <div class="mid"></div>
+    <div class="catalog-card">
+      <div class="card-title"><strong>Middlemarch</strong><span class="faint">No. 0412</span></div>
+      <dl>
+        <dt>Author</dt><dd>George Eliot</dd>
+        <dt>Narrator</dt><dd>Juliet Stevenson</dd>
+        <dt>Length</dt><dd>35 h 47 min, 86 chapters</dd>
+        <dt>Bought</dt><dd>Libro.fm, Audible</dd>
+        <dt>Shelved</dt><dd>/audiobooks/Eliot/Middlemarch</dd>
+      </dl>
+      <span class="stamp">ACQUIRED</span>
+    </div>
+  </div>
+</section>
+
+<section class="stores tinted" aria-label="Supported stores">
+  <div class="wrap">
+    <span class="muted">Works with the stores you already use</span>
+    <ul>
+      <li>Audible</li><li>Libro.fm</li><li>Chirp</li><li>GraphicAudio</li>
+      <li class="more muted">and more through plugins</li>
+    </ul>
+  </div>
+</section>
+
+<section id="how" class="wrap section">
+  <div class="section-head">
+    <span class="eyebrow">How it works</span>
+    <h2>Three steps from store to shelf</h2>
+  </div>
+  <ol class="cards3" style="list-style:none;margin:0;padding:0">
+    <li class="step">
+      <span class="num">Step 1</span>
+      <h3>Connect your stores</h3>
+      <p class="muted">Sign in to each store once from the Accounts page. Your sign-ins are encrypted and stay on your machine.</p>
+    </li>
+    <li class="step">
+      <span class="num">Step 2</span>
+      <h3>Bookclerk catalogs it all</h3>
+      <p class="muted">Every title you own lands in one searchable library, whichever store you bought it from.</p>
+    </li>
+    <li class="step">
+      <span class="num">Step 3</span>
+      <h3>Your copies, where you want them</h3>
+      <p class="muted">Pick a book or let Bookclerk keep up. Files are named, tagged and split into chapters, then saved to a folder or to cloud storage.</p>
+    </li>
+  </ol>
+</section>
+
+<section id="features" class="tinted">
+  <div class="wrap section">
+    <div class="section-head">
+      <span class="eyebrow">What you get</span>
+      <h2>A clerk for the books you already paid for</h2>
+    </div>
+    <div class="cards3">
+      <div class="feature">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5V5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2"/><path d="M9 7h6"/></svg>
+        <h3>One library for every store</h3>
+        <p class="muted">Search, tag and rate across all your purchases instead of hopping between apps.</p>
+      </div>
+      <div class="feature">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+        <h3>Copies you keep</h3>
+        <p class="muted">Chapters, covers, PDFs and clean metadata. Keep the original format or convert to MP3.</p>
+      </div>
+      <div class="feature">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1v-6h3z"/><path d="M3 19a2 2 0 0 0 2 2h1v-6H3z"/></svg>
+        <h3>Plays where you listen</h3>
+        <p class="muted">Tells Audiobookshelf when new books arrive, so they appear in your player without a manual rescan.</p>
+      </div>
+      <div class="feature">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8"/><path d="M12 16v4"/></svg>
+        <h3>Runs on your hardware</h3>
+        <p class="muted">A laptop, a home server or a NAS. Use it from the browser, or script it from the command line.</p>
+      </div>
+      <div class="feature">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7"/><path d="M18.5 14a6.5 6.5 0 0 1 3 6"/></svg>
+        <h3>Shared with your household</h3>
+        <p class="muted">Family members get their own sign-in. Owners decide who can add stores and who can only browse.</p>
+      </div>
+      <div class="feature">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8.2-8 9-4.6-.8-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>
+        <h3>Private by design</h3>
+        <p class="muted">No Bookclerk account to create. Add-ons run sealed off from your files and reach only the sites you approve.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="tour" class="wrap section">
+  <div class="section-head">
+    <span class="eyebrow">Take a look</span>
+    <h2>The library, in your browser</h2>
+  </div>
+  <figure>
+    <div class="window" aria-hidden="true">
+      <div class="window-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="url faint">localhost:8787/library</span></div>
+      <div class="window-body">
+        <div class="window-nav">
+          <img src="/bookclerk-mark.svg" alt="">
+          <span class="active">Library</span><span>Discover</span><span>Wishlist</span><span>Accounts</span><span>Settings</span>
+        </div>
+        <div class="window-main">
+          <div class="top"><strong>Library</strong><span class="search faint">Search your books</span></div>
+          <div class="book-row"><span class="cover" style="background:#3d7f7a"></span><span class="meta"><strong>Middlemarch</strong><span class="muted">George Eliot · Libro.fm</span></span><span class="badge status-acquired">acquired</span></div>
+          <div class="book-row"><span class="cover" style="background:#c84a34"></span><span class="meta"><strong>The Count of Monte Cristo</strong><span class="muted">Alexandre Dumas · Audible</span></span><span class="badge status-acquired">acquired</span></div>
+          <div class="book-row"><span class="cover" style="background:#1a4a6b"></span><span class="meta"><strong>The Time Machine</strong><span class="muted">H. G. Wells · Chirp</span></span><span class="badge status-queued">queued</span></div>
+          <div class="book-row"><span class="cover" style="background:#e7d3ac"></span><span class="meta"><strong>The War of the Worlds</strong><span class="muted">H. G. Wells · GraphicAudio</span></span><span class="badge status-downloading">downloading</span></div>
+          <div class="book-row"><span class="cover" style="background:#0b3553"></span><span class="meta"><strong>Persuasion</strong><span class="muted">Jane Austen · Audible</span></span><span class="badge status-none">not acquired</span></div>
+        </div>
+      </div>
+    </div>
+    <figcaption class="faint">An illustration of the library screen. Screenshots of each release will replace it.</figcaption>
+  </figure>
+</section>
+
+<section class="band" aria-labelledby="dev-title">
+  <div class="wrap">
+    <div class="copy">
+      <span class="eyebrow">For developers</span>
+      <h2 id="dev-title">Add a store, a destination or an integration</h2>
+      <p>Plugins are written in TypeScript, Python or Rust against a Workers-style API, and each one runs in its own sandbox with only the access it declares. The docs cover the architecture, the plugin SDKs and the HTTP API.</p>
+      <div class="btn-row">
+        <a class="btn btn-light" href="{{docsUrl}}">Read the docs</a>
+        <a class="btn btn-outline" href="{{repo}}">View on GitHub</a>
+      </div>
+    </div>
+<pre><code><span class="comment"># build and run the development version</span>
+git clone {{repo}}
+cd bookclerk
+cargo dev
+
+<span class="comment"># check a plugin before you publish it</span>
+cargo plugin -- check ./my-plugin</code></pre>
+  </div>
+</section>
+
+<section class="wrap section faq" aria-labelledby="faq-title">
+  <div class="section-head">
+    <span class="eyebrow">Questions</span>
+    <h2 id="faq-title">Before you start</h2>
+  </div>
+  <div class="faq-list">
+    <details open>
+      <summary>Can I use Bookclerk today?</summary>
+      {{#prerelease}}<p class="muted">You can try the development version, but there is no stable release yet. Settings and the library format may change between updates, and an update can mean starting your library over.</p>{{/prerelease}}
+      {{#released}}<p class="muted">Yes. {{releaseTag}} is the current release. Download it from the <a href="/download">download page</a>.</p>{{/released}}
+    </details>
+    <details>
+      <summary>Which stores are supported?</summary>
+      <p class="muted">Audible, Libro.fm, Chirp and GraphicAudio. You can turn each one on or off, and plugins can add more.</p>
+    </details>
+    <details>
+      <summary>Do I need a server?</summary>
+      <p class="muted">No. Bookclerk runs on an ordinary computer and you use it from your browser. A home server or NAS lets it keep working while your computer is off.</p>
+    </details>
+    <details>
+      <summary>Is my store password safe?</summary>
+      <p class="muted">Your store sign-ins are encrypted and stored in your own library on your own machine. Bookclerk sends them only to the store they belong to, and you can protect the encryption key with a password of your own.</p>
+    </details>
+    <details>
+      <summary>What can I do with the files?</summary>
+      <p class="muted">Keep them as personal copies of books you bought and listen on your own devices. Please do not share them, and check the store's terms and the laws where you live.</p>
+    </details>
+    <details>
+      <summary>What does Bookclerk cost?</summary>
+      <p class="muted">Nothing. Bookclerk is free software under the GPL. You still buy your books from the stores.</p>
+    </details>
+  </div>
+</section>
+
+</main>
+{{> footer}}
+</body>
+</html>

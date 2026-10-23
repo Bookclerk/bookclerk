@@ -1,0 +1,22 @@
+# Cloudflare Worker for the bookclerk.app website, deployed by GitHub Actions
+# (.github/workflows/site-deploy.yml). The name is fixed: the deploy token is
+# scoped to this Worker by name, so renaming it needs a new token scope.
+name = "bookclerk-site"
+compatibility_date = "2026-01-01"
+# Served only on the custom domain <DOMAIN>; the deploy workflow adds that
+# route from the DOMAIN organization variable.
+workers_dev = false
+
+# worker.js runs first for page paths only, to answer `Accept: text/markdown`
+# with each page's Markdown version; everything else (styles, images, the
+# .md and .txt files under other paths) is served from dist/ without it.
+main = "worker.js"
+
+# `npm run build` writes dist/. /download serves download.html, and unknown
+# paths get 404.html with a 404 status.
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+html_handling = "auto-trailing-slash"
+not_found_handling = "404-page"
+run_worker_first = ["/", "/index.html", "/index.md", "/download", "/download.html", "/download.md", "/404.md", "/docs/*"]

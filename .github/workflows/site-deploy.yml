@@ -1,0 +1,165 @@
+# Build and deploy the bookclerk.app website (tools/site) as the Cloudflare
+# Worker `bookclerk-site` (static assets plus a small script that serves
+# Markdown to `Accept: text/markdown` requests) via wrangler-action.
+#
+# Runs when the site, the docs or the brand assets change on main, when a
+# release is published (the site shows the newest release and drops its
+# pre-release notices), and by hand. The site renders docs/ as /docs/: from
+# main until the first release, then from the newest release tag.
+#
+# GitHub repository secrets:
+#   CLOUDFLARE_API_TOKEN   scoped to the Worker `bookclerk-site` (Workers
+#                          Scripts edit) and the DOMAIN zone (Workers Routes
+#                          edit, for the custom domain)
+#   CLOUDFLARE_ACCOUNT_ID
+#
+# Organization variable DOMAIN (default bookclerk.app): the Worker is served on
+# the custom domain <DOMAIN>, whose zone must be in the Cloudflare account.
+#
+# https://github.com/cloudflare/wrangler-action
+# GITHUB_TOKEN permission keys:
+# https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication#permissions-for-the-github_token
+
+name: site-deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tools/site/**"
+      - "docs/**"
+      - "assets/brand/**"
+      - ".github/workflows/site-deploy.yml"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+# Least privilege for GITHUB_TOKEN:
+#   contents → checkout and reading the latest release
+permissions:
+  contents: read
+
+concurrency:
+  group: site-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/site
+    steps:
+      # A release builds the current site from main (the tag may predate it)
+      # and takes only the docs from the tag, below.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'release' && github.event.repository.default_branch || '' }}
+          persist-credentials: false
+
+      - name: Require deploy secrets
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          missing=0
+          for name in CF_TOKEN CF_ACCOUNT; do
+            eval "val=\${$name:-}"
+            if [ -z "$val" ]; then
+              echo "::error::Missing secret for $name (see workflow header)"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tools/site/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The newest published, non-prerelease release; none yet means the
+      # site renders its pre-release notices. build.mjs validates both values.
+      - name: Read release state
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # 404 means no release yet; any other failure stops the deploy
+          # rather than wrongly marking a released project as pre-release.
+          if json=$(gh api "repos/${REPO}/releases/latest" 2>gh-err.txt); then
+            tag=$(jq -r '.tag_name' <<<"$json")
+            date=$(jq -r '.published_at[0:10]' <<<"$json")
+          elif grep -q 'HTTP 404' gh-err.txt; then
+            tag=""
+            date=""
+          else
+            cat gh-err.txt >&2
+            exit 1
+          fi
+          # Same shape build.mjs enforces; checked here too because the next
+          # step passes the tag to git.
+          if [[ -n "$tag" && ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Unexpected release tag: $tag"
+            exit 1
+          fi
+          echo "Release: ${tag:-none}"
+          {
+            echo "tag=${tag}"
+            echo "date=${date}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Once a release exists the docs come from its tag, whatever commit the
+      # site itself is built from.
+      - name: Use the release's docs
+        if: steps.release.outputs.tag != ''
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          rm -rf ../../docs
+          git checkout "refs/tags/${TAG}" -- ../../docs
+
+      # After the docs swap, so the link check covers the docs deployed.
+      - name: Test the site generator
+        run: npm test
+
+      - name: Build the site
+        env:
+          SITE_RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          SITE_RELEASE_DATE: ${{ steps.release.outputs.date }}
+          SITE_ORIGIN: https://${{ vars.DOMAIN || 'bookclerk.app' }}
+        run: |
+          set -euo pipefail
+          # The checked-out commit: on a release that is main, not the tag.
+          SITE_COMMIT=$(git rev-parse HEAD)
+          export SITE_COMMIT
+          SITE_BUILT_ON=$(date -u +%F) npm run build
+
+      - name: Route the Worker to its custom domain
+        env:
+          DOMAIN: ${{ vars.DOMAIN || 'bookclerk.app' }}
+        run: |
+          set -euo pipefail
+          # [[ =~ ]] matches the whole value, so a trailing newline is rejected.
+          hostname_re='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
+          if [[ ! "$DOMAIN" =~ $hostname_re ]]; then
+            echo "::error::DOMAIN is not a lowercase hostname: $DOMAIN"
+            exit 1
+          fi
+          printf '\n[[routes]]\npattern = "%s"\ncustom_domain = true\n' "$DOMAIN" >> wrangler.toml
+          echo "Site URL: https://${DOMAIN}"
+
+      - name: Deploy Worker
+        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: tools/site
+          command: deploy

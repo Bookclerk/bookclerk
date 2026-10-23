@@ -1,0 +1,30 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>{{pageTitle}}</title>
+<meta name="description" content="{{pageDescription}}">
+{{#indexable}}<link rel="canonical" href="{{pageUrl}}">
+{{/indexable}}{{^indexable}}<meta name="robots" content="noindex">
+{{/indexable}}{{#prerelease}}<meta name="robots" content="noarchive">
+{{/prerelease}}<meta name="theme-color" content="#0B3553">
+<meta name="color-scheme" content="light dark">
+<meta property="og:site_name" content="Bookclerk">
+<meta property="og:type" content="{{pageType}}">
+<meta property="og:title" content="{{pageTitle}}">
+<meta property="og:description" content="{{pageDescription}}">
+<meta property="og:url" content="{{pageUrl}}">
+<meta property="og:locale" content="en_US">
+<meta property="og:image" content="{{socialImage}}">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Bookclerk: every purchase, properly placed. A library catalog card for an audiobook.">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+{{#markdown}}<link rel="alternate" type="text/markdown" href="{{markdownUrl}}" title="This page as Markdown">
+{{/markdown}}<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=Literata:opsz,wght@7..72,500;7..72,700&amp;family=Source+Sans+3:wght@400;600;700&amp;display=swap">
+<link rel="stylesheet" href="/site.css">
+<!--jsonld-->
