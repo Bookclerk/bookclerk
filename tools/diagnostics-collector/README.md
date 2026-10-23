@@ -3,9 +3,12 @@
 Deployed by **GitHub Actions** ([wrangler-action](https://github.com/cloudflare/wrangler-action)):
 [`.github/workflows/diagnostics-collector-deploy.yml`](../../.github/workflows/diagnostics-collector-deploy.yml).
 
-The Worker is served on `https://diagnostics.<DOMAIN>` (organization variable
-`DOMAIN`, default `bookclerk.app`). The ingest workflow and CI release builds
-derive the URL from the same variable, so the deploy writes nothing back.
+With the `DOMAIN` Actions variable set (`bookclerk.app` upstream) the Worker is
+served on `https://diagnostics.<DOMAIN>`, and the ingest workflow and CI release
+builds derive that URL from the same variable. Without `DOMAIN` (a fork using
+its own Cloudflare account) the deploy turns on workers.dev, reads the URL from
+the deploy output and stores it in repository variable
+**`DIAGNOSTICS_COLLECTOR_BASE_URL`**.
 
 | Method | Path | Who | Auth |
 |--------|------|-----|------|
@@ -43,8 +46,12 @@ key within that timestamp) so a truncated batch cannot skip same-ms siblings.
 
 ### Workflow token permissions
 
-Deploy needs only `contents: read`; after `wrangler deploy` it checks `/health`
-on the custom domain. Ingest uses
+Deploy's `GITHUB_TOKEN` needs only `contents: read`; after `wrangler deploy` it
+checks `/health`. `GITHUB_TOKEN` cannot write repository variables, so in
+workers.dev mode the URL is stored with an automation App token
+(`AUTOMATION_APP_CLIENT_ID` / `AUTOMATION_APP_PRIVATE_KEY`, App permission
+"Variables: write"); without those secrets the run prints the
+`gh variable set` command to run by hand. Ingest uses
 `copilot-requests: write` + `issues: write` per
 [gh-aw Copilot auth guidance](https://github.com/github/gh-aw).
 
@@ -70,6 +77,7 @@ Override anytime with `collector_url` or runtime `BOOKCLERK_DIAGNOSTICS_COLLECTO
 ## Ingest
 
 [`.github/workflows/diagnostics-ingest.yml`](../../.github/workflows/diagnostics-ingest.yml) reads
-`https://diagnostics.<DOMAIN>`.
+`https://diagnostics.<DOMAIN>`, or `DIAGNOSTICS_COLLECTOR_BASE_URL` when
+`DOMAIN` is unset.
 
 See [`docs/diagnostics.md`](../../docs/diagnostics.md).

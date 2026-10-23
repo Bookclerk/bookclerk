@@ -6,8 +6,9 @@
 #   DIAGNOSTICS_REPORT_API_KEY — Worker REPORT_API_KEY (set on deploy via wrangler-action)
 #
 # Worker deploy: .github/workflows/diagnostics-collector-deploy.yml
-# Collector URL: https://diagnostics.<DOMAIN>, from organization variable DOMAIN
-# (default bookclerk.app), the same domain the deploy routes the Worker to
+# Collector URL: https://diagnostics.<DOMAIN> when variable DOMAIN is set,
+# otherwise repository variable DIAGNOSTICS_COLLECTOR_BASE_URL (the
+# workers.dev URL the deploy stores)
 #
 # Copilot auth (aligned with GitHub Agentic Workflows guidance):
 #   Prefer permissions.copilot-requests: write + ${{ github.token }} (org billing).
@@ -61,16 +62,25 @@ jobs:
       - name: Resolve collector base URL
         id: collector
         env:
-          DOMAIN: ${{ vars.DOMAIN || 'bookclerk.app' }}
+          DOMAIN: ${{ vars.DOMAIN }}
+          STORED: ${{ vars.DIAGNOSTICS_COLLECTOR_BASE_URL }}
         run: |
           set -euo pipefail
-          # [[ =~ ]] matches the whole value, so a trailing newline is rejected.
-          hostname_re='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
-          if [[ ! "$DOMAIN" =~ $hostname_re ]]; then
-            echo "::error::DOMAIN is not a lowercase hostname: $DOMAIN"
-            exit 1
+          if [ -n "$DOMAIN" ]; then
+            # [[ =~ ]] matches the whole value, so a trailing newline is rejected.
+            hostname_re='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
+            if [[ ! "$DOMAIN" =~ $hostname_re ]]; then
+              echo "::error::DOMAIN is not a lowercase hostname: $DOMAIN"
+              exit 1
+            fi
+            BASE="https://diagnostics.${DOMAIN}"
+          else
+            BASE="${STORED%/}"
+            if [ -z "$BASE" ]; then
+              echo "::error::Set DOMAIN, or run diagnostics-collector-deploy to store DIAGNOSTICS_COLLECTOR_BASE_URL"
+              exit 1
+            fi
           fi
-          BASE="https://diagnostics.${DOMAIN}"
           echo "Using collector URL: $BASE"
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
 

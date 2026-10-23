@@ -4,7 +4,8 @@ name = "bookclerk-diagnostics"
 main = "worker.js"
 compatibility_date = "2026-01-01"
 # Served only on the custom domain `diagnostics.<DOMAIN>`; the deploy
-# workflow adds that route from the DOMAIN organization variable.
+# workflow adds that route from the DOMAIN variable, or turns workers_dev on
+# when DOMAIN is unset (forks without a domain).
 workers_dev = false
 
 [vars]
