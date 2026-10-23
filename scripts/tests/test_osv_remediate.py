@@ -265,6 +265,109 @@ class PlanTest(unittest.TestCase):
         self.assertTrue(osv.is_affected(merged, "crates.io", "rustls", V("0.23.45")))
         self.assertFalse(osv.is_affected(cve, "crates.io", "rustls", V("0.23.45")))
 
+    def test_alert_hints_come_from_rule_and_message_text(self) -> None:
+        raw = [
+            {
+                "rule": {
+                    "id": "CVE-2026-111943",
+                    "full_description": {"text": "unused"},
+                    "help": "Also published as: RUSTSEC-2026-0382, "
+                    "[RUSTSEC-2026-0381](https://osv.dev/RUSTSEC-2026-0381) "
+                    "and CVE-2026-111943",
+                },
+                "most_recent_instance": {
+                    "location": {"path": "Cargo.lock"},
+                    "message": {
+                        "text": "Package 'webpki-roots@1.0.9' is vulnerable to "
+                        "'CVE-2026-111943' (also known as 'RUSTSEC-2026-0381', "
+                        "'RUSTSEC-2026-0383', 'GHSA-xxxx-not-an-id')."
+                    },
+                },
+            }
+        ]
+        [alert] = osv.alerts_from_api(raw)
+        self.assertEqual(alert, osv.Alert("CVE-2026-111943", "Cargo.lock"))
+        self.assertEqual(
+            alert.hints,
+            ("RUSTSEC-2026-0382", "RUSTSEC-2026-0381", "RUSTSEC-2026-0383"),
+        )
+
+    def test_hints_of_duplicate_alerts_are_merged(self) -> None:
+        def item(message: str) -> dict[str, object]:
+            return {
+                "rule": {"id": "CVE-2026-111943"},
+                "most_recent_instance": {
+                    "location": {"path": "Cargo.lock"},
+                    "message": {"text": message},
+                },
+            }
+
+        [alert] = osv.alerts_from_api(
+            [item("also known as RUSTSEC-2026-0381"), item("RUSTSEC-2026-0382")]
+        )
+        self.assertEqual(alert.hints, ("RUSTSEC-2026-0381", "RUSTSEC-2026-0382"))
+
+    def test_hints_merge_across_alerts_on_one_advisory(self) -> None:
+        alerts = [
+            osv.Alert("CVE-1", "Cargo.lock", ("RUSTSEC-2026-0001",)),
+            osv.Alert("CVE-1", "fuzz/Cargo.lock", ("RUSTSEC-2026-0002",)),
+            osv.Alert("RUSTSEC-2026-0003", "Cargo.lock"),
+        ]
+        self.assertEqual(
+            osv.alert_hints_by_id(alerts),
+            {
+                "CVE-1": ("RUSTSEC-2026-0001", "RUSTSEC-2026-0002"),
+                "RUSTSEC-2026-0003": (),
+            },
+        )
+
+    def test_unknown_cve_rule_resolves_through_hints(self) -> None:
+        roots = _vuln(
+            "RUSTSEC-2026-0381",
+            "webpki-roots",
+            "crates.io",
+            [{"introduced": "1.0.0"}, {"fixed": "1.0.10"}],
+        )
+        roots["aliases"] = ["CVE-2026-111943"]
+        webpki = _vuln(
+            "RUSTSEC-2026-0382",
+            "rustls-webpki",
+            "crates.io",
+            [{"introduced": "0"}, {"fixed": "0.103.16"}],
+        )
+        known = {"RUSTSEC-2026-0381": roots, "RUSTSEC-2026-0382": webpki}
+        looked_up: list[str] = []
+
+        def fake_fetch(vuln_id: str) -> dict[str, object] | None:
+            looked_up.append(vuln_id)
+            return known.get(vuln_id)
+
+        original = osv.fetch_vuln
+        osv.fetch_vuln = fake_fetch
+        try:
+            merged = osv.fetch_vuln_with_aliases(
+                "CVE-2026-111943", ("RUSTSEC-2026-0381", "RUSTSEC-2026-0382")
+            )
+            nothing = osv.fetch_vuln_with_aliases("CVE-2026-1", ("CVE-2026-2",))
+        finally:
+            osv.fetch_vuln = original
+        assert merged is not None
+        self.assertEqual(merged["id"], "RUSTSEC-2026-0381")
+        self.assertIn("CVE-2026-111943", merged["aliases"])
+        self.assertIn("RUSTSEC-2026-0382", merged["aliases"])
+        self.assertTrue(
+            osv.is_affected(merged, "crates.io", "webpki-roots", V("1.0.9"))
+        )
+        self.assertTrue(
+            osv.is_affected(merged, "crates.io", "rustls-webpki", V("0.103.15"))
+        )
+        self.assertFalse(
+            osv.is_affected(merged, "crates.io", "rustls-webpki", V("0.103.16"))
+        )
+        self.assertIsNone(nothing)
+        # Each id is looked up once: the CVE alias is not fetched again.
+        self.assertEqual(looked_up.count("CVE-2026-111943"), 1)
+
     def test_plan_matches_only_affected_versions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()

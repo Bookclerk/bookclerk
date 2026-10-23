@@ -619,7 +619,10 @@ attributed to the App.
 
 `osv-remediate.yml` runs after every full OSV scan of `main` (push, schedule
 or manual run) and on demand. It reads the open OSV-Scanner alerts in
-Security → Code scanning, looks each advisory up on api.osv.dev, and
+Security → Code scanning, looks each advisory up on api.osv.dev (with its
+aliases; when OSV does not know an alert's rule id, for example a new CVE that
+OSV-Scanner chose to name a group of advisories, the other advisory ids in the
+alert's rule and message text stand in for it), and
 `scripts/osv-remediate.py` tries lockfile-only updates (`cargo update
 --precise`, then the newest compatible release; `npm update
 --package-lock-only --ignore-scripts`; `uv lock --no-build --upgrade-package
