@@ -292,6 +292,21 @@ class PlanTest(unittest.TestCase):
             ("RUSTSEC-2026-0382", "RUSTSEC-2026-0381", "RUSTSEC-2026-0383"),
         )
 
+    def test_hints_of_duplicate_alerts_are_merged(self) -> None:
+        def item(message: str) -> dict[str, object]:
+            return {
+                "rule": {"id": "CVE-2026-111943"},
+                "most_recent_instance": {
+                    "location": {"path": "Cargo.lock"},
+                    "message": {"text": message},
+                },
+            }
+
+        [alert] = osv.alerts_from_api(
+            [item("also known as RUSTSEC-2026-0381"), item("RUSTSEC-2026-0382")]
+        )
+        self.assertEqual(alert.hints, ("RUSTSEC-2026-0381", "RUSTSEC-2026-0382"))
+
     def test_hints_merge_across_alerts_on_one_advisory(self) -> None:
         alerts = [
             osv.Alert("CVE-1", "Cargo.lock", ("RUSTSEC-2026-0001",)),

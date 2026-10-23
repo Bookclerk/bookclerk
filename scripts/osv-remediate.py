@@ -245,10 +245,10 @@ def alerts_from_api(raw: list[dict[str, object]]) -> list[Alert]:
         raw: Alert objects as the code-scanning API returns them.
 
     Returns:
-        One alert per (advisory, lockfile) pair, skipping alerts with no rule
-        id or no location.
+        One alert per (advisory, lockfile) pair, carrying the hints of every
+        alert on that pair, skipping alerts with no rule id or no location.
     """
-    alerts: set[Alert] = set()
+    hints: dict[tuple[str, str], dict[str, None]] = {}
     for item in raw:
         rule = item.get("rule")
         instance = item.get("most_recent_instance")
@@ -258,13 +258,14 @@ def alerts_from_api(raw: list[dict[str, object]]) -> list[Alert]:
         vuln_id = rule.get("id")
         path = location.get("path") if isinstance(location, dict) else None
         if isinstance(vuln_id, str) and isinstance(path, str) and vuln_id and path:
-            alerts.add(
-                Alert(
-                    vuln_id,
-                    path.removeprefix("file://"),
-                    alert_hints(rule, instance),
-                )
-            )
+            # Alerts on one rule and lockfile can name different ids (one
+            # per affected package); keep every one.
+            key = (vuln_id, path.removeprefix("file://"))
+            hints.setdefault(key, {}).update(dict.fromkeys(alert_hints(rule, instance)))
+    alerts = [
+        Alert(vuln_id, lockfile, tuple(found)[:MAX_ALIASES])
+        for (vuln_id, lockfile), found in hints.items()
+    ]
     return sorted(alerts, key=lambda a: (a.lockfile, a.vuln_id))
 
 
