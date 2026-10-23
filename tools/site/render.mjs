@@ -181,7 +181,8 @@ export function rewriteLink(href, docKey, keys, blobBase, urlFor = docUrl) {
  * @param {string} blobBase See {@link rewriteLink}.
  * @param {(key: string) => string} urlFor Site URL of another doc's page.
  * @returns {MarkdownIt} A renderer with raw HTML off, GitHub-style heading
- *   ids, rewritten links and tables wrapped for horizontal scrolling.
+ *   ids, rewritten links, and code blocks and tables that keyboard users
+ *   can scroll sideways.
  */
 function renderer(docKey, keys, blobBase, urlFor) {
   const md = new MarkdownIt({ html: false, linkify: false, typographer: false });
@@ -203,7 +204,13 @@ function renderer(docKey, keys, blobBase, urlFor) {
     token.attrSet("href", rewriteLink(token.attrGet("href") ?? "", docKey, keys, blobBase, urlFor));
     return linkOpen(tokens, idx, options, env, self);
   };
-  md.renderer.rules.table_open = () => '<div class="table-scroll"><table>\n';
+  // Code blocks and wide tables scroll sideways on narrow screens; tabindex
+  // lets keyboard users scroll them too.
+  for (const rule of ["fence", "code_block"]) {
+    const base = md.renderer.rules[rule];
+    md.renderer.rules[rule] = (tokens, idx, options, env, self) => base(tokens, idx, options, env, self).replace(/^<pre/, '<pre tabindex="0"');
+  }
+  md.renderer.rules.table_open = () => '<div class="table-scroll" tabindex="0"><table>\n';
   md.renderer.rules.table_close = () => "</table></div>\n";
   return md;
 }
