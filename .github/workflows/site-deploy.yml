@@ -22,7 +22,9 @@ name: site-deploy
 
 on:
   push:
-    branches: [main]
+    # TEMPORARY: the PR branch, so the first deploy runs before merge (a new
+    # workflow cannot be dispatched until it is on main). Removed before ready.
+    branches: [main, claude/project-thread-p5aprn]
     paths:
       - "tools/site/**"
       - "assets/brand/**"
