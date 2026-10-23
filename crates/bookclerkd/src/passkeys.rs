@@ -171,7 +171,7 @@ async fn require_user(
 #[utoipa::path(
     get,
     path = "/api/auth/passkeys",
-    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
+    security(("portalSession" = [])),
     responses(
         (status = 200, description = "The caller's passkeys.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
@@ -215,7 +215,7 @@ struct ReauthBody {
     post,
     path = "/api/auth/passkeys/register/begin",
     request_body = ReauthBody,
-    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
+    security(("portalSession" = [])),
     responses(
         (status = 200, description = "WebAuthn creation options.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
@@ -302,7 +302,7 @@ struct CeremonyFinish {
     post,
     path = "/api/auth/passkeys/register/finish",
     request_body = CeremonyFinish,
-    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
+    security(("portalSession" = [])),
     responses(
         (status = 200, description = "The passkey was stored.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
@@ -358,7 +358,7 @@ async fn register_finish(
     path = "/api/auth/passkeys/{id}",
     params(("id" = i64, Path, description = "Passkey id.")),
     request_body = ReauthBody,
-    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
+    security(("portalSession" = [])),
     responses(
         (status = 200, description = "The passkey was deleted.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
@@ -562,7 +562,7 @@ async fn login_finish(
 #[utoipa::path(
     post,
     path = "/api/auth/passkeys/elevate/begin",
-    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
+    security(("portalSession" = [])),
     responses(
         (status = 200, description = "WebAuthn request options.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),
@@ -614,7 +614,7 @@ async fn elevate_begin(
     post,
     path = "/api/auth/passkeys/elevate/finish",
     request_body = CeremonyFinish,
-    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
+    security(("portalSession" = [])),
     responses(
         (status = 200, description = "Elevated; the response sets a short-lived operator cookie.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),

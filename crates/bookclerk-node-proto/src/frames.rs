@@ -836,7 +836,7 @@ pub struct UploadCommitRequest {
 }
 
 /// Answer of the upload endpoint (every status carries one).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct UploadAnswer {
     /// Stable outcome: `received`, `committed`, `lost`, `refused`,
     /// `misdirected`, `unauthorized`, `unavailable`.

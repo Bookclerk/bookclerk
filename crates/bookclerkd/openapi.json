@@ -10751,12 +10751,6 @@
         },
         "security": [
           {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
-          {
             "portalSession": []
           }
         ],
@@ -10811,12 +10805,6 @@
           }
         },
         "security": [
-          {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
           {
             "portalSession": []
           }
@@ -10882,12 +10870,6 @@
           }
         },
         "security": [
-          {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
           {
             "portalSession": []
           }
@@ -10965,12 +10947,6 @@
           }
         },
         "security": [
-          {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
           {
             "portalSession": []
           }
@@ -11109,12 +11085,6 @@
         },
         "security": [
           {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
-          {
             "portalSession": []
           }
         ],
@@ -11169,12 +11139,6 @@
           }
         },
         "security": [
-          {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
           {
             "portalSession": []
           }
@@ -11282,12 +11246,6 @@
         },
         "security": [
           {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
-          {
             "portalSession": []
           }
         ],
@@ -11353,12 +11311,6 @@
         },
         "security": [
           {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
-          {
             "portalSession": []
           }
         ],
@@ -11403,12 +11355,6 @@
           }
         },
         "security": [
-          {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
           {
             "portalSession": []
           }
@@ -11462,12 +11408,6 @@
           }
         },
         "security": [
-          {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
           {
             "portalSession": []
           }
@@ -11943,15 +11883,27 @@
         },
         "responses": {
           "200": {
-            "description": "The file was stored.",
+            "description": "The file was stored (`received`).",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/UploadAnswer"
+                }
               }
             }
           },
           "401": {
-            "description": "The upload token is missing or wrong.",
+            "description": "The upload token is missing or wrong (`unauthorized`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadAnswer"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The connection's transport is refused (`transport_insecure`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -11970,12 +11922,42 @@
               }
             }
           },
+          "409": {
+            "description": "The upload lost its fence to a newer one (`lost`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadAnswer"
+                }
+              }
+            }
+          },
+          "421": {
+            "description": "This node is not the upload's receiving node (`misdirected`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadAnswer"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The file was refused (`refused`): not in the upload, a size or content mismatch, or the destinations changed.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/UploadAnswer"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Storage or the upload record is unavailable, or the file lock timed out; retry (`unavailable`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadAnswer"
                 }
               }
             }
@@ -12019,25 +12001,27 @@
         },
         "responses": {
           "200": {
-            "description": "The upload was committed to the destinations.",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The body is invalid or files are missing.",
+            "description": "The upload was committed to the destinations (`committed`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/UploadAnswer"
                 }
               }
             }
           },
           "401": {
-            "description": "The upload token is missing or wrong.",
+            "description": "The upload token is missing or wrong (`unauthorized`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadAnswer"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The connection's transport is refused (`transport_insecure`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -12052,6 +12036,46 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The upload lost its fence to a newer one (`lost`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadAnswer"
+                }
+              }
+            }
+          },
+          "421": {
+            "description": "This node is not the upload's receiving node (`misdirected`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadAnswer"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The commit was refused (`refused`): an invalid body, missing files, or the destinations changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadAnswer"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Storage or the upload record is unavailable; retry (`unavailable`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadAnswer"
                 }
               }
             }
@@ -18737,6 +18761,30 @@
               "null"
             ],
             "description": "Password used for recent-reauth when the user already has a credential."
+          }
+        }
+      },
+      "UploadAnswer": {
+        "type": "object",
+        "description": "Answer of the upload endpoint (every status carries one).",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Stable outcome: `received`, `committed`, `lost`, `refused`,\n`misdirected`, `unauthorized`, `unavailable`."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why, for `refused`."
+          },
+          "job_completed": {
+            "type": "boolean",
+            "description": "For `committed`: the job is finished."
           }
         }
       },
