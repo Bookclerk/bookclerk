@@ -423,7 +423,7 @@ pub async fn patch_profile(
 #[utoipa::path(
     put,
     path = "/api/auth/profile/avatar",
-    request_body(content = Vec<u8>, content_type = "image/*"),
+    request_body(content = crate::openapi::BinaryBody, content_type = "image/*"),
     responses(
         (status = 200, description = "The avatar was stored.", body = serde_json::Value),
         (status = 401, description = "The caller is not signed in."),

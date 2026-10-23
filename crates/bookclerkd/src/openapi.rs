@@ -385,6 +385,17 @@ pub fn document() -> OpenApi {
     doc
 }
 
+/// A request body of raw bytes (a file upload), documented as
+/// `type: string, format: binary` so generated clients send the bytes
+/// rather than a JSON array.
+#[derive(utoipa::ToSchema)]
+#[schema(value_type = String, format = Binary)]
+pub struct BinaryBody(
+    /// The body's bytes.
+    #[allow(dead_code)]
+    Vec<u8>,
+);
+
 /// The document, built once per process and shared by every router.
 ///
 /// # Returns
@@ -511,8 +522,12 @@ mod tests {
     fn handler_checked_routes_state_their_security() {
         let doc = document_value();
         for (method, path, op) in operations(&doc) {
-            let refuses_anonymous =
-                op["responses"]["401"]["description"] == "The caller is not signed in.";
+            let refuses_anonymous = [
+                "The caller is not signed in.",
+                "The Bearer token is missing or wrong.",
+            ]
+            .iter()
+            .any(|d| op["responses"]["401"]["description"] == *d);
             if refuses_anonymous {
                 assert!(
                     op["security"].as_array().is_some_and(|s| !s.is_empty()),
@@ -520,6 +535,58 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A handler that reads a JSON body declares it, so generated clients
+    /// can send it.
+    #[test]
+    fn json_bodies_are_declared() {
+        let roots = [
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../bookclerk-integrations/src/portal"),
+        ];
+        let mut missing = Vec::new();
+        for root in roots {
+            let mut stack = vec![root];
+            while let Some(dir) = stack.pop() {
+                for entry in std::fs::read_dir(&dir).expect("read src") {
+                    let path = entry.expect("dir entry").path();
+                    if path.is_dir() {
+                        stack.push(path);
+                        continue;
+                    }
+                    if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                        continue;
+                    }
+                    let text =
+                        without_test_items(&std::fs::read_to_string(&path).expect("read source"));
+                    for (at, _) in text.match_indices("#[utoipa::path(") {
+                        let rest = &text[at..];
+                        let Some(attr_end) = rest.find("\n)]") else {
+                            continue;
+                        };
+                        let attr = &rest[..attr_end];
+                        let Some(fn_at) = rest.find("fn ") else {
+                            continue;
+                        };
+                        let sig_end = rest[fn_at..].find('{').map_or(rest.len(), |i| fn_at + i);
+                        let signature = &rest[fn_at..sig_end];
+                        if signature.contains(": Json<") && !attr.contains("request_body") {
+                            let name = signature[3..]
+                                .split(['(', '<'])
+                                .next()
+                                .unwrap_or("")
+                                .to_string();
+                            missing.push(format!("{}: {name}", path.display()));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "handlers read a JSON body their #[utoipa::path] does not declare: {missing:?}"
+        );
     }
 
     /// The live socket is documented at the path its re-auth checks use.

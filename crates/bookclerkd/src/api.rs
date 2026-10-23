@@ -3147,6 +3147,7 @@ async fn get_plugin_consent(
     post,
     path = "/api/plugins/{id}/consent",
     params(("id" = String, Path, description = "Plugin id."), PluginConsentQuery),
+    request_body = PluginConsentApproveRequest,
     responses(
         (status = 200, description = "The grant was stored.", body = PluginConsentResponse),
         (status = 400, description = "An override is not allowed.", body = crate::http_error::ErrorJson),
@@ -3287,6 +3288,7 @@ async fn get_settings(
 #[utoipa::path(
     patch,
     path = "/api/settings",
+    request_body = PatchSettingsRequest,
     responses(
         (status = 200, description = "The settings after the change.", body = SettingsResponse),
         (status = 400, description = "A key is unknown or a value is invalid.", body = crate::http_error::ErrorJson),
@@ -3571,6 +3573,7 @@ pub(crate) async fn apply_migrated_database_plugin(
 #[utoipa::path(
     post,
     path = "/api/database/migrate",
+    request_body = DatabaseMigrateRequest,
     responses(
         (status = 200, description = "The rows were copied.", body = ActionResponse),
         (status = 400, description = "The target is invalid.", body = ActionResponse),
@@ -5062,6 +5065,7 @@ async fn discover_recommendations(
 #[utoipa::path(
     post,
     path = "/api/discover/purchase-hints",
+    request_body = bookclerk_discover::PurchaseHintsQuery,
     responses(
         (status = 200, description = "Prices and availability.", body = bookclerk_discover::PurchaseHintsResponse),
         (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain"),
@@ -5102,6 +5106,7 @@ struct PurchaseHintsBatchResponse {
 #[utoipa::path(
     post,
     path = "/api/discover/purchase-hints/batch",
+    request_body = PurchaseHintsBatchBody,
     responses(
         (status = 200, description = "One result per query, in order.", body = PurchaseHintsBatchResponse),
         (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain"),
@@ -5166,6 +5171,7 @@ fn validate_purchase_hints_query(
 #[utoipa::path(
     post,
     path = "/api/discover/title-meta",
+    request_body = bookclerk_discover::TitleMetaQuery,
     responses(
         (status = 200, description = "The metadata, or null when nothing matched.", body = Option<bookclerk_discover::TitleMeta>),
         (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain"),
@@ -5188,6 +5194,7 @@ async fn discover_title_meta(
 #[utoipa::path(
     post,
     path = "/api/discover/title-reviews",
+    request_body = bookclerk_discover::TitleReviewsQuery,
     responses(
         (status = 200, description = "A page of reviews.", body = bookclerk_discover::TitleReviewsPage),
         (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain"),
@@ -5225,6 +5232,7 @@ struct TitleMetaBatchResponse {
 #[utoipa::path(
     post,
     path = "/api/discover/title-meta/batch",
+    request_body = TitleMetaBatchBody,
     responses(
         (status = 200, description = "One result per query, in order.", body = TitleMetaBatchResponse),
         (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain"),
@@ -5479,6 +5487,7 @@ async fn list_wishlist(
 #[utoipa::path(
     post,
     path = "/api/wishlist",
+    request_body = CreateRequestBody,
     responses(
         (status = 200, description = "The new request.", body = bookclerk_library::TitleRequestRecord),
         (status = 400, description = "The title is missing or invalid.", body = String, content_type = "text/plain"),
@@ -5934,6 +5943,7 @@ async fn get_preferences(
 #[utoipa::path(
     patch,
     path = "/api/preferences",
+    request_body = PatchPreferencesBody,
     responses(
         (status = 200, description = "The preferences after the change.", body = PreferencesResponse),
         (status = 400, description = "A value is invalid.", body = String, content_type = "text/plain"),

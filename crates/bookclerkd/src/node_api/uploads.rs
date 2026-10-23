@@ -1101,7 +1101,7 @@ async fn record_written(
     put,
     path = "/api/node/v1/uploads/{upload_id}/files/{index}",
     params(("upload_id" = String, Path, description = "Upload id."), ("index" = u32, Path, description = "File index in the upload.")),
-    request_body(content = Vec<u8>, content_type = "application/octet-stream"),
+    request_body(content = crate::openapi::BinaryBody, content_type = "application/octet-stream"),
     responses(
         (status = 200, description = "The file was stored.", body = serde_json::Value),
         (status = 401, description = "The upload token is missing or wrong."),

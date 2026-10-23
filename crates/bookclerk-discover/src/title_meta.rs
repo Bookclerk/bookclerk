@@ -120,7 +120,7 @@ pub struct TitleMeta {
 }
 
 /// Query for a page of Audible customer reviews.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct TitleReviewsQuery {
     /// Audible / Amazon ASIN when this edition is sold on Audible.
     pub asin: String,

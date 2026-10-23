@@ -661,6 +661,7 @@ pub async fn signin_methods(State(state): State<Arc<AppState>>) -> Result<Respon
 #[utoipa::path(
     post,
     path = "/api/auth/tray-handoff/prepare",
+    security(("operatorToken" = [])),
     responses(
         (status = 200, description = "A single-use tray ticket.", body = serde_json::Value),
         (status = 401, description = "The Bearer token is missing or wrong."),

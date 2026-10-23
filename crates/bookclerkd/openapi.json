@@ -115,7 +115,11 @@
             "description": "The request did not come straight from loopback."
           }
         },
-        "security": [],
+        "security": [
+          {
+            "operatorToken": []
+          }
+        ],
         "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
@@ -3601,6 +3605,16 @@
         ],
         "summary": "Validates, writes, and reloads allowlisted Settings keys under `reload_lock`.",
         "operationId": "patch_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchSettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "The settings after the change.",
@@ -3739,6 +3753,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PluginConsentApproveRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "The grant was stored.",
@@ -3855,6 +3879,16 @@
         ],
         "summary": "Copies library rows between database plugins and optionally switches `[database].plugin`.",
         "operationId": "migrate_database",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DatabaseMigrateRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "The rows were copied.",
@@ -5313,6 +5347,16 @@
         ],
         "summary": "Resolves storefront price/availability for one title, forcing server-side preferred stores.",
         "operationId": "discover_purchase_hints",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PurchaseHintsQuery"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "Prices and availability.",
@@ -5366,6 +5410,16 @@
         ],
         "summary": "Resolves up to 24 purchase-hint queries with caller-derived preferred stores.",
         "operationId": "discover_purchase_hints_batch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PurchaseHintsBatchBody"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "One result per query, in order.",
@@ -5668,6 +5722,16 @@
         ],
         "summary": "Resolves Audnexus-style title metadata for one query.",
         "operationId": "discover_title_meta",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TitleMetaQuery"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "The metadata, or null when nothing matched.",
@@ -5728,6 +5792,16 @@
         ],
         "summary": "Resolves up to 24 title-metadata queries without failing the whole batch on one error.",
         "operationId": "discover_title_meta_batch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TitleMetaBatchBody"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "One result per query, in order.",
@@ -5781,6 +5855,16 @@
         ],
         "summary": "Fetches Audnexus reviews for an ASIN; rejects an empty ASIN with 400.",
         "operationId": "discover_title_reviews",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TitleReviewsQuery"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "A page of reviews.",
@@ -5888,6 +5972,16 @@
         ],
         "summary": "Creates a wishlist / title-request row for the authenticated caller.",
         "operationId": "create_wishlist",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRequestBody"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "The new request.",
@@ -6255,12 +6349,7 @@
           "content": {
             "image/*": {
               "schema": {
-                "type": "array",
-                "items": {
-                  "type": "integer",
-                  "format": "int32",
-                  "minimum": 0
-                }
+                "$ref": "#/components/schemas/BinaryBody"
               }
             }
           },
@@ -6439,6 +6528,16 @@
         ],
         "summary": "Merges a preferences PATCH onto the caller’s stored row and writes it back.",
         "operationId": "patch_preferences",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchPreferencesBody"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "The preferences after the change.",
@@ -8139,12 +8238,7 @@
           "content": {
             "application/octet-stream": {
               "schema": {
-                "type": "array",
-                "items": {
-                  "type": "integer",
-                  "format": "int32",
-                  "minimum": 0
-                }
+                "$ref": "#/components/schemas/BinaryBody"
               }
             }
           },
@@ -8868,6 +8962,11 @@
           }
         },
         "additionalProperties": false
+      },
+      "BinaryBody": {
+        "type": "string",
+        "format": "binary",
+        "description": "A request body of raw bytes (a file upload), documented as\n`type: string, format: binary` so generated clients send the bytes\nrather than a JSON array."
       },
       "BookRecord": {
         "type": "object",
@@ -9862,6 +9961,146 @@
           }
         }
       },
+      "CreateRequestBody": {
+        "type": "object",
+        "description": "Wishlist / title-request create body from Discover or the portal.",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Required title text; empty values are rejected with 400."
+          },
+          "authors": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional author list as a single display string."
+          },
+          "asin": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional Audible ASIN used for work-key identity."
+          },
+          "isbn": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional ISBN used for work-key identity."
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional operator or member note stored on the request."
+          },
+          "store_editions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StoreEdition"
+            },
+            "description": "Known storefront editions to persist as `title_request_sources`."
+          },
+          "purchase_hints": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PurchaseHint"
+            },
+            "description": "Optional priced storefront links snapshotted at wishlist time."
+          },
+          "work_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional stable work key; when omitted one is derived from bib fields."
+          },
+          "cover_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional cover image URL snapshotted onto the request."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional plot/summary text persisted with the request."
+          },
+          "subtitle": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional subtitle stored on the request and source rows."
+          },
+          "narrators": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional narrator list as a single display string."
+          },
+          "series": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional series name."
+          },
+          "series_index": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional series position as a display string."
+          },
+          "publisher": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional publisher name."
+          },
+          "length_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Optional runtime in minutes."
+          },
+          "published_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional publication date as a display string."
+          },
+          "genres": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional genre list as a single display string."
+          },
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional content language code."
+          }
+        }
+      },
       "CreateUserRequest": {
         "type": "object",
         "description": "Provisioner body for creating a user and optional invite ticket.",
@@ -9904,6 +10143,38 @@
           "mint_invite": {
             "type": "boolean",
             "description": "When true (default), also mint an invite/claim ticket."
+          }
+        }
+      },
+      "DatabaseMigrateRequest": {
+        "type": "object",
+        "description": "Body for copying library rows between database plugins.",
+        "required": [
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Source plugin id. Defaults to the active `[database].plugin` before reload."
+          },
+          "to": {
+            "type": "string",
+            "description": "Destination database plugin id to copy into."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "When true, count rows without writing."
+          },
+          "force": {
+            "type": "boolean",
+            "description": "When true, overwrite a destination that is not empty."
+          },
+          "apply": {
+            "type": "boolean",
+            "description": "Update `[database].plugin` in config.toml after a successful copy."
           }
         }
       },
@@ -11151,6 +11422,67 @@
           }
         }
       },
+      "PatchPreferencesBody": {
+        "type": "object",
+        "description": "Partial preferences update; omitted fields keep their stored values.",
+        "properties": {
+          "default_view": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Replacement landing view when set."
+          },
+          "disabled_shelves": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Replacement hidden-shelf list when set."
+          },
+          "discover_sort": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Replacement Discover sort key when set."
+          },
+          "discover_sort_dir": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Replacement Discover sort direction when set."
+          },
+          "discover_language": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Present + value sets language; present + `null` clears to browser default;\nomitted leaves unchanged."
+          },
+          "discover_excluded_sources": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Replacement excluded-store list when set."
+          },
+          "theme": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Replacement appearance preference when set (`system`, `light`, `dark`)."
+          }
+        }
+      },
       "PatchProfileRequest": {
         "type": "object",
         "description": "JSON body for `PATCH /api/auth/profile`.",
@@ -11175,6 +11507,30 @@
               "null"
             ],
             "description": "Picture choice (`auto`, `monogram`, `gravatar`, `upload`, or `sso:{id}`)."
+          }
+        }
+      },
+      "PatchSettingsRequest": {
+        "type": "object",
+        "description": "Body for `PATCH /api/settings`.",
+        "required": [
+          "settings"
+        ],
+        "properties": {
+          "settings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SettingsUpdate"
+            },
+            "description": "Key/value pairs to validate, persist, and reload."
+          },
+          "expected_output_revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`core.output` document revision the client read (`output_revision` in\n`GET /api/settings`). When set and stale, an `output.*` update is\nrejected with 409."
           }
         }
       },
@@ -11265,6 +11621,30 @@
           "updated_at": {
             "type": "string",
             "description": "RFC 3339 time of the last intent write."
+          }
+        }
+      },
+      "PluginConsentApproveRequest": {
+        "type": "object",
+        "description": "Body for `POST /api/plugins/{id}/consent`.",
+        "required": [
+          "approve"
+        ],
+        "properties": {
+          "approve": {
+            "type": "boolean",
+            "description": "Must be true; a false value is rejected with 400."
+          },
+          "grant": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PluginGrantOverride",
+                "description": "Optional operator overrides applied on top of the manifest request."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -11543,6 +11923,129 @@
               "null"
             ],
             "description": "RFC 3339 time of the observation."
+          }
+        }
+      },
+      "PluginGrantOverride": {
+        "type": "object",
+        "description": "Operator-supplied grant fields that replace matching request values.",
+        "properties": {
+          "networkMode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Override egress mode when set."
+          },
+          "domains": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Override approved hostnames when set."
+          },
+          "tcp": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/TcpGrantView"
+            },
+            "description": "Override raw TCP grants when set."
+          },
+          "addressCidrs": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Override address-space CIDRs when set."
+          },
+          "allowUndeclaredPublicRedirects": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Override undeclared-public-redirect permission when set."
+          },
+          "bindings": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Override approved host bindings when set."
+          },
+          "compatibilityFlags": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Override compatibility flags when set."
+          },
+          "cpuMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Override workerd CPU milliseconds when set.",
+            "minimum": 0
+          },
+          "subrequests": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Override workerd subrequest budget when set.",
+            "minimum": 0
+          },
+          "diskMib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Override disk budget in mebibytes when set.",
+            "minimum": 0
+          },
+          "memoryMib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Override jail memory in mebibytes when set.",
+            "minimum": 0
+          },
+          "cpuCores": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Jail CPU in cores (2 d.p.); converted to Spec percent server-side."
+          },
+          "extraProcesses": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Extra process/thread budget (native); ignored for workerd.",
+            "minimum": 0
           }
         }
       },
@@ -12147,6 +12650,19 @@
           }
         }
       },
+      "PurchaseHintsBatchBody": {
+        "type": "object",
+        "description": "Body for batched purchase-hint lookups (max 24 queries).",
+        "properties": {
+          "queries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PurchaseHintsQuery"
+            },
+            "description": "Per-title purchase-hint queries in this batch."
+          }
+        }
+      },
       "PurchaseHintsBatchResponse": {
         "type": "object",
         "description": "Parallel purchase-hint results aligned with the request queries.",
@@ -12160,6 +12676,75 @@
               "$ref": "#/components/schemas/PurchaseHintsResponse"
             },
             "description": "One purchase-hint response per query, in request order."
+          }
+        }
+      },
+      "PurchaseHintsQuery": {
+        "type": "object",
+        "description": "Inputs for view-time catalog + pricing lookup.",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Display title as shown on the storefront or library card."
+          },
+          "authors": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Comma-separated author names when the storefront provides them."
+          },
+          "asin": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Audible / Amazon ASIN when this edition is sold on Audible."
+          },
+          "isbn": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Canonical ISBN-13 (or ISBN-10 normalized) when published."
+          },
+          "candidate_source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Storefront id of the edition that produced this card."
+          },
+          "candidate_product_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Storefront product id of the edition that produced this card."
+          },
+          "store_editions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StoreEdition"
+            },
+            "description": "Known storefront editions already on the recommendation card."
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Marketplace / region code (`us`, `uk`, …) for catalog lookups."
+          },
+          "preferred_sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Storefronts the caller has linked accounts for. Treated as **member**\npricing when picking `best`; other stores are compared at list /\nnon-member price. Every catalog match is still returned in `hints`."
           }
         }
       },
@@ -13132,6 +13717,24 @@
           }
         }
       },
+      "SettingsUpdate": {
+        "type": "object",
+        "description": "One `config.toml` key/value pair from a settings PATCH.",
+        "required": [
+          "key",
+          "value"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Dotted config key; rejected unless it passes the settings allowlist."
+          },
+          "value": {
+            "type": "string",
+            "description": "Raw string value, normalized before it is written."
+          }
+        }
+      },
       "SharingBody": {
         "type": "object",
         "description": "`POST /api/config/join/sharing` body.",
@@ -13603,6 +14206,19 @@
           }
         }
       },
+      "TitleMetaBatchBody": {
+        "type": "object",
+        "description": "Body for batched title-metadata lookups (max 24 queries).",
+        "properties": {
+          "queries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TitleMetaQuery"
+            },
+            "description": "Per-title metadata queries in this batch."
+          }
+        }
+      },
       "TitleMetaBatchResponse": {
         "type": "object",
         "description": "Title-metadata results aligned with the request; failed items are `null`.",
@@ -13623,6 +14239,56 @@
               ]
             },
             "description": "One optional metadata payload per query; enrichment errors become `None`."
+          }
+        }
+      },
+      "TitleMetaQuery": {
+        "type": "object",
+        "description": "Query for public title metadata (Audnexus / Audible catalog).",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Display title as shown on the storefront or library card."
+          },
+          "authors": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Comma-separated author names when the storefront provides them."
+          },
+          "asin": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Audible / Amazon ASIN when this edition is sold on Audible."
+          },
+          "isbn": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Canonical ISBN-13 (or ISBN-10 normalized) when published."
+          },
+          "narrators": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Comma-separated narrator names when known."
+          },
+          "length_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Audiobook runtime in whole minutes when known."
+          },
+          "region": {
+            "type": "string",
+            "description": "Marketplace / region code (`us`, `uk`, …) for catalog lookups."
           }
         }
       },
@@ -14142,6 +14808,39 @@
               "$ref": "#/components/schemas/TitleReview"
             },
             "description": "Review rows on this page."
+          }
+        }
+      },
+      "TitleReviewsQuery": {
+        "type": "object",
+        "description": "Query for a page of Audible customer reviews.",
+        "required": [
+          "asin"
+        ],
+        "properties": {
+          "asin": {
+            "type": "string",
+            "description": "Audible / Amazon ASIN when this edition is sold on Audible."
+          },
+          "region": {
+            "type": "string",
+            "description": "Marketplace / region code (`us`, `uk`, …) for catalog lookups."
+          },
+          "page": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1-based page index.",
+            "minimum": 0
+          },
+          "page_size": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Page size (clamped server-side to 1..=20).",
+            "minimum": 0
+          },
+          "sort_by": {
+            "type": "string",
+            "description": "`MostHelpful` (default) or `MostRecent`."
           }
         }
       },
