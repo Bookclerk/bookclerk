@@ -932,13 +932,6 @@ jobs:
           path: ${{ runner.temp }}/BookclerkFiles/envelope-metrics.json
           if-no-files-found: warn
 
-  # A merge group, like an OSV remediation run, only needs to know whether it
-  # can land. Once any job fails, cancel the rest of the run so CI Gate
-  # reports at once and the queue ejects the group instead of holding runners
-  # until the slowest job ends. Pull requests keep running every job so one
-  # round shows every failure. This job builds and runs no repository code;
-  # it is the only one that can cancel the run. In a called run, job names
-  # carry the caller's prefix (`<caller job> / CI Gate`).
   site:
     name: website + collector Workers
     needs: plan
@@ -1001,6 +994,13 @@ jobs:
         if: needs.plan.outputs.check_collector_test == 'true'
         run: python3 scripts/ci-exec.py run collector_test
 
+  # A merge group, like an OSV remediation run, only needs to know whether it
+  # can land. Once any job fails, cancel the rest of the run so CI Gate
+  # reports at once and the queue ejects the group instead of holding runners
+  # until the slowest job ends. Pull requests keep running every job so one
+  # round shows every failure. This job builds and runs no repository code;
+  # it is the only one that can cancel the run. In a called run, job names
+  # carry the caller's prefix (`<caller job> / CI Gate`).
   merge-queue-fail-fast:
     name: merge-queue fail-fast
     if: github.event_name == 'merge_group' || inputs.private-head
