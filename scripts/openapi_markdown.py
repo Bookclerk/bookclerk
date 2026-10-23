@@ -146,7 +146,11 @@ class Document:
         """Assign each component schema its heading anchor on the schema page."""
         anchors = Anchors()
         anchors.take("Schemas")
-        return {name: anchors.take(name) for name in self.schemas}
+        return {name: anchors.take(name) for name in self.schema_names()}
+
+    def schema_names(self) -> list[str]:
+        """Component schema names in page order: alphabetical, ignoring case."""
+        return sorted(self.schemas, key=str.casefold)
 
     def _collect_tags(self) -> list[Tag]:
         """Group operations by their first tag, in the document's tag order."""
@@ -169,6 +173,7 @@ class Document:
                 if method not in item:
                     continue
                 op = _object(item[method], f"{method} {path}")
+                op = _with_path_parameters(op, item, f"{method} {path}")
                 names = spec_list(op.get("tags", []), f"{method} {path} tags")
                 tag(str(names[0]) if names else "Other").operations.append(Operation(method.upper(), path, op))
         for group in tags.values():
@@ -496,6 +501,8 @@ class Document:
                 continue
             names = [code(str(name)) for name in requirement]
             options.append(" and ".join(names) if names else "none")
+        if not requirements:
+            return "none"
         if not options:
             return ""
         return " or ".join(_unique(options))
@@ -532,7 +539,8 @@ class Document:
             "The request and response bodies of the [web API](README.md), in alphabetical order.",
             "",
         ]
-        for name, schema in self.schemas.items():
+        for name in self.schema_names():
+            schema = self.schemas[name]
             lines += [f"## {name}", ""]
             if isinstance(schema, Mapping) and schema.get("description"):
                 lines += [prose(str(schema["description"])), ""]
@@ -566,6 +574,33 @@ def spec_list(value: Any, where: str) -> list[Any]:
     if not isinstance(value, list):
         raise OpenApiError(f"{where}: expected an array")
     return value
+
+
+def _with_path_parameters(op: JsonObject, item: JsonObject, where: str) -> JsonObject:
+    """Merge a path item's shared parameters into one of its operations.
+
+    Args:
+        op: The operation.
+        item: The path item holding it.
+        where: Where the operation is, for error messages.
+
+    Returns:
+        The operation with the path's parameters it does not override, keyed by
+        ``(name, in)``; ``$ref`` entries are kept as they are.
+    """
+    shared = spec_list(item.get("parameters", []), f"{where} path parameters")
+    if not shared:
+        return op
+    keyed: dict[tuple[str, str], Any] = {}
+    unkeyed: list[Any] = []
+    for param in [*shared, *spec_list(op.get("parameters", []), f"{where} parameters")]:
+        name = param.get("name") if isinstance(param, Mapping) else None
+        location = param.get("in") if isinstance(param, Mapping) else None
+        if isinstance(name, str) and isinstance(location, str) and "$ref" not in param:
+            keyed[(name, location)] = param
+        else:
+            unkeyed.append(param)
+    return {**op, "parameters": [*keyed.values(), *unkeyed]}
 
 
 def _object(value: Any, where: str) -> JsonObject:

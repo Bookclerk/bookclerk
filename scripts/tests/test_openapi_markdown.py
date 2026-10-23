@@ -65,6 +65,19 @@ DOCUMENT = {
                 "responses": {"201": {"description": "Added.", "content": {"image/png": {"schema": {"type": "string", "format": "binary"}}}}},
             }
         },
+        "/shelves/{shelf}": {
+            "parameters": [
+                {"name": "shelf", "in": "path", "required": True, "description": "Shared.", "schema": {"type": "string"}},
+                {"name": "lang", "in": "query", "description": "Path level.", "schema": {"type": "string"}},
+            ],
+            "get": {
+                "tags": ["Books"],
+                "summary": "Lists a shelf.",
+                "security": [],
+                "parameters": [{"name": "lang", "in": "query", "description": "Operation level.", "schema": {"type": "string"}}],
+                "responses": {"200": {"description": "The shelf."}},
+            },
+        },
         "/untagged": {"get": {"summary": "Odd one.", "responses": {"200": {"description": "Anything.", "content": {"application/json": {"schema": {}}}}}}},
     },
     "components": {
@@ -85,8 +98,8 @@ DOCUMENT = {
                     "count": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "string", "enum": ["all"]}], "description": "How many."},
                 },
             },
-            "Status": {"type": "string", "enum": ["new", "old"], "description": "Book state."},
             "Wrapped": {"allOf": [{"$ref": "#/components/schemas/Book"}, {"type": "object", "properties": {"note": {"type": "string"}}}]},
+            "Status": {"type": "string", "enum": ["new", "old"], "description": "Book state."},
         },
     },
 }
@@ -127,6 +140,15 @@ class RenderTest(unittest.TestCase):
         self.assertIn("**Deprecated.**", page)
         self.assertIn("**Credentials:** none", page)
 
+    def test_path_parameters_merge_and_open_security(self) -> None:
+        shelf = self.pages["books.md"].split("## `GET /shelves/{shelf}`")[1]
+        self.assertIn("| `shelf` | path | string | yes | Shared. |", shelf)
+        # The operation's own parameter replaces the path's one of the same name and place.
+        self.assertIn("| `lang` | query | string | no | Operation level. |", shelf)
+        self.assertNotIn("Path level.", shelf)
+        # An empty security list means the route is open.
+        self.assertIn("**Credentials:** none", shelf)
+
     def test_request_body_fields_flatten_inline_objects(self) -> None:
         page = self.pages["books.md"]
         self.assertIn("`application/json`: object", page)
@@ -148,6 +170,8 @@ class RenderTest(unittest.TestCase):
         self.assertIn("Type: one of `new`, `old`", schemas)
         self.assertIn("Includes every field of [`Book`](#book).", schemas)
         self.assertIn("| `note` | string | no |  |", schemas)
+        # Alphabetical, whatever order the document lists them in.
+        self.assertLess(schemas.index("## Status"), schemas.index("## Wrapped"))
 
     def test_no_raw_html(self) -> None:
         for name, text in self.pages.items():
