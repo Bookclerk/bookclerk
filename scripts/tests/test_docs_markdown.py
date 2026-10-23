@@ -10,7 +10,6 @@ The guard tests never point a deleting call at a real directory: refusals of
 from __future__ import annotations
 
 import importlib.util
-import json
 import os
 import sys
 import tempfile
@@ -113,102 +112,46 @@ class OutputGuardTest(unittest.TestCase):
         self.assertIn(ROOT / "target", dm.DEFAULT_SCRATCH.resolve().parents)
 
 
-class RustLinkTest(unittest.TestCase):
-    """rustdoc intra-doc links become Markdown links."""
+class IndexTest(unittest.TestCase):
+    """The indexes put the plugin SDKs first, then the web API, then the crates."""
 
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory(prefix="docs-markdown-rust-")
-        self.rust = Path(self._tmp.name) / "rust"
-        (self.rust / "demo" / "mux").mkdir(parents=True)
-        (self.rust / "demo" / "index.md").write_text("# demo\n")
-        (self.rust / "demo" / "mux.md").write_text(
-            "# Module: mux\n\n## demo::mux::Mux\n\n*Struct*\n\n```rust\n## demo::not::AHeading\n```\n"
-        )
-        (self.rust / "demo" / "mux" / "frame.md").write_text("# Module: frame\n")
-        self.index = dm.index_rust_headings(self.rust)
-
-    def tearDown(self) -> None:
-        self._tmp.cleanup()
-
-    def test_indexes_items_and_modules(self) -> None:
-        self.assertEqual(self.index.items["demo::mux::Mux"], (self.rust / "demo" / "mux.md", "demomuxmux"))
-        self.assertNotIn("demo::not::AHeading", self.index.items)
-        self.assertEqual(self.index.modules["demo"], self.rust / "demo" / "index.md")
-        self.assertEqual(self.index.modules["demo::mux"], self.rust / "demo" / "mux.md")
-        self.assertEqual(self.index.modules["demo::mux::frame"], self.rust / "demo" / "mux" / "frame.md")
-
-    def test_slug_matches_github(self) -> None:
-        self.assertEqual(dm.slug("demo::mux::Mux"), "demomuxmux")
-        self.assertEqual(dm.slug("Module: `mux` & more"), "module-mux--more")
-
-    def rewrite(self, text: str, targets: dict[str, tuple[str, str] | None]) -> tuple[str, int]:
-        return dm.rewrite_shortcuts(text, self.rust / "demo" / "index.md", targets, self.index)
-
-    def test_rewrites_shortcut_and_inline_links(self) -> None:
-        targets = {
-            "`Mux`": ("local", "demo::mux::Mux"),
-            "crate::mux": ("local", "demo::mux"),
-            "`Arc`": ("url", "https://doc.rust-lang.org/stable/std/sync/struct.Arc.html"),
-        }
-        text = "Use [`Mux`] in [the module](crate::mux), shared in an [`Arc`].\n"
-        out, count = self.rewrite(text, targets)
+    def test_groups(self) -> None:
+        self.assertEqual(dm.rust_group("bookclerk_plugin_abi", "crates/bookclerk-plugin-abi"), "Plugin interface")
+        self.assertEqual(dm.rust_group("bookclerk_dev", "crates/bookclerk-dev"), "Development and testing")
         self.assertEqual(
-            out,
-            "Use [`Mux`](mux.md#demomuxmux) in [the module](mux.md), shared in an "
-            "[`Arc`](https://doc.rust-lang.org/stable/std/sync/struct.Arc.html).\n",
+            dm.rust_group("bookclerk_plugin_source_libro", "crates/bookclerk-plugins/optional/source-libro"), "Plugins"
         )
-        self.assertEqual(count, 3)
+        self.assertEqual(dm.rust_group("echo", "examples/plugins-echo-workerd-rust"), "Development and testing")
+        self.assertEqual(dm.rust_group("bookclerk_media", "crates/bookclerk-media"), "Host internals")
 
-    def test_unresolvable_links_lose_only_the_link(self) -> None:
-        targets = {"`Self::open`": None, "Self::close": ("local", "demo::mux::Mux::close")}
-        out, count = self.rewrite("Call [`Self::open`], then [close it](Self::close).\n", targets)
-        self.assertEqual(out, "Call `Self::open`, then close it.\n")
-        self.assertEqual(count, 2)
+    def test_index_lists_groups_in_order(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="docs-markdown-rust-") as tmp:
+            out = Path(tmp)
+            crates = [
+                dm.RustCrate("bookclerk_media", "bookclerk-media", "Clear media | remux", "Host internals"),
+                dm.RustCrate("bookclerk_plugin_abi", "bookclerk-plugin-abi", "ABI", "Plugin interface"),
+                dm.RustCrate("bookclerk_plugin_sdk", "bookclerk-plugin-sdk", "Guest SDK", "Plugin interface"),
+            ]
+            dm.write_rust_index(out, crates)
+            text = (out / "README.md").read_text()
+        self.assertLess(text.index("## Plugin interface"), text.index("## Host internals"))
+        # The SDK is listed with the other SDKs, not among the crates.
+        self.assertNotIn("| [`bookclerk_plugin_sdk`]", text)
+        self.assertNotIn("## Plugins", text)
+        self.assertIn("| [`bookclerk_media`](bookclerk_media/index.md) | Clear media \\| remux |", text)
 
-    def test_leaves_code_and_unknown_brackets_alone(self) -> None:
-        targets = {"`Mux`": ("local", "demo::mux::Mux"), "dependencies": ("local", "demo::mux")}
-        text = "```toml\n[dependencies]\n[`Mux`]\n```\nSee `[`Mux`]` and [features] and `&[T]`.\n"
-        out, count = self.rewrite(text, targets)
-        self.assertEqual(out, text)
-        self.assertEqual(count, 0)
-
-    def test_external_urls(self) -> None:
-        self.assertEqual(
-            dm.external_url(["zeroize", "ZeroizeOnDrop"], "trait", "zeroize"),
-            "https://docs.rs/zeroize/latest/zeroize/trait.ZeroizeOnDrop.html",
-        )
-        self.assertEqual(
-            dm.external_url(["std", "sync", "Arc"], "struct", "std"),
-            "https://doc.rust-lang.org/stable/std/sync/struct.Arc.html",
-        )
-        self.assertEqual(
-            dm.external_url(["tokio", "net"], "module", "tokio"), "https://docs.rs/tokio/latest/tokio/net/index.html"
-        )
-        self.assertIsNone(dm.external_url(["serde", "Serialize", "serialize"], "assoc_type", "serde"))
-
-    def test_link_targets_from_rustdoc_json(self) -> None:
-        data = {
-            "index": {
-                "1": {"links": {"`Mux`": 10, "`Arc`": 11, "`Gone`": 12}},
-                "2": {"links": {"`Mux`": 10, "`Thing`": 13}},
-                "3": {"links": {"`Thing`": 14}},
-            },
-            "paths": {
-                "10": {"crate_id": 0, "path": ["demo", "mux", "Mux"], "kind": "struct"},
-                "11": {"crate_id": 5, "path": ["alloc", "sync", "Arc"], "kind": "struct"},
-                "13": {"crate_id": 0, "path": ["demo", "A"], "kind": "struct"},
-                "14": {"crate_id": 0, "path": ["demo", "B"], "kind": "struct"},
-            },
-            "external_crates": {"5": {"name": "alloc"}},
-        }
-        path = Path(self._tmp.name) / "demo.json"
-        path.write_text(json.dumps(data))
-        targets = dm.rust_link_targets(path, {"demo"})
-        self.assertEqual(targets["`Mux`"], ("local", "demo::mux::Mux"))
-        self.assertEqual(targets["`Arc`"], ("url", "https://doc.rust-lang.org/stable/alloc/sync/struct.Arc.html"))
-        self.assertIsNone(targets["`Gone`"])
-        # One text naming two targets is ambiguous.
-        self.assertIsNone(targets["`Thing`"])
+    def test_api_index_order_and_missing_references(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="docs-markdown-api-") as tmp:
+            api = Path(tmp)
+            for rel in ("typescript/README.md", "python/README.md", "rust/README.md", "rust/bookclerk_plugin_sdk/index.md", "ui/README.md"):
+                (api / rel).parent.mkdir(parents=True, exist_ok=True)
+                (api / rel).write_text("# x\n")
+            dm.write_api_index(api)
+            text = (api / "README.md").read_text()
+        order = [text.index(s) for s in ("## Plugin SDKs", "typescript/README.md", "python/README.md", "rust/bookclerk_plugin_sdk/index.md", "## Rust crates", "## Web UI")]
+        self.assertEqual(order, sorted(order))
+        # No web API reference was built, so there is no section for it.
+        self.assertNotIn("## Web API", text)
 
 
 class TreeTest(unittest.TestCase):
@@ -255,6 +198,19 @@ class TreeTest(unittest.TestCase):
         )
         self.assertFalse((project / "_media" / "gui.md").exists())
         self.assertTrue((project / "_media" / "other.md").exists())
+
+    def test_typedoc_module_list_moves_to_the_readme(self) -> None:
+        project = self.base / "out" / "api" / "typescript"
+        project.mkdir(parents=True)
+        (project / "README.md").write_text("# SDK\n\nIntro.\n")
+        (project / "modules.md").write_text("# SDK\n\n## Modules\n\n- [cli](cli.md)\n- [workerd](workerd.md)\n")
+        (project / "cli.md").write_text("# cli\n\nBack to [the SDK](modules.md).\n")
+        dm.fold_module_index(project)
+        self.assertFalse((project / "modules.md").exists())
+        self.assertEqual(
+            (project / "README.md").read_text(), "# SDK\n\nIntro.\n\n## Modules\n\n- [cli](cli.md)\n- [workerd](workerd.md)\n"
+        )
+        self.assertIn("(README.md)", (project / "cli.md").read_text())
 
     def test_broken_links_in_the_tree_and_out_of_the_api_reference(self) -> None:
         out = self.base / "out"

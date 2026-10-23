@@ -9,7 +9,7 @@
 #
 # Two jobs, so the build never holds a credential:
 #   build    no secrets, read-only token: scripts/docs-markdown.py writes
-#            docs/ plus the Rust, TypeScript and Python API reference as
+#            docs/ plus the TypeScript, Python and Rust API reference as
 #            Markdown, uploaded as an artifact.
 #   publish  mints the automation App token for the docs repository only
 #            (contents: write) and runs scripts/docs-publish.py, which commits
@@ -52,7 +52,7 @@ jobs:
           persist-credentials: false
 
       # Pinned with RUST_NIGHTLY in scripts/docs-markdown.py: the nightly
-      # whose rustdoc JSON format cargo-doc-md reads.
+      # whose rustdoc JSON format scripts/rustdoc_markdown.py reads.
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
@@ -74,11 +74,7 @@ jobs:
         with:
           shared-key: docs-markdown
           workspaces: ". -> target/docs-markdown/cargo-target"
-          cache-bin: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Install cargo-doc-md
-        run: cargo +nightly-2025-11-15 install cargo-doc-md --version 0.11.0 --locked
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -88,16 +84,8 @@ jobs:
             ui/package-lock.json
             packages/plugin-sdk/package-lock.json
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
-        with:
-          version: "0.11.32"
-          enable-cache: false
-
       - name: Build the Markdown docs
-        env:
-          SHA: ${{ github.sha }}
-        run: python3 scripts/docs-markdown.py --revision "$SHA"
+        run: python3 scripts/docs-markdown.py
 
       # The output marker is a dotfile and stays behind.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

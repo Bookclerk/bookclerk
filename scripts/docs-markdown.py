@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """Build the Markdown docs tree published to the docs repository.
 
-The tree holds ``docs/`` as it is, plus the generated API reference converted
-to Markdown under ``api/``:
+The tree holds ``docs/`` as it is, plus the generated API reference under
+``api/``, ordered for plugin authors first:
 
-- ``api/rust/``: rustdoc JSON (a pinned nightly) converted by ``cargo-doc-md``,
-  with rustdoc's intra-doc links (``[`PluginWorker`]``), which the converter
-  leaves as plain text, turned into links;
-- ``api/typescript/`` and ``api/ui/``: each project's own TypeDoc with
-  ``typedoc-plugin-markdown`` (a dev dependency of both) and its own
-  ``typedoc.json``;
-- ``api/python/``: ``pydoc-markdown`` over the Python SDK, one page per
-  public module.
+- ``api/typescript/``: the TypeScript plugin SDK, from the project's own
+  TypeDoc with ``typedoc-plugin-markdown`` and its ``typedoc.json``;
+- ``api/python/``: the Python plugin SDK, read with :mod:`ast` by
+  ``python_api_markdown.py`` (nothing in the package is imported);
+- ``api/rust/``: every workspace library crate, from rustdoc JSON (a pinned
+  nightly) rendered by ``rustdoc_markdown.py``, grouped into the plugin SDK,
+  plugins, host internals and development crates;
+- ``api/ui/``: the web UI library, like the TypeScript SDK.
 
 `scripts/docs-publish.py` commits the tree to the docs repository. Every
 relative link in the tree must resolve, or the build fails.
@@ -32,11 +32,14 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import python_api_markdown  # noqa: E402  (sibling module, needs the path above)
+import rustdoc_markdown  # noqa: E402
 DEFAULT_SCRATCH = ROOT / "target" / "docs-markdown"
 DEFAULT_OUT = DEFAULT_SCRATCH / "out"
 
@@ -44,44 +47,54 @@ DEFAULT_OUT = DEFAULT_SCRATCH / "out"
 # cleared. `docs-publish.py` skips it.
 OUTPUT_MARKER = ".bookclerk-docs-markdown"
 
-# cargo-doc-md 0.11 reads rustdoc JSON format 56, which nightlies emitted
+# rustdoc_markdown.py reads rustdoc JSON format 56, which nightlies emitted
 # between 2025-09 and 2025-11-21. Bump both together.
 RUST_NIGHTLY = "nightly-2025-11-15"
 RUST_JSON_FORMAT = 56
 
 # TypeDoc projects: (output folder under api/, project directory).
 TYPEDOC_PROJECTS = (("typescript", "packages/plugin-sdk"), ("ui", "ui"))
+# Markdown-theme options for both: no GitHub source links (the docs are read
+# on the site), no per-page package banner or breadcrumbs, one page per
+# module rather than per symbol, and parameters as tables.
+TYPEDOC_MARKDOWN_OPTIONS = (
+    "--disableSources",
+    "--hidePageHeader",
+    "--hideBreadcrumbs",
+    "--outputFileStrategy",
+    "modules",
+    "--parametersFormat",
+    "table",
+    "--enumMembersFormat",
+    "table",
+    "--typeDeclarationFormat",
+    "table",
+    "--useCodeBlocks",
+)
 PYTHON_SDK = "packages/plugin-sdk-python"
 PYTHON_PACKAGE = "bookclerk_plugin_sdk"
 
-# Item kinds rustdoc JSON reports, mapped to the page prefix rustdoc's HTML
-# (docs.rs, doc.rust-lang.org) uses for them.
-HTML_KIND_PREFIX = {
-    "struct": "struct",
-    "enum": "enum",
-    "union": "union",
-    "trait": "trait",
-    "trait_alias": "traitalias",
-    "function": "fn",
-    "type_alias": "type",
-    "constant": "constant",
-    "static": "static",
-    "macro": "macro",
-    "proc_attribute": "attr",
-    "proc_derive": "derive",
-    "primitive": "primitive",
+# Groups of the Rust reference, in index order: (title, description).
+# A crate's group comes from RUST_GROUP_OF, else from its directory.
+RUST_GROUPS = (
+    ("Plugin interface", "The plugin ABI, the `plugin.toml` manifest and the plugin author CLI."),
+    ("Plugins", "First-party plugins: databases, destinations, sources and integrations."),
+    ("Host internals", "The crates the hosts are built from. Not a stable API."),
+    ("Development and testing", "Build tooling, test suites and examples."),
+)
+# The Rust plugin SDK itself is listed with the other SDKs (RUST_SDK_CRATE).
+RUST_SDK_CRATE = "bookclerk_plugin_sdk"
+RUST_GROUP_OF = {
+    "bookclerk_plugin_sdk": "Plugin interface",
+    "bookclerk_plugin_abi": "Plugin interface",
+    "bookclerk_plugin_manifest": "Plugin interface",
+    "bookclerk_plugin_tools": "Plugin interface",
+    "bookclerk_dev": "Development and testing",
+    "bookclerk_plugin_e2e": "Development and testing",
 }
-STD_CRATES = frozenset({"std", "core", "alloc", "proc_macro", "test"})
 
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
 CODE_SPAN_RE = re.compile(r"(`+)(?:(?!\1).)+?\1")
-# A shortcut reference such as [`Foo`] or [Foo::bar] that is not followed by
-# a link destination, a reference label or a definition colon.
-SHORTCUT_RE = re.compile(r"\[(`[^`\[\]]+`|[A-Za-z_][\w:]*(?:\(\))?)\](?![(\[:])")
-# An inline link whose destination is a Rust path, as rustdoc allows:
-# [text](crate::Item) or [text](Self::method).
-INLINE_PATH_RE = re.compile(r"\[((?:[^\[\]]|\[[^\]]*\])+)\]\(([A-Za-z_]\w*(?:::\w+)*(?:\(\))?)\)")
-HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 LINK_RE = re.compile(r"(?<!!)\[(?:[^\[\]]|\[[^\]]*\])*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 
 
@@ -204,7 +217,10 @@ def copy_docs(src: Path, out: Path) -> None:
 
 
 def build_rust_json(target_dir: Path) -> Path:
-    """Generate rustdoc JSON for every workspace crate on the pinned nightly.
+    """Generate rustdoc JSON for every workspace library on the pinned nightly.
+
+Binaries are left out: they have no API, and a binary named like its
+package's library would overwrite that library's JSON.
 
     ``--ignore-rust-version`` because the pinned nightly can predate the
     workspace's ``rust-version``; only documentation is produced.
@@ -221,6 +237,7 @@ def build_rust_json(target_dir: Path) -> Path:
             f"+{RUST_NIGHTLY}",
             "doc",
             "--workspace",
+            "--lib",
             "--no-deps",
             "--all-features",
             "--ignore-rust-version",
@@ -233,11 +250,49 @@ def build_rust_json(target_dir: Path) -> Path:
     return target_dir / "doc"
 
 
-def workspace_targets() -> set[str]:
-    """Return the rustdoc names of the workspace's library and binary targets.
+@dataclass
+class RustCrate:
+    """A workspace library documented in the Rust reference.
+
+    Attributes:
+        name: rustdoc name (``bookclerk_media``).
+        package: Cargo package name.
+        description: The package's ``description``, or ``""``.
+        group: Title from :data:`RUST_GROUPS`.
+    """
+
+    name: str
+    package: str
+    description: str
+    group: str
+
+
+def rust_group(name: str, manifest_dir: str) -> str:
+    """Return the reference group a workspace library belongs to.
+
+    Args:
+        name: rustdoc name of the library.
+        manifest_dir: Its package directory, relative to the workspace root.
 
     Returns:
-        Target names with ``-`` replaced by ``_``, as rustdoc names its JSON.
+        A title from :data:`RUST_GROUPS`.
+    """
+    if name in RUST_GROUP_OF:
+        return RUST_GROUP_OF[name]
+    parts = Path(manifest_dir).parts
+    if parts[:1] in (("examples",), ("tools",)):
+        return "Development and testing"
+    if parts[:2] == ("crates", "bookclerk-plugins"):
+        return "Plugins"
+    return "Host internals"
+
+
+def workspace_libraries() -> dict[str, RustCrate]:
+    """Return the workspace's library targets, keyed by rustdoc name.
+
+    Returns:
+        Library name (``-`` replaced by ``_``, as rustdoc names its JSON) ->
+        crate.
     """
     result = subprocess.run(
         ["cargo", "metadata", "--no-deps", "--format-version", "1"],
@@ -246,313 +301,82 @@ def workspace_targets() -> set[str]:
         capture_output=True,
         text=True,
     )
-    names = set()
-    for package in json.loads(result.stdout)["packages"]:
+    meta = json.loads(result.stdout)
+    root = Path(meta["workspace_root"])
+    libs = {}
+    for package in meta["packages"]:
+        manifest_dir = Path(package["manifest_path"]).parent.relative_to(root).as_posix()
         for target in package["targets"]:
-            if set(target["kind"]) & {"lib", "bin", "proc-macro", "rlib", "cdylib", "staticlib", "dylib"}:
-                names.add(target["name"].replace("-", "_"))
-    return names
+            if set(target["kind"]) & {"lib", "proc-macro", "rlib"}:
+                name = target["name"].replace("-", "_")
+                group = rust_group(name, manifest_dir)
+                libs[name] = RustCrate(name, package["name"], package.get("description") or "", group)
+    return libs
 
 
-def convert_rust(json_dir: Path, out: Path, crates: set[str]) -> list[str]:
-    """Convert each crate's rustdoc JSON with ``cargo-doc-md``.
+def convert_rust(json_dir: Path, out: Path, libraries: dict[str, RustCrate]) -> list[str]:
+    """Render the Rust reference from rustdoc JSON.
 
-    Only files named after a current workspace target are read, so JSON left
-    in a reused target directory by a renamed or removed crate is ignored.
+    Only files named after a current workspace library are read, so JSON
+    left in a reused target directory by a renamed or removed crate, or by a
+    binary, is ignored.
 
     Args:
         json_dir: Directory of ``<crate>.json`` files.
         out: ``api/rust`` in the output tree.
-        crates: Output of :func:`workspace_targets`.
+        libraries: Output of :func:`workspace_libraries`.
 
     Returns:
-        The crate names converted, sorted.
+        The crate names rendered, sorted.
 
     Raises:
         BuildError: No JSON was found, or a file has an unexpected format.
     """
-    files = sorted(p for p in json_dir.glob("*.json") if p.stem in crates)
-    if not files:
+    try:
+        crates = rustdoc_markdown.load_crates(json_dir, libraries, RUST_JSON_FORMAT)
+    except ValueError as err:
+        raise BuildError(str(err)) from err
+    if not crates:
         raise BuildError(f"no rustdoc JSON in {json_dir}")
-    crates = []
-    for path in files:
-        with path.open() as fh:
-            fmt = json.load(fh).get("format_version")
-        if fmt != RUST_JSON_FORMAT:
-            raise BuildError(f"{path.name}: rustdoc JSON format {fmt}, expected {RUST_JSON_FORMAT}")
-        run(["cargo-doc-md", "--json", str(path), "--output", str(out)], cwd=ROOT)
-        crates.append(path.stem)
-    # Each run rewrites the converter's own master index for one crate;
-    # write_rust_index replaces it with one covering every crate.
-    (out / "index.md").unlink(missing_ok=True)
-    return crates
+    pages = rustdoc_markdown.Renderer(crates).render_all()
+    for rel, text in pages.items():
+        dest = out / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(text, encoding="utf-8")
+    write_rust_index(out, [libraries[name] for name in crates])
+    return sorted(crates)
 
 
-def slug(heading: str) -> str:
-    """Return the GitHub-style anchor for a heading.
+def write_rust_index(rust_out: Path, crates: list[RustCrate]) -> None:
+    """Write ``api/rust/README.md``, listing the crates by group.
 
-    Args:
-        heading: Heading text, without the leading ``#`` marks.
-
-    Returns:
-        Lowercased text with punctuation other than ``-`` and ``_`` removed
-        and spaces turned into ``-``.
-    """
-    text = re.sub(r"[`*]", "", heading).strip().lower()
-    text = re.sub(r"[^\w\- ]", "", text)
-    return text.replace(" ", "-")
-
-
-@dataclass
-class HeadingIndex:
-    """Where each Rust item and module landed in the converted tree.
-
-    Attributes:
-        items: Full path (``crate::module::Item``) -> (file, anchor).
-        modules: Full module path -> file.
-    """
-
-    items: dict[str, tuple[Path, str]] = field(default_factory=dict)
-    modules: dict[str, Path] = field(default_factory=dict)
-
-
-def index_rust_headings(rust_out: Path) -> HeadingIndex:
-    """Index the item headings and module files ``cargo-doc-md`` wrote.
-
-    Items are headed by their full path (``## crate::mux::Mux``). A module
-    ``crate::a::b`` is the file ``crate/a/b.md``; a crate root is
-    ``crate/index.md``.
+The plugin SDK crate is left out: ``api/README.md`` lists it with the other
+plugin SDKs.
 
     Args:
         rust_out: ``api/rust`` in the output tree.
-
-    Returns:
-        The index.
-    """
-    index = HeadingIndex()
-    for md in sorted(rust_out.rglob("*.md")):
-        rel = md.relative_to(rust_out)
-        if len(rel.parts) < 2:
-            continue
-        crate = rel.parts[0]
-        if rel.name == "index.md" and len(rel.parts) == 2:
-            index.modules.setdefault(crate, md)
-        else:
-            module = "::".join((crate, *rel.with_suffix("").parts[1:]))
-            if rel.with_suffix("").parts[1:] == (crate,):
-                module = crate
-            index.modules.setdefault(module, md)
-        in_fence = False
-        for line in md.read_text(encoding="utf-8").splitlines():
-            if FENCE_RE.match(line):
-                in_fence = not in_fence
-                continue
-            match = None if in_fence else HEADING_RE.match(line)
-            if match and "::" in match.group(2) and " " not in match.group(2).strip("`"):
-                name = match.group(2).strip("`")
-                index.items.setdefault(name, (md, slug(match.group(2))))
-    return index
-
-
-def external_url(path: list[str], kind: str, crate_name: str) -> str | None:
-    """Return the rustdoc HTML page of an item outside the workspace.
-
-    Args:
-        path: The item's full path, starting with its crate.
-        kind: rustdoc JSON item kind.
-        crate_name: The crate's name as rustdoc reports it.
-
-    Returns:
-        A doc.rust-lang.org URL for the standard library, a docs.rs URL
-        otherwise, or None for kinds without their own page.
-    """
-    base = (
-        f"https://doc.rust-lang.org/stable/{'/'.join(path[:-1])}"
-        if crate_name in STD_CRATES
-        else f"https://docs.rs/{crate_name}/latest/{'/'.join(path[:-1])}"
-    )
-    if kind == "module":
-        return f"{base}/{path[-1]}/index.html"
-    prefix = HTML_KIND_PREFIX.get(kind)
-    if prefix is None:
-        return None
-    return f"{base}/{prefix}.{path[-1]}.html"
-
-
-def rust_link_targets(json_path: Path, workspace_crates: set[str]) -> dict[str, tuple[str, str] | None]:
-    """Collect what each intra-doc link text in a crate points at.
-
-    Args:
-        json_path: One crate's rustdoc JSON.
-        workspace_crates: Crates converted into this tree.
-
-    Returns:
-        Link text (as written between the brackets) -> ("local", full path)
-        for workspace items, ("url", address) for other crates, or None when
-        the text is a link but its target has no page, or names different
-        targets in different items.
-    """
-    with json_path.open() as fh:
-        data = json.load(fh)
-    paths = data.get("paths", {})
-    crates = {str(k): v.get("name", "") for k, v in data.get("external_crates", {}).items()}
-    found: dict[str, tuple[str, str] | None] = {}
-    for item in data.get("index", {}).values():
-        for text, target_id in (item.get("links") or {}).items():
-            summary = paths.get(str(target_id))
-            resolved: tuple[str, str] | None = None
-            if summary:
-                full = summary["path"]
-                if full[0] in workspace_crates:
-                    resolved = ("local", "::".join(full))
-                else:
-                    name = crates.get(str(summary.get("crate_id")), full[0])
-                    url = external_url(full, summary.get("kind", ""), name)
-                    resolved = ("url", url) if url else None
-            if text in found and found[text] != resolved:
-                found[text] = None
-            else:
-                found[text] = resolved
-    return found
-
-
-def _code_spans(line: str) -> list[tuple[int, int]]:
-    """Return the ``(start, end)`` offsets of inline code spans in a line.
-
-    Args:
-        line: One Markdown line.
-
-    Returns:
-        Offsets, end exclusive.
-    """
-    return [m.span() for m in CODE_SPAN_RE.finditer(line)]
-
-
-def rewrite_shortcuts(
-    text: str, md_file: Path, targets: dict[str, tuple[str, str] | None], index: HeadingIndex
-) -> tuple[str, int]:
-    """Turn rustdoc shortcut links in one converted file into Markdown links.
-
-    Handles shortcut links (``[`Foo`]``) and inline links whose destination
-    is a Rust path (``[text](crate::Foo)``). Only texts rustdoc itself
-    recorded as links are touched, and never inside fenced code or inline
-    code. A link whose target has no page (a method, say) keeps its text and
-    loses the link.
-
-    Args:
-        text: The file's Markdown.
-        md_file: The file's path, for relative links.
-        targets: Output of :func:`rust_link_targets` for the file's crate.
-        index: Output of :func:`index_rust_headings`.
-
-    Returns:
-        (new Markdown, number of links rewritten).
-    """
-    def resolve(label: str) -> str | None:
-        target = targets[label]
-        if target is None:
-            return None
-        if target[0] == "url":
-            return target[1]
-        full = target[1]
-        if full in index.items:
-            dest, anchor = index.items[full]
-            return f"{Path(os.path.relpath(dest, md_file.parent)).as_posix()}#{anchor}"
-        if full in index.modules:
-            return Path(os.path.relpath(index.modules[full], md_file.parent)).as_posix()
-        return None
-
-    out_lines = []
-    count = 0
-    in_fence = False
-    for line in text.splitlines(keepends=True):
-        if FENCE_RE.match(line):
-            in_fence = not in_fence
-            out_lines.append(line)
-            continue
-        if in_fence:
-            out_lines.append(line)
-            continue
-        spans = _code_spans(line)
-
-        def replace(match: re.Match[str]) -> str:
-            nonlocal count
-            start = match.start()
-            if any(s <= start < e for s, e in spans):
-                return match.group(0)
-            label = match.group(1)
-            if label not in targets:
-                return match.group(0)
-            count += 1
-            href = resolve(label)
-            return label if href is None else f"[{label}]({href})"
-
-        def replace_inline(match: re.Match[str]) -> str:
-            nonlocal count
-            if any(s <= match.start() < e for s, e in spans):
-                return match.group(0)
-            text, dest = match.group(1), match.group(2)
-            if dest not in targets:
-                return match.group(0)
-            count += 1
-            href = resolve(dest)
-            return text if href is None else f"[{text}]({href})"
-
-        line = INLINE_PATH_RE.sub(replace_inline, line)
-        spans = _code_spans(line)
-        out_lines.append(SHORTCUT_RE.sub(replace, line))
-    return "".join(out_lines), count
-
-
-def fix_rust_links(json_dir: Path, rust_out: Path, crates: list[str]) -> int:
-    """Rewrite intra-doc links across the converted Rust reference.
-
-    Args:
-        json_dir: Directory of ``<crate>.json`` files.
-        rust_out: ``api/rust`` in the output tree.
-        crates: Crates converted.
-
-    Returns:
-        The number of links rewritten.
-    """
-    index = index_rust_headings(rust_out)
-    workspace = set(crates)
-    total = 0
-    for crate in crates:
-        targets = rust_link_targets(json_dir / f"{crate}.json", workspace)
-        crate_dir = rust_out / crate
-        if not crate_dir.is_dir():
-            continue
-        for md in sorted(crate_dir.rglob("*.md")):
-            text = md.read_text(encoding="utf-8")
-            new, count = rewrite_shortcuts(text, md, targets, index)
-            if new != text:
-                md.write_text(new, encoding="utf-8")
-            total += count
-    return total
-
-
-def write_rust_index(rust_out: Path, crates: list[str]) -> None:
-    """Write ``api/rust/README.md``, listing every converted crate.
-
-    Args:
-        rust_out: ``api/rust`` in the output tree.
-        crates: Crates converted.
+        crates: Crates rendered.
     """
     lines = [
         "# Rust API reference",
         "",
-        "Generated from rustdoc JSON for every crate in the Bookclerk workspace.",
-        "Start with [`bookclerk_plugin_sdk`](bookclerk_plugin_sdk/index.md) to write a native plugin.",
+        "Generated from rustdoc JSON for the Bookclerk workspace's libraries.",
+        "To write a native plugin, use the [Rust plugin SDK](bookclerk_plugin_sdk/index.md).",
         "",
     ]
-    for crate in crates:
-        if (rust_out / crate / "index.md").is_file():
-            lines.append(f"- [`{crate}`]({crate}/index.md)")
-    (rust_out / "README.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    for title, description in RUST_GROUPS:
+        members = sorted((c for c in crates if c.group == title and c.name != RUST_SDK_CRATE), key=lambda c: c.name)
+        if not members:
+            continue
+        lines += [f"## {title}", "", description, "", "| Crate | Description |", "| --- | --- |"]
+        for crate in members:
+            text = crate.description.replace("|", "\\|")
+            lines.append(f"| [`{crate.name}`]({crate.name}/index.md) | {text} |")
+        lines.append("")
+    (rust_out / "README.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
-def build_typedoc(project: Path, out: Path, revision: str | None) -> None:
+def build_typedoc(project: Path, out: Path) -> None:
     """Run TypeDoc's Markdown theme over one TypeScript project.
 
     The project's own TypeDoc, TypeScript and ``typedoc.json`` are used, so
@@ -561,7 +385,6 @@ def build_typedoc(project: Path, out: Path, revision: str | None) -> None:
     Args:
         project: The TypeScript project directory, dependencies installed.
         out: Its folder under ``api/``.
-        revision: Commit for source links, or None for TypeDoc's default.
     """
     cmd = [
         str(project / "node_modules" / ".bin" / "typedoc"),
@@ -571,10 +394,35 @@ def build_typedoc(project: Path, out: Path, revision: str | None) -> None:
         "typedoc-plugin-markdown",
         "--out",
         str(out),
+        *TYPEDOC_MARKDOWN_OPTIONS,
     ]
-    if revision:
-        cmd += ["--gitRevision", revision]
     run(cmd, cwd=project)
+
+
+def fold_module_index(project_out: Path) -> None:
+    """Put TypeDoc's module list on the project's landing page.
+
+    With a project README, TypeDoc writes the README as ``README.md`` and the
+    module list as ``modules.md``, which nothing on the landing page links
+    to. The list is appended to the README under "Modules" and links to
+    ``modules.md`` are pointed at the README.
+
+    Args:
+        project_out: One TypeDoc output folder under ``api/``.
+    """
+    readme = project_out / "README.md"
+    modules = project_out / "modules.md"
+    if not readme.is_file() or not modules.is_file():
+        return
+    entries = [line for line in modules.read_text(encoding="utf-8").splitlines() if line.startswith("- [")]
+    text = readme.read_text(encoding="utf-8").rstrip()
+    readme.write_text(text + "\n\n## Modules\n\n" + "\n".join(entries) + "\n", encoding="utf-8")
+    modules.unlink()
+    for md in project_out.rglob("*.md"):
+        page = md.read_text(encoding="utf-8")
+        new = page.replace("(modules.md)", "(README.md)").replace("(../modules.md)", "(../README.md)")
+        if new != page:
+            md.write_text(new, encoding="utf-8")
 
 
 def link_media_to_docs(project_out: Path, out: Path) -> int:
@@ -658,11 +506,10 @@ def python_modules(src: Path, package: str) -> list[str]:
     return modules
 
 
-def build_python(venv_bin: Path, src: Path, out: Path) -> list[str]:
-    """Render each public Python SDK module with ``pydoc-markdown``.
+def build_python(src: Path, out: Path) -> list[str]:
+    """Render each public Python SDK module with :mod:`python_api_markdown`.
 
     Args:
-        venv_bin: ``bin`` of a venv with the ``docs-markdown`` extra.
         src: The SDK's ``src`` directory.
         out: ``api/python`` in the output tree.
 
@@ -671,51 +518,78 @@ def build_python(venv_bin: Path, src: Path, out: Path) -> list[str]:
     """
     out.mkdir(parents=True, exist_ok=True)
     modules = python_modules(src, PYTHON_PACKAGE)
+    for rel, text in python_api_markdown.render(src, modules).items():
+        (out / rel).write_text(text, encoding="utf-8")
+    lines = [
+        "# Python plugin SDK",
+        "",
+        "The `bookclerk-plugin-sdk` package. Start with",
+        f"[`{PYTHON_PACKAGE}.workerd`]({PYTHON_PACKAGE}.workerd.md), which holds the entrypoint classes a plugin extends.",
+        "",
+        "| Module | Summary |",
+        "| --- | --- |",
+    ]
     for module in modules:
-        # JSON is valid YAML, which pydoc-markdown reads.
-        config = {
-            "loaders": [{"type": "python", "search_path": [str(src)], "modules": [module]}],
-            "processors": [{"type": "filter", "skip_empty_modules": True}, {"type": "google"}, {"type": "crossref"}],
-            "renderer": {
-                "type": "markdown",
-                "filename": str(out / f"{module}.md"),
-                "render_toc": False,
-                "insert_header_anchors": False,
-                "descriptive_class_title": False,
-                "add_method_class_prefix": True,
-                "render_module_header": True,
-            },
-        }
-        config_path = out / f".{module}.pydoc-markdown.yml"
-        config_path.write_text(json.dumps(config), encoding="utf-8")
-        try:
-            run([str(venv_bin / "pydoc-markdown"), str(config_path)], cwd=src)
-        finally:
-            config_path.unlink(missing_ok=True)
-    lines = ["# Python API reference", "", "The `bookclerk-plugin-sdk` package, one page per public module.", ""]
-    lines += [f"- [`{m}`]({m}.md)" for m in modules if (out / f"{m}.md").is_file()]
+        page = out / f"{module}.md"
+        if page.is_file():
+            lines.append(f"| [`{module}`]({module}.md) | {python_api_markdown.module_summary(src, module)} |")
     (out / "README.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return modules
 
 
-def write_api_index(api_out: Path, sections: Iterable[tuple[str, str, str]]) -> None:
+def _code_spans(line: str) -> list[tuple[int, int]]:
+    """Return the ``(start, end)`` offsets of inline code spans in a line.
+
+    Args:
+        line: One Markdown line.
+
+    Returns:
+        Offsets, end exclusive.
+    """
+    return [m.span() for m in CODE_SPAN_RE.finditer(line)]
+
+
+# api/README.md, in order: (section, [(page under api/, title, description)]).
+# A reference that was not built is left out, and so is an empty section.
+API_INDEX = (
+    (
+        "Plugin SDKs",
+        (
+            ("typescript/README.md", "TypeScript", "`@bookclerk/plugin-sdk`, for plugins that run in workerd"),
+            ("python/README.md", "Python", "`bookclerk-plugin-sdk`, for Python plugins that run in workerd"),
+            (f"rust/{RUST_SDK_CRATE}/index.md", "Rust", f"`{RUST_SDK_CRATE}`, for native plugins"),
+        ),
+    ),
+    ("Web API", (("web/README.md", "bookclerkd HTTP API", "the endpoints the daemon serves"),)),
+    (
+        "Rust crates",
+        (("rust/README.md", "Rust crates", "the plugin ABI and manifest, first-party plugins, and the host's crates"),),
+    ),
+    ("Web UI", (("ui/README.md", "Web UI library", "`ui/src/lib`, the web UI's API client and helpers"),)),
+)
+
+
+def write_api_index(api_out: Path) -> None:
     """Write ``api/README.md``, linking each reference that was built.
 
     Args:
         api_out: ``api`` in the output tree.
-        sections: (folder, title, description) for each candidate reference.
     """
     lines = [
         "# API reference",
         "",
         "Generated from the source at the same version as these docs.",
-        "To build the HTML version locally, run `./scripts/generate-api-docs.sh`.",
+        "Writing a plugin? Start with the SDK for its language; [Plugins](../plugins.md) explains the model.",
         "",
     ]
-    for folder, title, description in sections:
-        if (api_out / folder / "README.md").is_file():
-            lines.append(f"- [{title}]({folder}/README.md): {description}")
-    (api_out / "README.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    for section, pages in API_INDEX:
+        built = [(page, title, description) for page, title, description in pages if (api_out / page).is_file()]
+        if not built:
+            continue
+        lines += [f"## {section}", ""]
+        lines += [f"- [{title}]({page}): {description}" for page, title, description in built]
+        lines.append("")
+    (api_out / "README.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
 def broken_links(out: Path) -> list[str]:
@@ -776,8 +650,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="output directory (cleared first)")
     parser.add_argument("--scratch-root", type=Path, default=DEFAULT_SCRATCH, help="directory --out must be inside")
     parser.add_argument("--rust-json-dir", type=Path, help="use existing rustdoc JSON instead of building it")
-    parser.add_argument("--python-venv", type=Path, help="venv with the docs-markdown extra (default: build one)")
-    parser.add_argument("--revision", help="commit for TypeScript source links")
     parser.add_argument("--skip-rust", action="store_true")
     parser.add_argument("--skip-typescript", action="store_true")
     parser.add_argument("--skip-python", action="store_true")
@@ -790,41 +662,24 @@ def main(argv: list[str] | None = None) -> int:
         api = out / "api"
         api.mkdir()
 
-        if not args.skip_rust:
-            json_dir = args.rust_json_dir.resolve() if args.rust_json_dir else build_rust_json(scratch / "cargo-target")
-            crates = convert_rust(json_dir, api / "rust", workspace_targets())
-            fixed = fix_rust_links(json_dir, api / "rust", crates)
-            write_rust_index(api / "rust", crates)
-            print(f"==> Rust: {len(crates)} crates, {fixed} intra-doc links rewritten")
-
         if not args.skip_typescript:
             for folder, project in TYPEDOC_PROJECTS:
                 if not (ROOT / project / "node_modules").is_dir():
                     run(["npm", "ci", "--no-audit", "--no-fund"], cwd=ROOT / project)
-                build_typedoc(ROOT / project, api / folder, args.revision)
+                build_typedoc(ROOT / project, api / folder)
+                fold_module_index(api / folder)
                 link_media_to_docs(api / folder, out)
 
         if not args.skip_python:
-            sdk = ROOT / PYTHON_SDK
-            venv = args.python_venv.resolve() if args.python_venv else scratch / "python-venv"
-            if args.python_venv is None:
-                run(
-                    ["uv", "sync", "--quiet", "--no-install-project", "--locked", "--extra", "docs-markdown"],
-                    cwd=sdk,
-                    env={"UV_PROJECT_ENVIRONMENT": str(venv)},
-                )
-            modules = build_python(venv / "bin", sdk / "src", api / "python")
+            modules = build_python(ROOT / PYTHON_SDK / "src", api / "python")
             print(f"==> Python: {len(modules)} modules")
 
-        write_api_index(
-            api,
-            (
-                ("rust", "Rust", "every workspace crate, including the plugin SDK"),
-                ("typescript", "TypeScript plugin SDK", "`@bookclerk/plugin-sdk`"),
-                ("ui", "Web UI library", "`ui/src/lib`"),
-                ("python", "Python plugin SDK", "`bookclerk-plugin-sdk`"),
-            ),
-        )
+        if not args.skip_rust:
+            json_dir = args.rust_json_dir.resolve() if args.rust_json_dir else build_rust_json(scratch / "cargo-target")
+            crates = convert_rust(json_dir, api / "rust", workspace_libraries())
+            print(f"==> Rust: {len(crates)} crates")
+
+        write_api_index(api)
         broken = broken_links(out)
         if broken:
             for line in broken[:50]:
