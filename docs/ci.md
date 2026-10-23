@@ -767,8 +767,8 @@ step with this one, as Markdown that the website and agents read:
 
 - Its `main` mirrors this repository's `main`. Every push to `main` builds
   the tree and commits it there with a `Source-Commit: <sha>` trailer naming
-  the commit it was built from. Runs share one concurrency group that cancels
-  the older run, so a burst of merges publishes only the newest commit, and a
+  the commit it was built from. Runs on `main` share one concurrency group
+  that cancels the older run, so a burst of merges publishes only the newest commit, and a
   run whose commit is no longer the tip of `main` when it reaches the publish
   step skips it. A build identical to the docs `main` adds no commit.
 - A published release tags the docs commit whose trailer names the release's
