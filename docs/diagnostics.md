@@ -5,14 +5,18 @@ Opt-in crash / error-burst reporting for Bookclerk operators. Product docs:
 
 ## Operator config
 
-After deploy CI has set `DIAGNOSTICS_COLLECTOR_BASE_URL`, build Bookclerk with that
-URL baked in:
+The collector is served on `https://diagnostics.<DOMAIN>` when the `DOMAIN`
+Actions variable is set (`bookclerk.app` upstream). A fork without a domain
+gets its Cloudflare account's workers.dev URL instead, which the deploy stores
+in Actions variable `DIAGNOSTICS_COLLECTOR_BASE_URL` (organization first, then
+repository). Build Bookclerk with
+that URL baked in:
 
 ```bash
 BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL="https://diagnostics.bookclerk.app" cargo build --release -p bookclerk-cli
 ```
 
-Release builds on `main` in CI pass the repository variable automatically.
+Release builds in CI pick the URL up automatically.
 
 ```toml
 [diagnostics]
@@ -74,9 +78,9 @@ stable.
 
 | Workflow | Purpose |
 |----------|---------|
-| `diagnostics-collector-deploy` | Deploy Worker on `diagnostics.<DOMAIN>` (default `bookclerk.app`); set `DIAGNOSTICS_COLLECTOR_BASE_URL` to that URL |
+| `diagnostics-collector-deploy` | Deploy Worker on `diagnostics.<DOMAIN>`, or on workers.dev when `DOMAIN` is unset (stores that URL in `DIAGNOSTICS_COLLECTOR_BASE_URL`); then check `/health` |
 | `diagnostics-ingest` | Daily `/report` pull + Copilot triage |
-| `ci` | Release builds with `BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL` from repo variable |
+| `ci` | Release builds with `BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL` set to the collector URL |
 
 ### Workflow permissions (least privilege)
 
@@ -85,7 +89,7 @@ See [repository permissions](https://docs.github.com/en/authentication/keeping-y
 
 | Workflow | Permissions |
 |----------|-------------|
-| Deploy | `contents: read`, `actions-variables: write` (`gh variable set`) |
+| Deploy | `contents: read`; in workers.dev mode an automation App token ("Variables: write") stores the URL |
 | Ingest | `contents: read`, `issues: write`, `copilot-requests: write` |
 
 Ingest Copilot auth follows [GitHub Agentic Workflows](https://github.com/github/gh-aw): prefer

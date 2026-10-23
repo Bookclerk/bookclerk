@@ -600,6 +600,12 @@ attributed to the App.
      (`cflite-batch.yml` and `osv-advisories.yml` file draft advisories and
      dedupe against them)
    - **Metadata: read** (always granted)
+   - **Variables: read and write**, as an organization and/or repository
+     permission (`diagnostics-collector-deploy.yml` stores the workers.dev
+     collector URL when `DOMAIN` is unset; organization first, repository as
+     the fallback). That token cannot be narrowed, because the token API has
+     no Variables permission to request, so the job mints it only for the
+     one write.
 
    **Workflows** is not needed: none of these pull requests touch
    `.github/workflows/`. Install the App on `bookclerk-docs` as well, with
@@ -883,7 +889,7 @@ secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`:
 | `site-deploy.yml` | `bookclerk-site` | `<DOMAIN>` |
 | `diagnostics-collector-deploy.yml` | `bookclerk-diagnostics` | `diagnostics.<DOMAIN>` |
 
-`DOMAIN` is the organization variable (default `bookclerk.app`).
+`DOMAIN` is the organization variable (default `bookclerk.app` for the site). With `DOMAIN` unset the diagnostics collector is served on the account's workers.dev subdomain instead (see `docs/diagnostics.md`).
 
 The API token is scoped to the Workers by name, so it needs, for each Worker
 the workflows deploy:

@@ -532,9 +532,12 @@ jobs:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' && !inputs.private-head }}
 
+      # The collector lives on diagnostics.<DOMAIN>, or on the workers.dev URL
+      # the deploy stores when DOMAIN is unset
+      # (.github/workflows/diagnostics-collector-deploy.yml).
       - name: Build release binaries
         env:
-          BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL: ${{ vars.DIAGNOSTICS_COLLECTOR_BASE_URL }}
+          BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL: ${{ vars.DOMAIN && format('https://diagnostics.{0}', vars.DOMAIN) || vars.DIAGNOSTICS_COLLECTOR_BASE_URL }}
         run: python3 scripts/ci-exec.py run release
 
   confinement:
