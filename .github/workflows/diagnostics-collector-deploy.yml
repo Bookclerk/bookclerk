@@ -140,7 +140,8 @@ jobs:
             url="$ROUTE_URL"
           else
             url="${DEPLOYMENT_URL%/}"
-            workers_dev_re='^https://bookclerk-diagnostics\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.workers\.dev$'
+            # <worker name from wrangler.toml>.<account subdomain>.workers.dev
+            workers_dev_re='^https://[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.workers\.dev$'
             if [[ ! "$url" =~ $workers_dev_re ]]; then
               echo "::error::Deploy did not report a workers.dev URL: $url"
               exit 1
@@ -154,13 +155,14 @@ jobs:
           URL: ${{ steps.url.outputs.url }}
         run: |
           set -euo pipefail
-          # A new custom domain or workers.dev route can take a moment to answer.
-          for attempt in 1 2 3 4 5 6; do
+          # A new custom domain or workers.dev subdomain can take a few
+          # minutes to answer; allow about six.
+          for attempt in 1 2 3 4 5 6 7 8; do
             if body=$(curl -fsS --max-time 10 "$URL/health"); then
               echo "$body"
               exit 0
             fi
-            sleep $((attempt * 10))
+            [ "$attempt" -lt 8 ] && sleep $((attempt * 10))
           done
           echo "::error::$URL/health did not answer after deploy"
           exit 1
@@ -185,9 +187,10 @@ jobs:
             echo "write=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # The pinned action has no input for the App's "Variables" permission,
-      # so the token carries the installation's permissions; it is used for
-      # this one call and revoked when the job ends.
+      # The installation-token API has no Variables permission to request
+      # (only listed permissions can be narrowed to), so the token carries the
+      # installation's permissions; it is used for this one write and revoked
+      # when the job ends.
       - name: Mint variable-write token
         id: app-token
         if: steps.record.outputs.write == 'true'

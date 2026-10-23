@@ -3,9 +3,9 @@
 name = "bookclerk-diagnostics"
 main = "worker.js"
 compatibility_date = "2026-01-01"
-# Served only on the custom domain `diagnostics.<DOMAIN>`; the deploy
-# workflow adds that route from the DOMAIN variable, or turns workers_dev on
-# when DOMAIN is unset (forks without a domain).
+# Off here: with the DOMAIN variable set, the deploy workflow adds the custom
+# domain `diagnostics.<DOMAIN>` and serves only there. With DOMAIN unset (a
+# fork without a domain) it turns workers_dev on instead.
 workers_dev = false
 
 [vars]
