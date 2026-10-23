@@ -538,22 +538,24 @@ def dependabot_to_alerts(raw: list[dict[str, Any]]) -> list[tuple[str, str]]:
     return sorted(out)
 
 
-def fetch_record(vuln_id: str) -> dict[str, Any] | None:
+def fetch_record(vuln_id: str, hints: tuple[str, ...] = ()) -> dict[str, Any] | None:
     """Looks an advisory and its aliases up on api.osv.dev (`with_alias_meta`).
 
     Args:
         vuln_id: The id an alert names.
+        hints: Other advisory ids the alert names (`osv.Alert.hints`), used
+            when OSV does not know `vuln_id` and folded in as aliases.
 
     Returns:
-        The merged record, or None when OSV does not know the id.
+        The merged record, or None when OSV knows neither the id nor any hint.
 
     Raises:
         urllib.error.URLError: OSV could not be reached.
     """
-    primary = osv.fetch_vuln(vuln_id)
-    if primary is None:
+    found = osv.fetch_primary(vuln_id, hints)
+    if found is None:
         return None
-    alias_ids = sorted(record_ids(primary) - {vuln_id})[: osv.MAX_ALIASES]
+    primary, alias_ids = found
     aliases = [r for alias in alias_ids if (r := osv.fetch_vuln(alias)) is not None]
     return with_alias_meta(primary, aliases)
 
@@ -574,12 +576,12 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         return 1
     gh = GitHub(repo, token, os.environ.get("GITHUB_API_URL", API))
     try:
-        scanning = [
-            (a.vuln_id, a.lockfile, "code-scanning") for a in osv.alerts_from_api(gh.code_scanning_alerts(args.ref))
-        ]
+        scanning_alerts = osv.alerts_from_api(gh.code_scanning_alerts(args.ref))
+        hints = osv.alert_hints_by_id(scanning_alerts)
+        scanning = [(a.vuln_id, a.lockfile, "code-scanning") for a in scanning_alerts]
         dependabot = [(ghsa, path, "dependabot") for ghsa, path in dependabot_to_alerts(gh.dependabot_alerts())]
         alerts = scanning + dependabot
-        records = {vuln_id: fetch_record(vuln_id) for vuln_id in sorted({a[0] for a in alerts})}
+        records = {vuln_id: fetch_record(vuln_id, hints.get(vuln_id, ())) for vuln_id in sorted({a[0] for a in alerts})}
         release_tag = gh.latest_release_tag()
         on_record = gh.advisory_markers()
         drafts = [

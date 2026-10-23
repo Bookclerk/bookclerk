@@ -108,3 +108,31 @@ and would change a protocol-critical path; upstream audible-rs still depends
 on rsa 0.9. Re-evaluate when rsa ships a fix or jsonwebtoken/openidconnect/
 audible-rs move off it.
 """
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0370"
+ignoreUntil = 2026-12-23
+reason = """
+INFO / unmaintained: `zvariant` was folded into zbus 6 (`zbus::wire`). No
+vulnerability and no patched release. Pulled only by the Linux tray:
+bookclerk-tray -> ksni 0.3.6 -> zbus 5. ksni 0.3.7 (latest) still requires
+zbus ^5, so no lockfile or manifest change drops it. Tracked in #382; remove
+when ksni ships on zbus 6 or the tray replaces ksni.
+"""
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0371"
+ignoreUntil = 2026-12-23
+reason = """
+INFO / unmaintained: `zbus_names` was folded into zbus 6 (`zbus::names`). Same
+dependency path and exit as RUSTSEC-2026-0370 (ksni -> zbus 5); tracked in #382.
+"""
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0372"
+ignoreUntil = 2026-12-23
+reason = """
+INFO / unmaintained: `zvariant_derive` (a compile-time proc-macro) was folded
+into zbus 6. Same dependency path and exit as RUSTSEC-2026-0370 (ksni -> zbus
+5); tracked in #382.
+"""

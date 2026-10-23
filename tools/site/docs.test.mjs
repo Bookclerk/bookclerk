@@ -98,6 +98,13 @@ test("raw HTML in a doc is shown as text", () => {
   assert.ok(!out.html.includes("<script"));
 });
 
+test("code blocks and tables can be scrolled from the keyboard", () => {
+  const out = renderDoc("```sh\ncargo build\n```\n\n    indented\n\n| a | b |\n| - | - |\n| 1 | 2 |\n", "cluster-hosts", { blobBase: BLOB });
+  assert.equal(out.html.match(/<pre tabindex="0">/g)?.length, 2);
+  assert.ok(!out.html.includes("<pre>"));
+  assert.ok(out.html.includes('<div class="table-scroll" tabindex="0"><table>'));
+});
+
 test("fillShell escapes values, fills markers once and refuses gaps", () => {
   const shell = "<title>%%pageTitle%%</title><!--jsonld--><!--doc-versions--><!--doc-nav--><!--doc-note--><!--doc-body--><!--doc-footer-->";
   const markers = { "doc-body": "<p>%%pageTitle%% <!--doc-footer--></p>" };
