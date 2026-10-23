@@ -1,14 +1,15 @@
-// Tests for docs.mjs and the rendered /docs/ pages. Run with `npm test`.
+// Tests for docs.mjs and render.mjs: URLs, link rewriting and every doc in
+// docs/ rendered the way the Worker renders it. Run with `npm test`.
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, relative, sep } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { build } from "./build.mjs";
-import { docFile, docUrl, markdownFiles, rewriteLink, siteMarkdown, slugify } from "./docs.mjs";
+import { docUrl, GENERATED_TITLES, markdownFiles, renderDocs, rewriteLink, siteMarkdown, slugify } from "./docs.mjs";
+import { docMarkdownUrl, fillShell, normalizePath, renderDoc } from "./render.mjs";
+
+/** The repository's docs/. */
+const DOCS = fileURLToPath(new URL("../../docs/", import.meta.url));
 
 /** GitHub prefix used by the link tests. */
 const BLOB = "https://github.com/Bookclerk/bookclerk/blob/main/";
@@ -16,13 +17,20 @@ const BLOB = "https://github.com/Bookclerk/bookclerk/blob/main/";
 /** Docs that exist in the link tests. */
 const KEYS = new Set(["README", "plugins", "media", "adr/control-plane", "api/README"]);
 
-test("doc URLs and files", () => {
+test("doc URLs, in the default version and under a version prefix", () => {
   assert.equal(docUrl("README"), "/docs/");
   assert.equal(docUrl("api/README"), "/docs/api/");
   assert.equal(docUrl("adr/control-plane"), "/docs/adr/control-plane");
-  assert.equal(docFile("README"), "docs/index.html");
-  assert.equal(docFile("api/README"), "docs/api/index.html");
-  assert.equal(docFile("plugins"), "docs/plugins.html");
+  assert.equal(docUrl("plugins", "/docs/v/main/"), "/docs/v/main/plugins");
+  assert.equal(docUrl("README", "/docs/v/main/"), "/docs/v/main/");
+  assert.equal(docMarkdownUrl("README", "/docs/v/v0.1.0/"), "/docs/v/v0.1.0/README.md");
+});
+
+test("normalizePath matches path.posix.normalize", () => {
+  assert.equal(normalizePath("docs/adr/../plugins.md"), "docs/plugins.md");
+  assert.equal(normalizePath("docs/./a/"), "docs/a/");
+  assert.equal(normalizePath("docs/../../x"), "../x");
+  assert.equal(normalizePath("docs/.."), ".");
 });
 
 test("slugify matches GitHub heading anchors", () => {
@@ -46,62 +54,58 @@ test("links to other repository files go to GitHub at the same ref", () => {
   assert.equal(rewriteLink("missing.md", "plugins", KEYS, BLOB), `${BLOB}docs/missing.md`);
 });
 
+test("without a list of docs, any .md inside the docs tree is a doc", () => {
+  assert.equal(rewriteLink("api/rust/x/index.md#fn", "README", null, BLOB), "/docs/api/rust/x/index#fn");
+  assert.equal(rewriteLink("../AGENTS.md", "README", null, BLOB), `${BLOB}AGENTS.md`);
+  assert.equal(rewriteLink("%E0%A4%A.md", "README", null, BLOB), "%E0%A4%A.md");
+  assert.equal(rewriteLink("media.md", "plugins", null, BLOB, (k) => docUrl(k, "/docs/v/main/")), "/docs/v/main/media");
+});
+
 test("absolute links and anchors are left alone", () => {
   for (const href of ["https://example.com/a.md", "mailto:contact@bookclerk.app", "#local", "//cdn.example/x"]) {
     assert.equal(rewriteLink(href, "plugins", KEYS, BLOB), href);
   }
 });
 
-test("every doc renders, and every link on the site resolves", () => {
-  const dir = mkdtempSync(join(tmpdir(), "bookclerk-site-docs-"));
-  try {
-    build({ SITE_COMMIT: "b6adae4d", SITE_BUILT_ON: "2026-10-23" }, dir);
-    const pages = [];
-    const walk = (d) => {
-      for (const n of readdirSync(d)) {
-        const f = join(d, n);
-        if (statSync(f).isDirectory()) walk(f);
-        else if (n.endsWith(".html")) pages.push(f);
-      }
-    };
-    walk(dir);
-    const urlOf = (f) => ("/" + relative(dir, f).split(sep).join("/")).replace(/index\.html$/, "").replace(/\.html$/, "");
-    const ids = new Map(pages.map((f) => [urlOf(f), new Set([...readFileSync(f, "utf8").matchAll(/ id="([^"]+)"/g)].map((m) => m[1]))]));
-
-    const sources = markdownFiles(fileURLToPath(new URL("../../docs/", import.meta.url)));
-    assert.ok(sources.length > 30);
-    assert.equal(pages.filter((f) => urlOf(f).startsWith("/docs/")).length, sources.length);
-    for (const source of sources) assert.ok(existsSync(join(dir, "docs", source)), `no Markdown copy of ${source}`);
-
-    const broken = [];
-    for (const f of pages) {
-      const html = readFileSync(f, "utf8");
-      assert.ok(!html.includes("<!--doc-"), `unfilled marker in ${urlOf(f)}`);
-      for (const [, href] of html.matchAll(/href="(\/[^"]*)"/g)) {
-        const [path, hash] = href.split("#");
-        if (/\.(css|ico|png|svg|webmanifest|md|txt|xml)$/.test(path)) {
-          if (!existsSync(join(dir, path))) broken.push(`${urlOf(f)} -> ${href} (no file)`);
-          continue;
-        }
-        if (!ids.has(path)) broken.push(`${urlOf(f)} -> ${href}`);
-        else if (hash && !ids.get(path).has(hash)) broken.push(`${urlOf(f)} -> ${href} (no anchor)`);
-      }
+test("every doc renders, and every link between docs resolves", () => {
+  const sources = markdownFiles(DOCS);
+  assert.ok(sources.length > 30);
+  // /docs/v/<ref>/ selects a version, so no doc may live at docs/v.
+  assert.deepEqual(sources.filter((f) => f === "v.md" || f.startsWith("v/")), []);
+  const { nav, docs } = renderDocs(DOCS, BLOB, GENERATED_TITLES);
+  assert.equal(docs.length, sources.length);
+  const ids = new Map(docs.map((d) => [docUrl(d.key), new Set([...d.html.matchAll(/ id="([^"]+)"/g)].map((m) => m[1]))]));
+  // Generated pages are not in docs/; links to them are checked by the docs build.
+  const generated = new Set(Object.keys(GENERATED_TITLES).map((k) => docUrl(k)));
+  const broken = [];
+  for (const doc of docs) {
+    for (const [, href] of doc.html.matchAll(/href="(\/docs\/[^"]*)"/g)) {
+      const [path, hash] = href.split("#");
+      if (generated.has(path)) continue;
+      if (!ids.has(path)) broken.push(`${doc.key} -> ${href}`);
+      else if (hash && !ids.get(path).has(hash)) broken.push(`${doc.key} -> ${href} (no anchor)`);
     }
-    assert.deepEqual(broken, []);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
   }
+  assert.deepEqual(broken, []);
+  // Every doc is in the sidebar, the index aside.
+  const listed = new Set(nav.flatMap((g) => g.pages.map((p) => p.key)));
+  assert.deepEqual(docs.map((d) => d.key).filter((k) => k !== "README" && !listed.has(k)), []);
 });
 
 test("raw HTML in a doc is shown as text", () => {
-  const dir = mkdtempSync(join(tmpdir(), "bookclerk-site-docs-"));
-  try {
-    build({ SITE_COMMIT: "b6adae4d", SITE_BUILT_ON: "2026-10-23" }, dir);
-    // docs/cluster-hosts.md says "Let **<branch>** join".
-    assert.match(readFileSync(join(dir, "docs/cluster-hosts.html"), "utf8"), /&lt;branch&gt;/);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  const out = renderDoc("Let **<branch>** join <script>alert(1)</script>", "cluster-hosts", { blobBase: BLOB });
+  assert.match(out.html, /&lt;branch&gt;/);
+  assert.ok(!out.html.includes("<script"));
+});
+
+test("fillShell escapes values, fills markers once and refuses gaps", () => {
+  const shell = "<title>%%pageTitle%%</title><!--jsonld--><!--doc-versions--><!--doc-nav--><!--doc-note--><!--doc-body--><!--doc-footer-->";
+  const markers = { "doc-body": "<p>%%pageTitle%% <!--doc-footer--></p>" };
+  const out = fillShell(shell, { pageTitle: "<a> & b" }, markers);
+  // Text inside a marker's HTML is never read as a hole or a marker.
+  assert.equal(out, "<title>&lt;a&gt; &amp; b</title><p>%%pageTitle%% <!--doc-footer--></p>");
+  assert.throws(() => fillShell("%%nope%%<!--jsonld-->", {}, {}), /nope/);
+  assert.throws(() => fillShell("%%pageTitle%%", { pageTitle: "x" }, {}), /<!--jsonld-->/);
 });
 
 test("Markdown copies rewrite whole link targets outside code", () => {
