@@ -142,10 +142,16 @@ class Alert:
     Attributes:
         vuln_id: The advisory id the alert's rule names (RUSTSEC-, GHSA-, ...).
         lockfile: Repository-relative path of the lockfile the alert points at.
+        hints: Other advisory ids the alert's rule and message text name, in
+            order of first appearance. OSV-Scanner groups advisories that
+            share an alias under one rule, whose id can be a CVE that
+            api.osv.dev does not know yet; these ids still resolve. Not part
+            of the alert's identity.
     """
 
     vuln_id: str
     lockfile: str
+    hints: tuple[str, ...] = field(default=(), compare=False)
 
 
 @dataclass
@@ -199,6 +205,39 @@ def _next_link(link_header: str) -> str | None:
     return None
 
 
+# Advisory ids an alert's rule or message can name besides its rule id.
+_ADVISORY_ID = re.compile(
+    r"\b(?:RUSTSEC-\d{4}-\d{4}|GHSA(?:-[23456789cfghjmpqrvwx]{4}){3}"
+    r"|PYSEC-\d{4}-\d+|CVE-\d{4}-\d{4,})\b"
+)
+
+
+def alert_hints(rule: dict[str, object], instance: dict[str, object]) -> tuple[str, ...]:
+    """Collects the advisory ids an alert's rule and message text name.
+
+    Args:
+        rule: The alert's `rule` object.
+        instance: The alert's `most_recent_instance` object.
+
+    Returns:
+        Every advisory id found in the rule's name, descriptions and help and
+        in the instance message, other than the rule id, in order of first
+        appearance and at most `MAX_ALIASES` of them.
+    """
+    texts: list[object] = [
+        rule.get(key) for key in ("name", "description", "full_description", "help")
+    ]
+    message = instance.get("message")
+    if isinstance(message, dict):
+        texts.append(message.get("text"))
+    found: dict[str, None] = {}
+    for text in texts:
+        if isinstance(text, str):
+            found.update(dict.fromkeys(_ADVISORY_ID.findall(text)))
+    found.pop(str(rule.get("id")), None)
+    return tuple(found)[:MAX_ALIASES]
+
+
 def alerts_from_api(raw: list[dict[str, object]]) -> list[Alert]:
     """Converts code-scanning alert JSON into alerts this script can act on.
 
@@ -219,7 +258,13 @@ def alerts_from_api(raw: list[dict[str, object]]) -> list[Alert]:
         vuln_id = rule.get("id")
         path = location.get("path") if isinstance(location, dict) else None
         if isinstance(vuln_id, str) and isinstance(path, str) and vuln_id and path:
-            alerts.add(Alert(vuln_id, path.removeprefix("file://")))
+            alerts.add(
+                Alert(
+                    vuln_id,
+                    path.removeprefix("file://"),
+                    alert_hints(rule, instance),
+                )
+            )
     return sorted(alerts, key=lambda a: (a.lockfile, a.vuln_id))
 
 
@@ -301,28 +346,76 @@ def merge_aliases(
     return {**primary, "affected": affected}
 
 
-def fetch_vuln_with_aliases(vuln_id: str) -> dict[str, object] | None:
-    """Looks an advisory up on api.osv.dev and folds in its aliases' records.
+def fetch_primary(
+    vuln_id: str, hints: tuple[str, ...] = ()
+) -> tuple[dict[str, object], list[str]] | None:
+    """Finds the OSV record for an alert and the alias ids still to fetch.
 
     Args:
-        vuln_id: The advisory id the alert names.
+        vuln_id: The advisory id the alert's rule names.
+        hints: Other advisory ids the alert names (`Alert.hints`).
 
     Returns:
-        The merged record (see `merge_aliases`), or None when OSV does not
-        know the id.
+        The rule id's record, or when OSV does not know it, the first hint's
+        record OSV knows, with `vuln_id` and the hints added to its
+        `aliases`; and the ids still to look up (its aliases and the hints,
+        without ids already tried), at most `MAX_ALIASES`. None when OSV
+        knows none of the ids.
 
     Raises:
         urllib.error.URLError: OSV could not be reached.
     """
+    tried = [vuln_id]
     primary = fetch_vuln(vuln_id)
+    for hint in hints:
+        if primary is not None:
+            break
+        tried.append(hint)
+        primary = fetch_vuln(hint)
     if primary is None:
         return None
     raw_aliases = primary.get("aliases")
-    alias_ids = [
+    candidates = [
+        *(raw_aliases if isinstance(raw_aliases, list) else []),
+        *hints,
+    ]
+    alias_ids = list(
+        dict.fromkeys(
+            alias
+            for alias in candidates
+            if isinstance(alias, str) and alias not in tried
+        )
+    )[:MAX_ALIASES]
+    own_id = primary.get("id")
+    aliases = [
         alias
-        for alias in (raw_aliases if isinstance(raw_aliases, list) else [])
-        if isinstance(alias, str) and alias != vuln_id
-    ][:MAX_ALIASES]
+        for alias in dict.fromkeys([*candidates, vuln_id])
+        if isinstance(alias, str) and alias != own_id
+    ]
+    return {**primary, "aliases": aliases}, alias_ids
+
+
+def fetch_vuln_with_aliases(
+    vuln_id: str, hints: tuple[str, ...] = ()
+) -> dict[str, object] | None:
+    """Looks an advisory up on api.osv.dev and folds in its aliases' records.
+
+    Args:
+        vuln_id: The advisory id the alert names.
+        hints: Other advisory ids the alert names (`Alert.hints`), used when
+            OSV does not know `vuln_id` and folded in as aliases.
+
+    Returns:
+        The merged record (see `merge_aliases`), or None when OSV knows
+        neither the id nor any hint.
+
+    Raises:
+        urllib.error.URLError: OSV could not be reached.
+    """
+    found = fetch_primary(vuln_id, hints)
+    if found is None:
+        return None
+    primary, alias_ids = found
     records = [
         record for alias in alias_ids if (record := fetch_vuln(alias)) is not None
     ]
@@ -836,6 +929,22 @@ def resolved_alerts(
     return count
 
 
+def alert_hints_by_id(alerts: list[Alert]) -> dict[str, tuple[str, ...]]:
+    """Merges the hints of every alert on the same advisory id.
+
+    Args:
+        alerts: Open alerts.
+
+    Returns:
+        Each advisory id the alerts name, mapped to the hints its alerts
+        carry, in order of first appearance.
+    """
+    merged: dict[str, dict[str, None]] = {}
+    for alert in alerts:
+        merged.setdefault(alert.vuln_id, {}).update(dict.fromkeys(alert.hints))
+    return {vuln_id: tuple(hints) for vuln_id, hints in merged.items()}
+
+
 def main(argv: list[str] | None = None) -> int:
     """Runs the remediation.
 
@@ -864,9 +973,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         alerts = fetch_alerts(args.repo, token, args.ref)
+        hints = alert_hints_by_id(alerts)
         vulns = {
-            vuln_id: fetch_vuln_with_aliases(vuln_id)
-            for vuln_id in sorted({a.vuln_id for a in alerts})
+            vuln_id: fetch_vuln_with_aliases(vuln_id, hints[vuln_id])
+            for vuln_id in sorted(hints)
         }
     except (urllib.error.URLError, TypeError, ValueError) as err:
         print(f"could not read alerts or advisories: {err}", file=sys.stderr)
