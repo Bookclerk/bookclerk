@@ -19,7 +19,7 @@
 #     DOMAIN, so nothing is written back.
 #   DOMAIN unset (a fork with its own Cloudflare account): the account's
 #     workers.dev subdomain, read from the deploy output. Readers cannot
-#     derive that, so it is stored in repository variable
+#     derive that, so it is stored in Actions variable
 #     DIAGNOSTICS_COLLECTOR_BASE_URL, on the organization when possible and
 #     otherwise on the repository. GITHUB_TOKEN cannot write variables; the
 #     write uses the automation App (AUTOMATION_APP_CLIENT_ID /
