@@ -1089,7 +1089,10 @@ Workers product. So the first deploy of a new Worker needs one of these:
 
 See [Workers roles and permissions](https://developers.cloudflare.com/workers/authorization/workers/).
 
-After that, only the two permissions above are needed. Renaming a Worker in
+After that, the two permissions above are enough, plus the per-Worker
+permissions listed for `bookclerk-diagnostics` and `bookclerk-demo` that
+every deploy uses (D1 for both; Containers and Turnstile for the demo).
+Renaming a Worker in
 `wrangler.toml` creates a new Worker, so it repeats this step and leaves the
 old one behind; keep the names as they are.
 

@@ -198,7 +198,10 @@ jobs:
           DEMO_HOST: ${{ steps.url.outputs.host }}
         run: |
           set -euo pipefail
-          if npx wrangler secret list --format json | jq -e 'any(.[]; .name == "SESSION_KEY")' >/dev/null; then
+          # A failed list must fail the step: treating it as "no key" would
+          # rotate SESSION_KEY and drop every live session.
+          secrets_json=$(npx wrangler secret list --format json)
+          if jq -e 'any(.[]; .name == "SESSION_KEY")' <<<"$secrets_json" >/dev/null; then
             NEED_SESSION_KEY=false
           else
             NEED_SESSION_KEY=true

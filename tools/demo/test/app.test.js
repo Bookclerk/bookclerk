@@ -452,6 +452,29 @@ describe("sweep", () => {
     assert.equal(row.end_reason, "sweep");
     assert.equal(await sweep(env, deps), 0);
   });
+
+  it("keeps a session live while its object fails to end, then gives up", async () => {
+    const env = makeEnv();
+    const deps = makeDeps();
+    await startSession(env, deps);
+    const stub = onlyStub(env);
+    stub.end = async () => {
+      throw new Error("object unavailable");
+    };
+    const live = () => env.DB.prepare("SELECT ended_at, revoke_failed FROM sessions").first();
+    deps.advance(1800_000 + 121_000);
+    assert.equal(await sweep(env, deps), 1);
+    assert.equal((await live()).ended_at, null);
+    deps.advance(1800_000);
+    assert.equal(await sweep(env, deps), 1);
+    assert.equal((await live()).ended_at, null);
+    deps.advance(1800_000);
+    assert.equal(await sweep(env, deps), 1);
+    const row = await live();
+    assert.notEqual(row.ended_at, null);
+    assert.equal(row.revoke_failed, 1);
+    assert.equal(await sweep(env, deps), 0);
+  });
 });
 
 describe("withBanner", () => {

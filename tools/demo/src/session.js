@@ -133,7 +133,7 @@ export class DemoSession extends Container {
       if (portalSession === null || !(await this.stillStarting())) {
         // Ended meanwhile: close() may have run before the VM was up, so
         // make sure it is gone. The end is already recorded.
-        await this.destroy();
+        await this.retryDestroy(0);
         return;
       }
       // The operator token is not kept: from here on bookclerkd sees only
@@ -142,7 +142,7 @@ export class DemoSession extends Container {
       await this.setState("ready");
     } catch (err) {
       if (!(await this.stillStarting())) {
-        await this.destroy().catch(() => {});
+        await this.retryDestroy(0);
         return;
       }
       console.error(`demo session ${meta.id} failed to start: ${String(err)}`);

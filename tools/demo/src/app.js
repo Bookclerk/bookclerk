@@ -35,6 +35,13 @@ const SWEEP_BATCH = 20;
 const SWEEP_GRACE_SECONDS = 120;
 
 /**
+ * How far past its hard stop a session whose object keeps failing to end is
+ * closed in D1 anyway, so it stops holding a live slot (about as long as the
+ * object itself retries destroying the VM).
+ */
+const SWEEP_GIVE_UP_SECONDS = 3600;
+
+/**
  * What the handler needs from outside, injectable for tests.
  *
  * @typedef {object} Deps
@@ -491,17 +498,22 @@ export async function handle(request, env, deps = DEFAULT_DEPS) {
  */
 export async function sweep(env, deps = DEFAULT_DEPS) {
   const now = Math.floor(deps.now() / 1000);
-  const ids = await overdue(env.DB, now, SWEEP_GRACE_SECONDS, SWEEP_BATCH);
-  for (const id of ids) {
+  const rows = await overdue(env.DB, now, SWEEP_GRACE_SECONDS, SWEEP_BATCH);
+  for (const { id, endsAt } of rows) {
     try {
       await sessionStub(env, id).end("sweep");
     } catch (err) {
       console.error(`sweep could not end session ${id}: ${String(err)}`);
+      // Leave the row live so the next sweep tries the teardown again, until
+      // it is so late that the slot matters more.
+      if (now - endsAt < SWEEP_GIVE_UP_SECONDS) continue;
+      await finish(env.DB, { id, now, reason: "sweep", revoked: 0, failed: 1 });
+      continue;
     }
     // The object records its own end; this closes the row when it could not
     // (it had already ended, or never opened), so no row stays live forever.
     await finish(env.DB, { id, now, reason: "sweep", revoked: 0, failed: 0 });
   }
   await prune(env.DB, now);
-  return ids.length;
+  return rows.length;
 }

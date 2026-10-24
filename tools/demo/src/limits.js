@@ -188,15 +188,16 @@ export async function finish(db, e) {
  * @param {D1Database} db Database.
  * @param {number} now Current Unix seconds.
  * @param {number} graceSeconds How far past the hard stop a session must be.
- * @param {number} max Most ids to return.
- * @returns {Promise<string[]>} Session ids.
+ * @param {number} max Most sessions to return.
+ * @returns {Promise<Array<{id: string, endsAt: number}>>} Session ids and
+ *   their hard stops (Unix seconds), oldest first.
  */
 export async function overdue(db, now, graceSeconds, max) {
   const { results } = await db
-    .prepare("SELECT id FROM sessions WHERE ended_at IS NULL AND ends_at < ? ORDER BY ends_at LIMIT ?")
+    .prepare("SELECT id, ends_at FROM sessions WHERE ended_at IS NULL AND ends_at < ? ORDER BY ends_at LIMIT ?")
     .bind(now - graceSeconds, max)
     .all();
-  return results.map((r) => String(r.id));
+  return results.map((r) => ({ id: String(r.id), endsAt: Number(r.ends_at) }));
 }
 
 /**
