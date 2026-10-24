@@ -10,7 +10,7 @@
  */
 
 import { BudgetLedger, DEFAULT_DAILY_NEURONS, MAX_DAILY_NEURONS, utcDay } from "../triage.js";
-import { finishSignIn, signOut, startSignIn } from "./auth.js";
+import { DEFAULT_NEXT, finishSignIn, safeNext, sameSiteHop, signOut, startSignIn } from "./auth.js";
 import { metered } from "./budget.js";
 import {
   afterFixCounts,
@@ -77,6 +77,53 @@ export function dashboardConfig(env) {
  */
 export function isDashboardPath(path) {
   return (path !== "/" && PATHS.has(path)) || REPORT_PATH.test(path);
+}
+
+/**
+ * Whether a request is a top-level page load the member started on another
+ * site by clicking a link (in a GitHub issue, chat or web mail). The browser
+ * leaves the SameSite=Strict session cookie off such a request, so a
+ * signed-in member would otherwise see the sign-in page.
+ *
+ * Requiring user activation keeps another site's scripts from loading
+ * member pages with the cookie on its own (which would write report views
+ * to the access log under the member's name), and stops the reload from
+ * repeating: the reload the hop page starts is never user-activated.
+ *
+ * @param {Request} request Incoming request.
+ * @returns {boolean} True when `Sec-Fetch-Site` is `cross-site`,
+ *   `Sec-Fetch-Mode` is `navigate`, `Sec-Fetch-Dest` is `document` and
+ *   `Sec-Fetch-User` is `?1`; browsers that send none of them get the
+ *   sign-in page as before.
+ */
+export function crossSiteNavigation(request) {
+  const h = request.headers;
+  return (
+    h.get("sec-fetch-site") === "cross-site" &&
+    h.get("sec-fetch-mode") === "navigate" &&
+    h.get("sec-fetch-dest") === "document" &&
+    h.get("sec-fetch-user") === "?1"
+  );
+}
+
+/**
+ * The page that reloads `target` same-site (see `crossSiteNavigation`).
+ *
+ * @param {string} target Same-origin address from `safeNext` or `homeWith`.
+ * @returns {Response} A 200 page with no cookies.
+ */
+function sameSiteReload(target) {
+  return htmlResponse(sameSiteHop("Opening the dashboard", target, "Opening the dashboard."));
+}
+
+/**
+ * The sign-in page's address with a return page.
+ *
+ * @param {string | null} next Page from `safeNext`, or null.
+ * @returns {string} `/` or `/?next=<encoded page>`.
+ */
+function homeWith(next) {
+  return next ? `/?next=${encodeURIComponent(next)}` : "/";
 }
 
 /**
@@ -156,9 +203,21 @@ export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now
   if (path === "/auth/logout" && method === "POST") return signOut(request, env);
 
   const member = await currentMember(db, request, now);
-  if (path === "/" && method === "GET") return member ? redirect("/dash") : htmlResponse(signInPage(cfg));
+  if (path === "/" && method === "GET") {
+    const next = safeNext(url.searchParams.get("next"));
+    if (member) return redirect(next ?? DEFAULT_NEXT);
+    // Load the page again from a same-site navigation, which carries the
+    // session cookie if there is one; without one it lands back here as a
+    // same-origin request and gets the sign-in page.
+    if (crossSiteNavigation(request)) return sameSiteReload(homeWith(next));
+    return htmlResponse(signInPage(cfg, next));
+  }
   if (!member) {
-    if (method === "GET") return redirect("/");
+    if (method === "GET") {
+      const here = safeNext(path + url.search);
+      if (here && crossSiteNavigation(request)) return sameSiteReload(here);
+      return redirect(homeWith(here));
+    }
     return htmlResponse(messagePage("Signed out", html`<p>Your session ended. Sign in again.</p>`), 401);
   }
 

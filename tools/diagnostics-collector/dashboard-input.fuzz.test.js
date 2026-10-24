@@ -11,7 +11,10 @@
 //   session row they name, whether a request is signed in and as whom.
 // - parseCallback reads the sign-in callback's query and cookies, which
 //   anyone can send; its result decides whether a code is traded with
-//   GitHub.
+//   GitHub and which page the signed-in member lands on.
+// - safeNext reads the return page from a query parameter or the sign-in
+//   cookie; its result becomes a redirect target, so it must never leave
+//   the dashboard's own pages.
 // - membershipDecision reads GitHub's organization membership answer; its
 //   result decides whether sign-in grants member or owner access.
 // - decodeIssuePage reads GitHub's issue listing; its result moves the
@@ -32,7 +35,7 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
-import { MAX_CODE_CHARS, OAUTH_COOKIE, parseCallback } from "./dashboard/auth.js";
+import { DEFAULT_NEXT, MAX_CODE_CHARS, MAX_NEXT_CHARS, OAUTH_COOKIE, parseCallback, safeNext } from "./dashboard/auth.js";
 import {
   DIAGNOSTICS_LABEL,
   decodeAccessToken,
@@ -208,10 +211,97 @@ describe("summarizeReport", () => {
   });
 });
 
+const ORACLE_ORIGIN = "https://dashboard.oracle.invalid";
+
+/**
+ * Whether a return page is one the dashboard may redirect to, decided with
+ * the URL parser instead of safeNext's own patterns: it resolves on this
+ * origin to a dashboard GET page without changing on the way (no dot
+ * segments, no backslashes, no encoded path), and its query has no
+ * characters that HTML or a header would treat specially.
+ *
+ * @param {string} next Candidate return page.
+ * @returns {boolean} True when it is safe to redirect to.
+ */
+function isDashboardPage(next) {
+  if (!next.startsWith("/") || next.startsWith("//") || next.length > MAX_NEXT_CHARS) return false;
+  let url;
+  try {
+    url = new URL(next, ORACLE_ORIGIN);
+  } catch {
+    return false;
+  }
+  const pages = new Set(["/dash", "/reports", "/issues"]);
+  const page = pages.has(url.pathname) || (url.pathname.startsWith("/reports/") && UUID.test(url.pathname.slice(9)));
+  return (
+    url.origin === ORACLE_ORIGIN &&
+    page &&
+    url.pathname + url.search === next &&
+    url.hash === "" &&
+    ![..."<>\"'\\ ;,#"].some((c) => next.includes(c)) &&
+    !/[\u0000-\u001f\u007f-\uffff]/.test(next)
+  );
+}
+
+/**
+ * Oracle for safeNext: anything it returns passes isDashboardPage and is the
+ * input or the input's path with the query cut off; a page path on its own
+ * is always kept.
+ *
+ * @param {unknown} input Candidate.
+ * @param {string} label Input name for failure messages.
+ */
+function checkNext(input, label) {
+  const got = safeNext(input);
+  if (typeof input !== "string") {
+    assert.equal(got, null, label);
+    return;
+  }
+  if (got !== null) {
+    assert.ok(isDashboardPage(got), `${label}: ${JSON.stringify(got)} is not a dashboard page`);
+    assert.ok(got === input || got === input.slice(0, input.indexOf("?")), label);
+  }
+  const path = input.split("?")[0];
+  if (input.length <= MAX_NEXT_CHARS && isDashboardPage(path)) {
+    assert.ok(got === path || got === input, `${label}: a dashboard page was refused`);
+  }
+}
+
+const NEXT_FRAGMENTS = [
+  "/", "//", "\\", "..", ".", "?", "&", "=", "%", "%2F", "%2f", "%5C", "%0d%0a", "#", ":", "@", "https:", "javascript:",
+  "dash", "reports", "issues", "auth", "@", "/:", "live", "admin", "7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4", " ", "\t", "\n", "\0", "é", "'", '"', "<",
+];
+
+describe("safeNext", () => {
+  it("replays the seed corpus", () => {
+    const all = seeds("next_path");
+    assert.ok(all.length > 0);
+    for (const [name, raw] of all) checkNext(raw, name);
+    const byName = Object.fromEntries(all);
+    assert.equal(safeNext(byName["report.txt"]), byName["report.txt"]);
+    assert.equal(safeNext(byName["reports_query.txt"]), byName["reports_query.txt"]);
+    for (const off of ["protocol_relative.txt", "absolute.txt", "backslash.txt", "dot_segments.txt", "javascript.txt", "auth.txt", "live.txt"]) {
+      assert.equal(safeNext(byName[off]), null, off);
+    }
+    assert.equal(safeNext(byName["quote_query.txt"]), "/dash", "an unsafe query is dropped");
+    for (const v of [null, undefined, 7, {}, ["/dash"]]) checkNext(v, String(v));
+  });
+
+  it("holds the oracle under seeded mutation", () => {
+    const all = seeds("next_path").map(([, raw]) => raw);
+    const rand = rng(20261024);
+    for (let n = 0; n < 6000; n++) {
+      const input = mutate(rand, all[Math.floor(rand() * all.length)], NEXT_FRAGMENTS);
+      checkNext(input, `iteration ${n}: ${JSON.stringify(input).slice(0, 300)}`);
+    }
+  });
+});
+
 /**
  * Oracle for parseCallback: re-derives acceptance with a separate cookie
  * walk (a regex over the whole header) and checks what an accepted callback
- * returns.
+ * returns, including that the return page is a dashboard page and equals
+ * the cookie's decoded page whenever that one is.
  *
  * @param {{search: string, cookie: string}} input Callback inputs.
  * @param {string} label Input name for failure messages.
@@ -225,19 +315,29 @@ function checkCallback(input, label) {
   const m = /(?:^|;)\s*__Host-bc_oauth\s*=([^;]*)/.exec(input.cookie);
   const value = m ? m[1].trim() : "";
   const token = /^[A-Za-z0-9_-]{43}$/;
-  const cm = /^([A-Za-z0-9_-]{43})\.([A-Za-z0-9_-]{43})$/.exec(value);
+  const cm = /^([A-Za-z0-9_-]{43})\.([A-Za-z0-9_-]{43})(?:\.([^.]*))?$/.exec(value);
   const accept =
     Boolean(cm) && token.test(state) && cm[1] === state && /^[A-Za-z0-9_-]+$/.test(code) && code.length <= MAX_CODE_CHARS;
   assert.equal(got !== null, accept, label);
   if (got) {
     assert.equal(got.code, code, label);
     assert.equal(got.verifier, cm[2], label);
+    assert.ok(got.next === DEFAULT_NEXT || isDashboardPage(got.next), `${label}: next ${JSON.stringify(got.next)}`);
+    const tail = cm[3];
+    // Only canonical base64url decodes to one answer; Buffer is lenient
+    // where atob is not, so compare on those only.
+    if (tail && /^[A-Za-z0-9_-]+$/.test(tail) && Buffer.from(tail, "base64url").toString("base64url") === tail) {
+      const decoded = Buffer.from(tail, "base64url").toString("latin1");
+      if (decoded.length <= MAX_NEXT_CHARS && isDashboardPage(decoded)) assert.equal(got.next, decoded, label);
+    } else if (tail === undefined) {
+      assert.equal(got.next, DEFAULT_NEXT, label);
+    }
   }
 }
 
 const CALLBACK_FRAGMENTS = [
   "&", "=", "?", "%", "%41", "+", ";", " ", ".", "state=", "code=", `${OAUTH_COOKIE}=`, "__Host-bc_session=",
-  "A", "_", "-", "/", "é", "\0", "\n",
+  "A", "_", "-", "/", "é", "\0", "\n", "Ly9ldmlsLmV4YW1wbGU", "L2Rhc2g", "L2lzc3Vlcw",
 ];
 
 describe("parseCallback", () => {
