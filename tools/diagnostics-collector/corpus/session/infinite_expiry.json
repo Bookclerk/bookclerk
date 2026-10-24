@@ -1,0 +1,5 @@
+{
+  "cookie": "__Host-bc_session=c2Vzc2lvbi10b2tlbi1zZXNzaW9uLXRva2VuLXNlc3Np",
+  "row": {"user_id": 7, "login": "octo", "role": "admin", "expires_at": 1e400},
+  "now": 1000
+}

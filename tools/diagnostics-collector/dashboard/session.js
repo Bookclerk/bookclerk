@@ -134,17 +134,48 @@ export async function createSession(db, who, now) {
  *   valid, unexpired session.
  */
 export async function currentMember(db, request, now) {
-  const token = readCookie(request, SESSION_COOKIE);
-  if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
+  const token = sessionToken(request.headers.get("cookie") || "");
+  if (!token) return null;
   const row = await first(
     db,
     "SELECT user_id, login, role, expires_at FROM sessions WHERE id_hash = ? AND expires_at > ?",
     await sha256Hex(token),
     now,
   );
-  if (!row) return null;
-  const role = ROLES.includes(row.role) ? row.role : "member";
-  return { userId: Number(row.user_id), login: String(row.login), role, expiresAt: Number(row.expires_at) };
+  return memberFromRow(row, now);
+}
+
+/**
+ * The session token a `Cookie` header carries, if well formed (sans-IO, so
+ * the fuzz tests drive the same code as requests).
+ *
+ * @param {string} cookieHeader `Cookie` header (untrusted).
+ * @returns {string | null} The 43-character base64url token, or null.
+ */
+export function sessionToken(cookieHeader) {
+  const token = cookieValue(cookieHeader, SESSION_COOKIE);
+  return token && /^[A-Za-z0-9_-]{43}$/.test(token) ? token : null;
+}
+
+/**
+ * The authorization decision for a looked-up session row (sans-IO).
+ *
+ * @param {Record<string, unknown> | null} row `sessions` row, or null when
+ *   no row matched.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {Member | null} The member, or null when there is no row, it has
+ *   expired, or its user id or login is malformed. An unknown role reads as
+ *   "member", never "admin".
+ */
+export function memberFromRow(row, now) {
+  if (!row || typeof row !== "object") return null;
+  const expiresAt = Number(row.expires_at);
+  const userId = Number(row.user_id);
+  const login = typeof row.login === "string" ? row.login : "";
+  if (!Number.isFinite(expiresAt) || expiresAt <= now) return null;
+  if (!Number.isSafeInteger(userId) || userId <= 0 || !/^[A-Za-z0-9-]{1,39}$/.test(login)) return null;
+  const role = row.role === "admin" ? "admin" : "member";
+  return { userId, login, role, expiresAt };
 }
 
 /**
@@ -155,8 +186,8 @@ export async function currentMember(db, request, now) {
  * @returns {Promise<string>} A `Set-Cookie` value that clears the cookie.
  */
 export async function endSession(db, request) {
-  const token = readCookie(request, SESSION_COOKIE);
-  if (token && /^[A-Za-z0-9_-]{43}$/.test(token)) {
+  const token = sessionToken(request.headers.get("cookie") || "");
+  if (token) {
     await run(db, "DELETE FROM sessions WHERE id_hash = ?", await sha256Hex(token));
   }
   return hostCookie(SESSION_COOKIE, "", { maxAge: 0, sameSite: "Strict" });

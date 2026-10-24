@@ -138,10 +138,10 @@ async function dropIssue(db, number) {
 /**
  * Cron: pulls diagnostics issues changed since the last run, then refreshes
  * pull requests and the label check for up to `MAX_PR_REFRESH` issues:
- * queued ones (changed, or not reached by a previous run) first, then open
- * issues and issues with open pull requests, then the rest, least recently
- * refreshed first, so every stored issue is rechecked in turn. Issues that
- * lost the label are dropped. Old rows are swept first.
+ * queued ones (changed, or not reached by a previous run) first, then every
+ * other issue least recently refreshed first, open or closed, so no issue
+ * can starve the rest. Issues that lost the label are dropped. Old rows are
+ * swept first.
  *
  * @param {{DASHBOARD_DB: D1Database}} env Worker bindings.
  * @param {import("./github.js").GitHubConfig} cfg Settings.
@@ -170,9 +170,7 @@ export async function syncIssues(env, cfg, now) {
   const queue = await all(
     db,
     `SELECT number FROM issues
-     ORDER BY prs_synced_at IS NOT NULL,
-       NOT (state = 'open' OR number IN (SELECT issue_number FROM issue_pr WHERE state = 'open')),
-       prs_synced_at, number
+     ORDER BY prs_synced_at IS NOT NULL, prs_synced_at, number
      LIMIT ?`,
     MAX_PR_REFRESH,
   );

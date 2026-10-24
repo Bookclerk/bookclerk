@@ -148,8 +148,8 @@ Every 30 minutes a cron lists issues labeled `diagnostics` changed since the
 last run, reads the report IDs from each issue's `### Report IDs` section (the
 format triage and its fallback write), and asks GraphQL for the pull requests
 that close or reference each issue (the newest 50 cross-references), up to
-100 issues a run: changed issues first, then open ones, then the rest in
-turn, so every issue is rechecked; one that lost the `diagnostics` label is
+100 issues a run: changed issues first, then the rest in turn, least
+recently checked first, so every issue is rechecked; one that lost the `diagnostics` label is
 dropped, and a failed GraphQL call keeps the links already stored. Each sign-in and report view is
 written to an access log kept 90 days and shown to owners. The overview also
 shows today's triage spend from `TRIAGE_BUDGET`.

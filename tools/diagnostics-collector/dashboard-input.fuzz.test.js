@@ -7,6 +7,8 @@
 //   written to D1 and shown on every page.
 // - eventLog renders the events of a stored report on its page; a throw
 //   there would make the report unviewable.
+// - sessionToken and memberFromRow decide, from a request's cookies and the
+//   session row they name, whether a request is signed in and as whom.
 // - parseCallback reads the sign-in callback's query and cookies, which
 //   anyone can send; its result decides whether a code is traded with
 //   GitHub.
@@ -19,6 +21,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { MAX_CODE_CHARS, OAUTH_COOKIE, parseCallback } from "./dashboard/auth.js";
 import { eventLog } from "./dashboard/pages.js";
+import { memberFromRow, SESSION_COOKIE, sessionToken } from "./dashboard/session.js";
 import { FALLBACK_MARKER, MAX_IDS_PER_ISSUE, TRIAGE_MARKER, parseIssueReportIds } from "./dashboard/report-ids.js";
 import { MAX_FIELD_CHARS, MAX_LABEL_CHARS, summarizeReport } from "./dashboard/signature.js";
 import { mutate, rng } from "./test-support/fuzz.js";
@@ -225,6 +228,76 @@ describe("parseCallback", () => {
         ? { search: mutate(rand, base.search, CALLBACK_FRAGMENTS), cookie: base.cookie }
         : { search: base.search, cookie: mutate(rand, base.cookie, CALLBACK_FRAGMENTS) };
       checkCallback(input, `iteration ${n}: ${JSON.stringify(input).slice(0, 300)}`);
+    }
+  });
+});
+
+/**
+ * Oracle for the session decision: a separate cookie walk for the token,
+ * and the member rules restated (live, positive id, GitHub-shaped login,
+ * admin only when the row says so exactly).
+ *
+ * @param {{cookie: string, row: unknown, now: number}} input Decision inputs.
+ * @param {string} label Input name for failure messages.
+ */
+function checkSession(input, label) {
+  assert.equal(SESSION_COOKIE, "__Host-bc_session");
+  const m = /(?:^|;)\s*__Host-bc_session\s*=([^;]*)/.exec(input.cookie);
+  const value = m ? m[1].trim() : "";
+  assert.equal(sessionToken(input.cookie), /^[A-Za-z0-9_-]{43}$/.test(value) ? value : null, label);
+
+  const got = memberFromRow(input.row, input.now);
+  const r = input.row !== null && typeof input.row === "object" ? input.row : null;
+  const live =
+    r !== null &&
+    Number.isFinite(Number(r.expires_at)) &&
+    Number(r.expires_at) > input.now &&
+    Number.isSafeInteger(Number(r.user_id)) &&
+    Number(r.user_id) > 0 &&
+    typeof r.login === "string" &&
+    /^[A-Za-z0-9-]{1,39}$/.test(r.login);
+  assert.equal(got !== null, live, label);
+  if (got) {
+    assert.equal(got.role, r.role === "admin" ? "admin" : "member", label);
+    assert.equal(got.login, r.login, label);
+    assert.ok(got.expiresAt > input.now, label);
+  }
+}
+
+const SESSION_FRAGMENTS = [
+  ";", "=", " ", "__Host-bc_session=", "__Host-bc_oauth=", "A", "-", "_", ".", "%", "\n", "\"", "0", "-1",
+  '"admin"', '"member"', "null", "1e400", "{}", "[]", '"expires_at":', '"role":', "é",
+];
+
+describe("session decision", () => {
+  it("replays the seed corpus", () => {
+    const all = seeds("session");
+    assert.ok(all.length > 0);
+    for (const [name, raw] of all) checkSession(JSON.parse(raw), name);
+    const valid = JSON.parse(all.find(([n]) => n === "valid.json")[1]);
+    assert.ok(memberFromRow(valid.row, valid.now), "the valid seed is a member");
+  });
+
+  it("holds the oracle under seeded mutation", () => {
+    const all = seeds("session").map(([, raw]) => JSON.parse(raw));
+    const rand = rng(20261027);
+    for (let n = 0; n < 4000; n++) {
+      const base = all[Math.floor(rand() * all.length)];
+      const input = { ...base };
+      const pick = rand();
+      if (pick < 0.45) {
+        input.cookie = mutate(rand, base.cookie, SESSION_FRAGMENTS);
+      } else if (pick < 0.9) {
+        const text = mutate(rand, JSON.stringify(base.row), SESSION_FRAGMENTS);
+        try {
+          input.row = JSON.parse(text);
+        } catch {
+          input.row = text;
+        }
+      } else {
+        input.now = Math.floor((rand() - 0.25) * 4000);
+      }
+      checkSession(input, `iteration ${n}: ${JSON.stringify(input).slice(0, 300)}`);
     }
   });
 });

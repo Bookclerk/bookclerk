@@ -327,17 +327,21 @@ non-Rust tooling (decision 6):
   reports an issue claims; the stored-report summary (`summarizeReport`
   in `dashboard/signature.js`), which writes every report's index row; the
   report page's event log (`eventLog` in `dashboard/pages.js`), which renders
-  stored events; and
+  stored events; the session check (`sessionToken` and `memberFromRow` in
+  `dashboard/session.js`), which decides whether a request is signed in and
+  as whom; and
   the sign-in callback check (`parseCallback` in `dashboard/auth.js`), which
   decides from the callback query and cookies whether a code is traded with
   GitHub. `tools/diagnostics-collector/dashboard-input.fuzz.test.js` replays
   their seed corpora (`tools/diagnostics-collector/corpus/report_ids/`,
-  `corpus/signature/`, `corpus/oauth_callback/`) and runs seeded mutation
+  `corpus/signature/`, `corpus/oauth_callback/`, `corpus/session/`) and runs seeded mutation
   fuzzing on every PR, checking results against independent oracles (IDs
   re-derived by a separate walk, all UUIDs present in the body, capped; level
   counts recounted, a signature exactly when an error or warning exists,
   bounded control-free fields; the event log renders one escaped row per
-  event without throwing; a callback accepted exactly when a separate
+  event without throwing; a session token found exactly when a separate
+  cookie walk finds a well-formed one, and a member only for a live row with
+  a valid id and login, admin only when the row says so; a callback accepted exactly when a separate
   cookie walk finds a state that matches the query and well-formed code and
   verifier, returning those values).
 
