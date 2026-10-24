@@ -29,6 +29,9 @@
 //   SITE_BUILT_ON      build date, YYYY-MM-DD (defaults to today, UTC)
 //   SITE_ORIGIN        origin the site is served from, for canonical and
 //                      preview URLs (default https://bookclerk.app)
+//   SITE_DEMO_URL      origin of the hosted demo (tools/demo), e.g.
+//                      https://demo.bookclerk.app; empty or unset means the
+//                      deployment has no demo, and every demo link is left out
 //
 // Every value is validated before it reaches a template, and every template
 // value is HTML-escaped.
@@ -156,8 +159,9 @@ function displayDate(iso) {
  *
  * @param {Record<string, string | undefined>} env Usually `process.env`.
  * @returns {{release: {tag: string, date: string} | null, commit: string,
- *   builtOn: string, origin: string, docsTags: string[]}}
- *   `release` is null when no release exists yet. `docsTags` are the release
+ *   builtOn: string, origin: string, demoUrl: string | null, docsTags: string[]}}
+ *   `release` is null when no release exists yet, and `demoUrl` when the
+ *   deployment has no hosted demo. `docsTags` are the release
  *   tags with published docs, newest first, at most MAX_DOCS_VERSIONS of
  *   them; the newest release is not among them until its docs are.
  * @throws {Error} When a value is present but malformed, or a release tag
@@ -170,6 +174,7 @@ export function readState(env) {
   const builtOn = (env.SITE_BUILT_ON ?? "").trim() || new Date().toISOString().slice(0, 10);
   const origin = (env.SITE_ORIGIN ?? "").trim() || DEFAULT_ORIGIN;
   const listed = (env.SITE_DOCS_VERSIONS ?? "").split(/\s+/).filter((t) => t !== "");
+  const demoUrl = (env.SITE_DEMO_URL ?? "").trim() || null;
 
   if (!COMMIT_RE.test(commit)) {
     throw new Error(`SITE_COMMIT must be 7-40 lowercase hex digits, got ${JSON.stringify(commit)}`);
@@ -180,12 +185,15 @@ export function readState(env) {
   if (!ORIGIN_RE.test(origin)) {
     throw new Error(`SITE_ORIGIN must be https://<lowercase hostname>, got ${JSON.stringify(origin)}`);
   }
+  if (demoUrl !== null && !ORIGIN_RE.test(demoUrl)) {
+    throw new Error(`SITE_DEMO_URL must be https://<lowercase hostname>, got ${JSON.stringify(demoUrl)}`);
+  }
   for (const t of listed) {
     if (!TAG_RE.test(t)) throw new Error(`SITE_DOCS_VERSIONS must hold tags like v1.2.3, got ${JSON.stringify(t)}`);
   }
   if (tag === "") {
     if (listed.length > 0) throw new Error("SITE_DOCS_VERSIONS is set but SITE_RELEASE_TAG is not");
-    return { release: null, commit, builtOn, origin, docsTags: [] };
+    return { release: null, commit, builtOn, origin, demoUrl, docsTags: [] };
   }
   if (!TAG_RE.test(tag)) {
     throw new Error(`SITE_RELEASE_TAG must look like v1.2.3, got ${JSON.stringify(tag)}`);
@@ -195,7 +203,7 @@ export function readState(env) {
   }
   // The picker keeps the newest MAX_DOCS_VERSIONS tags; older ones drop off.
   const docsTags = [...new Set(listed)].slice(0, MAX_DOCS_VERSIONS);
-  return { release: { tag, date }, commit, builtOn, origin, docsTags };
+  return { release: { tag, date }, commit, builtOn, origin, demoUrl, docsTags };
 }
 
 /**
@@ -248,10 +256,19 @@ export function templateContext(state) {
       releaseTag: state.release?.tag ?? "",
       releaseDate: state.release ? displayDate(state.release.date) : "",
       releaseUrl: state.release ? `${REPOSITORY_URL}/releases/tag/${state.release.tag}` : "",
+      demoUrl: state.demoUrl ?? "",
     },
+    // Sections do not nest, so the demo's place on a page in each release
+    // state gets a flag of its own: before a release the demo is the main
+    // way to try Bookclerk (`demolead`), after one it follows the download
+    // (`demofollow`); `previewlead` is a pre-release build with no demo.
     flags: {
       prerelease: state.release === null,
       released: state.release !== null,
+      demo: state.demoUrl !== null,
+      demolead: state.demoUrl !== null && state.release === null,
+      demofollow: state.demoUrl !== null && state.release !== null,
+      previewlead: state.demoUrl === null && state.release === null,
     },
   };
 }
@@ -453,6 +470,12 @@ function writeLlmsTxt(context, rendered, outDir) {
     `${status} Each doc below is Markdown; the same page as HTML is at the URL without \`.md\`. Source code: ${repo}. Every doc in one file: ${origin}/llms-full.txt. Every page also answers a request with \`Accept: text/markdown\` in Markdown; the home and download pages are at ${origin}/index.md and ${origin}/download.md.`,
     "",
   ];
+  if (context.flags.demo) {
+    lines.push(
+      `Live demo: ${context.values.demoUrl} gives a visitor their own private copy of Bookclerk in the browser for 30 minutes, to sign in to their stores, scan their library and search it. It cannot download books, and it signs the stores out and deletes the copy when the demo ends.`,
+      "",
+    );
+  }
   const groups = rendered.nav;
   const designAt = groups.findIndex((g) => g.title === NAV[NAV.length - 1].title);
   for (const [i, group] of groups.entries()) {

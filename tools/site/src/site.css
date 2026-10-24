@@ -132,6 +132,8 @@ img, svg { max-width: 100%; }
 }
 .btn-secondary:hover { background: color-mix(in srgb, var(--teal) 25%, transparent); color: var(--ink); }
 .btn-row { display: flex; flex-wrap: wrap; gap: 12px; }
+.btn-arrow { gap: 8px; }
+.btn-arrow svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
 /* Pre-release ribbon */
 .ribbon {
@@ -219,6 +221,22 @@ img, svg { max-width: 100%; }
 .feature svg { width: 28px; height: 28px; stroke: var(--teal); fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .feature h3 { font-size: 20px; line-height: 28px; }
 .feature p, .step p { font-size: 16px; line-height: 24px; }
+
+/* Live demo: the strip under How it works and the card on the download page */
+.demo-strip { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px 24px; background: var(--parchment); border-radius: 12px; padding: 24px 28px; }
+.demo-strip > div { flex: 1 1 480px; min-width: 0; display: flex; flex-direction: column; gap: 4px; max-width: 760px; }
+.demo-strip h3 { font-size: 20px; line-height: 28px; }
+.demo-strip p { font-size: 16px; line-height: 24px; }
+.demo-card { background: var(--band-bg); color: var(--band-fg); border-radius: 12px; padding: 36px 40px; display: flex; flex-wrap: wrap; gap: 32px 40px; align-items: center; }
+.demo-card .copy { flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.demo-card .eyebrow { color: var(--band-accent); }
+.demo-card h2 { font-size: 32px; line-height: 40px; }
+.demo-card p { color: color-mix(in srgb, var(--band-fg) 82%, transparent); }
+.demo-card .btn-light { background: var(--band-fg); color: var(--band-bg); }
+.demo-card .btn-light:hover { background: #fbf7ee; color: var(--band-bg); }
+.demo-card ul { flex: 1 1 320px; min-width: 0; list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; font-size: 16px; line-height: 24px; }
+.demo-card li { display: flex; gap: 12px; }
+.demo-card li svg { flex: 0 0 22px; width: 22px; height: 22px; fill: none; stroke: var(--band-accent); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
 /* Tour: an illustration of the app until release screenshots replace it */
 .window { border: 1px solid color-mix(in srgb, var(--ink) 15%, transparent); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow-xl); background: var(--paper); }
@@ -321,6 +339,8 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
   .section { padding-block: 56px; }
   .section-head h2, .page-head h1 { font-size: 32px; line-height: 38px; }
   .window-nav { display: none; }
+  .demo-card { padding: 24px 20px; }
+  .demo-card h2 { font-size: 26px; line-height: 32px; }
 }
 
 @media (max-width: 480px) {

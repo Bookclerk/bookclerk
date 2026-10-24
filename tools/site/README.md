@@ -31,6 +31,7 @@ instead of `main`'s.
 | `SITE_COMMIT` | commit the site is built from |
 | `SITE_BUILT_ON` | build date, `YYYY-MM-DD` (default: today) |
 | `SITE_ORIGIN` | `https://<host>` the site is served from, for canonical and preview URLs (default `https://bookclerk.app`) |
+| `SITE_DEMO_URL` | `https://<host>` of the hosted demo ([`tools/demo`](../demo/README.md)); empty means no demo, and the pages leave out every demo link. The workflow uses `https://demo.<DOMAIN>`, else the `DEMO_URL` variable, and none when `DEMO_URL` is `none` |
 
 ## Local preview
 
@@ -57,6 +58,10 @@ cd audit && npm ci && node audit.mjs      # --chrome <path> or CHROME_PATH picks
 - `src/*.html` – pages. `{{name}}` inserts an escaped value, `{{> name}}` a
   partial from `src/partials/`, and `{{#prerelease}}…{{/prerelease}}` /
   `{{#released}}…{{/released}}` keep content for one release state.
+  `{{#demo}}` keeps content when the deployment has a demo; sections do not
+  nest, so `{{#demolead}}` (demo, no release), `{{#demofollow}}` (demo and a
+  release) and `{{#previewlead}}` (no demo, no release) cover the
+  combinations, and `{{^flag}}` inverts any of them.
 - `src/site.css` – styles; colors and fonts follow `ui/src/index.css` and
   `assets/brand/README.md`, with a dark scheme from `prefers-color-scheme`.
 - `src/fonts/` – the web fonts, served from the site itself (no third-party

@@ -15,6 +15,9 @@ const PRE = { SITE_COMMIT: "b6adae4d0123456789abcdef0123456789abcdef", SITE_BUIL
 /** Release state after a first release. */
 const REL = { ...PRE, SITE_RELEASE_TAG: "v0.1.0", SITE_RELEASE_DATE: "2026-12-01", SITE_DOCS_VERSIONS: "v0.1.0" };
 
+/** A deployment with a hosted demo. */
+const DEMO = { SITE_DEMO_URL: "https://demo.bookclerk.app" };
+
 /**
  * Builds the site into a temporary directory.
  *
@@ -131,6 +134,66 @@ test("a release build drops the pre-release notices", () => {
   }
 });
 
+test("readState accepts a demo origin and rejects anything else", () => {
+  assert.equal(readState(PRE).demoUrl, null);
+  assert.equal(readState({ ...PRE, SITE_DEMO_URL: " " }).demoUrl, null);
+  assert.equal(readState({ ...PRE, ...DEMO }).demoUrl, "https://demo.bookclerk.app");
+  for (const url of ["http://demo.bookclerk.app", "https://demo.bookclerk.app/", "javascript:alert(1)", "https://demo.bookclerk.app\"><script>"]) {
+    assert.throws(() => readState({ ...PRE, SITE_DEMO_URL: url }), /SITE_DEMO_URL/, url);
+  }
+});
+
+test("a build without a demo links to none", () => {
+  for (const env of [PRE, REL]) {
+    const site = built(env);
+    try {
+      for (const name of ["index.html", "download.html", "404.html", "index.md", "download.md", "llms.txt"]) {
+        assert.doesNotMatch(site.page(name), /live demo|demo\.bookclerk/i, name);
+      }
+      assert.ok(site.page("index.html").includes('href="#how">See how it works'));
+    } finally {
+      site.done();
+    }
+  }
+});
+
+test("before a release the demo leads the home and download pages", () => {
+  const site = built({ ...PRE, ...DEMO });
+  try {
+    const home = site.page("index.html");
+    const hero = home.slice(home.indexOf('class="btn-row"'), home.indexOf("</div>", home.indexOf('class="btn-row"')));
+    assert.match(hero, /class="btn btn-primary btn-arrow" href="https:\/\/demo.bookclerk.app">Try the live demo/);
+    assert.match(hero, /class="btn btn-secondary" href="\/download">Get the preview/);
+    assert.ok(!home.includes("Try the preview"));
+    assert.ok(home.includes('<div class="demo-strip">'));
+    assert.ok(home.includes("Can I try Bookclerk without installing it?"));
+    for (const name of ["index.html", "download.html", "404.html"]) {
+      assert.ok(site.page(name).includes('<a href="https://demo.bookclerk.app">Demo</a>'), name);
+      assert.ok(site.page(name).includes('<a href="https://demo.bookclerk.app">Live demo</a>'), name);
+    }
+    const download = site.page("download.html");
+    assert.ok(download.indexOf('class="demo-card"') < download.indexOf('class="status-card"'));
+    assert.ok(download.includes("try Bookclerk in your browser"));
+    assert.ok(site.page("llms.txt").includes("Live demo: https://demo.bookclerk.app "));
+    assert.ok(site.page("index.md").includes("[Try the live demo](https://demo.bookclerk.app)"));
+  } finally {
+    site.done();
+  }
+});
+
+test("after a release the demo follows the download", () => {
+  const site = built({ ...REL, ...DEMO });
+  try {
+    const home = site.page("index.html");
+    assert.ok(home.indexOf("Download v0.1.0") < home.indexOf('class="btn btn-secondary" href="https://demo.bookclerk.app">Try the live demo'));
+    assert.ok(!home.includes("Get the preview"));
+    const download = site.page("download.html");
+    assert.ok(download.indexOf('class="status-card"') < download.indexOf('class="demo-card"'));
+  } finally {
+    site.done();
+  }
+});
+
 test("the build publishes pages, styles, headers and brand assets", () => {
   const site = built(PRE);
   try {
@@ -242,7 +305,7 @@ test("crawler and agent files list the site", () => {
 });
 
 test("home and download pages have Markdown versions that keep their sections", () => {
-  for (const env of [PRE, REL]) {
+  for (const env of [PRE, REL, { ...PRE, ...DEMO }, { ...REL, ...DEMO }]) {
     const site = built(env);
     try {
       for (const [html, md] of [
@@ -257,7 +320,7 @@ test("home and download pages have Markdown versions that keep their sections", 
         assert.ok(sections.length > 0, html);
         for (const title of sections) assert.ok(markdown.includes(`## ${title}`), `${md} lacks "## ${title}"`);
       }
-      assert.equal(site.page("index.md").includes("Pre-release"), env === PRE);
+      assert.equal(site.page("index.md").includes("Pre-release"), env.SITE_RELEASE_TAG === undefined);
       assert.match(site.page("404.md"), /^# We could not find that page/);
       assert.doesNotMatch(site.page("404.html"), /rel="alternate" type="text\/markdown"/);
     } finally {
