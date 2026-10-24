@@ -13,7 +13,9 @@ import { BudgetLedger, DEFAULT_DAILY_NEURONS, MAX_DAILY_NEURONS, utcDay } from "
 import { DEFAULT_NEXT, finishSignIn, safeNext, sameSiteHop, signOut, startSignIn } from "./auth.js";
 import { metered } from "./budget.js";
 import {
-  afterFixCounts,
+  fixStatus,
+  isRegressionVersion,
+  issuesTrackingSignature,
   all,
   countsByBucket,
   DAY_MS,
@@ -286,7 +288,7 @@ export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now
       topBy(db, "version", since, {}, 6),
       topSignatures(db, since, filter, 6),
       listReports(db, since, filter, 8, 0).then((r) => r.rows),
-      afterFixCounts(db),
+      fixStatus(db),
       triageBudget(env, now),
       topBy(db, "version", now - 90 * DAY_MS, {}, 30).then((r) => r.map((x) => String(x.key)).filter(Boolean)),
       indexCapReached(db, now, indexCap(env)),
@@ -345,29 +347,39 @@ export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now
     // hours (a session's length), so the header cannot hide a first view.
     const liveRefresh = request.headers.get("bookclerk-live") === "1"
       && Boolean(await first(db, "SELECT 1 AS seen FROM access_log WHERE user_id = ? AND action = 'view-report' AND report_id = ? AND at > ? LIMIT 1", member.userId, r.report_id, now - 8 * 3_600_000));
-    const [stored, afterFix, similar, days] = await Promise.all([
+    const [stored, afterFix, similar, days, sameSignature] = await Promise.all([
       liveRefresh ? Promise.resolve(null) : readStoredReport(b2, String(r.object_key)).catch(() => null),
-      afterFixCounts(db),
+      fixStatus(db),
       r.signature
         ? all(db, "SELECT report_id, received_at, version, os, arch FROM reports WHERE signature = ? AND report_id <> ? ORDER BY received_at DESC LIMIT 8", r.signature, r.report_id)
         : Promise.resolve([]),
       r.signature ? signatureDays(db, r.signature, now - 14 * DAY_MS) : Promise.resolve(new Map()),
+      r.signature ? issuesTrackingSignature(db, r.signature) : Promise.resolve([]),
     ]);
     if (!liveRefresh) await logAccess(db, member, "view-report", r.report_id, now);
-    const fixes = found.issues.map((i) => afterFix.get(Number(i.number))).filter(Boolean);
-    const fix = fixes.sort((a, b) => b.fixAt - a.fixAt)[0] ?? null;
+    // The fix shown is a linked issue's: one with a fixed-in version first
+    // (it can tell a regression), then the newest merge. A report no issue
+    // lists yet shows the fix of an issue tracking its signature, so a
+    // regression is visible before anyone links it.
+    const linked = found.issues.map((i) => Number(i.number));
+    const pick = (numbers) => numbers
+      .filter((n) => afterFix.has(n))
+      .map((n) => ({ ...afterFix.get(n), issue: n }))
+      .sort((a, b) => Number(Boolean(b.fixedIn)) - Number(Boolean(a.fixedIn)) || (b.fixAt ?? 0) - (a.fixAt ?? 0))[0];
+    const fix = pick(linked) ?? pick(sameSignature.filter((n) => !linked.includes(n))) ?? null;
+    const regression = Boolean(fix?.fixedIn && isRegressionVersion(String(r.version), fix.fixedIn));
     const today = Math.floor(now / DAY_MS);
     const counts = dailySeries(now, 14, days);
     const sigDays = counts.map((n, i) => {
       const day = today - 13 + i;
-      return { label: fmtDay(day * DAY_MS), n, after: Boolean(fix && (day + 1) * DAY_MS > fix.fixAt) };
+      return { label: fmtDay(day * DAY_MS), n, after: Boolean(fix?.fixAt && (day + 1) * DAY_MS > fix.fixAt) };
     });
-    const markerIndex = fix ? Math.floor(fix.fixAt / DAY_MS) - (today - 13) : -1;
+    const markerIndex = fix?.fixAt ? Math.floor(fix.fixAt / DAY_MS) - (today - 13) : -1;
     const fixPr = found.prs.filter((p) => p.state === "merged").sort((a, b) => Number(b.merged_at) - Number(a.merged_at))[0];
     return htmlResponse(
       reportPage({
-        cfg, member, report: r, stored, issues: found.issues, prs: found.prs, fix, similar, sigDays,
-        sigMarker: fix && fixPr ? { index: markerIndex, label: `#${fixPr.pr_number} merged` } : null,
+        cfg, member, report: r, stored, issues: found.issues, prs: found.prs, fix, regression, similar, sigDays,
+        sigMarker: fix?.fixAt && fixPr ? { index: markerIndex, label: `#${fixPr.pr_number} merged` } : null,
       }),
     );
   }
@@ -377,7 +389,7 @@ export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now
     const state = s === "closed" || s === "all" ? s : "open";
     const [issues, afterFix, syncedAt] = await Promise.all([
       listIssues(db, state, now - 14 * DAY_MS, 100),
-      afterFixCounts(db),
+      fixStatus(db),
       getState(db, "issues_synced_at"),
     ]);
     return htmlResponse(issuesPage({ cfg, member, now, state, issues, afterFix, syncedAt: syncedAt ? Number(syncedAt) : null }));

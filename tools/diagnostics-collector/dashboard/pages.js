@@ -128,6 +128,33 @@ function moreIssues(r) {
   return html` <a class="quiet" href="/reports/${r.report_id}" title="Listed in ${more + 1} issues">+${more}</a>`;
 }
 
+/**
+ * How an issue's fix reads next to its pull request: the version it shipped
+ * in, or that it has not shipped yet.
+ *
+ * @param {{fixedIn: string | null, source: string | null} | undefined} fix
+ *   The issue's entry from `fixStatus`.
+ * @returns {string} Short text, empty when there is nothing to add.
+ */
+function fixNote(fix) {
+  if (!fix) return "";
+  if (fix.fixedIn) return `fixed in ${fix.fixedIn}${fix.source === "manual" ? " (label)" : ""}`;
+  return fix.source === "unreleased" ? "merged, not in a release yet" : "";
+}
+
+/**
+ * How many reports came after an issue's fix, and what "after" means for it.
+ *
+ * @param {{fixedIn: string | null, fixAt: number | null, after: number}} fix
+ *   The issue's entry from `fixStatus`.
+ * @returns {string} One sentence.
+ */
+function afterFixText(fix) {
+  const n = `${fmtInt(fix.after)} ${fix.after === 1 ? "report" : "reports"} with this signature`;
+  if (fix.fixedIn) return `${n} from ${fix.fixedIn} or later`;
+  return fix.fixAt ? `${n} since the fix merged on ${fmtDay(fix.fixAt)}, before any release carries it` : n;
+}
+
 /** How a report's link to its tracking issue was made, by ledger `source`. */
 const LINK_SOURCE = {
   filed: "listed when filed",
@@ -264,7 +291,7 @@ export function overviewPage(d) {
         <section class="panel stat s2"><h2>Reports, ${range.label}</h2><div class="v">${fmtInt(d.stats.total)}</div><div class="d">from ${fmtInt(d.stats.installs)} installs</div>${sparkline(d.totalSeries, "teal", 120, 28, true)}</section>
         <section class="panel stat warn s2"><h2>Not filed</h2><div class="v">${fmtInt(d.stats.notFiled)}</div><div class="d">no issue lists them</div></section>
         <section class="panel stat s2"><h2>Open issues</h2><div class="v">${fmtInt(d.stats.openIssues)}</div><div class="d">labeled diagnostics</div></section>
-        <section class="panel stat${afterFixIssues ? " crit" : ""} s2"><h2>After a fix</h2><div class="v">${fmtInt(afterFixIssues)}</div><div class="d">issues still reported after their PR merged</div></section>
+        <section class="panel stat${afterFixIssues ? " crit" : ""} s2"><h2>After a fix</h2><div class="v">${fmtInt(afterFixIssues)}</div><div class="d">issues seen again from the fixed version on</div></section>
         <section class="panel stat s2"><h2>Triage budget</h2><div class="v small">${fmtInt(d.budget.spent)}<span class="of"> / ${fmtInt(d.budget.cap)}</span></div>${meter(budgetFrac, "fill-amber", `${Math.round(budgetFrac * 100)} percent of today's neurons used`)}<div class="d">neurons used today (UTC)</div></section>
 
         <section class="panel s8"><h2>Reports per ${range.bucket < 86_400_000 ? "hour" : "day"}, by trigger <span class="legend">${series.map((s) => html`<span><i class="${s.cls}"></i>${s.key}</span>`)}</span></h2>
@@ -428,7 +455,8 @@ export function reportPage(d) {
             : html`<p class="fine">No issue lists this report yet. Triage may have judged it noise, or ingest has not run since it arrived.</p>`}
           ${d.issues.length > 1 ? html`<p class="fine"><span class="chip crit">Conflict</span> ${d.issues.length} issues list this report; it counts under #${d.issues[0].number} until a member resolves it.</p>` : ""}
           ${d.prs.map((pr) => html`<div class="link-item"><span class="chip ${pr.state}">${{ open: "Open", closed: "Closed", merged: "Merged" }[pr.state] ?? pr.state}</span><a href="${ghUrl(d.cfg, "pull", pr.pr_number)}">#${pr.pr_number} ${pr.title}</a></div>`)}
-          ${fix && fix.after > 0 ? html`<div class="link-item"><span class="chip crit">Seen after fix</span><span class="fine">${fmtInt(fix.after)} reports with this signature since the fix merged on ${fmtDay(fix.fixAt)}</span></div>` : ""}
+          ${fix && fixNote(fix) ? html`<div class="link-item"><span class="chip ${fix.fixedIn ? "merged" : "none"}">${fix.fixedIn ? "Fixed" : "Merged"}</span><span class="fine">${fixNote(fix)}${d.issues.some((i) => Number(i.number) === fix.issue) ? "" : html`, per <a href="${ghUrl(d.cfg, "issues", fix.issue)}">#${fix.issue}</a>, which tracks this signature`}</span></div>` : ""}
+          ${fix && (d.regression || fix.after > 0) ? html`<div class="link-item"><span class="chip crit">${d.regression ? "Regression" : "Seen after fix"}</span><span class="fine">${d.regression ? `this report runs ${r.version}, after the fix; ` : ""}${afterFixText(fix)}</span></div>` : ""}
         </div></section>
         <section class="panel s12"><h2>Event log <span class="note">secrets were redacted on the client before upload</span></h2>
           ${d.stored
@@ -471,8 +499,8 @@ export function issuesPage(d) {
                 <td>${sparkline(dailySeries(d.now, 14, i.days), fix && fix.after > 0 ? "brick" : "teal")}</td>
                 <td class="num">${i.first_seen ? html`${fmtDay(i.first_seen)} · <span class="mono">${i.first_version}</span>` : ""}</td>
                 <td class="num">${i.last_seen ? html`${fmtDay(i.last_seen)} · <span class="mono">${i.last_version}</span>` : ""}</td>
-                <td>${pr ? html`<a class="chip ${pr.state}" href="${ghUrl(d.cfg, "pull", pr.pr_number)}">PR #${pr.pr_number} ${pr.state}</a>` : html`<span class="fine">none linked</span>`}</td>
-                <td class="r num">${!fix ? html`<span class="fine">no fix yet</span>` : fix.after > 0 ? html`<span class="chip crit">${fmtInt(fix.after)} reports</span>` : "0"}</td></tr>`;
+                <td>${pr ? html`<a class="chip ${pr.state}" href="${ghUrl(d.cfg, "pull", pr.pr_number)}">PR #${pr.pr_number} ${pr.state}</a>` : html`<span class="fine">none linked</span>`}${fixNote(fix) ? html` <span class="fine">${fixNote(fix)}</span>` : ""}</td>
+                <td class="r num">${!fix ? html`<span class="fine">no fix yet</span>` : fix.after > 0 ? html`<span class="chip crit" title="${afterFixText(fix)}">${fmtInt(fix.after)} ${fix.fixedIn ? "regressions" : "since merge"}</span>` : "0"}</td></tr>`;
             })
           : html`<tr><td colspan="8" class="empty">No diagnostics issues in this view.</td></tr>`}</tbody></table></div>
       </section></div>`,

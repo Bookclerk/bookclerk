@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync, verify as rsaVerify } from "node:crypto";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { OAUTH_COOKIE, pkceChallenge } from "./dashboard/auth.js";
-import { afterFixCounts, all, getReport, indexReport, first, linkBySignature, listIssues, run, sameVersionLine, topSignatures } from "./dashboard/db.js";
+import { all, fixStatus, getReport, indexReport, isRegressionVersion, first, linkBySignature, listIssues, run, sameVersionLine, topSignatures } from "./dashboard/db.js";
 import { appJwt, clearTokenCache, githubConfig, INSTALLATION_PERMISSIONS, pkcs8FromPem } from "./dashboard/github.js";
 import { escapeHtml, fmtTime, html, isoTime } from "./dashboard/html.js";
 import { buckets } from "./dashboard/pages.js";
@@ -739,10 +739,213 @@ describe("issue sync", () => {
     assert.deepEqual(links.map((l) => [l.report_id, l.issue_number]), [[ID1, 412]]);
     const prs = await all(env.DASHBOARD_DB, "SELECT pr_number, state FROM issue_pr");
     assert.deepEqual(prs.map((p) => [p.pr_number, p.state]), [[418, "merged"]]);
-    const after = await afterFixCounts(env.DASHBOARD_DB);
-    assert.equal(after.get(412).after, 1, "the newer report shares the signature");
+    const after = await fixStatus(env.DASHBOARD_DB);
+    assert.equal(after.get(412).after, 1, "the newer report shares the signature and the fix is unreleased");
+    assert.equal(after.get(412).source, null, "an open issue's fix is not resolved against releases");
     const list = gh.calls.find((c) => c.url.includes("/issues?"));
     assert.match(list.url, /labels=diagnostics/);
+  });
+});
+
+describe("fixed-in version", () => {
+  const SHA = "a".repeat(40);
+  const ID3 = "d2b80f13-0000-4000-8000-000000000003";
+
+  /** A closed issue listing ID1, with the given labels. */
+  function closedIssue(number, labels = [{ name: "diagnostics" }]) {
+    return {
+      number,
+      title: "[diagnostics] Libro stalls",
+      state: "closed",
+      body: `<!-- bookclerk-diagnostics: workers-ai triage -->\nx\n\n### Report IDs\n- \`${ID1}\`\n`,
+      created_at: new Date(NOW - 6 * 86_400_000).toISOString(),
+      updated_at: new Date(NOW - 2 * 86_400_000).toISOString(),
+      closed_at: new Date(NOW - 2 * 86_400_000).toISOString(),
+      labels,
+    };
+  }
+
+  /** GraphQL answer: one merged pull request with a merge commit. */
+  const mergedPr = (mergedAt) =>
+    Response.json({
+      data: {
+        repository: {
+          i0: {
+            labels: { nodes: [{ name: "diagnostics" }], pageInfo: { hasNextPage: false } },
+            closedByPullRequestsReferences: {
+              nodes: [{ number: 418, title: "Retry", state: "MERGED", mergedAt: new Date(mergedAt).toISOString(), mergeCommit: { oid: SHA }, repository: { nameWithOwner: "Bookclerk/bookclerk" } }],
+            },
+            timelineItems: { nodes: [] },
+          },
+        },
+      },
+    });
+
+  it("records the first release that contains the fix and counts regressions by version", async () => {
+    const env = makeEnv();
+    await seed(env, ID1, NOW - 5 * 86_400_000, { version: "0.9.0-rc.2" });
+    await seed(env, ID2, NOW - 3_600_000, { version: "0.9.2+nix" });
+    await seed(env, ID3, NOW - 1_800_000, { version: "0.9.1" });
+    const release = (tag, at) => ({ tag_name: tag, draft: false, prerelease: tag.includes("-"), published_at: new Date(at).toISOString() });
+    let releaseCalls = 0;
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues?", () => Response.json([closedIssue(412)])],
+      ["POST https://api.github.com/graphql", () => mergedPr(NOW - 2 * 86_400_000)],
+      [
+        "GET https://api.github.com/repos/Bookclerk/bookclerk/releases",
+        () => {
+          releaseCalls += 1;
+          return Response.json([release("v0.9.2", NOW - 12 * 3_600_000), release("v0.9.1", NOW - 86_400_000), release("v0.9.0", NOW - 10 * 86_400_000)]);
+        },
+      ],
+      [`GET https://api.github.com/repos/Bookclerk/bookclerk/compare/v0.9.1...${SHA}`, () => new Response("{}", { status: 404 })],
+      [`GET https://api.github.com/repos/Bookclerk/bookclerk/compare/v0.9.2...${SHA}`, () => Response.json({ status: "behind" })],
+    ]);
+    await syncIssues(env, githubConfig(env), NOW);
+    const rows = await all(env.DASHBOARD_DB, "SELECT * FROM issue_fix");
+    assert.equal(rows.length, 1);
+    assert.deepEqual(
+      [rows[0].issue_number, rows[0].source, rows[0].fixed_in, rows[0].pr_number, rows[0].merge_sha, rows[0].recorded_by],
+      [412, "release", "0.9.2", 418, SHA, "sync"],
+    );
+    assert.ok(!gh.calls.some((c) => c.url.includes("compare/v0.9.0...")), "releases before the merge are not compared");
+    const status = await fixStatus(env.DASHBOARD_DB);
+    assert.equal(status.get(412).fixedIn, "0.9.2");
+    assert.equal(status.get(412).after, 1, "only the 0.9.2 repack counts; 0.9.1 and the rc are older than the fix");
+    assert.equal((await all(env.DASHBOARD_DB, "SELECT merge_sha FROM issue_pr"))[0].merge_sha, SHA);
+
+    // A resolved issue is not looked up again.
+    await syncIssues(env, githubConfig(env), NOW + 60_000);
+    assert.equal(releaseCalls, 1);
+    assert.equal((await all(env.DASHBOARD_DB, "SELECT * FROM issue_fix")).length, 1);
+
+    const cookie = await signedIn(env);
+    const page = await (await call(env, new Request(`${ORIGIN}/reports/${ID2}`, { headers: { cookie } }), makeB2({ [`id:diagnostics/x/${ID2}.json`]: JSON.stringify(stored(ID2)) }))).text();
+    assert.match(page, /Regression/);
+    assert.match(page, /fixed in 0\.9\.2/);
+    const older = await (await call(env, new Request(`${ORIGIN}/reports/${ID3}`, { headers: { cookie } }), makeB2({ [`id:diagnostics/x/${ID3}.json`]: JSON.stringify(stored(ID3)) }))).text();
+    assert.doesNotMatch(older, /chip crit">Regression/);
+    const issues = await (await call(env, new Request(`${ORIGIN}/issues?state=closed`, { headers: { cookie } }))).text();
+    assert.match(issues, /1 regressions/);
+  });
+
+  it("waits for a release that contains the fix, and lets a fixed-in label decide", async () => {
+    const env = makeEnv();
+    await seed(env, ID1, NOW - 5 * 86_400_000, { version: "0.9.0" });
+    await seed(env, ID2, NOW - 3_600_000, { version: "0.9.0" });
+    const releases = [{ tag_name: "v0.9.0", draft: false, prerelease: false, published_at: new Date(NOW - 10 * 86_400_000).toISOString() }];
+    let issue = closedIssue(413);
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues?", () => Response.json([issue])],
+      ["POST https://api.github.com/graphql", () => mergedPr(NOW - 2 * 86_400_000)],
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/releases", () => Response.json(releases)],
+      [`GET https://api.github.com/repos/Bookclerk/bookclerk/compare/`, ({ url }) => Response.json({ status: url.includes("v0.9.1...") ? "behind" : "ahead" })],
+    ]);
+    await syncIssues(env, githubConfig(env), NOW);
+    let rows = await all(env.DASHBOARD_DB, "SELECT source, fixed_in FROM issue_fix ORDER BY recorded_at");
+    assert.deepEqual(rows, [{ source: "unreleased", fixed_in: null }], "no release after the merge yet");
+    let status = await fixStatus(env.DASHBOARD_DB);
+    assert.equal(status.get(413).source, "unreleased");
+    assert.equal(status.get(413).after, 1, "while unreleased, reports after the merge count");
+
+    // No newer release: not looked at again.
+    await syncIssues(env, githubConfig(env), NOW + 60_000);
+    assert.equal((await all(env.DASHBOARD_DB, "SELECT * FROM issue_fix")).length, 1);
+
+    // A release appears that contains the fix.
+    releases.unshift({ tag_name: "v0.9.1", draft: false, prerelease: false, published_at: new Date(NOW + 3_600_000).toISOString() });
+    await syncIssues(env, githubConfig(env), NOW + 7_200_000);
+    rows = await all(env.DASHBOARD_DB, "SELECT source, fixed_in FROM issue_fix ORDER BY recorded_at");
+    assert.deepEqual(rows, [{ source: "unreleased", fixed_in: null }, { source: "release", fixed_in: "0.9.1" }]);
+
+    // A member's label overrides it, and the sync leaves the issue alone afterwards.
+    issue = { ...closedIssue(413, [{ name: "diagnostics" }, { name: "fixed-in:v0.9.0" }]), updated_at: new Date(NOW + 3 * 3_600_000).toISOString() };
+    await syncIssues(env, githubConfig(env), NOW + 4 * 3_600_000);
+    rows = await all(env.DASHBOARD_DB, "SELECT source, fixed_in, recorded_by FROM issue_fix ORDER BY recorded_at");
+    assert.deepEqual(rows.at(-1), { source: "manual", fixed_in: "0.9.0", recorded_by: "label" });
+    await syncIssues(env, githubConfig(env), NOW + 5 * 3_600_000);
+    assert.equal((await all(env.DASHBOARD_DB, "SELECT * FROM issue_fix")).length, 3, "the same label writes no second row");
+    status = await fixStatus(env.DASHBOARD_DB);
+    assert.equal(status.get(413).fixedIn, "0.9.0");
+    assert.equal(status.get(413).source, "manual");
+    assert.equal(status.get(413).after, 2, "both 0.9.0 reports are regressions against the labeled version");
+
+    // The label is removed: its rows go, and the release row counts again.
+    issue = { ...closedIssue(413), updated_at: new Date(NOW + 6 * 3_600_000).toISOString() };
+    await syncIssues(env, githubConfig(env), NOW + 7 * 3_600_000);
+    rows = await all(env.DASHBOARD_DB, "SELECT source, fixed_in FROM issue_fix ORDER BY recorded_at");
+    assert.deepEqual(rows, [{ source: "unreleased", fixed_in: null }, { source: "release", fixed_in: "0.9.1" }]);
+    status = await fixStatus(env.DASHBOARD_DB);
+    assert.equal(status.get(413).fixedIn, "0.9.1");
+    assert.equal(status.get(413).after, 0);
+  });
+
+  it("looks past releases it already compared and ignores tags that are not versions", async () => {
+    const env = makeEnv();
+    await seed(env, ID1, NOW - 5 * 86_400_000, { version: "0.9.0" });
+    const at = (hours) => new Date(NOW + hours * 3_600_000).toISOString();
+    const tag = (tag_name, published_at, draft = false) => ({ tag_name, draft, prerelease: false, published_at });
+    // Three maintenance releases after the merge from another branch, and a
+    // nightly tag, none containing the fix.
+    const releases = [tag("nightly-2026-10-24", at(-30)), tag("v0.8.7", at(-40)), tag("v0.8.6", at(-41)), tag("v0.8.5", at(-42)), tag("v0.8.4", at(-240))];
+    const compared = [];
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues?", () => Response.json([closedIssue(415)])],
+      ["POST https://api.github.com/graphql", () => mergedPr(NOW - 2 * 86_400_000)],
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/releases", () => Response.json(releases)],
+      [
+        "GET https://api.github.com/repos/Bookclerk/bookclerk/compare/",
+        ({ url }) => {
+          const t = /compare\/([^.]+(?:\.[^.]+)*?)\.\.\./.exec(url)[1];
+          compared.push(t);
+          return Response.json({ status: t === "v0.9.0" ? "behind" : "diverged" });
+        },
+      ],
+    ]);
+    await syncIssues(env, githubConfig(env), NOW);
+    assert.deepEqual(compared, ["v0.8.5", "v0.8.6", "v0.8.7"], "the nightly tag is not a version; three releases are compared, oldest first");
+    assert.deepEqual(await all(env.DASHBOARD_DB, "SELECT source, fixed_in FROM issue_fix"), [{ source: "unreleased", fixed_in: null }]);
+
+    // The release that contains the fix comes later than the three compared.
+    releases.unshift(tag("v0.9.0", at(1)));
+    compared.length = 0;
+    await syncIssues(env, githubConfig(env), NOW + 2 * 3_600_000);
+    assert.deepEqual(compared, ["v0.9.0"], "only releases newer than the last look are compared");
+    assert.deepEqual(await all(env.DASHBOARD_DB, "SELECT source, fixed_in FROM issue_fix ORDER BY recorded_at"), [{ source: "unreleased", fixed_in: null }, { source: "release", fixed_in: "0.9.0" }]);
+  });
+
+  it("keeps the rows when GitHub's release reads fail", async () => {
+    const env = makeEnv();
+    await seed(env, ID1, NOW - 5 * 86_400_000);
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues?", () => Response.json([closedIssue(414)])],
+      ["POST https://api.github.com/graphql", () => mergedPr(NOW - 2 * 86_400_000)],
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/releases", () => new Response("down", { status: 502 })],
+    ]);
+    const res = await syncIssues(env, githubConfig(env), NOW);
+    assert.deepEqual(res, { issues: 1, refreshed: 1 });
+    assert.equal((await all(env.DASHBOARD_DB, "SELECT * FROM issue_fix")).length, 0);
+  });
+
+  it("orders versions the way a regression needs", () => {
+    const cases = [
+      ["0.9.2", "0.9.2", true],
+      ["v0.9.2", "0.9.2", true],
+      ["0.9.2+nix", "0.9.2", true],
+      ["0.9.2-1", "0.9.2", true],
+      ["0.9.2-rc.1", "0.9.2", false],
+      ["0.9.3-rc.1", "0.9.2", true],
+      ["0.10.0", "0.9.2", true],
+      ["0.9.1", "0.9.2", false],
+      ["0.0.0-synthetic", "0.9.2", false],
+      ["garbage", "0.9.2", false],
+      ["", "0.9.2", false],
+    ];
+    for (const [version, fixedIn, expected] of cases) assert.equal(isRegressionVersion(version, fixedIn), expected, `${version} vs ${fixedIn}`);
   });
 });
 

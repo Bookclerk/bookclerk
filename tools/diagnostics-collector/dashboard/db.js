@@ -4,6 +4,8 @@
  * request or report text, only from the fixed filter names below.
  */
 
+import { compareSemver, isPackagingDerivative, normalizeVersion } from "../version-filter.js";
+
 /** One day, in milliseconds. */
 export const DAY_MS = 86_400_000;
 
@@ -536,29 +538,108 @@ export async function signatureDays(db, signature, since) {
 }
 
 /**
- * Per issue: when its newest merged pull request landed and how many reports
- * sharing a signature with the issue's own reports arrived after that.
+ * Whether a report's version is the fixed version or a later one, so a
+ * report of a fixed issue's signature from it is a regression. Build
+ * metadata and distribution suffixes on the fixed version count as it;
+ * a version that does not parse never counts.
+ *
+ * @param {string} version A report's version.
+ * @param {string} fixedIn The fixed-in version (no leading `v`).
+ * @returns {boolean} True for a regression.
+ */
+export function isRegressionVersion(version, fixedIn) {
+  if (isPackagingDerivative(normalizeVersion(version), normalizeVersion(fixedIn))) return true;
+  const cmp = compareSemver(version, fixedIn);
+  return cmp !== null && cmp >= 0;
+}
+
+/**
+ * Common table expression `latest` (`issue_number`, `source`, `fixed_in`,
+ * `pr_number`, `recorded_at`, `recorded_by`): each issue's newest fixed-in
+ * row.
+ */
+export const LATEST_FIX = `latest AS (
+  SELECT f.issue_number, f.source, f.fixed_in, f.pr_number, f.recorded_at, f.recorded_by FROM issue_fix f
+  WHERE f.recorded_at = (SELECT MAX(g.recorded_at) FROM issue_fix g WHERE g.issue_number = f.issue_number))`;
+
+/**
+ * Issues tracking at least one report with a signature.
  *
  * @param {D1Database} db Database.
- * @returns {Promise<Map<number, {fixAt: number, after: number}>>} Only issues
- *   with a merged pull request.
+ * @param {string} signature Signature.
+ * @returns {Promise<number[]>} Issue numbers, ascending.
  */
-export async function afterFixCounts(db) {
+export async function issuesTrackingSignature(db, signature) {
   const rows = await all(
     db,
-    `WITH fixes AS (
+    `SELECT DISTINCT ri.issue_number AS n FROM report_issue ri JOIN reports r ON r.report_id = ri.report_id
+     WHERE r.signature = ? AND ${LINKED} ORDER BY ri.issue_number`,
+    signature,
+  );
+  return rows.map((r) => Number(r.n));
+}
+
+/**
+ * Per issue with a fix: which version fixed it (the latest `issue_fix` row),
+ * when its newest merged pull request landed, and how many reports sharing
+ * a signature with the issue's tracked reports came from the fixed version
+ * or a later one (`after`, a regression count) or, while the fix is
+ * unreleased or its version does not parse, arrived after the merge.
+ *
+ * Counts are aggregated per issue and version in SQL; only the distinct
+ * versions reach the Worker.
+ *
+ * @param {D1Database} db Database.
+ * @returns {Promise<Map<number, {fixedIn: string | null, source: string | null,
+ *   prNumber: number | null, fixAt: number | null, after: number}>>} Issues
+ *   with a fixed-in row or a merged pull request. `source` is the row's
+ *   (`release`, `manual`, `unreleased`) or null for a merged pull request
+ *   the sync has not resolved yet.
+ */
+export async function fixStatus(db) {
+  const FIXED = `WITH ${LATEST_FIX},
+     merged AS (
        SELECT issue_number, MAX(merged_at) AS fix_at FROM issue_pr
        WHERE state = 'merged' AND merged_at IS NOT NULL GROUP BY issue_number),
+     fixed AS (
+       SELECT i.number AS issue_number, l.source AS source, l.fixed_in AS fixed_in, l.pr_number AS pr_number, m.fix_at AS fix_at
+       FROM issues i LEFT JOIN latest l ON l.issue_number = i.number LEFT JOIN merged m ON m.issue_number = i.number
+       WHERE l.issue_number IS NOT NULL OR m.issue_number IS NOT NULL)`;
+  const fixes = await all(db, `${FIXED} SELECT * FROM fixed`);
+  const out = new Map();
+  const opt = (v) => (v === null || v === undefined ? null : v);
+  for (const f of fixes) {
+    out.set(Number(f.issue_number), {
+      fixedIn: opt(f.fixed_in) === null ? null : String(f.fixed_in),
+      source: opt(f.source) === null ? null : String(f.source),
+      prNumber: opt(f.pr_number) === null ? null : Number(f.pr_number),
+      fixAt: opt(f.fix_at) === null ? null : Number(f.fix_at),
+      after: 0,
+    });
+  }
+  if (!out.size) return out;
+  // Reports sharing a signature with each fixed issue's tracked reports,
+  // per version (a report counts once per issue even when it shares two
+  // signatures with it).
+  const counts = await all(
+    db,
+    `${FIXED},
      sigs AS (
        SELECT DISTINCT ri.issue_number, r.signature FROM report_issue ri
+       JOIN fixed f ON f.issue_number = ri.issue_number
        JOIN reports r ON r.report_id = ri.report_id WHERE r.signature IS NOT NULL AND ${LINKED})
-     SELECT f.issue_number AS issue_number, f.fix_at AS fix_at,
-       (SELECT COUNT(DISTINCT r2.report_id) FROM sigs s
-          JOIN reports r2 ON r2.signature = s.signature AND r2.received_at > f.fix_at
-          WHERE s.issue_number = f.issue_number) AS after
-     FROM fixes f`,
+     SELECT s.issue_number AS issue_number, r2.version AS version, COUNT(DISTINCT r2.report_id) AS n,
+       COUNT(DISTINCT CASE WHEN f.fix_at IS NOT NULL AND r2.received_at > f.fix_at THEN r2.report_id END) AS n_after
+     FROM sigs s JOIN fixed f ON f.issue_number = s.issue_number JOIN reports r2 ON r2.signature = s.signature
+     GROUP BY s.issue_number, r2.version`,
   );
-  return new Map(rows.map((r) => [Number(r.issue_number), { fixAt: Number(r.fix_at), after: Number(r.after) }]));
+  for (const c of counts) {
+    const fix = out.get(Number(c.issue_number));
+    if (!fix) continue;
+    const byVersion = fix.fixedIn !== null && compareSemver(fix.fixedIn, fix.fixedIn) !== null;
+    fix.after += byVersion ? (isRegressionVersion(String(c.version ?? ""), fix.fixedIn) ? Number(c.n) : 0) : Number(c.n_after);
+  }
+  return out;
 }
 
 /**
@@ -676,6 +757,7 @@ export async function linkFingerprint(db) {
        (SELECT COALESCE(GROUP_CONCAT(v, char(31)), '') FROM
          (SELECT number || ':' || state || ':' || updated_at || ':' || title AS v FROM issues ORDER BY number))
        || char(30) || (SELECT COUNT(*) || ':' || COALESCE(SUM(issue_number), 0) FROM report_issue)
+       || char(30) || (SELECT COUNT(*) || ':' || COALESCE(MAX(recorded_at), 0) FROM issue_fix)
        || char(30) || (SELECT COALESCE(GROUP_CONCAT(v, char(31)), '') FROM
          (SELECT issue_number || ':' || pr_number || ':' || state || ':' || COALESCE(merged_at, '') || ':' || title AS v FROM issue_pr ORDER BY issue_number, pr_number))
        AS fp`,
