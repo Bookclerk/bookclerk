@@ -29,7 +29,7 @@
     "oxlint": "^1.88.0",
     "tailwindcss": "^4.3.3",
     "typedoc": "^0.28.20",
-    "typedoc-plugin-markdown": "^4.13.1",
+    "typedoc-plugin-markdown": "^4.14.0",
     "typescript": "~6.0.2",
     "vite": "^8.3.4",
     "vitest": "5.0.5"
