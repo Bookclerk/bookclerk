@@ -151,6 +151,10 @@ pub fn sync_bundled_platform(bundle: &Path, files_dir: &Path) -> Result<Vec<Bund
 
     let _lock = PluginMutationLock::acquire(files_dir)?;
     fs::create_dir_all(&plugins_root)?;
+    // Mutation paths are built under this root and checked by
+    // `require_mutable_child`, which reads a relative path as relative to the
+    // root itself; a relative files dir would otherwise be joined twice.
+    let plugins_root = plugins_root.canonicalize()?;
     sweep_leftovers(&plugins_root);
     for artifact in pending {
         // Another process may have installed it while we waited for the lock.
@@ -587,6 +591,22 @@ mode = "deny"
         assert_eq!(provenance(files.path()), PluginProvenance::PlatformBundled);
         let staging = files.path().join("plugins").join(STAGING_DIR);
         assert_eq!(fs::read_dir(staging).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn relative_files_dir_installs_where_discovery_looks() {
+        let bundle = bundle_with_sqlite("0.1.0", b"guest");
+        // A files dir spelled relative to the working directory, as a
+        // relative BOOKCLERK_FILES_DIR is.
+        let dir = tempfile::Builder::new()
+            .prefix(".bundled-relative-")
+            .tempdir_in(".")
+            .unwrap();
+        let relative = PathBuf::from(dir.path().file_name().unwrap());
+        assert!(relative.is_relative());
+        let rows = sync_bundled_platform(bundle.path(), &relative).unwrap();
+        assert_eq!(only_action(&rows), &BundledSyncAction::Installed);
+        assert_eq!(provenance(dir.path()), PluginProvenance::PlatformBundled);
     }
 
     #[test]
