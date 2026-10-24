@@ -22,6 +22,15 @@ updates:
           - minor
           - patch
 
+  # Base images of the production image, pinned by digest.
+  - package-ecosystem: docker
+    directory: "/packaging/docker"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+
   - package-ecosystem: npm
     directory: "/tools/diagnostics-collector"
     schedule:

@@ -371,6 +371,9 @@ impl DatabaseRegistry {
 
 /// Discover and spawn the external database plugin matching `[database].plugin`.
 ///
+/// Platform plugins bundled beside the host executable are installed into the
+/// files directory first ([`crate::install_bundled_platform_plugins`]).
+///
 /// Guests are required: when the matching database plugin is missing or fails to
 /// start, [`open_library_store`] returns an error (no in-process engine).
 ///
@@ -378,6 +381,8 @@ impl DatabaseRegistry {
 ///
 /// Returns an error when the operation fails.
 pub async fn load_external_database(config: &Config) -> PluginResult<DatabaseRegistry> {
+    // A release's bundled sqlite/local must be installed before discovery.
+    crate::install_bundled_platform_plugins(&config.paths().files_dir);
     let mut registry = DatabaseRegistry::default();
     let spec = config.database.plugin.trim();
     let plugins = crate::discover_plugins(config)?;

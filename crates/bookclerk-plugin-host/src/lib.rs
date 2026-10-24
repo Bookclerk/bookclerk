@@ -56,6 +56,7 @@ mod enrollment_tests;
 static PROCESS_DEK_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 mod authority;
+mod bundled_platform;
 mod callback_proxy;
 mod consent;
 mod crates_io;
@@ -101,6 +102,7 @@ pub use authority::{
 pub use bookclerk_plugin_catalog::host_bookclerk_target;
 pub use bookclerk_plugin_manifest::TcpGrant;
 pub use bookclerk_plugin_sdk::{JobCheckpoint, JobInvocationLease, JobOutcome};
+pub use bundled_platform::install_bundled_platform_plugins;
 pub use callback_proxy::CallbackProxy;
 pub use consent::{
     active_processes_for, canonical_event_filter, consent_request, consent_request_alias,

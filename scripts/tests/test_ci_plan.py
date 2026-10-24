@@ -185,6 +185,14 @@ class ScenarioTests(unittest.TestCase):
         self.assertFalse(p.full_suite, p.reasons)
         self.assertEqual(sorted(p.checks), ["collector_test"])
 
+    def test_docker_image_files_select_no_check(self) -> None:
+        p = plan("packaging/docker/Dockerfile", "packaging/docker/smoke.sh", ".dockerignore")
+        self.assertFalse(p.full_suite, p.reasons)
+        self.assertEqual(sorted(p.checks), [])
+
+    def test_other_packaging_paths_stay_full_suite(self) -> None:
+        self.assertTrue(plan("packaging/new-format/spec").full_suite)
+
     def test_other_tools_paths_stay_full_suite(self) -> None:
         self.assertTrue(plan("tools/new-tool/main.js").full_suite)
 

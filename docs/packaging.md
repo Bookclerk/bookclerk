@@ -22,7 +22,11 @@ Platform releases ship hosts + `bookclerk-jail` + `bookclerk-workerd` +
 the pinned Cloudflare `workerd` binary +
 `bookclerk-media-worker` + platform plugins under `plugins/<plugin-key-fs-id>/`
 (sqlite and local, recorded in `install-ledger.json`) so a fresh
-install works without storefronts or a Rust toolchain. `cargo build-app
+install works without storefronts or a Rust toolchain. On startup the host
+installs those bundled plugins from the `plugins/` directory beside its
+executable into `$BOOKCLERK_FILES_DIR/plugins/` and stamps its own ledger, so
+any files directory works with a release, including a container volume (see
+[operations.md#docker](operations.md#docker)). `cargo build-app
 --platform` / `cargo ensure-workerd` fetch that pin into `target/<profile>/`.
 Reference Echo examples are never packaged.
 
