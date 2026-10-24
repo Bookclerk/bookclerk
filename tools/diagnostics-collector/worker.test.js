@@ -1,8 +1,10 @@
 // Error handling of the authenticated routes: a failed upstream call comes
 // back as JSON naming the stage, never as Cloudflare's opaque error 1101.
+// Also the /report filter that passes over reports an issue already lists.
 
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import { createD1 } from "./test-support/d1.js";
 import worker, { UpstreamError } from "./worker.js";
 
 const KEY = "k".repeat(32);
@@ -118,5 +120,54 @@ describe("worker errors", () => {
   it("still refuses /report without the key", async () => {
     const res = await worker.fetch(report(), ENV);
     assert.equal(res.status, 401);
+  });
+});
+
+describe("GET /report?unfiled=1", () => {
+  const FILED = "11111111-1111-4111-8111-111111111111";
+  const FRESH = "22222222-2222-4222-8222-222222222222";
+
+  /** Stubs B2 with one filed and one fresh report and returns the D1 stand-in. */
+  async function setup() {
+    const db = createD1();
+    await db.prepare("INSERT INTO report_issue (report_id, issue_number) VALUES (?, ?)").bind(FILED, 400).run();
+    const files = [FILED, FRESH].map((id, i) => ({
+      action: "upload",
+      fileName: `diagnostics/0.0.0-synthetic/${id}.json`,
+      fileId: `file-${id}`,
+      uploadTimestamp: 1000 + i,
+      contentLength: 2,
+    }));
+    stubFetch({
+      b2_authorize_account: () =>
+        Response.json({ apiUrl: "https://b2.test", downloadUrl: "https://d.test", authorizationToken: "t" }),
+      b2_list_file_names: () => Response.json({ files, nextFileName: null }),
+      [`file-${FILED}`]: () => Response.json({ report_id: FILED }),
+      [`file-${FRESH}`]: () => Response.json({ report_id: FRESH }),
+    });
+    return db;
+  }
+
+  /** Pulls /report from the start with the given extra query. */
+  async function pull(db, query) {
+    const req = new Request(`https://collector.test/report?since=0&baseline_version=${query}`, {
+      headers: { authorization: `Bearer ${KEY}` },
+    });
+    return (await worker.fetch(req, { ...ENV, DASHBOARD_DB: db })).json();
+  }
+
+  it("skips reports an issue lists and still moves the cursor past them", async () => {
+    const out = await pull(await setup(), "&unfiled=1");
+    assert.deepEqual(out.reports.map((r) => r.report_id), [FRESH]);
+    assert.equal(out.skipped_filed, 1);
+    assert.equal(out.filed_filter, "on");
+    assert.equal(out.next_since, 1001);
+  });
+
+  it("returns every report without the flag", async () => {
+    const out = await pull(await setup(), "");
+    assert.deepEqual(out.reports.map((r) => r.report_id), [FILED, FRESH]);
+    assert.equal(out.skipped_filed, 0);
+    assert.equal(out.filed_filter, "off");
   });
 });

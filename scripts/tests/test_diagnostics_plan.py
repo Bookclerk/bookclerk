@@ -22,6 +22,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CORPUS = Path(__file__).resolve().parent / "diagnostics_plan_corpus"
 KNOWN = {"11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"}
+#: Collector origin the dashboard links in the Report IDs section point at.
+DASHBOARD = "https://diagnostics.example.test"
 
 
 def _load(name: str, path: Path):
@@ -55,13 +57,14 @@ FRAGMENTS = [
 ]
 
 
-def assert_publishable(case: unittest.TestCase, issues: list, label: str) -> None:
+def assert_publishable(case: unittest.TestCase, issues: list, label: str, dashboard: str | None = None) -> None:
     """Checks every invariant a validated plan promises.
 
     Args:
         case: Test case to fail.
         issues: Validator output.
         label: Input name for failure messages.
+        dashboard: Collector origin the validator was given, or None.
     """
     case.assertLessEqual(len(issues), 5, label)
     for issue in issues:
@@ -74,27 +77,32 @@ def assert_publishable(case: unittest.TestCase, issues: list, label: str) -> Non
         head, sep, ids = rest.rpartition("\n### Report IDs\n")
         case.assertTrue(sep, label)
         case.assertIsNone(REPORT_IDS_HEADING.search(head), f"{label}: forged Report IDs section")
-        listed = re.findall(r"^- `([^`\n]*)`$", ids, re.M)
+        listed = re.findall(r"^- `([^`\n]*)`", ids, re.M)
         case.assertTrue(listed, label)
-        case.assertEqual(ids, "".join(f"- `{i}`\n" for i in listed), label)
+        # Every KNOWN ID is a UUID, so each line links exactly when a
+        # dashboard was given, and only to that report's page on it.
+        suffix = (lambda i: f" \u00b7 [dashboard]({dashboard}/reports/{i})") if dashboard else (lambda i: "")
+        case.assertEqual(ids, "".join(f"- `{i}`{suffix(i)}\n" for i in listed), label)
         case.assertTrue(set(listed) <= KNOWN, label)
+        case.assertEqual(issue.report_ids, tuple(listed), label)
         case.assertLessEqual(len(head), 40_000, label)
         for field in (issue.title, head):
             for what, pattern in FORBIDDEN.items():
                 case.assertIsNone(pattern.search(field), f"{label}: {what} in {field[:200]!r}")
 
 
-def run(text: str) -> list | None:
+def run(text: str, dashboard: str | None = None) -> list | None:
     """Validates one input.
 
     Args:
         text: Model reply.
+        dashboard: Collector origin for report links, or None.
 
     Returns:
         The issues, or None when the validator refused the reply.
     """
     try:
-        return vp.plan_issues(text, KNOWN)
+        return vp.plan_issues(text, KNOWN, dashboard)
     except vp.PlanError:
         return None
 
@@ -150,9 +158,10 @@ class MutationFuzzTests(unittest.TestCase):
         rng = random.Random(20261023)
         for n in range(self.ITERATIONS):
             text = self.mutate(rng, rng.choice(seeds))
-            issues = run(text)
+            dashboard = DASHBOARD if n % 2 else None
+            issues = run(text, dashboard)
             if issues is not None:
-                assert_publishable(self, issues, f"iteration {n}: {text[:300]!r}")
+                assert_publishable(self, issues, f"iteration {n}: {text[:300]!r}", dashboard)
 
     def test_hostile_fields_are_publishable(self) -> None:
         rng = random.Random(7)
@@ -162,6 +171,43 @@ class MutationFuzzTests(unittest.TestCase):
             issues = run(json.dumps(plan))
             self.assertIsNotNone(issues)
             assert_publishable(self, issues, f"hostile {n}: {plan!r}"[:400])
+
+
+class CoverageAndLinkTests(unittest.TestCase):
+    """Reports a plan leaves out, and the dashboard origin links point at."""
+
+    def test_partial_plan_leaves_the_rest_uncovered(self) -> None:
+        first, second = sorted(KNOWN)
+        plan = json.dumps({"issues": [{"title": "t", "body": "b", "report_ids": [first]}]})
+        issues = run(plan)
+        self.assertEqual(vp.uncovered_ids(issues, KNOWN), [second])
+        self.assertEqual(vp.uncovered_ids(run(load_corpus("empty_plan.txt")), KNOWN), [])
+        whole = json.dumps({"issues": [{"title": "t", "body": "b", "report_ids": sorted(KNOWN)}]})
+        self.assertEqual(vp.uncovered_ids(run(whole), KNOWN), [])
+
+    def test_dashboard_origin_is_a_bare_https_origin(self) -> None:
+        self.assertEqual(vp.dashboard_origin("https://Diagnostics.Bookclerk.app/"), "https://diagnostics.bookclerk.app")
+        self.assertEqual(vp.dashboard_origin("https://x.workers.dev:8443"), "https://x.workers.dev:8443")
+        for bad in (None, "", "http://d.test", "https://d.test/path", "https://u@d.test", "https://d.test?q", "https://d.test)", "javascript:x"):
+            self.assertIsNone(vp.dashboard_origin(bad), bad)
+
+    def test_only_uuids_get_links(self) -> None:
+        self.assertEqual(vp.id_line("not-a-uuid", DASHBOARD), "- `not-a-uuid`\n")
+        uuid = next(iter(KNOWN))
+        self.assertEqual(vp.id_line(uuid, None), f"- `{uuid}`\n")
+        self.assertEqual(vp.id_line(uuid, DASHBOARD), f"- `{uuid}` \u00b7 [dashboard]({DASHBOARD}/reports/{uuid})\n")
+
+
+def load_corpus(name: str) -> str:
+    """Reads one seed input.
+
+    Args:
+        name: File name in the corpus.
+
+    Returns:
+        The file's text.
+    """
+    return (CORPUS / name).read_text(encoding="utf-8")
 
 
 class CliTests(unittest.TestCase):
@@ -175,6 +221,10 @@ class CliTests(unittest.TestCase):
             (t / "out").mkdir()
             self.assertEqual(vp.main([str(t / "plan"), str(t / "data.json"), str(t / "out")]), 0)
             self.assertEqual((t / "out" / "0" / "labels").read_text(), "diagnostics,bug")
+            self.assertIsInstance(json.loads((t / "out" / "uncovered.json").read_text()), list)
+            (t / "linked").mkdir()
+            self.assertEqual(vp.main([str(t / "plan"), str(t / "data.json"), str(t / "linked"), DASHBOARD + "/"]), 0)
+            self.assertIn(f"]({DASHBOARD}/reports/", (t / "linked" / "0" / "body").read_text())
             (t / "plan").write_text((CORPUS / "unknown_ids_plan.txt").read_text())
             (t / "out2").mkdir()
             self.assertEqual(vp.main([str(t / "plan"), str(t / "data.json"), str(t / "out2")]), 1)

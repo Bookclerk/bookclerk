@@ -3,7 +3,8 @@
  *
  * Triage (`scripts/validate_plan.py`) and its fallback
  * (`scripts/triage-and-file.sh`) end every issue they file with a
- * `### Report IDs` heading followed by one `` - `<id>` `` line per report.
+ * `### Report IDs` heading followed by one `` - `<id>` `` line per report,
+ * optionally followed by `` · [dashboard](<url>) `` linking the report's page.
  * Issue bodies can be edited by people with triage rights, so the body is
  * treated as untrusted: only the lines directly under the last such heading
  * count, each ID must look like a report UUID or a collector object name, and
@@ -25,8 +26,11 @@ export const MAX_BODY_CHARS = 65536;
 /** Lowercase report UUID. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-/** A list line under the heading: `` - `id` ``. */
-const LINE_RE = /^[-*] `([A-Za-z0-9._:/+-]{1,160})`\s*$/;
+/**
+ * A list line under the heading: `` - `id` ``, optionally with a trailing
+ * `` · [dashboard](<url>) ``. Only the ID is read; the link is ignored.
+ */
+const LINE_RE = /^[-*] `([A-Za-z0-9._:/+-]{1,160})`(?: \u00b7 \[dashboard\]\([^\s()]{1,300}\))?\s*$/;
 
 /**
  * Turns one listed ID into a report UUID: either the UUID itself or a

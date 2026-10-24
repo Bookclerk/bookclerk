@@ -60,7 +60,11 @@ B2 reports, issues and pull requests synced from GitHub every 30 minutes)
 
 Each `/submit` receives a UUID `report_id`. The B2 object is named
 `diagnostics/<version>/<report_id>.json`. Triage issues list these IDs so
-operators can pull the full object from B2 for manual review.
+operators can pull the full object from B2 for manual review. Each listed
+UUID is followed by a link to its page on the member dashboard
+(`` - `<id>` · [dashboard](https://diagnostics.<DOMAIN>/reports/<id>) ``); only
+organization members can open it, by design. The dashboard reads only the ID
+and ignores the link.
 
 ## Triage
 
@@ -72,8 +76,18 @@ issue plan as JSON. The model has no tools, so a crafted report can at most
 shape that plan. The workflow then validates it before anything is filed: at
 most five issues, fixed labels, only report IDs from the batch, bounded sizes,
 links removed, and mentions and issue references defanged. Reports that do not
-fit in the batch's 120,000-byte limit are listed by ID in a separate fallback
-issue, so every pulled report is tracked.
+fit in the batch's 120,000-byte limit, and reports a non-empty plan leaves out
+of every issue, are listed by ID in a separate fallback issue, so every pulled
+report is tracked. (An empty plan is the model deciding nothing needs an
+issue, and files nothing.)
+
+The pull cursor is kept in the Actions cache, which GitHub evicts when the
+repository's caches near their 10 GB limit. So ingest asks `/report` with
+`unfiled=1`: when the dashboard database is bound, the collector passes over
+(and moves the cursor past) reports some issue already lists, and a lost or
+reset cursor re-reads the bucket without filing those reports again. The
+pull log prints how many were skipped. A `force_full` run turns the filter
+off and re-triages everything.
 
 Spend is capped per UTC day by `TRIAGE_DAILY_NEURONS` (default 2,000, a fifth
 of the account's 10,000 free Workers AI neurons a day; values above 9,000 are

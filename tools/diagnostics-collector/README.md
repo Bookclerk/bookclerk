@@ -14,7 +14,7 @@ fallback).
 | Method | Path | Who | Auth |
 |--------|------|-----|------|
 | `POST` | `/submit` | Bookclerk clients | none (validated + secret heuristics) |
-| `GET` | `/report?since=<ms>&after=<name>` | GitHub Action | `Authorization: Bearer <REPORT_API_KEY>` |
+| `GET` | `/report?since=<ms>&after=<name>[&unfiled=1]` | GitHub Action | `Authorization: Bearer <REPORT_API_KEY>` |
 | `POST` | `/triage` | GitHub Action | `Authorization: Bearer <REPORT_API_KEY>` |
 | `GET` | `/health` | probes | none |
 | `GET` | `/`, `/dash`, `/reports`, `/reports/<id>`, `/issues` | organization members | GitHub sign-in (`/auth/github`), session cookie |

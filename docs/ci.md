@@ -311,7 +311,8 @@ non-Rust tooling (decision 6):
   (`scripts/tests/diagnostics_plan_corpus/`) and runs seeded mutation fuzzing
   on every PR, checking each accepted plan against an independent oracle (no
   links, mentions, cross-references, raw HTML or forged Report IDs; only batch
-  report IDs; at most five issues).
+  report IDs, each linked only to its own dashboard page on the given
+  collector origin; at most five issues).
 - The diagnostics ingest release-tag reader
   (`tools/diagnostics-collector/scripts/release_baseline.py`), which turns the
   GitHub `releases/latest` response into the tag the ingest job writes to

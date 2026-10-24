@@ -83,9 +83,14 @@ json.dump(kept, sys.stdout, separators=(",", ":"), ensure_ascii=False)
 
 # Report IDs as a Markdown list, one per line. IDs are collector object names
 # or report UUIDs; anything else is listed as "unknown" so a report cannot
-# write Markdown into an issue through its ID.
+# write Markdown into an issue through its ID. A report UUID also links to its
+# dashboard page on the collector (organization members only), in the same
+# form validate_plan.py writes and dashboard/report-ids.js reads.
 id_list() {
-  jq -r "$1"' | if type == "string" and test("^[A-Za-z0-9._:-]{1,128}$") then . else "unknown" end | "- `\(.)`"' "$2"
+  jq -r --arg base "${BASE%/}" "$1"' | if type == "string" and test("^[A-Za-z0-9._:-]{1,128}$") then . else "unknown" end
+    | if test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+      then "- `\(.)` \u00b7 [dashboard](\($base)/reports/\(.))"
+      else "- `\(.)`" end' "$2"
 }
 ALL_IDS=$(id_list '.reports[] | (.report_id // .report.report_id // .file_name)' "$REPORTS_FILE")
 KEPT_IDS=$(id_list '.[] | .report_id' "$DATA_FILE")
@@ -105,7 +110,8 @@ file_fallback() {
     printf '%s\n' "$3"
     echo
     echo "Automated triage did not cover these reports ($2). Review them"
-    echo "by ID in the collector's storage; report contents are not posted here."
+    echo "on the dashboard (organization members only); report contents are"
+    echo "not posted here."
     echo
     echo "Workflow run: ${GITHUB_SERVER_URL:-https://github.com}/${REPO}/actions/runs/${GITHUB_RUN_ID:-unknown}"
   } | gh issue create --repo "$REPO" --title "[diagnostics] unattended batch ($1)" --label diagnostics --body-file -) || return 1
@@ -169,7 +175,7 @@ ISSUES_DIR="$WORK_DIR/issues"
 mkdir -p "$ISSUES_DIR"
 planned=0
 if [[ $status -eq 0 ]]; then
-  if python3 -I "$SCRIPT_DIR/validate_plan.py" "$PLAN_FILE" "$DATA_FILE" "$ISSUES_DIR"
+  if python3 -I "$SCRIPT_DIR/validate_plan.py" "$PLAN_FILE" "$DATA_FILE" "$ISSUES_DIR" "${BASE%/}"
   then
     planned=$(find "$ISSUES_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)
   else
@@ -201,6 +207,17 @@ if [[ $status -eq 0 ]]; then
     omitted=$(wc -l <<<"$OMITTED_IDS")
     echo "${omitted} report(s) did not fit in the triage batch; tracking them in a fallback issue." >&2
     file_fallback "$omitted" "they did not fit in the batch's size limit" "$OMITTED_IDS" || failed=1
+  fi
+  # Reports the model saw but no planned issue lists would otherwise never be
+  # linked to an issue.
+  UNCOVERED_IDS=""
+  if [[ -s "$ISSUES_DIR/uncovered.json" ]]; then
+    UNCOVERED_IDS=$(id_list '.[]' "$ISSUES_DIR/uncovered.json")
+  fi
+  if [[ -n "$UNCOVERED_IDS" ]]; then
+    uncovered=$(wc -l <<<"$UNCOVERED_IDS")
+    echo "${uncovered} report(s) are in no planned issue; tracking them in a fallback issue." >&2
+    file_fallback "$uncovered" "the triage plan left them out" "$UNCOVERED_IDS" || failed=1
   fi
   if [[ $failed -ne 0 ]]; then
     echo "::error::Some planned diagnostics issues could not be filed" >&2

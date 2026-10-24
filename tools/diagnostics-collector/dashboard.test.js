@@ -196,6 +196,11 @@ describe("report ids", () => {
     assert.deepEqual(parseIssueReportIds(fallback), { kind: "fallback", ids: [ID2] });
   });
 
+  it("reads IDs followed by a dashboard link", () => {
+    const body = `### Report IDs\n- \`${ID1}\` · [dashboard](https://d.test/reports/${ID1})\n- \`${ID2}\` · [dashboard](https://d.test/a b)\n`;
+    assert.deepEqual(parseIssueReportIds(body).ids, [ID1]);
+  });
+
   it("uses only the last section and stops at the first other line", () => {
     const body = `### Report IDs\n- \`${ID1}\`\n\n### Report IDs\n- \`${ID2}\`\ntext\n- \`${ID1}\``;
     assert.deepEqual(parseIssueReportIds(body).ids, [ID2]);

@@ -6,10 +6,14 @@ trusted: at most five issues, fixed labels, only report IDs from the batch
 (an issue needs at least one), bounded sizes, and no @-mentions,
 cross-references, links, raw HTML or forged Report IDs sections.
 
-Usage: ``validate_plan.py PLAN_FILE DATA_FILE OUT_DIR``. Each issue becomes
-``OUT_DIR/<n>/{title,labels,body}``. Exits non-zero when the reply holds no
-plan, or a non-empty plan holds no valid issue, so the caller files its
-fallback issue instead.
+Usage: ``validate_plan.py PLAN_FILE DATA_FILE OUT_DIR [DASHBOARD_URL]``.
+Each issue becomes ``OUT_DIR/<n>/{title,labels,body}``, and
+``OUT_DIR/uncovered.json`` lists the batch's report IDs that a non-empty plan
+left out, so the caller can track them in its fallback issue. With
+``DASHBOARD_URL`` (the collector's ``https://`` origin), each listed report
+UUID links to its dashboard page; only organization members can open it.
+Exits non-zero when the reply holds no plan, or a non-empty plan holds no
+valid issue, so the caller files its fallback issue instead.
 """
 
 from __future__ import annotations
@@ -30,6 +34,10 @@ MAX_BODY_CHARS = 8000
 TITLE_PREFIX = "[diagnostics] "
 #: First line of every body, so filed issues can be found again.
 MARKER = "<!-- bookclerk-diagnostics: workers-ai triage -->"
+#: A report UUID, the only ID form that gets a dashboard link.
+UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+#: The collector origin a dashboard link may point at (no path, query or userinfo).
+DASHBOARD_RE = re.compile(r"https://[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::[0-9]{1,5})?")
 
 
 class PlanError(Exception):
@@ -46,11 +54,46 @@ class Issue:
         labels: Comma-separated labels: ``diagnostics``, plus ``bug`` when the
             plan says so.
         body: Defanged body ending in the script-written Report IDs section.
+        report_ids: The batch report IDs the issue lists, in listed order.
     """
 
     title: str
     labels: str
     body: str
+    report_ids: tuple[str, ...]
+
+
+def id_line(report_id: str, dashboard: str | None) -> str:
+    """Formats one line of the Report IDs section.
+
+    Args:
+        report_id: A report ID from the batch.
+        dashboard: Validated collector origin, or None for no link.
+
+    Returns:
+        ``- `<id>```, followed by `` · [dashboard](<origin>/reports/<id>)``
+        when there is a dashboard and the ID is a report UUID, and a newline.
+    """
+    line = f"- `{report_id}`"
+    if dashboard and UUID_RE.fullmatch(report_id):
+        line += f" \u00b7 [dashboard]({dashboard}/reports/{report_id})"
+    return line + "\n"
+
+
+def dashboard_origin(raw: str | None) -> str | None:
+    """Validates the collector origin dashboard links point at.
+
+    Args:
+        raw: The command-line value, possibly with a trailing slash.
+
+    Returns:
+        The lowercase origin without a trailing slash, or None when it is
+        missing or not a bare ``https://`` origin.
+    """
+    if not raw:
+        return None
+    origin = raw.strip().rstrip("/").lower()
+    return origin if DASHBOARD_RE.fullmatch(origin) else None
 
 
 def defang(text: str) -> str:
@@ -109,12 +152,13 @@ def find_plan(text: str) -> list[object]:
     raise PlanError("reply has no JSON plan")
 
 
-def plan_issues(text: str, known: set[str]) -> list[Issue]:
+def plan_issues(text: str, known: set[str], dashboard: str | None = None) -> list[Issue]:
     """Validates a reply into the issues to file.
 
     Args:
         text: The model's whole reply.
         known: Report IDs in the batch the model saw.
+        dashboard: Validated collector origin for report links, or None.
 
     Returns:
         Up to ``MAX_ISSUES`` issues; empty when the plan is ``{"issues": []}``.
@@ -147,7 +191,8 @@ def plan_issues(text: str, known: set[str]) -> list[Issue]:
                 + "\n"
                 + defang(body)
                 + "\n\n### Report IDs\n"
-                + "".join(f"- `{i}`\n" for i in ids),
+                + "".join(id_line(i, dashboard) for i in ids),
+                report_ids=tuple(ids),
             )
         )
     # An empty plan is a decision; a non-empty one with nothing valid is a bad
@@ -175,23 +220,47 @@ def known_ids(batch: object) -> set[str]:
     }
 
 
+def uncovered_ids(issues: list[Issue], known: set[str]) -> list[str]:
+    """Lists the batch reports a non-empty plan left out.
+
+    An empty plan is the model's decision that nothing needs an issue, so it
+    leaves nothing uncovered; a plan that files some issues must account for
+    every report, or the rest would never be linked to an issue.
+
+    Args:
+        issues: Validated issues.
+        known: Report IDs in the batch the model saw.
+
+    Returns:
+        The IDs no issue lists, sorted; empty when ``issues`` is empty.
+    """
+    if not issues:
+        return []
+    covered = {i for issue in issues for i in issue.report_ids}
+    return sorted(known - covered)
+
+
 def main(argv: list[str]) -> int:
     """Validates PLAN_FILE against DATA_FILE and writes issue files to OUT_DIR.
 
     Args:
-        argv: ``[PLAN_FILE, DATA_FILE, OUT_DIR]``.
+        argv: ``[PLAN_FILE, DATA_FILE, OUT_DIR]`` and optionally
+            ``DASHBOARD_URL``.
 
     Returns:
         0 when the plan is valid (possibly with no issues), 1 otherwise.
     """
-    if len(argv) != 3:
-        print("usage: validate_plan.py PLAN_FILE DATA_FILE OUT_DIR", file=sys.stderr)
+    if len(argv) not in (3, 4):
+        print("usage: validate_plan.py PLAN_FILE DATA_FILE OUT_DIR [DASHBOARD_URL]", file=sys.stderr)
         return 2
-    plan_path, data_path, out_dir = (pathlib.Path(a) for a in argv)
+    plan_path, data_path, out_dir = (pathlib.Path(a) for a in argv[:3])
+    dashboard = dashboard_origin(argv[3]) if len(argv) == 4 else None
+    if len(argv) == 4 and dashboard is None:
+        print("dashboard URL is not a bare https:// origin; filing without report links", file=sys.stderr)
     text = plan_path.read_text(encoding="utf-8", errors="replace")
     known = known_ids(json.loads(data_path.read_text(encoding="utf-8")))
     try:
-        issues = plan_issues(text, known)
+        issues = plan_issues(text, known, dashboard)
     except PlanError as err:
         print(err, file=sys.stderr)
         return 1
@@ -200,6 +269,7 @@ def main(argv: list[str]) -> int:
         d.mkdir()
         for name, value in (("title", issue.title), ("labels", issue.labels), ("body", issue.body)):
             (d / name).write_text(value, encoding="utf-8", errors="replace")
+    (out_dir / "uncovered.json").write_text(json.dumps(uncovered_ids(issues, known)), encoding="utf-8")
     return 0
 
 
