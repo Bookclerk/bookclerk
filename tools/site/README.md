@@ -74,7 +74,10 @@ cd audit && npm ci && node audit.mjs      # --chrome <path> or CHROME_PATH picks
   `wrangler.toml` runs it only for page paths (`run_worker_first`). It
   compresses what it answers with (Brotli, else gzip) itself, because
   Cloudflare's edge leaves `text/markdown` uncompressed; files served without
-  it are compressed by the edge.
+  it are compressed by the edge. Its `Accept-Encoding` parser is an
+  untrusted-input boundary: `fuzz.test.mjs` replays the seeds in
+  `fuzz/accept_encoding/` and fuzzes mutations of them against an
+  independent oracle (`docs/ci.md#fuzzing`).
   `entry.mjs` binds it to `generated/docs-shell.json`, which `npm run build`
   writes (gitignored), so build before `wrangler dev` or `deploy`.
 - `src/_headers` – security headers (no scripts are allowed to run), and

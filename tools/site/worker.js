@@ -116,20 +116,23 @@ function ttlFor(ref) {
   return ref === "main" ? MAIN_TTL : TAG_TTL;
 }
 
+/** A quality value as RFC 9110 writes it: 0 to 1 with at most three decimals. */
+const QVALUE_RE = /^(?:0(?:\.[0-9]{0,3})?|1(?:\.0{0,3})?)$/;
+
 /**
  * Reads the quality value of one Accept or Accept-Encoding list member.
  *
  * @param {string[]} params The member's `;`-separated parameters.
- * @returns {number} Its `q` (0-1): 1 when absent, 0 when malformed.
+ * @returns {number} Its `q` (0-1): 1 when absent, 0 when not a valid qvalue.
  */
 function qualityOf(params) {
   let q = 1;
   for (const param of params) {
-    const [key, value] = param.split("=").map((s) => s.trim().toLowerCase());
-    if (key === "q") {
-      const parsed = Number(value);
-      q = value !== "" && Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : 0;
-    }
+    const eq = param.indexOf("=");
+    const key = (eq < 0 ? param : param.slice(0, eq)).trim().toLowerCase();
+    if (key !== "q") continue;
+    const value = eq < 0 ? "" : param.slice(eq + 1).trim();
+    q = QVALUE_RE.test(value) ? Number(value) : 0;
   }
   return q;
 }
