@@ -372,14 +372,24 @@ function pageContext(context, page, extra = {}) {
 /**
  * Turns a fragment of rendered HTML into plain text.
  *
+ * A scan rather than a tag-stripping regular expression: everything from a
+ * `<` to the next `>` is dropped, so no `<` survives. `&lt;` and `&gt;` stay
+ * encoded for the same reason; the site's own copy uses neither.
+ *
  * @param {string} html Markup from a rendered template, escaped by escapeHtml.
- * @returns {string} Its text: tags dropped, escapeHtml's entities decoded and
+ * @returns {string} Its text: tags dropped, quotes and ampersands decoded and
  *   whitespace collapsed.
  */
-function plainText(html) {
-  return html
-    .replace(/<[^>]*>/g, "")
-    .replace(/&(lt|gt|quot|#39|amp);/g, (_, e) => ({ lt: "<", gt: ">", quot: '"', "#39": "'", amp: "&" })[e])
+export function plainText(html) {
+  let text = "";
+  let inTag = false;
+  for (const ch of html) {
+    if (ch === "<") inTag = true;
+    else if (ch === ">") inTag = false;
+    else if (!inTag) text += ch;
+  }
+  return text
+    .replace(/&(quot|#39|amp);/g, (_, e) => ({ quot: '"', "#39": "'", amp: "&" })[e])
     .replace(/\s+/g, " ")
     .trim();
 }

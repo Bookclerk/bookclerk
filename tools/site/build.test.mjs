@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { build, docsVersions, escapeHtml, inlineLogo, jsonLd, readState, render, templateContext } from "./build.mjs";
+import { build, docsVersions, escapeHtml, inlineLogo, jsonLd, plainText, readState, render, templateContext } from "./build.mjs";
 
 /** Release state of a repository with no release yet. */
 const PRE = { SITE_COMMIT: "b6adae4d0123456789abcdef0123456789abcdef", SITE_BUILT_ON: "2026-10-23" };
@@ -134,6 +134,12 @@ test("a release build drops the pre-release notices", () => {
   }
 });
 
+test("plainText drops every tag and leaves no angle bracket", () => {
+  assert.equal(plainText('<p class="x">Tom &amp; Jerry&#39;s <a href="/">home</a></p>'), "Tom & Jerry's home");
+  assert.equal(plainText("<scr<script>ipt>alert(1)"), "iptalert(1)");
+  assert.ok(!plainText("a <b <c>> &lt;d&gt;").includes("<"));
+});
+
 test("readState accepts a demo origin and rejects anything else", () => {
   assert.equal(readState(PRE).demoUrl, null);
   assert.equal(readState({ ...PRE, SITE_DEMO_URL: " " }).demoUrl, null);
@@ -253,7 +259,8 @@ test("pages carry search and preview metadata", () => {
     assert.ok(!("softwareVersion" in app));
     assert.equal(app.dateModified, "2026-10-23");
     // Structured data repeats the page; it never says what visitors cannot see.
-    const text = home.replace(/<script[\s\S]*?<\/script>/g, "").replace(/<[^>]*>/g, "").replace(/&#39;/g, "'").replace(/\s+/g, " ");
+    // The page body only: the JSON-LD itself sits in <head>.
+    const text = plainText(home.slice(home.indexOf("<main"), home.indexOf("</main>")));
     const faq = ld["@graph"].find((n) => n["@type"] === "FAQPage");
     assert.equal(faq.mainEntity.length, 6);
     for (const q of faq.mainEntity) {
