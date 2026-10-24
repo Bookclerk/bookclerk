@@ -221,6 +221,45 @@ ORACLE_DIRS = ("fuzz/fuzz_targets/", "fuzz/oracles/")
 
 # GitHub advisory ecosystem for packages that are not on a public registry.
 OTHER_ECOSYSTEM = "other"
+# GitHub advisory ecosystem for crates published to crates.io.
+RUST_ECOSYSTEM = "rust"
+
+
+def published_ecosystem(configured: str, crate_manifest: str, root: Path) -> str:
+    """Returns the advisory ecosystem for an artifact's affected-package entry.
+
+    An artifact that names its crate's `Cargo.toml` is reported as a
+    crates.io package once that crate can be published (its `publish` is
+    not `false` or an empty list), so its advisories attach to the crate
+    without a configuration change. Until then, and for artifacts without a
+    crate manifest, the configured ecosystem stands.
+
+    Args:
+        configured: The `ecosystem` the artifact map declares.
+        crate_manifest: Repository-relative `Cargo.toml` of the published
+            crate, or empty.
+        root: Repository root.
+
+    Returns:
+        `RUST_ECOSYSTEM` for a publishable crate, otherwise `configured`.
+
+    Raises:
+        ValueError: The manifest has no `[package]` table.
+    """
+    import tomllib
+
+    if not crate_manifest:
+        return configured
+    package = tomllib.loads((root / crate_manifest).read_text(encoding="utf-8")).get("package")
+    if not isinstance(package, dict):
+        raise ValueError(f"{crate_manifest} has no [package]")
+    publish = package.get("publish", True)
+    if isinstance(publish, dict) and publish.get("workspace") is True:
+        workspace = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
+        publish = workspace.get("workspace", {}).get("package", {}).get("publish", True)
+    if publish is False or publish == []:
+        return configured
+    return RUST_ECOSYSTEM
 
 
 # ---------------------------------------------------------------------------
@@ -474,7 +513,8 @@ class Artifact:
 
     Attributes:
         key: Name used in ``fuzz/boundaries.toml``.
-        ecosystem: GitHub advisory ecosystem.
+        ecosystem: GitHub advisory ecosystem for the affected-package entry
+            (``published_ecosystem``).
         package: Package name in the advisory.
     """
 
@@ -506,11 +546,13 @@ class Boundary:
     artifacts: tuple[Artifact, ...]
 
 
-def load_boundaries(path: Path) -> dict[str, Boundary]:
+def load_boundaries(path: Path, root: Path = ROOT) -> dict[str, Boundary]:
     """Reads the fuzz target to boundary map.
 
     Args:
         path: ``fuzz/boundaries.toml``.
+        root: Repository root the artifacts' ``crate_manifest`` paths are
+            relative to.
 
     Returns:
         Boundaries keyed by target name.
@@ -524,7 +566,8 @@ def load_boundaries(path: Path) -> dict[str, Boundary]:
     doc = tomllib.loads(path.read_text(encoding="utf-8"))
     artifacts: dict[str, Artifact] = {}
     for key, spec in doc.get("artifacts", {}).items():
-        artifacts[key] = Artifact(key=key, ecosystem=spec["ecosystem"], package=spec["package"])
+        ecosystem = published_ecosystem(spec["ecosystem"], spec.get("crate_manifest", ""), root)
+        artifacts[key] = Artifact(key=key, ecosystem=ecosystem, package=spec["package"])
     out: dict[str, Boundary] = {}
     for target, spec in doc.get("targets", {}).items():
         side = spec["side"]
@@ -653,8 +696,11 @@ def draft_changes(draft: dict[str, Any], body: dict[str, Any], markers: Iterable
     description = splice_auto(str(draft.get("description") or ""), body["description"], markers)
     if description is not None:
         changes["description"] = description
+    # Matched by package name: an artifact's ecosystem changes when its
+    # crate becomes publishable (`published_ecosystem`), and a draft filed
+    # before that still names the old one.
     proposed = {
-        (v["package"]["ecosystem"], v["package"]["name"]): v["vulnerable_version_range"]
+        v["package"]["name"]: v["vulnerable_version_range"]
         for v in body.get("vulnerabilities") or []
         if v.get("vulnerable_version_range")
     }
@@ -665,7 +711,7 @@ def draft_changes(draft: dict[str, Any], body: dict[str, Any], markers: Iterable
             k: vuln.get(k) for k in ("package", "vulnerable_version_range", "patched_versions", "vulnerable_functions")
         }
         package = vuln.get("package") or {}
-        new_range = proposed.get((package.get("ecosystem"), package.get("name")))
+        new_range = proposed.get(package.get("name"))
         if new_range and not vuln.get("vulnerable_version_range"):
             entry["vulnerable_version_range"] = new_range
             filled = True
