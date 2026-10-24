@@ -18,12 +18,17 @@ export const API = "https://api.github.com";
 /** GitHub web host (OAuth endpoints). */
 export const WEB = "https://github.com";
 
-/** Permissions every installation token is narrowed to. All read-only. */
+/**
+ * Permissions every installation token is narrowed to. All read-only.
+ * `contents` is for the release list and the compare call that find which
+ * release tag contains a fix.
+ */
 export const INSTALLATION_PERMISSIONS = Object.freeze({
   metadata: "read",
   issues: "read",
   pull_requests: "read",
   members: "read",
+  contents: "read",
 });
 
 /** Time allowed for one GitHub call, in milliseconds. */
@@ -284,7 +289,7 @@ export function decodeUser(data) {
  *
  * @typedef {{number: number, title: string, state: "open" | "closed",
  *   body: string, created_at: string, updated_at: string,
- *   closed_at: string | null}} SyncedIssue
+ *   closed_at: string | null, fixed_in_label: string | null}} SyncedIssue
  */
 
 /**
@@ -317,6 +322,7 @@ export function decodeIssuePage(data) {
       created_at: str(i.created_at),
       updated_at: str(i.updated_at),
       closed_at: typeof i.closed_at === "string" ? i.closed_at : null,
+      fixed_in_label: fixedInLabel(i.labels),
     });
   }
   return { issues, full: list.length >= 100, newest: Number.isFinite(newestMs) ? new Date(newestMs).toISOString() : "" };
@@ -560,8 +566,143 @@ export async function fetchIssue(cfg, token, number) {
 /** Label that marks a diagnostics issue. */
 export const DIAGNOSTICS_LABEL = "diagnostics";
 
+/**
+ * Prefix of the label that sets an issue's fixed-in version by hand, as in
+ * `fixed-in:0.4.2`. It overrides the version the sync derives from releases.
+ */
+export const FIXED_IN_LABEL = "fixed-in:";
+
+/**
+ * The version a `fixed-in:<version>` label names: `MAJOR.MINOR.PATCH` with
+ * an optional prerelease and build, with or without a leading `v`, which is
+ * dropped. Longer or odder values are not versions.
+ */
+const FIXED_IN_VERSION = /^v?(\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[0-9A-Za-z.-]{1,64})?(?:\+[0-9A-Za-z.-]{1,64})?)$/;
+
+/**
+ * The fixed-in version an issue's labels set.
+ *
+ * @param {unknown} labels `labels` from the REST API (objects with `name`,
+ *   or names).
+ * @returns {string | null} The version of the first well-formed
+ *   `fixed-in:<version>` label, without a leading `v`, or null.
+ */
+export function fixedInLabel(labels) {
+  if (!Array.isArray(labels)) return null;
+  for (const l of labels) {
+    const name = typeof l === "string" ? l : isObject(l) && typeof l.name === "string" ? l.name : "";
+    if (name.length > 100 || !name.startsWith(FIXED_IN_LABEL)) continue;
+    const m = FIXED_IN_VERSION.exec(name.slice(FIXED_IN_LABEL.length));
+    if (m) return m[1];
+  }
+  return null;
+}
+
+/** Releases per list page (GitHub's maximum). */
+const RELEASE_PAGE = 100;
+
+/**
+ * Most release pages one lookup reads, so a repository with a very long
+ * release history cannot make the sync page through all of it; past this
+ * the lookup leaves fixed-in versions to labels.
+ */
+const RELEASE_PAGES = 5;
+
+/**
+ * Reads `GET /repos/{owner}/{repo}/releases`.
+ *
+ * @param {unknown} data Parsed body.
+ * @returns {{tag: string, publishedAt: number, prerelease: boolean}[]}
+ *   Published, non-draft releases whose tag is a plain name (letters,
+ *   digits, `.`, `_`, `-`; at most 100 characters) with a parseable
+ *   `published_at`, one per tag (the first kept), oldest first.
+ */
+export function decodeReleases(data) {
+  const list = Array.isArray(data) ? data : [];
+  const seen = new Set();
+  const out = [];
+  for (const r of list) {
+    if (!isObject(r) || r.draft === true) continue;
+    const tag = typeof r.tag_name === "string" ? r.tag_name : "";
+    if (!/^[A-Za-z0-9._-]{1,100}$/.test(tag) || seen.has(tag)) continue;
+    const publishedAt = Date.parse(typeof r.published_at === "string" ? r.published_at : "");
+    if (!Number.isFinite(publishedAt)) continue;
+    seen.add(tag);
+    out.push({ tag, publishedAt, prerelease: r.prerelease === true });
+  }
+  return out.sort((a, b) => a.publishedAt - b.publishedAt || (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0));
+}
+
+/**
+ * The repository's releases, read to the end of the list.
+ *
+ * GitHub lists releases by creation time, and a release can be published
+ * long after it was created, so no page short of the last one proves that
+ * every release published after a given time has been read. Pages are
+ * therefore read until a short page ends the list or `RELEASE_PAGES` pages
+ * were read, and the caller treats a list cut off by the cap as incomplete.
+ *
+ * @param {GitHubConfig} cfg Settings.
+ * @param {string} token Installation token.
+ * @returns {Promise<{releases: ReturnType<typeof decodeReleases>, complete: boolean}>}
+ *   `releases` as `decodeReleases` returns them over all pages read;
+ *   `complete` is whether the end of the list was reached.
+ * @throws {Error} When a call fails.
+ */
+export async function listReleases(cfg, token) {
+  const raw = [];
+  let complete = false;
+  for (let page = 1; page <= RELEASE_PAGES && !complete; page++) {
+    const res = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/releases?per_page=${RELEASE_PAGE}&page=${page}`, {
+      headers: apiHeaders(token),
+    });
+    if (!res.ok) throw new Error(`release list failed: HTTP ${res.status}`);
+    const body = await res.json().catch(() => null);
+    const items = Array.isArray(body) ? body : [];
+    raw.push(...items);
+    complete = items.length < RELEASE_PAGE;
+  }
+  return { releases: decodeReleases(raw), complete };
+}
+
+/**
+ * Reads `GET /repos/{owner}/{repo}/compare/{tag}...{sha}`: whether the tag
+ * contains the commit.
+ *
+ * @param {unknown} data Parsed body.
+ * @returns {boolean | null} True for `identical` or `behind` (the commit
+ *   is the tag or one of its ancestors, so the tag contains it; the compare
+ *   is `{tag}...{sha}`, base first), false for `ahead` (the commit is newer
+ *   than the tag) or `diverged`, null for any other answer.
+ */
+export function decodeCompare(data) {
+  const status = isObject(data) && typeof data.status === "string" ? data.status : "";
+  if (status === "identical" || status === "behind") return true;
+  if (status === "ahead" || status === "diverged") return false;
+  return null;
+}
+
+/**
+ * Whether a release tag contains a commit.
+ *
+ * @param {GitHubConfig} cfg Settings.
+ * @param {string} token Installation token.
+ * @param {string} tag A tag from `decodeReleases`.
+ * @param {string} sha A merge commit (40 hex characters).
+ * @returns {Promise<boolean | null>} As `decodeCompare` returns; null also
+ *   when GitHub has no such tag or commit (404).
+ * @throws {Error} When the call fails otherwise.
+ */
+export async function tagContains(cfg, token, tag, sha) {
+  if (!/^[A-Za-z0-9._-]{1,100}$/.test(tag) || !/^[0-9a-f]{40}$/.test(sha)) return null;
+  const res = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/compare/${encodeURIComponent(tag)}...${sha}`, { headers: apiHeaders(token) });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`compare failed: HTTP ${res.status}`);
+  return decodeCompare(await res.json().catch(() => null));
+}
+
 /** GraphQL fields read for a referencing pull request. */
-const PR_FIELDS = "number title state mergedAt repository { nameWithOwner }";
+const PR_FIELDS = "number title state mergedAt mergeCommit { oid } repository { nameWithOwner }";
 
 /**
  * Pull requests that close or cross-reference each issue, in this
@@ -578,9 +719,9 @@ const PR_FIELDS = "number title state mergedAt repository { nameWithOwner }";
  * @param {number[]} numbers Issue numbers (at most 10 per call).
  * @returns {Promise<Map<number, {labeled: boolean, prs: {number: number,
  *   title: string, state: "open" | "closed" | "merged",
- *   mergedAt: number | null}[]}>>} Issue number → label check and distinct
- *   pull requests. An issue GitHub returned no data for is left out, so the
- *   caller keeps what it stored before.
+ *   mergedAt: number | null, mergeSha: string | null}[]}>>} Issue number →
+ *   label check and distinct pull requests. An issue GitHub returned no data
+ *   for is left out, so the caller keeps what it stored before.
  * @throws {Error} When the call fails or the response carries GraphQL
  *   errors, so a failed refresh never reads as "no pull requests".
  */
@@ -618,7 +759,9 @@ export async function pullRequestsFor(cfg, token, numbers) {
  *   ignored.
  * @returns {Map<number, {labeled: boolean, prs: {number: number,
  *   title: string, state: "open" | "closed" | "merged",
- *   mergedAt: number | null}[]}>} As `pullRequestsFor` returns.
+ *   mergedAt: number | null, mergeSha: string | null}[]}>} As
+ *   `pullRequestsFor` returns; `mergeSha` is the merge commit (40 lowercase
+ *   hex characters) of a merged pull request, else null.
  * @throws {Error} When the response carries GraphQL errors or no
  *   repository object.
  */
@@ -639,11 +782,13 @@ export function decodePullRequests(data, numbers, repository) {
       const state = pr.state === "OPEN" ? "open" : pr.state === "CLOSED" ? "closed" : pr.state === "MERGED" ? "merged" : null;
       if (!state) return;
       const mergedAt = Date.parse(text(pr.mergedAt));
+      const oid = text(pr.mergeCommit?.oid);
       found.set(pr.number, {
         number: pr.number,
         title: text(pr.title).slice(0, 300),
         state,
         mergedAt: Number.isFinite(mergedAt) ? mergedAt : null,
+        mergeSha: state === "merged" && /^[0-9a-f]{40}$/.test(oid) ? oid : null,
       });
     };
     const list = (v) => (Array.isArray(v) ? v : []);

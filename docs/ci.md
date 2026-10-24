@@ -420,7 +420,12 @@ non-Rust tooling (decision 6):
   when it is a short lowercase identifier; a notice accepted only as an
   object whose `issue` is an integer from 1 to 10^9; a single issue decoded
   only when it is a numbered non-PR issue, labeled exactly when a label is
-  `diagnostics`).
+  `diagnostics`; a merge commit kept only for a merged pull request with a
+  40-character lowercase hex oid; a `fixed-in:<version>` label read only as
+  a well-formed `MAJOR.MINOR.PATCH` with optional prerelease and build;
+  releases decoded to the published non-draft entries with a plain tag name,
+  oldest first; a compare answer read as containing only for `identical` or
+  `behind`, as not containing only for `ahead` or `diverged`).
 - The collector's B2 error-code reader (`b2ErrorCode` in
   `tools/diagnostics-collector/worker.js`), which picks the `code` out of a B2
   error body for logs and authenticated responses.

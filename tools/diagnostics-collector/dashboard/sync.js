@@ -14,6 +14,7 @@ import { metered } from "./budget.js";
 import {
   all,
   getState,
+  LATEST_FIX,
   getStates,
   indexReport,
   reportInsert,
@@ -22,10 +23,11 @@ import {
   sweep,
   utcDayOf,
 } from "./db.js";
-import { fetchIssue, installationToken, listDiagnosticsIssues, pullRequestsFor } from "./github.js";
+import { fetchIssue, installationToken, listDiagnosticsIssues, listReleases, pullRequestsFor, tagContains } from "./github.js";
 import { parseIssueReportIds, reportIdOf } from "./report-ids.js";
 import { summarizeReport } from "./signature.js";
 import { listPage, MAX_STORED_REPORT_CHARS } from "./storage.js";
+import { normalizeVersion, parseSemver } from "../version-filter.js";
 
 /** Most issue pages (100 each) one sync reads. */
 const MAX_ISSUE_PAGES = 5;
@@ -57,6 +59,18 @@ const NOT_FOUND_RETRY_MS = [1000, 2000];
 
 /** Report links inserted per statement (two bound values each). */
 const LINK_CHUNK = 40;
+
+/** Most issues whose fixed-in version one sync resolves against releases. */
+const FIX_RESOLVE_MAX = 5;
+
+/** Most release tags compared against one issue's fix commit per sync. */
+const FIX_COMPARES = 3;
+
+/**
+ * D1 calls the fixed-in step needs: the label read, the pending check, the
+ * candidate read and one write batch.
+ */
+const FIX_CALLS = 4;
 
 /**
  * Most pull requests kept by number in one statement (one bound value each);
@@ -118,10 +132,11 @@ function issueStatements(db, issue) {
   const stmts = [
     db
       .prepare(
-        `INSERT INTO issues (number, title, state, kind, created_at, updated_at, closed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO issues (number, title, state, kind, created_at, updated_at, closed_at, fixed_in_label)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (number) DO UPDATE SET title = excluded.title, state = excluded.state,
            kind = excluded.kind, updated_at = excluded.updated_at, closed_at = excluded.closed_at,
+           fixed_in_label = excluded.fixed_in_label,
            prs_synced_at = CASE WHEN issues.updated_at = excluded.updated_at
              THEN issues.prs_synced_at ELSE NULL END`,
       )
@@ -133,6 +148,7 @@ function issueStatements(db, issue) {
         isoMs(issue.created_at) ?? 0,
         isoMs(issue.updated_at) ?? 0,
         isoMs(issue.closed_at),
+        typeof issue.fixed_in_label === "string" ? issue.fixed_in_label : null,
       ),
     // Only the links the body lists are the body's to replace; links made by
     // signature, triage or a member live in the ledger alone.
@@ -194,8 +210,8 @@ async function storeIssuePage(db, issues, cursor) {
  *
  * @param {D1Database} db Database.
  * @param {number} number Issue number.
- * @param {{number: number, title: string, state: string, mergedAt: number | null}[]} prs
- *   Pull requests from `pullRequestsFor`.
+ * @param {{number: number, title: string, state: string, mergedAt: number | null,
+ *   mergeSha: string | null}[]} prs Pull requests from `pullRequestsFor`.
  * @param {number} now Unix time in milliseconds.
  * @returns {D1PreparedStatement[]} Statements.
  */
@@ -215,13 +231,13 @@ function pullRequestStatements(db, number, prs, now) {
     stmts.push(
       db
         .prepare(
-          `INSERT INTO issue_pr (issue_number, pr_number, title, state, merged_at) VALUES (?, ?, ?, ?, ?)
+          `INSERT INTO issue_pr (issue_number, pr_number, title, state, merged_at, merge_sha) VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT (issue_number, pr_number) DO UPDATE SET title = excluded.title,
-             state = excluded.state, merged_at = excluded.merged_at
+             state = excluded.state, merged_at = excluded.merged_at, merge_sha = excluded.merge_sha
            WHERE issue_pr.title IS NOT excluded.title OR issue_pr.state IS NOT excluded.state
-             OR issue_pr.merged_at IS NOT excluded.merged_at`,
+             OR issue_pr.merged_at IS NOT excluded.merged_at OR issue_pr.merge_sha IS NOT excluded.merge_sha`,
         )
-        .bind(number, pr.number, pr.title, pr.state, pr.mergedAt),
+        .bind(number, pr.number, pr.title, pr.state, pr.mergedAt, pr.mergeSha ?? null),
     );
   }
   return stmts;
@@ -239,8 +255,128 @@ function dropStatements(db, number) {
   return [
     db.prepare("DELETE FROM report_issue WHERE issue_number = ?").bind(number),
     db.prepare("DELETE FROM issue_pr WHERE issue_number = ?").bind(number),
+    db.prepare("DELETE FROM issue_fix WHERE issue_number = ?").bind(number),
     db.prepare("DELETE FROM issues WHERE number = ?").bind(number),
   ];
+}
+
+/**
+ * Records which version fixed each closed issue, in at most `FIX_CALLS` D1
+ * calls and, when any issue needs a look, one release listing plus up to
+ * `FIX_RESOLVE_MAX` × `FIX_COMPARES` compare calls to GitHub:
+ *
+ * - an issue whose `fixed-in:<version>` label names a version other than
+ *   its latest row gets a `manual` row and is otherwise left alone; when
+ *   the label is gone, the rows it wrote go too, so the lookup resumes;
+ * - up to `FIX_RESOLVE_MAX` closed issues with a merged pull request whose
+ *   merge commit is known, and no row yet or an `unreleased` row with
+ *   releases not yet compared, get a `release` row naming the oldest release
+ *   that contains the commit among the next `FIX_COMPARES` releases
+ *   published after the merge and after the last one compared, or an
+ *   `unreleased` row recording how far the comparison got (publish time
+ *   and tag of the last release compared), so the next sync continues from
+ *   there whether or not a new release appeared. Only
+ *   releases whose tag is a version are considered, and the whole release
+ *   list is read (`listReleases`); when it is longer than the pages read,
+ *   nothing is resolved and a `fixed-in` label settles the version, rather
+ *   than placing a fix in a release that may not be the first. A release
+ *   row is final: a later pull request on the issue does not move it.
+ *
+ * A GitHub failure here is logged and leaves the rows as they were; the
+ * next sync tries again.
+ *
+ * @param {import("./budget.js").MeteredD1} db Metered database.
+ * @param {import("./github.js").GitHubConfig} cfg Settings.
+ * @param {string} token Installation token.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {Promise<number>} Statements written.
+ */
+export async function resolveFixes(db, cfg, token, now) {
+  const stmts = [];
+  const insert = (issue, source, fixedIn, prNumber, mergeSha, by, checked = null) =>
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO issue_fix (issue_number, recorded_at, source, fixed_in, pr_number, merge_sha, recorded_by, checked_until, checked_tag)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(issue, now, source, fixedIn, prNumber, mergeSha, by, checked?.publishedAt ?? null, checked?.tag ?? null);
+  // Labels: 'set' needs a manual row; 'gone' has label rows to drop.
+  const labels = await all(
+    db,
+    `WITH ${LATEST_FIX}
+     SELECT i.number AS number, i.fixed_in_label AS label,
+       CASE WHEN i.fixed_in_label IS NOT NULL THEN 'set' ELSE 'gone' END AS kind
+     FROM issues i LEFT JOIN latest l ON l.issue_number = i.number
+     WHERE (i.fixed_in_label IS NOT NULL
+         AND (l.issue_number IS NULL OR l.source <> 'manual' OR l.fixed_in IS NOT i.fixed_in_label))
+       OR (i.fixed_in_label IS NULL AND l.source = 'manual' AND l.recorded_by = 'label')
+     ORDER BY i.number LIMIT 100`,
+  );
+  for (const row of labels) {
+    if (row.kind === "set") stmts.push(insert(Number(row.number), "manual", String(row.label), null, null, "label"));
+    else stmts.push(db.prepare("DELETE FROM issue_fix WHERE issue_number = ? AND recorded_by = 'label'").bind(Number(row.number)));
+  }
+
+  // Closed issues with a merged fix the sync has not placed in a release.
+  const CANDIDATES = `WITH ${LATEST_FIX}, newest AS (
+       SELECT p.issue_number, p.pr_number, p.merged_at, p.merge_sha FROM issue_pr p
+       WHERE p.state = 'merged' AND p.merged_at IS NOT NULL AND p.merge_sha IS NOT NULL
+         AND p.merged_at = (SELECT MAX(q.merged_at) FROM issue_pr q
+           WHERE q.issue_number = p.issue_number AND q.state = 'merged' AND q.merge_sha IS NOT NULL))
+     SELECT i.number AS number, n.pr_number AS pr_number, n.merged_at AS merged_at, n.merge_sha AS merge_sha,
+       l.source AS source, l.checked_until AS checked_until, l.checked_tag AS checked_tag
+     FROM issues i JOIN newest n ON n.issue_number = i.number
+     LEFT JOIN latest l ON l.issue_number = i.number
+     WHERE i.state = 'closed' AND i.fixed_in_label IS NULL
+       AND (l.issue_number IS NULL OR (l.source = 'unreleased'
+         AND (COALESCE(l.checked_until, 0) < ?
+           OR (COALESCE(l.checked_until, 0) = ? AND COALESCE(l.checked_tag, '') < ?))))
+     ORDER BY i.closed_at, i.number LIMIT ?`;
+  // Releases in the order the lookup walks them: publish time, then tag,
+  // as decodeReleases sorts them.
+  const after = (r, cursor) => r.publishedAt > cursor.publishedAt || (r.publishedAt === cursor.publishedAt && r.tag > cursor.tag);
+  // Cheap check before the GitHub call: anything at all to look at, taking
+  // any release newer than an unreleased row's last comparison as possible.
+  const pending = await all(db, CANDIDATES, Number.MAX_SAFE_INTEGER, -1, "", 1);
+  if (pending.length) {
+    try {
+      // The whole release list is needed: releases are listed by creation
+      // time and can be published late, so only the end of the list proves
+      // the first release after a merge is in it. A list cut off by the
+      // page cap leaves fixed-in versions to labels.
+      const { releases: listed, complete } = await listReleases(cfg, token);
+      if (!complete) throw new Error("the release list is longer than the lookup reads; set fixed-in labels");
+      const releases = listed.filter((r) => parseSemver(r.tag) !== null);
+      const newest = releases.length ? releases[releases.length - 1] : { publishedAt: 0, tag: "" };
+      const candidates = await all(db, CANDIDATES, newest.publishedAt, newest.publishedAt, newest.tag, FIX_RESOLVE_MAX);
+      for (const c of candidates) {
+        const mergedAt = Number(c.merged_at);
+        const cursor =
+          c.source === "unreleased" ? { publishedAt: Number(c.checked_until ?? 0), tag: String(c.checked_tag ?? "") } : { publishedAt: -Infinity, tag: "" };
+        const sha = String(c.merge_sha);
+        let fixedIn = null;
+        // Where the comparison got to: the last release compared, or the
+        // newest release when none was (nothing after the merge yet).
+        let checked = newest;
+        for (const r of releases.filter((x) => x.publishedAt >= mergedAt && after(x, cursor)).slice(0, FIX_COMPARES)) {
+          checked = r;
+          if (await tagContains(cfg, token, r.tag, sha)) {
+            fixedIn = normalizeVersion(r.tag);
+            break;
+          }
+        }
+        stmts.push(
+          fixedIn === null
+            ? insert(Number(c.number), "unreleased", null, Number(c.pr_number), sha, "sync", checked)
+            : insert(Number(c.number), "release", fixedIn, Number(c.pr_number), sha, "sync"),
+        );
+      }
+    } catch (err) {
+      console.error(`fixed-in lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  if (stmts.length) await db.batch(stmts);
+  return stmts.length;
 }
 
 /**
@@ -330,6 +466,7 @@ export async function syncIssues(env, cfg, now) {
       await db.batch(stmts);
     }
   }
+  if (budget.left() > FIX_CALLS + SYNC_RESERVE) await resolveFixes(db, cfg, token, now);
   await setState(db, "issues_synced_at", String(now));
   return { issues: stored, refreshed };
 }

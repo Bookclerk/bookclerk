@@ -122,8 +122,8 @@ With the automation GitHub App's credentials set, the collector serves a
 dashboard for members of the repository owner's organization: `/` signs in
 with GitHub, and `/dash` (overview), `/reports` (filterable list),
 `/reports/<report_id>` (one report with its event log) and `/issues`
-(diagnostics issues, their pull requests, and reports that keep arriving
-after a fix merged) are member-only. Without the credentials the routes stay
+(diagnostics issues, their pull requests, the version each fix shipped in,
+and reports that keep arriving from that version on) are member-only. Without the credentials the routes stay
 off and `/` answers like `/health`. The deploy only uploads the credentials;
 removing the Actions secrets later leaves the Worker's copies in place, so to
 turn the dashboard off, delete the Worker secrets `GITHUB_APP_CLIENT_ID`,
@@ -156,7 +156,10 @@ page, owner actions stay POSTs with a same-origin `Origin` check, and
 
 **What the Worker holds.** The App can write to the repository, so every
 installation token the Worker mints is narrowed in the request to `metadata`,
-`issues`, `pull_requests` and `members`, all `read`, on this one repository.
+`issues`, `pull_requests`, `members` and `contents` (for the release list
+and compare reads below), all `read`, on this one repository; the App's
+installation must grant each of them, or the token cannot be minted and
+sign-in fails.
 The client secret and private key are Worker secrets only. Neither, nor any
 user token, is logged, stored or sent to a browser, and
 `scripts/tests/test_ci_contract.py` keeps them out of Bookclerk builds and
@@ -215,6 +218,38 @@ transferred issue is not followed); one that lost the `diagnostics` label is
 dropped, and a failed GraphQL call keeps the links already stored. Each sign-in and report view is
 written to an access log kept 90 days and shown to owners. The overview also
 shows today's triage spend from `TRIAGE_BUDGET`.
+
+**Fixed-in version and regressions.** For each closed issue with a merged
+pull request, the same sync records the version the fix shipped in
+(`issue_fix`, one row per change, the newest wins): it reads the repository's
+whole release list, prereleases included (at most five pages of a hundred;
+a longer list is left to `fixed-in` labels, since releases are listed by
+creation time and one published late could hide past any shorter read), and
+asks GitHub's compare API whether
+the oldest release published after the merge contains the pull request's
+merge commit (then the next two). The first that does is the fixed-in
+version, with a leading `v` dropped, and a prerelease counts. Until one does
+the fix is `unreleased`, and the next sync continues with the releases after
+the last one compared, so a fix that only a later release carries is found
+over a few runs and a new release is checked as soon as it exists. At most
+five issues are resolved per sync, so a backlog clears over a few runs, and a
+GitHub failure leaves the rows as they were. A `fixed-in:<version>` label on
+the issue (`fixed-in:v0.4.2`, `MAJOR.MINOR.PATCH` with optional prerelease
+and build) sets the version by hand and stops the automatic lookup for that
+issue; the label's value wins over an earlier automatic row. A release row is
+final: a later pull request that references the issue does not move it.
+
+A report that shares a signature with an issue's tracked reports and runs the
+fixed-in version or a later one (semver order; a build suffix or
+distribution repack of the fixed version counts as it, a version that does
+not parse never does) is a **regression**: the issues list counts them per
+issue, the overview counts issues with any, and the report page marks such a
+report "Regression" and names the fixed-in version. While a fix is
+unreleased the count is instead the reports that arrived after the merge.
+Reports from versions older than the fix are expected and not flagged.
+Nothing reopens an issue automatically. The installation token the Worker
+mints for these reads carries `contents: read` in addition to the issue,
+pull request, member and metadata reads; it still cannot write.
 
 **Live updates.** Open pages update on their own, without polling. Each page
 opens a WebSocket to `/live` (same origin and a live session required), held
