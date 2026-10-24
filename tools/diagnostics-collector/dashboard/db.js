@@ -526,7 +526,7 @@ export async function recentAccess(db, limit) {
  *
  * @param {D1Database} db Database.
  * @param {{userId: number, login: string}} who Signed-in member.
- * @param {"sign-in" | "view-report" | "sign-out-all" | "reindex"} action What they did.
+ * @param {"sign-in" | "view-report" | "sign-out-all" | "reindex" | "sync"} action What they did.
  * @param {string | null} reportId Report viewed, when any.
  * @param {number} now Unix time in milliseconds.
  * @returns {Promise<void>}

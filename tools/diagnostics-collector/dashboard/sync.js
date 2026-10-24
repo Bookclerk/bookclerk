@@ -45,8 +45,11 @@ const MAX_PR_REFRESH = 100;
 /** Issues per GraphQL call, stored in one D1 batch. */
 const PR_BATCH = 10;
 
-/** D1 calls the sync keeps for its last write (the sync time). */
-const SYNC_RESERVE = 1;
+/**
+ * D1 calls the sync keeps for its last write (the sync time) and, when an
+ * owner runs it from the dashboard, the route's note and access-log writes.
+ */
+const SYNC_RESERVE = 3;
 
 /** Report links inserted per statement (two bound values each). */
 const LINK_CHUNK = 40;

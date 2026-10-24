@@ -219,6 +219,7 @@ export function overviewPage(d) {
     ? html`<section class="panel s12" aria-labelledby="owner-h"><h2 id="owner-h">Owner tools</h2>
         <div class="owner-row">
           <form method="post" action="/admin/reindex"><button class="button small" type="submit">Index older reports from storage</button></form>
+          <form method="post" action="/admin/sync"><button class="button small" type="submit">Sync issues from GitHub now</button></form>
           <form method="post" action="/admin/sign-out-all"><button class="button small danger" type="submit">Sign out everyone</button></form>
           <span class="fine">${d.reindexNote}</span>
         </div>

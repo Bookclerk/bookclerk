@@ -51,7 +51,7 @@ import { readStoredReport } from "./storage.js";
 import { reindexSlice, syncIssues } from "./sync.js";
 
 /** Paths the dashboard owns (exact). */
-const PATHS = new Set(["/", "/auth/github", "/auth/callback", "/auth/logout", "/dash", "/reports", "/issues", "/admin/reindex", "/admin/sign-out-all"]);
+const PATHS = new Set(["/", "/auth/github", "/auth/callback", "/auth/logout", "/dash", "/reports", "/issues", "/admin/reindex", "/admin/sync", "/admin/sign-out-all"]);
 
 /** `/reports/<uuid>`. */
 const REPORT_PATH = /^\/reports\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
@@ -159,7 +159,7 @@ export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now
     return htmlResponse(messagePage("Signed out", html`<p>Your session ended. Sign in again.</p>`), 401);
   }
 
-  if (method === "POST" && (path === "/admin/reindex" || path === "/admin/sign-out-all")) {
+  if (method === "POST" && (path === "/admin/reindex" || path === "/admin/sync" || path === "/admin/sign-out-all")) {
     if (member.role !== "admin" || !sameOrigin(request)) {
       return htmlResponse(messagePage("Request refused", html`<p>Only organization owners can do this, from the dashboard's own buttons.</p>`), 403);
     }
@@ -167,6 +167,19 @@ export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now
       await logAccess(db, member, "sign-out-all", null, now);
       await endAllSessions(db);
       return redirect("/");
+    }
+    if (path === "/admin/sync") {
+      let note;
+      try {
+        const res = await syncIssues(env, cfg, now);
+        note = `Issue sync: stored ${res.issues} changed issues, refreshed pull requests for ${res.refreshed}.`;
+      } catch (err) {
+        console.error(`issue sync failed: ${err instanceof Error ? err.message : String(err)}`);
+        note = "Issue sync could not reach GitHub; try again.";
+      }
+      await setState(db, "reindex_note", `${new Date(now).toISOString().slice(0, 16).replace("T", " ")} UTC: ${note}`);
+      await logAccess(db, member, "sync", null, now);
+      return redirect("/dash");
     }
     let note;
     try {

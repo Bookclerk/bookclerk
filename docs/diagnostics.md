@@ -159,7 +159,8 @@ last run, reads the report IDs from each issue's `### Report IDs` section (the
 format triage and its fallback write), and asks GraphQL for the pull requests
 that close or reference each issue (the newest 50 cross-references), up to
 100 issues a run: changed issues first, then the rest in turn, least
-recently checked first, so every issue is rechecked; one that lost the `diagnostics` label is
+recently checked first, so every issue is rechecked (an owner's **Sync issues
+from GitHub now** button runs the same sync at once); one that lost the `diagnostics` label is
 dropped, and a failed GraphQL call keeps the links already stored. Each sign-in and report view is
 written to an access log kept 90 days and shown to owners. The overview also
 shows today's triage spend from `TRIAGE_BUDGET`.

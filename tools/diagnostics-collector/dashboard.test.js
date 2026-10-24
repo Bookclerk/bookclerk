@@ -767,6 +767,37 @@ function limitedD1(d1, limit) {
   return handle;
 }
 
+describe("owner issue sync", () => {
+  it("links a filed issue to its report right away, within the D1 limit", async () => {
+    const env = makeEnv();
+    const d1 = env.DASHBOARD_DB;
+    await seed(env, ID1);
+    const issue = {
+      number: 400,
+      title: "[diagnostics] synthetic",
+      state: "closed",
+      body: `<!-- bookclerk-diagnostics: workers-ai triage -->\nx\n\n### Report IDs\n- \`${ID1}\`\n`,
+      created_at: new Date(NOW - 60_000).toISOString(),
+      updated_at: new Date(NOW - 30_000).toISOString(),
+      closed_at: new Date(NOW - 30_000).toISOString(),
+    };
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues?", () => Response.json([issue])],
+      ["POST https://api.github.com/graphql", () => Response.json({ data: { repository: { i0: { closedByPullRequestsReferences: { nodes: [] }, timelineItems: { nodes: [] } } } } })],
+    ]);
+    const member = await signedIn(env, "member");
+    const refused = await call(env, new Request(`${ORIGIN}/admin/sync`, { method: "POST", headers: { cookie: member, origin: ORIGIN } }));
+    assert.equal(refused.status, 403);
+    const owner = await signedIn(env, "admin");
+    const res = await call({ ...env, DASHBOARD_DB: limitedD1(d1, 50) }, new Request(`${ORIGIN}/admin/sync`, { method: "POST", headers: { cookie: owner, origin: ORIGIN } }));
+    assert.equal(res.status, 303);
+    assert.deepEqual((await all(d1, "SELECT report_id, issue_number FROM report_issue")).map((r) => [r.report_id, r.issue_number]), [[ID1, 400]]);
+    assert.match((await first(d1, "SELECT value FROM sync_state WHERE key = 'reindex_note'")).value, /stored 1 changed issues/);
+    assert.equal((await first(d1, "SELECT action FROM access_log ORDER BY id DESC LIMIT 1")).action, "sync");
+  });
+});
+
 describe("per-invocation D1 limit", () => {
   it("works through an issue and pull request backlog in 50-call runs", async () => {
     const d1 = createD1();
