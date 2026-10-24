@@ -23,8 +23,8 @@ pub use bookclerk_plugin_abi::{
     FetchOptions, FetchTitleParams, ListDealsParams, ListeningProgress, LoginCompleteParams,
     LoginParams, LoginResult, LoginStartResult, OutputLocalContextDto, OutputS3ContextDto,
     PlainFetch, PlainPart, PortalAuthMode, PurchaseHint, PurchaseHintParams, PurchaseHintResult,
-    S3CredentialsDto, ScanBook, ScanLibraryParams, ScanParams, ScanSummary, SearchCatalogParams,
-    SourceAccount, SourceAccounts, SyncListeningResult,
+    RevokeAccountParams, S3CredentialsDto, ScanBook, ScanLibraryParams, ScanParams, ScanSummary,
+    SearchCatalogParams, SourceAccount, SourceAccounts, SyncListeningResult,
 };
 
 /// Logical ABI identifier for diagnostics (not a `plugin.toml` field).

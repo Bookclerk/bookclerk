@@ -3611,6 +3611,28 @@ var CatalogDetailParamsCodec = {
     return out;
   }
 };
+var RevokeAccountParamsCodec = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.accountId ?? "");
+    if (v.credentials !== void 0) {
+      s.setData(1, v.credentials ?? EMPTY_BYTES);
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out = {
+      accountId: s.getText(0)
+    };
+    const credentialsValue = s.getData(1);
+    if (!(credentialsValue.length === 0)) {
+      out.credentials = credentialsValue;
+    }
+    return out;
+  }
+};
 var CatalogHitCodec = {
   dataWords: 5,
   pointerCount: 19,
@@ -6003,6 +6025,34 @@ var ContentSourceCatalogDetailResultsCodec = {
     };
   }
 };
+var ContentSourceRevokeAccountParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      RevokeAccountParamsCodec.write(s.initStruct(0, 0, 2), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: RevokeAccountParamsCodec.read(s.getStruct(0, 0, 2), caps)
+    };
+  }
+};
+var ContentSourceRevokeAccountResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
 var RemoteLibraryHealthParamsCodec = {
   dataWords: 0,
   pointerCount: 0,
@@ -6859,7 +6909,8 @@ var METHODS = {
     listDeals: withParams("storefront", "listDeals", ContentSourceListDealsParamsCodec, ContentSourceListDealsResultsCodec, okHits),
     health: withoutParams("storefront", "health", ContentSourceHealthParamsCodec, ContentSourceHealthResultsCodec, okHealth),
     diagnose: withoutParams("storefront", "diagnose", ContentSourceDiagnoseParamsCodec, ContentSourceDiagnoseResultsCodec, okLines),
-    catalogDetail: withParams("storefront", "catalogDetail", ContentSourceCatalogDetailParamsCodec, ContentSourceCatalogDetailResultsCodec, (value) => okValue({ found: value != null, hit: value ?? void 0 }))
+    catalogDetail: withParams("storefront", "catalogDetail", ContentSourceCatalogDetailParamsCodec, ContentSourceCatalogDetailResultsCodec, (value) => okValue({ found: value != null, hit: value ?? void 0 })),
+    revokeAccount: withParams("storefront", "revokeAccount", ContentSourceRevokeAccountParamsCodec, ContentSourceRevokeAccountResultsCodec, okEmpty)
   },
   Destination: {
     head: spec({
@@ -8072,6 +8123,7 @@ var STOREFRONT_METHODS = Object.freeze([
   "purchaseHint",
   "listDeals",
   "catalogDetail",
+  "revokeAccount",
   "diagnose",
   "health"
 ]);
@@ -8175,6 +8227,18 @@ var StorefrontEntrypoint = class extends NamedEntrypoint {
    */
   catalogDetail(_params) {
     return Promise.reject(unsupported("catalogDetail"));
+  }
+  /**
+   * Undo store-side state for one account before the host deletes its
+   * credentials, such as deregistering the device registered at login.
+   * Best effort: the host revokes the account whatever this returns. The
+   * default does nothing.
+   *
+   * @param _params - Account id and its stored credentials.
+   * @returns Resolves when the store sign-out finished.
+   */
+  revokeAccount(_params) {
+    return Promise.resolve();
   }
   /**
    * Operator-facing diagnostic lines.

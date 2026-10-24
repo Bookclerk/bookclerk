@@ -96,6 +96,7 @@ import type {
   PurchaseHintParams,
   QueueMessage as WireQueueMessage,
   QueueSendOk,
+  RevokeAccountParams,
   ScanLibraryParams,
   ScanParams,
   ScanSummary,
@@ -1668,6 +1669,7 @@ const STOREFRONT_METHODS = Object.freeze([
   "purchaseHint",
   "listDeals",
   "catalogDetail",
+  "revokeAccount",
   "diagnose",
   "health",
 ]);
@@ -1778,6 +1780,18 @@ export class StorefrontEntrypoint<Env extends BookclerkEnv = BookclerkEnv> exten
    */
   catalogDetail(_params: CatalogDetailParams): Promise<CatalogHit | null> {
     return Promise.reject(unsupported("catalogDetail"));
+  }
+  /**
+   * Undo store-side state for one account before the host deletes its
+   * credentials, such as deregistering the device registered at login.
+   * Best effort: the host revokes the account whatever this returns. The
+   * default does nothing.
+   *
+   * @param _params - Account id and its stored credentials.
+   * @returns Resolves when the store sign-out finished.
+   */
+  revokeAccount(_params: RevokeAccountParams): Promise<void> {
+    return Promise.resolve();
   }
   /**
    * Operator-facing diagnostic lines.

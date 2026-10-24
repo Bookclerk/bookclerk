@@ -15,9 +15,9 @@ use bookclerk_plugin_abi::{
     serve_plugin_stdio, Bindings, CatalogDetailParams, CatalogHit, CliCommandSpec, CliInvokeParams,
     CliInvokeResult, CliSchema, ContentSource, Entrypoints, HealthOk, Invocation, JobController,
     JobOutcome, JobRunner, LoginParams, LoginResult, PluginCli, PluginDescribe, PluginError,
-    PluginErrorCode, PluginWorker, PurchaseHint, PurchaseHintParams, Result, ScalarLimits,
-    SearchCatalogParams, SourceAccount, WriteOptions, FEATURE_SCALAR_LIMITS, FEATURE_STREAMS,
-    MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
+    PluginErrorCode, PluginWorker, PurchaseHint, PurchaseHintParams, Result, RevokeAccountParams,
+    ScalarLimits, SearchCatalogParams, SourceAccount, WriteOptions, FEATURE_SCALAR_LIMITS,
+    FEATURE_STREAMS, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
 use bookclerk_plugin_manifest::PluginManifest;
 use serde::Deserialize;
@@ -129,6 +129,16 @@ impl ContentSource for FixtureStorefront {
             product_id: params.product_id,
             ..CatalogHit::default()
         }))
+    }
+
+    async fn revoke_account(&self, params: RevokeAccountParams) -> Result<()> {
+        if params.credentials.as_deref().unwrap_or_default().is_empty() {
+            return Err(PluginError::new(
+                PluginErrorCode::Unauthorized,
+                format!("no credentials for {}", params.account_id),
+            ));
+        }
+        Ok(())
     }
 
     async fn login(&self, params: LoginParams) -> Result<LoginResult> {

@@ -126,6 +126,7 @@ const INTERFACES: &[InterfaceEntry] = &[
             "health",
             "diagnose",
             "catalogDetail",
+            "revokeAccount",
         ],
     },
     InterfaceEntry {
@@ -792,7 +793,11 @@ mod tests {
             method_headers(content_source, 12),
             Some(("ContentSource", "catalogDetail"))
         );
-        assert_eq!(method_headers(content_source, 13), None);
+        assert_eq!(
+            method_headers(content_source, 13),
+            Some(("ContentSource", "revokeAccount"))
+        );
+        assert_eq!(method_headers(content_source, 14), None);
         let source = <plugin_capnp::source::Client as HasTypeId>::TYPE_ID;
         assert_eq!(
             method_headers(source, 0),

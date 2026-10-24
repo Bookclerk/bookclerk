@@ -8,10 +8,11 @@ use audible_rs::auth::Authenticator;
 use bookclerk_config::AudioQuality;
 
 use bookclerk_plugin_source_audible::{
-    fetch_chapter_info, request_content_license, scan_account_into_library, summarize_license,
+    deregister_device, fetch_chapter_info, request_content_license, scan_account_into_library,
+    summarize_license,
 };
 use url::Url;
-use wiremock::matchers::{body_string_contains, method, path, query_param};
+use wiremock::matchers::{body_json, body_string_contains, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn synthetic_client(server: &MockServer) -> Client {
@@ -214,4 +215,36 @@ async fn chapter_metadata_is_fetched() {
             .map(|a| a.len()),
         Some(2)
     );
+}
+
+#[tokio::test]
+async fn revoke_deregisters_only_this_device() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/auth/deregister"))
+        .and(header("x-amz-access-token", "Atna|synthetic"))
+        .and(body_json(serde_json::json!({
+            "deregister_all_existing_accounts": false
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = synthetic_client(&server);
+    deregister_device(&client).await.unwrap();
+}
+
+#[tokio::test]
+async fn revoke_reports_a_rejected_deregistration() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/auth/deregister"))
+        .respond_with(ResponseTemplate::new(403))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = synthetic_client(&server);
+    assert!(deregister_device(&client).await.is_err());
 }

@@ -43,6 +43,7 @@ pub const METHOD_NAMES: &[&str] = &[
     list_deals::NAME,
     list_accounts::NAME,
     catalog_detail::NAME,
+    revoke_account::NAME,
     put::NAME,
     get::NAME,
     exists::NAME,
@@ -266,6 +267,16 @@ pub mod catalog_detail {
     pub const NAME: &str = "catalogDetail";
 }
 
+/// Undo store-side state for one account before the host deletes its
+/// sealed credentials (for example, deregister the login device).
+///
+/// Params: [`crate::RevokeAccountParams`]. Result: none. Best effort: the host
+/// revokes the account whether or not the guest succeeds.
+pub mod revoke_account {
+    /// Wire method name `"revokeAccount"`.
+    pub const NAME: &str = "revokeAccount";
+}
+
 /// Put a small object (cover/sidecar) into an output destination.
 ///
 /// Typed Cap'n Proto `Destination.put` ([`crate::Destination::put`]).
@@ -368,6 +379,8 @@ pub mod names {
     pub use super::purchase_hint::NAME as PURCHASE_HINT;
     /// Alias of [`super::put::NAME`] (`"put"`).
     pub use super::put::NAME as PUT;
+    /// Alias of [`super::revoke_account::NAME`] (`"revokeAccount"`).
+    pub use super::revoke_account::NAME as REVOKE_ACCOUNT;
     /// Alias of [`super::scan::NAME`] (`"scan"`).
     pub use super::scan::NAME as SCAN;
     /// Alias of [`super::scan_library::NAME`] (`"scanLibrary"`).

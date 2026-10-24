@@ -770,6 +770,9 @@ struct ConnectionInfo {
 ///
 /// The account is addressed by `(source, account_id)`: the same store id may
 /// exist under two plugins. `source` is the alias or plugin key of the link.
+///
+/// When the last link goes, the plugin first signs the account out at the
+/// store (for example, Audible deregisters its device), best effort.
 #[utoipa::path(
     operation_id = "portal_revoke_connection",
     post,
@@ -808,6 +811,15 @@ async fn revoke_connection(
         .count_account_links_for_account(&plugin_key, &account_id)
         .await?;
     if remaining == 0 {
+        // Let the plugin sign the account out at the store (for example,
+        // deregister the login device) while its credentials still exist.
+        // Best effort: a missing plugin or store error never blocks revoke.
+        if let Some(content) = find_source(&state, &plugin_key).await {
+            let scope = bookclerk_source::source_scope(&library, content.as_ref());
+            if let Err(err) = content.revoke_credentials(&scope, &account_id).await {
+                warn!(%account_id, %err, "store sign-out failed on revoke");
+            }
+        }
         if let Err(err) = library
             .delete_account_secrets(&plugin_key, &account_id)
             .await

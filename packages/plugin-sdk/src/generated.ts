@@ -1050,6 +1050,15 @@ export interface ContentSource {
    * @returns {@link CatalogDetailReply}
    */
   catalogDetail(params: CatalogDetailParams): Promise<CatalogDetailReply>;
+  /**
+   * Undo store-side state for one account before the host deletes its
+   * sealed credentials (for example, deregister the device registered at
+   * login). Best effort: the host revokes the account whatever this returns.
+   *
+   * @param params - Account id and its sealed credentials.
+   * @returns {@link EmptyReply}
+   */
+  revokeAccount(params: RevokeAccountParams): Promise<EmptyReply>;
 }
 
 /**
@@ -1855,6 +1864,20 @@ export interface CatalogDetailParams {
    * Omitted when absent (wire zero value).
    */
   isbn?: string;
+}
+
+/**
+ * Params of `ContentSource.revokeAccount`. The host sends the credentials it
+ * is about to delete so the guest can sign the device out at the store.
+ */
+export interface RevokeAccountParams {
+  /** Account being revoked. */
+  accountId: string;
+  /**
+   * Host-loaded credential blob for this account; empty when none is stored.
+   * Omitted when absent (wire zero value).
+   */
+  credentials?: Uint8Array;
 }
 
 /**

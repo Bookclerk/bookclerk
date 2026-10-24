@@ -2449,6 +2449,46 @@
         }
       ]
     },
+    "ContentSource.revokeAccount$Params": {
+      "name": "ContentSource.revokeAccount$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "params",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "RevokeAccountParams"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "ContentSource.revokeAccount$Results": {
+      "name": "ContentSource.revokeAccount$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "ContentSource.scan$Params": {
       "name": "ContentSource.scan$Params",
       "file": "plugin.capnp",
@@ -9661,6 +9701,34 @@
         }
       ]
     },
+    "RevokeAccountParams": {
+      "name": "RevokeAccountParams",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "accountId",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "credentials",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 1
+        }
+      ]
+    },
     "ScalarLimits": {
       "name": "ScalarLimits",
       "file": "plugin.capnp",
@@ -11010,6 +11078,12 @@
           "ordinal": 12,
           "params": "ContentSource.catalogDetail$Params",
           "results": "ContentSource.catalogDetail$Results"
+        },
+        {
+          "name": "revokeAccount",
+          "ordinal": 13,
+          "params": "ContentSource.revokeAccount$Params",
+          "results": "ContentSource.revokeAccount$Results"
         }
       ]
     },

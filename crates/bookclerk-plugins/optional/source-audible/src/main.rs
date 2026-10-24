@@ -8,8 +8,9 @@ use bookclerk_plugin_sdk::{
     serve, Bindings, Brand, CatalogHit, ContentSource as ContentSourceRole, Entrypoints,
     ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation, ListDealsParams,
     LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, PlainFetch, PluginDescribe,
-    PluginError, PluginWorker, PortalAuthMode, PurchaseHint, PurchaseHintParams, ScalarLimits,
-    ScanParams, ScanSummary, SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    PluginError, PluginWorker, PortalAuthMode, PurchaseHint, PurchaseHintParams,
+    RevokeAccountParams, ScalarLimits, ScanParams, ScanSummary, SearchCatalogParams,
+    FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 use bookclerk_source::abi::{
     account_credentials_json, credentials_from_bytes, expand_seed_from_params,
@@ -130,6 +131,23 @@ impl ContentSourceRole for AudibleContentSource {
         )
         .await
         .map_err(internal)
+    }
+
+    async fn revoke_account(&self, params: RevokeAccountParams) -> Result<(), PluginError> {
+        let Some(creds) = params.credentials.as_deref() else {
+            return Ok(());
+        };
+        let creds = credentials_from_bytes(creds)
+            .map_err(|e| PluginError::invalid_params(e.to_string()))?;
+        let device = bookclerk_plugin_source_audible::guest_revoke_account(&creds)
+            .await
+            .map_err(internal)?;
+        tracing::info!(
+            account = %params.account_id,
+            device = device.as_deref().unwrap_or("unknown"),
+            "deregistered Audible device"
+        );
+        Ok(())
     }
 
     async fn search_catalog(
