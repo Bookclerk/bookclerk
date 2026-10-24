@@ -401,7 +401,9 @@ const PR_FIELDS = "number title state mergedAt repository { nameWithOwner }";
 /**
  * Pull requests that close or cross-reference each issue, in this
  * repository, and whether each issue still carries the `diagnostics` label
- * (the label-filtered issue listing cannot report a removal).
+ * (the label-filtered issue listing cannot report a removal). An issue
+ * counts as unlabeled only when GitHub returns its complete label list
+ * without `diagnostics`.
  *
  * Cross-references are read newest first (the last 50 timeline events), so
  * a long-lived issue still shows the pull requests that mention it lately.
@@ -421,7 +423,7 @@ export async function pullRequestsFor(cfg, token, numbers) {
   const fields = numbers
     .map(
       (n, i) => `i${i}: issue(number: ${Number(n)}) {
-        labels(first: 50) { nodes { name } }
+        labels(first: 50) { nodes { name } pageInfo { hasNextPage } }
         closedByPullRequestsReferences(first: 10, includeClosedPrs: true) { nodes { ${PR_FIELDS} } }
         timelineItems(last: 50, itemTypes: [CROSS_REFERENCED_EVENT, CONNECTED_EVENT]) { nodes {
           ... on CrossReferencedEvent { source { ... on PullRequest { ${PR_FIELDS} } } }
@@ -483,8 +485,9 @@ export function decodePullRequests(data, numbers, repository) {
     for (const pr of list(issue.closedByPullRequestsReferences?.nodes)) take(pr);
     for (const ev of list(issue.timelineItems?.nodes)) take(ev?.source ?? ev?.subject);
     const labels = Array.isArray(issue.labels?.nodes) ? issue.labels.nodes : null;
-    // Without a label list the check is unknown: keep the issue.
-    const labeled = labels === null || labels.some((l) => text(l?.name).toLowerCase() === DIAGNOSTICS_LABEL);
+    // Without a complete label list the check is unknown: keep the issue.
+    const complete = labels !== null && issue.labels?.pageInfo?.hasNextPage === false;
+    const labeled = !complete || labels.some((l) => text(l?.name).toLowerCase() === DIAGNOSTICS_LABEL);
     out.set(n, { labeled, prs: [...found.values()] });
   });
   return out;

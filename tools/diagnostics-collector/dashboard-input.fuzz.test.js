@@ -14,6 +14,8 @@
 //   GitHub.
 // - membershipDecision reads GitHub's organization membership answer; its
 //   result decides whether sign-in grants member or owner access.
+// - decodeListPage reads B2's file listing; its result names the objects
+//   report viewing downloads and where reindexing continues.
 // - decodePullRequests reads the GraphQL answer about each issue's labels
 //   and pull requests; its result decides whether the sync drops an issue
 //   or replaces its stored pull request links.
@@ -27,6 +29,7 @@ import { describe, it } from "node:test";
 import { MAX_CODE_CHARS, OAUTH_COOKIE, parseCallback } from "./dashboard/auth.js";
 import { DIAGNOSTICS_LABEL, decodePullRequests, membershipDecision } from "./dashboard/github.js";
 import { eventLog } from "./dashboard/pages.js";
+import { decodeListPage } from "./dashboard/storage.js";
 import { memberFromRow, SESSION_COOKIE, sessionToken } from "./dashboard/session.js";
 import { FALLBACK_MARKER, MAX_IDS_PER_ISSUE, TRIAGE_MARKER, parseIssueReportIds } from "./dashboard/report-ids.js";
 import { MAX_FIELD_CHARS, MAX_LABEL_CHARS, summarizeReport } from "./dashboard/signature.js";
@@ -394,8 +397,8 @@ describe("membership decision", () => {
 /**
  * Oracle for decodePullRequests: GraphQL errors or no repository object
  * throw; otherwise an issue alias that is not an object is left out, and
- * each other issue is labeled unless it lists labels without `diagnostics`
- * (any case), with one entry per positive integer pull request number in
+ * each other issue is labeled unless its complete label list (no next page)
+ * lacks `diagnostics` (any case), with one entry per positive integer pull request number in
  * this repository with a known state, the timeline's last word winning,
  * string fields only.
  *
@@ -434,7 +437,8 @@ function checkPullRequests(input, label) {
       consider(ev.source !== undefined && ev.source !== null ? ev.source : ev.subject);
     }
     const labels = isObj(issue.labels) && Array.isArray(issue.labels.nodes) ? issue.labels.nodes : null;
-    const labeled = labels === null || labels.some((l) => isObj(l) && str(l.name).toLowerCase() === DIAGNOSTICS_LABEL);
+    const complete = labels !== null && isObj(issue.labels.pageInfo) && issue.labels.pageInfo.hasNextPage === false;
+    const labeled = !complete || labels.some((l) => isObj(l) && str(l.name).toLowerCase() === DIAGNOSTICS_LABEL);
     expected.set(n, { labeled, prs: [...prs.values()] });
   });
   assert.deepEqual(got, expected, label);
@@ -444,6 +448,7 @@ const PR_FRAGMENTS = [
   '"OPEN"', '"CLOSED"', '"MERGED"', '"__proto__"', '"diagnostics"', '"DIAGNOSTICS"', '"Bookclerk/bookclerk"', '"other/repo"',
   '"number":', '"state":', '"nodes":', '"errors":', '"repository":', '"mergedAt":', '"2026-10-20T00:00:00Z"', '"toString"',
   "null", "{}", "[]", "0", "-1", "1e400", "9007199254740993", '"5"', ",", ":", "{", "}", "[", "]", '"',
+  '"hasNextPage":', "true", "false",
 ];
 
 describe("pull request decoding", () => {
@@ -470,6 +475,60 @@ describe("pull request decoding", () => {
         data = text;
       }
       checkPullRequests({ ...base, data }, `iteration ${n}: ${text.slice(0, 300)}`);
+    }
+  });
+});
+
+/**
+ * Oracle for decodeListPage: never throws; keeps, in order, entries that are
+ * objects with action "upload" and string name and id, with a finite
+ * numeric timestamp or 0; the next start only as a non-empty string.
+ *
+ * @param {unknown} data Parsed listing.
+ * @param {string} label Input name for failure messages.
+ */
+function checkListPage(data, label) {
+  const got = decodeListPage(data);
+  const isObj = (v) => v !== null && typeof v === "object";
+  const files = [];
+  if (isObj(data) && Array.isArray(data.files)) {
+    for (const f of data.files) {
+      if (!isObj(f) || f.action !== "upload" || typeof f.fileName !== "string" || typeof f.fileId !== "string") continue;
+      const t = f.uploadTimestamp;
+      files.push({ fileName: f.fileName, fileId: f.fileId, uploadTimestamp: typeof t === "number" && t - t === 0 ? t : 0 });
+    }
+  }
+  const next = isObj(data) && typeof data.nextFileName === "string" && data.nextFileName.length > 0 ? data.nextFileName : null;
+  assert.deepEqual(got, { files, nextFileName: next }, label);
+}
+
+const LIST_FRAGMENTS = [
+  '"upload"', '"hide"', '"folder"', '"start"', '"fileName":', '"fileId":', '"action":', '"uploadTimestamp":', '"nextFileName":',
+  '"files":', '"diagnostics/0.9.0/x.json"', '""', "1e400", "-1", "0", "null", "{}", "[]", ",", ":", "{", "}", "[", "]", '"', "é",
+];
+
+describe("B2 listing decoding", () => {
+  it("replays the seed corpus", () => {
+    const all = seeds("b2_list");
+    assert.ok(all.length > 0);
+    for (const [name, raw] of all) checkListPage(JSON.parse(raw), name);
+    const normal = JSON.parse(all.find(([n]) => n === "normal.json")[1]);
+    assert.equal(decodeListPage(normal).files.length, 2);
+  });
+
+  it("holds the oracle under seeded mutation", () => {
+    const all = seeds("b2_list");
+    const rand = rng(20261030);
+    for (let n = 0; n < 3000; n++) {
+      const [, raw] = all[Math.floor(rand() * all.length)];
+      const text = mutate(rand, raw, LIST_FRAGMENTS);
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = text;
+      }
+      checkListPage(data, `iteration ${n}: ${text.slice(0, 300)}`);
     }
   });
 });

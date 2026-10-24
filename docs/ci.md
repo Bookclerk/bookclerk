@@ -334,12 +334,14 @@ non-Rust tooling (decision 6):
   whether a code is traded with GitHub; the membership decision
   (`membershipDecision` in `dashboard/github.js`), which decides from
   GitHub's membership answer whether sign-in grants member or owner access;
-  and the pull request decoder (`decodePullRequests`, same file), which
+  the pull request decoder (`decodePullRequests`, same file), which
   decides from GitHub's GraphQL answer whether the sync drops an issue or
-  replaces its pull request links. `tools/diagnostics-collector/dashboard-input.fuzz.test.js` replays
+  replaces its pull request links; and the B2 listing decoder
+  (`decodeListPage` in `dashboard/storage.js`), which names the objects
+  report viewing downloads and where reindexing continues. `tools/diagnostics-collector/dashboard-input.fuzz.test.js` replays
   their seed corpora (`tools/diagnostics-collector/corpus/report_ids/`,
   `corpus/signature/`, `corpus/oauth_callback/`, `corpus/session/`,
-  `corpus/membership/`, `corpus/pull_requests/`) and runs seeded mutation
+  `corpus/membership/`, `corpus/pull_requests/`, `corpus/b2_list/`) and runs seeded mutation
   fuzzing on every PR, checking results against independent oracles (IDs
   re-derived by a separate walk, all UUIDs present in the body, capped; level
   counts recounted, a signature exactly when an error or warning exists,
@@ -352,8 +354,10 @@ non-Rust tooling (decision 6):
   membership with the same user id, or a 404 for the owner itself, admin
   only when GitHub says so, and an error for any other failed status; pull
   requests decoded to exactly the well-formed ones in this repository, the
-  label check failing only on a label list without `diagnostics`, and an
-  error for GraphQL errors or a missing repository).
+  label check failing only on a complete label list without `diagnostics`,
+  and an error for GraphQL errors or a missing repository; B2 listings
+  decoded to exactly the uploaded entries with string name and id, without
+  throwing).
 - The website Worker's `Accept-Encoding` parser (`pickEncoding` in
   `tools/site/worker.js`), which picks the response's content coding.
   `tools/site/fuzz.test.mjs` replays its seed corpus

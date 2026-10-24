@@ -593,7 +593,7 @@ describe("pull request refresh", () => {
         ({ body }) => {
           query = body.query;
           return Response.json({
-            data: { repository: { i0: { labels: { nodes: [{ name: "bug" }] }, closedByPullRequestsReferences: { nodes: [] }, timelineItems: { nodes: [] } } } },
+            data: { repository: { i0: { labels: { nodes: [{ name: "bug" }], pageInfo: { hasNextPage: false } }, closedByPullRequestsReferences: { nodes: [] }, timelineItems: { nodes: [] } } } },
           });
         },
       ],

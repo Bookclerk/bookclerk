@@ -37,11 +37,29 @@ export async function listPage(b2, auth, opts) {
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error("b2 list failed");
-  const data = await res.json();
-  const files = (Array.isArray(data.files) ? data.files : [])
-    .filter((f) => f && f.action === "upload" && typeof f.fileName === "string" && typeof f.fileId === "string")
-    .map((f) => ({ fileName: f.fileName, fileId: f.fileId, uploadTimestamp: Number(f.uploadTimestamp) }));
-  return { files, nextFileName: typeof data.nextFileName === "string" ? data.nextFileName : null };
+  return decodeListPage(await res.json().catch(() => null));
+}
+
+/**
+ * Reads a `b2_list_file_names` answer. Sans-IO, so the fuzzer drives the
+ * same code report viewing and reindexing do. Never throws.
+ *
+ * @param {unknown} data Parsed response body.
+ * @returns {{files: {fileName: string, fileId: string, uploadTimestamp: number}[],
+ *   nextFileName: string | null}} Uploaded files with string name and id, in
+ *   order (a timestamp that is not a finite number becomes 0), and the next
+ *   page's start when it is a non-empty string.
+ */
+export function decodeListPage(data) {
+  const d = data !== null && typeof data === "object" ? data : {};
+  const files = (Array.isArray(d.files) ? d.files : [])
+    .filter((f) => f !== null && typeof f === "object" && f.action === "upload" && typeof f.fileName === "string" && typeof f.fileId === "string")
+    .map((f) => ({
+      fileName: f.fileName,
+      fileId: f.fileId,
+      uploadTimestamp: typeof f.uploadTimestamp === "number" && Number.isFinite(f.uploadTimestamp) ? f.uploadTimestamp : 0,
+    }));
+  return { files, nextFileName: typeof d.nextFileName === "string" && d.nextFileName !== "" ? d.nextFileName : null };
 }
 
 /**
