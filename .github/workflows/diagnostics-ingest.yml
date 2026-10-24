@@ -168,6 +168,7 @@ jobs:
           echo "Pulled count=$COUNT next_since=$NEXT next_after=${NEXT_AFTER:-(none)} baseline=$BASELINE source=$SOURCE skipped_version=$SKIPPED skipped_filed=$FILED"
 
       - name: Triage and file issues
+        id: triage
         if: steps.pull.outputs.count != '0'
         env:
           COLLECTOR_BASE_URL: ${{ steps.collector.outputs.base }}
@@ -177,8 +178,10 @@ jobs:
         run: tools/diagnostics-collector/scripts/triage-and-file.sh /tmp/diagnostics-batch/report.json
 
       - name: Store pull cursor
-        # Advance even if triage fails so the same batch is not re-pulled daily.
-        if: ${{ always() && steps.pull.outcome == 'success' }}
+        # Only after every report in the batch is filed (or nothing needed
+        # triage), so a failed filing is retried by the next run; reports an
+        # issue already lists are skipped then (unfiled=1), not filed twice.
+        if: ${{ always() && steps.pull.outcome == 'success' && (steps.triage.outcome == 'success' || steps.triage.outcome == 'skipped') }}
         env:
           BASE: ${{ steps.collector.outputs.base }}
           KEY: ${{ secrets.DIAGNOSTICS_REPORT_API_KEY }}
