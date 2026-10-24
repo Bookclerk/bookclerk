@@ -69,7 +69,8 @@ IP addresses are stored only as a keyed hash that changes every day.
 
 `.github/workflows/demo-deploy.yml` deploys on demo changes to `main`, on
 each published release, nightly, and on demand; a nightly or release run
-stops early when the live demo already runs that commit. It needs the repository
+stops early when the live demo already runs that commit and an earlier run
+for it succeeded. It needs the repository
 secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; the token's
 permissions are listed in
 [`docs/ci.md`](../../docs/ci.md#cloudflare-worker-deploys). The workflow makes

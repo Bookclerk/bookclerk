@@ -51,6 +51,9 @@ on:
 #   contents → checkout
 permissions:
   contents: read
+  # The gate reads this workflow's past runs to see whether one already
+  # finished a deploy of the same commit.
+  actions: read
 
 # A deploy is never cancelled half way; a newer run waits for it.
 concurrency:
@@ -80,7 +83,8 @@ jobs:
           fi
 
       # The nightly and release runs rebuild the same commit when main has not
-      # moved; the live demo reports its commit, so skip the 20-minute build.
+      # moved; the live demo reports its commit, so skip the 20-minute build
+      # when it matches and a run for that commit already succeeded.
       # Pushes and manual runs always deploy.
       - name: Check whether the live demo already runs this commit
         id: gate
@@ -91,13 +95,21 @@ jobs:
           DOMAIN: ${{ vars.DOMAIN }}
           DEMO_URL: ${{ vars.DEMO_URL }}
           SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           deploy="$READY"
           if [ "$READY" = true ] && { [ "$EVENT" = schedule ] || [ "$EVENT" = release ]; }; then
             url="${DEMO_URL}"
             if [ -n "$DOMAIN" ]; then url="https://demo.${DOMAIN}"; fi
-            if [ -n "$url" ] \
+            # The Worker reports the new version as soon as it is uploaded,
+            # before migrations, secrets and smoke checks run, so the health
+            # check alone cannot tell a finished deploy from one that failed
+            # half way. Skip only when an earlier run of this workflow for
+            # the same commit also succeeded end to end.
+            done=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/demo-deploy.yml/runs?head_sha=$SHA&status=success&per_page=1" \
+              --jq '.total_count' 2>/dev/null || echo 0)
+            if [ -n "$url" ] && [ "${done:-0}" -gt 0 ] \
               && body=$(curl -fsS --max-time 10 "$url/_demo/health") \
               && jq -e --arg sha "$SHA" '.configured == true and .version == $sha' <<<"$body" >/dev/null; then
               echo "::notice::$url already runs $SHA; nothing to deploy"

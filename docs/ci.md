@@ -1072,7 +1072,9 @@ commit, then lets `wrangler deploy` build `packaging/demo/Dockerfile` on top
 of them and push it to Cloudflare's container registry. It runs when the demo
 changes on `main`, when a release is published, nightly, and on demand. A
 nightly or release run first asks the live demo's `/_demo/health` which commit
-it runs and stops before building when it is the same one. A
+it runs and stops before building when it is the same one and an earlier
+run for that commit finished successfully (the Worker reports its version
+before migrations and smoke checks, so a half-finished deploy is retried). A
 repository without the two Cloudflare secrets gets a notice instead of a
 failure.
 
