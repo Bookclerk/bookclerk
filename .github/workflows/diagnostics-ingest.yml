@@ -28,7 +28,7 @@ on:
         default: false
 
 # Least privilege:
-#   contents — checkout (triage script lives in-repo)
+#   contents — checkout (triage script lives in-repo) and releases/latest
 #   issues   — create triage issues
 permissions:
   contents: read
@@ -113,6 +113,35 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Using since=$SINCE after=${AFTER:-(none)}"
 
+      - name: Resolve release baseline
+        id: baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Resolved here with the job's token rather than by the Worker:
+          # unauthenticated calls from Cloudflare's shared egress addresses
+          # are rate-limited by GitHub (HTTP 403). No published release
+          # (404) means every version is ingested.
+          if TAG=$(gh api "repos/${REPO}/releases/latest" --jq '.tag_name' 2>/tmp/baseline.err); then
+            :
+          elif grep -q 'HTTP 404' /tmp/baseline.err; then
+            TAG=""
+          else
+            echo "::error::GitHub releases/latest lookup failed"
+            cat /tmp/baseline.err
+            exit 1
+          fi
+          # [[ =~ ]] matches the whole value, so a trailing newline is rejected.
+          tag_re='^[A-Za-z0-9._-]{0,64}$'
+          if [[ ! "$TAG" =~ $tag_re ]]; then
+            echo "::error::Unexpected release tag: $TAG"
+            exit 1
+          fi
+          echo "Release baseline: ${TAG:-(none, all versions)}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
       - name: Pull /report
         id: pull
         env:
@@ -120,6 +149,7 @@ jobs:
           KEY: ${{ secrets.DIAGNOSTICS_REPORT_API_KEY }}
           SINCE: ${{ steps.cursor.outputs.since }}
           AFTER: ${{ steps.cursor.outputs.after }}
+          BASELINE_TAG: ${{ steps.baseline.outputs.tag }}
         run: |
           set -euo pipefail
           mkdir -p /tmp/diagnostics-batch
@@ -131,7 +161,7 @@ jobs:
           HTTP=$(printf 'header = "Authorization: Bearer %s"\n' "$KEY" \
             | curl -sS --config - -o /tmp/diagnostics-batch/report.json -w "%{http_code}" \
             -H "Accept: application/json" \
-            "${BASE}/report?since=${SINCE}${AFTER_Q}")
+            "${BASE}/report?since=${SINCE}${AFTER_Q}&baseline_version=${BASELINE_TAG}")
           if [ "$HTTP" != "200" ]; then
             echo "::error::Worker /report returned HTTP $HTTP"
             head -c 2000 /tmp/diagnostics-batch/report.json || true
