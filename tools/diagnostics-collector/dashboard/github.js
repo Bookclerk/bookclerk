@@ -366,7 +366,10 @@ const PR_FIELDS = "number title state mergedAt repository { nameWithOwner }";
  * @param {number[]} numbers Issue numbers (at most 10 per call).
  * @returns {Promise<Map<number, {number: number, title: string,
  *   state: "open" | "closed" | "merged", mergedAt: number | null}[]>>}
- *   Issue number → distinct pull requests.
+ *   Issue number → distinct pull requests. An issue GitHub returned no data
+ *   for is left out, so the caller keeps what it stored before.
+ * @throws {Error} When the call fails or the response carries GraphQL
+ *   errors, so a failed refresh never reads as "no pull requests".
  */
 export async function pullRequestsFor(cfg, token, numbers) {
   const fields = numbers
@@ -388,11 +391,14 @@ export async function pullRequestsFor(cfg, token, numbers) {
   });
   if (!res.ok) throw new Error(`graphql failed: HTTP ${res.status}`);
   const data = await res.json();
-  const repoData = data?.data?.repository ?? {};
+  if (Array.isArray(data?.errors) && data.errors.length) throw new Error("graphql returned errors");
+  const repoData = data?.data?.repository;
+  if (!repoData || typeof repoData !== "object") throw new Error("graphql returned no repository");
   const self = `${cfg.owner}/${cfg.repo}`.toLowerCase();
   const out = new Map();
   numbers.forEach((n, i) => {
     const issue = repoData[`i${i}`];
+    if (!issue || typeof issue !== "object") return;
     const found = new Map();
     const take = (pr) => {
       if (!pr || !Number.isSafeInteger(pr.number)) return;

@@ -21,11 +21,11 @@ import { html, htmlResponse, redirect } from "./html.js";
 import { messagePage } from "./pages.js";
 import {
   base64url,
+  cookieValue,
   createSession,
   endSession,
   hostCookie,
   randomToken,
-  readCookie,
   sameOrigin,
 } from "./session.js";
 
@@ -74,6 +74,43 @@ export function callbackUrl(request) {
   return `${new URL(request.url).origin}/auth/callback`;
 }
 
+/** Longest sign-in code accepted, in characters. */
+export const MAX_CODE_CHARS = 128;
+
+/**
+ * Checks a sign-in callback's inputs: the query GitHub sent back and the
+ * request's cookies. Sans-IO, so the fuzz tests drive the same code as the
+ * route.
+ *
+ * Accepts only when `state` and the cookie's state are the same 32-byte
+ * base64url token, the cookie carries a verifier of the same form, and
+ * `code` is 1–`MAX_CODE_CHARS` base64url characters.
+ *
+ * @param {string} search Query string of the callback URL (untrusted).
+ * @param {string} cookieHeader `Cookie` header (untrusted).
+ * @returns {{code: string, verifier: string} | null} What to trade with
+ *   GitHub, or null when the callback must be refused.
+ */
+export function parseCallback(search, cookieHeader) {
+  const q = new URLSearchParams(String(search));
+  const code = q.get("code") || "";
+  const state = q.get("state") || "";
+  const parts = (cookieValue(cookieHeader, OAUTH_COOKIE) || "").split(".");
+  if (parts.length !== 2) return null;
+  const [cookieState, verifier] = parts;
+  if (
+    !TOKEN_RE.test(state) ||
+    !TOKEN_RE.test(cookieState) ||
+    !TOKEN_RE.test(verifier) ||
+    !equal(state, cookieState) ||
+    !/^[A-Za-z0-9_-]+$/.test(code) ||
+    code.length > MAX_CODE_CHARS
+  ) {
+    return null;
+  }
+  return { code, verifier };
+}
+
 /**
  * `GET /auth/github`: redirects to GitHub with fresh state and PKCE.
  *
@@ -107,17 +144,8 @@ export async function startSignIn(request, cfg) {
  */
 export async function finishSignIn(request, env, cfg, ctx, now) {
   const clear = hostCookie(OAUTH_COOKIE, "", { maxAge: 0, sameSite: "Lax" });
-  const url = new URL(request.url);
-  const code = url.searchParams.get("code") || "";
-  const state = url.searchParams.get("state") || "";
-  const [cookieState = "", verifier = ""] = (readCookie(request, OAUTH_COOKIE) || "").split(".");
-  if (
-    !TOKEN_RE.test(state) ||
-    !TOKEN_RE.test(cookieState) ||
-    !TOKEN_RE.test(verifier) ||
-    !equal(state, cookieState) ||
-    !/^[A-Za-z0-9_-]{1,128}$/.test(code)
-  ) {
+  const parsed = parseCallback(new URL(request.url).search, request.headers.get("cookie") || "");
+  if (!parsed) {
     return htmlResponse(
       messagePage("Sign-in expired", html`<p>The sign-in link was used already or took too long. Start again from the sign-in page.</p>`),
       400,
@@ -129,6 +157,7 @@ export async function finishSignIn(request, env, cfg, ctx, now) {
   let user;
   let role;
   try {
+    const { code, verifier } = parsed;
     const token = await exchangeCode(cfg, { code, redirectUri: callbackUrl(request), verifier });
     if (!token) {
       return htmlResponse(

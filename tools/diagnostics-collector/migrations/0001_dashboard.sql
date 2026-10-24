@@ -32,6 +32,8 @@ CREATE TABLE index_days (
 );
 
 -- Diagnostics issues (label `diagnostics`), synced from GitHub by the cron.
+-- prs_synced_at is when its pull requests were last refreshed; NULL queues
+-- the issue for the next cron run (set NULL whenever the issue changes).
 CREATE TABLE issues (
   number INTEGER PRIMARY KEY,
   title TEXT NOT NULL,
@@ -39,8 +41,10 @@ CREATE TABLE issues (
   kind TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  closed_at INTEGER
+  closed_at INTEGER,
+  prs_synced_at INTEGER
 );
+CREATE INDEX issues_prs_synced ON issues (prs_synced_at);
 
 -- Which reports each issue lists in its Report IDs section.
 CREATE TABLE report_issue (

@@ -324,14 +324,19 @@ non-Rust tooling (decision 6):
 - The member dashboard's readers of untrusted text: the issue-body
   Report IDs parser (`parseIssueReportIds` in
   `tools/diagnostics-collector/dashboard/report-ids.js`), which decides which
-  reports an issue claims, and the stored-report summary (`summarizeReport`
-  in `dashboard/signature.js`), which writes every report's index row.
-  `tools/diagnostics-collector/dashboard-input.fuzz.test.js` replays their
-  seed corpora (`tools/diagnostics-collector/corpus/report_ids/`,
-  `corpus/signature/`) and runs seeded mutation fuzzing on every PR, checking
-  results against independent oracles (IDs re-derived by a separate walk, all
-  UUIDs present in the body, capped; level counts recounted, a signature
-  exactly when an error or warning exists, bounded control-free fields).
+  reports an issue claims; the stored-report summary (`summarizeReport`
+  in `dashboard/signature.js`), which writes every report's index row; and
+  the sign-in callback check (`parseCallback` in `dashboard/auth.js`), which
+  decides from the callback query and cookies whether a code is traded with
+  GitHub. `tools/diagnostics-collector/dashboard-input.fuzz.test.js` replays
+  their seed corpora (`tools/diagnostics-collector/corpus/report_ids/`,
+  `corpus/signature/`, `corpus/oauth_callback/`) and runs seeded mutation
+  fuzzing on every PR, checking results against independent oracles (IDs
+  re-derived by a separate walk, all UUIDs present in the body, capped; level
+  counts recounted, a signature exactly when an error or warning exists,
+  bounded control-free fields; a callback accepted exactly when a separate
+  cookie walk finds a state that matches the query and well-formed code and
+  verifier, returning those values).
 
 Still to add (tracked in the fuzzing ADR's follow-ups): a full RPC session
 against a scripted guest, the workerd `egress.js` gate checked against

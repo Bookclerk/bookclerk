@@ -5,6 +5,9 @@
 //   edit; its result decides which reports an issue claims.
 // - summarizeReport reads stored reports anyone can submit; its result is
 //   written to D1 and shown on every page.
+// - parseCallback reads the sign-in callback's query and cookies, which
+//   anyone can send; its result decides whether a code is traded with
+//   GitHub.
 //
 // Each result is checked against an independent oracle written without the
 // module's own helpers.
@@ -12,6 +15,7 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import { MAX_CODE_CHARS, OAUTH_COOKIE, parseCallback } from "./dashboard/auth.js";
 import { FALLBACK_MARKER, MAX_IDS_PER_ISSUE, TRIAGE_MARKER, parseIssueReportIds } from "./dashboard/report-ids.js";
 import { MAX_FIELD_CHARS, MAX_LABEL_CHARS, summarizeReport } from "./dashboard/signature.js";
 import { mutate, rng } from "./test-support/fuzz.js";
@@ -145,6 +149,60 @@ describe("summarizeReport", () => {
         // Unparseable text still must not break the summary.
       }
       await checkSummary(value, `iteration ${n}: ${JSON.stringify(raw).slice(0, 200)}`);
+    }
+  });
+});
+
+/**
+ * Oracle for parseCallback: re-derives acceptance with a separate cookie
+ * walk (a regex over the whole header) and checks what an accepted callback
+ * returns.
+ *
+ * @param {{search: string, cookie: string}} input Callback inputs.
+ * @param {string} label Input name for failure messages.
+ */
+function checkCallback(input, label) {
+  const got = parseCallback(input.search, input.cookie);
+  const q = new URLSearchParams(input.search);
+  const state = q.get("state") ?? "";
+  const code = q.get("code") ?? "";
+  const escaped = OAUTH_COOKIE.replace(/[-]/g, "\\-");
+  const m = new RegExp(`(?:^|;)\\s*${escaped}\\s*=([^;]*)`).exec(input.cookie);
+  const value = m ? m[1].trim() : "";
+  const token = /^[A-Za-z0-9_-]{43}$/;
+  const cm = /^([A-Za-z0-9_-]{43})\.([A-Za-z0-9_-]{43})$/.exec(value);
+  const accept =
+    Boolean(cm) && token.test(state) && cm[1] === state && /^[A-Za-z0-9_-]+$/.test(code) && code.length <= MAX_CODE_CHARS;
+  assert.equal(got !== null, accept, label);
+  if (got) {
+    assert.equal(got.code, code, label);
+    assert.equal(got.verifier, cm[2], label);
+  }
+}
+
+const CALLBACK_FRAGMENTS = [
+  "&", "=", "?", "%", "%41", "+", ";", " ", ".", "state=", "code=", `${OAUTH_COOKIE}=`, "__Host-bc_session=",
+  "A", "_", "-", "/", "é", "\0", "\n",
+];
+
+describe("parseCallback", () => {
+  it("replays the seed corpus", () => {
+    const all = seeds("oauth_callback");
+    assert.ok(all.length > 0);
+    for (const [name, raw] of all) checkCallback(JSON.parse(raw), name);
+    const valid = JSON.parse(all.find(([n]) => n === "valid.json")[1]);
+    assert.ok(parseCallback(valid.search, valid.cookie), "the valid seed is accepted");
+  });
+
+  it("holds the oracle under seeded mutation", () => {
+    const all = seeds("oauth_callback").map(([, raw]) => JSON.parse(raw));
+    const rand = rng(20261026);
+    for (let n = 0; n < 4000; n++) {
+      const base = all[Math.floor(rand() * all.length)];
+      const input = rand() < 0.5
+        ? { search: mutate(rand, base.search, CALLBACK_FRAGMENTS), cookie: base.cookie }
+        : { search: base.search, cookie: mutate(rand, base.cookie, CALLBACK_FRAGMENTS) };
+      checkCallback(input, `iteration ${n}: ${JSON.stringify(input).slice(0, 300)}`);
     }
   });
 });

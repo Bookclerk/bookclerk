@@ -147,7 +147,9 @@ the first deploy) adds stored reports the index is missing, 40 per press.
 Every 30 minutes a cron lists issues labeled `diagnostics` changed since the
 last run, reads the report IDs from each issue's `### Report IDs` section (the
 format triage and its fallback write), and asks GraphQL for the pull requests
-that close or reference each open issue. Each sign-in and report view is
+that close or reference each changed or open issue, up to 100 issues a run
+(the rest wait for the next run; a failed GraphQL call keeps the links
+already stored). Each sign-in and report view is
 written to an access log kept 90 days and shown to owners. The overview also
 shows today's triage spend from `TRIAGE_BUDGET`.
 

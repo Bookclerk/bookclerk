@@ -20,7 +20,10 @@ import { listPage, MAX_STORED_REPORT_CHARS } from "./storage.js";
 /** Most issue pages (100 each) one sync reads. */
 const MAX_ISSUE_PAGES = 5;
 
-/** Most issues whose pull requests one sync refreshes. */
+/**
+ * Most issues whose pull requests one sync refreshes. Issues past the limit
+ * stay queued (`prs_synced_at` NULL) for the next run.
+ */
 const MAX_PR_REFRESH = 100;
 
 /** Issues per GraphQL call. */
@@ -66,7 +69,8 @@ export async function storeIssue(db, issue) {
         `INSERT INTO issues (number, title, state, kind, created_at, updated_at, closed_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (number) DO UPDATE SET title = excluded.title, state = excluded.state,
-           kind = excluded.kind, updated_at = excluded.updated_at, closed_at = excluded.closed_at`,
+           kind = excluded.kind, updated_at = excluded.updated_at, closed_at = excluded.closed_at,
+           prs_synced_at = NULL`,
       )
       .bind(
         number,
@@ -91,16 +95,20 @@ export async function storeIssue(db, issue) {
 }
 
 /**
- * Replaces the pull requests recorded for an issue.
+ * Replaces the pull requests recorded for an issue and marks it refreshed.
  *
  * @param {D1Database} db Database.
  * @param {number} number Issue number.
  * @param {{number: number, title: string, state: string, mergedAt: number | null}[]} prs
  *   Pull requests from `pullRequestsFor`.
+ * @param {number} now Unix time in milliseconds.
  * @returns {Promise<void>}
  */
-async function storePullRequests(db, number, prs) {
-  const stmts = [db.prepare("DELETE FROM issue_pr WHERE issue_number = ?").bind(number)];
+async function storePullRequests(db, number, prs, now) {
+  const stmts = [
+    db.prepare("DELETE FROM issue_pr WHERE issue_number = ?").bind(number),
+    db.prepare("UPDATE issues SET prs_synced_at = ? WHERE number = ?").bind(now, number),
+  ];
   for (const pr of prs) {
     stmts.push(
       db
@@ -113,7 +121,9 @@ async function storePullRequests(db, number, prs) {
 
 /**
  * Cron: pulls diagnostics issues changed since the last run, then refreshes
- * pull requests for those and every open issue, then sweeps old rows.
+ * pull requests for queued issues (changed ones, and any a previous run did
+ * not reach) first, then open issues and issues with open pull requests,
+ * least recently refreshed first. Old rows are swept first.
  *
  * @param {{DASHBOARD_DB: D1Database}} env Worker bindings.
  * @param {import("./github.js").GitHubConfig} cfg Settings.
@@ -126,33 +136,46 @@ export async function syncIssues(env, cfg, now) {
   await sweep(db, now);
   const token = await installationToken(cfg, now);
   const since = (await getState(db, "issues_since")) ?? "";
-  const touched = new Set();
+  const stored = new Set();
   let newest = since;
   for (let page = 1; page <= MAX_ISSUE_PAGES; page++) {
     const issues = await listDiagnosticsIssues(cfg, token, since, page);
     for (const issue of issues) {
       await storeIssue(db, issue);
-      touched.add(Number(issue.number));
+      stored.add(Number(issue.number));
       if (typeof issue.updated_at === "string" && issue.updated_at > newest) newest = issue.updated_at;
     }
     if (issues.length < 100) break;
   }
   if (newest) await setState(db, "issues_since", newest);
 
-  const open = await all(
+  const queue = await all(
     db,
-    `SELECT number FROM issues WHERE state = 'open'
-     UNION SELECT issue_number FROM issue_pr WHERE state = 'open'`,
+    `SELECT number FROM issues
+     WHERE prs_synced_at IS NULL OR state = 'open'
+       OR number IN (SELECT issue_number FROM issue_pr WHERE state = 'open')
+     ORDER BY prs_synced_at IS NOT NULL, prs_synced_at, number
+     LIMIT ?`,
+    MAX_PR_REFRESH,
   );
-  for (const row of open) touched.add(Number(row.number ?? row.issue_number));
-  const numbers = [...touched].filter((n) => Number.isSafeInteger(n) && n > 0).slice(0, MAX_PR_REFRESH);
+  const numbers = queue.map((r) => Number(r.number)).filter((n) => Number.isSafeInteger(n) && n > 0);
+  let refreshed = 0;
   for (let i = 0; i < numbers.length; i += PR_BATCH) {
     const batch = numbers.slice(i, i + PR_BATCH);
     const prs = await pullRequestsFor(cfg, token, batch);
-    for (const n of batch) await storePullRequests(db, n, prs.get(n) ?? []);
+    for (const n of batch) {
+      // No data for an issue (deleted, transferred): keep its old links but
+      // move it to the back of the queue so it cannot starve the rest.
+      if (!prs.has(n)) {
+        await run(db, "UPDATE issues SET prs_synced_at = ? WHERE number = ?", now, n);
+        continue;
+      }
+      await storePullRequests(db, n, prs.get(n), now);
+      refreshed += 1;
+    }
   }
   await setState(db, "issues_synced_at", String(now));
-  return { issues: touched.size, refreshed: numbers.length };
+  return { issues: stored.size, refreshed };
 }
 
 /**

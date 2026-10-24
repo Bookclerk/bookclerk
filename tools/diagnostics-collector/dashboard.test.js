@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync, verify as rsaVerify } from "node:crypto";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { OAUTH_COOKIE, pkceChallenge } from "./dashboard/auth.js";
-import { afterFixCounts, all, indexReport, first } from "./dashboard/db.js";
+import { afterFixCounts, all, indexReport, first, run } from "./dashboard/db.js";
 import { appJwt, clearTokenCache, githubConfig, INSTALLATION_PERMISSIONS, pkcs8FromPem } from "./dashboard/github.js";
 import { escapeHtml, html } from "./dashboard/html.js";
 import { parseIssueReportIds, reportIdOf } from "./dashboard/report-ids.js";
@@ -504,5 +504,75 @@ describe("issue sync", () => {
     assert.equal(after.get(412).after, 1, "the newer report shares the signature");
     const list = gh.calls.find((c) => c.url.includes("/issues?"));
     assert.match(list.url, /labels=diagnostics/);
+  });
+});
+
+describe("pull request refresh", () => {
+  /** GraphQL route answering every requested issue with no pull requests. */
+  function emptyGraphql(seen) {
+    return [
+      "POST https://api.github.com/graphql",
+      ({ body }) => {
+        const repository = {};
+        for (const [, alias, n] of body.query.matchAll(/(i\d+): issue\(number: (\d+)\)/g)) {
+          seen.push(Number(n));
+          repository[alias] = { closedByPullRequestsReferences: { nodes: [] }, timelineItems: { nodes: [] } };
+        }
+        return Response.json({ data: { repository } });
+      },
+    ];
+  }
+
+  /** Inserts closed issues queued for a refresh. */
+  async function queuedIssues(db, count) {
+    for (let n = 1; n <= count; n++) {
+      await run(db, "INSERT INTO issues (number, title, state, kind, created_at, updated_at) VALUES (?, 't', 'closed', 'triage', 0, 0)", n);
+    }
+  }
+
+  const noNewIssues = ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues?", () => Response.json([])];
+
+  it("keeps stored links when GraphQL answers with errors", async () => {
+    const env = makeEnv();
+    const db = env.DASHBOARD_DB;
+    await queuedIssues(db, 1);
+    await run(db, "INSERT INTO issue_pr (issue_number, pr_number, title, state, merged_at) VALUES (1, 9, 'fix', 'merged', ?)", NOW);
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      noNewIssues,
+      ["POST https://api.github.com/graphql", () => Response.json({ errors: [{ message: "rate limited" }], data: null })],
+    ]);
+    await assert.rejects(syncIssues(env, githubConfig(env), NOW), /graphql returned errors/);
+    assert.equal((await all(db, "SELECT * FROM issue_pr")).length, 1);
+    assert.equal((await first(db, "SELECT prs_synced_at FROM issues")).prs_synced_at, null, "still queued");
+  });
+
+  it("keeps links for an issue GitHub returned no data for", async () => {
+    const env = makeEnv();
+    const db = env.DASHBOARD_DB;
+    await queuedIssues(db, 1);
+    await run(db, "INSERT INTO issue_pr (issue_number, pr_number, title, state, merged_at) VALUES (1, 9, 'fix', 'merged', ?)", NOW);
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      noNewIssues,
+      ["POST https://api.github.com/graphql", () => Response.json({ data: { repository: { i0: null } } })],
+    ]);
+    const res = await syncIssues(env, githubConfig(env), NOW);
+    assert.equal(res.refreshed, 0);
+    assert.equal((await all(db, "SELECT * FROM issue_pr")).length, 1);
+    assert.equal((await first(db, "SELECT prs_synced_at FROM issues")).prs_synced_at, NOW, "moved to the back of the queue");
+  });
+
+  it("carries issues past the per-run limit to the next run", async () => {
+    const env = makeEnv();
+    const db = env.DASHBOARD_DB;
+    await queuedIssues(db, 105);
+    const seen = [];
+    gh = scriptGitHub([...appRoutes(null), noNewIssues, emptyGraphql(seen)]);
+    assert.equal((await syncIssues(env, githubConfig(env), NOW)).refreshed, 100);
+    assert.equal((await first(db, "SELECT COUNT(*) AS n FROM issues WHERE prs_synced_at IS NULL")).n, 5);
+    seen.length = 0;
+    assert.equal((await syncIssues(env, githubConfig(env), NOW + 1)).refreshed, 5);
+    assert.deepEqual(seen, [101, 102, 103, 104, 105]);
   });
 });

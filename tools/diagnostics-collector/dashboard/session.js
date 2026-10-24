@@ -60,8 +60,19 @@ export async function sha256Hex(text) {
  * @returns {string | null} The value, or null when absent.
  */
 export function readCookie(request, name) {
-  const header = request.headers.get("cookie") || "";
-  for (const part of header.split(";")) {
+  return cookieValue(request.headers.get("cookie") || "", name);
+}
+
+/**
+ * Value of one cookie from a `Cookie` header (sans-IO, so the fuzz tests
+ * drive the same code as requests). The first cookie with the name wins.
+ *
+ * @param {string} header `Cookie` header text (untrusted).
+ * @param {string} name Cookie name.
+ * @returns {string | null} The value, or null when absent.
+ */
+export function cookieValue(header, name) {
+  for (const part of String(header).split(";")) {
     const eq = part.indexOf("=");
     if (eq < 0) continue;
     if (part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
