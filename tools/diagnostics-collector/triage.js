@@ -199,12 +199,13 @@ export class BudgetLedger {
 }
 
 /**
- * Reads a request body as UTF-8 text, stopping as soon as it passes a limit.
+ * Reads a request or response body as UTF-8 text, stopping as soon as it
+ * passes a limit.
  *
  * Content-Length is the client's claim and a chunked body has none, so the
  * bytes are counted as they arrive rather than buffered first.
  *
- * @param {Request} request Request whose body to read.
+ * @param {Request | Response} request Request or response whose body to read.
  * @param {number} limit Most bytes accepted.
  * @returns {Promise<string|null>} The body text, or null when it is longer
  *   than `limit` bytes (the rest of the stream is cancelled).

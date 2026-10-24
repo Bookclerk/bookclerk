@@ -107,6 +107,13 @@ With **no GitHub releases** yet, every version is eligible (current state of thi
 repo). Same-version prereleases like `1.2.3-rc.1` are excluded once `1.2.3` is
 stable.
 
+When a call to B2 or GitHub fails, the Worker answers `502` with
+`{"error": "upstream failed"}` and logs the failing stage. Callers that send
+the report key (ingest) also get a `detail` naming the stage, the HTTP status
+and B2's short error code, for example `b2 list failed: HTTP 401:
+unauthorized`; it never includes credentials or response bodies. `/submit`
+callers get no detail.
+
 ## GitHub Actions
 
 | Workflow | Purpose |
