@@ -65,6 +65,18 @@ describe("worker errors", () => {
     assert.equal((await res.json()).detail, "github releases/latest failed: HTTP 403");
   });
 
+  it("names the stage when the request itself fails", async () => {
+    const logged = [];
+    console.error = (line) => logged.push(line);
+    globalThis.fetch = async (input) => {
+      throw new TypeError(`connect failed for ${input} with ${ENV.B2_APPLICATION_KEY}`);
+    };
+    const res = await worker.fetch(report({ authorization: `Bearer ${KEY}` }), ENV);
+    assert.equal(res.status, 502);
+    assert.equal((await res.json()).detail, "b2 authorize failed");
+    assert.ok(!logged[0].includes(ENV.B2_APPLICATION_KEY));
+  });
+
   it("keeps B2 codes that are not short identifiers out of the detail", () => {
     assert.equal(new UpstreamError("b2 list", 400, "<b>x</b>").message, "b2 list failed: HTTP 400");
   });

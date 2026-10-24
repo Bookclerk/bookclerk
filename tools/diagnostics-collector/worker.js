@@ -63,22 +63,64 @@ export class UpstreamError extends Error {
   }
 }
 
+/** Longest B2 error body, in UTF-16 units, parsed when looking for its error code. */
+const MAX_B2_ERROR_CHARS = 4096;
+
 /**
- * Builds the UpstreamError for a failed B2 response, reading B2's JSON error
- * code when the body has one.
+ * Reads B2's error code from an error response body. Sans-IO, so the fuzz
+ * test drives the same code the Worker runs.
+ *
+ * @param {string} text The response body (from B2, untrusted).
+ * @returns {string | undefined} The body's `code` when the body is a JSON
+ *   object of at most `MAX_B2_ERROR_CHARS` UTF-16 units whose `code` is a
+ *   lowercase identifier of 1 to 40 characters, else undefined.
+ */
+export function b2ErrorCode(text) {
+  if (typeof text !== "string" || text.length > MAX_B2_ERROR_CHARS) return undefined;
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
+  const code = body.code;
+  return typeof code === "string" && /^[a-z_]{1,40}$/.test(code) ? code : undefined;
+}
+
+/**
+ * Builds the UpstreamError for a failed B2 response.
  *
  * @param {string} stage Which call failed.
  * @param {Response} res The failed response.
  * @returns {Promise<UpstreamError>} The error to throw.
  */
 async function b2Error(stage, res) {
-  let code;
+  let text;
   try {
-    code = (await res.json()).code;
+    text = await res.text();
   } catch {
-    code = undefined;
+    text = "";
   }
-  return new UpstreamError(stage, res.status, code);
+  return new UpstreamError(stage, res.status, b2ErrorCode(text));
+}
+
+/**
+ * Calls fetch, turning a rejected request (DNS, TLS, connection reset) into
+ * an UpstreamError for `stage`. The runtime's own message is dropped, since
+ * it can echo the URL or headers.
+ *
+ * @param {string} stage Which call this is, e.g. "b2 list".
+ * @param {string} url Request URL.
+ * @param {RequestInit} [init] Request options.
+ * @returns {Promise<Response>} The response, whatever its status.
+ */
+async function upstreamFetch(stage, url, init) {
+  try {
+    return await fetch(url, init);
+  } catch {
+    throw new UpstreamError(stage);
+  }
 }
 
 /**
@@ -340,7 +382,7 @@ async function resolveLatestStableBaseline(env) {
     headers.Authorization = `Bearer ${env.GITHUB_TOKEN}`;
   }
 
-  const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
+  const res = await upstreamFetch("github releases/latest", `https://api.github.com/repos/${repo}/releases/latest`, {
     headers,
   });
 
@@ -481,7 +523,7 @@ async function b2Authorize(env) {
     throw new UpstreamError("b2 credentials check");
   }
   const basic = btoa(`${id}:${key}`);
-  const res = await fetch(`${endpoint}/b2api/v2/b2_authorize_account`, {
+  const res = await upstreamFetch("b2 authorize", `${endpoint}/b2api/v2/b2_authorize_account`, {
     headers: { Authorization: `Basic ${basic}` },
   });
   if (!res.ok) throw await b2Error("b2 authorize", res);
@@ -489,7 +531,7 @@ async function b2Authorize(env) {
 }
 
 async function b2GetUploadUrl(auth, bucketId) {
-  const res = await fetch(`${auth.apiUrl}/b2api/v2/b2_get_upload_url`, {
+  const res = await upstreamFetch("b2 get_upload_url", `${auth.apiUrl}/b2api/v2/b2_get_upload_url`, {
     method: "POST",
     headers: {
       Authorization: auth.authorizationToken,
@@ -518,7 +560,7 @@ async function b2Upload(upload, fileName, bodyText, info = {}) {
     headers[`X-Bz-Info-${k}`] = encodeURIComponent(String(v));
   }
 
-  const res = await fetch(upload.uploadUrl, {
+  const res = await upstreamFetch("b2 upload", upload.uploadUrl, {
     method: "POST",
     headers,
     body: bytes,
@@ -539,7 +581,7 @@ async function b2ListIncoming(auth, bucketId) {
       maxFileCount: 1000,
     };
     if (startFileName) body.startFileName = startFileName;
-    const res = await fetch(`${auth.apiUrl}/b2api/v2/b2_list_file_names`, {
+    const res = await upstreamFetch("b2 list", `${auth.apiUrl}/b2api/v2/b2_list_file_names`, {
       method: "POST",
       headers: {
         Authorization: auth.authorizationToken,
@@ -559,7 +601,7 @@ async function b2ListIncoming(auth, bucketId) {
 }
 
 async function b2DownloadById(auth, fileId) {
-  const res = await fetch(`${auth.downloadUrl}/b2api/v2/b2_download_file_by_id?fileId=${encodeURIComponent(fileId)}`, {
+  const res = await upstreamFetch("b2 download", `${auth.downloadUrl}/b2api/v2/b2_download_file_by_id?fileId=${encodeURIComponent(fileId)}`, {
     headers: { Authorization: auth.authorizationToken },
   });
   if (!res.ok) throw await b2Error("b2 download", res);
