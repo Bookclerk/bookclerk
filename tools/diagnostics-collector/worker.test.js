@@ -1,6 +1,7 @@
 // Error handling of the authenticated routes: a failed upstream call comes
 // back as JSON naming the stage, never as Cloudflare's opaque error 1101.
 // Also the /report filter that passes over reports an issue already lists.
+// Also the ingest cursor the Action stores and pulls from.
 
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
@@ -169,5 +170,91 @@ describe("GET /report?unfiled=1", () => {
     assert.deepEqual(out.reports.map((r) => r.report_id), [FILED, FRESH]);
     assert.equal(out.skipped_filed, 0);
     assert.equal(out.filed_filter, "off");
+  });
+});
+
+describe("ingest cursor routes", () => {
+  /** Posts a cursor body with the report key. */
+  function commit(env, body) {
+    return worker.fetch(
+      new Request("https://collector.test/report/cursor", {
+        method: "POST",
+        body,
+        headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" },
+      }),
+      env,
+    );
+  }
+
+  it("stores a later cursor, keeps it on an earlier one, and pulls from it", async () => {
+    const env = { ...ENV, DASHBOARD_DB: createD1() };
+    const later = { since: 1792831701483, after: "diagnostics/0.0.0-synthetic/b.json" };
+    let res = await commit(env, JSON.stringify(later));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, advanced: true, ...later });
+    // A forced full pull ends earlier: the stored cursor stays.
+    res = await commit(env, JSON.stringify({ since: 5, after: "" }));
+    assert.deepEqual(await res.json(), { ok: true, advanced: false, ...later });
+    // Same time, later name: moves.
+    res = await commit(env, JSON.stringify({ ...later, after: "diagnostics/0.0.0-synthetic/c.json" }));
+    assert.equal((await res.json()).advanced, true);
+
+    let listedFrom = null;
+    stubFetch({
+      b2_authorize_account: () =>
+        Response.json({ apiUrl: "https://b2.test", downloadUrl: "https://d.test", authorizationToken: "t" }),
+      b2_list_file_names: () => {
+        listedFrom = true;
+        return Response.json({
+          files: [
+            { action: "upload", fileName: "diagnostics/0.0.0-synthetic/b.json", fileId: "1", uploadTimestamp: later.since },
+            { action: "upload", fileName: "diagnostics/0.0.0-synthetic/c.json", fileId: "2", uploadTimestamp: later.since },
+          ],
+          nextFileName: null,
+        });
+      },
+    });
+    res = await worker.fetch(
+      new Request("https://collector.test/report?cursor=stored&baseline_version=", { headers: { authorization: `Bearer ${KEY}` } }),
+      env,
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.ok(listedFrom);
+    assert.equal(body.cursor_source, "stored");
+    assert.equal(body.since, later.since);
+    assert.equal(body.after, "diagnostics/0.0.0-synthetic/c.json");
+    assert.equal(body.count, 0);
+  });
+
+  it("starts from the beginning with nothing stored, and an explicit since wins", async () => {
+    const env = { ...ENV, DASHBOARD_DB: createD1() };
+    await commit(env, JSON.stringify({ since: 99, after: "x" }));
+    stubFetch({
+      b2_authorize_account: () =>
+        Response.json({ apiUrl: "https://b2.test", downloadUrl: "https://d.test", authorizationToken: "t" }),
+      b2_list_file_names: () => Response.json({ files: [], nextFileName: null }),
+    });
+    const get = (q, e) =>
+      worker.fetch(new Request(`https://collector.test/report?${q}&baseline_version=`, { headers: { authorization: `Bearer ${KEY}` } }), e);
+    const fresh = await (await get("cursor=stored", { ...ENV, DASHBOARD_DB: createD1() })).json();
+    assert.deepEqual([fresh.since, fresh.after, fresh.cursor_source], [0, "", "stored"]);
+    const forced = await (await get("cursor=stored&since=0", env)).json();
+    assert.deepEqual([forced.since, forced.after, forced.cursor_source], [0, "", "query"]);
+  });
+
+  it("refuses a missing key, a malformed body and a missing database", async () => {
+    const env = { ...ENV, DASHBOARD_DB: createD1() };
+    const anon = await worker.fetch(new Request("https://collector.test/report/cursor", { method: "POST", body: '{"since":1}' }), env);
+    assert.equal(anon.status, 401);
+    for (const bad of ['{"since":-1}', '{"since":1,"after":"a\\u0000"}', "x".repeat(2000), "[]"]) {
+      assert.equal((await commit(env, bad)).status, 400, bad);
+    }
+    assert.equal((await commit(ENV, '{"since":1}')).status, 503);
+    const stored = await worker.fetch(
+      new Request("https://collector.test/report?cursor=stored", { headers: { authorization: `Bearer ${KEY}` } }),
+      ENV,
+    );
+    assert.equal(stored.status, 503);
   });
 });

@@ -205,6 +205,15 @@ keeps at most 200. Without the `LIVE` binding pages simply stay as
 loaded. A Durable Object request is counted for each change, well inside
 Workers Free's daily allowance because indexing is capped (above).
 
+## Ingest cursor
+
+The collector keeps `diagnostics-ingest`'s place in the stored reports in its
+D1 database: the run pulls with `GET /report?cursor=stored` and then stores
+where the pull ended with `POST /report/cursor` (same key as `/report`), but
+only once every report in the batch is filed, so a failed filing is retried by
+the next run. A stored cursor only moves forward. A `force_full` run pulls from the start
+(`since=0`) and leaves the stored cursor where it was.
+
 ## Version filter on ingest
 
 `GET /report` resolves the latest **stable** GitHub release (`releases/latest`)

@@ -4,7 +4,8 @@
 #
 # Required repository secret:
 #   DIAGNOSTICS_REPORT_API_KEY — Worker REPORT_API_KEY (set on deploy via wrangler-action);
-#     authorizes /report, /triage and /issues/notify (which links a filed
+#     authorizes /report, /report/cursor (where the collector keeps this
+#     workflow's pull cursor), /triage and /issues/notify (which links a filed
 #     issue to its reports on the dashboard at once). It exists only here and in the Worker,
 #     never in Bookclerk builds.
 #
@@ -82,37 +83,22 @@ jobs:
           echo "Using collector URL: $BASE"
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
 
-      - name: Restore pull cursor
-        if: ${{ inputs.force_full != true }}
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .diagnostics-cursor
-          key: diagnostics-pull-cursor-v1
-          restore-keys: |
-            diagnostics-pull-cursor-v1
-
-      - name: Resolve since
+      - name: Resolve cursor
         id: cursor
         env:
           FORCE: ${{ inputs.force_full }}
         run: |
           set -euo pipefail
-          SINCE=0
-          AFTER=""
-          if [ "${FORCE:-false}" != "true" ] && [ -f .diagnostics-cursor/since ]; then
-            SINCE=$(tr -d '[:space:]' < .diagnostics-cursor/since)
-            case "$SINCE" in
-              ''|*[!0-9]*) SINCE=0 ;;
-            esac
+          # The collector stores the cursor (POST /report/cursor below), so a
+          # run starts where the last one ended. Forced runs pull from epoch;
+          # the stored cursor never moves backwards.
+          if [ "${FORCE:-false}" = "true" ]; then
+            echo "query=since=0" >> "$GITHUB_OUTPUT"
+            echo "Pulling from epoch (force_full)"
+          else
+            echo "query=cursor=stored" >> "$GITHUB_OUTPUT"
+            echo "Pulling from the collector's stored cursor"
           fi
-          if [ "${FORCE:-false}" != "true" ] && [ -f .diagnostics-cursor/after ]; then
-            AFTER=$(tr -d '\n\r' < .diagnostics-cursor/after)
-          fi
-          {
-            echo "since=$SINCE"
-            echo "after=$AFTER"
-          } >> "$GITHUB_OUTPUT"
-          echo "Using since=$SINCE after=${AFTER:-(none)}"
 
       - name: Resolve release baseline
         id: baseline
@@ -144,29 +130,24 @@ jobs:
         env:
           BASE: ${{ steps.collector.outputs.base }}
           KEY: ${{ secrets.DIAGNOSTICS_REPORT_API_KEY }}
-          SINCE: ${{ steps.cursor.outputs.since }}
-          AFTER: ${{ steps.cursor.outputs.after }}
+          CURSOR_QUERY: ${{ steps.cursor.outputs.query }}
           BASELINE_TAG: ${{ steps.baseline.outputs.tag }}
           FORCE: ${{ inputs.force_full }}
         run: |
           set -euo pipefail
           mkdir -p /tmp/diagnostics-batch
-          # The cursor lives in the Actions cache, which evicts it under
-          # pressure; unfiled=1 has the collector pass over reports an issue
-          # already lists, so a lost cursor cannot file them again.
+          # unfiled=1 has the collector pass over reports an issue already
+          # lists, so a re-pull (a forced run, or a failed filing retried)
+          # cannot file them again.
           UNFILED_Q="&unfiled=1"
           if [ "${FORCE:-false}" = "true" ]; then
             UNFILED_Q=""
-          fi
-          AFTER_Q=""
-          if [ -n "${AFTER}" ]; then
-            AFTER_Q="&after=$(python3 -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["AFTER"], safe=""))')"
           fi
           # The key goes in a header read from stdin, never on argv.
           HTTP=$(printf 'header = "Authorization: Bearer %s"\n' "$KEY" \
             | curl -sS --config - -o /tmp/diagnostics-batch/report.json -w "%{http_code}" \
             -H "Accept: application/json" \
-            "${BASE}/report?since=${SINCE}${AFTER_Q}${UNFILED_Q}&baseline_version=${BASELINE_TAG}")
+            "${BASE}/report?${CURSOR_QUERY}${UNFILED_Q}&baseline_version=${BASELINE_TAG}")
           if [ "$HTTP" != "200" ]; then
             echo "::error::Worker /report returned HTTP $HTTP"
             head -c 2000 /tmp/diagnostics-batch/report.json || true
@@ -187,6 +168,7 @@ jobs:
           echo "Pulled count=$COUNT next_since=$NEXT next_after=${NEXT_AFTER:-(none)} baseline=$BASELINE source=$SOURCE skipped_version=$SKIPPED skipped_filed=$FILED"
 
       - name: Triage and file issues
+        id: triage
         if: steps.pull.outputs.count != '0'
         env:
           COLLECTOR_BASE_URL: ${{ steps.collector.outputs.base }}
@@ -195,20 +177,23 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: tools/diagnostics-collector/scripts/triage-and-file.sh /tmp/diagnostics-batch/report.json
 
-      - name: Persist pull cursor
-        # Advance even if triage fails so the same batch is not re-pulled daily.
-        if: ${{ always() && steps.pull.outcome == 'success' && steps.pull.outputs.next_since != '' && steps.pull.outputs.next_since != '0' }}
+      - name: Store pull cursor
+        # Only after every report in the batch is filed (or nothing needed
+        # triage), so a failed filing is retried by the next run; reports an
+        # issue already lists are skipped then (unfiled=1), not filed twice.
+        if: ${{ always() && steps.pull.outcome == 'success' && (steps.triage.outcome == 'success' || steps.triage.outcome == 'skipped') }}
         env:
-          NEXT: ${{ steps.pull.outputs.next_since }}
-          NEXT_AFTER: ${{ steps.pull.outputs.next_after }}
+          BASE: ${{ steps.collector.outputs.base }}
+          KEY: ${{ secrets.DIAGNOSTICS_REPORT_API_KEY }}
         run: |
-          mkdir -p .diagnostics-cursor
-          printf '%s\n' "$NEXT" > .diagnostics-cursor/since
-          printf '%s\n' "$NEXT_AFTER" > .diagnostics-cursor/after
-
-      - name: Save pull cursor
-        if: ${{ always() && steps.pull.outcome == 'success' && steps.pull.outputs.next_since != '' && steps.pull.outputs.next_since != '0' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .diagnostics-cursor
-          key: diagnostics-pull-cursor-v1-${{ github.run_id }}-${{ steps.pull.outputs.next_since }}-${{ steps.pull.outputs.next_after }}
+          set -euo pipefail
+          # The body comes from the collector's own answer; json.dumps keeps
+          # the object name a JSON string whatever it holds.
+          python3 -c 'import json; d=json.load(open("/tmp/diagnostics-batch/report.json")); print(json.dumps({"since": int(d.get("next_since") or 0), "after": str(d.get("next_after") or "")}))' > /tmp/diagnostics-cursor.json
+          # The key goes in a header read from stdin, never on argv.
+          printf 'header = "Authorization: Bearer %s"\n' "$KEY" \
+            | curl -fsS --config - --max-time 30 \
+            -H "Content-Type: application/json" \
+            --data-binary @/tmp/diagnostics-cursor.json \
+            "${BASE}/report/cursor"
+          echo

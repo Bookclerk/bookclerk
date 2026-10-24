@@ -471,6 +471,26 @@ describe("pages", () => {
     assert.equal(log[0].report_id, ID1);
   });
 
+  it("shows the newest issue and how many older ones list a report", async () => {
+    gh = scriptGitHub([]);
+    const env = makeEnv();
+    await seed(env, ID1);
+    for (const number of [400, 403]) {
+      await storeIssue(env.DASHBOARD_DB, {
+        number,
+        title: `[diagnostics] batch ${number}`,
+        state: number === 400 ? "closed" : "open",
+        body: `<!-- bookclerk-diagnostics: workers-ai triage -->\nx\n\n### Report IDs\n- \`${ID1}\`\n`,
+        created_at: new Date(NOW - 86_400_000).toISOString(),
+        updated_at: new Date(NOW - 86_400_000).toISOString(),
+      });
+    }
+    const cookie = await signedIn(env);
+    const list = await (await call(env, new Request(`${ORIGIN}/reports`, { headers: { cookie } }))).text();
+    assert.match(list, /issues\/403">#403<\/a> <a class="quiet" href="\/reports\/[^"]+" title="Listed in 2 issues">\+1<\/a>/);
+    assert.doesNotMatch(list, /issues\/400"/);
+  });
+
   it("says when a report is not indexed", async () => {
     const env = makeEnv();
     const cookie = await signedIn(env);

@@ -38,6 +38,10 @@ MARKER = "<!-- bookclerk-diagnostics: workers-ai triage -->"
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 #: The collector origin a dashboard link may point at (no path, query or userinfo).
 DASHBOARD_RE = re.compile(r"https://[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::[0-9]{1,5})?")
+#: Longest dashboard origin, so ``<origin>/reports/<uuid>`` (45 more
+#: characters) fits the 300-character link the dashboard's Report IDs parser
+#: (``dashboard/report-ids.js``) reads.
+MAX_DASHBOARD_ORIGIN_CHARS = 255
 
 
 class PlanError(Exception):
@@ -93,7 +97,9 @@ def dashboard_origin(raw: str | None) -> str | None:
     if not raw:
         return None
     origin = raw.strip().rstrip("/").lower()
-    return origin if DASHBOARD_RE.fullmatch(origin) else None
+    if len(origin) > MAX_DASHBOARD_ORIGIN_CHARS or not DASHBOARD_RE.fullmatch(origin):
+        return None
+    return origin
 
 
 def defang(text: str) -> str:

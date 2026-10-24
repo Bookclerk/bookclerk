@@ -113,6 +113,19 @@ function issueChip(cfg, n, state) {
 }
 
 /**
+ * "+N" after a report's issue chip when more issues than the newest list it;
+ * the report's own page names them all.
+ *
+ * @param {{report_id: string, issue_count?: number | null}} r Report row.
+ * @returns {import("./html.js").SafeHtml | string} The link, or nothing.
+ */
+function moreIssues(r) {
+  const more = Number(r.issue_count ?? 0) - 1;
+  if (!(more > 0)) return "";
+  return html` <a class="quiet" href="/reports/${r.report_id}" title="Listed in ${more + 1} issues">+${more}</a>`;
+}
+
+/**
  * Range picker links that keep the other query parameters.
  *
  * @param {URL} url Current URL.
@@ -185,7 +198,7 @@ function reportRows(cfg, rows, full) {
       ${full
         ? html`<td class="r num">${r.errors}</td><td class="r num">${r.warnings}</td>`
         : html`<td class="r num">${r.events}</td>`}
-      <td>${issueChip(cfg, r.issue_number, r.issue_state)}</td></tr>`,
+      <td>${issueChip(cfg, r.issue_number, r.issue_state)}${moreIssues(r)}</td></tr>`,
   )}`;
 }
 
