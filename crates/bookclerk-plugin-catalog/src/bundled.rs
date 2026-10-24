@@ -365,17 +365,31 @@ fn sweep_leftovers(plugins_root: &Path) {
     let Ok(staging) = require_mutable_child(plugins_root, &plugins_root.join(STAGING_DIR)) else {
         return;
     };
-    let Ok(entries) = fs::read_dir(&staging) else {
-        return;
+    let entries = match fs::read_dir(&staging) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+        Err(err) => {
+            tracing::warn!(path = %staging.display(), %err, "cannot list plugin staging leftovers");
+            return;
+        }
     };
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                tracing::warn!(path = %staging.display(), %err, "cannot read a plugin staging entry");
+                continue;
+            }
+        };
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
         if !(name.starts_with(STAGING_PREFIX) || name.ends_with(BACKUP_SUFFIX)) {
             continue;
         }
-        if let Ok(path) = require_mutable_child(plugins_root, &entry.path()) {
-            let _ = fs::remove_dir_all(path);
+        let removed = require_mutable_child(plugins_root, &entry.path())
+            .and_then(|path| fs::remove_dir_all(path).map_err(CatalogError::from));
+        if let Err(err) = removed {
+            tracing::warn!(path = %entry.path().display(), %err, "cannot remove a leftover plugin staging tree");
         }
     }
 }

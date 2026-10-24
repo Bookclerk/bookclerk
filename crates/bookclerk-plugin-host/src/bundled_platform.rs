@@ -8,7 +8,6 @@
 //! and `local` plugins. See [`bookclerk_plugin_catalog::sync_bundled_platform`].
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
 
 use bookclerk_plugin_catalog::{
     bundled_plugins_dir_beside, sync_bundled_platform, BundledSync, BundledSyncAction,
@@ -16,7 +15,10 @@ use bookclerk_plugin_catalog::{
 
 /// Files directories this process has already synced (or tried to), so repeat
 /// database loads (config reload, scratch libraries) do not re-hash the bundle.
-static ATTEMPTED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+///
+/// An async mutex held for the whole sync: a concurrent caller for the same
+/// files directory waits for it instead of discovering plugins mid-install.
+static ATTEMPTED: tokio::sync::Mutex<Vec<PathBuf>> = tokio::sync::Mutex::const_new(Vec::new());
 
 /// Installs bundled platform plugins from beside the running executable into `files_dir`.
 ///
@@ -40,13 +42,11 @@ pub async fn install_bundled_platform_plugins(files_dir: &Path) {
     let Some(bundle) = bundled_plugins_dir_beside(&exe) else {
         return;
     };
-    {
-        let mut attempted = ATTEMPTED.lock().unwrap_or_else(PoisonError::into_inner);
-        if attempted.iter().any(|dir| dir == files_dir) {
-            return;
-        }
-        attempted.push(files_dir.to_path_buf());
+    let mut attempted = ATTEMPTED.lock().await;
+    if attempted.iter().any(|dir| dir == files_dir) {
+        return;
     }
+    attempted.push(files_dir.to_path_buf());
     let files = files_dir.to_path_buf();
     let worker_bundle = bundle.clone();
     let result =
