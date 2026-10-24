@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "test": "node --test build.test.mjs docs.test.mjs worker.test.mjs",
+    "test": "node --test build.test.mjs docs.test.mjs fuzz.test.mjs worker.test.mjs",
     "deploy": "wrangler deploy",
     "dev": "node build.mjs && wrangler dev"
   },
