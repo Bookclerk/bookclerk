@@ -339,7 +339,8 @@ non-Rust tooling (decision 6):
   replaces its pull request links; the issue listing decoder
   (`decodeIssuePage`, same file), which moves the sync cursor and feeds
   `storeIssue`; the sign-in and token decoders (`decodeInstallationId`,
-  `decodeInstallationToken`, `decodeAccessToken`, `decodeUser`, same file);
+  `decodeInstallationToken`, `decodeAccessToken`, `oauthErrorCode`,
+  `decodeUser`, same file);
   and the B2 listing decoder
   (`decodeListPage` in `dashboard/storage.js`), which names the objects
   report viewing downloads and where reindexing continues. `tools/diagnostics-collector/dashboard-input.fuzz.test.js` replays
@@ -364,7 +365,8 @@ non-Rust tooling (decision 6):
   decoded to exactly the uploaded entries with string name and id, without
   throwing; issue pages decoded to the numbered non-PR entries with string
   fields, full by raw count, and the newest parseable update; tokens, ids
-  and users accepted only when well-formed).
+  and users accepted only when well-formed; an OAuth error code kept only
+  when it is a short lowercase identifier).
 - The collector's B2 error-code reader (`b2ErrorCode` in
   `tools/diagnostics-collector/worker.js`), which picks the `code` out of a B2
   error body for logs and authenticated responses.

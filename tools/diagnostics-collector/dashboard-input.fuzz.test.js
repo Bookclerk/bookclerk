@@ -16,8 +16,8 @@
 //   result decides whether sign-in grants member or owner access.
 // - decodeIssuePage reads GitHub's issue listing; its result moves the
 //   sync cursor and is what storeIssue writes.
-// - decodeInstallationId, decodeInstallationToken, decodeAccessToken and
-//   decodeUser read GitHub's answers during sign-in and token minting.
+// - decodeInstallationId, decodeInstallationToken, decodeAccessToken,
+//   oauthErrorCode and decodeUser read GitHub's answers during sign-in and token minting.
 // - decodeListPage reads B2's file listing; its result names the objects
 //   report viewing downloads and where reindexing continues.
 // - decodePullRequests reads the GraphQL answer about each issue's labels
@@ -34,6 +34,7 @@ import { MAX_CODE_CHARS, OAUTH_COOKIE, parseCallback } from "./dashboard/auth.js
 import {
   DIAGNOSTICS_LABEL,
   decodeAccessToken,
+  oauthErrorCode,
   decodeInstallationId,
   decodeInstallationToken,
   decodeIssuePage,
@@ -604,6 +605,11 @@ function checkAuthResponse(input, label) {
     }
     case "access":
       assert.equal(decodeAccessToken(d), typeof o.access_token === "string" && o.access_token.length > 0 ? o.access_token : null, label);
+      assert.equal(
+        oauthErrorCode(d),
+        typeof o.error === "string" && o.error.length >= 1 && o.error.length <= 40 && [...o.error].every((c) => c === "_" || (c >= "a" && c <= "z")) ? o.error : null,
+        label,
+      );
       break;
     case "user": {
       const ok = posInt(o.id) && typeof o.login === "string" && o.login.length >= 1 && o.login.length <= 39 && [...o.login].every((c) => /[A-Za-z0-9-]/.test(c));
