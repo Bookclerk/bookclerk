@@ -295,6 +295,38 @@ describe("sign-in", () => {
     ["DELETE https://api.github.com/applications/Iv23liTestClient/token", () => new Response(null, { status: 204 })],
   ];
 
+  it("names GitHub's reason when it refuses the code and trims the client secret", async () => {
+    gh = scriptGitHub([
+      [
+        "POST https://github.com/login/oauth/access_token",
+        ({ body }) => {
+          assert.equal(body.client_secret, "test-client-secret", "a pasted trailing newline is dropped");
+          return Response.json({ error: "incorrect_client_credentials", error_description: "The client_id and/or client_secret passed are incorrect." });
+        },
+      ],
+    ]);
+    const res = await callback(makeEnv({ GITHUB_APP_CLIENT_SECRET: "test-client-secret\n" }), makeCtx());
+    assert.equal(res.status, 400);
+    const text = await res.text();
+    assert.match(text, /code exchange/);
+    assert.match(text, /<code>incorrect_client_credentials<\/code>/);
+    assert.doesNotMatch(text, /client_secret passed/, "GitHub's free text is not echoed");
+  });
+
+  it("names the HTTP status when GitHub refuses the account lookup", async () => {
+    gh = scriptGitHub([
+      userRoutes[0],
+      ["GET https://api.github.com/user", () => new Response("{}", { status: 403 })],
+      userRoutes[2],
+    ]);
+    const ctx = makeCtx();
+    const res = await callback(makeEnv(), ctx);
+    await Promise.all(ctx.pending);
+    assert.equal(res.status, 400);
+    assert.match(await res.text(), /account lookup[\s\S]*<code>HTTP 403<\/code>/);
+    assert.ok(gh.calls.some((c) => c.method === "DELETE"), "the user token is still revoked");
+  });
+
   it("signs in an active member with read-only tokens and revokes the user token", async () => {
     gh = scriptGitHub([...userRoutes, ...appRoutes({ state: "active", role: "admin", user: { id: 7 } })]);
     const env = makeEnv();

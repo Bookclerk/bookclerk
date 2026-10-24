@@ -132,6 +132,31 @@ export async function startSignIn(request, cfg) {
 }
 
 /**
+ * The page for a sign-in GitHub refused, naming the step and GitHub's short
+ * reason so an owner can tell a wrong client secret from an expired code.
+ * The reason is logged too.
+ *
+ * @param {string} step Which call failed: "code exchange" or "account lookup".
+ * @param {string} reason GitHub's OAuth error code or an HTTP status, from
+ *   `exchangeCode` / `fetchUser` (never credentials or response text).
+ * @param {string} clear Set-Cookie value that clears the sign-in cookie.
+ * @returns {Response} A 400 error page.
+ */
+function signInFailed(step, reason, clear) {
+  console.error(`sign-in ${step} failed: ${reason}`);
+  return htmlResponse(
+    messagePage(
+      "Sign-in failed",
+      html`<p>GitHub refused the sign-in at the ${step} step. Start again from the sign-in page.</p>
+        <p class="notice">GitHub's reason: <code>${reason}</code></p>`,
+    ),
+    400,
+    {},
+    [clear],
+  );
+}
+
+/**
  * `GET /auth/callback`: finishes sign-in.
  *
  * @param {Request} request Incoming request.
@@ -158,30 +183,19 @@ export async function finishSignIn(request, env, cfg, ctx, now) {
   let role;
   try {
     const { code, verifier } = parsed;
-    const token = await exchangeCode(cfg, { code, redirectUri: callbackUrl(request), verifier });
-    if (!token) {
-      return htmlResponse(
-        messagePage("Sign-in failed", html`<p>GitHub did not accept the sign-in. Start again from the sign-in page.</p>`),
-        400,
-        {},
-        [clear],
-      );
-    }
+    const exchanged = await exchangeCode(cfg, { code, redirectUri: callbackUrl(request), verifier });
+    if ("error" in exchanged) return signInFailed("code exchange", exchanged.error, clear);
+    let got;
     try {
-      user = await fetchUser(token);
+      got = await fetchUser(exchanged.token);
     } finally {
-      ctx.waitUntil(revokeUserToken(cfg, token));
+      ctx.waitUntil(revokeUserToken(cfg, exchanged.token));
     }
-    if (!user) {
-      return htmlResponse(
-        messagePage("Sign-in failed", html`<p>GitHub did not return your account. Start again from the sign-in page.</p>`),
-        400,
-        {},
-        [clear],
-      );
-    }
+    if ("error" in got) return signInFailed("account lookup", got.error, clear);
+    user = got.user;
     role = await membershipRole(cfg, user, now);
-  } catch {
+  } catch (err) {
+    console.error(`sign-in GitHub call failed: ${err instanceof Error ? err.message : String(err)}`);
     return htmlResponse(
       messagePage("GitHub could not be reached", html`<p>Bookclerk could not check your organization membership just now. Try again in a minute.</p>`),
       502,

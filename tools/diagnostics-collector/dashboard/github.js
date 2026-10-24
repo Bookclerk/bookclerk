@@ -49,7 +49,9 @@ const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
  */
 export function githubConfig(env) {
   const clientId = typeof env.GITHUB_APP_CLIENT_ID === "string" ? env.GITHUB_APP_CLIENT_ID.trim() : "";
-  const clientSecret = typeof env.GITHUB_APP_CLIENT_SECRET === "string" ? env.GITHUB_APP_CLIENT_SECRET : "";
+  // Trimmed: a secret pasted with a trailing newline makes GitHub answer
+  // incorrect_client_credentials.
+  const clientSecret = typeof env.GITHUB_APP_CLIENT_SECRET === "string" ? env.GITHUB_APP_CLIENT_SECRET.trim() : "";
   const privateKey = typeof env.GITHUB_APP_PRIVATE_KEY === "string" ? env.GITHUB_APP_PRIVATE_KEY : "";
   const m = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(String(env.GITHUB_REPOSITORY || "").trim());
   if (!clientId || !clientSecret || !privateKey || !m) return null;
@@ -251,6 +253,20 @@ export function decodeAccessToken(data) {
 }
 
 /**
+ * Reads GitHub's OAuth error code (`bad_verification_code`,
+ * `incorrect_client_credentials`, `redirect_uri_mismatch`, ...) from a code
+ * exchange answer, for the sign-in error page and the Worker log. The
+ * free-text `error_description` is never read.
+ *
+ * @param {unknown} data Parsed body.
+ * @returns {string | null} The `error` field when it is 1 to 40 lowercase
+ *   letters and underscores, else null.
+ */
+export function oauthErrorCode(data) {
+  return isObject(data) && typeof data.error === "string" && /^[a-z_]{1,40}$/.test(data.error) ? data.error : null;
+}
+
+/**
  * Reads `GET /user`.
  *
  * @param {unknown} data Parsed body.
@@ -335,8 +351,9 @@ export function authorizeUrl(cfg, p) {
  * @param {GitHubConfig} cfg Settings.
  * @param {{code: string, redirectUri: string, verifier: string}} p Code,
  *   callback URL and PKCE verifier.
- * @returns {Promise<string | null>} The user token, or null when GitHub
- *   refuses the code.
+ * @returns {Promise<{token: string} | {error: string}>} The user token, or
+ *   why GitHub refused the code: its OAuth error code, or the HTTP status
+ *   when it gave none. Neither carries credentials.
  */
 export async function exchangeCode(cfg, p) {
   const res = await gh(`${WEB}/login/oauth/access_token`, {
@@ -350,21 +367,24 @@ export async function exchangeCode(cfg, p) {
       code_verifier: p.verifier,
     }),
   });
-  if (!res.ok) return null;
-  return decodeAccessToken(await res.json().catch(() => null));
+  const data = await res.json().catch(() => null);
+  const token = res.ok ? decodeAccessToken(data) : null;
+  if (token) return { token };
+  return { error: oauthErrorCode(data) ?? `HTTP ${res.status}` };
 }
 
 /**
  * Who a user token belongs to.
  *
  * @param {string} userToken Token from `exchangeCode`.
- * @returns {Promise<{id: number, login: string} | null>} Numeric id and
- *   login, or null when GitHub refuses the token.
+ * @returns {Promise<{user: {id: number, login: string}} | {error: string}>}
+ *   Numeric id and login, or the HTTP status when GitHub refuses the token
+ *   or answers with something else.
  */
 export async function fetchUser(userToken) {
   const res = await gh(`${API}/user`, { headers: apiHeaders(userToken) });
-  if (!res.ok) return null;
-  return decodeUser(await res.json().catch(() => null));
+  const user = res.ok ? decodeUser(await res.json().catch(() => null)) : null;
+  return user ? { user } : { error: `HTTP ${res.status}` };
 }
 
 /**
