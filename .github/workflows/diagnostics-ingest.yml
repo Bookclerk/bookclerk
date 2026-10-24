@@ -124,19 +124,15 @@ jobs:
           # unauthenticated calls from Cloudflare's shared egress addresses
           # are rate-limited by GitHub (HTTP 403). No published release
           # (404) means every version is ingested.
-          if TAG=$(gh api "repos/${REPO}/releases/latest" --jq '.tag_name' 2>/tmp/baseline.err); then
-            :
+          # release_baseline.py parses the response (tools/diagnostics-collector/scripts),
+          # so only a plain version label reaches $GITHUB_OUTPUT and the query.
+          if gh api "repos/${REPO}/releases/latest" >/tmp/release.json 2>/tmp/baseline.err; then
+            TAG=$(python3 tools/diagnostics-collector/scripts/release_baseline.py </tmp/release.json)
           elif grep -q 'HTTP 404' /tmp/baseline.err; then
             TAG=""
           else
             echo "::error::GitHub releases/latest lookup failed"
             cat /tmp/baseline.err
-            exit 1
-          fi
-          # [[ =~ ]] matches the whole value, so a trailing newline is rejected.
-          tag_re='^[A-Za-z0-9._-]{0,64}$'
-          if [[ ! "$TAG" =~ $tag_re ]]; then
-            echo "::error::Unexpected release tag: $TAG"
             exit 1
           fi
           echo "Release baseline: ${TAG:-(none, all versions)}"
