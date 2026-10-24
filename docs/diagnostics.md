@@ -222,7 +222,9 @@ shows today's triage spend from `TRIAGE_BUDGET`.
 **Fixed-in version and regressions.** For each closed issue with a merged
 pull request, the same sync records the version the fix shipped in
 (`issue_fix`, one row per change, the newest wins): it reads the repository's
-newest releases, prereleases included, and asks GitHub's compare API whether
+releases back to the fix's merge, prereleases included (at most five pages of
+a hundred; a fix merged before the oldest release read is left for a
+`fixed-in` label), and asks GitHub's compare API whether
 the oldest release published after the merge contains the pull request's
 merge commit (then the next two). The first that does is the fixed-in
 version, with a leading `v` dropped, and a prerelease counts. Until one does

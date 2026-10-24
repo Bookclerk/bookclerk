@@ -598,8 +598,14 @@ export function fixedInLabel(labels) {
   return null;
 }
 
-/** Most releases the sync reads, newest first. */
-const RELEASE_PAGE = 30;
+/** Releases per list page (GitHub's maximum). */
+const RELEASE_PAGE = 100;
+
+/**
+ * Most release pages one lookup reads, so a repository with a very long
+ * release history cannot make the sync page through all of it.
+ */
+const RELEASE_PAGES = 5;
 
 /**
  * Reads `GET /repos/{owner}/{repo}/releases`.
@@ -627,18 +633,45 @@ export function decodeReleases(data) {
 }
 
 /**
- * The repository's newest releases, prereleases included.
+ * The repository's releases, newest pages first, read back far enough to
+ * cover a point in time.
+ *
+ * Pages are read until one holds a release published before `since`, the
+ * list ends, or `RELEASE_PAGES` pages were read. GitHub lists releases by
+ * creation time, which for a published release is its publish time to
+ * within the delay between the two, so a page whose oldest release is
+ * before `since` means everything after `since` has been read.
  *
  * @param {GitHubConfig} cfg Settings.
  * @param {string} token Installation token.
- * @returns {Promise<ReturnType<typeof decodeReleases>>} As `decodeReleases`
- *   returns.
- * @throws {Error} When the call fails.
+ * @param {number} since Unix ms the list has to reach back to.
+ * @returns {Promise<{releases: ReturnType<typeof decodeReleases>, reach: number}>}
+ *   `releases` as `decodeReleases` returns them over all pages read;
+ *   `reach` is 0 when the list reached back to `since` or to its end, and
+ *   otherwise the publish time of the oldest release read, before which
+ *   the list is not known to be complete.
+ * @throws {Error} When a call fails.
  */
-export async function listReleases(cfg, token) {
-  const res = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/releases?per_page=${RELEASE_PAGE}`, { headers: apiHeaders(token) });
-  if (!res.ok) throw new Error(`release list failed: HTTP ${res.status}`);
-  return decodeReleases(await res.json().catch(() => null));
+export async function listReleases(cfg, token, since) {
+  const raw = [];
+  let reach = 0;
+  for (let page = 1; page <= RELEASE_PAGES; page++) {
+    const res = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/releases?per_page=${RELEASE_PAGE}&page=${page}`, {
+      headers: apiHeaders(token),
+    });
+    if (!res.ok) throw new Error(`release list failed: HTTP ${res.status}`);
+    const body = await res.json().catch(() => null);
+    const items = Array.isArray(body) ? body : [];
+    raw.push(...items);
+    const decoded = decodeReleases(items);
+    const oldest = decoded.length ? decoded[0].publishedAt : Infinity;
+    if (items.length < RELEASE_PAGE || oldest < since) {
+      reach = 0;
+      break;
+    }
+    reach = Math.min(oldest, reach || Infinity);
+  }
+  return { releases: decodeReleases(raw), reach };
 }
 
 /**

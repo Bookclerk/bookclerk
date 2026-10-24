@@ -275,8 +275,11 @@ function dropStatements(db, number) {
  *   published after the merge and after the last one compared, or an
  *   `unreleased` row recording how far the comparison got, so the next sync
  *   continues from there whether or not a new release appeared. Only
- *   releases whose tag is a version are considered. A release row is final:
- *   a later pull request on the issue does not move it.
+ *   releases whose tag is a version are considered, and the release list is
+ *   read back to the oldest candidate's merge (`listReleases`); a merge
+ *   older than the pages read is skipped, for a `fixed-in` label to settle,
+ *   rather than placed in a release that may not be the first. A release
+ *   row is final: a later pull request on the issue does not move it.
  *
  * A GitHub failure here is logged and leaves the rows as they were; the
  * next sync tries again.
@@ -325,15 +328,24 @@ export async function resolveFixes(db, cfg, token, now) {
      LEFT JOIN latest l ON l.issue_number = i.number
      WHERE i.state = 'closed' AND i.fixed_in_label IS NULL
        AND (l.issue_number IS NULL OR (l.source = 'unreleased' AND COALESCE(l.checked_until, 0) < ?))
+       AND n.merged_at >= ?
      ORDER BY i.closed_at, i.number LIMIT ?`;
   // Cheap check before the GitHub call: anything at all to look at, taking
-  // any release newer than an unreleased row's last comparison as possible.
-  const pending = await all(db, CANDIDATES, Number.MAX_SAFE_INTEGER, 1);
+  // any release newer than an unreleased row's last comparison as possible
+  // and any merge time as reachable.
+  const pending = await all(db, CANDIDATES, Number.MAX_SAFE_INTEGER, 0, FIX_RESOLVE_MAX);
   if (pending.length) {
     try {
-      const releases = (await listReleases(cfg, token)).filter((r) => parseSemver(r.tag) !== null);
+      // Read releases back to the oldest merge among the candidates, so the
+      // first release after each merge is in the list; a merge older than
+      // that, or than the pages read (`reach`), waits for a later sync or a
+      // label rather than being placed in a release that may not be the
+      // first.
+      const since = Math.min(...pending.map((c) => Number(c.merged_at)));
+      const { releases: listed, reach } = await listReleases(cfg, token, since);
+      const releases = listed.filter((r) => parseSemver(r.tag) !== null);
       const newestRelease = releases.length ? releases[releases.length - 1].publishedAt : 0;
-      const candidates = await all(db, CANDIDATES, newestRelease, FIX_RESOLVE_MAX);
+      const candidates = await all(db, CANDIDATES, newestRelease, Math.max(reach, since), FIX_RESOLVE_MAX);
       for (const c of candidates) {
         const mergedAt = Number(c.merged_at);
         const checked = c.source === "unreleased" ? Number(c.checked_until ?? 0) : -Infinity;

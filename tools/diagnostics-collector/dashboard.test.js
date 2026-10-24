@@ -952,6 +952,100 @@ describe("fixed-in version", () => {
     assert.deepEqual(await all(env.DASHBOARD_DB, "SELECT source, fixed_in FROM issue_fix ORDER BY recorded_at"), [{ source: "unreleased", fixed_in: null }, { source: "release", fixed_in: "0.9.0" }]);
   });
 
+  it("pages through the release list back to the merge before choosing the first release", async () => {
+    const env = makeEnv();
+    await seed(env, ID1, NOW - 5 * 86_400_000, { version: "1.0.0" });
+    // 150 releases, one an hour, all newer than the merge: the first one
+    // after the merge is on the second page.
+    const releases = Array.from({ length: 150 }, (_, i) => ({
+      tag_name: `v1.0.${149 - i}`,
+      draft: false,
+      prerelease: false,
+      published_at: new Date(NOW - (i + 1) * 3_600_000).toISOString(),
+    }));
+    const pages = [];
+    const compared = [];
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues?", () => Response.json([closedIssue(417)])],
+      ["POST https://api.github.com/graphql", () => mergedPr(NOW - 200 * 3_600_000)],
+      [
+        "GET https://api.github.com/repos/Bookclerk/bookclerk/releases",
+        ({ url }) => {
+          const u = new URL(url);
+          const page = Number(u.searchParams.get("page"));
+          const per = Number(u.searchParams.get("per_page"));
+          pages.push(page);
+          return Response.json(releases.slice((page - 1) * per, page * per));
+        },
+      ],
+      [
+        "GET https://api.github.com/repos/Bookclerk/bookclerk/compare/",
+        ({ url }) => {
+          compared.push(/compare\/([^.]+(?:\.[^.]+)*?)\.\.\./.exec(url)[1]);
+          return Response.json({ status: "behind" });
+        },
+      ],
+    ]);
+    await syncIssues(env, githubConfig(env), NOW);
+    assert.deepEqual(pages, [1, 2], "the second page is read because the first did not reach the merge");
+    assert.deepEqual(compared, ["v1.0.0"], "the oldest release after the merge is compared first");
+    assert.deepEqual(await all(env.DASHBOARD_DB, "SELECT source, fixed_in FROM issue_fix"), [{ source: "release", fixed_in: "1.0.0" }]);
+  });
+
+  it("leaves a fix merged before the releases it can read for a label", async () => {
+    const env = makeEnv();
+    await seed(env, ID1, NOW - 5 * 86_400_000, { version: "1.0.0" });
+    // More releases than five pages hold, all newer than the first issue's
+    // merge; the second issue's merge falls inside the pages read.
+    const releases = Array.from({ length: 520 }, (_, i) => ({
+      tag_name: `v1.0.${519 - i}`,
+      draft: false,
+      prerelease: false,
+      published_at: new Date(NOW - (i + 1) * 3_600_000).toISOString(),
+    }));
+    const pages = [];
+    const compared = [];
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues?", () => Response.json([closedIssue(418), closedIssue(419)])],
+      [
+        "POST https://api.github.com/graphql",
+        () => {
+          const issue = (number, mergedAt) => ({
+            labels: { nodes: [{ name: "diagnostics" }], pageInfo: { hasNextPage: false } },
+            closedByPullRequestsReferences: {
+              nodes: [{ number, title: "Retry", state: "MERGED", mergedAt: new Date(mergedAt).toISOString(), mergeCommit: { oid: SHA }, repository: { nameWithOwner: "Bookclerk/bookclerk" } }],
+            },
+            timelineItems: { nodes: [] },
+          });
+          return Response.json({ data: { repository: { i0: issue(430, NOW - 600 * 3_600_000), i1: issue(431, NOW - 10 * 3_600_000 - 1) } } });
+        },
+      ],
+      [
+        "GET https://api.github.com/repos/Bookclerk/bookclerk/releases",
+        ({ url }) => {
+          const u = new URL(url);
+          const page = Number(u.searchParams.get("page"));
+          const per = Number(u.searchParams.get("per_page"));
+          pages.push(page);
+          return Response.json(releases.slice((page - 1) * per, page * per));
+        },
+      ],
+      [
+        "GET https://api.github.com/repos/Bookclerk/bookclerk/compare/",
+        ({ url }) => {
+          compared.push(/compare\/([^.]+(?:\.[^.]+)*?)\.\.\./.exec(url)[1]);
+          return Response.json({ status: "behind" });
+        },
+      ],
+    ]);
+    await syncIssues(env, githubConfig(env), NOW);
+    assert.deepEqual(pages, [1, 2, 3, 4, 5], "the lookup stops after five pages");
+    assert.deepEqual(compared, ["v1.0.510"], "only the issue whose merge the pages cover is compared");
+    assert.deepEqual(await all(env.DASHBOARD_DB, "SELECT issue_number, source, fixed_in FROM issue_fix"), [{ issue_number: 419, source: "release", fixed_in: "1.0.510" }]);
+  });
+
   it("keeps the rows when GitHub's release reads fail", async () => {
     const env = makeEnv();
     await seed(env, ID1, NOW - 5 * 86_400_000);
