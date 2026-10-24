@@ -172,6 +172,7 @@ jobs:
           "$PY" scripts/tests/test_python_api_markdown.py
           "$PY" scripts/tests/test_openapi_markdown.py
           "$PY" scripts/tests/test_docs_publish.py
+          "$PY" scripts/tests/test_diagnostics_plan.py
 
       - name: Database plugin isolation
         run: python3 scripts/tests/test_db_plugin_isolation.py -q

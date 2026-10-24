@@ -301,6 +301,16 @@ a pull request that adds or widens a boundary extends it.
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape (`bookclerk-plugin-abi::GuestSqlPolicy`, lowered as the SQLite adapter lowers it) | Every table, column, function and schema action SQLite's own authorizer reports for an admitted statement is inside the policy; shared oracle `fuzz/oracles/guest_sql_authz.rs`, replayed from `bookclerk-library` |
 | `mux_peer` | Peer frames on the multiplexed byte link (`bookclerk-plugin-sdk::mux`: `Open`, `Data`, `Close`, `Window`, lengths and ids) | Settles within a bound once the peer's bytes end, delivers no more than the peer sent, accepts no more streams than the peer could open, leaves no task behind; shared oracle `fuzz/oracles/mux_peer.rs`, replayed from `bookclerk-plugin-sdk` |
 
+One boundary lives outside the Rust workspace and follows the ADR's rule for
+non-Rust tooling (decision 6): the diagnostics triage plan validator
+(`tools/diagnostics-collector/scripts/validate_plan.py`), which decides what
+model output reaches public issues.
+`scripts/tests/test_diagnostics_plan.py` replays its seed corpus
+(`scripts/tests/diagnostics_plan_corpus/`) and runs seeded mutation fuzzing on
+every PR, checking each accepted plan against an independent oracle (no links,
+mentions, cross-references, raw HTML or forged Report IDs; only batch report
+IDs; at most five issues).
+
 Still to add (tracked in the fuzzing ADR's follow-ups): a full RPC session
 against a scripted guest, the workerd `egress.js` gate checked against
 `EgressPolicy` (#335), Audible CENC/DASH parsing, package extraction, naming

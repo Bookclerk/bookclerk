@@ -58,6 +58,9 @@ jobs:
           fi
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes; keep the token out of .git/config.
+          persist-credentials: false
 
       - name: Resolve collector base URL
         id: collector
@@ -161,7 +164,8 @@ jobs:
       - name: Install Copilot CLI
         if: steps.pull.outputs.count != '0'
         run: |
-          npm install -g @github/copilot
+          # Pinned: the triage relies on this version's tool-permission flags.
+          npm install -g @github/copilot@1.0.103
           copilot --version || true
 
       - name: Resolve Copilot auth
@@ -192,6 +196,8 @@ jobs:
           # COPILOT_GITHUB_TOKEN overrides only when set (personal-repo fallback).
           GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN || secrets.DIAGNOSTICS_COPILOT_GITHUB_TOKEN || github.token }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN || secrets.DIAGNOSTICS_COPILOT_GITHUB_TOKEN }}
+          # gh files issues with the workflow token, never the Copilot PAT.
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq jq

@@ -61,7 +61,17 @@ inputs their author imagined; a fuzzer supplies the rest.
    fuzzing is not filed as a public issue. It is fixed first, and the
    minimized input lands as `fuzz/corpus/<target>/regression_*` in the
    fixing pull request, so the finding becomes public together with its fix.
-6. **Sanitizers follow the code under test.** Pure-Rust targets run with
+6. **Boundaries outside the Rust workspace use their language's own
+   fuzzing.** A boundary in non-Rust tooling (a CI script or a Worker
+   that decides what untrusted data reaches a public surface) cannot be a
+   `cargo-fuzz` target. It ships with the same pieces in its own language
+   instead: the parsing as a sans-IO function, a checked-in seed corpus, a
+   replay test in PR CI, and fuzzing (coverage-guided where the language
+   has a practical engine, seeded mutation otherwise) checked against an
+   independent oracle. [`docs/ci.md`](../ci.md#fuzzing) lists these
+   boundaries beside the `cargo-fuzz` targets. Shipped Rust code is never
+   moved out of `cargo-fuzz` this way.
+7. **Sanitizers follow the code under test.** Pure-Rust targets run with
    debug assertions and overflow checks on under AddressSanitizer. The first
    target whose boundary code links C (LAME, a bundled SQLite in a host
    adapter) adds UndefinedBehaviorSanitizer to the workflow matrix; none
