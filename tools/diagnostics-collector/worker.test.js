@@ -77,6 +77,28 @@ describe("worker errors", () => {
     assert.ok(!logged[0].includes(ENV.B2_APPLICATION_KEY));
   });
 
+  it("stops reading an oversized B2 error body", async () => {
+    console.error = () => {};
+    let pulled = 0;
+    let cancelled = false;
+    const chunk = new TextEncoder().encode(`{"code":"unauthorized","pad":"${"x".repeat(2048)}`);
+    const body = new ReadableStream({
+      pull(controller) {
+        pulled += 1;
+        controller.enqueue(chunk);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    stubFetch({ b2_authorize_account: () => new Response(body, { status: 401 }) });
+    const res = await worker.fetch(report({ authorization: `Bearer ${KEY}` }), ENV);
+    assert.equal(res.status, 502);
+    assert.equal((await res.json()).detail, "b2 authorize failed: HTTP 401");
+    assert.ok(cancelled, "the rest of the body is cancelled");
+    assert.ok(pulled <= 4, `read ${pulled} chunks`);
+  });
+
   it("keeps B2 codes that are not short identifiers out of the detail", () => {
     assert.equal(new UpstreamError("b2 list", 400, "<b>x</b>").message, "b2 list failed: HTTP 400");
   });

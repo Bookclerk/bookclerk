@@ -31,7 +31,7 @@
  * secrets; Bookclerk builds carry the collector URL, never this key.
  */
 
-import { handleTriage } from "./triage.js";
+import { handleTriage, readCapped } from "./triage.js";
 import {
   extractVersionFromKey,
   normalizeVersion,
@@ -98,7 +98,9 @@ export function b2ErrorCode(text) {
 async function b2Error(stage, res) {
   let text;
   try {
-    text = await res.text();
+    // Stops reading past the limit (null), so an oversized error body
+    // costs no more than the limit before it is dropped.
+    text = (await readCapped(res, MAX_B2_ERROR_CHARS)) ?? "";
   } catch {
     text = "";
   }
