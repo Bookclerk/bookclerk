@@ -17,7 +17,8 @@ TRIAGE_MODEL = "@cf/ibm-granite/granite-4.0-h-micro"
 TRIAGE_DAILY_NEURONS = "2000"
 # Dashboard: most reports /submit indexes per UTC day, so an open /submit
 # cannot spend the D1 write allowance (100,000 rows a day on the free plan).
-DASHBOARD_INDEX_DAILY_ROWS = "20000"
+# Each indexed report writes five rows, so this spends at most half of it.
+DASHBOARD_INDEX_DAILY_ROWS = "10000"
 
 [ai]
 binding = "AI"

@@ -675,10 +675,14 @@ describe("issue paging and filtered trends", () => {
       ],
       ["POST https://api.github.com/graphql", () => Response.json({ data: { repository: {} } })],
     ]);
-    for (let run = 0; run < 3; run++) await syncIssues(env, githubConfig(env), NOW);
+    const page = async () => (await first(env.DASHBOARD_DB, "SELECT value FROM sync_state WHERE key = 'issues_page'"))?.value ?? null;
+    await syncIssues(env, githubConfig(env), NOW);
+    assert.equal(await page(), "5", "the pass continues next run from the last page read");
+    await syncIssues(env, githubConfig(env), NOW);
     assert.equal((await first(env.DASHBOARD_DB, "SELECT COUNT(*) AS n FROM issues")).n, 600);
-    const page = (await first(env.DASHBOARD_DB, "SELECT value FROM sync_state WHERE key = 'issues_page'")).value;
-    assert.equal(page, "1", "back to the first page once drained");
+    assert.equal(await page(), null, "back to the first page once drained");
+    const since = (await first(env.DASHBOARD_DB, "SELECT value FROM sync_state WHERE key = 'issues_since'")).value;
+    assert.equal(since, new Date(Date.parse(at) - 1000).toISOString());
   });
 
   it("counts a signature's daily trend inside the version filter", async () => {
@@ -705,5 +709,135 @@ describe("index cap under concurrency", () => {
     assert.equal(results.filter((r) => r === "indexed").length, 1);
     assert.equal((await all(db, "SELECT * FROM reports")).length, 1);
     assert.equal((await first(db, "SELECT rows FROM index_days")).rows, 1);
+  });
+});
+
+/**
+ * A D1 handle that fails any call past `limit`, counting each batch as one
+ * call, the way Workers Free limits D1 queries per invocation. Independent of
+ * dashboard/budget.js, so it checks that code rather than mirroring it.
+ */
+function limitedD1(d1, limit) {
+  const handle = { calls: 0 };
+  const charge = () => {
+    handle.calls += 1;
+    if (handle.calls > limit) throw new Error(`D1 call ${handle.calls} exceeds ${limit}`);
+  };
+  const wrap = (stmt) => ({
+    stmt,
+    bind: (...p) => wrap(stmt.bind(...p)),
+    all: () => (charge(), stmt.all()),
+    first: () => (charge(), stmt.first()),
+    run: () => (charge(), stmt.run()),
+  });
+  handle.prepare = (sql) => wrap(d1.prepare(sql));
+  handle.batch = (stmts) => (charge(), d1.batch(stmts.map((s) => s.stmt)));
+  return handle;
+}
+
+describe("per-invocation D1 limit", () => {
+  it("works through an issue and pull request backlog in 50-call runs", async () => {
+    const d1 = createD1();
+    const env = makeEnv();
+    const t = (i) => new Date(NOW - 86_400_000 + i * 1000).toISOString();
+    const issues = Array.from({ length: 1150 }, (_, i) => ({
+      number: i + 1,
+      title: "x",
+      state: "open",
+      body: `### Report IDs\n- \`00000000-0000-4000-8000-${String(i).padStart(12, "0")}\`\n`,
+      created_at: t(i),
+      updated_at: t(i),
+    }));
+    let fetches = 0;
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      [
+        "GET https://api.github.com/repos/Bookclerk/bookclerk/issues?",
+        ({ url }) => {
+          fetches += 1;
+          const q = new URL(url).searchParams;
+          const since = q.get("since") ?? "";
+          const page = Number(q.get("page"));
+          return Response.json(issues.filter((i) => i.updated_at >= since).slice((page - 1) * 100, page * 100));
+        },
+      ],
+      [
+        "POST https://api.github.com/graphql",
+        ({ body }) => {
+          fetches += 1;
+          const repository = {};
+          for (const [, alias, n] of body.query.matchAll(/(i\d+): issue\(number: (\d+)\)/g)) {
+            repository[alias] = {
+              labels: { nodes: [{ name: "diagnostics" }], pageInfo: { hasNextPage: false } },
+              closedByPullRequestsReferences: { nodes: [{ number: 5000 + Number(n), title: "fix", state: "OPEN", mergedAt: null, repository: { nameWithOwner: "Bookclerk/bookclerk" } }] },
+              timelineItems: { nodes: [] },
+            };
+          }
+          return Response.json({ data: { repository } });
+        },
+      ],
+    ]);
+    let runs = 0;
+    for (; runs < 12; runs++) {
+      const db = limitedD1(d1, 50);
+      fetches = 0;
+      await syncIssues({ ...env, DASHBOARD_DB: db }, githubConfig(env), NOW + runs);
+      assert.ok(fetches <= 45, `run ${runs} made ${fetches} GitHub calls`);
+      if (!(await first(d1, "SELECT value FROM sync_state WHERE key = 'issues_page'"))) break;
+    }
+    assert.ok(runs < 12, "the backlog drains");
+    assert.equal((await first(d1, "SELECT COUNT(*) AS n FROM issues")).n, 1150);
+    assert.equal((await first(d1, "SELECT COUNT(*) AS n FROM report_issue")).n, 1150);
+    assert.equal((await first(d1, "SELECT value FROM sync_state WHERE key = 'issues_since'")).value, new Date(Date.parse(t(1149)) - 1000).toISOString());
+    const linked = (await first(d1, "SELECT COUNT(*) AS n FROM issue_pr")).n;
+    assert.equal(linked, (runs + 1) * 100, "each run refreshes its share of the queue");
+    const written = await first(d1, "SELECT title FROM issue_pr WHERE issue_number = 1");
+    assert.equal(written.title, "fix");
+  });
+
+  it("indexes stored reports over several presses within the limit", async () => {
+    const env = makeEnv();
+    const d1 = env.DASHBOARD_DB;
+    const ids = Array.from({ length: 130 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`);
+    const objects = {};
+    const names = ids.map((id) => `diagnostics/0.9.0-rc.2/${id}.json`).sort();
+    for (const id of ids) objects[`id:${id}`] = JSON.stringify(stored(id));
+    await seed(env, ids[3]);
+    let fetches = 0;
+    const b2 = makeB2(objects);
+    const download = b2.downloadById;
+    b2.downloadById = (auth, id) => ((fetches += 1), download(auth, id));
+    gh = scriptGitHub([
+      [
+        "POST https://b2.test/b2api/v2/b2_list_file_names",
+        ({ body }) => {
+          fetches += 1;
+          const from = body.startFileName ? names.indexOf(body.startFileName) : 0;
+          const files = names.slice(from, from + body.maxFileCount).map((fileName) => ({
+            action: "upload",
+            fileName,
+            fileId: `id:${reportIdOf(fileName)}`,
+            uploadTimestamp: NOW,
+          }));
+          return Response.json({ files, nextFileName: names[from + body.maxFileCount] ?? null });
+        },
+      ],
+    ]);
+    const cookie = await signedIn(env, "admin");
+    let presses = 0;
+    for (; presses < 6; presses++) {
+      const db = limitedD1(d1, 50);
+      fetches = 0;
+      const res = await call({ ...env, DASHBOARD_DB: db }, new Request(`${ORIGIN}/admin/reindex`, { method: "POST", headers: { cookie, origin: ORIGIN } }), b2);
+      assert.equal(res.status, 303);
+      assert.ok(fetches <= 45, `press ${presses} made ${fetches} B2 calls`);
+      const note = (await first(d1, "SELECT value FROM sync_state WHERE key = 'reindex_note'")).value;
+      assert.doesNotMatch(note, /could not/);
+      if (/finished/.test(note)) break;
+    }
+    assert.equal(presses, 3, "40 downloads a press");
+    assert.equal((await first(d1, "SELECT COUNT(*) AS n FROM reports")).n, 130);
+    assert.equal((await first(d1, "SELECT rows FROM index_days")).rows, 130, "the ledger counts each report once");
+    assert.equal(await first(d1, "SELECT value FROM sync_state WHERE key = 'reindex_cursor'"), null);
   });
 });

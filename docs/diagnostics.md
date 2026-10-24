@@ -144,10 +144,16 @@ counts and a signature (a hash of the first error's target and its message
 with numbers, IDs, paths, URLs and quoted text replaced; warnings when there
 is no error). Raw messages stay in B2; the report page downloads that one
 object with the Worker's B2 credentials, never `REPORT_API_KEY`. Because
-`/submit` is open, indexing stops at `DASHBOARD_INDEX_DAILY_ROWS` rows a UTC
-day (default 20,000, a fifth of D1's free daily writes); the report is still
-stored, and an owner's **Index older reports** button (also used once after
-the first deploy) adds stored reports the index is missing, 40 per press.
+`/submit` is open, indexing stops at `DASHBOARD_INDEX_DAILY_ROWS` reports a
+UTC day (default 10,000; each report writes five D1 rows, so at most half of
+D1's 100,000 free daily row writes, leaving the rest for sign-ins, the access
+log and the sync); the report is still stored, and an owner's **Index older
+reports** button (also used once after the first deploy) adds stored reports
+the index is missing, up to 40 per press. The cron sync and the reindex stay
+within Workers Free's 50 D1 queries and 50 subrequests per invocation: each
+issue page, pull request batch or listing page is written in one or two
+batches that also save the cursor, and work left over continues in the next
+run or press.
 Every 30 minutes a cron lists issues labeled `diagnostics` changed since the
 last run, reads the report IDs from each issue's `### Report IDs` section (the
 format triage and its fallback write), and asks GraphQL for the pull requests

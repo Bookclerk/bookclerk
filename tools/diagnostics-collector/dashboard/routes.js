@@ -11,6 +11,7 @@
 
 import { BudgetLedger, DEFAULT_DAILY_NEURONS, MAX_DAILY_NEURONS, utcDay } from "../triage.js";
 import { finishSignIn, signOut, startSignIn } from "./auth.js";
+import { metered } from "./budget.js";
 import {
   afterFixCounts,
   all,
@@ -141,6 +142,8 @@ async function triageBudget(env, now) {
 export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now()) {
   const cfg = dashboardConfig(env);
   if (!cfg || !(PATHS.has(path) || REPORT_PATH.test(path))) return null;
+  // One D1 call budget for the whole request; the reindex stops within it.
+  env = { ...env, DASHBOARD_DB: metered(env.DASHBOARD_DB) };
   const db = env.DASHBOARD_DB;
   const method = request.method;
   const url = new URL(request.url);

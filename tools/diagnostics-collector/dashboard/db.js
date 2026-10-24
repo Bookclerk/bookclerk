@@ -21,8 +21,14 @@ export const RANGES = {
 /** Range used when the request names none or an unknown one. */
 export const DEFAULT_RANGE = "14d";
 
-/** Default daily cap on rows /submit may index. */
-export const DEFAULT_INDEX_DAILY_ROWS = 20_000;
+/**
+ * Default daily cap on reports /submit may index. Each indexed report writes
+ * five D1 rows (measured with `meta.rows_written`: four for the report row
+ * and its indexes, one for the day's ledger), so the cap spends at most half
+ * of D1's 100,000 free daily row writes and leaves the rest for sign-ins,
+ * the access log, the issue sync and the owner's reindex.
+ */
+export const DEFAULT_INDEX_DAILY_ROWS = 10_000;
 
 /** Reports per page in the explorer. */
 export const PAGE_SIZE = 25;
@@ -75,6 +81,43 @@ export function utcDayOf(ms) {
 }
 
 /**
+ * The statement that adds one report row, ignoring a report already indexed.
+ * It writes four D1 rows (the row, its primary-key index, `reports_received`
+ * and `reports_signature`).
+ *
+ * @param {D1Database} db Database.
+ * @param {{reportId: string, objectKey: string, receivedAt: number,
+ *   summary: Awaited<ReturnType<typeof import("./signature.js").summarizeReport>>}} row
+ *   The report and its summary.
+ * @returns {D1PreparedStatement} The bound statement.
+ */
+export function reportInsert(db, row) {
+  const s = row.summary;
+  return db
+    .prepare(
+      `INSERT OR IGNORE INTO reports (report_id, object_key, received_at, version, os, arch, distro,
+         trigger, events, errors, warnings, signature, signature_label, install_hash)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      row.reportId,
+      row.objectKey,
+      row.receivedAt,
+      s.version,
+      s.os,
+      s.arch,
+      s.distro,
+      s.trigger,
+      s.events,
+      s.errors,
+      s.warnings,
+      s.signature,
+      s.signatureLabel,
+      s.installHash,
+    );
+}
+
+/**
  * Adds a report to the index unless today's cap is reached.
  *
  * The cap holds under concurrent `/submit` requests: a slot is reserved by
@@ -102,30 +145,7 @@ export async function indexReport(db, row, cap) {
     .bind(day, cap)
     .run();
   if ((reserved.meta?.changes ?? 0) === 0) return "capped";
-  const s = row.summary;
-  const insert = await db
-    .prepare(
-      `INSERT OR IGNORE INTO reports (report_id, object_key, received_at, version, os, arch, distro,
-         trigger, events, errors, warnings, signature, signature_label, install_hash)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .bind(
-      row.reportId,
-      row.objectKey,
-      row.receivedAt,
-      s.version,
-      s.os,
-      s.arch,
-      s.distro,
-      s.trigger,
-      s.events,
-      s.errors,
-      s.warnings,
-      s.signature,
-      s.signatureLabel,
-      s.installHash,
-    )
-    .run();
+  const insert = await reportInsert(db, row).run();
   if ((insert.meta?.changes ?? 0) === 0) {
     // Indexed by a concurrent request in the meantime: hand the slot back.
     await run(db, "UPDATE index_days SET rows = rows - 1 WHERE day = ? AND rows > 0", day);
@@ -544,12 +564,35 @@ export async function getState(db, key) {
  * @returns {Promise<void>}
  */
 export async function setState(db, key, value) {
-  await run(
-    db,
-    "INSERT INTO sync_state (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-    key,
-    value,
-  );
+  await stateStatement(db, key, value).run();
+}
+
+/**
+ * The statement that writes a cursor, for saving it in the same batch as the
+ * work it records.
+ *
+ * @param {D1Database} db Database.
+ * @param {string} key Cursor name.
+ * @param {string | null} value New value; null deletes the cursor.
+ * @returns {D1PreparedStatement} The bound statement.
+ */
+export function stateStatement(db, key, value) {
+  if (value === null) return db.prepare("DELETE FROM sync_state WHERE key = ?").bind(key);
+  return db
+    .prepare("INSERT INTO sync_state (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+    .bind(key, value);
+}
+
+/**
+ * Reads several cursors in one query.
+ *
+ * @param {D1Database} db Database.
+ * @param {string[]} keys Cursor names.
+ * @returns {Promise<Map<string, string>>} Name → value, for the cursors set.
+ */
+export async function getStates(db, keys) {
+  const rows = await all(db, `SELECT key, value FROM sync_state WHERE key IN (${keys.map(() => "?").join(", ")})`, ...keys);
+  return new Map(rows.map((r) => [String(r.key), String(r.value)]));
 }
 
 /**
