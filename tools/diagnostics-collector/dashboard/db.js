@@ -486,8 +486,9 @@ export async function filterOptions(db, since) {
 }
 
 /**
- * One indexed report with its linked issues (the tracking issue first, each
- * with the link's `source`) and their pull requests.
+ * One indexed report with its linked issues (the tracking issue first, in the
+ * same order the counts use: triaged issues before the holding issue, then
+ * oldest first; each with the link's `source`) and their pull requests.
  *
  * @param {D1Database} db Database.
  * @param {string} reportId Lowercase UUID.
@@ -501,7 +502,7 @@ export async function getReport(db, reportId) {
     all(
       db,
       `SELECT i.*, ri.source AS source FROM report_issue ri JOIN issues i ON i.number = ri.issue_number
-       WHERE ri.report_id = ? AND ${LINKED} ORDER BY i.number ASC`,
+       WHERE ri.report_id = ? AND ${LINKED} ORDER BY (COALESCE(i.kind, '') = 'fallback'), i.number ASC`,
       reportId,
     ),
     all(

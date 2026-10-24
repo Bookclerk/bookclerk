@@ -663,7 +663,9 @@ describe("pages", () => {
     const tracked = new Map((await listIssues(env.DASHBOARD_DB, "all", 0, 10)).map((i) => [i.number, Number(i.reports)]));
     assert.equal(tracked.get(395), 0, "the held report counts under the triaged issue");
     assert.equal(tracked.get(413), 3);
-    assert.equal((await getReport(env.DASHBOARD_DB, held)).report.issue_number, 413);
+    const heldPage = await getReport(env.DASHBOARD_DB, held);
+    assert.equal(heldPage.report.issue_number, 413);
+    assert.deepEqual(heldPage.issues.map((i) => i.number), [413, 395], "the report page lists the tracker first");
     assert.equal(sameVersionLine("v1.2.3", "1.2.0-rc.1"), true);
     assert.equal(sameVersionLine("1.2", "1.20"), false);
     assert.equal(sameVersionLine("1.2.3", ""), false);
