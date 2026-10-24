@@ -179,6 +179,11 @@ With **no GitHub releases** yet, every version is eligible (current state of thi
 repo). Same-version prereleases like `1.2.3-rc.1` are excluded once `1.2.3` is
 stable.
 
+The daily ingest workflow resolves that release itself with its job token and
+passes it as `?baseline_version=` (empty when there is no release), so the
+Worker does not call GitHub on that path. Unauthenticated GitHub API calls from
+Cloudflare's shared egress addresses are rate-limited and fail with `403`.
+
 When a call to B2 or GitHub fails, the Worker answers `502` with
 `{"error": "upstream failed"}` and logs the failing stage. Callers that send
 the report key (ingest) also get a `detail` naming the stage, the HTTP status

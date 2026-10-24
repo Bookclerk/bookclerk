@@ -301,7 +301,7 @@ a pull request that adds or widens a boundary extends it.
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape (`bookclerk-plugin-abi::GuestSqlPolicy`, lowered as the SQLite adapter lowers it) | Every table, column, function and schema action SQLite's own authorizer reports for an admitted statement is inside the policy; shared oracle `fuzz/oracles/guest_sql_authz.rs`, replayed from `bookclerk-library` |
 | `mux_peer` | Peer frames on the multiplexed byte link (`bookclerk-plugin-sdk::mux`: `Open`, `Data`, `Close`, `Window`, lengths and ids) | Settles within a bound once the peer's bytes end, delivers no more than the peer sent, accepts no more streams than the peer could open, leaves no task behind; shared oracle `fuzz/oracles/mux_peer.rs`, replayed from `bookclerk-plugin-sdk` |
 
-Four boundaries live outside the Rust workspace and follow the ADR's rule for
+Five boundaries live outside the Rust workspace and follow the ADR's rule for
 non-Rust tooling (decision 6):
 
 - The diagnostics triage plan validator
@@ -312,6 +312,15 @@ non-Rust tooling (decision 6):
   on every PR, checking each accepted plan against an independent oracle (no
   links, mentions, cross-references, raw HTML or forged Report IDs; only batch
   report IDs; at most five issues).
+- The diagnostics ingest release-tag reader
+  (`tools/diagnostics-collector/scripts/release_baseline.py`), which turns the
+  GitHub `releases/latest` response into the tag the ingest job writes to
+  `$GITHUB_OUTPUT` and passes to `/report`.
+  `scripts/tests/test_release_baseline.py` replays its seed corpus
+  (`scripts/tests/release_baseline_corpus/`) and runs seeded mutation fuzzing
+  on every PR, checking each result against an independent oracle (a refusal,
+  an empty tag for a draft or prerelease, or exactly the body's own
+  `tag_name` when it is 1–64 characters of `[A-Za-z0-9._-]`).
 - The collector's `/triage` admission (`admitBatch` in
   `tools/diagnostics-collector/triage.js`), which parses the report-derived
   batch and prices it against the daily neuron budget.

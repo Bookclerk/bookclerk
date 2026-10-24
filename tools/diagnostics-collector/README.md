@@ -39,7 +39,9 @@ Before downloading objects, `/report` keeps only versions that match the latest
 
 If the repo has **no releases** yet (or `releases/latest` is 404), the filter is
 disabled and all versions are returned. Ops can override with
-`?baseline_version=` (empty = all).
+`?baseline_version=` (empty = all). The ingest workflow always passes it,
+resolved with its own GitHub token, because unauthenticated calls from
+Cloudflare egress addresses are rate-limited (`403`).
 
 Pagination uses `since` (upload timestamp ms) plus `after` (exclusive object
 key within that timestamp) so a truncated batch cannot skip same-ms siblings.
