@@ -55,8 +55,8 @@ pub use download::{
 };
 pub use error::{AudibleError, Result};
 pub use guest::{
-    credentials_json_from_auth, guest_fetch_title, guest_login_complete, guest_login_start,
-    guest_scan,
+    credentials_json_from_auth, deregister_device, guest_fetch_title, guest_login_complete,
+    guest_login_start, guest_revoke_account, guest_scan,
 };
 pub use options::DownloadOptions;
 pub use qr::{render_login_qr, QrRenderMode};

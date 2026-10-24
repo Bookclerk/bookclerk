@@ -1913,6 +1913,19 @@ class ContentSource(Protocol):
         """
         ...
 
+    async def revoke_account(self, params: RevokeAccountParams) -> EmptyReply:
+        """Undo store-side state for one account before the host deletes its
+        stored credentials (for example, deregister the device registered at
+        login). Best effort: the host revokes the account whatever this returns.
+
+        Args:
+            params: Account id and its stored credentials.
+
+        Returns:
+            ``EmptyReply``
+        """
+        ...
+
 
 class RemoteLibrary(Protocol):
     """`remoteLibrary` entrypoint: long-running remote-library lifecycle (start /
@@ -2966,6 +2979,21 @@ class CatalogDetailParams(TypedDict):
 
     productId: str
     isbn: NotRequired[str]
+
+
+class RevokeAccountParams(TypedDict):
+    """Params of `ContentSource.revokeAccount`. The host sends the credentials it
+    is about to delete so the guest can sign the device out at the store.
+
+    Attributes:
+        accountId: Account being revoked.
+        credentials: Decrypted credential blob for this account, exactly as login
+            returned it; never log it. Empty when none is stored. Omitted when absent
+            (wire zero value).
+    """
+
+    accountId: str
+    credentials: NotRequired[bytes]
 
 
 class CatalogHit(TypedDict):
@@ -5239,6 +5267,7 @@ __all__ = [
     "PurchaseHintParams",
     "ListDealsParams",
     "CatalogDetailParams",
+    "RevokeAccountParams",
     "CatalogHit",
     "CatalogHits",
     "CatalogHitsReplyOk",

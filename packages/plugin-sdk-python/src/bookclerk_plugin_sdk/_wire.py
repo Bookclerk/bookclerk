@@ -2507,6 +2507,26 @@ _catalog_detail_params_codec = _Codec(0, 2, _write_catalog_detail_params, _read_
 """Wire codec for ``CatalogDetailParams`` (0 data words, 2 pointers)."""
 
 
+def _write_revoke_account_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["accountId"])
+    if v.get("credentials") is not None:
+        s.set_data(1, v["credentials"])
+
+
+def _read_revoke_account_params(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "accountId": s.get_text(0),
+    }
+    credentials = s.get_data(1)
+    if not (len(credentials) == 0):
+        out["credentials"] = credentials
+    return out
+
+
+_revoke_account_params_codec = _Codec(0, 2, _write_revoke_account_params, _read_revoke_account_params)
+"""Wire codec for ``RevokeAccountParams`` (0 data words, 2 pointers)."""
+
+
 def _write_catalog_hit(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["productId"])
     s.set_text(1, v["title"])
@@ -5393,6 +5413,34 @@ def _read_content_source_catalog_detail_results(s: _StructReader, caps: _CapTabl
 
 _content_source_catalog_detail_results_codec = _Codec(0, 1, _write_content_source_catalog_detail_results, _read_content_source_catalog_detail_results)
 """Wire codec for ``ContentSourceCatalogDetailResults`` (0 data words, 1 pointers)."""
+
+
+def _write_content_source_revoke_account_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _revoke_account_params_codec.write(s.init_struct(0, 0, 2), v["params"], caps)
+
+
+def _read_content_source_revoke_account_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "params": _revoke_account_params_codec.read(s.get_struct(0, 0, 2), caps),
+    }
+
+
+_content_source_revoke_account_params_codec = _Codec(0, 1, _write_content_source_revoke_account_params, _read_content_source_revoke_account_params)
+"""Wire codec for ``ContentSourceRevokeAccountParams`` (0 data words, 1 pointers)."""
+
+
+def _write_content_source_revoke_account_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_content_source_revoke_account_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _empty_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_content_source_revoke_account_results_codec = _Codec(0, 1, _write_content_source_revoke_account_results, _read_content_source_revoke_account_results)
+"""Wire codec for ``ContentSourceRevokeAccountResults`` (0 data words, 1 pointers)."""
 
 
 def _write_remote_library_health_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:

@@ -727,6 +727,24 @@ export interface ContentSourceCatalogDetailResults {
 }
 
 /**
+ * Params envelope of `ContentSource.revokeAccount`.
+ *
+ * @internal
+ */
+export interface ContentSourceRevokeAccountParams {
+  params: T.RevokeAccountParams;
+}
+
+/**
+ * Results envelope of `ContentSource.revokeAccount`.
+ *
+ * @internal
+ */
+export interface ContentSourceRevokeAccountResults {
+  result: T.EmptyReply;
+}
+
+/**
  * Params envelope of `RemoteLibrary.health`.
  *
  * @internal
@@ -4660,6 +4678,34 @@ export const CatalogDetailParamsCodec: StructCodec<T.CatalogDetailParams> = {
     const isbnValue = s.getText(1);
     if (!(isbnValue === "")) {
       out.isbn = isbnValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `RevokeAccountParams` (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const RevokeAccountParamsCodec: StructCodec<T.RevokeAccountParams> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.accountId ?? "");
+    if (v.credentials !== undefined) {
+      s.setData(1, v.credentials ?? EMPTY_BYTES);
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out: T.RevokeAccountParams = {
+      accountId: s.getText(0),
+    };
+    const credentialsValue = s.getData(1);
+    if (!(credentialsValue.length === 0)) {
+      out.credentials = credentialsValue;
     }
     return out;
   },
@@ -8797,6 +8843,46 @@ export const ContentSourceCatalogDetailResultsCodec: StructCodec<ContentSourceCa
   read(s, caps) {
     return {
       result: CatalogDetailReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `ContentSource.revokeAccount` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const ContentSourceRevokeAccountParamsCodec: StructCodec<ContentSourceRevokeAccountParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      RevokeAccountParamsCodec.write(s.initStruct(0, 0, 2), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: RevokeAccountParamsCodec.read(s.getStruct(0, 0, 2), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `ContentSource.revokeAccount` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const ContentSourceRevokeAccountResultsCodec: StructCodec<ContentSourceRevokeAccountResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps),
     };
   },
 };

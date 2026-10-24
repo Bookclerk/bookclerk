@@ -27,19 +27,20 @@ use crate::generated::{
     read_fetch_title_reply, read_invocation, read_list_deals_params, read_login_complete_params,
     read_login_params, read_login_reply, read_login_start_reply, read_plugin_event,
     read_publish_reply, read_purchase_hint_params, read_purchase_hint_reply,
-    read_scan_library_params, read_scan_params, read_scan_reply, read_search_catalog_params,
-    read_source_accounts_reply, read_sync_listening_reply, write_authenticate_user_params,
-    write_brand, write_catalog_detail_params, write_catalog_detail_reply, write_catalog_hits_reply,
-    write_cli_invoke_params, write_cli_invoke_reply, write_cli_schema, write_cli_schema_reply,
-    write_config_option, write_database_adapter_config, write_diagnose_reply,
-    write_event_poll_reply, write_expand_candidates_params, write_external_user_reply,
-    write_fetch_title_params, write_fetch_title_reply, write_invocation, write_list_deals_params,
+    read_revoke_account_params, read_scan_library_params, read_scan_params, read_scan_reply,
+    read_search_catalog_params, read_source_accounts_reply, read_sync_listening_reply,
+    write_authenticate_user_params, write_brand, write_catalog_detail_params,
+    write_catalog_detail_reply, write_catalog_hits_reply, write_cli_invoke_params,
+    write_cli_invoke_reply, write_cli_schema, write_cli_schema_reply, write_config_option,
+    write_database_adapter_config, write_diagnose_reply, write_event_poll_reply,
+    write_expand_candidates_params, write_external_user_reply, write_fetch_title_params,
+    write_fetch_title_reply, write_invocation, write_list_deals_params,
     write_login_complete_params, write_login_params, write_login_reply, write_login_start_reply,
     write_plugin_event, write_publish_reply, write_purchase_hint_params, write_purchase_hint_reply,
-    write_scan_library_params, write_scan_params, write_scan_reply, write_search_catalog_params,
-    write_source_accounts_reply, write_sync_listening_reply, CatalogDetail, CatalogHits,
-    DiagnoseResult, EventPollResult, Invocation, PluginEvent, PublishOk, PurchaseHintResult,
-    SourceAccounts, SyncListeningResult,
+    write_revoke_account_params, write_scan_library_params, write_scan_params, write_scan_reply,
+    write_search_catalog_params, write_source_accounts_reply, write_sync_listening_reply,
+    CatalogDetail, CatalogHits, DiagnoseResult, EventPollResult, Invocation, PluginEvent,
+    PublishOk, PurchaseHintResult, SourceAccounts, SyncListeningResult,
 };
 #[cfg(feature = "host")]
 use crate::host_roles::HostAdapterDatabaseSession;
@@ -85,8 +86,8 @@ use crate::{
     ExpandCandidatesParams, ExternalUser, FetchTitleParams, ListDealsParams, ListeningProgress,
     LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, PlainFetch, PluginError,
     PluginMigration, PluginMigrationOp, PurchaseHint, PurchaseHintParams, Result,
-    ScanLibraryParams, ScanParams, ScanSummary, SearchCatalogParams, SourceAccount,
-    MAX_PLUGIN_MIGRATION_ID_BYTES,
+    RevokeAccountParams, ScanLibraryParams, ScanParams, ScanSummary, SearchCatalogParams,
+    SourceAccount, MAX_PLUGIN_MIGRATION_ID_BYTES,
 };
 
 pub(super) fn from_capnp(err: impl std::fmt::Display) -> PluginError {
@@ -2110,6 +2111,20 @@ impl content_source_capnp::Server for ContentSourceServer {
             });
         write_catalog_detail_reply(results.get().init_result(), &outcome)
     }
+
+    async fn revoke_account(
+        self: Rc<Self>,
+        params: content_source_capnp::RevokeAccountParams,
+        mut results: content_source_capnp::RevokeAccountResults,
+    ) -> capnp::Result<()> {
+        let params = read_revoke_account_params(params.get()?.get_params()?)?;
+        let mut result = results.get().init_result();
+        match self.inner.revoke_account(params).await {
+            Ok(()) => result.set_ok(()),
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
 }
 
 struct RemoteLibraryServer {
@@ -3401,6 +3416,12 @@ impl ContentSource for ContentSourceClient {
         read_catalog_detail_reply(reply_result!(reply))
             .map_err(from_capnp)?
             .map(|ok| ok.found.then_some(ok.hit))
+    }
+    async fn revoke_account(&self, params: RevokeAccountParams) -> Result<()> {
+        let mut req = self.client.revoke_account_request();
+        write_revoke_account_params(req.get().init_params(), &params).map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_empty(reply_result!(reply))
     }
     async fn health(&self) -> Result<HealthOk> {
         let req = self.client.health_request();

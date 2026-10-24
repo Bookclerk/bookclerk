@@ -10,7 +10,8 @@ use crate::generated::{
     CliSchema, DatabaseAdapterConfig, ExpandCandidatesParams, ExternalUser, FetchTitleParams,
     Invocation, ListDealsParams, ListeningProgress, LoginCompleteParams, LoginParams, LoginResult,
     LoginStartResult, PlainFetch, PluginEvent, PublishOk, PurchaseHint, PurchaseHintParams,
-    ScanLibraryParams, ScanParams, ScanSummary, SearchCatalogParams, SourceAccount,
+    RevokeAccountParams, ScanLibraryParams, ScanParams, ScanSummary, SearchCatalogParams,
+    SourceAccount,
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, JobInvocation, JobOutcome, ListOptions,
@@ -280,6 +281,21 @@ pub trait ContentSource {
     /// Full catalog record for one product; `Ok(None)` when unknown.
     async fn catalog_detail(&self, _params: CatalogDetailParams) -> Result<Option<CatalogHit>> {
         Err(PluginError::unsupported("catalogDetail"))
+    }
+
+    /// Undo store-side state for one account before the host deletes its
+    /// stored credentials, such as deregistering the device registered at
+    /// login.
+    ///
+    /// The default does nothing, which is right for stores that keep no
+    /// per-login state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the store rejects the sign-out. The host logs it
+    /// and revokes the account anyway.
+    async fn revoke_account(&self, _params: RevokeAccountParams) -> Result<()> {
+        Ok(())
     }
 
     /// Storefront health.

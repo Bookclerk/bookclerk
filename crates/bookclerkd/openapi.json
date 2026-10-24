@@ -14674,7 +14674,7 @@
           "Accounts"
         ],
         "summary": "Unlinks a store account from this identity and deletes secrets when no other identity remains.",
-        "description": "The account is addressed by `(source, account_id)`: the same store id may\nexist under two plugins. `source` is the alias or plugin key of the link.",
+        "description": "The account is addressed by `(source, account_id)`: the same store id may\nexist under two plugins. `source` is the alias or plugin key of the link.\n\nWhen the last link goes, the plugin first signs the account out at the\nstore (for example, Audible deregisters its device), best effort.",
         "operationId": "portal_revoke_connection",
         "parameters": [
           {

@@ -437,6 +437,13 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       W.ContentSourceCatalogDetailResultsCodec,
       (value) => okValue({ found: value != null, hit: (value ?? undefined) as CatalogHit }),
     ),
+    revokeAccount: withParams(
+      "storefront",
+      "revokeAccount",
+      W.ContentSourceRevokeAccountParamsCodec,
+      W.ContentSourceRevokeAccountResultsCodec,
+      okEmpty,
+    ),
   },
   Destination: {
     head: spec<W.DestinationHeadParams, W.DestinationHeadResults["result"]>({

@@ -40,8 +40,9 @@ use bookclerk_plugin_abi::{
     EventResult, ExecuteReply, ExecuteRequest, GuestDatabase, GuestReceiptPersist, HostBindings,
     Invocation, JobInvocation, JobOutcome, ListOptions, ListPage, LoginParams, ObjectMetadata,
     PluginCli, PluginClient, PluginError, PluginErrorCode, PluginEvent, ProgressSink, PublishOk,
-    PurchaseHintParams, PutResult, ReadResult, ResolvedStatement, SearchCatalogParams, Source,
-    StatementResult, TypedDbStatement, WriteOptions, MAX_EVENT_PAYLOAD_BYTES, PRODUCT_API_VERSION,
+    PurchaseHintParams, PutResult, ReadResult, ResolvedStatement, RevokeAccountParams,
+    SearchCatalogParams, Source, StatementResult, TypedDbStatement, WriteOptions,
+    MAX_EVENT_PAYLOAD_BYTES, PRODUCT_API_VERSION,
 };
 use bookclerk_workerd::pin::binary_name;
 use tokio::io::AsyncReadExt;
@@ -1794,6 +1795,22 @@ async fn storefront_vectors(client: &PluginClient, exports_jobs: bool) {
         .expect("found");
     assert_eq!(detail.product_id, "p1");
     assert_eq!(detail.title, "Detail p1");
+
+    storefront
+        .revoke_account(RevokeAccountParams {
+            account_id: "a1".into(),
+            credentials: Some(b"{}".to_vec()),
+        })
+        .await
+        .expect("revokeAccount");
+    let err = storefront
+        .revoke_account(RevokeAccountParams {
+            account_id: "a1".into(),
+            credentials: None,
+        })
+        .await
+        .expect_err("revokeAccount without credentials");
+    assert_eq!(err.code, PluginErrorCode::Unauthorized);
 
     let err = storefront
         .login(LoginParams {

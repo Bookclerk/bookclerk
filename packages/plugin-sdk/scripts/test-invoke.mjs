@@ -116,6 +116,10 @@ class Storefront extends StorefrontEntrypoint {
   async catalogDetail(params) {
     return params.productId === "known" ? { productId: "known", title: "Known" } : null;
   }
+  async revokeAccount(params) {
+    calls.storefront.push(["revokeAccount", params.accountId, Array.from(params.credentials ?? [])]);
+    if (params.accountId === "bad") throw new Error("store refused sign-out");
+  }
   async diagnose() {
     return [`greeting=${this.env.CONFIG.greeting}`, `secret=${this.env.SECRETS.token}`, `inv=${this.invocation.id}`];
   }
@@ -337,6 +341,24 @@ function decodeReply(reply, resultsCodec, caps) {
   );
   assert.equal(detail.value.found, true);
   assert.equal(detail.value.hit.title, "Known");
+}
+
+{
+  const revoked = decodeReply(
+    await invoke("ContentSource", "revokeAccount", W.ContentSourceRevokeAccountParamsCodec, {
+      params: { accountId: "a1", credentials: new Uint8Array([1, 2, 3]) },
+    }),
+    W.ContentSourceRevokeAccountResultsCodec,
+  );
+  assert.equal(revoked.kind, "ok");
+  assert.deepEqual(calls.storefront.at(-1), ["revokeAccount", "a1", [1, 2, 3]]);
+  const refused = decodeReply(
+    await invoke("ContentSource", "revokeAccount", W.ContentSourceRevokeAccountParamsCodec, {
+      params: { accountId: "bad" },
+    }),
+    W.ContentSourceRevokeAccountResultsCodec,
+  );
+  assert.equal(refused.kind, "err");
 }
 
 {

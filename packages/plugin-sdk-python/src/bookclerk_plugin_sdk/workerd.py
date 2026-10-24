@@ -1262,6 +1262,7 @@ STOREFRONT_METHODS: tuple[str, ...] = (
     "purchaseHint",
     "listDeals",
     "catalogDetail",
+    "revokeAccount",
     "diagnose",
     "health",
 )
@@ -1322,6 +1323,14 @@ class StorefrontEntrypoint(NamedEntrypoint):
     async def catalogDetail(self, _params: abi.CatalogDetailParams):
         """Full catalog record (``CatalogDetailParams`` → ``CatalogHit``)."""
         raise _unsupported("catalogDetail")
+
+    async def revokeAccount(self, _params: abi.RevokeAccountParams) -> None:
+        """Sign the account out at the store before the host deletes its credentials.
+
+        Best effort: the host revokes the account whatever this returns. The
+        default does nothing (``RevokeAccountParams`` → ``None``).
+        """
+        return None
 
     async def health(self):
         """Liveness / readiness probe (``HealthOk``)."""

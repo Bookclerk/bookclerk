@@ -42,10 +42,21 @@ use crate::discover::DiscoveredPlugin;
 use crate::jail::plugin_data_dir;
 use crate::protocol::{
     CatalogDetailParams, FetchTitleParams, ListDealsParams, LoginCompleteParams, LoginParams,
-    LoginResult, ScanParams, SearchCatalogParams,
+    LoginResult, RevokeAccountParams, ScanParams, SearchCatalogParams,
 };
 use crate::rpc_session::{PluginSession, SessionServices, HOST_SHARED_ACCOUNT};
 use crate::Result;
+
+/// Longest a guest may spend signing an account out at the store before the
+/// host deletes the account's credentials without it.
+///
+/// With [`REVOKE_ACCOUNT_QUEUE_GRACE`] it stays inside the daemon's default
+/// 8 s API deadline, which also bounds the Accounts revoke route.
+const REVOKE_ACCOUNT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Extra time a revoke may wait behind another call on the same plugin
+/// session before its own [`REVOKE_ACCOUNT_TIMEOUT`] starts.
+const REVOKE_ACCOUNT_QUEUE_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// External content source backed by a discovered plugin binary.
 pub struct ExternalSource {
@@ -298,6 +309,39 @@ impl ExternalSource {
             .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))
     }
 
+    /// Credential blob for one account as the guest receives it: the handed
+    /// copy when an owner cluster handed credentials with the job, otherwise
+    /// the sealed row in `scope`.
+    ///
+    /// # Returns
+    ///
+    /// `None` when no credentials are stored for `account_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the sealed row cannot be read or re-encoded, or
+    /// when credentials exist but the guest lacks the `secrets` binding.
+    async fn account_credential_bytes(
+        &self,
+        scope: &SourceScope,
+        account_id: &str,
+    ) -> bookclerk_source::Result<Option<Vec<u8>>> {
+        let credentials = match self.handed.as_ref() {
+            Some(handed) => handed.0.get(account_id).map(|value| value.to_vec()),
+            None => scope
+                .load_credentials_json(account_id)
+                .await
+                .map_err(|e| bookclerk_source::SourceError::Auth(e.to_string()))?
+                .as_ref()
+                .map(credentials_to_bytes)
+                .transpose()?,
+        };
+        if credentials.is_some() {
+            self.session.require_binding("secrets")?;
+        }
+        Ok(credentials)
+    }
+
     /// True when the guest advertised OAuth connect (`loginStart` /
     /// `loginComplete`); the `oauth` binding was verified at spawn.
     fn supports_oauth_rpc(&self) -> bool {
@@ -500,19 +544,7 @@ impl ContentSource for ExternalSource {
         title_id: &str,
         opts: &FetchOptions,
     ) -> bookclerk_source::Result<SourceFetch> {
-        let credentials = match self.handed.as_ref() {
-            Some(handed) => handed.0.get(account_id).map(|value| value.to_vec()),
-            None => scope
-                .load_credentials_json(account_id)
-                .await
-                .map_err(|e| bookclerk_source::SourceError::Auth(e.to_string()))?
-                .as_ref()
-                .map(credentials_to_bytes)
-                .transpose()?,
-        };
-        if credentials.is_some() {
-            self.session.require_binding("secrets")?;
-        }
+        let credentials = self.account_credential_bytes(scope, account_id).await?;
         // Jail-granted scratch (already TMPDIR), not the host download cache.
         let cache_dir = {
             let dir = self.session.scratch_dir().join("fetch");
@@ -534,6 +566,63 @@ impl ContentSource for ExternalSource {
             .cs_call(move |src| async move { src.fetch_title(params).await })
             .await?;
         Ok(plain.into())
+    }
+
+    /// Asks the guest to sign the account out at the store, then deletes the
+    /// account's stored credentials whatever the guest answered.
+    async fn revoke_credentials(
+        &self,
+        scope: &SourceScope,
+        account_id: &str,
+    ) -> bookclerk_source::Result<()> {
+        match self.account_credential_bytes(scope, account_id).await {
+            Ok(credentials) => {
+                let params = RevokeAccountParams {
+                    account_id: account_id.to_string(),
+                    credentials,
+                };
+                // The deadline runs on the vat side, so dropping the timed-out
+                // request also frees the session for the next storefront call.
+                // The outer bound covers waiting behind another call on the
+                // same session before this one starts.
+                let call = self.cs_call(move |src| async move {
+                    tokio::time::timeout(REVOKE_ACCOUNT_TIMEOUT, src.revoke_account(params))
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(bookclerk_plugin_sdk::PluginError::deadline_exceeded(
+                                format!(
+                                    "revokeAccount took longer than {} s",
+                                    REVOKE_ACCOUNT_TIMEOUT.as_secs()
+                                ),
+                            ))
+                        })
+                });
+                let outcome =
+                    tokio::time::timeout(REVOKE_ACCOUNT_TIMEOUT + REVOKE_ACCOUNT_QUEUE_GRACE, call)
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(bookclerk_source::SourceError::api(
+                                "store sign-out did not start in time".to_string(),
+                            ))
+                        });
+                if let Err(err) = outcome {
+                    tracing::warn!(
+                        plugin = %self.id(),
+                        account = %account_id,
+                        error = %err,
+                        "store sign-out failed; deleting stored credentials anyway"
+                    );
+                }
+            }
+            Err(err) => tracing::warn!(
+                plugin = %self.id(),
+                account = %account_id,
+                error = %err,
+                "skipping store sign-out (credentials unavailable or no `secrets` binding); \
+                 deleting stored credentials anyway"
+            ),
+        }
+        bookclerk_source::revoke_credentials_default(scope, account_id).await
     }
 
     async fn search_catalog(

@@ -280,6 +280,49 @@ pub async fn guest_scan(
     Ok(scan_summary(books, accounts, pages))
 }
 
+/// Deregister the Audible device that login registered for these credentials.
+///
+/// Only this device is removed (`deregister_all = false`); the account's other
+/// devices stay. Amazon invalidates the tokens on success, so the host deletes
+/// the credentials afterwards either way.
+///
+/// # Arguments
+///
+/// * `credentials` - Credential JSON exactly as login returned it.
+///
+/// # Returns
+///
+/// The device name Amazon assigned at registration, when the credentials
+/// record one.
+///
+/// # Errors
+///
+/// Returns an error when the credentials do not parse, the token refresh
+/// fails, or Amazon rejects the deregistration.
+pub async fn guest_revoke_account(credentials: &Value) -> Result<Option<String>> {
+    let auth = authenticator_from_credentials(credentials)?;
+    let client = Client::new(auth).map_err(AudibleError::from)?;
+    deregister_device(&client).await
+}
+
+/// Deregister the device behind `client`, leaving the account's other
+/// devices registered.
+///
+/// Exposed for wiremock CI tests (inject a [`Client`] with
+/// `auth_base_override`).
+///
+/// # Returns
+///
+/// The device name Amazon assigned at registration, when known.
+///
+/// # Errors
+///
+/// Returns an error when the token refresh fails or Amazon rejects the
+/// deregistration.
+pub async fn deregister_device(client: &Client) -> Result<Option<String>> {
+    Ok(client.deregister(false).await?)
+}
+
 /// Download + decrypt one title; return plain paths (never encrypted on the wire).
 ///
 /// `fetch` carries the host fetch knobs from the ABI `FetchTitleParams.fetch`

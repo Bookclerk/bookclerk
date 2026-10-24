@@ -957,6 +957,12 @@ interface ContentSource {
   catalogDetail @12 (
       params :CatalogDetailParams  # Product id and optional ISBN.
   ) -> (result :CatalogDetailReply);
+  # Undo store-side state for one account before the host deletes its
+  # stored credentials (for example, deregister the device registered at
+  # login). Best effort: the host revokes the account whatever this returns.
+  revokeAccount @13 (
+      params :RevokeAccountParams  # Account id and its stored credentials.
+  ) -> (result :EmptyReply);
 }
 
 # `remoteLibrary` entrypoint: long-running remote-library lifecycle (start /
@@ -1682,6 +1688,16 @@ struct CatalogDetailParams {
   productId @0 :Text;
   # ISBN when it differs from `productId`.
   isbn @1 :Text $optional;
+}
+
+# Params of `ContentSource.revokeAccount`. The host sends the credentials it
+# is about to delete so the guest can sign the device out at the store.
+struct RevokeAccountParams {
+  # Account being revoked.
+  accountId @0 :Text;
+  # Decrypted credential blob for this account, exactly as login returned
+  # it; never log it. Empty when none is stored.
+  credentials @1 :Data $optional;
 }
 
 # Whether an edition is abridged.

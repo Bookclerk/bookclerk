@@ -206,7 +206,12 @@ through `ContentSource` /
 an alias) —
 DRM (Adrm/CENC) is decrypted inside the Audible plugin before the host sees
 media. Guest `fetchTitle` carries optional `pdfUrl`; catalog methods are on the
-Workers RPC wire for external guests.
+Workers RPC wire for external guests. When an account is removed (Accounts
+page or `bookclerk library revoke-account`), the host first calls the guest's
+`revokeAccount` with the account's stored credentials so it can sign out at
+the store (Audible deregisters the device it registered at login), then
+deletes the credentials whatever the guest answered. The SDK default does
+nothing.
 
 Enabling a third-party plugin still means running that guest as the Bookclerk
 user, inside the jail below — review and **approve** capabilities before

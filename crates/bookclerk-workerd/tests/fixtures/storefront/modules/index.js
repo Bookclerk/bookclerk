@@ -45,6 +45,12 @@ export class Storefront extends StorefrontEntrypoint {
     return { productId: params.productId, title: `Detail ${params.productId}` };
   }
 
+  async revokeAccount(params) {
+    if (!params.credentials?.length) {
+      throw PluginError.fromWire("unauthorized", `no credentials for ${params.accountId}`);
+    }
+  }
+
   async login(params) {
     throw PluginError.fromWire("unauthorized", `no credentials for ${params.marketplace}`);
   }
