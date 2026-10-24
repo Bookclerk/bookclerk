@@ -312,27 +312,46 @@ function plural(n, noun) {
 }
 
 /**
- * Event rows of a stored report, bounded.
+ * Bounded text for an untrusted JSON value: strings as they are, anything
+ * else as JSON. Never throws (objects from storage may carry keys such as
+ * `toString` that break `String()`).
+ *
+ * @param {unknown} value Field key or value from storage.
+ * @param {number} max Longest result, in characters.
+ * @returns {string} The text, or an empty string when it cannot be shown.
+ */
+function fieldText(value, max) {
+  if (typeof value === "string") return value.slice(0, max);
+  try {
+    return String(JSON.stringify(value) ?? "").slice(0, max);
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Event rows of a stored report, bounded. Exported for the fuzz tests: the
+ * events are whatever anyone submitted.
  *
  * @param {unknown} events `payload.events` from storage.
  * @returns {{counts: Record<string, number>, rows: import("./html.js").SafeHtml}}
  *   Level counts and `<div>` rows.
  */
-function eventLog(events) {
+export function eventLog(events) {
   const list = Array.isArray(events) ? events.slice(0, 500) : [];
   const counts = { ERROR: 0, WARN: 0, INFO: 0, DEBUG: 0, TRACE: 0 };
   const rows = list.map((ev) => {
     const e = ev && typeof ev === "object" ? ev : {};
     let level = typeof e.level === "string" ? e.level.toUpperCase() : "";
     if (level === "WARNING") level = "WARN";
-    if (!(level in counts)) level = "INFO";
+    if (!Object.hasOwn(counts, level)) level = "INFO";
     counts[level] += 1;
     const ts = isoTime(e.ts_unix_ms).slice(11, 23);
     const fields = Array.isArray(e.fields)
       ? e.fields
           .slice(0, 20)
           .filter((f) => Array.isArray(f) && f.length === 2)
-          .map(([k, v]) => `${String(k).slice(0, 64)}=${String(v).slice(0, 256)}`)
+          .map(([k, v]) => `${fieldText(k, 64)}=${fieldText(v, 256)}`)
           .join(" ")
       : "";
     const message = typeof e.message === "string" ? e.message.slice(0, 8000) : "";

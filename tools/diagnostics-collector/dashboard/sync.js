@@ -252,7 +252,7 @@ export async function reindexSlice(env, b2) {
       await indexReport(
         db,
         { reportId: f.reportId, objectKey: f.fileName, receivedAt, summary: await summarizeReport(stored) },
-        Number.POSITIVE_INFINITY,
+        Number.MAX_SAFE_INTEGER,
       );
       indexed += 1;
     }

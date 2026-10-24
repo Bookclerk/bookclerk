@@ -77,20 +77,33 @@ export function utcDayOf(ms) {
 /**
  * Adds a report to the index unless today's cap is reached.
  *
+ * The cap holds under concurrent `/submit` requests: a slot is reserved by
+ * one conditional upsert on the day's ledger row (atomic in SQLite and D1)
+ * before the report row is written, and handed back when the report turns
+ * out to be indexed already.
+ *
  * @param {D1Database} db Database.
  * @param {{reportId: string, objectKey: string, receivedAt: number,
  *   summary: Awaited<ReturnType<typeof import("./signature.js").summarizeReport>>}} row
  *   The report and its summary.
- * @param {number} cap Most rows indexed per UTC day (by receipt day).
+ * @param {number} cap Most rows indexed per UTC day (by receipt day); a
+ *   positive safe integer.
  * @returns {Promise<"indexed" | "capped">} What happened. A report already
  *   indexed counts as indexed and does not use up the cap.
  */
 export async function indexReport(db, row, cap) {
+  if (await first(db, "SELECT 1 AS hit FROM reports WHERE report_id = ?", row.reportId)) return "indexed";
   const day = utcDayOf(row.receivedAt);
-  const used = await first(db, "SELECT rows FROM index_days WHERE day = ?", day);
-  if (used && Number(used.rows) >= cap) return "capped";
+  const reserved = await db
+    .prepare(
+      `INSERT INTO index_days (day, rows) VALUES (?, 1)
+       ON CONFLICT (day) DO UPDATE SET rows = rows + 1 WHERE rows < ?`,
+    )
+    .bind(day, cap)
+    .run();
+  if ((reserved.meta?.changes ?? 0) === 0) return "capped";
   const s = row.summary;
-  const insert = db
+  const insert = await db
     .prepare(
       `INSERT OR IGNORE INTO reports (report_id, object_key, received_at, version, os, arch, distro,
          trigger, events, errors, warnings, signature, signature_label, install_hash)
@@ -111,14 +124,11 @@ export async function indexReport(db, row, cap) {
       s.signature,
       s.signatureLabel,
       s.installHash,
-    );
-  const res = await insert.run();
-  if ((res.meta?.changes ?? 0) > 0) {
-    await run(
-      db,
-      "INSERT INTO index_days (day, rows) VALUES (?, 1) ON CONFLICT (day) DO UPDATE SET rows = rows + 1",
-      day,
-    );
+    )
+    .run();
+  if ((insert.meta?.changes ?? 0) === 0) {
+    // Indexed by a concurrent request in the meantime: hand the slot back.
+    await run(db, "UPDATE index_days SET rows = rows - 1 WHERE day = ? AND rows > 0", day);
   }
   return "indexed";
 }

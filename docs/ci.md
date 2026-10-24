@@ -325,7 +325,9 @@ non-Rust tooling (decision 6):
   Report IDs parser (`parseIssueReportIds` in
   `tools/diagnostics-collector/dashboard/report-ids.js`), which decides which
   reports an issue claims; the stored-report summary (`summarizeReport`
-  in `dashboard/signature.js`), which writes every report's index row; and
+  in `dashboard/signature.js`), which writes every report's index row; the
+  report page's event log (`eventLog` in `dashboard/pages.js`), which renders
+  stored events; and
   the sign-in callback check (`parseCallback` in `dashboard/auth.js`), which
   decides from the callback query and cookies whether a code is traded with
   GitHub. `tools/diagnostics-collector/dashboard-input.fuzz.test.js` replays
@@ -334,7 +336,8 @@ non-Rust tooling (decision 6):
   fuzzing on every PR, checking results against independent oracles (IDs
   re-derived by a separate walk, all UUIDs present in the body, capped; level
   counts recounted, a signature exactly when an error or warning exists,
-  bounded control-free fields; a callback accepted exactly when a separate
+  bounded control-free fields; the event log renders one escaped row per
+  event without throwing; a callback accepted exactly when a separate
   cookie walk finds a state that matches the query and well-formed code and
   verifier, returning those values).
 

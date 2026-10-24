@@ -601,3 +601,17 @@ describe("untrusted times and pages", () => {
     assert.equal((await first(env.DASHBOARD_DB, "SELECT value FROM sync_state WHERE key = 'issues_since'")).value, t(200));
   });
 });
+
+describe("index cap under concurrency", () => {
+  it("indexes at most the cap when requests race", async () => {
+    const db = createD1();
+    const summary = await summarizeReport(stored(ID1));
+    const ids = Array.from({ length: 10 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`);
+    const results = await Promise.all(
+      ids.map((id) => indexReport(db, { reportId: id, objectKey: `diagnostics/x/${id}.json`, receivedAt: NOW, summary }, 1)),
+    );
+    assert.equal(results.filter((r) => r === "indexed").length, 1);
+    assert.equal((await all(db, "SELECT * FROM reports")).length, 1);
+    assert.equal((await first(db, "SELECT rows FROM index_days")).rows, 1);
+  });
+});

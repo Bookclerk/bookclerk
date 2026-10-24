@@ -5,6 +5,8 @@
 //   edit; its result decides which reports an issue claims.
 // - summarizeReport reads stored reports anyone can submit; its result is
 //   written to D1 and shown on every page.
+// - eventLog renders the events of a stored report on its page; a throw
+//   there would make the report unviewable.
 // - parseCallback reads the sign-in callback's query and cookies, which
 //   anyone can send; its result decides whether a code is traded with
 //   GitHub.
@@ -16,6 +18,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { MAX_CODE_CHARS, OAUTH_COOKIE, parseCallback } from "./dashboard/auth.js";
+import { eventLog } from "./dashboard/pages.js";
 import { FALLBACK_MARKER, MAX_IDS_PER_ISSUE, TRIAGE_MARKER, parseIssueReportIds } from "./dashboard/report-ids.js";
 import { MAX_FIELD_CHARS, MAX_LABEL_CHARS, summarizeReport } from "./dashboard/signature.js";
 import { mutate, rng } from "./test-support/fuzz.js";
@@ -94,6 +97,24 @@ async function checkSummary(input, label) {
   assert.match(got.installHash, /^([0-9a-f]{1,64})?$/, label);
   const again = await summarizeReport(input);
   assert.deepEqual(again, got, `${label}: not deterministic`);
+  checkEventLog(payload.events, label);
+}
+
+/**
+ * Oracle for eventLog: never throws, one row per event up to 500, level
+ * counts add up to the rows, and no event text survives as markup.
+ *
+ * @param {unknown} events `payload.events` (any JSON value).
+ * @param {string} label Input name for failure messages.
+ */
+function checkEventLog(events, label) {
+  const log = eventLog(events);
+  const out = String(log.rows);
+  const expected = Array.isArray(events) ? Math.min(events.length, 500) : 0;
+  assert.equal((out.match(/<div class="row /g) ?? []).length, expected, label);
+  assert.equal(Object.values(log.counts).reduce((a, b) => a + b, 0), expected, label);
+  assert.deepEqual(Object.keys(log.counts), ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"], label);
+  assert.ok(!/<script/i.test(out), `${label}: unescaped markup`);
 }
 
 const ID_FRAGMENTS = [
@@ -104,6 +125,7 @@ const ID_FRAGMENTS = [
 const JSON_FRAGMENTS = [
   "[", "]", "{", "}", ",", ":", '"', "\\", "null", "true", "1e308", '"level":"ERROR"', '"level":"warn"',
   '"message":"', '"target":"', "0xff", "/tmp/a", "12345678", "C:\\\\x", "😀", "\\u0000",
+  '"fields":[["k",{"toString":null}]]', '"ts_unix_ms":1e20', '"level":"__proto__"', "<script>",
 ];
 
 describe("parseIssueReportIds", () => {
