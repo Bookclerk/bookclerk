@@ -2,7 +2,7 @@
 
 The public website: a landing page for people who want to use Bookclerk, a
 download page, and the documentation with its generated API reference under
-`/docs/`. It is plain HTML and CSS with no client-side scripts, served by a
+`/docs/`. It is plain HTML and CSS with no client-side scripts of its own, served by a
 Cloudflare Worker named **`bookclerk-site`** on the domain in the `DOMAIN`
 organization variable. `build.mjs` writes the static pages; the Worker
 (`entry.mjs` → `worker.js`) renders each docs page at request time from the
@@ -71,11 +71,22 @@ cd audit && npm ci && node audit.mjs      # --chrome <path> or CHROME_PATH picks
   the HTML: a test checks that every `<h2>` of the page is a `##` section of
   its Markdown version.
 - `worker.js` – the docs route and content negotiation (see below).
-  `wrangler.toml` runs it only for page paths (`run_worker_first`).
+  `wrangler.toml` runs it only for page paths (`run_worker_first`). It
+  compresses what it answers with (Brotli, else gzip) itself, because
+  Cloudflare's edge leaves `text/markdown` uncompressed; files served without
+  it are compressed by the edge. Its `Accept-Encoding` parser is an
+  untrusted-input boundary: `fuzz.test.mjs` replays the seeds in
+  `fuzz/accept_encoding/` and fuzzes mutations of them against an
+  independent oracle (`docs/ci.md#fuzzing`).
   `entry.mjs` binds it to `generated/docs-shell.json`, which `npm run build`
   writes (gitignored), so build before `wrangler dev` or `deploy`.
-- `src/_headers` – security headers (no scripts are allowed to run), and
-  Markdown and `llms.txt` content types.
+- `src/_headers` – security headers, and Markdown and `llms.txt` content
+  types. The CSP allows no script except Cloudflare Web Analytics, which the
+  edge injects into each page: `script-src https://static.cloudflareinsights.com`
+  for the beacon and `connect-src https://cloudflareinsights.com` beside
+  `'self'` for its reports. That beacon is the one approved exception to the
+  site's no-third-party-requests rule. `SECURITY_HEADERS` in `worker.js`
+  carries the same policy, and a test keeps the two equal.
 - Brand assets are copied from `assets/brand/` at build time.
 
 ## Docs

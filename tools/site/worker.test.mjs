@@ -19,6 +19,7 @@ import {
   markdownPath,
   MAX_DOC_BYTES,
   PAGE_MARKDOWN,
+  pickEncoding,
   prefersMarkdown,
   SECURITY_HEADERS,
 } from "./worker.js";
@@ -231,6 +232,23 @@ test("the Worker sends the same security headers as src/_headers", () => {
   assert.deepEqual(fromFile, SECURITY_HEADERS);
 });
 
+test("the CSP lets only Cloudflare's analytics beacon run and report", () => {
+  const directives = Object.fromEntries(
+    SECURITY_HEADERS["Content-Security-Policy"].split(";").map((d) => {
+      const [name, ...sources] = d.trim().split(/\s+/);
+      return [name, sources];
+    }),
+  );
+  assert.deepEqual(directives["default-src"], ["'none'"]);
+  assert.deepEqual(directives["script-src"], ["https://static.cloudflareinsights.com"]);
+  assert.deepEqual(directives["connect-src"], ["'self'", "https://cloudflareinsights.com"]);
+  assert.equal(directives["script-src-attr"], undefined);
+  for (const [name, sources] of Object.entries(directives)) {
+    if (name === "script-src" || name === "connect-src") continue;
+    for (const source of sources) assert.ok(source.startsWith("'"), `${name} names a host: ${source}`);
+  }
+});
+
 test("a Markdown request for a page gets its Markdown version", async () => {
   for (const [path, heading, canonical] of [
     ["/", "# Bookclerk: every purchase, properly placed", "/"],
@@ -299,7 +317,7 @@ test("a browser gets the doc in the site's page, with its version and sidebar", 
   const res = await get("/docs/plugins", BROWSER);
   assert.equal(res.status, 200);
   assert.match(res.headers.get("Content-Type"), /^text\/html/);
-  assert.equal(res.headers.get("Vary"), "Accept");
+  assert.equal(res.headers.get("Vary"), "Accept, Accept-Encoding");
   assert.equal(res.headers.get("Cache-Control"), "public, max-age=300, s-maxage=86400");
   assert.equal(res.headers.get("X-Robots-Tag"), null);
   assert.equal(res.headers.get("Link"), '<https://bookclerk.app/docs/plugins.md>; rel="alternate"; type="text/markdown"');
@@ -466,4 +484,76 @@ test("a Markdown request passes conditional headers to the assets", async () => 
 test("other methods are passed to the assets unchanged", async () => {
   const res = await get("/", "text/markdown", "POST");
   assert.match(res.headers.get("Content-Type"), /^text\/html/);
+});
+
+test("pickEncoding prefers Brotli, honours quality values and refuses q=0", () => {
+  assert.equal(pickEncoding("gzip, deflate, br, zstd"), "br");
+  assert.equal(pickEncoding("gzip"), "gzip");
+  assert.equal(pickEncoding("br;q=0.5, gzip"), "gzip");
+  assert.equal(pickEncoding("br;q=0, gzip;q=0"), null);
+  assert.equal(pickEncoding("*"), "br");
+  assert.equal(pickEncoding("*, br;q=0"), "gzip");
+  assert.equal(pickEncoding("identity"), null);
+  assert.equal(pickEncoding(""), null);
+  assert.equal(pickEncoding(null), null);
+});
+
+test("text answers are compressed for clients that accept it", async () => {
+  for (const [path, accept] of [
+    ["/", BROWSER],
+    ["/", "text/markdown"],
+    ["/download.md", "*/*"],
+    ["/docs/plugins", BROWSER],
+    ["/docs/plugins", "text/markdown"],
+    ["/docs/no-such-doc", BROWSER],
+  ]) {
+    const req = new Request(`https://bookclerk.app${path}`, { headers: { Accept: accept, "Accept-Encoding": "gzip, deflate, br" } });
+    const res = await handle(req, env, { shell, fetch: docsFetch });
+    assert.equal(res.headers.get("Content-Encoding"), "br", `${path} as ${accept}`);
+    assert.equal(res.headers.get("Content-Length"), null, path);
+    assert.ok(res.headers.get("Vary").split(", ").includes("Accept-Encoding"), path);
+  }
+  const gzipOnly = await handle(new Request("https://bookclerk.app/", { headers: { "Accept-Encoding": "gzip" } }), env, { shell });
+  assert.equal(gzipOnly.headers.get("Content-Encoding"), "gzip");
+  // Cloudflare rewrites Accept-Encoding before the Worker runs; what the client sent wins.
+  const viaEdge = new Request("https://bookclerk.app/", { headers: { "Accept-Encoding": "gzip, br" } });
+  Object.defineProperty(viaEdge, "cf", { value: { clientAcceptEncoding: "identity" } });
+  assert.equal((await handle(viaEdge, env, { shell })).headers.get("Content-Encoding"), null);
+});
+
+test("compression leaves alone what must not or need not be compressed", async () => {
+  const plain = await get("/", BROWSER);
+  assert.equal(plain.headers.get("Content-Encoding"), null);
+  assert.ok(plain.headers.get("Vary").split(", ").includes("Accept-Encoding"));
+  const answer = (headers, status = 200) => ({ ASSETS: { fetch: async () => new Response(status === 304 ? null : "x", { status, headers }) } });
+  for (const [headers, status] of [
+    [{ "Content-Type": "text/html", "Content-Encoding": "gzip" }, 200],
+    [{ "Content-Type": "text/html", "Cache-Control": "public, no-transform" }, 200],
+    [{ "Content-Type": "image/png" }, 200],
+    [{ "Content-Type": "text/html", "Content-Range": "bytes 0-0/20" }, 206],
+  ]) {
+    const req = new Request("https://bookclerk.app/download", { headers: { "Accept-Encoding": "br" } });
+    const res = await handle(req, answer(headers, status), { shell });
+    assert.equal(res.headers.get("Content-Encoding"), headers["Content-Encoding"] ?? null, JSON.stringify(headers));
+  }
+  const tagged = await handle(new Request("https://bookclerk.app/download", { headers: { "Accept-Encoding": "br" } }), answer({ "Content-Type": "text/html", ETag: '"abc"' }), { shell });
+  assert.equal(tagged.headers.get("ETag"), 'W/"abc"');
+  for (const headers of [{ "Content-Type": "text/html", ETag: '"abc"' }, { ETag: '"abc"' }]) {
+    // A 304 keeps the compressed answer's Vary and weak validator, with no body to encode.
+    const req = new Request("https://bookclerk.app/download", { headers: { "Accept-Encoding": "br", "If-None-Match": 'W/"abc"' } });
+    const res = await handle(req, answer(headers, 304), { shell });
+    assert.equal(res.status, 304);
+    assert.equal(res.headers.get("Content-Encoding"), null);
+    assert.equal(res.headers.get("ETag"), 'W/"abc"');
+    assert.ok(res.headers.get("Vary").split(", ").includes("Accept-Encoding"));
+  }
+  const md304 = await handle(
+    new Request("https://bookclerk.app/download", { headers: { Accept: "text/markdown", "Accept-Encoding": "gzip", "If-None-Match": 'W/"abc"' } }),
+    answer({ ETag: '"abc"' }, 304),
+    { shell },
+  );
+  assert.equal(md304.headers.get("Vary"), "Accept, Accept-Encoding");
+  assert.equal(md304.headers.get("ETag"), 'W/"abc"');
+  const post = await handle(new Request("https://bookclerk.app/", { method: "POST", headers: { "Accept-Encoding": "br" } }), env, { shell });
+  assert.equal(post.headers.get("Content-Encoding"), null);
 });
