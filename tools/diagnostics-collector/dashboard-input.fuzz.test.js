@@ -18,6 +18,8 @@
 //   sync cursor and is what storeIssue writes.
 // - decodeInstallationId, decodeInstallationToken, decodeAccessToken,
 //   oauthErrorCode and decodeUser read GitHub's answers during sign-in and token minting.
+// - parseIssueNotify reads the ingest Action's issue notice and decodeIssue
+//   the issue it names, read back from GitHub.
 // - decodeListPage reads B2's file listing; its result names the objects
 //   report viewing downloads and where reindexing continues.
 // - decodePullRequests reads the GraphQL answer about each issue's labels
@@ -34,6 +36,8 @@ import { MAX_CODE_CHARS, OAUTH_COOKIE, parseCallback } from "./dashboard/auth.js
 import {
   DIAGNOSTICS_LABEL,
   decodeAccessToken,
+  decodeIssue,
+  parseIssueNotify,
   oauthErrorCode,
   decodeInstallationId,
   decodeInstallationToken,
@@ -668,6 +672,86 @@ describe("GitHub REST decoding", () => {
         const base = auth[Math.floor(rand() * auth.length)];
         const input = { kind: base.kind, data: mutateJson(rand, base.data) };
         checkAuthResponse(input, `auth ${n}: ${JSON.stringify(input).slice(0, 300)}`);
+      }
+    }
+  });
+});
+
+/**
+ * Oracle for parseIssueNotify: a separate walk over the parsed value.
+ *
+ * @param {string} text Body.
+ * @param {string} label Failure label.
+ */
+function checkIssueNotify(text, label) {
+  let expected = null;
+  if (text.length <= 256) {
+    let v;
+    let ok = true;
+    try {
+      v = JSON.parse(text);
+    } catch {
+      ok = false;
+    }
+    if (ok && v !== null && typeof v === "object" && !Array.isArray(v)) {
+      const n = v.issue;
+      if (typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= 1_000_000_000) expected = n;
+    }
+  }
+  assert.equal(parseIssueNotify(text), expected, label);
+}
+
+/**
+ * Oracle for decodeIssue: one well-numbered non-PR issue, labeled exactly
+ * when a label (string or object name) is "diagnostics".
+ *
+ * @param {unknown} data Parsed body.
+ * @param {string} label Failure label.
+ */
+function checkIssue(data, label) {
+  const got = decodeIssue(data);
+  const isObj = (v) => v !== null && typeof v === "object";
+  const valid = isObj(data) && !Array.isArray(data) && data.pull_request == null
+    && typeof data.number === "number" && Number.isInteger(data.number) && data.number >= 1 && data.number <= Number.MAX_SAFE_INTEGER;
+  if (!valid) {
+    assert.equal(got, null, label);
+    return;
+  }
+  assert.ok(got, label);
+  assert.equal(got.issue.number, data.number, label);
+  assert.equal(got.issue.body, typeof data.body === "string" ? data.body : "", label);
+  let labeled = false;
+  if (Array.isArray(data.labels)) {
+    for (const l of data.labels) {
+      if (l === "diagnostics" || (isObj(l) && l.name === "diagnostics")) labeled = true;
+    }
+  }
+  assert.equal(got.labeled, labeled, label);
+}
+
+describe("issue notice decoding", () => {
+  it("replays the seed corpora", () => {
+    const notices = seeds("issue_notify");
+    assert.ok(notices.length > 0);
+    for (const [name, raw] of notices) checkIssueNotify(raw, name);
+    assert.equal(parseIssueNotify(notices.find(([n]) => n === "normal.json")[1]), 400);
+    const issues = seeds("issue");
+    assert.ok(issues.length > 0);
+    for (const [name, raw] of issues) checkIssue(JSON.parse(raw), name);
+    assert.equal(decodeIssue(JSON.parse(issues.find(([n]) => n === "labeled.json")[1])).labeled, true);
+  });
+
+  it("holds the oracles under seeded mutation", () => {
+    const notices = seeds("issue_notify").map(([, raw]) => raw);
+    const issues = seeds("issue").map(([, raw]) => JSON.parse(raw));
+    const rand = rng(20261024);
+    for (let n = 0; n < 3000; n++) {
+      if (rand() < 0.5) {
+        const text = mutate(rand, notices[Math.floor(rand() * notices.length)], ['"issue"', "1e9", "-1", "null", "{}", "[]", "9007199254740993", '"', ":"]);
+        checkIssueNotify(text, `notice ${n}: ${text.slice(0, 200)}`);
+      } else {
+        const data = mutateJson(rand, issues[Math.floor(rand() * issues.length)]);
+        checkIssue(data, `issue ${n}: ${JSON.stringify(data)?.slice(0, 300)}`);
       }
     }
   });

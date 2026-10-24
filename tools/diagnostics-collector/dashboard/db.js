@@ -526,7 +526,7 @@ export async function recentAccess(db, limit) {
  *
  * @param {D1Database} db Database.
  * @param {{userId: number, login: string}} who Signed-in member.
- * @param {"sign-in" | "view-report" | "sign-out-all" | "reindex"} action What they did.
+ * @param {"sign-in" | "view-report" | "sign-out-all" | "reindex" | "sync"} action What they did.
  * @param {string | null} reportId Report viewed, when any.
  * @param {number} now Unix time in milliseconds.
  * @returns {Promise<void>}
@@ -541,6 +541,28 @@ export async function logAccess(db, who, action, reportId, now) {
     action,
     reportId,
   );
+}
+
+/**
+ * A fingerprint of everything the issue sync writes that pages show: issue
+ * count, numbers, states, titles and update times, report links, and pull
+ * request states and merge times. Two equal fingerprints mean a sync changed
+ * nothing visible, so open pages need no live refresh. Sums can collide in
+ * principle; a collision only skips one refresh.
+ *
+ * @param {D1Database} db Database.
+ * @returns {Promise<string>} Opaque text to compare.
+ */
+export async function linkFingerprint(db) {
+  const row = await first(
+    db,
+    `SELECT
+       (SELECT COUNT(*) || ':' || COALESCE(SUM(number * 31 + updated_at + LENGTH(title) + (state = 'open')), 0) FROM issues)
+       || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(issue_number), 0) FROM report_issue)
+       || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(pr_number * 7 + (state = 'merged') * 3 + (state = 'open') + COALESCE(merged_at, 0)), 0) FROM issue_pr)
+       AS fp`,
+  );
+  return row ? String(row.fp) : "";
 }
 
 /**

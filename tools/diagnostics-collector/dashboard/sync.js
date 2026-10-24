@@ -22,7 +22,7 @@ import {
   sweep,
   utcDayOf,
 } from "./db.js";
-import { installationToken, listDiagnosticsIssues, pullRequestsFor } from "./github.js";
+import { fetchIssue, installationToken, listDiagnosticsIssues, pullRequestsFor } from "./github.js";
 import { parseIssueReportIds, reportIdOf } from "./report-ids.js";
 import { summarizeReport } from "./signature.js";
 import { listPage, MAX_STORED_REPORT_CHARS } from "./storage.js";
@@ -45,8 +45,15 @@ const MAX_PR_REFRESH = 100;
 /** Issues per GraphQL call, stored in one D1 batch. */
 const PR_BATCH = 10;
 
-/** D1 calls the sync keeps for its last write (the sync time). */
-const SYNC_RESERVE = 1;
+/**
+ * D1 calls the sync keeps for its last write (the sync time), the live
+ * update's before-and-after link fingerprints and, when an owner runs it from
+ * the dashboard, the route's note and access-log writes.
+ */
+const SYNC_RESERVE = 5;
+
+/** Waits, in ms, before re-reading an issue GitHub said it does not have. */
+const NOT_FOUND_RETRY_MS = [1000, 2000];
 
 /** Report links inserted per statement (two bound values each). */
 const LINK_CHUNK = 40;
@@ -316,6 +323,45 @@ export async function syncIssues(env, cfg, now) {
   }
   await setState(db, "issues_synced_at", String(now));
   return { issues: stored, refreshed };
+}
+
+/**
+ * Brings one issue up to date right away, for the ingest Action's notice
+ * after it files an issue. Only the number comes from the caller: the issue,
+ * its report IDs, its label and its pull requests are read from GitHub, so
+ * a caller cannot link reports an issue does not list.
+ *
+ * @param {{DASHBOARD_DB: D1Database}} env Worker bindings.
+ * @param {import("./github.js").GitHubConfig} cfg Settings.
+ * @param {number} number Issue number.
+ * @param {number} now Unix time in milliseconds.
+ * @param {number[]} [retryDelaysMs] Waits before reading again while GitHub
+ *   has no such issue (tests pass none).
+ * @returns {Promise<"linked" | "dropped">} Whether the issue is now stored
+ *   with its links, or was forgotten (no such issue, or not labeled
+ *   `diagnostics`).
+ */
+export async function syncIssueNow(env, cfg, number, now, retryDelaysMs = NOT_FOUND_RETRY_MS) {
+  const db = metered(env.DASHBOARD_DB);
+  const token = await installationToken(cfg, now);
+  let got = await fetchIssue(cfg, token, number);
+  // GitHub's reads can lag a create by a moment; the notice arrives right
+  // after `gh issue create`, so a 404 is retried before it counts.
+  for (const ms of retryDelaysMs) {
+    if (got) break;
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    got = await fetchIssue(cfg, token, number);
+  }
+  if (!got || !got.labeled) {
+    await db.batch(dropStatements(db, number));
+    return "dropped";
+  }
+  const prs = await pullRequestsFor(cfg, token, [number]);
+  const stmts = issueStatements(db, got.issue);
+  const refreshed = prs.get(number);
+  if (refreshed?.labeled) stmts.push(...pullRequestStatements(db, number, refreshed.prs, now));
+  await db.batch(stmts);
+  return "linked";
 }
 
 /**

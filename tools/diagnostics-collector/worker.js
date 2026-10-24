@@ -34,20 +34,25 @@
  *
  * Bindings: AI (Workers AI), TRIAGE_BUDGET (KV, the daily neuron ledger),
  * DASHBOARD_DB (D1, the dashboard's report index and sessions), ASSETS
- * (dashboard styles, script and fonts under /static/).
+ * (dashboard styles, script and fonts under /static/), LIVE (the LiveHub
+ * Durable Object that pushes "changed" to open dashboard pages; see
+ * dashboard/live.js).
  *
  * REPORT_API_KEY only ever lives in the Worker and the GitHub Actions
  * secrets; Bookclerk builds carry the collector URL, never this key.
  */
 
-import { dashboardFetch, dashboardScheduled, indexCap } from "./dashboard/routes.js";
-import { indexSubmitted } from "./dashboard/sync.js";
+import { parseIssueNotify } from "./dashboard/github.js";
+import { dashboardFetch, dashboardIndexSubmitted, dashboardIssueNotify, dashboardScheduled } from "./dashboard/routes.js";
 import { handleTriage, readCapped } from "./triage.js";
 import {
   extractVersionFromKey,
   normalizeVersion,
   versionAcceptable,
 } from "./version-filter.js";
+
+// The Durable Object class must be exported from the main module.
+export { LiveHub } from "./dashboard/live.js";
 
 const MAX_BODY_BYTES = 256 * 1024;
 const DIAGNOSTICS_PREFIX = "diagnostics/";
@@ -174,6 +179,13 @@ export default {
         return await handleReport(request, env, url);
       }
 
+      if (request.method === "POST" && path === "/issues/notify") {
+        if (!requireReportAuth(request, env)) {
+          return json({ error: "unauthorized" }, 401);
+        }
+        return await handleIssueNotify(request, env);
+      }
+
       if (request.method === "POST" && path === "/triage") {
         if (!requireReportAuth(request, env)) {
           return json({ error: "unauthorized" }, 401);
@@ -212,6 +224,25 @@ function b2Access(env) {
     downloadById: (auth, fileId) => b2DownloadById(auth, fileId),
     bucketId: env.B2_BUCKET_ID,
   };
+}
+
+/**
+ * `POST /issues/notify`: the ingest Action names an issue it just filed so
+ * the dashboard links it at once. Answers 202 with what happened, 204 when
+ * the dashboard is off (so forks without it do not fail the Action), or 400
+ * for a malformed body.
+ *
+ * @param {Request} request Authenticated request.
+ * @param {Record<string, any>} env Worker bindings.
+ * @returns {Promise<Response>} The answer.
+ */
+async function handleIssueNotify(request, env) {
+  const text = await readCapped(request, 256);
+  const number = text === null ? null : parseIssueNotify(text);
+  if (number === null) return json({ error: "expected {\"issue\": <number>}" }, 400);
+  const result = await dashboardIssueNotify(env, number, Date.now());
+  if (result === null) return new Response(null, { status: 204 });
+  return json({ ok: true, issue: number, result }, 202);
 }
 
 async function handleSubmit(request, env, ctx) {
@@ -273,7 +304,7 @@ async function handleSubmit(request, env, ctx) {
   // Best-effort dashboard index row; a failure leaves the report for the
   // owner's reindex and never fails the upload.
   if (env.DASHBOARD_DB && ctx) {
-    ctx.waitUntil(indexSubmitted(env.DASHBOARD_DB, enriched, objectKey, indexCap(env)).catch(() => {}));
+    ctx.waitUntil(dashboardIndexSubmitted(env, enriched, objectKey).catch(() => {}));
   }
 
   return json(

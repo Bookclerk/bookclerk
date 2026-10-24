@@ -13,8 +13,9 @@ import { parseIssueReportIds, reportIdOf } from "./dashboard/report-ids.js";
 import { dashboardFetch } from "./dashboard/routes.js";
 import { SESSION_COOKIE, createSession } from "./dashboard/session.js";
 import { normalizeMessage, summarizeReport } from "./dashboard/signature.js";
-import { storeIssue, syncIssues } from "./dashboard/sync.js";
+import { storeIssue, syncIssueNow, syncIssues } from "./dashboard/sync.js";
 import { createD1 } from "./test-support/d1.js";
+import worker from "./worker.js";
 
 const ORIGIN = "https://diagnostics.example.test";
 const NOW = Date.UTC(2026, 9, 23, 14, 0, 0);
@@ -766,6 +767,142 @@ function limitedD1(d1, limit) {
   handle.batch = (stmts) => (charge(), d1.batch(stmts.map((s) => s.stmt)));
   return handle;
 }
+
+describe("owner issue sync", () => {
+  it("links a filed issue to its report right away, within the D1 limit", async () => {
+    const env = makeEnv();
+    const d1 = env.DASHBOARD_DB;
+    await seed(env, ID1);
+    const issue = {
+      number: 400,
+      title: "[diagnostics] synthetic",
+      state: "closed",
+      body: `<!-- bookclerk-diagnostics: workers-ai triage -->\nx\n\n### Report IDs\n- \`${ID1}\`\n`,
+      created_at: new Date(NOW - 60_000).toISOString(),
+      updated_at: new Date(NOW - 30_000).toISOString(),
+      closed_at: new Date(NOW - 30_000).toISOString(),
+    };
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues?", () => Response.json([issue])],
+      ["POST https://api.github.com/graphql", () => Response.json({ data: { repository: { i0: { closedByPullRequestsReferences: { nodes: [] }, timelineItems: { nodes: [] } } } } })],
+    ]);
+    const member = await signedIn(env, "member");
+    const refused = await call(env, new Request(`${ORIGIN}/admin/sync`, { method: "POST", headers: { cookie: member, origin: ORIGIN } }));
+    assert.equal(refused.status, 403);
+    const owner = await signedIn(env, "admin");
+    const res = await call({ ...env, DASHBOARD_DB: limitedD1(d1, 50) }, new Request(`${ORIGIN}/admin/sync`, { method: "POST", headers: { cookie: owner, origin: ORIGIN } }));
+    assert.equal(res.status, 303);
+    assert.deepEqual((await all(d1, "SELECT report_id, issue_number FROM report_issue")).map((r) => [r.report_id, r.issue_number]), [[ID1, 400]]);
+    assert.match((await first(d1, "SELECT value FROM sync_state WHERE key = 'reindex_note'")).value, /stored 1 changed issues/);
+    assert.equal((await first(d1, "SELECT action FROM access_log ORDER BY id DESC LIMIT 1")).action, "sync");
+  });
+});
+
+describe("issue notice from the ingest Action", () => {
+  const KEY = "r".repeat(32);
+  /** POSTs a notice to the Worker. */
+  function notify(env, body, key = KEY) {
+    return worker.fetch(
+      new Request(`${ORIGIN}/issues/notify`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+        body,
+      }),
+      env,
+      makeCtx(),
+    );
+  }
+  const filed = (labels) => ({
+    number: 400,
+    title: "[diagnostics] synthetic",
+    state: "open",
+    labels,
+    body: `<!-- bookclerk-diagnostics: workers-ai triage -->\nx\n\n### Report IDs\n- \`${ID1}\`\n`,
+    created_at: new Date(NOW - 60_000).toISOString(),
+    updated_at: new Date(NOW - 30_000).toISOString(),
+    closed_at: null,
+  });
+  const noPrs = ["POST https://api.github.com/graphql", () => Response.json({ data: { repository: { i0: { closedByPullRequestsReferences: { nodes: [] }, timelineItems: { nodes: [] } } } } })];
+
+  it("links the issue's reports from GitHub's copy, not the caller's", async () => {
+    const env = makeEnv({ REPORT_API_KEY: KEY });
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues/400", () => Response.json(filed([{ name: "diagnostics" }]))],
+      noPrs,
+    ]);
+    const res = await notify(env, JSON.stringify({ issue: 400, report_ids: [ID2] }));
+    assert.equal(res.status, 202);
+    assert.deepEqual(await res.json(), { ok: true, issue: 400, result: "linked" });
+    assert.deepEqual((await all(env.DASHBOARD_DB, "SELECT report_id, issue_number FROM report_issue")).map((r) => [r.report_id, r.issue_number]), [[ID1, 400]]);
+    assert.ok((await first(env.DASHBOARD_DB, "SELECT prs_synced_at FROM issues")).prs_synced_at > 0);
+  });
+
+  it("forgets an issue without the diagnostics label", async () => {
+    const env = makeEnv({ REPORT_API_KEY: KEY });
+    await storeIssue(env.DASHBOARD_DB, filed([]));
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues/400", () => Response.json(filed([{ name: "bug" }]))],
+    ]);
+    const res = await notify(env, JSON.stringify({ issue: 400 }));
+    assert.equal((await res.json()).result, "dropped");
+    assert.equal((await all(env.DASHBOARD_DB, "SELECT * FROM report_issue")).length, 0);
+  });
+
+  it("ignores a transferred issue and one GitHub answers with another number", async () => {
+    for (const answer of [
+      () => new Response(null, { status: 301, headers: { location: "https://api.github.com/repositories/9/issues/7" } }),
+      () => Response.json({ ...filed([{ name: "diagnostics" }]), number: 7 }),
+    ]) {
+      const env = makeEnv({ REPORT_API_KEY: KEY });
+      gh = scriptGitHub([...appRoutes(null), ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues/400", answer]]);
+      assert.equal(await syncIssueNow(env, githubConfig(env), 400, NOW, []), "dropped");
+      assert.equal((await all(env.DASHBOARD_DB, "SELECT * FROM issues")).length, 0);
+      gh.restore();
+      gh = null;
+      clearTokenCache();
+    }
+  });
+
+  it("reads again when GitHub does not have the new issue yet", async () => {
+    const env = makeEnv({ REPORT_API_KEY: KEY });
+    let reads = 0;
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues/400", () => (++reads === 1 ? new Response("{}", { status: 404 }) : Response.json(filed([{ name: "diagnostics" }])))],
+      noPrs,
+    ]);
+    assert.equal(await syncIssueNow(env, githubConfig(env), 400, NOW, [0]), "linked");
+    assert.equal(reads, 2);
+  });
+
+  it("pushes a live update only when the notice changed the links", async () => {
+    const pushes = [];
+    const LIVE = { idFromName: (n) => n, get: () => ({ fetch: async (url) => (pushes.push(String(url)), new Response(null, { status: 204 })) }) };
+    const env = makeEnv({ REPORT_API_KEY: KEY, LIVE });
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues/400", () => Response.json(filed([{ name: "diagnostics" }]))],
+      noPrs,
+    ]);
+    assert.equal((await notify(env, JSON.stringify({ issue: 400 }))).status, 202);
+    assert.deepEqual(pushes, ["https://live/changed"]);
+    assert.equal((await notify(env, JSON.stringify({ issue: 400 }))).status, 202);
+    assert.equal(pushes.length, 1);
+  });
+
+  it("refuses a missing key or a malformed body, and answers 204 when the dashboard is off", async () => {
+    const env = makeEnv({ REPORT_API_KEY: KEY });
+    assert.equal((await notify(env, JSON.stringify({ issue: 400 }), "x".repeat(32))).status, 401);
+    for (const body of ["", "[]", '{"issue":"400"}', '{"issue":0}', '{"issue":1.5}', "x".repeat(300)]) {
+      assert.equal((await notify(env, body)).status, 400, body.slice(0, 20));
+    }
+    const off = await notify({ REPORT_API_KEY: KEY }, JSON.stringify({ issue: 400 }));
+    assert.equal(off.status, 204);
+  });
+});
 
 describe("per-invocation D1 limit", () => {
   it("works through an issue and pull request backlog in 50-call runs", async () => {

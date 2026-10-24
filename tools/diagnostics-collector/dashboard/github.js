@@ -322,6 +322,42 @@ export function decodeIssuePage(data) {
   return { issues, full: list.length >= 100, newest: Number.isFinite(newestMs) ? new Date(newestMs).toISOString() : "" };
 }
 
+/**
+ * Reads `GET /repos/{owner}/{repo}/issues/{number}`.
+ *
+ * @param {unknown} data Parsed body.
+ * @returns {{issue: SyncedIssue, labeled: boolean} | null} The issue as
+ *   `decodeIssuePage` reads it and whether its labels include
+ *   `diagnostics`, or null for a pull request or a malformed answer.
+ */
+export function decodeIssue(data) {
+  const { issues } = decodeIssuePage([data]);
+  if (issues.length !== 1) return null;
+  const labels = isObject(data) && Array.isArray(data.labels) ? data.labels : [];
+  const labeled = labels.some((l) => l === DIAGNOSTICS_LABEL || (isObject(l) && l.name === DIAGNOSTICS_LABEL));
+  return { issue: issues[0], labeled };
+}
+
+/**
+ * Reads the body of `POST /issues/notify`: `{"issue": <number>}`.
+ *
+ * @param {string} text Request body (from the ingest Action; authenticated,
+ *   still parsed defensively).
+ * @returns {number | null} An issue number from 1 to 10^9, or null.
+ */
+export function parseIssueNotify(text) {
+  if (typeof text !== "string" || text.length > 256) return null;
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!isObject(data) || Array.isArray(data)) return null;
+  const n = data.issue;
+  return Number.isSafeInteger(n) && n > 0 && n <= 1e9 ? n : null;
+}
+
 // ---------------------------------------------------------------------------
 // Sign-in
 
@@ -498,6 +534,27 @@ export async function listDiagnosticsIssues(cfg, token, sinceIso, page) {
   const res = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/issues?${q}`, { headers: apiHeaders(token) });
   if (!res.ok) throw new Error(`issue list failed: HTTP ${res.status}`);
   return decodeIssuePage(await res.json().catch(() => null));
+}
+
+/**
+ * One issue, read again from GitHub.
+ *
+ * @param {GitHubConfig} cfg Settings.
+ * @param {string} token Installation token.
+ * @param {number} number Issue number.
+ * @returns {Promise<{issue: SyncedIssue, labeled: boolean} | null>} The
+ *   issue, or null when GitHub has none by that number (deleted,
+ *   transferred, or a pull request) or answers with another number.
+ * @throws {Error} When GitHub answers with another failure.
+ */
+export async function fetchIssue(cfg, token, number) {
+  // A transferred issue answers 301 to its new home in another repository;
+  // that is not this repository's issue, so the redirect is not followed.
+  const res = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/issues/${number}`, { headers: apiHeaders(token), redirect: "manual" });
+  if (res.status === 404 || res.status === 410 || res.status === 301) return null;
+  if (!res.ok) throw new Error(`issue read failed: HTTP ${res.status}`);
+  const got = decodeIssue(await res.json().catch(() => null));
+  return got && got.issue.number === number ? got : null;
 }
 
 /** Label that marks a diagnostics issue. */

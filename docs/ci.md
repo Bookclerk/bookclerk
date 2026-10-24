@@ -349,14 +349,17 @@ non-Rust tooling (decision 6):
   (`decodeIssuePage`, same file), which moves the sync cursor and feeds
   `storeIssue`; the sign-in and token decoders (`decodeInstallationId`,
   `decodeInstallationToken`, `decodeAccessToken`, `oauthErrorCode`,
-  `decodeUser`, same file);
+  `decodeUser`, same file); the ingest Action's issue notice
+  (`parseIssueNotify`, same file) and the single-issue decoder (`decodeIssue`,
+  same file), which decide which issue is re-read and whether it stays linked;
   and the B2 listing decoder
   (`decodeListPage` in `dashboard/storage.js`), which names the objects
   report viewing downloads and where reindexing continues. `tools/diagnostics-collector/dashboard-input.fuzz.test.js` replays
   their seed corpora (`tools/diagnostics-collector/corpus/report_ids/`,
   `corpus/signature/`, `corpus/oauth_callback/`, `corpus/session/`,
   `corpus/membership/`, `corpus/pull_requests/`, `corpus/b2_list/`,
-  `corpus/issue_page/`, `corpus/github_auth/`) and runs seeded mutation
+  `corpus/issue_page/`, `corpus/github_auth/`, `corpus/issue_notify/`,
+  `corpus/issue/`) and runs seeded mutation
   fuzzing on every PR, checking results against independent oracles (IDs
   re-derived by a separate walk, all UUIDs present in the body, capped; level
   counts recounted, a signature exactly when an error or warning exists,
@@ -375,7 +378,10 @@ non-Rust tooling (decision 6):
   throwing; issue pages decoded to the numbered non-PR entries with string
   fields, full by raw count, and the newest parseable update; tokens, ids
   and users accepted only when well-formed; an OAuth error code kept only
-  when it is a short lowercase identifier).
+  when it is a short lowercase identifier; a notice accepted only as an
+  object whose `issue` is an integer from 1 to 10^9; a single issue decoded
+  only when it is a numbered non-PR issue, labeled exactly when a label is
+  `diagnostics`).
 - The collector's B2 error-code reader (`b2ErrorCode` in
   `tools/diagnostics-collector/worker.js`), which picks the `code` out of a B2
   error body for logs and authenticated responses.
