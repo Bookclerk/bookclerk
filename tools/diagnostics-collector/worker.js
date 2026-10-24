@@ -40,7 +40,8 @@
  * secrets; Bookclerk builds carry the collector URL, never this key.
  */
 
-import { dashboardFetch, dashboardScheduled, indexCap } from "./dashboard/routes.js";
+import { parseIssueNotify } from "./dashboard/github.js";
+import { dashboardFetch, dashboardIssueNotify, dashboardScheduled, indexCap } from "./dashboard/routes.js";
 import { indexSubmitted } from "./dashboard/sync.js";
 import { handleTriage, readCapped } from "./triage.js";
 import {
@@ -174,6 +175,13 @@ export default {
         return await handleReport(request, env, url);
       }
 
+      if (request.method === "POST" && path === "/issues/notify") {
+        if (!requireReportAuth(request, env)) {
+          return json({ error: "unauthorized" }, 401);
+        }
+        return await handleIssueNotify(request, env);
+      }
+
       if (request.method === "POST" && path === "/triage") {
         if (!requireReportAuth(request, env)) {
           return json({ error: "unauthorized" }, 401);
@@ -212,6 +220,25 @@ function b2Access(env) {
     downloadById: (auth, fileId) => b2DownloadById(auth, fileId),
     bucketId: env.B2_BUCKET_ID,
   };
+}
+
+/**
+ * `POST /issues/notify`: the ingest Action names an issue it just filed so
+ * the dashboard links it at once. Answers 202 with what happened, 204 when
+ * the dashboard is off (so forks without it do not fail the Action), or 400
+ * for a malformed body.
+ *
+ * @param {Request} request Authenticated request.
+ * @param {Record<string, any>} env Worker bindings.
+ * @returns {Promise<Response>} The answer.
+ */
+async function handleIssueNotify(request, env) {
+  const text = await readCapped(request, 256);
+  const number = text === null ? null : parseIssueNotify(text);
+  if (number === null) return json({ error: "expected {\"issue\": <number>}" }, 400);
+  const result = await dashboardIssueNotify(env, number, Date.now());
+  if (result === null) return new Response(null, { status: 204 });
+  return json({ ok: true, issue: number, result }, 202);
 }
 
 async function handleSubmit(request, env, ctx) {

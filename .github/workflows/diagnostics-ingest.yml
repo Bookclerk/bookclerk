@@ -4,7 +4,8 @@
 #
 # Required repository secret:
 #   DIAGNOSTICS_REPORT_API_KEY — Worker REPORT_API_KEY (set on deploy via wrangler-action);
-#     authorizes /report and /triage. It exists only here and in the Worker,
+#     authorizes /report, /triage and /issues/notify (which links a filed
+#     issue to its reports on the dashboard at once). It exists only here and in the Worker,
 #     never in Bookclerk builds.
 #
 # Worker deploy: .github/workflows/diagnostics-collector-deploy.yml

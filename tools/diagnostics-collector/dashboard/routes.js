@@ -48,7 +48,7 @@ import {
 } from "./pages.js";
 import { currentMember, endAllSessions, sameOrigin } from "./session.js";
 import { readStoredReport } from "./storage.js";
-import { reindexSlice, syncIssues } from "./sync.js";
+import { reindexSlice, syncIssueNow, syncIssues } from "./sync.js";
 
 /** Paths the dashboard owns (exact). */
 const PATHS = new Set(["/", "/auth/github", "/auth/callback", "/auth/logout", "/dash", "/reports", "/issues", "/admin/reindex", "/admin/sync", "/admin/sign-out-all"]);
@@ -314,4 +314,20 @@ export async function dashboardScheduled(env, now) {
   const cfg = dashboardConfig(env);
   if (!cfg) return;
   await syncIssues(env, cfg, now);
+}
+
+/**
+ * `POST /issues/notify` (ingest Action, `REPORT_API_KEY`): links a newly
+ * filed issue right away instead of at the next cron.
+ *
+ * @param {Record<string, any>} env Worker bindings.
+ * @param {number} number Issue number from `parseIssueNotify`.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {Promise<"linked" | "dropped" | null>} What happened, or null
+ *   when the dashboard is off.
+ */
+export async function dashboardIssueNotify(env, number, now) {
+  const cfg = dashboardConfig(env);
+  if (!cfg) return null;
+  return syncIssueNow(env, cfg, number, now);
 }

@@ -22,7 +22,7 @@ import {
   sweep,
   utcDayOf,
 } from "./db.js";
-import { installationToken, listDiagnosticsIssues, pullRequestsFor } from "./github.js";
+import { fetchIssue, installationToken, listDiagnosticsIssues, pullRequestsFor } from "./github.js";
 import { parseIssueReportIds, reportIdOf } from "./report-ids.js";
 import { summarizeReport } from "./signature.js";
 import { listPage, MAX_STORED_REPORT_CHARS } from "./storage.js";
@@ -319,6 +319,36 @@ export async function syncIssues(env, cfg, now) {
   }
   await setState(db, "issues_synced_at", String(now));
   return { issues: stored, refreshed };
+}
+
+/**
+ * Brings one issue up to date right away, for the ingest Action's notice
+ * after it files an issue. Only the number comes from the caller: the issue,
+ * its report IDs, its label and its pull requests are read from GitHub, so
+ * a caller cannot link reports an issue does not list.
+ *
+ * @param {{DASHBOARD_DB: D1Database}} env Worker bindings.
+ * @param {import("./github.js").GitHubConfig} cfg Settings.
+ * @param {number} number Issue number.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {Promise<"linked" | "dropped">} Whether the issue is now stored
+ *   with its links, or was forgotten (no such issue, or not labeled
+ *   `diagnostics`).
+ */
+export async function syncIssueNow(env, cfg, number, now) {
+  const db = metered(env.DASHBOARD_DB);
+  const token = await installationToken(cfg, now);
+  const got = await fetchIssue(cfg, token, number);
+  if (!got || !got.labeled) {
+    await db.batch(dropStatements(db, number));
+    return "dropped";
+  }
+  const prs = await pullRequestsFor(cfg, token, [number]);
+  const stmts = issueStatements(db, got.issue);
+  const refreshed = prs.get(number);
+  if (refreshed?.labeled) stmts.push(...pullRequestStatements(db, number, refreshed.prs, now));
+  await db.batch(stmts);
+  return "linked";
 }
 
 /**

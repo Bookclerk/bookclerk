@@ -96,7 +96,8 @@ OMITTED_IDS=$(comm -23 <(sort <<<"$ALL_IDS") <(sort <<<"$KEPT_IDS"))
 # Usage: file_fallback <report count> <reason> <ID list>.
 file_fallback() {
   gh label create diagnostics --color "0E8A16" --description "Automated diagnostics reports" 2>/dev/null || true
-  {
+  local url
+  url=$({
     echo "<!-- bookclerk-diagnostics: triage fallback -->"
     echo "## Diagnostics batch ($1 report(s))"
     echo
@@ -107,7 +108,9 @@ file_fallback() {
     echo "by ID in the collector's storage; report contents are not posted here."
     echo
     echo "Workflow run: ${GITHUB_SERVER_URL:-https://github.com}/${REPO}/actions/runs/${GITHUB_RUN_ID:-unknown}"
-  } | gh issue create --repo "$REPO" --title "[diagnostics] unattended batch ($1)" --label diagnostics --body-file -
+  } | gh issue create --repo "$REPO" --title "[diagnostics] unattended batch ($1)" --label diagnostics --body-file -) || return 1
+  echo "$url"
+  notify_issue "$url"
 }
 
 # The prompt lives in the collector (triage.js), next to the model and its
@@ -123,8 +126,26 @@ http=$(printf 'header = "Authorization: Bearer %s"\n' "$REPORT_API_KEY" \
 curl_status=$?
 set -e
 # Only curl needs the key; nothing after it (the plan validator reads
-# report-steered model output) inherits it.
+# report-steered model output) inherits it. A shell-only copy, never
+# exported, lets notify_issue tell the collector about filed issues.
+notify_key=$REPORT_API_KEY
 unset REPORT_API_KEY
+
+# Tells the collector's dashboard about an issue just filed, so it links the
+# issue's reports at once instead of at the next sync. Best effort: the
+# dashboard's 30-minute sync catches anything this misses.
+# Usage: notify_issue <issue URL printed by gh issue create>.
+notify_issue() {
+  local number
+  number=$(sed -n 's#^https://[^ ]*/issues/\([0-9][0-9]*\)$#\1#p' <<<"$1" | tail -n 1)
+  [[ -n "$number" ]] || return 0
+  printf 'header = "Authorization: Bearer %s"\n' "$notify_key" \
+    | curl -sS --config - -o /dev/null --max-time 30 \
+        -H "Content-Type: application/json" \
+        --data-binary "{\"issue\":${number}}" \
+        "${BASE%/}/issues/notify" \
+    || echo "::warning::Could not tell the dashboard about issue #${number}; the next sync will link it" >&2
+}
 status=1
 reason="the collector could not be reached"
 if [[ $curl_status -eq 0 ]]; then
@@ -165,10 +186,15 @@ if [[ $status -eq 0 ]]; then
   failed=0
   for dir in "$ISSUES_DIR"/*/; do
     [[ -d "$dir" ]] || continue
-    gh issue create --repo "$REPO" \
+    if url=$(gh issue create --repo "$REPO" \
       --title "$(cat "$dir/title")" \
       --label "$(cat "$dir/labels")" \
-      --body-file "$dir/body" || failed=1
+      --body-file "$dir/body"); then
+      echo "$url"
+      notify_issue "$url"
+    else
+      failed=1
+    fi
   done
   echo "Triage planned ${planned} issue(s) for ${count} report(s)."
   if [[ -n "$OMITTED_IDS" ]]; then
