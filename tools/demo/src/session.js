@@ -34,6 +34,8 @@ const SIGN_OUT_TIMEOUT_MS = 10_000;
  * @property {number} endsAt Hard stop, Unix seconds.
  * @property {SessionState} state Where the session is.
  * @property {string} version Image version shown in the banner.
+ * @property {string} origin The demo's origin (`https://host`), which
+ *   bookclerkd serves as its `public_origin`.
  */
 
 /** A visitor's container and the object that owns it. */
@@ -69,8 +71,8 @@ export class DemoSession extends Container {
    * Opens the session: records it and schedules the boot and the hard stop.
    * Calling it again for an open session does nothing.
    *
-   * @param {{id: string, endsAt: number, version: string}} params Session id,
-   *   hard stop (Unix seconds) and image version.
+   * @param {{id: string, endsAt: number, version: string, origin: string}} params
+   *   Session id, hard stop (Unix seconds), image version and the demo's origin.
    * @returns {Promise<void>}
    */
   async open(params) {
@@ -78,6 +80,17 @@ export class DemoSession extends Container {
     await this.ctx.storage.put("meta", { ...params, state: "starting" });
     await this.schedule(1, "boot");
     await this.schedule(new Date(params.endsAt * 1000), "expire");
+  }
+
+  /**
+   * Whether the session is still starting. The session can end while boot
+   * waits on the VM (Start over, the hard stop, the sweep); boot then must
+   * not bring it back.
+   *
+   * @returns {Promise<boolean>} True while the state is still "starting".
+   */
+  async stillStarting() {
+    return (await this.meta())?.state === "starting";
   }
 
   /**
@@ -90,20 +103,38 @@ export class DemoSession extends Container {
     if (!meta || meta.state !== "starting") return;
     const operatorToken = randomHex(32);
     try {
-      // Host env only: never argv, never forwarded to a plugin guest.
+      // Host env only: never argv, never forwarded to a plugin guest. The
+      // public origin is the demo's own: bookclerkd checks browsers' Origin
+      // against it and builds sign-in callbacks from it.
       await this.startAndWaitForPorts({
         ports: PORT,
         startOptions: {
-          envVars: { BOOKCLERK_OPERATOR_TOKEN: operatorToken, BOOKCLERK_AUTH_PASSWORD: randomHex(32) },
+          envVars: {
+            BOOKCLERK_OPERATOR_TOKEN: operatorToken,
+            BOOKCLERK_AUTH_PASSWORD: randomHex(32),
+            BOOKCLERK_INTEGRATIONS_PUBLIC_ORIGIN: meta.origin,
+          },
         },
         cancellationOptions: { portReadyTimeoutMS: BOOT_TIMEOUT_MS },
       });
       const call = (path, init) => this.containerFetch(`http://container${path}`, init, PORT);
-      await waitForHealth(call, { timeoutMs: BOOT_TIMEOUT_MS, intervalMs: 1000 });
-      const portalSession = await signInVisitor(call, operatorToken);
+      if (await this.stillStarting()) {
+        await waitForHealth(call, { timeoutMs: BOOT_TIMEOUT_MS, intervalMs: 1000 });
+      }
+      const portalSession = (await this.stillStarting()) ? await signInVisitor(call, operatorToken) : null;
+      if (portalSession === null || !(await this.stillStarting())) {
+        // Ended meanwhile: close() may have run before the VM was up, so
+        // make sure it is gone. The end is already recorded.
+        await this.destroy();
+        return;
+      }
       await this.ctx.storage.put("secrets", { operatorToken, portalSession });
       await this.setState("ready");
     } catch (err) {
+      if (!(await this.stillStarting())) {
+        await this.destroy().catch(() => {});
+        return;
+      }
       console.error(`demo session ${meta.id} failed to start: ${String(err)}`);
       await this.setState("failed");
       await this.close("failed", { revoked: 0, failed: 0 });
@@ -176,7 +207,7 @@ export class DemoSession extends Container {
     const secrets = await this.ctx.storage.get("secrets");
     if (wasReady && secrets) {
       const call = (path, init) => this.containerFetch(`http://container${path}`, init, PORT);
-      result = await signOutStores(call, secrets.portalSession, SIGN_OUT_TIMEOUT_MS);
+      result = await signOutStores(call, secrets.portalSession, SIGN_OUT_TIMEOUT_MS, meta.origin);
     }
     await this.close(reason, result);
     return result;

@@ -6,7 +6,7 @@
 // check (routes.js) before the request reaches the visitor's own container.
 
 import { classify } from "./routes.js";
-import { admit, countSignin, finish, limitsFrom, overdue, prune } from "./limits.js";
+import { admit, countSignin, finish, limitsFrom, overdue, prune, utcDay } from "./limits.js";
 import {
   cookiesForContainer,
   PORTAL_COOKIE,
@@ -46,6 +46,9 @@ const SWEEP_GRACE_SECONDS = 120;
 /** @type {Deps} */
 const DEFAULT_DEPS = { fetch: (...a) => fetch(...a), now: () => Date.now() };
 
+/** The imported HMAC key, cached per key text (one Worker serves one key). */
+let hmacKey = { text: "", key: /** @type {Promise<CryptoKey> | null} */ (null) };
+
 /**
  * Lowercase hex HMAC-SHA256.
  *
@@ -54,9 +57,13 @@ const DEFAULT_DEPS = { fetch: (...a) => fetch(...a), now: () => Date.now() };
  * @returns {Promise<string>} The MAC in hex.
  */
 async function hmacHex(key, message) {
-  const k = await crypto.subtle.importKey("raw", new TextEncoder().encode(key), { name: "HMAC", hash: "SHA-256" }, false, [
-    "sign",
-  ]);
+  if (hmacKey.key === null || hmacKey.text !== key) {
+    const imported = crypto.subtle.importKey("raw", new TextEncoder().encode(key), { name: "HMAC", hash: "SHA-256" }, false, [
+      "sign",
+    ]);
+    hmacKey = { text: key, key: imported };
+  }
+  const k = await hmacKey.key;
   const mac = new Uint8Array(await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(message)));
   return Array.from(mac, (x) => x.toString(16).padStart(2, "0")).join("");
 }
@@ -95,8 +102,7 @@ function sessionId(env, token) {
  * @returns {Promise<string>} The hash (hex, 32 characters).
  */
 async function ipHash(env, ip, nowSeconds) {
-  const day = new Date(nowSeconds * 1000).toISOString().slice(0, 10);
-  return (await hmacHex(env.SESSION_KEY, `ip|${day}|${ip}`)).slice(0, 32);
+  return (await hmacHex(env.SESSION_KEY, `ip|${utcDay(nowSeconds)}|${ip}`)).slice(0, 32);
 }
 
 /**
@@ -173,8 +179,9 @@ function isNavigation(request) {
 
 /**
  * Whether a state-changing request came from a page on this host. The
- * Worker checks this itself because it strips `Origin` before forwarding
- * (the container sees a different host).
+ * Worker refuses cross-site writes itself, before any reach a container;
+ * bookclerkd checks `Origin` again against its `public_origin`, which is
+ * this origin.
  *
  * @param {Request} request Request.
  * @param {URL} url The request's URL.
@@ -193,6 +200,40 @@ function sameOrigin(request, url) {
 }
 
 /**
+ * Reads a body up to `max` bytes, without buffering more than that.
+ *
+ * @param {ReadableStream<Uint8Array>} body The body.
+ * @param {number} max Most bytes to hold.
+ * @returns {Promise<{chunks: Uint8Array[], size: number, done: boolean,
+ *   reader: ReadableStreamDefaultReader<Uint8Array>}>} The chunks read, their
+ *   total size, whether the body ended within `max` (otherwise `chunks` holds
+ *   just over `max` bytes and `reader` the rest).
+ */
+async function readCapped(body, max) {
+  const reader = body.getReader();
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return { chunks, size, done: true, reader };
+    chunks.push(value);
+    size += value.byteLength;
+    if (size > max) return { chunks, size, done: false, reader };
+  }
+}
+
+/**
+ * Joins chunks into one UTF-8 string.
+ *
+ * @param {Uint8Array[]} chunks The chunks.
+ * @returns {string} The text.
+ */
+function decodeChunks(chunks) {
+  const decoder = new TextDecoder();
+  return chunks.map((c) => decoder.decode(c, { stream: true })).join("") + decoder.decode();
+}
+
+/**
  * Reads the Turnstile token from the launch form.
  *
  * @param {Request} request The form POST.
@@ -200,9 +241,13 @@ function sameOrigin(request, url) {
  */
 async function turnstileToken(request) {
   const type = request.headers.get("Content-Type") ?? "";
-  if (!type.startsWith("application/x-www-form-urlencoded")) return null;
-  const text = await request.text();
-  if (text.length > MAX_FORM_BYTES) return null;
+  if (!type.startsWith("application/x-www-form-urlencoded") || !request.body) return null;
+  const read = await readCapped(request.body, MAX_FORM_BYTES);
+  if (!read.done) {
+    await read.reader.cancel();
+    return null;
+  }
+  const text = decodeChunks(read.chunks);
   const token = new URLSearchParams(text).get("cf-turnstile-response");
   return token && token.length <= 4096 ? token : null;
 }
@@ -233,13 +278,17 @@ async function start(request, url, env, deps) {
   if (!siteverifyPassed(await verify.text(), { hostname: url.hostname, action: TURNSTILE_ACTION })) {
     return page(REFUSALS.turnstile, 403);
   }
+  // A visitor who starts again (a second tab, the back button) gives up
+  // their running session rather than holding two.
+  const previous = readSessionToken(request.headers.get("Cookie"));
+  if (previous) await sessionStub(env, await sessionId(env, previous)).end("restart");
   const now = Math.floor(deps.now() / 1000);
   const sessionToken = newToken();
   const id = await sessionId(env, sessionToken);
   const version = String(env.DEMO_VERSION ?? "");
   const admitted = await admit(env.DB, { id, ipHash: await ipHash(env, ip, now), now, version }, limitsFrom(env));
   if (!admitted.ok) return page(REFUSALS[admitted.reason], 429);
-  await sessionStub(env, id).open({ id, endsAt: admitted.endsAt, version });
+  await sessionStub(env, id).open({ id, endsAt: admitted.endsAt, version, origin: url.origin });
   const maxAge = admitted.endsAt - now;
   return redirect("/_demo/wait", [`${SESSION_COOKIE}=${sessionToken}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`]);
 }
@@ -273,18 +322,30 @@ async function forwardResponse(upstream) {
     if (rewritten) headers.append("Set-Cookie", rewritten);
   }
   for (const [k, v] of Object.entries(SECURITY_HEADERS)) headers.set(k, v);
+  const init = { status: upstream.status, statusText: upstream.statusText, headers };
   const type = headers.get("Content-Type") ?? "";
-  const length = Number(headers.get("Content-Length") ?? "0");
-  if (type.startsWith("text/html") && upstream.body && length <= MAX_BANNER_HTML_BYTES) {
-    const text = await upstream.text();
-    if (text.length <= MAX_BANNER_HTML_BYTES) {
-      headers.delete("Content-Length");
-      headers.delete("Content-Encoding");
-      return new Response(withBanner(text), { status: upstream.status, statusText: upstream.statusText, headers });
-    }
-    return new Response(text, { status: upstream.status, statusText: upstream.statusText, headers });
-  }
-  return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers });
+  if (!type.startsWith("text/html") || !upstream.body) return new Response(upstream.body, init);
+  // The body is decoded here, so its length changes; the runtime encodes it
+  // again for the browser as Content-Encoding says.
+  headers.delete("Content-Length");
+  const read = await readCapped(upstream.body, MAX_BANNER_HTML_BYTES);
+  if (read.done) return new Response(withBanner(decodeChunks(read.chunks)), init);
+  // Too big for the banner: send what was read, then the rest as it comes.
+  const { chunks, reader } = read;
+  const rest = new ReadableStream({
+    start(controller) {
+      for (const c of chunks) controller.enqueue(c);
+    },
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) controller.close();
+      else controller.enqueue(value);
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+  return new Response(rest, init);
 }
 
 /**
@@ -315,11 +376,10 @@ async function proxy(request, url, env, deps, id) {
   }
   const forwarded = new Request(request);
   // The visitor's IP never reaches the container, and nothing the visitor
-  // sends can claim one for them.
+  // sends can claim one for them. `Origin` and `Referer` stay: bookclerkd
+  // checks them against its public origin (this one).
   for (const h of [
     "Authorization",
-    "Origin",
-    "Referer",
     "Cookie",
     "CF-Connecting-IP",
     "True-Client-IP",
@@ -343,7 +403,8 @@ async function proxy(request, url, env, deps, id) {
 
 /**
  * The answer for a session that is not running: wait while it starts,
- * otherwise clear the cookies and say it ended.
+ * otherwise clear the cookies and say it ended. Only this answer clears the
+ * cookies; a 410 from bookclerkd itself (an expired invite link) does not.
  *
  * @param {Request} request The visitor's request.
  * @param {string} state The session's state.
@@ -354,10 +415,11 @@ function notRunning(request, state, env = {}) {
   if (state === "starting") {
     return isNavigation(request) ? redirect("/_demo/wait") : json({ error: "Your demo is still starting." }, 503);
   }
-  if (isNavigation(request)) {
-    return htmlResponse(endedPage({ siteUrl: siteUrl(env) }), 410, {});
-  }
-  return json({ error: "Your demo has ended." }, 410);
+  const response = isNavigation(request)
+    ? htmlResponse(endedPage({ siteUrl: siteUrl(env) }), 410, {})
+    : json({ error: "Your demo has ended." }, 410);
+  for (const c of CLEAR_COOKIES) response.headers.append("Set-Cookie", c);
+  return response;
 }
 
 /**
@@ -413,13 +475,7 @@ export async function handle(request, env, deps = DEFAULT_DEPS) {
     }
     return isNavigation(request) ? redirect("/") : json({ error: "Start the demo first." }, 401);
   }
-  const response = await proxy(request, url, env, deps, id);
-  if (response.status === 410) {
-    const headers = new Headers(response.headers);
-    for (const c of CLEAR_COOKIES) headers.append("Set-Cookie", c);
-    return new Response(response.body, { status: 410, headers });
-  }
-  return response;
+  return proxy(request, url, env, deps, id);
 }
 
 /**

@@ -92,18 +92,21 @@ export async function signInVisitor(call, operatorToken) {
 /**
  * Signs every store account linked to the visitor out at its store.
  *
- * Each sign-out is bounded: bookclerkd itself gives a store about five
- * seconds and always deletes the tokens, so a slow store cannot hold the
- * container open. Failures are counted, not thrown.
+ * The sign-outs run side by side and each is bounded: bookclerkd itself
+ * gives a store about five seconds and always deletes the tokens, so a slow
+ * store cannot hold the container (or the visitor's Start over) open.
+ * Failures are counted, not thrown.
  *
  * @param {ContainerCall} call Container request function.
  * @param {string} portalSession The visitor's portal session.
  * @param {number} timeoutMs Longest wait for each request.
+ * @param {string} origin The demo's origin, which bookclerkd's cross-site
+ *   check expects on cookie-authenticated writes (its `public_origin`).
  * @returns {Promise<{revoked: number, failed: number}>} Accounts signed out,
  *   and accounts whose sign-out failed (including when the list could not
  *   be read: then `failed` is 1).
  */
-export async function signOutStores(call, portalSession, timeoutMs) {
+export async function signOutStores(call, portalSession, timeoutMs, origin) {
   const cookie = { Cookie: `${PORTAL_COOKIE}=${portalSession}` };
   let accounts;
   try {
@@ -113,23 +116,19 @@ export async function signOutStores(call, portalSession, timeoutMs) {
     accounts = null;
   }
   if (accounts === null) return { revoked: 0, failed: 1 };
-  let revoked = 0;
-  let failed = 0;
-  for (const a of accounts) {
-    const path = `/api/portal/sources/${encodeURIComponent(a.source)}/connections/${encodeURIComponent(a.accountId)}/revoke`;
-    try {
+  const results = await Promise.allSettled(
+    accounts.map(async (a) => {
+      const path = `/api/portal/sources/${encodeURIComponent(a.source)}/connections/${encodeURIComponent(a.accountId)}/revoke`;
       const res = await call(path, {
         method: "POST",
-        headers: { ...cookie, "Content-Type": "application/json" },
+        headers: { ...cookie, Origin: origin, "Content-Type": "application/json" },
         body: "{}",
         signal: AbortSignal.timeout(timeoutMs),
       });
       await res.body?.cancel();
-      if (res.status === 200) revoked++;
-      else failed++;
-    } catch {
-      failed++;
-    }
-  }
-  return { revoked, failed };
+      return res.status === 200;
+    }),
+  );
+  const revoked = results.filter((r) => r.status === "fulfilled" && r.value).length;
+  return { revoked, failed: results.length - revoked };
 }

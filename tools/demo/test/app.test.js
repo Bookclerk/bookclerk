@@ -260,7 +260,7 @@ describe("a running session", () => {
     assert.equal(stub.forwarded.length, 0);
   });
 
-  it("forwards allowed calls without the Worker's cookie, auth or origin headers", async () => {
+  it("forwards allowed calls with their origin but without the Worker's cookie, auth or IP headers", async () => {
     const { env, deps, cookie, stub } = await ready();
     const res = await handle(
       new Request(`${ORIGIN}/api/library/scan`, {
@@ -282,7 +282,8 @@ describe("a running session", () => {
     const sent = stub.forwarded[0];
     assert.equal(sent.headers.get("Cookie"), `bookclerk_portal_session=${"p".repeat(64)}`);
     assert.equal(sent.headers.get("Authorization"), null);
-    assert.equal(sent.headers.get("Origin"), null);
+    assert.equal(sent.headers.get("Origin"), ORIGIN);
+    assert.equal(onlyStub(env).opened.origin, ORIGIN);
     assert.equal(sent.headers.get("Forwarded"), null);
     assert.equal(sent.headers.get("X-Real-IP"), null);
     assert.equal(res.headers.get("X-Frame-Options"), "DENY");
@@ -359,7 +360,72 @@ describe("a running session", () => {
     assert.ok(res.headers.getSetCookie().every((c) => c.includes("Max-Age=0")));
     const after = await handle(new Request(`${ORIGIN}/library`, { headers: { Cookie: cookie, Accept: "text/html" } }), env, deps);
     assert.equal(after.status, 410);
+    assert.ok(after.headers.getSetCookie().some((c) => c.startsWith("__Host-demo=;")));
     assert.match(await after.text(), /Your demo has ended/);
+  });
+
+  it("keeps the session when bookclerkd itself answers 410", async () => {
+    const { env, deps, cookie, stub } = await ready();
+    stub.reply = () => Response.json({ error: "invite expired" }, { status: 410 });
+    const res = await handle(new Request(`${ORIGIN}/invite`, { headers: { Cookie: cookie } }), env, deps);
+    assert.equal(res.status, 410);
+    assert.deepEqual(res.headers.getSetCookie(), []);
+  });
+
+  it("ends the running session when the visitor starts again", async () => {
+    const { env, deps, cookie, stub } = await ready();
+    const again = await handle(
+      new Request(`${ORIGIN}/_demo/start`, {
+        method: "POST",
+        headers: {
+          Origin: ORIGIN,
+          Cookie: cookie,
+          "Content-Type": "application/x-www-form-urlencoded",
+          "CF-Connecting-IP": "203.0.113.7",
+        },
+        body: "cf-turnstile-response=token123",
+      }),
+      env,
+      deps,
+    );
+    assert.equal(again.status, 303);
+    assert.deepEqual(stub.ended, ["restart"]);
+    assert.equal(env.stubs.size, 2);
+  });
+
+  it("refuses an oversized launch form without reading all of it", async () => {
+    const env = makeEnv();
+    const deps = makeDeps();
+    let pulled = 0;
+    const body = new ReadableStream({
+      pull(controller) {
+        pulled++;
+        controller.enqueue(new Uint8Array(8192).fill(97));
+        if (pulled > 1000) controller.close();
+      },
+    });
+    const res = await handle(
+      new Request(`${ORIGIN}/_demo/start`, {
+        method: "POST",
+        headers: { Origin: ORIGIN, "Content-Type": "application/x-www-form-urlencoded" },
+        body,
+        duplex: "half",
+      }),
+      env,
+      deps,
+    );
+    assert.equal(res.status, 403);
+    assert.ok(pulled < 10, `read ${pulled} chunks`);
+    assert.equal(deps.calls.length, 0);
+  });
+
+  it("streams HTML too big for the banner unchanged", async () => {
+    const { env, deps, cookie, stub } = await ready();
+    const big = "<html><head></head><body>" + "x".repeat(1024 * 1024 + 10) + "</body></html>";
+    stub.reply = () => new Response(big, { headers: { "Content-Type": "text/html", "Content-Length": String(big.length) } });
+    const res = await handle(new Request(`${ORIGIN}/library`, { headers: { Cookie: cookie, Accept: "text/html" } }), env, deps);
+    assert.equal(res.headers.get("Content-Length"), null);
+    assert.equal(await res.text(), big);
   });
 
   it("refuses Start over from another site", async () => {

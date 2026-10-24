@@ -12,7 +12,9 @@ downloaded, and their store sign-ins are revoked when the session ends.
    verifies it with Siteverify (hostname and action must match), then admits
    the session against the limits below and records it in D1.
 2. The visitor's `DemoSession` Durable Object (`src/session.js`) starts the
-   container with a fresh operator token and `master.key` password, waits for
+   container with a fresh operator token and `master.key` password, and the
+   demo's own origin as bookclerkd's `public_origin` (so bookclerkd's own
+   cross-site checks and store sign-in callbacks use it), waits for
    `/health`, creates the visitor's Owner account with the operator token and
    redeems its claim ticket. The visitor waits on `/_demo/wait`.
 3. `/_demo/enter` hands the browser the portal session cookie. From then on
@@ -22,8 +24,8 @@ downloaded, and their store sign-ins are revoked when the session ends.
      settings, users, auth changes, node and cluster routes, among others.
      Every operation in `crates/bookclerkd/openapi.json` has an explicit verdict and a
      test fails when the two drift;
-   - refuses cross-site writes itself, then strips `Origin`, `Referer`,
-     `Authorization` and client IP headers;
+   - refuses cross-site writes itself, then strips `Authorization`,
+     `Cookie` (other than bookclerkd's own) and client IP headers;
    - counts store sign-in starts against per-session and per-day limits;
    - adds the operator token inside the Durable Object, so the browser never
      sees it;

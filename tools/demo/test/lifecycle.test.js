@@ -76,14 +76,15 @@ describe("signOutStores", () => {
       "POST /api/portal/sources/audible/connections/amzn1.account.X/revoke": () => Response.json({ ok: true }),
       "POST /api/portal/sources/libro/connections/me%40example.test/revoke": () => new Response("", { status: 500 }),
     });
-    assert.deepEqual(await signOutStores(call, "s".repeat(64), 1000), { revoked: 1, failed: 1 });
+    assert.deepEqual(await signOutStores(call, "s".repeat(64), 1000, "https://demo.example.test"), { revoked: 1, failed: 1 });
     assert.equal(seen.length, 3);
     for (const s of seen) assert.equal(s.init.headers.Cookie, `bookclerk_portal_session=${"s".repeat(64)}`);
+    for (const s of seen.slice(1)) assert.equal(s.init.headers.Origin, "https://demo.example.test");
   });
 
   it("reports one failure when the account list cannot be read", async () => {
     const { call } = scripted({ "GET /api/portal/connections": () => new Response("nope", { status: 500 }) });
-    assert.deepEqual(await signOutStores(call, "s".repeat(64), 1000), { revoked: 0, failed: 1 });
+    assert.deepEqual(await signOutStores(call, "s".repeat(64), 1000, "https://demo.example.test"), { revoked: 0, failed: 1 });
   });
 });
 
