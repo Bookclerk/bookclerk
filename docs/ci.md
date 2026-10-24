@@ -344,6 +344,13 @@ non-Rust tooling (decision 6):
   a valid id and login, admin only when the row says so; a callback accepted exactly when a separate
   cookie walk finds a state that matches the query and well-formed code and
   verifier, returning those values).
+- The website Worker's `Accept-Encoding` parser (`pickEncoding` in
+  `tools/site/worker.js`), which picks the response's content coding.
+  `tools/site/fuzz.test.mjs` replays its seed corpus
+  (`tools/site/fuzz/accept_encoding/`) and runs seeded mutation fuzzing in
+  `npm test`, checking every choice against an independent oracle (RFC 9110
+  qvalues, `*` for unlisted codings, Brotli before gzip on a tie, nothing at
+  `q=0`).
 
 Still to add (tracked in the fuzzing ADR's follow-ups): a full RPC session
 against a scripted guest, the workerd `egress.js` gate checked against
