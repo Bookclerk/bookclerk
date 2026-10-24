@@ -39,10 +39,20 @@
 
 import { docMarkdownUrl, docUrl, renderDocPage, renderUnavailablePage } from "./render.mjs";
 
-/** Response headers every page gets; the same policy as src/_headers. */
+/**
+ * Response headers every page gets; the same policy as src/_headers.
+ *
+ * The site runs no scripts of its own. The one exception, approved by the
+ * project owner, is Cloudflare Web Analytics: the edge injects its beacon
+ * (`static.cloudflareinsights.com/beacon.min.js`, with an `integrity` hash)
+ * into HTML pages, and the beacon reports to `/cdn-cgi/rum` on this origin,
+ * or to `cloudflareinsights.com` when embedded by hand. The beacon's URL
+ * carries a version after the file name, so its host is allowed rather than
+ * one path.
+ */
 export const SECURITY_HEADERS = {
   "Content-Security-Policy":
-    "default-src 'none'; style-src 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; img-src 'self'; manifest-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "default-src 'none'; style-src 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; img-src 'self'; manifest-src 'self'; script-src https://static.cloudflareinsights.com; connect-src 'self' https://cloudflareinsights.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "strict-origin-when-cross-origin",
   "Permissions-Policy": "camera=(), microphone=(), geolocation=(), interest-cohort=()",
