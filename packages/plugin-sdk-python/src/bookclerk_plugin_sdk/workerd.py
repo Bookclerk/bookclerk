@@ -1324,7 +1324,7 @@ class StorefrontEntrypoint(NamedEntrypoint):
         """Full catalog record (``CatalogDetailParams`` → ``CatalogHit``)."""
         raise _unsupported("catalogDetail")
 
-    async def revokeAccount(self, _params: abi.RevokeAccountParams):
+    async def revokeAccount(self, _params: abi.RevokeAccountParams) -> None:
         """Sign the account out at the store before the host deletes its credentials.
 
         Best effort: the host revokes the account whatever this returns. The

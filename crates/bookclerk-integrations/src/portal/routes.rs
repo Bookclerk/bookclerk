@@ -811,28 +811,37 @@ async fn revoke_connection(
         .count_account_links_for_account(&plugin_key, &account_id)
         .await?;
     if remaining == 0 {
-        // Let the plugin sign the account out at the store (for example,
-        // deregister the login device) while its credentials still exist.
-        // Best effort: a missing plugin or store error never blocks revoke.
-        if let Some(content) = find_source(&state, &plugin_key).await {
-            let scope = bookclerk_source::source_scope(&library, content.as_ref());
-            if let Err(err) = content.revoke_credentials(&scope, &account_id).await {
-                warn!(%account_id, %err, "store sign-out failed on revoke");
+        let content = find_source(&state, &plugin_key).await;
+        // Runs as its own task so the API deadline cancelling this handler
+        // can never leave an unlinked account with its secrets still stored.
+        let cleanup = tokio::spawn(async move {
+            // Let the plugin sign the account out at the store (for example,
+            // deregister the login device) while its credentials still
+            // exist. Best effort and time-bounded by the plugin host: a
+            // missing plugin or store error never blocks revoke.
+            if let Some(content) = content {
+                let scope = bookclerk_source::source_scope(&library, content.as_ref());
+                if let Err(err) = content.revoke_credentials(&scope, &account_id).await {
+                    warn!(%account_id, %err, "store sign-out failed on revoke");
+                }
+            } else {
+                warn!(
+                    %account_id,
+                    %plugin_key,
+                    "plugin not deployed on this host; revoking without store sign-out"
+                );
             }
-        } else {
-            warn!(
-                %account_id,
-                %plugin_key,
-                "plugin not deployed on this host; revoking without store sign-out"
-            );
-        }
-        if let Err(err) = library
-            .delete_account_secrets(&plugin_key, &account_id)
+            if let Err(err) = library
+                .delete_account_secrets(&plugin_key, &account_id)
+                .await
+            {
+                warn!(%account_id, %err, "failed to delete encrypted_secrets on revoke");
+            }
+            library.revoke_credentials(&plugin_key, &account_id).await
+        });
+        cleanup
             .await
-        {
-            warn!(%account_id, %err, "failed to delete encrypted_secrets on revoke");
-        }
-        library.revoke_credentials(&plugin_key, &account_id).await?;
+            .map_err(|err| PortalError::unavailable(format!("revoke cleanup failed: {err}")))??;
     }
     Ok(Json(serde_json::json!({ "ok": true })))
 }

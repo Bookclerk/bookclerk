@@ -117,7 +117,7 @@ class Storefront extends StorefrontEntrypoint {
     return params.productId === "known" ? { productId: "known", title: "Known" } : null;
   }
   async revokeAccount(params) {
-    calls.storefront.push(["revokeAccount", params.accountId, params.credentials?.length ?? 0]);
+    calls.storefront.push(["revokeAccount", params.accountId, Array.from(params.credentials ?? [])]);
     if (params.accountId === "bad") throw new Error("store refused sign-out");
   }
   async diagnose() {
@@ -351,7 +351,7 @@ function decodeReply(reply, resultsCodec, caps) {
     W.ContentSourceRevokeAccountResultsCodec,
   );
   assert.equal(revoked.kind, "ok");
-  assert.deepEqual(calls.storefront.at(-1), ["revokeAccount", "a1", 3]);
+  assert.deepEqual(calls.storefront.at(-1), ["revokeAccount", "a1", [1, 2, 3]]);
   const refused = decodeReply(
     await invoke("ContentSource", "revokeAccount", W.ContentSourceRevokeAccountParamsCodec, {
       params: { accountId: "bad" },

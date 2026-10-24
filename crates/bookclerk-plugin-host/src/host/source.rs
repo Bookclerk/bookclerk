@@ -49,7 +49,14 @@ use crate::Result;
 
 /// Longest a guest may spend signing an account out at the store before the
 /// host deletes the account's credentials without it.
-const REVOKE_ACCOUNT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+///
+/// With [`REVOKE_ACCOUNT_QUEUE_GRACE`] it stays inside the daemon's default
+/// 8 s API deadline, which also bounds the Accounts revoke route.
+const REVOKE_ACCOUNT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Extra time a revoke may wait behind another call on the same plugin
+/// session before its own [`REVOKE_ACCOUNT_TIMEOUT`] starts.
+const REVOKE_ACCOUNT_QUEUE_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// External content source backed by a discovered plugin binary.
 pub struct ExternalSource {
@@ -590,13 +597,14 @@ impl ContentSource for ExternalSource {
                             ))
                         })
                 });
-                let outcome = tokio::time::timeout(REVOKE_ACCOUNT_TIMEOUT * 2, call)
-                    .await
-                    .unwrap_or_else(|_| {
-                        Err(bookclerk_source::SourceError::api(
-                            "store sign-out did not start in time".to_string(),
-                        ))
-                    });
+                let outcome =
+                    tokio::time::timeout(REVOKE_ACCOUNT_TIMEOUT + REVOKE_ACCOUNT_QUEUE_GRACE, call)
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(bookclerk_source::SourceError::api(
+                                "store sign-out did not start in time".to_string(),
+                            ))
+                        });
                 if let Err(err) = outcome {
                     tracing::warn!(
                         plugin = %self.id(),
