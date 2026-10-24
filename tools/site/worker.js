@@ -23,7 +23,18 @@
 // HTML responses carry `Link: rel="alternate"` to their Markdown version.
 // Every page response says `Vary: Accept` so caches keep the two apart.
 //
-// The script reads only the request's method, path and Accept header, and
+// Compression: the Worker compresses the text it answers with (Brotli, else
+// gzip, as the client's Accept-Encoding allows) by setting Content-Encoding
+// and letting the runtime encode the body. Cloudflare's edge compresses only
+// the media types on its default list, which has `text/x-markdown` but not
+// `text/markdown`, so without this the Markdown versions went out
+// uncompressed. Pages are cached at the edge uncompressed and encoded per
+// request; responses that are already encoded or say `no-transform` are left
+// alone. Files served without the Worker (styles, fonts, llms.txt) are
+// compressed by the edge, whose default list covers their types.
+//
+// The script reads only the request's method, path, Accept and
+// Accept-Encoding headers (and conditional headers it passes on), and
 // fetches only from its own assets and the docs repository.
 
 import { docMarkdownUrl, docUrl, renderDocPage, renderUnavailablePage } from "./render.mjs";
@@ -54,6 +65,15 @@ export const PAGE_MARKDOWN = new Map([
   ["/download", "/download.md"],
   ["/download.html", "/download.md"],
 ]);
+
+/**
+ * Media types the Worker compresses: text, and the structured-text types the
+ * site serves. Fonts and images are already compressed.
+ */
+const COMPRESSIBLE_RE = /^(?:text\/[a-z0-9.+-]+|application\/(?:[a-z0-9.-]+\+)?(?:json|xml)|image\/svg\+xml)$/;
+
+/** Content codings the Worker can apply, most preferred first. */
+const ENCODINGS = ["br", "gzip"];
 
 /** Request headers passed on when fetching a Markdown version. */
 const CONDITIONAL_HEADERS = ["If-None-Match", "If-Modified-Since"];
@@ -97,6 +117,24 @@ function ttlFor(ref) {
 }
 
 /**
+ * Reads the quality value of one Accept or Accept-Encoding list member.
+ *
+ * @param {string[]} params The member's `;`-separated parameters.
+ * @returns {number} Its `q` (0-1): 1 when absent, 0 when malformed.
+ */
+function qualityOf(params) {
+  let q = 1;
+  for (const param of params) {
+    const [key, value] = param.split("=").map((s) => s.trim().toLowerCase());
+    if (key === "q") {
+      const parsed = Number(value);
+      q = value !== "" && Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : 0;
+    }
+  }
+  return q;
+}
+
+/**
  * Reads how strongly an Accept header asks for Markdown and for HTML.
  *
  * The most specific range that matches decides, as RFC 9110 says: an HTML
@@ -115,14 +153,7 @@ export function acceptWeights(accept) {
     const [rawType, ...params] = part.split(";");
     const type = rawType.trim().toLowerCase();
     if (!type) continue;
-    let q = 1;
-    for (const param of params) {
-      const [key, value] = param.split("=").map((s) => s.trim().toLowerCase());
-      if (key === "q") {
-        const parsed = Number(value);
-        q = value !== "" && Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : 0;
-      }
-    }
+    const q = qualityOf(params);
     const rank = HTML_TYPES.has(type) ? 2 : type === "text/*" ? 1 : type === "*/*" ? 0 : -1;
     if (MARKDOWN_TYPES.has(type)) markdown = Math.max(markdown, q);
     else if (rank >= 0) html[rank] = Math.max(html[rank] ?? 0, q);
@@ -302,15 +333,16 @@ function withHeaders(response, headers, status) {
 }
 
 /**
- * Adds `Accept` to a response's Vary header.
+ * Adds a request header name to a response's Vary header.
  *
  * @param {Headers} headers Response headers.
+ * @param {string} name The header name to add, such as `Accept`.
  * @returns {string} The new Vary value.
  */
-function varyAccept(headers) {
+function varyAdd(headers, name) {
   const current = headers.get("Vary");
-  if (!current) return "Accept";
-  return current.split(",").some((v) => v.trim().toLowerCase() === "accept") ? current : `${current}, Accept`;
+  if (!current) return name;
+  return current.split(",").some((v) => v.trim().toLowerCase() === name.toLowerCase()) ? current : `${current}, ${name}`;
 }
 
 /**
@@ -433,7 +465,92 @@ async function serveDocs(request, url, deps) {
  */
 
 /**
- * Handles one request.
+ * Picks the content coding for a response from an Accept-Encoding header.
+ *
+ * A coding is acceptable when it is listed, or `*` is, with a quality value
+ * above 0; a coding listed by name overrides `*`. Among acceptable codings the
+ * highest quality wins, and ENCODINGS' order breaks ties.
+ *
+ * @param {string | null | undefined} acceptEncoding The client's
+ *   Accept-Encoding header.
+ * @returns {"br" | "gzip" | null} The coding to apply, or null for none.
+ */
+export function pickEncoding(acceptEncoding) {
+  /** @type {Map<string, number>} */
+  const listed = new Map();
+  for (const part of (acceptEncoding ?? "").split(",")) {
+    const [rawCoding, ...params] = part.split(";");
+    const coding = rawCoding.trim().toLowerCase();
+    if (!coding) continue;
+    const q = qualityOf(params);
+    listed.set(coding, Math.max(listed.get(coding) ?? 0, q));
+  }
+  let best = null;
+  let bestQ = 0;
+  for (const coding of ENCODINGS) {
+    const q = listed.get(coding) ?? listed.get("*") ?? 0;
+    if (q > bestQ) {
+      best = coding;
+      bestQ = q;
+    }
+  }
+  return best;
+}
+
+/**
+ * Asks the runtime to compress a response the client can take compressed.
+ *
+ * Setting Content-Encoding on a response whose body is not encoded makes the
+ * Workers runtime encode it on the way out. Only text media types are
+ * compressed, never a response that is already encoded, is a byte range, has
+ * no body or says `Cache-Control: no-transform`. A compressed response gets
+ * `Vary: Accept-Encoding`, loses its Content-Length and has its ETag made
+ * weak, since the bytes differ from the asset the tag names.
+ *
+ * @param {Request} request The incoming request; its `cf.clientAcceptEncoding`
+ *   (the header the client sent, before Cloudflare normalizes it) is preferred
+ *   over its Accept-Encoding header.
+ * @param {Response} response The response to send.
+ * @returns {Response} The response, compressed when it qualifies.
+ */
+export function compress(request, response) {
+  if (response.body === null && request.method !== "HEAD") return response;
+  if (response.status === 204 || response.status === 206 || response.status === 304) return response;
+  if (response.headers.has("Content-Encoding") || response.headers.has("Content-Range")) return response;
+  if (/(?:^|,)\s*no-transform\s*(?:,|$)/i.test(response.headers.get("Cache-Control") ?? "")) return response;
+  const type = (response.headers.get("Content-Type") ?? "").split(";")[0].trim().toLowerCase();
+  if (!COMPRESSIBLE_RE.test(type)) return response;
+  // @ts-ignore: `cf` exists on requests in the Workers runtime only.
+  const encoding = pickEncoding(request.cf?.clientAcceptEncoding ?? request.headers.get("Accept-Encoding"));
+  const out = new Response(response.body, response);
+  out.headers.set("Vary", varyAdd(out.headers, "Accept-Encoding"));
+  if (encoding === null) return out;
+  out.headers.set("Content-Encoding", encoding);
+  out.headers.delete("Content-Length");
+  const etag = out.headers.get("ETag");
+  if (etag !== null && !etag.startsWith("W/")) out.headers.set("ETag", `W/${etag}`);
+  return out;
+}
+
+/**
+ * Handles one request, compressing the answer when the client accepts it.
+ *
+ * @param {Request} request The incoming request.
+ * @param {{ASSETS: {fetch: (input: Request | URL | string, init?: RequestInit) => Promise<Response>}}} env
+ *   Bindings: the static assets.
+ * @param {{shell: import("./render.mjs").DocsShell, fetch?: typeof fetch, cache?: Cache | null,
+ *   waitUntil?: (promise: Promise<unknown>) => void}} docs
+ *   As for route().
+ * @returns {Promise<Response>} The response.
+ */
+export async function handle(request, env, docs) {
+  const response = await route(request, env, docs);
+  const isRead = request.method === "GET" || request.method === "HEAD";
+  return isRead ? compress(request, response) : response;
+}
+
+/**
+ * Answers one request, before compression.
  *
  * @param {Request} request The incoming request.
  * @param {{ASSETS: {fetch: (input: Request | URL | string, init?: RequestInit) => Promise<Response>}}} env
@@ -445,7 +562,7 @@ async function serveDocs(request, url, deps) {
  *   context's `waitUntil`.
  * @returns {Promise<Response>} The response.
  */
-export async function handle(request, env, docs) {
+async function route(request, env, docs) {
   const url = new URL(request.url);
   const isRead = request.method === "GET" || request.method === "HEAD";
   if (isRead && (url.pathname === "/docs" || url.pathname.startsWith("/docs/"))) {
@@ -470,7 +587,7 @@ export async function handle(request, env, docs) {
     if (found.ok || found.status === 304) {
       return withHeaders(found, {
         "Content-Type": MARKDOWN_CONTENT_TYPE,
-        Vary: varyAccept(found.headers),
+        Vary: varyAdd(found.headers, "Accept"),
         Link: `<${url.origin}${htmlPath(md) ?? url.pathname}>; rel="canonical"`,
       });
     }
@@ -480,7 +597,7 @@ export async function handle(request, env, docs) {
   const response = await env.ASSETS.fetch(request);
   if (md !== null) {
     const contentType = response.headers.get("Content-Type") ?? "";
-    const headers = { Vary: varyAccept(response.headers) };
+    const headers = { Vary: varyAdd(response.headers, "Accept") };
     if (response.ok && contentType.startsWith("text/html")) {
       headers.Link = `<${url.origin}${md}>; rel="alternate"; type="text/markdown"`;
     }
