@@ -145,15 +145,21 @@ versions.
 - Every page gets a `<title>`, description, canonical link, Open Graph and
   `twitter:card` tags (from `PAGES` in `build.mjs`, or from each doc: its
   introduction, else its section names). The 404 page is `noindex`.
-- JSON-LD: the home page describes the site and the app
-  (`SoftwareApplication`); each doc is a `TechArticle` with a breadcrumb.
-- `sitemap.xml` lists every indexable page; `robots.txt` allows all crawlers
-  and points to it.
+- JSON-LD: the home page describes the site, its organization, the app
+  (`SoftwareApplication` with the feature cards as `featureList`), its source
+  code and the FAQ (`FAQPage`); each doc is a `TechArticle` with a
+  breadcrumb. The features and questions are read from the rendered home page
+  (`homeFacts` in `build.mjs`), so structured data never says anything a
+  visitor cannot see on the page. Search engines treat text shown only to
+  crawlers as cloaking, so keep it that way.
+- `sitemap.xml` lists every indexable page with the build date as
+  `lastmod`; `robots.txt` allows all crawlers and points to it.
 - For agents: each doc is also served as Markdown at `/docs/<path>.md` (and
   `/docs/v/<ref>/<path>.md`)
   (linked from the page with `rel="alternate"` and "View as Markdown"), with
   links between docs pointing at the other Markdown copies. `/llms.txt`
-  indexes them per [llmstxt.org](https://llmstxt.org) and `/llms-full.txt`
+  repeats the home page's features and questions, then indexes them per
+  [llmstxt.org](https://llmstxt.org), and `/llms-full.txt`
   holds every doc in one file.
 - Content negotiation: a request for `/`, `/download` or any `/docs/` page
   whose `Accept` header ranks `text/markdown` (or `text/x-markdown`) at least

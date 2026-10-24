@@ -58,6 +58,9 @@ export const REPOSITORY_URL = "https://github.com/Bookclerk/bookclerk";
 /** Origin used when SITE_ORIGIN is unset. */
 const DEFAULT_ORIGIN = "https://bookclerk.app";
 
+/** Public contact address, as the footer shows it. */
+const CONTACT_EMAIL = "contact@bookclerk.app";
+
 /** One-sentence summary of Bookclerk, shared by the home page, JSON-LD and llms.txt. */
 const SUMMARY =
   "Bookclerk gathers the audiobooks you have bought from Audible, Libro.fm, Chirp and GraphicAudio into one library on your own computer, and keeps copies you control.";
@@ -246,6 +249,7 @@ export function templateContext(state) {
       commit: short,
       commitUrl: `${REPOSITORY_URL}/commit/${state.commit}`,
       builtOn: displayDate(state.builtOn),
+      builtOnIso: state.builtOn,
       docsUrl: "/docs/",
       gettingStartedUrl: "/docs/getting-started",
       pluginsUrl: "/docs/plugins",
@@ -366,21 +370,99 @@ function pageContext(context, page, extra = {}) {
 }
 
 /**
+ * Turns a fragment of rendered HTML into plain text.
+ *
+ * @param {string} html Markup from a rendered template, escaped by escapeHtml.
+ * @returns {string} Its text: tags dropped, escapeHtml's entities decoded and
+ *   whitespace collapsed.
+ */
+function plainText(html) {
+  return html
+    .replace(/<[^>]*>/g, "")
+    .replace(/&(lt|gt|quot|#39|amp);/g, (_, e) => ({ lt: "<", gt: ">", quot: '"', "#39": "'", amp: "&" })[e])
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Reads the features and questions the rendered home page shows, so the
+ * structured data and llms.txt repeat what visitors see instead of a second
+ * copy that could drift from it.
+ *
+ * @param {string} html The rendered home page.
+ * @returns {{features: {name: string, text: string}[], faq: {question: string, answer: string}[]}}
+ *   Each feature card's heading and text, and each FAQ entry's question and
+ *   answer, in page order.
+ * @throws {Error} When the page has no feature cards or no FAQ entries, so a
+ *   markup change cannot silently empty them.
+ */
+export function homeFacts(html) {
+  const features = [...html.matchAll(/<div class="feature">[\s\S]*?<h3>([\s\S]*?)<\/h3>\s*<p[^>]*>([\s\S]*?)<\/p>/g)].map(
+    ([, name, text]) => ({ name: plainText(name), text: plainText(text) }),
+  );
+  const faq = [...html.matchAll(/<details[^>]*>\s*<summary>([\s\S]*?)<\/summary>([\s\S]*?)<\/details>/g)].map(
+    ([, question, answer]) => ({ question: plainText(question), answer: plainText(answer) }),
+  );
+  if (features.length === 0 || faq.length === 0) throw new Error("the home page lost its feature cards or FAQ");
+  return { features, faq };
+}
+
+/**
  * The schema.org description of the site and of Bookclerk itself, for the
  * home page.
  *
+ * Everything in it is also on the page: the features and questions come from
+ * the rendered page (homeFacts), as search engines require of structured data.
+ *
  * @param {ReturnType<typeof templateContext>} context Site-wide values.
- * @returns {object} A JSON-LD `@graph` with the WebSite and the
- *   SoftwareApplication.
+ * @param {ReturnType<typeof homeFacts>} facts What the home page shows.
+ * @returns {object} A JSON-LD `@graph` with the WebSite, the organization
+ *   behind it, the SoftwareApplication, its source code and the FAQ.
  */
-function homeJsonLd(context) {
-  const { origin, releaseTag, socialImage } = context.values;
+function homeJsonLd(context, facts) {
+  const { origin, releaseTag, socialImage, builtOnIso } = context.values;
+  const organization = `${origin}/#organization`;
   return {
     "@context": "https://schema.org",
     "@graph": [
-      { "@type": "WebSite", "@id": `${origin}/#website`, name: "Bookclerk", url: `${origin}/`, inLanguage: "en" },
+      {
+        "@type": "WebSite",
+        "@id": `${origin}/#website`,
+        name: "Bookclerk",
+        url: `${origin}/`,
+        inLanguage: "en",
+        publisher: { "@id": organization },
+      },
+      {
+        "@type": "Organization",
+        "@id": organization,
+        name: "Bookclerk",
+        url: `${origin}/`,
+        logo: `${origin}/android-chrome-512x512.png`,
+        email: CONTACT_EMAIL,
+        sameAs: [REPOSITORY_URL],
+      },
+      {
+        "@type": "SoftwareSourceCode",
+        "@id": `${origin}/#source`,
+        name: "Bookclerk",
+        codeRepository: REPOSITORY_URL,
+        programmingLanguage: ["Rust", "TypeScript"],
+        license: "https://www.gnu.org/licenses/gpl-3.0.html",
+        targetProduct: { "@id": `${origin}/#app` },
+      },
+      {
+        "@type": "FAQPage",
+        "@id": `${origin}/#faq`,
+        mainEntity: facts.faq.map(({ question, answer }) => ({
+          "@type": "Question",
+          name: question,
+          acceptedAnswer: { "@type": "Answer", text: answer },
+        })),
+      },
       {
         "@type": "SoftwareApplication",
+        "@id": `${origin}/#app`,
         name: "Bookclerk",
         description: SUMMARY,
         url: `${origin}/`,
@@ -391,6 +473,10 @@ function homeJsonLd(context) {
         isAccessibleForFree: true,
         offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
         downloadUrl: `${origin}/download`,
+        featureList: facts.features.map(({ name, text }) => `${name}: ${text}`),
+        softwareRequirements: "A web browser",
+        publisher: { "@id": organization },
+        dateModified: builtOnIso,
         ...(releaseTag ? { softwareVersion: releaseTag.slice(1) } : {}),
         sameAs: [REPOSITORY_URL],
       },
@@ -454,9 +540,11 @@ function markdownLinkText(text) {
  *
  * @param {ReturnType<typeof templateContext>} context Site-wide values.
  * @param {ReturnType<typeof renderDocs>} rendered The docs and sidebar.
+ * @param {ReturnType<typeof homeFacts>} facts What the home page shows, so
+ *   llms.txt states the same facts in the same words.
  * @param {string} outDir Output directory.
  */
-function writeLlmsTxt(context, rendered, outDir) {
+function writeLlmsTxt(context, rendered, facts, outDir) {
   const { origin, docsVersion, repo } = context.values;
   const byKey = new Map(rendered.docs.map((d) => [d.key, d]));
   const status = context.flags.prerelease
@@ -476,6 +564,10 @@ function writeLlmsTxt(context, rendered, outDir) {
       "",
     );
   }
+  // llms.txt allows no headings before the first link section, so the home
+  // page's features and questions go in as lists.
+  lines.push("What Bookclerk does:", "", ...facts.features.map(({ name, text }) => `- **${name}.** ${text}`), "");
+  lines.push("Common questions:", "", ...facts.faq.map(({ question, answer }) => `- **${question}** ${answer}`), "");
   const groups = rendered.nav;
   const designAt = groups.findIndex((g) => g.title === NAV[NAV.length - 1].title);
   for (const [i, group] of groups.entries()) {
@@ -507,8 +599,8 @@ function writeLlmsTxt(context, rendered, outDir) {
  * @param {string} outDir Output directory.
  */
 function writeCrawlerFiles(context, paths, outDir) {
-  const { origin } = context.values;
-  const urls = paths.map((p) => `  <url><loc>${escapeHtml(origin + p)}</loc></url>`).join("\n");
+  const { origin, builtOnIso } = context.values;
+  const urls = paths.map((p) => `  <url><loc>${escapeHtml(origin + p)}</loc><lastmod>${builtOnIso}</lastmod></url>`).join("\n");
   writeFileSync(
     join(outDir, "sitemap.xml"),
     `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`,
@@ -537,9 +629,11 @@ export function build(env, outDir, shellFile = DOCS_SHELL_FILE) {
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
   const indexable = [];
+  let facts = null;
   for (const page of PAGES) {
     const html = render(readFileSync(join(src, page.file), "utf8"), pageContext(context, page), partials);
-    writeFileSync(join(outDir, page.file), html.replace(JSONLD_MARKER, () => jsonLd(page.path === "/" ? homeJsonLd(context) : null)));
+    if (page.path === "/") facts = homeFacts(html);
+    writeFileSync(join(outDir, page.file), html.replace(JSONLD_MARKER, () => jsonLd(page.path === "/" ? homeJsonLd(context, facts) : null)));
     if (page.markdown) {
       // Template values are validated tags, dates, commit ids and URLs, so
       // HTML escaping leaves them unchanged in Markdown too.
@@ -553,7 +647,8 @@ export function build(env, outDir, shellFile = DOCS_SHELL_FILE) {
   mkdirSync(dirname(shellFile), { recursive: true });
   writeFileSync(shellFile, JSON.stringify(buildDocsShell(context, partials, rendered, docsVersions(state))));
   writeCrawlerFiles(context, indexable, outDir);
-  writeLlmsTxt(context, rendered, outDir);
+  if (facts === null) throw new Error("PAGES has no home page");
+  writeLlmsTxt(context, rendered, facts, outDir);
   for (const file of STATIC_FILES) cpSync(join(src, file), join(outDir, file));
   mkdirSync(join(outDir, "fonts"));
   for (const file of readdirSync(join(src, "fonts"))) {

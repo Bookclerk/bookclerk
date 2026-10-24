@@ -248,8 +248,20 @@ test("pages carry search and preview metadata", () => {
     assert.match(home, /<meta property="og:image" content="https:\/\/example.org\/social-card.png">/);
     assert.match(home, /<meta name="twitter:card" content="summary_large_image">/);
     const ld = JSON.parse(home.match(/<script type="application\/ld\+json">(.*?)<\/script>/)[1]);
-    assert.equal(ld["@graph"][1]["@type"], "SoftwareApplication");
-    assert.ok(!("softwareVersion" in ld["@graph"][1]));
+    const app = ld["@graph"].find((n) => n["@type"] === "SoftwareApplication");
+    assert.ok(app);
+    assert.ok(!("softwareVersion" in app));
+    assert.equal(app.dateModified, "2026-10-23");
+    // Structured data repeats the page; it never says what visitors cannot see.
+    const text = home.replace(/<script[\s\S]*?<\/script>/g, "").replace(/<[^>]*>/g, "").replace(/&#39;/g, "'").replace(/\s+/g, " ");
+    const faq = ld["@graph"].find((n) => n["@type"] === "FAQPage");
+    assert.equal(faq.mainEntity.length, 6);
+    for (const q of faq.mainEntity) {
+      assert.ok(text.includes(q.name), q.name);
+      assert.ok(text.includes(q.acceptedAnswer.text), q.acceptedAnswer.text);
+    }
+    assert.equal(app.featureList.length, 6);
+    for (const f of app.featureList) assert.ok(text.includes(f.split(": ")[1]), f);
     assert.equal((home.match(/<title>/g) ?? []).length, 1);
 
     const missing = site.page("404.html");
@@ -272,7 +284,7 @@ test("a release build states its version in structured data", () => {
   const site = built(REL);
   try {
     const ld = JSON.parse(site.page("index.html").match(/<script type="application\/ld\+json">(.*?)<\/script>/)[1]);
-    assert.equal(ld["@graph"][1].softwareVersion, "0.1.0");
+    assert.equal(ld["@graph"].find((n) => n["@type"] === "SoftwareApplication").softwareVersion, "0.1.0");
     assert.ok(!site.page("index.html").includes("noarchive"));
   } finally {
     site.done();
@@ -293,6 +305,11 @@ test("crawler and agent files list the site", () => {
     assert.match(llms, /^- \[[^\]]+\]\(https:\/\/bookclerk.app\/docs\/plugins.md\): \S/m);
     assert.match(llms, /^## Optional$/m);
     assert.ok(llms.includes("unstable development version"));
+    assert.ok(llms.includes("- **One library for every store.** Search, tag and rate"));
+    assert.ok(llms.includes("- **Which stores are supported?** Audible, Libro.fm"));
+    // No headings between the summary and the first link section.
+    assert.doesNotMatch(llms.slice(0, llms.indexOf("\n## ")), /\n#/);
+    assert.match(site.page("sitemap.xml"), /<loc>https:\/\/bookclerk.app\/<\/loc><lastmod>2026-10-23<\/lastmod>/);
     assert.match(llms, /^- \[Rust plugin SDK\]\(https:\/\/bookclerk.app\/docs\/api\/rust\/bookclerk_plugin_sdk\/index.md\)$/m);
     const full = site.page("llms-full.txt");
     assert.ok(full.includes("Source: https://bookclerk.app/docs/plugins.md"));
