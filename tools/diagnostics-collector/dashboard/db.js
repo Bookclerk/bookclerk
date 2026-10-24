@@ -201,25 +201,107 @@ export function reportWhere(since, f = {}) {
     params.push(f.signature);
   }
   if (f.filed === "yes" || f.filed === "no") {
-    clauses.push(
-      `${f.filed === "no" ? "NOT " : ""}EXISTS (SELECT 1 FROM report_issue ri WHERE ri.report_id = r.report_id)`,
-    );
+    clauses.push(`${f.filed === "no" ? "NOT " : ""}EXISTS (SELECT 1 FROM report_issue ri WHERE ri.report_id = r.report_id AND ${LINKED})`);
   }
   return { where: clauses.join(" AND "), params };
 }
 
 /**
- * Columns for a report row with its newest linked issue and how many issues
- * list it in all, so a list can show that older issues exist too.
+ * Condition on a `report_issue` row that counts as a link: every source but
+ * `excluded`, which records that a member detached the report.
+ */
+const LINKED = "ri.source <> 'excluded'";
+
+/**
+ * The issue that tracks a report: the oldest issue it is linked to. One link
+ * is the normal case; two mean the report was filed twice, and the older
+ * issue keeps it until a member resolves the conflict.
+ */
+const TRACKER = `(SELECT MIN(ri.issue_number) FROM report_issue ri WHERE ri.report_id = r.report_id AND ${LINKED})`;
+
+/**
+ * Columns for a report row with its tracking issue, how that link was made
+ * and how many issues link it in all, so a list can flag a conflict.
  */
 const REPORT_COLUMNS = `r.report_id, r.object_key, r.received_at, r.version, r.os, r.arch, r.distro,
   r.trigger, r.events, r.errors, r.warnings, r.signature, r.signature_label, r.install_hash,
   i.number AS issue_number, i.state AS issue_state,
-  (SELECT COUNT(*) FROM report_issue rc WHERE rc.report_id = r.report_id) AS issue_count`;
+  (SELECT ri.source FROM report_issue ri WHERE ri.report_id = r.report_id AND ri.issue_number = i.number) AS issue_source,
+  (SELECT COUNT(*) FROM report_issue ri WHERE ri.report_id = r.report_id AND ${LINKED}) AS issue_count`;
 
-/** Join to the newest issue that lists a report. */
-const ISSUE_JOIN = `LEFT JOIN issues i ON i.number = (
-  SELECT MAX(ri.issue_number) FROM report_issue ri WHERE ri.report_id = r.report_id)`;
+/** Join to the issue that tracks a report. */
+const ISSUE_JOIN = `LEFT JOIN issues i ON i.number = ${TRACKER}`;
+
+/**
+ * Whether two versions are on the same `major.minor` line, the rule for
+ * linking a report to an issue by signature alone: an unrelated failure in
+ * a later line with the same first error should reach triage with the old
+ * issue as a candidate, not inherit it.
+ *
+ * @param {unknown} a One version string.
+ * @param {unknown} b Another.
+ * @returns {boolean} True when both parse and their lines are equal.
+ */
+export function sameVersionLine(a, b) {
+  const line = (v) => (typeof v === "string" ? /^v?(\d+)\.(\d+)(?:[.+-]|$)/.exec(v) : null);
+  const x = line(a);
+  const y = line(b);
+  return Boolean(x && y && x[1] === y[1] && x[2] === y[2]);
+}
+
+/** Report IDs looked up per statement when linking by signature. */
+const LINK_LOOKUP_CHUNK = 90;
+
+/**
+ * Links reports to the open issue that already tracks their error
+ * signature, source `signature`. A report qualifies when it is indexed with
+ * a signature, is linked to no issue yet, and an open, triaged issue (not
+ * the holding issue for untriaged reports) tracks a report with the same
+ * signature on the same `major.minor` version line; with several such
+ * issues the oldest wins. Writes nothing for reports that do not qualify.
+ *
+ * @param {D1Database} db Database.
+ * @param {string[]} reportIds Lowercase report UUIDs pulled by ingest.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {Promise<Map<string, number>>} Report ID → issue number linked.
+ */
+export async function linkBySignature(db, reportIds, now) {
+  const chosen = new Map();
+  for (let i = 0; i < reportIds.length; i += LINK_LOOKUP_CHUNK) {
+    const chunk = reportIds.slice(i, i + LINK_LOOKUP_CHUNK);
+    const rows = await all(
+      db,
+      `SELECT r.report_id AS report_id, r.version AS version, t.version AS tracked_version,
+         ri.issue_number AS issue
+       FROM reports r
+       JOIN reports t ON t.signature = r.signature AND t.report_id <> r.report_id
+       JOIN report_issue ri ON ri.report_id = t.report_id AND ${LINKED}
+       JOIN issues i ON i.number = ri.issue_number AND i.state = 'open' AND i.kind <> 'fallback'
+       WHERE r.signature IS NOT NULL AND r.report_id IN (${chunk.map(() => "?").join(", ")})
+         AND NOT EXISTS (SELECT 1 FROM report_issue x WHERE x.report_id = r.report_id AND x.source <> 'excluded')`,
+      ...chunk,
+    );
+    for (const row of rows) {
+      if (!sameVersionLine(row.version, row.tracked_version)) continue;
+      const issue = Number(row.issue);
+      const id = String(row.report_id);
+      if (!chosen.has(id) || issue < chosen.get(id)) chosen.set(id, issue);
+    }
+  }
+  if (chosen.size) {
+    await db.batch(
+      [...chosen].map(([id, issue]) =>
+        db
+          .prepare(
+            `INSERT OR IGNORE INTO report_issue (report_id, issue_number, source, linked_by, linked_at)
+             VALUES (?, ?, 'signature', 'ingest', ?)`,
+          )
+          .bind(id, issue, now),
+      ),
+    );
+  }
+  return chosen;
+}
 
 /**
  * Overview figures for a range.
@@ -239,7 +321,7 @@ export async function overviewStats(db, now, since, f) {
     first(db, `SELECT COUNT(*) AS n, COUNT(DISTINCT NULLIF(r.install_hash, '')) AS installs FROM reports r WHERE ${range.where}`, ...range.params),
     first(db, `SELECT COUNT(*) AS n FROM reports r WHERE ${d1.where}`, ...d1.params),
     first(db, `SELECT COUNT(*) AS n FROM reports r WHERE ${d2.where} AND r.received_at < ?`, ...d2.params, now - DAY_MS),
-    first(db, `SELECT COUNT(*) AS n FROM reports r WHERE ${range.where} AND NOT EXISTS (SELECT 1 FROM report_issue ri WHERE ri.report_id = r.report_id)`, ...range.params),
+    first(db, `SELECT COUNT(*) AS n FROM reports r WHERE ${range.where} AND NOT EXISTS (SELECT 1 FROM report_issue ri WHERE ri.report_id = r.report_id AND ${LINKED})`, ...range.params),
     first(db, "SELECT COUNT(*) AS n FROM issues WHERE state = 'open'"),
   ]);
   return {
@@ -332,7 +414,7 @@ export async function topSignatures(db, since, f, limit) {
         first(
           db,
           `SELECT i.number AS number, i.state AS state FROM reports r
-           JOIN report_issue ri ON ri.report_id = r.report_id
+           JOIN report_issue ri ON ri.report_id = r.report_id AND ${LINKED}
            JOIN issues i ON i.number = ri.issue_number
            WHERE r.signature = ? ORDER BY i.updated_at DESC LIMIT 1`,
           s.signature,
@@ -393,7 +475,8 @@ export async function filterOptions(db, since) {
 }
 
 /**
- * One indexed report with its linked issues and their pull requests.
+ * One indexed report with its linked issues (the tracking issue first, each
+ * with the link's `source`) and their pull requests.
  *
  * @param {D1Database} db Database.
  * @param {string} reportId Lowercase UUID.
@@ -406,14 +489,14 @@ export async function getReport(db, reportId) {
   const [issues, prs] = await Promise.all([
     all(
       db,
-      `SELECT i.* FROM report_issue ri JOIN issues i ON i.number = ri.issue_number
-       WHERE ri.report_id = ? ORDER BY i.number DESC`,
+      `SELECT i.*, ri.source AS source FROM report_issue ri JOIN issues i ON i.number = ri.issue_number
+       WHERE ri.report_id = ? AND ${LINKED} ORDER BY i.number ASC`,
       reportId,
     ),
     all(
       db,
       `SELECT p.* FROM report_issue ri JOIN issue_pr p ON p.issue_number = ri.issue_number
-       WHERE ri.report_id = ? ORDER BY p.pr_number DESC`,
+       WHERE ri.report_id = ? AND ${LINKED} ORDER BY p.pr_number DESC`,
       reportId,
     ),
   ]);
@@ -456,7 +539,7 @@ export async function afterFixCounts(db) {
        WHERE state = 'merged' AND merged_at IS NOT NULL GROUP BY issue_number),
      sigs AS (
        SELECT DISTINCT ri.issue_number, r.signature FROM report_issue ri
-       JOIN reports r ON r.report_id = ri.report_id WHERE r.signature IS NOT NULL)
+       JOIN reports r ON r.report_id = ri.report_id WHERE r.signature IS NOT NULL AND ${LINKED})
      SELECT f.issue_number AS issue_number, f.fix_at AS fix_at,
        (SELECT COUNT(DISTINCT r2.report_id) FROM sigs s
           JOIN reports r2 ON r2.signature = s.signature AND r2.received_at > f.fix_at
@@ -467,8 +550,16 @@ export async function afterFixCounts(db) {
 }
 
 /**
- * Diagnostics issues with report counts, first and last receipt, daily
- * activity in a range and linked pull requests.
+ * Each report with the issue that tracks it, as a derived table `tr` with
+ * `report_id` and `issue_number`; a report linked to two issues appears once,
+ * under the older one, so issue counts add up to the number of reports.
+ */
+const TRACKED = `(SELECT ri.report_id AS report_id, MIN(ri.issue_number) AS issue_number
+  FROM report_issue ri WHERE ${LINKED} GROUP BY ri.report_id) tr`;
+
+/**
+ * Diagnostics issues with the counts of the reports they track, first and
+ * last receipt, daily activity in a range and linked pull requests.
  *
  * @param {D1Database} db Database.
  * @param {"open" | "closed" | "all"} state Which issues.
@@ -484,13 +575,13 @@ export async function listIssues(db, state, since, limit) {
     db,
     `SELECT i.*, COUNT(r.report_id) AS reports, MIN(r.received_at) AS first_seen,
        MAX(r.received_at) AS last_seen,
-       (SELECT r2.version FROM report_issue x JOIN reports r2 ON r2.report_id = x.report_id
-          WHERE x.issue_number = i.number ORDER BY r2.received_at ASC LIMIT 1) AS first_version,
-       (SELECT r3.version FROM report_issue y JOIN reports r3 ON r3.report_id = y.report_id
-          WHERE y.issue_number = i.number ORDER BY r3.received_at DESC LIMIT 1) AS last_version
+       (SELECT r2.version FROM ${TRACKED} JOIN reports r2 ON r2.report_id = tr.report_id
+          WHERE tr.issue_number = i.number ORDER BY r2.received_at ASC LIMIT 1) AS first_version,
+       (SELECT r3.version FROM ${TRACKED} JOIN reports r3 ON r3.report_id = tr.report_id
+          WHERE tr.issue_number = i.number ORDER BY r3.received_at DESC LIMIT 1) AS last_version
      FROM issues i
-     LEFT JOIN report_issue ri ON ri.issue_number = i.number
-     LEFT JOIN reports r ON r.report_id = ri.report_id
+     LEFT JOIN ${TRACKED} ON tr.issue_number = i.number
+     LEFT JOIN reports r ON r.report_id = tr.report_id
      ${filter}
      GROUP BY i.number ORDER BY COALESCE(MAX(r.received_at), i.updated_at) DESC LIMIT ?`,
     ...params,
@@ -499,9 +590,9 @@ export async function listIssues(db, state, since, limit) {
   const [days, prs] = await Promise.all([
     all(
       db,
-      `SELECT ri.issue_number AS issue, CAST(r.received_at / ? AS INTEGER) AS day, COUNT(*) AS n
-       FROM report_issue ri JOIN reports r ON r.report_id = ri.report_id
-       WHERE r.received_at >= ? GROUP BY ri.issue_number, day`,
+      `SELECT tr.issue_number AS issue, CAST(r.received_at / ? AS INTEGER) AS day, COUNT(*) AS n
+       FROM ${TRACKED} JOIN reports r ON r.report_id = tr.report_id
+       WHERE r.received_at >= ? GROUP BY tr.issue_number, day`,
       DAY_MS,
       since,
     ),

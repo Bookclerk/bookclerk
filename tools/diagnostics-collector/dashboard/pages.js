@@ -113,8 +113,8 @@ function issueChip(cfg, n, state) {
 }
 
 /**
- * "+N" after a report's issue chip when more issues than the newest list it;
- * the report's own page names them all.
+ * "+N" after a report's issue chip when issues besides the tracking one list
+ * it; the report's own page names them all and flags the conflict.
  *
  * @param {{report_id: string, issue_count?: number | null}} r Report row.
  * @returns {import("./html.js").SafeHtml | string} The link, or nothing.
@@ -124,6 +124,14 @@ function moreIssues(r) {
   if (!(more > 0)) return "";
   return html` <a class="quiet" href="/reports/${r.report_id}" title="Listed in ${more + 1} issues">+${more}</a>`;
 }
+
+/** How a report's link to its tracking issue was made, by ledger `source`. */
+const LINK_SOURCE = {
+  filed: "listed when filed",
+  signature: "linked by signature",
+  triage: "attached by triage",
+  manual: "attached by a member",
+};
 
 /**
  * Range picker links that keep the other query parameters.
@@ -413,8 +421,9 @@ export function reportPage(d) {
         </dl></section>
         <section class="panel s4" data-live="tracked"><h2>Tracked by</h2><div class="links">
           ${d.issues.length
-            ? d.issues.map((i) => html`<div class="link-item"><span class="chip ${i.state === "open" ? "open" : "closed"}">${i.state === "open" ? "Open" : "Closed"}</span><a href="${ghUrl(d.cfg, "issues", i.number)}">#${i.number} ${i.title}</a></div>`)
+            ? d.issues.map((i, n) => html`<div class="link-item"><span class="chip ${i.state === "open" ? "open" : "closed"}">${i.state === "open" ? "Open" : "Closed"}</span><a href="${ghUrl(d.cfg, "issues", i.number)}">#${i.number} ${i.title}</a> <span class="fine">${n === 0 ? LINK_SOURCE[i.source] ?? "" : "also lists it"}</span></div>`)
             : html`<p class="fine">No issue lists this report yet. Triage may have judged it noise, or ingest has not run since it arrived.</p>`}
+          ${d.issues.length > 1 ? html`<p class="fine"><span class="chip crit">Conflict</span> ${d.issues.length} issues list this report; it counts under #${d.issues[0].number} until a member resolves it.</p>` : ""}
           ${d.prs.map((pr) => html`<div class="link-item"><span class="chip ${pr.state}">${{ open: "Open", closed: "Closed", merged: "Merged" }[pr.state] ?? pr.state}</span><a href="${ghUrl(d.cfg, "pull", pr.pr_number)}">#${pr.pr_number} ${pr.title}</a></div>`)}
           ${fix && fix.after > 0 ? html`<div class="link-item"><span class="chip crit">Seen after fix</span><span class="fine">${fmtInt(fix.after)} reports with this signature since the fix merged on ${fmtDay(fix.fixAt)}</span></div>` : ""}
         </div></section>

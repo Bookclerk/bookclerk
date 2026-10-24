@@ -313,8 +313,19 @@ a pull request that adds or widens a boundary extends it.
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape (`bookclerk-plugin-abi::GuestSqlPolicy`, lowered as the SQLite adapter lowers it) | Every table, column, function and schema action SQLite's own authorizer reports for an admitted statement is inside the policy; shared oracle `fuzz/oracles/guest_sql_authz.rs`, replayed from `bookclerk-library` |
 | `mux_peer` | Peer frames on the multiplexed byte link (`bookclerk-plugin-sdk::mux`: `Open`, `Data`, `Close`, `Window`, lengths and ids) | Settles within a bound once the peer's bytes end, delivers no more than the peer sent, accepts no more streams than the peer could open, leaves no task behind; shared oracle `fuzz/oracles/mux_peer.rs`, replayed from `bookclerk-plugin-sdk` |
 
-Five boundaries live outside the Rust workspace and follow the ADR's rule for
+Six boundaries live outside the Rust workspace and follow the ADR's rule for
 non-Rust tooling (decision 6):
+
+- The diagnostics holding issue editor
+  (`tools/diagnostics-collector/scripts/holding_issue.py`), which appends
+  report IDs to the body of the GitHub issue that holds untriaged reports (a
+  body anyone with triage rights can edit). `scripts/tests/test_holding_issue.py`
+  replays its seed corpus (`scripts/tests/holding_issue_corpus/`) and runs
+  seeded mutation fuzzing on every PR, checking each accepted result against
+  an independent reading of the body (the dashboard's list rule: the new IDs
+  follow the listed ones under the last Report IDs heading, nothing else in
+  the body changes, the list and body stay within their caps, and a second
+  append changes nothing).
 
 - The diagnostics triage plan validator
   (`tools/diagnostics-collector/scripts/validate_plan.py`), which decides what

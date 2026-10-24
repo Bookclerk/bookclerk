@@ -170,6 +170,37 @@ describe("GET /report?unfiled=1", () => {
     assert.deepEqual(out.reports.map((r) => r.report_id), [FILED, FRESH]);
     assert.equal(out.skipped_filed, 0);
     assert.equal(out.filed_filter, "off");
+    assert.deepEqual(out.linked, []);
+  });
+
+  it("links a report whose signature an open issue tracks instead of returning it", async () => {
+    const db = await setup();
+    // FILED is indexed with a signature and tracked by open issue #400;
+    // FRESH shares the signature on the same version line.
+    await db
+      .prepare("INSERT INTO issues (number, title, state, kind, created_at, updated_at) VALUES (400, 't', 'open', 'triage', 1, 1)")
+      .run();
+    for (const [id, version] of [[FILED, "0.0.0-synthetic"], [FRESH, "0.0.1"]]) {
+      await db
+        .prepare("INSERT INTO reports (report_id, object_key, received_at, version, signature) VALUES (?, ?, 1, ?, 'sig')")
+        .bind(id, `diagnostics/${version}/${id}.json`, version)
+        .run();
+    }
+    let downloads = 0;
+    const listing = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      if (String(input).includes("file-")) downloads += 1;
+      return listing(input, init);
+    };
+    const out = await pull(db, "&unfiled=1");
+    assert.deepEqual(out.reports, []);
+    assert.deepEqual(out.linked, [{ report_id: FRESH, issue: 400 }]);
+    assert.equal(out.linked_signature, 1);
+    assert.equal(out.next_since, 1001, "the cursor moves past a linked report");
+    assert.equal(downloads, 0, "a linked report is not downloaded");
+    const row = await db.prepare("SELECT source, linked_by FROM report_issue WHERE report_id = ?").bind(FRESH).first();
+    assert.deepEqual(row, { source: "signature", linked_by: "ingest" });
+    assert.deepEqual((await pull(db, "")).linked, [], "a force_full pull links nothing");
   });
 });
 

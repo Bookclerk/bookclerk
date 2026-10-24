@@ -97,25 +97,47 @@ KEPT_IDS=$(id_list '.[] | .report_id' "$DATA_FILE")
 # Reports the size cap left out of the batch: the plan cannot cover them.
 OMITTED_IDS=$(comm -23 <(sort <<<"$ALL_IDS") <(sort <<<"$KEPT_IDS"))
 
-# One issue tracking reports no plan covers, by ID only.
-# Usage: file_fallback <report count> <reason> <ID list>.
+# Title of the one open issue that holds reports no plan covers.
+HOLDING_TITLE="[diagnostics] untriaged reports"
+RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${REPO}/actions/runs/${GITHUB_RUN_ID:-unknown}"
+
+# Adds reports no plan covers, by ID only, to the open holding issue: its
+# Report IDs section grows (holding_issue.py edits only that list) and one
+# comment per run says why. When there is no open holding issue, or it is
+# full, a new one is opened. Usage: file_fallback <report count> <reason> <ID list>.
 file_fallback() {
   gh label create diagnostics --color "0E8A16" --description "Automated diagnostics reports" 2>/dev/null || true
-  local url
+  local number body url
+  # The oldest open diagnostics issue with exactly this title.
+  number=$(gh issue list --repo "$REPO" --state open --label diagnostics --limit 100 --json number,title \
+    | jq -r --arg t "$HOLDING_TITLE" '[.[] | select(.title == $t) | .number] | min // empty') || number=""
+  if [[ -n "$number" ]]; then
+    gh issue view "$number" --repo "$REPO" --json body --jq .body > "$WORK_DIR/holding-body"
+    printf '%s\n' "$3" > "$WORK_DIR/holding-lines"
+    if body=$(python3 -I "$SCRIPT_DIR/holding_issue.py" "$WORK_DIR/holding-body" "$WORK_DIR/holding-lines"); then
+      printf '%s' "$body" > "$WORK_DIR/holding-new"
+      gh issue edit "$number" --repo "$REPO" --body-file "$WORK_DIR/holding-new" >/dev/null || return 1
+      gh issue comment "$number" --repo "$REPO" --body "$1 more report(s) held: $2. Workflow run: $RUN_URL" >/dev/null || return 1
+      url="${GITHUB_SERVER_URL:-https://github.com}/${REPO}/issues/${number}"
+      echo "$url"
+      notify_issue "$url"
+      return 0
+    fi
+    echo "::notice::Holding issue #${number} cannot take more reports; opening a new one" >&2
+  fi
   url=$({
     echo "<!-- bookclerk-diagnostics: triage fallback -->"
-    echo "## Diagnostics batch ($1 report(s))"
+    echo "## Untriaged reports"
     echo
     echo "### Report IDs"
     printf '%s\n' "$3"
     echo
-    echo "Automated triage did not cover these reports ($2). Review them"
-    echo "on the dashboard (organization members only); report contents are"
-    echo "not posted here."
-    echo
-    echo "Workflow run: ${GITHUB_SERVER_URL:-https://github.com}/${REPO}/actions/runs/${GITHUB_RUN_ID:-unknown}"
-  } | gh issue create --repo "$REPO" --title "[diagnostics] unattended batch ($1)" --label diagnostics --body-file -) || return 1
+    echo "Reports no triage plan covered, added by each ingest run that could not"
+    echo "place them (the run's comment says why). Review them on the dashboard"
+    echo "(organization members only); report contents are not posted here."
+  } | gh issue create --repo "$REPO" --title "$HOLDING_TITLE" --label diagnostics --body-file -) || return 1
   echo "$url"
+  gh issue comment "${url##*/}" --repo "$REPO" --body "$1 report(s) held: $2. Workflow run: $RUN_URL" >/dev/null || true
   notify_issue "$url"
 }
 
@@ -155,6 +177,7 @@ notify_issue() {
 status=1
 reason="the collector could not be reached"
 if [[ $curl_status -eq 0 ]]; then
+  reason="the collector answered HTTP ${http}"
   case "$http" in
     200)
       if jq -er '.plan_text | strings' "$RESPONSE_FILE" >"$PLAN_FILE"; then
@@ -165,7 +188,6 @@ if [[ $curl_status -eq 0 ]]; then
       fi
       ;;
     429) reason="today's triage budget is used up" ;;
-    *) reason="the collector answered HTTP ${http}" ;;
   esac
 fi
 
@@ -180,6 +202,7 @@ if [[ $status -eq 0 ]]; then
     planned=$(find "$ISSUES_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)
   else
     status=1
+    reason="the model's reply held no valid plan"
   fi
 fi
 
@@ -205,7 +228,7 @@ if [[ $status -eq 0 ]]; then
   echo "Triage planned ${planned} issue(s) for ${count} report(s)."
   if [[ -n "$OMITTED_IDS" ]]; then
     omitted=$(wc -l <<<"$OMITTED_IDS")
-    echo "${omitted} report(s) did not fit in the triage batch; tracking them in a fallback issue." >&2
+    echo "${omitted} report(s) did not fit in the triage batch; adding them to the holding issue." >&2
     file_fallback "$omitted" "they did not fit in the batch's size limit" "$OMITTED_IDS" || failed=1
   fi
   # Reports the model saw but no planned issue lists would otherwise never be
@@ -216,7 +239,7 @@ if [[ $status -eq 0 ]]; then
   fi
   if [[ -n "$UNCOVERED_IDS" ]]; then
     uncovered=$(wc -l <<<"$UNCOVERED_IDS")
-    echo "${uncovered} report(s) are in no planned issue; tracking them in a fallback issue." >&2
+    echo "${uncovered} report(s) are in no planned issue; adding them to the holding issue." >&2
     file_fallback "$uncovered" "the triage plan left them out" "$UNCOVERED_IDS" || failed=1
   fi
   if [[ $failed -ne 0 ]]; then
@@ -224,7 +247,7 @@ if [[ $status -eq 0 ]]; then
     exit 1
   fi
 else
-  echo "No valid triage plan (${reason}); creating a single fallback issue via gh." >&2
+  echo "No valid triage plan (${reason}); adding every report to the holding issue." >&2
   file_fallback "$count" "$reason" "$ALL_IDS"
 fi
 
