@@ -917,6 +917,41 @@ describe("fixed-in version", () => {
     assert.deepEqual(await all(env.DASHBOARD_DB, "SELECT source, fixed_in FROM issue_fix ORDER BY recorded_at"), [{ source: "unreleased", fixed_in: null }, { source: "release", fixed_in: "0.9.0" }]);
   });
 
+  it("continues with the fourth release on the next sync when more than three follow the merge", async () => {
+    const env = makeEnv();
+    await seed(env, ID1, NOW - 5 * 86_400_000, { version: "0.9.0" });
+    const at = (hours) => new Date(NOW + hours * 3_600_000).toISOString();
+    const tag = (tag_name, published_at) => ({ tag_name, draft: false, prerelease: false, published_at });
+    // Four releases after the merge; only the fourth (newest) contains the fix.
+    const releases = [tag("v0.9.0", at(-10)), tag("v0.8.7", at(-20)), tag("v0.8.6", at(-30)), tag("v0.8.5", at(-40))];
+    const compared = [];
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues?", () => Response.json([closedIssue(416)])],
+      ["POST https://api.github.com/graphql", () => mergedPr(NOW - 2 * 86_400_000)],
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/releases", () => Response.json(releases)],
+      [
+        "GET https://api.github.com/repos/Bookclerk/bookclerk/compare/",
+        ({ url }) => {
+          const t = /compare\/([^.]+(?:\.[^.]+)*?)\.\.\./.exec(url)[1];
+          compared.push(t);
+          return Response.json({ status: t === "v0.9.0" ? "behind" : "diverged" });
+        },
+      ],
+    ]);
+    await syncIssues(env, githubConfig(env), NOW);
+    assert.deepEqual(compared, ["v0.8.5", "v0.8.6", "v0.8.7"], "the per-sync comparison budget stops before the fourth release");
+    const [first] = await all(env.DASHBOARD_DB, "SELECT source, fixed_in, checked_until FROM issue_fix");
+    assert.equal(first.source, "unreleased");
+    assert.equal(first.checked_until, Date.parse(at(-20)), "the cursor records the last release compared, not the newest one");
+
+    // No new release has appeared, yet the next sync must still look at v0.9.0.
+    compared.length = 0;
+    await syncIssues(env, githubConfig(env), NOW + 3_600_000);
+    assert.deepEqual(compared, ["v0.9.0"]);
+    assert.deepEqual(await all(env.DASHBOARD_DB, "SELECT source, fixed_in FROM issue_fix ORDER BY recorded_at"), [{ source: "unreleased", fixed_in: null }, { source: "release", fixed_in: "0.9.0" }]);
+  });
+
   it("keeps the rows when GitHub's release reads fail", async () => {
     const env = makeEnv();
     await seed(env, ID1, NOW - 5 * 86_400_000);

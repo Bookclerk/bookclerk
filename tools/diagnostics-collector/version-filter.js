@@ -87,8 +87,36 @@ export function compareSemver(a, b) {
   if (pa.prerelease == null && pb.prerelease == null) return 0;
   if (pa.prerelease == null) return 1;
   if (pb.prerelease == null) return -1;
-  if (pa.prerelease === pb.prerelease) return 0;
-  return pa.prerelease < pb.prerelease ? -1 : 1;
+  return comparePrerelease(pa.prerelease, pb.prerelease);
+}
+
+/**
+ * Compare two prerelease strings the way semver 2.0 item 11 orders them:
+ * dot-separated identifiers compared left to right, numeric identifiers
+ * numerically, numeric before alphanumeric, alphanumeric by ASCII, and a
+ * shorter list of identifiers before a longer one that shares its prefix.
+ *
+ * @param {string} a prerelease part of the first version (without the `-`)
+ * @param {string} b prerelease part of the second version
+ * @returns {-1 | 0 | 1} ordering of `a` relative to `b`
+ */
+function comparePrerelease(a, b) {
+  const ia = a.split(".");
+  const ib = b.split(".");
+  const n = Math.min(ia.length, ib.length);
+  for (let i = 0; i < n; i++) {
+    const x = ia[i];
+    const y = ib[i];
+    if (x === y) continue;
+    const xn = /^\d+$/.test(x);
+    const yn = /^\d+$/.test(y);
+    if (xn && yn) return BigInt(x) < BigInt(y) ? -1 : 1;
+    if (xn) return -1;
+    if (yn) return 1;
+    return x < y ? -1 : 1;
+  }
+  if (ia.length === ib.length) return 0;
+  return ia.length < ib.length ? -1 : 1;
 }
 
 /**

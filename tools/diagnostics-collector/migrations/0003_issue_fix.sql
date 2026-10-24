@@ -11,7 +11,10 @@
 --                      the issue (or, later, on the dashboard)
 -- fixed_in: the version without a leading `v`; NULL while unreleased.
 -- pr_number / merge_sha: the fix pull request the row was derived from.
--- recorded_by: 'sync' or a member login.
+-- checked_until: for an unreleased row, the publish time (Unix ms) of the
+--                last release compared, so the next look continues with the
+--                releases after it.
+-- recorded_by: 'sync', 'label' (a fixed-in label) or a member login.
 CREATE TABLE issue_fix (
   issue_number INTEGER NOT NULL,
   recorded_at INTEGER NOT NULL,
@@ -19,6 +22,7 @@ CREATE TABLE issue_fix (
   fixed_in TEXT,
   pr_number INTEGER,
   merge_sha TEXT,
+  checked_until INTEGER,
   recorded_by TEXT NOT NULL,
   PRIMARY KEY (issue_number, recorded_at)
 );

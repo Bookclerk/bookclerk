@@ -269,12 +269,14 @@ function dropStatements(db, number) {
  *   its latest row gets a `manual` row and is otherwise left alone; when
  *   the label is gone, the rows it wrote go too, so the lookup resumes;
  * - up to `FIX_RESOLVE_MAX` closed issues with a merged pull request whose
- *   merge commit is known, and no row yet or an `unreleased` row older than
- *   the newest release, get a `release` row naming the oldest release that
- *   contains the commit among the next `FIX_COMPARES` releases published
- *   after the merge and after the last look, or an `unreleased` row when
- *   none does. Only releases whose tag is a version are considered. A
- *   release row is final: a later pull request on the issue does not move it.
+ *   merge commit is known, and no row yet or an `unreleased` row with
+ *   releases not yet compared, get a `release` row naming the oldest release
+ *   that contains the commit among the next `FIX_COMPARES` releases
+ *   published after the merge and after the last one compared, or an
+ *   `unreleased` row recording how far the comparison got, so the next sync
+ *   continues from there whether or not a new release appeared. Only
+ *   releases whose tag is a version are considered. A release row is final:
+ *   a later pull request on the issue does not move it.
  *
  * A GitHub failure here is logged and leaves the rows as they were; the
  * next sync tries again.
@@ -287,13 +289,13 @@ function dropStatements(db, number) {
  */
 export async function resolveFixes(db, cfg, token, now) {
   const stmts = [];
-  const insert = (issue, source, fixedIn, prNumber, mergeSha, by) =>
+  const insert = (issue, source, fixedIn, prNumber, mergeSha, by, checkedUntil = null) =>
     db
       .prepare(
-        `INSERT OR IGNORE INTO issue_fix (issue_number, recorded_at, source, fixed_in, pr_number, merge_sha, recorded_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR IGNORE INTO issue_fix (issue_number, recorded_at, source, fixed_in, pr_number, merge_sha, recorded_by, checked_until)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .bind(issue, now, source, fixedIn, prNumber, mergeSha, by);
+      .bind(issue, now, source, fixedIn, prNumber, mergeSha, by, checkedUntil);
   // Labels: 'set' needs a manual row; 'gone' has label rows to drop.
   const labels = await all(
     db,
@@ -318,14 +320,14 @@ export async function resolveFixes(db, cfg, token, now) {
          AND p.merged_at = (SELECT MAX(q.merged_at) FROM issue_pr q
            WHERE q.issue_number = p.issue_number AND q.state = 'merged' AND q.merge_sha IS NOT NULL))
      SELECT i.number AS number, n.pr_number AS pr_number, n.merged_at AS merged_at, n.merge_sha AS merge_sha,
-       l.source AS source, l.recorded_at AS recorded_at
+       l.source AS source, l.checked_until AS checked_until
      FROM issues i JOIN newest n ON n.issue_number = i.number
      LEFT JOIN latest l ON l.issue_number = i.number
      WHERE i.state = 'closed' AND i.fixed_in_label IS NULL
-       AND (l.issue_number IS NULL OR (l.source = 'unreleased' AND l.recorded_at < ?))
+       AND (l.issue_number IS NULL OR (l.source = 'unreleased' AND COALESCE(l.checked_until, 0) < ?))
      ORDER BY i.closed_at, i.number LIMIT ?`;
   // Cheap check before the GitHub call: anything at all to look at, taking
-  // any release newer than an unreleased row's look as possible.
+  // any release newer than an unreleased row's last comparison as possible.
   const pending = await all(db, CANDIDATES, Number.MAX_SAFE_INTEGER, 1);
   if (pending.length) {
     try {
@@ -334,16 +336,24 @@ export async function resolveFixes(db, cfg, token, now) {
       const candidates = await all(db, CANDIDATES, newestRelease, FIX_RESOLVE_MAX);
       for (const c of candidates) {
         const mergedAt = Number(c.merged_at);
-        const lastLook = c.source === "unreleased" ? Number(c.recorded_at) : -Infinity;
+        const checked = c.source === "unreleased" ? Number(c.checked_until ?? 0) : -Infinity;
         const sha = String(c.merge_sha);
         let fixedIn = null;
-        for (const r of releases.filter((x) => x.publishedAt >= mergedAt && x.publishedAt > lastLook).slice(0, FIX_COMPARES)) {
+        // Where the comparison got to: the last release compared, or the
+        // newest release when none was (nothing after the merge yet).
+        let checkedUntil = newestRelease;
+        for (const r of releases.filter((x) => x.publishedAt >= mergedAt && x.publishedAt > checked).slice(0, FIX_COMPARES)) {
+          checkedUntil = r.publishedAt;
           if (await tagContains(cfg, token, r.tag, sha)) {
             fixedIn = normalizeVersion(r.tag);
             break;
           }
         }
-        stmts.push(insert(Number(c.number), fixedIn === null ? "unreleased" : "release", fixedIn, Number(c.pr_number), sha, "sync"));
+        stmts.push(
+          fixedIn === null
+            ? insert(Number(c.number), "unreleased", null, Number(c.pr_number), sha, "sync", checkedUntil)
+            : insert(Number(c.number), "release", fixedIn, Number(c.pr_number), sha, "sync"),
+        );
       }
     } catch (err) {
       console.error(`fixed-in lookup failed: ${err instanceof Error ? err.message : String(err)}`);

@@ -226,7 +226,9 @@ newest releases, prereleases included, and asks GitHub's compare API whether
 the oldest release published after the merge contains the pull request's
 merge commit (then the next two). The first that does is the fixed-in
 version, with a leading `v` dropped, and a prerelease counts. Until one does
-the fix is `unreleased`, looked at again once a newer release exists. At most
+the fix is `unreleased`, and the next sync continues with the releases after
+the last one compared, so a fix that only a later release carries is found
+over a few runs and a new release is checked as soon as it exists. At most
 five issues are resolved per sync, so a backlog clears over a few runs, and a
 GitHub failure leaves the rows as they were. A `fixed-in:<version>` label on
 the issue (`fixed-in:v0.4.2`, `MAJOR.MINOR.PATCH` with optional prerelease
