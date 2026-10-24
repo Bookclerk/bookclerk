@@ -337,7 +337,10 @@ export async function membershipRole(cfg, user, now) {
  * @param {string} token Installation token.
  * @param {string} sinceIso ISO-8601 time, or "" for all.
  * @param {number} page 1-based page.
- * @returns {Promise<object[]>} Issues (pull requests left out).
+ * @returns {Promise<{issues: object[], full: boolean, newest: string}>}
+ *   Issues (pull requests left out); whether GitHub returned a full page, so
+ *   another may follow; and the latest `updated_at` on the page, pull
+ *   requests included, so the sync cursor moves past them too.
  */
 export async function listDiagnosticsIssues(cfg, token, sinceIso, page) {
   const q = new URLSearchParams({
@@ -352,7 +355,12 @@ export async function listDiagnosticsIssues(cfg, token, sinceIso, page) {
   const res = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/issues?${q}`, { headers: apiHeaders(token) });
   if (!res.ok) throw new Error(`issue list failed: HTTP ${res.status}`);
   const items = await res.json();
-  return Array.isArray(items) ? items.filter((i) => i && !i.pull_request) : [];
+  const list = Array.isArray(items) ? items : [];
+  let newest = "";
+  for (const i of list) {
+    if (typeof i?.updated_at === "string" && i.updated_at > newest) newest = i.updated_at;
+  }
+  return { issues: list.filter((i) => i && !i.pull_request), full: list.length >= 100, newest };
 }
 
 /** GraphQL fields read for a referencing pull request. */

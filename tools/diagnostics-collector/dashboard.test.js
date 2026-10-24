@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { OAUTH_COOKIE, pkceChallenge } from "./dashboard/auth.js";
 import { afterFixCounts, all, indexReport, first, run } from "./dashboard/db.js";
 import { appJwt, clearTokenCache, githubConfig, INSTALLATION_PERMISSIONS, pkcs8FromPem } from "./dashboard/github.js";
-import { escapeHtml, html } from "./dashboard/html.js";
+import { escapeHtml, fmtTime, html, isoTime } from "./dashboard/html.js";
 import { parseIssueReportIds, reportIdOf } from "./dashboard/report-ids.js";
 import { dashboardFetch } from "./dashboard/routes.js";
 import { SESSION_COOKIE, createSession } from "./dashboard/session.js";
@@ -574,5 +574,30 @@ describe("pull request refresh", () => {
     seen.length = 0;
     assert.equal((await syncIssues(env, githubConfig(env), NOW + 1)).refreshed, 5);
     assert.deepEqual(seen, [101, 102, 103, 104, 105]);
+  });
+});
+
+describe("untrusted times and pages", () => {
+  it("formats out-of-range times as empty instead of throwing", () => {
+    assert.equal(isoTime(1e20), "");
+    assert.equal(isoTime(Number.NaN), "");
+    assert.equal(isoTime("5"), "");
+    assert.equal(fmtTime(-1e16), "");
+    assert.equal(fmtTime(0), "1970-01-01 00:00");
+  });
+
+  it("pages past a full page of pull requests and moves the cursor", async () => {
+    const env = makeEnv();
+    const t = (m) => new Date(NOW - 86_400_000 + m * 60_000).toISOString();
+    const prs = Array.from({ length: 100 }, (_, i) => ({ number: 1000 + i, pull_request: {}, updated_at: t(i) }));
+    const issue = { number: 7, title: "x", state: "closed", body: "", created_at: t(0), updated_at: t(200), closed_at: t(200) };
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues?", ({ url }) => Response.json(url.includes("page=1&") || url.endsWith("page=1") ? prs : [issue])],
+      ["POST https://api.github.com/graphql", () => Response.json({ data: { repository: { i0: { closedByPullRequestsReferences: { nodes: [] }, timelineItems: { nodes: [] } } } } })],
+    ]);
+    const res = await syncIssues(env, githubConfig(env), NOW);
+    assert.equal(res.issues, 1);
+    assert.equal((await first(env.DASHBOARD_DB, "SELECT value FROM sync_state WHERE key = 'issues_since'")).value, t(200));
   });
 });

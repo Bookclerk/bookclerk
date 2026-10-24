@@ -141,14 +141,25 @@ export function fmtInt(n) {
 }
 
 /**
+ * ISO-8601 text for a Unix time, safe on untrusted numbers.
+ *
+ * @param {unknown} ms Unix time in milliseconds.
+ * @returns {string} `YYYY-MM-DDTHH:MM:SS.sssZ`, or an empty string when the
+ *   value is not a number inside the Date range (±8.64e15 ms).
+ */
+export function isoTime(ms) {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || Math.abs(ms) > 8.64e15) return "";
+  return new Date(ms).toISOString();
+}
+
+/**
  * Formats a Unix time as UTC `YYYY-MM-DD HH:MM`.
  *
  * @param {number} ms Unix time in milliseconds.
- * @returns {string} The time, or an empty string when not a number.
+ * @returns {string} The time, or an empty string when not a valid time.
  */
 export function fmtTime(ms) {
-  if (!Number.isFinite(ms)) return "";
-  return new Date(ms).toISOString().slice(0, 16).replace("T", " ");
+  return isoTime(ms).slice(0, 16).replace("T", " ");
 }
 
 /**

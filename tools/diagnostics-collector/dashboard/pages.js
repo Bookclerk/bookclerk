@@ -5,7 +5,7 @@
 
 import { histogram, meter, sparkline, stackedBars } from "./charts.js";
 import { RANGES } from "./db.js";
-import { fmtDay, fmtInt, fmtTime, html, raw } from "./html.js";
+import { fmtDay, fmtInt, fmtTime, html, isoTime, raw } from "./html.js";
 
 /** Stack order and color class for known triggers; others draw as "other". */
 export const TRIGGER_SERIES = [
@@ -327,7 +327,7 @@ function eventLog(events) {
     if (level === "WARNING") level = "WARN";
     if (!(level in counts)) level = "INFO";
     counts[level] += 1;
-    const ts = Number.isFinite(e.ts_unix_ms) ? new Date(e.ts_unix_ms).toISOString().slice(11, 23) : "";
+    const ts = isoTime(e.ts_unix_ms).slice(11, 23);
     const fields = Array.isArray(e.fields)
       ? e.fields
           .slice(0, 20)

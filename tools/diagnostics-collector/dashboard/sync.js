@@ -139,13 +139,13 @@ export async function syncIssues(env, cfg, now) {
   const stored = new Set();
   let newest = since;
   for (let page = 1; page <= MAX_ISSUE_PAGES; page++) {
-    const issues = await listDiagnosticsIssues(cfg, token, since, page);
-    for (const issue of issues) {
+    const result = await listDiagnosticsIssues(cfg, token, since, page);
+    for (const issue of result.issues) {
       await storeIssue(db, issue);
       stored.add(Number(issue.number));
-      if (typeof issue.updated_at === "string" && issue.updated_at > newest) newest = issue.updated_at;
     }
-    if (issues.length < 100) break;
+    if (result.newest > newest) newest = result.newest;
+    if (!result.full) break;
   }
   if (newest) await setState(db, "issues_since", newest);
 
