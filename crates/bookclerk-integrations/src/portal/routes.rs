@@ -819,6 +819,12 @@ async fn revoke_connection(
             if let Err(err) = content.revoke_credentials(&scope, &account_id).await {
                 warn!(%account_id, %err, "store sign-out failed on revoke");
             }
+        } else {
+            warn!(
+                %account_id,
+                %plugin_key,
+                "plugin not deployed on this host; revoking without store sign-out"
+            );
         }
         if let Err(err) = library
             .delete_account_secrets(&plugin_key, &account_id)

@@ -1225,7 +1225,8 @@ pub struct RevokeAccountParams {
     /// Account being revoked.
     #[serde(default)]
     pub account_id: String,
-    /// Host-loaded credential blob for this account; empty when none is stored.
+    /// Decrypted credential blob for this account, exactly as login returned
+    /// it; never log it. Empty when none is stored.
     /// `None` when absent (wire zero value).
     #[serde(
         default,

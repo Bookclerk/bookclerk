@@ -1915,11 +1915,11 @@ class ContentSource(Protocol):
 
     async def revoke_account(self, params: RevokeAccountParams) -> EmptyReply:
         """Undo store-side state for one account before the host deletes its
-        sealed credentials (for example, deregister the device registered at
+        stored credentials (for example, deregister the device registered at
         login). Best effort: the host revokes the account whatever this returns.
 
         Args:
-            params: Account id and its sealed credentials.
+            params: Account id and its stored credentials.
 
         Returns:
             ``EmptyReply``
@@ -2987,8 +2987,9 @@ class RevokeAccountParams(TypedDict):
 
     Attributes:
         accountId: Account being revoked.
-        credentials: Host-loaded credential blob for this account; empty when none is
-            stored. Omitted when absent (wire zero value).
+        credentials: Decrypted credential blob for this account, exactly as login
+            returned it; never log it. Empty when none is stored. Omitted when absent
+            (wire zero value).
     """
 
     accountId: str

@@ -958,10 +958,10 @@ interface ContentSource {
       params :CatalogDetailParams  # Product id and optional ISBN.
   ) -> (result :CatalogDetailReply);
   # Undo store-side state for one account before the host deletes its
-  # sealed credentials (for example, deregister the device registered at
+  # stored credentials (for example, deregister the device registered at
   # login). Best effort: the host revokes the account whatever this returns.
   revokeAccount @13 (
-      params :RevokeAccountParams  # Account id and its sealed credentials.
+      params :RevokeAccountParams  # Account id and its stored credentials.
   ) -> (result :EmptyReply);
 }
 
@@ -1695,7 +1695,8 @@ struct CatalogDetailParams {
 struct RevokeAccountParams {
   # Account being revoked.
   accountId @0 :Text;
-  # Host-loaded credential blob for this account; empty when none is stored.
+  # Decrypted credential blob for this account, exactly as login returned
+  # it; never log it. Empty when none is stored.
   credentials @1 :Data $optional;
 }
 

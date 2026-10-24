@@ -268,7 +268,7 @@ pub mod catalog_detail {
 }
 
 /// Undo store-side state for one account before the host deletes its
-/// sealed credentials (for example, deregister the login device).
+/// stored credentials (for example, deregister the login device).
 ///
 /// Params: [`crate::RevokeAccountParams`]. Result: none. Best effort: the host
 /// revokes the account whether or not the guest succeeds.

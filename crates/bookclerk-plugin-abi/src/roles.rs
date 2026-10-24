@@ -284,7 +284,7 @@ pub trait ContentSource {
     }
 
     /// Undo store-side state for one account before the host deletes its
-    /// sealed credentials, such as deregistering the device registered at
+    /// stored credentials, such as deregistering the device registered at
     /// login.
     ///
     /// The default does nothing, which is right for stores that keep no

@@ -47,6 +47,10 @@ use crate::protocol::{
 use crate::rpc_session::{PluginSession, SessionServices, HOST_SHARED_ACCOUNT};
 use crate::Result;
 
+/// Longest a guest may spend signing an account out at the store before the
+/// host deletes the account's credentials without it.
+const REVOKE_ACCOUNT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// External content source backed by a discovered plugin binary.
 pub struct ExternalSource {
     /// Cap'n Proto session (never given `library.db`); opened once with the
@@ -570,23 +574,29 @@ impl ContentSource for ExternalSource {
                     account_id: account_id.to_string(),
                     credentials,
                 };
-                if let Err(err) = self
-                    .cs_call(move |src| async move { src.revoke_account(params).await })
-                    .await
-                {
-                    tracing::warn!(
+                let call = self.cs_call(move |src| async move { src.revoke_account(params).await });
+                match tokio::time::timeout(REVOKE_ACCOUNT_TIMEOUT, call).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => tracing::warn!(
                         plugin = %self.id(),
                         account = %account_id,
                         error = %err,
                         "store sign-out failed; deleting stored credentials anyway"
-                    );
+                    ),
+                    Err(_) => tracing::warn!(
+                        plugin = %self.id(),
+                        account = %account_id,
+                        timeout_secs = REVOKE_ACCOUNT_TIMEOUT.as_secs(),
+                        "store sign-out timed out; deleting stored credentials anyway"
+                    ),
                 }
             }
             Err(err) => tracing::warn!(
                 plugin = %self.id(),
                 account = %account_id,
                 error = %err,
-                "could not load credentials for store sign-out; deleting them anyway"
+                "skipping store sign-out (credentials unavailable or no `secrets` binding); \
+                 deleting stored credentials anyway"
             ),
         }
         bookclerk_source::revoke_credentials_default(scope, account_id).await
