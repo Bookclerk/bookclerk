@@ -508,7 +508,8 @@ export function pickEncoding(acceptEncoding) {
  * compressed, never a response that is already encoded, is a byte range, has
  * no body or says `Cache-Control: no-transform`. A compressed response gets
  * `Vary: Accept-Encoding`, loses its Content-Length and has its ETag made
- * weak, since the bytes differ from the asset the tag names.
+ * weak, since the bytes differ from the asset the tag names; a 304 for such
+ * a response gets the same Vary and ETag, and no Content-Encoding.
  *
  * @param {Request} request The incoming request; its `cf.clientAcceptEncoding`
  *   (the header the client sent, before Cloudflare normalizes it) is preferred
@@ -517,21 +518,26 @@ export function pickEncoding(acceptEncoding) {
  * @returns {Response} The response, compressed when it qualifies.
  */
 export function compress(request, response) {
-  if (response.body === null && request.method !== "HEAD") return response;
-  if (response.status === 204 || response.status === 206 || response.status === 304) return response;
+  const notModified = response.status === 304;
+  if (response.body === null && request.method !== "HEAD" && !notModified) return response;
+  if (response.status === 204 || response.status === 206) return response;
   if (response.headers.has("Content-Encoding") || response.headers.has("Content-Range")) return response;
   if (/(?:^|,)\s*no-transform\s*(?:,|$)/i.test(response.headers.get("Cache-Control") ?? "")) return response;
   const type = (response.headers.get("Content-Type") ?? "").split(";")[0].trim().toLowerCase();
-  if (!COMPRESSIBLE_RE.test(type)) return response;
+  // A 304 may leave out Content-Type; it stands for the page the client has.
+  if (!COMPRESSIBLE_RE.test(type) && !(notModified && type === "")) return response;
   // @ts-ignore: `cf` exists on requests in the Workers runtime only.
   const encoding = pickEncoding(request.cf?.clientAcceptEncoding ?? request.headers.get("Accept-Encoding"));
   const out = new Response(response.body, response);
   out.headers.set("Vary", varyAdd(out.headers, "Accept-Encoding"));
   if (encoding === null) return out;
-  out.headers.set("Content-Encoding", encoding);
-  out.headers.delete("Content-Length");
   const etag = out.headers.get("ETag");
   if (etag !== null && !etag.startsWith("W/")) out.headers.set("ETag", `W/${etag}`);
+  // A 304 has no body to encode; it only repeats the compressed answer's
+  // Vary and validator so caches that refresh their copy from it keep them.
+  if (notModified) return out;
+  out.headers.set("Content-Encoding", encoding);
+  out.headers.delete("Content-Length");
   return out;
 }
 

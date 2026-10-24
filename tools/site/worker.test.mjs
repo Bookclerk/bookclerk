@@ -513,7 +513,6 @@ test("compression leaves alone what must not or need not be compressed", async (
     [{ "Content-Type": "text/html", "Content-Encoding": "gzip" }, 200],
     [{ "Content-Type": "text/html", "Cache-Control": "public, no-transform" }, 200],
     [{ "Content-Type": "image/png" }, 200],
-    [{ "Content-Type": "text/html", ETag: '"abc"' }, 304],
     [{ "Content-Type": "text/html", "Content-Range": "bytes 0-0/20" }, 206],
   ]) {
     const req = new Request("https://bookclerk.app/download", { headers: { "Accept-Encoding": "br" } });
@@ -522,6 +521,22 @@ test("compression leaves alone what must not or need not be compressed", async (
   }
   const tagged = await handle(new Request("https://bookclerk.app/download", { headers: { "Accept-Encoding": "br" } }), answer({ "Content-Type": "text/html", ETag: '"abc"' }), { shell });
   assert.equal(tagged.headers.get("ETag"), 'W/"abc"');
+  for (const headers of [{ "Content-Type": "text/html", ETag: '"abc"' }, { ETag: '"abc"' }]) {
+    // A 304 keeps the compressed answer's Vary and weak validator, with no body to encode.
+    const req = new Request("https://bookclerk.app/download", { headers: { "Accept-Encoding": "br", "If-None-Match": 'W/"abc"' } });
+    const res = await handle(req, answer(headers, 304), { shell });
+    assert.equal(res.status, 304);
+    assert.equal(res.headers.get("Content-Encoding"), null);
+    assert.equal(res.headers.get("ETag"), 'W/"abc"');
+    assert.ok(res.headers.get("Vary").split(", ").includes("Accept-Encoding"));
+  }
+  const md304 = await handle(
+    new Request("https://bookclerk.app/download", { headers: { Accept: "text/markdown", "Accept-Encoding": "gzip", "If-None-Match": 'W/"abc"' } }),
+    answer({ ETag: '"abc"' }, 304),
+    { shell },
+  );
+  assert.equal(md304.headers.get("Vary"), "Accept, Accept-Encoding");
+  assert.equal(md304.headers.get("ETag"), 'W/"abc"');
   const post = await handle(new Request("https://bookclerk.app/", { method: "POST", headers: { "Accept-Encoding": "br" } }), env, { shell });
   assert.equal(post.headers.get("Content-Encoding"), null);
 });
