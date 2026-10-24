@@ -317,8 +317,9 @@ export async function resolveFixes(db, cfg, token, now) {
     else stmts.push(db.prepare("DELETE FROM issue_fix WHERE issue_number = ? AND recorded_by = 'label'").bind(Number(row.number)));
   }
 
-  // Closed issues with a merged fix the sync has not placed in a release.
-  const CANDIDATES = `WITH ${LATEST_FIX}, newest AS (
+  // Closed issues with a merged fix the sync has not placed in a release,
+  // in the given order.
+  const candidatesSql = (order) => `WITH ${LATEST_FIX}, newest AS (
        SELECT p.issue_number, p.pr_number, p.merged_at, p.merge_sha FROM issue_pr p
        WHERE p.state = 'merged' AND p.merged_at IS NOT NULL AND p.merge_sha IS NOT NULL
          AND p.merged_at = (SELECT MAX(q.merged_at) FROM issue_pr q
@@ -332,26 +333,28 @@ export async function resolveFixes(db, cfg, token, now) {
          AND (COALESCE(l.checked_until, 0) < ?
            OR (COALESCE(l.checked_until, 0) = ? AND COALESCE(l.checked_tag, '') < ?))))
        AND n.merged_at >= ?
-     ORDER BY i.closed_at, i.number LIMIT ?`;
+     ORDER BY ${order} LIMIT ?`;
+  const CANDIDATES = candidatesSql("i.closed_at, i.number");
   // Releases in the order the lookup walks them: publish time, then tag,
   // as decodeReleases sorts them.
   const after = (r, cursor) => r.publishedAt > cursor.publishedAt || (r.publishedAt === cursor.publishedAt && r.tag > cursor.tag);
-  // Cheap check before the GitHub call: anything at all to look at, taking
-  // any release newer than an unreleased row's last comparison as possible
-  // and any merge time as reachable.
-  const pending = await all(db, CANDIDATES, Number.MAX_SAFE_INTEGER, -1, "", 0, FIX_RESOLVE_MAX);
-  if (pending.length) {
+  // Cheap check before the GitHub call: the oldest merge among everything
+  // there could be to look at, taking any release newer than an unreleased
+  // row's last comparison as possible and any merge time as reachable.
+  const [oldest] = await all(db, candidatesSql("n.merged_at"), Number.MAX_SAFE_INTEGER, -1, "", 0, 1);
+  if (oldest) {
     try {
-      // Read releases back to the oldest merge among the candidates, so the
-      // first release after each merge is in the list; a merge older than
-      // that, or than the pages read (`reach`), waits for a later sync or a
-      // label rather than being placed in a release that may not be the
-      // first.
-      const since = Math.min(...pending.map((c) => Number(c.merged_at)));
+      // Read releases back to the oldest merge among all candidates, not
+      // only the ones this sync takes, so the first release after each
+      // merge is in the list and an issue closed late with an early merge
+      // is not left behind by the five ahead of it. A merge older than the
+      // pages read (`reach`) waits for a label rather than being placed in
+      // a release that may not be the first.
+      const since = Number(oldest.merged_at);
       const { releases: listed, reach } = await listReleases(cfg, token, since);
       const releases = listed.filter((r) => parseSemver(r.tag) !== null);
       const newest = releases.length ? releases[releases.length - 1] : { publishedAt: 0, tag: "" };
-      const candidates = await all(db, CANDIDATES, newest.publishedAt, newest.publishedAt, newest.tag, Math.max(reach, since), FIX_RESOLVE_MAX);
+      const candidates = await all(db, CANDIDATES, newest.publishedAt, newest.publishedAt, newest.tag, reach, FIX_RESOLVE_MAX);
       for (const c of candidates) {
         const mergedAt = Number(c.merged_at);
         const cursor =
