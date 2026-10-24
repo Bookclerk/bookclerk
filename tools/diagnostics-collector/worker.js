@@ -8,6 +8,10 @@
  *                 triage.js)
  * GET  /health  — liveness
  *
+ * With the dashboard configured (see dashboard/routes.js), `/` is the
+ * GitHub sign-in page and `/dash`, `/reports`, `/reports/<id>` and `/issues`
+ * serve organization members; without it `/` answers like `/health`.
+ *
  * Object layout: diagnostics/<version>/<report_id>.json
  *
  * /report selects objects whose path version is the latest *stable* GitHub
@@ -19,18 +23,25 @@
  *   REPORT_API_KEY          — required for /report and /triage
  *   CLIENT_IP_HASH_SALT     — optional; enables hashed client IP in enrichment
  *   GITHUB_TOKEN            — optional; higher GitHub API rate limits
+ *   GITHUB_APP_CLIENT_ID, GITHUB_APP_CLIENT_SECRET, GITHUB_APP_PRIVATE_KEY
+ *                           — optional; the automation App, for dashboard
+ *                             sign-in and read-only issue sync
  *
  * Vars:
  *   GITHUB_REPOSITORY       — owner/repo for releases/latest (e.g. Bookclerk/bookclerk)
  *   TRIAGE_MODEL            — optional; Workers AI model for /triage
  *   TRIAGE_DAILY_NEURONS    — optional; /triage neuron cap per UTC day
  *
- * Bindings: AI (Workers AI), TRIAGE_BUDGET (KV, the daily neuron ledger).
+ * Bindings: AI (Workers AI), TRIAGE_BUDGET (KV, the daily neuron ledger),
+ * DASHBOARD_DB (D1, the dashboard's report index and sessions), ASSETS
+ * (dashboard styles, script and fonts under /static/).
  *
  * REPORT_API_KEY only ever lives in the Worker and the GitHub Actions
  * secrets; Bookclerk builds carry the collector URL, never this key.
  */
 
+import { dashboardFetch, dashboardScheduled, indexCap } from "./dashboard/routes.js";
+import { indexSubmitted } from "./dashboard/sync.js";
 import { handleTriage, readCapped } from "./triage.js";
 import {
   extractVersionFromKey,
@@ -136,11 +147,14 @@ function errorText(err) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
     try {
+      const page = await dashboardFetch(request, env, ctx, path, b2Access(env));
+      if (page) return page;
+
       if (request.method === "GET" && (path === "/" || path === "/health")) {
         const origin = new URL(request.url).origin;
         return json({
@@ -153,7 +167,7 @@ export default {
       // Awaited so a rejection lands in the catch below instead of escaping
       // as Cloudflare's opaque error 1101.
       if (request.method === "POST" && path === "/submit") {
-        return await handleSubmit(request, env);
+        return await handleSubmit(request, env, ctx);
       }
 
       if (request.method === "GET" && path === "/report") {
@@ -179,9 +193,28 @@ export default {
       return json({ error: "internal error" }, 500);
     }
   },
+
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(dashboardScheduled(env, Date.now()));
+  },
 };
 
-async function handleSubmit(request, env) {
+/**
+ * The B2 helpers the dashboard reads stored reports with.
+ *
+ * @param {Record<string, any>} env Worker bindings.
+ * @returns {import("./dashboard/storage.js").B2Access} Helpers bound to this
+ *   Worker's B2 credentials.
+ */
+function b2Access(env) {
+  return {
+    authorize: () => b2Authorize(env),
+    downloadById: (auth, fileId) => b2DownloadById(auth, fileId),
+    bucketId: env.B2_BUCKET_ID,
+  };
+}
+
+async function handleSubmit(request, env, ctx) {
   const len = Number(request.headers.get("content-length") || "0");
   if (len > MAX_BODY_BYTES) {
     return json({ error: "payload too large" }, 413);
@@ -236,6 +269,12 @@ async function handleSubmit(request, env) {
     trigger: safeToken(payload.trigger, "report"),
     bookclerk_version: truncate(String(payload.version || ""), 64),
   });
+
+  // Best-effort dashboard index row; a failure leaves the report for the
+  // owner's reindex and never fails the upload.
+  if (env.DASHBOARD_DB && ctx) {
+    ctx.waitUntil(indexSubmitted(env.DASHBOARD_DB, enriched, objectKey, indexCap(env)).catch(() => {}));
+  }
 
   return json(
     {

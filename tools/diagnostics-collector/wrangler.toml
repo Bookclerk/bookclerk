@@ -15,6 +15,10 @@ GITHUB_REPOSITORY = "Bookclerk/bookclerk"
 # free neurons a day across all Workers AI use; this keeps triage to a fifth).
 TRIAGE_MODEL = "@cf/ibm-granite/granite-4.0-h-micro"
 TRIAGE_DAILY_NEURONS = "2000"
+# Dashboard: most reports /submit indexes per UTC day, so an open /submit
+# cannot spend the D1 write allowance (100,000 rows a day on the free plan).
+# Each indexed report writes five rows, so this spends at most half of it.
+DASHBOARD_INDEX_DAILY_ROWS = "10000"
 
 [ai]
 binding = "AI"
@@ -31,3 +35,21 @@ required = [
   "B2_BUCKET_ID",
   "REPORT_API_KEY",
 ]
+
+# Dashboard (dashboard/routes.js): report index, sessions and audit log. No
+# id: wrangler creates the database on the first deploy, like TRIAGE_BUDGET,
+# and the deploy workflow then applies migrations/. The dashboard stays off
+# until the GitHub App secrets are set too.
+[[d1_databases]]
+binding = "DASHBOARD_DB"
+migrations_dir = "migrations"
+
+# Dashboard styles, script, mark and fonts, served under /static/ without
+# running the Worker. Every other path reaches the Worker.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+# Issue and pull request sync for the dashboard, plus the session sweep.
+[triggers]
+crons = ["*/30 * * * *"]

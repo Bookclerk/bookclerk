@@ -321,6 +321,50 @@ non-Rust tooling (decision 6):
   oracle (a refusal has a cause; an admitted prompt is the re-serialized
   batch, fits the size cap and context window, and its reservation covers the
   call's worst case).
+- The member dashboard's readers of untrusted text: the issue-body
+  Report IDs parser (`parseIssueReportIds` in
+  `tools/diagnostics-collector/dashboard/report-ids.js`), which decides which
+  reports an issue claims; the stored-report summary (`summarizeReport`
+  in `dashboard/signature.js`), which writes every report's index row; the
+  report page's event log (`eventLog` in `dashboard/pages.js`), which renders
+  stored events; the session check (`sessionToken` and `memberFromRow` in
+  `dashboard/session.js`), which decides whether a request is signed in and
+  as whom; the sign-in callback check (`parseCallback` in
+  `dashboard/auth.js`), which decides from the callback query and cookies
+  whether a code is traded with GitHub; the membership decision
+  (`membershipDecision` in `dashboard/github.js`), which decides from
+  GitHub's membership answer whether sign-in grants member or owner access;
+  the pull request decoder (`decodePullRequests`, same file), which
+  decides from GitHub's GraphQL answer whether the sync drops an issue or
+  replaces its pull request links; the issue listing decoder
+  (`decodeIssuePage`, same file), which moves the sync cursor and feeds
+  `storeIssue`; the sign-in and token decoders (`decodeInstallationId`,
+  `decodeInstallationToken`, `decodeAccessToken`, `decodeUser`, same file);
+  and the B2 listing decoder
+  (`decodeListPage` in `dashboard/storage.js`), which names the objects
+  report viewing downloads and where reindexing continues. `tools/diagnostics-collector/dashboard-input.fuzz.test.js` replays
+  their seed corpora (`tools/diagnostics-collector/corpus/report_ids/`,
+  `corpus/signature/`, `corpus/oauth_callback/`, `corpus/session/`,
+  `corpus/membership/`, `corpus/pull_requests/`, `corpus/b2_list/`,
+  `corpus/issue_page/`, `corpus/github_auth/`) and runs seeded mutation
+  fuzzing on every PR, checking results against independent oracles (IDs
+  re-derived by a separate walk, all UUIDs present in the body, capped; level
+  counts recounted, a signature exactly when an error or warning exists,
+  bounded control-free fields; the event log renders one escaped row per
+  event without throwing; a session token found exactly when a separate
+  cookie walk finds a well-formed one, and a member only for a live row with
+  a valid id and login, admin only when the row says so; a callback accepted exactly when a separate
+  cookie walk finds a state that matches the query and well-formed code and
+  verifier, returning those values; membership granted only for an active
+  membership with the same user id, or a 404 for the owner itself, admin
+  only when GitHub says so, and an error for any other failed status; pull
+  requests decoded to exactly the well-formed ones in this repository, the
+  label check failing only on a complete label list without `diagnostics`,
+  and an error for GraphQL errors or a missing repository; B2 listings
+  decoded to exactly the uploaded entries with string name and id, without
+  throwing; issue pages decoded to the numbered non-PR entries with string
+  fields, full by raw count, and the newest parseable update; tokens, ids
+  and users accepted only when well-formed).
 - The collector's B2 error-code reader (`b2ErrorCode` in
   `tools/diagnostics-collector/worker.js`), which picks the `code` out of a B2
   error body for logs and authenticated responses.
@@ -949,6 +993,10 @@ the workflows deploy:
   for the deploy that first creates its `TRIAGE_BUDGET` namespace (the
   binding has no id, so wrangler creates it). Deploying bindings needs only
   Editor on the Worker, so this can be removed once the namespace exists.
+- For `bookclerk-diagnostics` only, **Account → D1 → Edit**: the first
+  deploy creates the dashboard's `DASHBOARD_DB` database (no id in the
+  binding), and every deploy applies its migrations with
+  `wrangler d1 migrations apply`, so this one stays.
 
 Editor cannot create a Worker; creating one takes the **Admin** role on the
 Workers product. So the first deploy of a new Worker needs one of these:

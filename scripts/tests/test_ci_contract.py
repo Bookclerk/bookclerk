@@ -792,6 +792,37 @@ class DiagnosticsReportKeyTests(unittest.TestCase):
                 self.assertNotIn("DIAGNOSTICS_REPORT_API_KEY", text, path.name)
 
 
+class DiagnosticsDashboardSecretTests(unittest.TestCase):
+    """The dashboard's GitHub App credentials stay in the collector deploy.
+
+    The Worker receives the automation App's client secret and private key
+    for member sign-in; no Bookclerk build may name them, and only the
+    collector deploy may hand the client secret on.
+    """
+
+    WORKER_NAMES = ("GITHUB_APP_CLIENT_SECRET", "GITHUB_APP_PRIVATE_KEY")
+
+    def test_no_build_source_names_the_dashboard_secrets(self) -> None:
+        keys = DiagnosticsReportKeyTests
+        for root in keys.BUILD_ROOTS:
+            for path in (REPO / root).rglob("*"):
+                if path.suffix not in keys.SOURCE_SUFFIXES or keys.SKIP_DIRS & set(path.parts):
+                    continue
+                text = path.read_text(encoding="utf-8", errors="replace")
+                for name in self.WORKER_NAMES:
+                    self.assertNotIn(name, text, f"{path} names {name}")
+
+    def test_only_the_collector_deploy_receives_the_client_secret(self) -> None:
+        workflows = REPO / ".github" / "workflows"
+        for path in [*workflows.glob("*.yml"), *workflows.glob("*.yaml")]:
+            if path.name == "diagnostics-collector-deploy.yml":
+                continue
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn("AUTOMATION_APP_CLIENT_SECRET", text, path.name)
+            for name in self.WORKER_NAMES:
+                self.assertNotIn(name, text, path.name)
+
+
 class PostgresTestSelectionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

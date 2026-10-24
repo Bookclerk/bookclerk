@@ -51,6 +51,9 @@ bookclerk / bookclerkd  →  POST /submit  →  Worker (assigns report_id UUID)
                     B2: diagnostics/<version>/<report_id>.json
                               ↓
 GitHub ingest → POST /triage (Workers AI, no tools) → validated plan → Issues
+
+Organization members → GitHub sign-in → member dashboard (D1 index of the
+B2 reports, issues and pull requests synced from GitHub every 30 minutes)
 ```
 
 ## Report IDs
@@ -92,6 +95,75 @@ edit; see [Cloudflare Worker deploys](ci.md#cloudflare-worker-deploys).
 `DIAGNOSTICS_REPORT_API_KEY` Actions secret. Bookclerk builds carry only the
 collector URL, so a release can submit reports but never read or triage them.
 
+## Member dashboard
+
+With the automation GitHub App's credentials set, the collector serves a
+dashboard for members of the repository owner's organization: `/` signs in
+with GitHub, and `/dash` (overview), `/reports` (filterable list),
+`/reports/<report_id>` (one report with its event log) and `/issues`
+(diagnostics issues, their pull requests, and reports that keep arriving
+after a fix merged) are member-only. Without the credentials the routes stay
+off and `/` answers like `/health`. The deploy only uploads the credentials;
+removing the Actions secrets later leaves the Worker's copies in place, so to
+turn the dashboard off, delete the Worker secrets `GITHUB_APP_CLIENT_ID`,
+`GITHUB_APP_CLIENT_SECRET` and `GITHUB_APP_PRIVATE_KEY` (Cloudflare dashboard
+or `wrangler secret delete`).
+
+**Sign-in.** The Worker sends the member to GitHub with a random state and a
+PKCE challenge (kept in a 10-minute `__Host-bc_oauth` cookie), trades the
+returned code for a user token, reads `GET /user`, and revokes that token at
+once. It then checks `GET /orgs/<owner>/memberships/<login>` with its own
+installation token; only `state: active` passes, and organization owners get
+the owner tools. When the repository belongs to a user instead of an
+organization, only that user can sign in.
+
+**What the Worker holds.** The App can write to the repository, so every
+installation token the Worker mints is narrowed in the request to `metadata`,
+`issues`, `pull_requests` and `members`, all `read`, on this one repository.
+The client secret and private key are Worker secrets only. Neither, nor any
+user token, is logged, stored or sent to a browser, and
+`scripts/tests/test_ci_contract.py` keeps them out of Bookclerk builds and
+other workflows. The App needs the organization permission **Members: read**
+(accepted on its installation) and the callback URL
+`https://diagnostics.<DOMAIN>/auth/callback` (or the workers.dev URL) in its
+settings.
+
+**Sessions.** A random 32-byte `__Host-bc_session` cookie (HttpOnly, Secure,
+SameSite=Strict) names a row in D1 that stores only its SHA-256. Sessions end
+8 hours after sign-in, so a member removed from the organization loses access
+within 8 hours; sign-out deletes the row, and owners can sign everyone out.
+State-changing requests are POSTs that also need a same-origin `Origin`
+header. Pages carry a strict Content-Security-Policy (only this origin's
+styles, script, fonts and images; no inline script or style), `no-store`, and
+`frame-ancestors 'none'`. Report and issue text is escaped everywhere.
+
+**Data.** `DASHBOARD_DB` (D1, created on the first deploy; schema in
+`tools/diagnostics-collector/migrations/`) holds one index row per report,
+written by `/submit` after the B2 upload: version, platform, trigger, level
+counts and a signature (a hash of the first error's target and its message
+with numbers, IDs, paths, URLs and quoted text replaced; warnings when there
+is no error). Raw messages stay in B2; the report page downloads that one
+object with the Worker's B2 credentials, never `REPORT_API_KEY`. Because
+`/submit` is open, indexing stops at `DASHBOARD_INDEX_DAILY_ROWS` reports a
+UTC day (default 10,000; each report writes five D1 rows, so at most half of
+D1's 100,000 free daily row writes, leaving the rest for sign-ins, the access
+log and the sync); the report is still stored, and an owner's **Index older
+reports** button (also used once after the first deploy) adds stored reports
+the index is missing, up to 40 per press. The cron sync and the reindex stay
+within Workers Free's 50 D1 queries and 50 subrequests per invocation: each
+issue page, pull request batch or listing page is written in one or two
+batches that also save the cursor, and work left over continues in the next
+run or press.
+Every 30 minutes a cron lists issues labeled `diagnostics` changed since the
+last run, reads the report IDs from each issue's `### Report IDs` section (the
+format triage and its fallback write), and asks GraphQL for the pull requests
+that close or reference each issue (the newest 50 cross-references), up to
+100 issues a run: changed issues first, then the rest in turn, least
+recently checked first, so every issue is rechecked; one that lost the `diagnostics` label is
+dropped, and a failed GraphQL call keeps the links already stored. Each sign-in and report view is
+written to an access log kept 90 days and shown to owners. The overview also
+shows today's triage spend from `TRIAGE_BUDGET`.
+
 ## Version filter on ingest
 
 `GET /report` resolves the latest **stable** GitHub release (`releases/latest`)
@@ -118,7 +190,7 @@ callers get no detail.
 
 | Workflow | Purpose |
 |----------|---------|
-| `diagnostics-collector-deploy` | Deploy Worker on `diagnostics.<DOMAIN>`, or on workers.dev when `DOMAIN` is unset (stores that URL in `DIAGNOSTICS_COLLECTOR_BASE_URL`); then check `/health` |
+| `diagnostics-collector-deploy` | Deploy Worker on `diagnostics.<DOMAIN>`, or on workers.dev when `DOMAIN` is unset (stores that URL in `DIAGNOSTICS_COLLECTOR_BASE_URL`); apply dashboard D1 migrations; upload the dashboard's App secrets when set; then check `/health` |
 | `diagnostics-ingest` | Daily `/report` pull, `/triage` on Workers AI, issues from the validated plan |
 | `ci` | Release builds with `BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL` set to the collector URL |
 
@@ -134,7 +206,9 @@ See [repository permissions](https://docs.github.com/en/authentication/keeping-y
 
 ### Secrets
 
-`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `DIAGNOSTICS_REPORT_API_KEY`, `DIAGNOSTICS_B2_*`.
+`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `DIAGNOSTICS_REPORT_API_KEY`, `DIAGNOSTICS_B2_*`;
+for the member dashboard, `AUTOMATION_APP_CLIENT_ID`, `AUTOMATION_APP_CLIENT_SECRET`
+and `AUTOMATION_APP_PRIVATE_KEY` (GitHub's PKCS#1 key file as downloaded).
 
 ## Redaction & privacy
 
