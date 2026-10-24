@@ -276,10 +276,10 @@ function dropStatements(db, number) {
  *   `unreleased` row recording how far the comparison got (publish time
  *   and tag of the last release compared), so the next sync continues from
  *   there whether or not a new release appeared. Only
- *   releases whose tag is a version are considered, and the release list is
- *   read back to the oldest candidate's merge (`listReleases`); a merge
- *   older than the pages read is skipped, for a `fixed-in` label to settle,
- *   rather than placed in a release that may not be the first. A release
+ *   releases whose tag is a version are considered, and the whole release
+ *   list is read (`listReleases`); when it is longer than the pages read,
+ *   nothing is resolved and a `fixed-in` label settles the version, rather
+ *   than placing a fix in a release that may not be the first. A release
  *   row is final: a later pull request on the issue does not move it.
  *
  * A GitHub failure here is logged and leaves the rows as they were; the
@@ -317,9 +317,8 @@ export async function resolveFixes(db, cfg, token, now) {
     else stmts.push(db.prepare("DELETE FROM issue_fix WHERE issue_number = ? AND recorded_by = 'label'").bind(Number(row.number)));
   }
 
-  // Closed issues with a merged fix the sync has not placed in a release,
-  // in the given order.
-  const candidatesSql = (order) => `WITH ${LATEST_FIX}, newest AS (
+  // Closed issues with a merged fix the sync has not placed in a release.
+  const CANDIDATES = `WITH ${LATEST_FIX}, newest AS (
        SELECT p.issue_number, p.pr_number, p.merged_at, p.merge_sha FROM issue_pr p
        WHERE p.state = 'merged' AND p.merged_at IS NOT NULL AND p.merge_sha IS NOT NULL
          AND p.merged_at = (SELECT MAX(q.merged_at) FROM issue_pr q
@@ -332,29 +331,24 @@ export async function resolveFixes(db, cfg, token, now) {
        AND (l.issue_number IS NULL OR (l.source = 'unreleased'
          AND (COALESCE(l.checked_until, 0) < ?
            OR (COALESCE(l.checked_until, 0) = ? AND COALESCE(l.checked_tag, '') < ?))))
-       AND n.merged_at >= ?
-     ORDER BY ${order} LIMIT ?`;
-  const CANDIDATES = candidatesSql("i.closed_at, i.number");
+     ORDER BY i.closed_at, i.number LIMIT ?`;
   // Releases in the order the lookup walks them: publish time, then tag,
   // as decodeReleases sorts them.
   const after = (r, cursor) => r.publishedAt > cursor.publishedAt || (r.publishedAt === cursor.publishedAt && r.tag > cursor.tag);
-  // Cheap check before the GitHub call: the oldest merge among everything
-  // there could be to look at, taking any release newer than an unreleased
-  // row's last comparison as possible and any merge time as reachable.
-  const [oldest] = await all(db, candidatesSql("n.merged_at"), Number.MAX_SAFE_INTEGER, -1, "", 0, 1);
-  if (oldest) {
+  // Cheap check before the GitHub call: anything at all to look at, taking
+  // any release newer than an unreleased row's last comparison as possible.
+  const pending = await all(db, CANDIDATES, Number.MAX_SAFE_INTEGER, -1, "", 1);
+  if (pending.length) {
     try {
-      // Read releases back to the oldest merge among all candidates, not
-      // only the ones this sync takes, so the first release after each
-      // merge is in the list and an issue closed late with an early merge
-      // is not left behind by the five ahead of it. A merge older than the
-      // pages read (`reach`) waits for a label rather than being placed in
-      // a release that may not be the first.
-      const since = Number(oldest.merged_at);
-      const { releases: listed, reach } = await listReleases(cfg, token, since);
+      // The whole release list is needed: releases are listed by creation
+      // time and can be published late, so only the end of the list proves
+      // the first release after a merge is in it. A list cut off by the
+      // page cap leaves fixed-in versions to labels.
+      const { releases: listed, complete } = await listReleases(cfg, token);
+      if (!complete) throw new Error("the release list is longer than the lookup reads; set fixed-in labels");
       const releases = listed.filter((r) => parseSemver(r.tag) !== null);
       const newest = releases.length ? releases[releases.length - 1] : { publishedAt: 0, tag: "" };
-      const candidates = await all(db, CANDIDATES, newest.publishedAt, newest.publishedAt, newest.tag, reach, FIX_RESOLVE_MAX);
+      const candidates = await all(db, CANDIDATES, newest.publishedAt, newest.publishedAt, newest.tag, FIX_RESOLVE_MAX);
       for (const c of candidates) {
         const mergedAt = Number(c.merged_at);
         const cursor =

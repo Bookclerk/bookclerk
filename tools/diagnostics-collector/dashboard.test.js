@@ -1016,7 +1016,7 @@ describe("fixed-in version", () => {
     assert.deepEqual(await all(env.DASHBOARD_DB, "SELECT source, fixed_in FROM issue_fix ORDER BY recorded_at"), [{ source: "unreleased", fixed_in: null }, { source: "release", fixed_in: "0.9.3" }]);
   });
 
-  it("reads releases back to the oldest merge even when five caught-up issues come first", async () => {
+  it("resolves an issue closed late with an early merge once the five ahead of it are caught up", async () => {
     const env = makeEnv();
     await seed(env, ID1, NOW - 5 * 86_400_000, { version: "0.9.0" });
     // Five issues closed early with fixes merged after the only release
@@ -1060,7 +1060,7 @@ describe("fixed-in version", () => {
     assert.equal((await all(env.DASHBOARD_DB, "SELECT * FROM issue_fix WHERE source = 'unreleased'")).length, 5);
 
     await syncIssues(env, githubConfig(env), NOW + 60_000);
-    assert.deepEqual(compared, ["v0.9.0"], "the sixth issue's merge sets how far back releases are read");
+    assert.deepEqual(compared, ["v0.9.0"], "the sixth issue is resolved once the five ahead of it are caught up");
     assert.deepEqual(await all(env.DASHBOARD_DB, "SELECT issue_number, fixed_in FROM issue_fix WHERE source = 'release'"), [{ issue_number: 455, fixed_in: "0.9.0" }]);
   });
 
@@ -1100,16 +1100,16 @@ describe("fixed-in version", () => {
       ],
     ]);
     await syncIssues(env, githubConfig(env), NOW);
-    assert.deepEqual(pages, [1, 2], "the second page is read because the first did not reach the merge");
+    assert.deepEqual(pages, [1, 2], "the list is read to its end");
     assert.deepEqual(compared, ["v1.0.0"], "the oldest release after the merge is compared first");
     assert.deepEqual(await all(env.DASHBOARD_DB, "SELECT source, fixed_in FROM issue_fix"), [{ source: "release", fixed_in: "1.0.0" }]);
   });
 
-  it("leaves a fix merged before the releases it can read for a label", async () => {
+  it("resolves nothing when the release list is longer than it reads", async () => {
     const env = makeEnv();
     await seed(env, ID1, NOW - 5 * 86_400_000, { version: "1.0.0" });
-    // More releases than five pages hold, all newer than the first issue's
-    // merge; the second issue's merge falls inside the pages read.
+    // More releases than five pages hold: a release published late could
+    // sit past the pages read, so no fix is placed in a release.
     const releases = Array.from({ length: 520 }, (_, i) => ({
       tag_name: `v1.0.${519 - i}`,
       draft: false,
@@ -1154,8 +1154,8 @@ describe("fixed-in version", () => {
     ]);
     await syncIssues(env, githubConfig(env), NOW);
     assert.deepEqual(pages, [1, 2, 3, 4, 5], "the lookup stops after five pages");
-    assert.deepEqual(compared, ["v1.0.510"], "only the issue whose merge the pages cover is compared");
-    assert.deepEqual(await all(env.DASHBOARD_DB, "SELECT issue_number, source, fixed_in FROM issue_fix"), [{ issue_number: 419, source: "release", fixed_in: "1.0.510" }]);
+    assert.deepEqual(compared, [], "no release is compared against an incomplete list");
+    assert.deepEqual(await all(env.DASHBOARD_DB, "SELECT * FROM issue_fix"), []);
   });
 
   it("keeps the rows when GitHub's release reads fail", async () => {
