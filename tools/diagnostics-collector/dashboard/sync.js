@@ -70,7 +70,8 @@ export async function storeIssue(db, issue) {
          VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (number) DO UPDATE SET title = excluded.title, state = excluded.state,
            kind = excluded.kind, updated_at = excluded.updated_at, closed_at = excluded.closed_at,
-           prs_synced_at = NULL`,
+           prs_synced_at = CASE WHEN issues.updated_at = excluded.updated_at
+             THEN issues.prs_synced_at ELSE NULL END`,
       )
       .bind(
         number,
@@ -165,7 +166,12 @@ export async function syncIssues(env, cfg, now) {
     if (result.newest > newest) newest = result.newest;
     if (!result.full) break;
   }
-  if (newest) await setState(db, "issues_since", newest);
+  // Resume one second before the newest update seen, so issues sharing that
+  // second past a full last page are read next run. Re-reading the ones
+  // already stored is harmless: an unchanged issue keeps its place in the
+  // refresh queue.
+  const resume = isoMs(newest);
+  if (resume !== null) await setState(db, "issues_since", new Date(resume - 1000).toISOString());
 
   const queue = await all(
     db,

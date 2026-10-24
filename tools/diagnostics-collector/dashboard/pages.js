@@ -230,7 +230,7 @@ export function overviewPage(d) {
     member: d.member,
     nav: "overview",
     body: html`<div class="wrap">
-      ${d.capReached ? html`<p class="banner">Today's indexing limit is reached, so new reports are stored but not shown here until tomorrow's reindex.</p>` : ""}
+      ${d.capReached ? html`<p class="banner">Today's indexing limit is reached. New reports are stored but not shown here until an owner presses Index older reports.</p>` : ""}
       <div class="toolbar"><h1>Overview</h1>${versionForm}${rangePicker(d.url, d.rangeId)}</div>
       <div class="grid">
         <section class="panel stat s2"><h2>Reports, 24h</h2><div class="v">${fmtInt(d.stats.last24h)}</div><div class="d">${delta >= 0 ? "+" : "−"}${fmtInt(Math.abs(delta))} on the day before</div></section>

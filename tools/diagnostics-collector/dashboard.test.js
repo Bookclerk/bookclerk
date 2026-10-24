@@ -626,7 +626,25 @@ describe("untrusted times and pages", () => {
     ]);
     const res = await syncIssues(env, githubConfig(env), NOW);
     assert.equal(res.issues, 1);
-    assert.equal((await first(env.DASHBOARD_DB, "SELECT value FROM sync_state WHERE key = 'issues_since'")).value, t(200));
+    const since = (await first(env.DASHBOARD_DB, "SELECT value FROM sync_state WHERE key = 'issues_since'")).value;
+    assert.equal(since, new Date(Date.parse(t(200)) - 1000).toISOString(), "one second back, so ties are reread");
+  });
+
+  it("keeps an unchanged issue's refresh time when it is read again", async () => {
+    const db = createD1();
+    const issue = { number: 9, title: "x", state: "open", body: "", created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-02T00:00:00Z" };
+    await storeIssue(db, issue);
+    await run(db, "UPDATE issues SET prs_synced_at = 5 WHERE number = 9");
+    await storeIssue(db, issue);
+    assert.equal((await first(db, "SELECT prs_synced_at FROM issues")).prs_synced_at, 5);
+    await storeIssue(db, { ...issue, updated_at: "2026-10-03T00:00:00Z" });
+    assert.equal((await first(db, "SELECT prs_synced_at FROM issues")).prs_synced_at, null);
+  });
+
+  it("ignores an install hash that is not a string", async () => {
+    for (const client_ip_hash of [["abc"], { toString: null }, 12]) {
+      assert.equal((await summarizeReport({ ...stored(ID1), client_ip_hash })).installHash, "");
+    }
   });
 });
 

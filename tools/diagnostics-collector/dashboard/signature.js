@@ -120,6 +120,7 @@ export async function summarizeReport(stored) {
     warnings,
     signature,
     signatureLabel,
-    installHash: /^[0-9a-f]{1,64}$/.test(s.client_ip_hash ?? "") ? s.client_ip_hash : "",
+    installHash:
+      typeof s.client_ip_hash === "string" && /^[0-9a-f]{1,64}$/.test(s.client_ip_hash) ? s.client_ip_hash : "",
   };
 }

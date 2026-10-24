@@ -103,7 +103,11 @@ with GitHub, and `/dash` (overview), `/reports` (filterable list),
 `/reports/<report_id>` (one report with its event log) and `/issues`
 (diagnostics issues, their pull requests, and reports that keep arriving
 after a fix merged) are member-only. Without the credentials the routes stay
-off and `/` answers like `/health`.
+off and `/` answers like `/health`. The deploy only uploads the credentials;
+removing the Actions secrets later leaves the Worker's copies in place, so to
+turn the dashboard off, delete the Worker secrets `GITHUB_APP_CLIENT_ID`,
+`GITHUB_APP_CLIENT_SECRET` and `GITHUB_APP_PRIVATE_KEY` (Cloudflare dashboard
+or `wrangler secret delete`).
 
 **Sign-in.** The Worker sends the member to GitHub with a random state and a
 PKCE challenge (kept in a 10-minute `__Host-bc_oauth` cookie), trades the
