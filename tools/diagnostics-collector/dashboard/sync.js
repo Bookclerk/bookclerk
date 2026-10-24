@@ -155,23 +155,37 @@ export async function syncIssues(env, cfg, now) {
   await sweep(db, now);
   const token = await installationToken(cfg, now);
   const since = (await getState(db, "issues_since")) ?? "";
+  const startPage = Math.max(1, Number.parseInt((await getState(db, "issues_page")) ?? "1", 10) || 1);
   const stored = new Set();
   let newest = since;
-  for (let page = 1; page <= MAX_ISSUE_PAGES; page++) {
+  let drained = false;
+  for (let page = startPage; page < startPage + MAX_ISSUE_PAGES; page++) {
     const result = await listDiagnosticsIssues(cfg, token, since, page);
     for (const issue of result.issues) {
       await storeIssue(db, issue);
       stored.add(Number(issue.number));
     }
     if (result.newest > newest) newest = result.newest;
-    if (!result.full) break;
+    if (!result.full) {
+      drained = true;
+      break;
+    }
   }
   // Resume one second before the newest update seen, so issues sharing that
   // second past a full last page are read next run. Re-reading the ones
   // already stored is harmless: an unchanged issue keeps its place in the
-  // refresh queue.
+  // refresh queue. When every page read sits inside that second (more than
+  // a run's worth of issues updated together), the time cannot move, so the
+  // next run keeps it and continues from the last page read instead (read
+  // again, in case updates shifted the order).
   const resume = isoMs(newest);
-  if (resume !== null) await setState(db, "issues_since", new Date(resume - 1000).toISOString());
+  const next = resume === null ? since : new Date(resume - 1000).toISOString();
+  if (!drained && since && next <= since) {
+    await setState(db, "issues_page", String(startPage + MAX_ISSUE_PAGES - 1));
+  } else {
+    if (next) await setState(db, "issues_since", next);
+    await setState(db, "issues_page", "1");
+  }
 
   const queue = await all(
     db,

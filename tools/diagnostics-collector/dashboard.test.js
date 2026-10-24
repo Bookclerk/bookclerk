@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync, verify as rsaVerify } from "node:crypto";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { OAUTH_COOKIE, pkceChallenge } from "./dashboard/auth.js";
-import { afterFixCounts, all, indexReport, first, run } from "./dashboard/db.js";
+import { afterFixCounts, all, indexReport, first, run, topSignatures } from "./dashboard/db.js";
 import { appJwt, clearTokenCache, githubConfig, INSTALLATION_PERMISSIONS, pkcs8FromPem } from "./dashboard/github.js";
 import { escapeHtml, fmtTime, html, isoTime } from "./dashboard/html.js";
 import { parseIssueReportIds, reportIdOf } from "./dashboard/report-ids.js";
@@ -645,6 +645,41 @@ describe("untrusted times and pages", () => {
     for (const client_ip_hash of [["abc"], { toString: null }, 12]) {
       assert.equal((await summarizeReport({ ...stored(ID1), client_ip_hash })).installHash, "");
     }
+  });
+});
+
+describe("issue paging and filtered trends", () => {
+  it("works through more tied issue updates than one run reads", async () => {
+    const env = makeEnv();
+    const at = new Date(NOW - 86_400_000).toISOString();
+    const issues = Array.from({ length: 600 }, (_, i) => ({ number: i + 1, title: "x", state: "open", body: "", created_at: at, updated_at: at }));
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      [
+        "GET https://api.github.com/repos/Bookclerk/bookclerk/issues?",
+        ({ url }) => {
+          const page = Number(new URL(url).searchParams.get("page"));
+          return Response.json(issues.slice((page - 1) * 100, page * 100));
+        },
+      ],
+      ["POST https://api.github.com/graphql", () => Response.json({ data: { repository: {} } })],
+    ]);
+    for (let run = 0; run < 3; run++) await syncIssues(env, githubConfig(env), NOW);
+    assert.equal((await first(env.DASHBOARD_DB, "SELECT COUNT(*) AS n FROM issues")).n, 600);
+    const page = (await first(env.DASHBOARD_DB, "SELECT value FROM sync_state WHERE key = 'issues_page'")).value;
+    assert.equal(page, "1", "back to the first page once drained");
+  });
+
+  it("counts a signature's daily trend inside the version filter", async () => {
+    const db = createD1();
+    const ids = ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"];
+    for (const [i, version] of ["1.0.0", "2.0.0"].entries()) {
+      const summary = await summarizeReport(stored(ids[i], { version }));
+      await indexReport(db, { reportId: ids[i], objectKey: `diagnostics/${version}/${ids[i]}.json`, receivedAt: NOW - 1000, summary });
+    }
+    const [sig] = await topSignatures(db, NOW - 86_400_000, { version: "1.0.0" }, 5);
+    assert.equal(sig.n, 1);
+    assert.equal([...sig.days.values()].reduce((a, b) => a + b, 0), 1);
   });
 });
 

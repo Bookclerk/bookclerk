@@ -300,10 +300,10 @@ export async function topSignatures(db, since, f, limit) {
         all(
           db,
           `SELECT CAST(r.received_at / ? AS INTEGER) AS day, COUNT(*) AS n FROM reports r
-           WHERE r.signature = ? AND r.received_at >= ? GROUP BY day`,
+           WHERE ${w.where} AND r.signature = ? GROUP BY day`,
           DAY_MS,
+          ...w.params,
           s.signature,
-          since,
         ),
         first(
           db,
