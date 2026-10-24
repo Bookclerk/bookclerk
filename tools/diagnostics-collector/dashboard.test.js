@@ -13,7 +13,7 @@ import { parseIssueReportIds, reportIdOf } from "./dashboard/report-ids.js";
 import { dashboardFetch } from "./dashboard/routes.js";
 import { SESSION_COOKIE, createSession } from "./dashboard/session.js";
 import { normalizeMessage, summarizeReport } from "./dashboard/signature.js";
-import { storeIssue, syncIssues } from "./dashboard/sync.js";
+import { storeIssue, syncIssueNow, syncIssues } from "./dashboard/sync.js";
 import { createD1 } from "./test-support/d1.js";
 import worker from "./worker.js";
 
@@ -849,6 +849,48 @@ describe("issue notice from the ingest Action", () => {
     const res = await notify(env, JSON.stringify({ issue: 400 }));
     assert.equal((await res.json()).result, "dropped");
     assert.equal((await all(env.DASHBOARD_DB, "SELECT * FROM report_issue")).length, 0);
+  });
+
+  it("ignores a transferred issue and one GitHub answers with another number", async () => {
+    for (const answer of [
+      () => new Response(null, { status: 301, headers: { location: "https://api.github.com/repositories/9/issues/7" } }),
+      () => Response.json({ ...filed([{ name: "diagnostics" }]), number: 7 }),
+    ]) {
+      const env = makeEnv({ REPORT_API_KEY: KEY });
+      gh = scriptGitHub([...appRoutes(null), ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues/400", answer]]);
+      assert.equal(await syncIssueNow(env, githubConfig(env), 400, NOW, []), "dropped");
+      assert.equal((await all(env.DASHBOARD_DB, "SELECT * FROM issues")).length, 0);
+      gh.restore();
+      gh = null;
+      clearTokenCache();
+    }
+  });
+
+  it("reads again when GitHub does not have the new issue yet", async () => {
+    const env = makeEnv({ REPORT_API_KEY: KEY });
+    let reads = 0;
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues/400", () => (++reads === 1 ? new Response("{}", { status: 404 }) : Response.json(filed([{ name: "diagnostics" }])))],
+      noPrs,
+    ]);
+    assert.equal(await syncIssueNow(env, githubConfig(env), 400, NOW, [0]), "linked");
+    assert.equal(reads, 2);
+  });
+
+  it("pushes a live update only when the notice changed the links", async () => {
+    const pushes = [];
+    const LIVE = { idFromName: (n) => n, get: () => ({ fetch: async (url) => (pushes.push(String(url)), new Response(null, { status: 204 })) }) };
+    const env = makeEnv({ REPORT_API_KEY: KEY, LIVE });
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues/400", () => Response.json(filed([{ name: "diagnostics" }]))],
+      noPrs,
+    ]);
+    assert.equal((await notify(env, JSON.stringify({ issue: 400 }))).status, 202);
+    assert.deepEqual(pushes, ["https://live/changed"]);
+    assert.equal((await notify(env, JSON.stringify({ issue: 400 }))).status, 202);
+    assert.equal(pushes.length, 1);
   });
 
   it("refuses a missing key or a malformed body, and answers 204 when the dashboard is off", async () => {

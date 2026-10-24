@@ -11,9 +11,11 @@
  * page request. Pages never send anything the hub reads; a message from a
  * page is ignored without being parsed, so the socket adds no input to
  * decode. A socket is accepted only for a signed-in member (dashboardFetch
- * checks the session and the `Origin` before forwarding), and is closed once
- * the session it was opened under would have expired, or when an owner signs
- * everyone out.
+ * checks the session and the `Origin` before forwarding). The hub closes it
+ * at the first connect or push after the session it was opened under would
+ * have expired, and closes every socket when an owner signs everyone out. A
+ * page whose session ended earlier (sign-out in another tab) learns it at the
+ * next push, when its refresh is redirected to sign-in, and closes itself.
  *
  * Without the `LIVE` binding (tests, or a deployment that removed it) pages
  * simply do not update on their own; nothing else changes.
@@ -27,6 +29,9 @@ export const MAX_SOCKETS = 200;
 
 /** Message pages receive when they should refresh. */
 export const CHANGED = "changed";
+
+/** `WebSocket.readyState` of an open socket. */
+const OPEN = 1;
 
 /** Close code sent when a session expires or every session ends (RFC 6455 "policy violation"). */
 const CLOSE_SIGNED_OUT = 1008;
@@ -185,7 +190,8 @@ export class LiveHub {
       return new Response("bad session expiry", { status: 400 });
     }
     this.dropExpired(now);
-    if (this.state.getWebSockets().length >= MAX_SOCKETS) {
+    // Sockets just closed above stay listed until their close completes.
+    if (this.state.getWebSockets().filter((ws) => ws.readyState === OPEN).length >= MAX_SOCKETS) {
       return new Response("too many live pages", { status: 503 });
     }
     const [client, server] = Object.values(new WebSocketPair());

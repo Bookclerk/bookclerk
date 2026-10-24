@@ -140,7 +140,7 @@ notify_issue() {
   number=$(sed -n 's#^https://[^ ]*/issues/\([0-9][0-9]*\)$#\1#p' <<<"$1" | tail -n 1)
   [[ -n "$number" ]] || return 0
   printf 'header = "Authorization: Bearer %s"\n' "$notify_key" \
-    | curl -sS --config - -o /dev/null --max-time 30 \
+    | curl -fsS --config - -o /dev/null --max-time 30 \
         -H "Content-Type: application/json" \
         --data-binary "{\"issue\":${number}}" \
         "${BASE%/}/issues/notify" \

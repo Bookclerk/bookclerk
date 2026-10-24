@@ -20,6 +20,9 @@ function fakeSocket(expiresAt) {
   return {
     sent: [],
     closed: null,
+    get readyState() {
+      return this.closed ? 2 : 1;
+    },
     deserializeAttachment: () => (expiresAt === undefined ? null : { expiresAt }),
     send(msg) {
       if (this.closed) throw new Error("closed");
@@ -169,16 +172,25 @@ describe("live route", () => {
     assert.deepEqual(env.LIVE.calls.map((c) => c.url), ["https://live/close-all"]);
   });
 
-  it("refreshes a report page without reading storage or logging another view", async () => {
+  it("refreshes a report page without reading storage or logging the view again", async () => {
     const env = makeEnv();
     const id = "7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4";
     await indexSubmitted(env.DASHBOARD_DB, { report_id: id, received_at_unix_ms: NOW, payload: { events: [] } }, "diagnostics/0.9.0/a.json", Infinity);
     const cookie = (await createSession(env.DASHBOARD_DB, { userId: 7, login: "octo", role: "member" }, NOW)).split(";")[0];
-    const b2 = { authorize: () => assert.fail("storage read on a live refresh") };
-    const res = await call(env, new Request(`${ORIGIN}/reports/${id}`, { headers: { cookie, "bookclerk-live": "1" } }), b2);
+    const views = async () => (await all(env.DASHBOARD_DB, "SELECT * FROM access_log WHERE action = 'view-report'")).length;
+    // The header cannot hide a first view: it is read and logged as usual.
+    let reads = 0;
+    const b2 = { authorize: async () => { reads += 1; throw new Error("offline"); } };
+    const live = { headers: { cookie, "bookclerk-live": "1" } };
+    assert.equal((await call(env, new Request(`${ORIGIN}/reports/${id}`, live), b2)).status, 200);
+    assert.equal(await views(), 1);
+    assert.equal(reads, 1);
+    // Later live refreshes skip storage and the log.
+    const res = await call(env, new Request(`${ORIGIN}/reports/${id}`, live), b2);
     assert.equal(res.status, 200);
     assert.match(await res.text(), /data-live="tracked"/);
-    assert.equal((await all(env.DASHBOARD_DB, "SELECT * FROM access_log")).length, 0);
+    assert.equal(await views(), 1);
+    assert.equal(reads, 1);
   });
 
   it("keeps working without the binding", async () => {

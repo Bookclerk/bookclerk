@@ -46,10 +46,14 @@ const MAX_PR_REFRESH = 100;
 const PR_BATCH = 10;
 
 /**
- * D1 calls the sync keeps for its last write (the sync time) and, when an
- * owner runs it from the dashboard, the route's note and access-log writes.
+ * D1 calls the sync keeps for its last write (the sync time), the live
+ * update's before-and-after link fingerprints and, when an owner runs it from
+ * the dashboard, the route's note and access-log writes.
  */
-const SYNC_RESERVE = 3;
+const SYNC_RESERVE = 5;
+
+/** Waits, in ms, before re-reading an issue GitHub said it does not have. */
+const NOT_FOUND_RETRY_MS = [1000, 2000];
 
 /** Report links inserted per statement (two bound values each). */
 const LINK_CHUNK = 40;
@@ -331,14 +335,23 @@ export async function syncIssues(env, cfg, now) {
  * @param {import("./github.js").GitHubConfig} cfg Settings.
  * @param {number} number Issue number.
  * @param {number} now Unix time in milliseconds.
+ * @param {number[]} [retryDelaysMs] Waits before reading again while GitHub
+ *   has no such issue (tests pass none).
  * @returns {Promise<"linked" | "dropped">} Whether the issue is now stored
  *   with its links, or was forgotten (no such issue, or not labeled
  *   `diagnostics`).
  */
-export async function syncIssueNow(env, cfg, number, now) {
+export async function syncIssueNow(env, cfg, number, now, retryDelaysMs = NOT_FOUND_RETRY_MS) {
   const db = metered(env.DASHBOARD_DB);
   const token = await installationToken(cfg, now);
-  const got = await fetchIssue(cfg, token, number);
+  let got = await fetchIssue(cfg, token, number);
+  // GitHub's reads can lag a create by a moment; the notice arrives right
+  // after `gh issue create`, so a 404 is retried before it counts.
+  for (const ms of retryDelaysMs) {
+    if (got) break;
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    got = await fetchIssue(cfg, token, number);
+  }
   if (!got || !got.labeled) {
     await db.batch(dropStatements(db, number));
     return "dropped";

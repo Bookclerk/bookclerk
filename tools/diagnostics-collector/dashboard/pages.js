@@ -386,7 +386,7 @@ export function reportPage(d) {
     nav: "reports",
     body: html`<div class="wrap">
       <div class="toolbar column"><span class="crumb"><a href="/reports">Reports</a> / <span class="mono">${r.report_id}</span></span>
-        <h1>${title}</h1><span class="fine">Your view of this report is recorded in the access log.</span></div>
+        <h1 data-live="title">${title}</h1><span class="fine">Your view of this report is recorded in the access log.</span></div>
       <div class="grid">
         <section class="panel s8"><h2>Report</h2><dl class="meta">
           <div><dt>Received</dt><dd class="num">${fmtTime(r.received_at)} UTC</dd></div>

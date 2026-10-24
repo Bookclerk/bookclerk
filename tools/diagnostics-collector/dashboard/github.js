@@ -544,14 +544,17 @@ export async function listDiagnosticsIssues(cfg, token, sinceIso, page) {
  * @param {number} number Issue number.
  * @returns {Promise<{issue: SyncedIssue, labeled: boolean} | null>} The
  *   issue, or null when GitHub has none by that number (deleted,
- *   transferred, or a pull request).
+ *   transferred, or a pull request) or answers with another number.
  * @throws {Error} When GitHub answers with another failure.
  */
 export async function fetchIssue(cfg, token, number) {
-  const res = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/issues/${number}`, { headers: apiHeaders(token) });
-  if (res.status === 404 || res.status === 410) return null;
+  // A transferred issue answers 301 to its new home in another repository;
+  // that is not this repository's issue, so the redirect is not followed.
+  const res = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/issues/${number}`, { headers: apiHeaders(token), redirect: "manual" });
+  if (res.status === 404 || res.status === 410 || res.status === 301) return null;
   if (!res.ok) throw new Error(`issue read failed: HTTP ${res.status}`);
-  return decodeIssue(await res.json().catch(() => null));
+  const got = decodeIssue(await res.json().catch(() => null));
+  return got && got.issue.number === number ? got : null;
 }
 
 /** Label that marks a diagnostics issue. */

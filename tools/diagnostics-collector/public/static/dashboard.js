@@ -53,11 +53,13 @@ document.addEventListener("DOMContentLoaded", () => {
     lastAt = Date.now();
     try {
       const res = await fetch(location.href, { headers: { "Bookclerk-Live": "1" }, credentials: "same-origin" });
-      // A redirect means the session ended; stop rather than show the sign-in page.
-      if (!res.ok || res.redirected) {
+      // A redirect means the session ended; stop rather than show the
+      // sign-in page. Other failures wait for the next push.
+      if (res.redirected) {
         stop();
         return;
       }
+      if (!res.ok) return;
       const fresh = new DOMParser().parseFromString(await res.text(), "text/html");
       for (const el of document.querySelectorAll("[data-live]")) {
         const next = fresh.querySelector(`[data-live="${CSS.escape(el.dataset.live)}"]`);
@@ -76,14 +78,18 @@ document.addEventListener("DOMContentLoaded", () => {
     refresh();
   }
 
+  let socket = null;
+
   function stop() {
     stopped = true;
+    socket?.close(1000);
     const dot = indicator();
     if (dot) dot.hidden = true;
   }
 
   function connect() {
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/live`);
+    socket = ws;
     ws.addEventListener("open", () => {
       const dot = indicator();
       if (dot) dot.hidden = false;

@@ -21,8 +21,10 @@ import {
   DEFAULT_RANGE,
   filterOptions,
   getReport,
+  first,
   getState,
   indexCapReached,
+  linkFingerprint,
   listIssues,
   listReports,
   logAccess,
@@ -173,9 +175,8 @@ export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now
     if (path === "/admin/sync") {
       let note;
       try {
-        const res = await syncIssues(env, cfg, now);
+        const res = await syncAndAnnounce(env, cfg, now);
         note = `Issue sync: stored ${res.issues} changed issues, refreshed pull requests for ${res.refreshed}.`;
-        if (res.issues > 0 || res.refreshed > 0) await announceChange(env);
       } catch (err) {
         console.error(`issue sync failed: ${err instanceof Error ? err.message : String(err)}`);
         note = "Issue sync could not reach GitHub; try again.";
@@ -279,9 +280,11 @@ export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now
     }
     const r = found.report;
     // A live refresh (dashboard.js after a push) swaps in only the links and
-    // counts, so it skips the stored report and the access-log entry: the
-    // load that showed the report was logged, and this answer omits it.
-    const liveRefresh = request.headers.get("bookclerk-live") === "1";
+    // counts, so it skips the stored report. It still logs the view unless
+    // this member's view of this report is already logged in the last 8
+    // hours (a session's length), so the header cannot hide a first view.
+    const liveRefresh = request.headers.get("bookclerk-live") === "1"
+      && Boolean(await first(db, "SELECT 1 AS seen FROM access_log WHERE user_id = ? AND action = 'view-report' AND report_id = ? AND at > ? LIMIT 1", member.userId, r.report_id, now - 8 * 3_600_000));
     const [stored, afterFix, similar, days] = await Promise.all([
       liveRefresh ? Promise.resolve(null) : readStoredReport(b2, String(r.object_key)).catch(() => null),
       afterFixCounts(db),
@@ -332,8 +335,37 @@ export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now
 export async function dashboardScheduled(env, now) {
   const cfg = dashboardConfig(env);
   if (!cfg) return;
-  const res = await syncIssues(env, cfg, now);
-  if (res.issues > 0 || res.refreshed > 0) await announceChange(env);
+  await syncAndAnnounce({ ...env, DASHBOARD_DB: metered(env.DASHBOARD_DB) }, cfg, now);
+}
+
+/**
+ * Runs `work` and tells open pages to refresh only when it changed what
+ * they show (the link fingerprint differs afterwards). The sync keeps D1
+ * calls in reserve for the two fingerprint reads.
+ *
+ * @template T
+ * @param {{DASHBOARD_DB: D1Database}} env Worker bindings with a metered
+ *   handle.
+ * @param {() => Promise<T>} work The sync.
+ * @returns {Promise<T>} What `work` returned.
+ */
+async function announceIfLinksChanged(env, work) {
+  const before = await linkFingerprint(env.DASHBOARD_DB);
+  const result = await work();
+  if ((await linkFingerprint(env.DASHBOARD_DB)) !== before) await announceChange(env);
+  return result;
+}
+
+/**
+ * The issue sync, with a live update when it changed anything visible.
+ *
+ * @param {Record<string, any>} env Worker bindings with a metered handle.
+ * @param {import("./github.js").GitHubConfig} cfg Settings.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {Promise<{issues: number, refreshed: number}>} The sync's counts.
+ */
+function syncAndAnnounce(env, cfg, now) {
+  return announceIfLinksChanged(env, () => syncIssues(env, cfg, now));
 }
 
 /**
@@ -349,9 +381,8 @@ export async function dashboardScheduled(env, now) {
 export async function dashboardIssueNotify(env, number, now) {
   const cfg = dashboardConfig(env);
   if (!cfg) return null;
-  const result = await syncIssueNow(env, cfg, number, now);
-  await announceChange(env);
-  return result;
+  env = { ...env, DASHBOARD_DB: metered(env.DASHBOARD_DB) };
+  return announceIfLinksChanged(env, () => syncIssueNow(env, cfg, number, now));
 }
 
 /**
