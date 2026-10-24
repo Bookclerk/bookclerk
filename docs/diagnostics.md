@@ -163,7 +163,9 @@ recently checked first, so every issue is rechecked (an owner's **Sync issues
 from GitHub now** button runs the same sync at once, and the ingest Action
 calls `POST /issues/notify` with `REPORT_API_KEY` and `{"issue": <number>}`
 after filing each issue, so the Worker re-reads that issue from GitHub and
-links it immediately; only the number is taken from the caller); one that lost the `diagnostics` label is
+links it immediately, reading again for a few seconds if GitHub does not
+have the new issue yet; only the number is taken from the caller, and a
+transferred issue is not followed); one that lost the `diagnostics` label is
 dropped, and a failed GraphQL call keeps the links already stored. Each sign-in and report view is
 written to an access log kept 90 days and shown to owners. The overview also
 shows today's triage spend from `TRIAGE_BUDGET`.
@@ -174,14 +176,17 @@ by one SQLite-backed Durable Object, `LiveHub` (binding `LIVE`, created by
 the deploy's `[[migrations]]` entry), through the hibernation API so idle
 pages cost nothing. When `/submit` indexes a report, `/issues/notify` links an
 issue, or a sync or reindex stores something, the Worker tells the hub, and
-the hub sends each page the bare text `changed`. The page then fetches its
+the hub sends each page the bare text `changed` (syncs push only when the
+stored issues, links or pull requests actually changed). The page then fetches its
 own URL once with its session cookie and swaps in the elements marked
 `data-live` (at most one fetch every 3 seconds, none while the tab is
 hidden). The push carries no data, and the hub never reads what pages send.
-A live refresh of a report page skips the stored report and the access-log
-entry; the load that showed the report was logged. Sockets close when the
-session they were opened under expires or an owner signs everyone out, and
-the hub keeps at most 200. Without the `LIVE` binding pages simply stay as
+A live refresh of a report page skips the stored report, and skips the
+access-log entry only when that member's view of the report is already
+logged in the last 8 hours. Sockets close at the first push after the
+session they were opened under expires, at once when an owner signs everyone
+out, and a page whose refresh is sent to sign-in closes its own; the hub
+keeps at most 200. Without the `LIVE` binding pages simply stay as
 loaded. A Durable Object request is counted for each change, well inside
 Workers Free's daily allowance because indexing is capped (above).
 
