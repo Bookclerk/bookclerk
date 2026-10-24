@@ -1,0 +1,19 @@
+{
+  "name": "bookclerk-demo",
+  "private": true,
+  "description": "Bookclerk hosted demo Worker: one Cloudflare Container per visitor",
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "dependencies": {
+    "@cloudflare/containers": "0.3.7"
+  },
+  "devDependencies": {
+    "wrangler": "4.151.1"
+  },
+  "overrides": {
+    "undici": "7.30.1"
+  }
+}

@@ -290,7 +290,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(len(upload), 1)
         self.assertIn("!inputs.private-head", upload[0]["if"])
         node = next(s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/setup-node@"))
-        for lock in ("tools/site/package-lock.json", "tools/site/audit/package-lock.json", "tools/diagnostics-collector/package-lock.json"):
+        for lock in ("tools/site/package-lock.json", "tools/site/audit/package-lock.json", "tools/diagnostics-collector/package-lock.json", "tools/demo/package-lock.json"):
             self.assertIn(lock, node["with"]["cache-dependency-path"])
 
     def test_fail_fast_job_is_merge_group_only_and_alone_can_cancel(self) -> None:

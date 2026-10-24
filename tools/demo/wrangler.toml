@@ -1,0 +1,60 @@
+# The hosted demo: one Cloudflare Container per visitor, running the demo
+# image (packaging/demo/Dockerfile) built from the same main commit as
+# production. Deployed by .github/workflows/demo-deploy.yml; see README.md.
+name = "bookclerk-demo"
+main = "src/worker.js"
+compatibility_date = "2026-06-01"
+# Off here: with the DOMAIN variable set, the deploy workflow adds the custom
+# domain `demo.<DOMAIN>` and serves only there. With DOMAIN unset (a fork
+# without a domain) it turns workers_dev on instead.
+workers_dev = false
+
+# Visitors' store sign-ins are personal data: no Worker or container logs
+# outlive a session.
+[observability]
+enabled = false
+
+[vars]
+# Admission limits (src/limits.js). MAX_LIVE_SESSIONS matches the container
+# class's max_instances below, which is the hard cap behind it.
+MAX_LIVE_SESSIONS = "20"
+# Visitor-hours per UTC day: about 15 US dollars a month at worst.
+DAILY_BUDGET_HOURS = "40"
+SESSION_MINUTES = "30"
+SESSIONS_PER_HOUR = "3"
+SIGNINS_PER_SESSION = "5"
+SIGNINS_PER_DAY = "10"
+
+# Sessions, the daily budget and rate counters. No id: wrangler creates the
+# database on the first deploy, and the deploy workflow then applies
+# migrations/.
+[[d1_databases]]
+binding = "DB"
+migrations_dir = "migrations"
+
+# The launch and waiting pages' styles and scripts, served under /_demo/
+# without running the Worker. Every other path reaches the Worker.
+[assets]
+directory = "./public"
+
+# Ends sessions whose own timer did not fire, and prunes old rows.
+[triggers]
+crons = ["*/5 * * * *"]
+
+# One container per visitor. basic is 1/4 vCPU and 1 GiB: the spike measured
+# about 530 MB with all plugins running. The image is built by the deploy
+# workflow from images it built first (see packaging/demo/Dockerfile).
+[[containers]]
+class_name = "DemoSession"
+image = "../../packaging/demo/Dockerfile"
+image_build_context = "../../packaging/demo"
+instance_type = "basic"
+max_instances = 20
+
+[[durable_objects.bindings]]
+name = "SESSIONS"
+class_name = "DemoSession"
+
+[[migrations]]
+tag = "v1-demo-session"
+new_sqlite_classes = ["DemoSession"]
