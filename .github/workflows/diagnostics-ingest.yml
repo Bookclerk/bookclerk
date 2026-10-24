@@ -160,12 +160,13 @@ jobs:
           SOURCE=$(python3 -c 'import json; print(json.load(open("/tmp/diagnostics-batch/report.json")).get("baseline_source",""))')
           SKIPPED=$(python3 -c 'import json; print(json.load(open("/tmp/diagnostics-batch/report.json")).get("skipped_version",0))')
           FILED=$(python3 -c 'import json; d=json.load(open("/tmp/diagnostics-batch/report.json")); print("%s (filter %s)" % (d.get("skipped_filed", 0), d.get("filed_filter", "off")))')
+          LINKED=$(python3 -c 'import json; d=json.load(open("/tmp/diagnostics-batch/report.json")); print(" ".join("%s->#%s" % (l["report_id"][:8], l["issue"]) for l in d.get("linked", [])) or "none")')
           {
             echo "count=$COUNT"
             echo "next_since=$NEXT"
             echo "next_after=$NEXT_AFTER"
           } >> "$GITHUB_OUTPUT"
-          echo "Pulled count=$COUNT next_since=$NEXT next_after=${NEXT_AFTER:-(none)} baseline=$BASELINE source=$SOURCE skipped_version=$SKIPPED skipped_filed=$FILED"
+          echo "Pulled count=$COUNT next_since=$NEXT next_after=${NEXT_AFTER:-(none)} baseline=$BASELINE source=$SOURCE skipped_version=$SKIPPED skipped_filed=$FILED linked_by_signature=$LINKED"
 
       - name: Triage and file issues
         id: triage

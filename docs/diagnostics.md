@@ -76,18 +76,25 @@ issue plan as JSON. The model has no tools, so a crafted report can at most
 shape that plan. The workflow then validates it before anything is filed: at
 most five issues, fixed labels, only report IDs from the batch, bounded sizes,
 links removed, and mentions and issue references defanged. Reports that do not
-fit in the batch's 120,000-byte limit, and reports a non-empty plan leaves out
-of every issue, are listed by ID in a separate fallback issue, so every pulled
-report is tracked. (An empty plan is the model deciding nothing needs an
-issue, and files nothing.)
+fit in the batch's 120,000-byte limit, reports a non-empty plan leaves out of
+every issue, and every report of a run whose reply held no valid plan (or
+that the budget or an outage kept from the model) go to one open **holding
+issue**, `[diagnostics] untriaged reports`: the run appends their IDs to its
+`### Report IDs` section (`scripts/holding_issue.py` edits only that list;
+when it holds 500 IDs a new one is opened) and comments once with the
+reason, so every pulled report is tracked and nothing is buried in a new
+issue per run. (An empty plan is the model deciding nothing needs an issue,
+and files nothing.)
 
-The pull cursor is kept in the Actions cache, which GitHub evicts when the
-repository's caches near their 10 GB limit. So ingest asks `/report` with
-`unfiled=1`: when the dashboard database is bound, the collector passes over
-(and moves the cursor past) reports some issue already lists, and a lost or
-reset cursor re-reads the bucket without filing those reports again. The
-pull log prints how many were skipped. A `force_full` run turns the filter
-off and re-triages everything.
+Ingest asks `/report` with `unfiled=1`. When the dashboard database is bound
+the collector then does two things with its report ledger (see
+[Member dashboard](#member-dashboard)): it passes over (and moves the cursor
+past) reports some issue already tracks, so a re-pull from the start cannot
+file them again; and a report whose error signature an open, triaged issue
+already tracks, on the same `major.minor` version line, is linked to that
+issue (`source = signature`) and not returned, so a known failure grows its
+issue instead of reaching the model. The pull log prints both counts. A
+`force_full` run turns both off and re-triages everything.
 
 Spend is capped per UTC day by `TRIAGE_DAILY_NEURONS` (default 2,000, a fifth
 of the account's 10,000 free Workers AI neurons a day; values above 9,000 are
@@ -184,9 +191,18 @@ within Workers Free's 50 D1 queries and 50 subrequests per invocation: each
 issue page, pull request batch or listing page is written in one or two
 batches that also save the cursor, and work left over continues in the next
 run or press.
+**Report ledger.** `report_issue` records which issue each report is linked
+to and how (`source`): `filed` (listed in the issue body; the sync replaces
+these rows from GitHub), `signature` (linked at ingest, above), `triage` and
+`manual` (reserved for the model and for members attaching reports), and
+`excluded` (a member detached it from that issue; nothing links the pair again). Every count on the
+pages reads this ledger: a report counts once, under the issue that tracks
+it. A report two issues list is a conflict: the older issue keeps it, the
+report page says so, and the list shows "+1" after the issue chip.
+
 Every 30 minutes a cron lists issues labeled `diagnostics` changed since the
 last run, reads the report IDs from each issue's `### Report IDs` section (the
-format triage and its fallback write), and asks GraphQL for the pull requests
+format triage and the holding issue use), and asks GraphQL for the pull requests
 that close or reference each issue (the newest 50 cross-references), up to
 100 issues a run: changed issues first, then the rest in turn, least
 recently checked first, so every issue is rechecked (an owner's **Sync issues

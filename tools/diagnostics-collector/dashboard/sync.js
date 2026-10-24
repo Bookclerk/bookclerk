@@ -105,7 +105,7 @@ function isoMs(s) {
 
 /**
  * The statements that store one issue and the reports it lists, replacing
- * earlier links.
+ * the links an earlier copy of the body made.
  *
  * @param {D1Database} db Database.
  * @param {object} issue Issue from the REST API.
@@ -134,13 +134,22 @@ function issueStatements(db, issue) {
         isoMs(issue.updated_at) ?? 0,
         isoMs(issue.closed_at),
       ),
-    db.prepare("DELETE FROM report_issue WHERE issue_number = ?").bind(number),
+    // Only the links the body lists are the body's to replace; links made by
+    // signature, triage or a member live in the ledger alone.
+    db.prepare("DELETE FROM report_issue WHERE issue_number = ? AND source = 'filed'").bind(number),
   ];
   for (let i = 0; i < ids.length; i += LINK_CHUNK) {
     const chunk = ids.slice(i, i + LINK_CHUNK);
+    // A report linked another way that the body now lists becomes `filed`;
+    // one a member excluded stays excluded.
     stmts.push(
       db
-        .prepare(`INSERT OR IGNORE INTO report_issue (report_id, issue_number) VALUES ${chunk.map(() => "(?, ?)").join(", ")}`)
+        .prepare(
+          `INSERT INTO report_issue (report_id, issue_number, source, linked_by, linked_at)
+           VALUES ${chunk.map(() => "(?, ?, 'filed', NULL, NULL)").join(", ")}
+           ON CONFLICT (report_id, issue_number) DO UPDATE SET source = 'filed', linked_by = NULL, linked_at = NULL
+           WHERE report_issue.source <> 'excluded'`,
+        )
         .bind(...chunk.flatMap((id) => [id, number])),
     );
   }

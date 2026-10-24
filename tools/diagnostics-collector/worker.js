@@ -4,7 +4,9 @@
  * POST /submit  — clients send redacted JSON; validated + enriched → B2
  * GET  /report  — GitHub Action pulls new objects since `since`, or since the
  *                 stored cursor with `cursor=stored` (secret key); with
- *                 `unfiled=1` it skips reports an issue already lists
+ *                 `unfiled=1` it skips reports an issue already lists and
+ *                 links reports whose error signature an open issue tracks
+ *                 to that issue instead of returning them
  * POST /report/cursor — GitHub Action stores where its last pull ended
  *                 (secret key; see ingest-cursor.js)
  * POST /triage  — GitHub Action sends the sanitized batch; Workers AI returns
@@ -54,6 +56,7 @@ import {
   dashboardFiledReportIds,
   dashboardIndexSubmitted,
   dashboardIssueNotify,
+  dashboardLinkBySignature,
   dashboardScheduled,
 } from "./dashboard/routes.js";
 import { MAX_CURSOR_CHARS, commitCursor, parseCursor, readCursor } from "./ingest-cursor.js";
@@ -405,11 +408,13 @@ async function handleReport(request, env, url) {
     .filter((f) => f.action === "upload" && isAfterCursor(f, since, afterName))
     .sort(compareUploadOrder);
 
-  const reports = [];
+  // First pass: pick the objects this pull covers and move the cursor past
+  // them; downloads wait until the dashboard has had a chance to link some
+  // of them to an issue by signature, which needs only the index.
+  const picked = [];
   let maxTs = since;
   let nextAfter = afterName;
   let skippedVersion = 0;
-  let skippedCorrupt = 0;
   let skippedFiled = 0;
   let truncated = false;
   for (const f of newer) {
@@ -427,21 +432,45 @@ async function handleReport(request, env, url) {
       skippedFiled += 1;
       continue;
     }
-    if (reports.length >= MAX_REPORT_FILES) {
+    if (picked.length >= MAX_REPORT_FILES) {
       truncated = true;
       break;
+    }
+    ({ maxTs, nextAfter } = advanceCursor(maxTs, nextAfter, ts, f.fileName));
+    picked.push({ f, ts, objectVersion, listedId });
+  }
+
+  // Reports an open issue already tracks by signature join that issue here
+  // and are not returned: nothing to triage. Only with the filed filter on,
+  // so a `force_full` run still re-triages everything.
+  let linkedBySignature = new Map();
+  if (filed) {
+    try {
+      linkedBySignature = await dashboardLinkBySignature(env, picked.map((p) => p.listedId).filter(Boolean), Date.now());
+    } catch (err) {
+      // The pull needs only B2; without the links these reports go to
+      // triage as before.
+      console.error(`signature linking failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  const reports = [];
+  const linked = [];
+  let skippedCorrupt = 0;
+  for (const { f, ts, objectVersion, listedId } of picked) {
+    if (listedId && linkedBySignature.has(listedId)) {
+      linked.push({ report_id: listedId, issue: linkedBySignature.get(listedId) });
+      continue;
     }
     const downloaded = await b2DownloadById(auth, f.fileId);
     let parsed;
     try {
       parsed = JSON.parse(downloaded);
     } catch {
-      // Corrupt objects must not stall the cursor.
-      ({ maxTs, nextAfter } = advanceCursor(maxTs, nextAfter, ts, f.fileName));
+      // Corrupt objects must not stall the cursor (it is already past them).
       skippedCorrupt += 1;
       continue;
     }
-    ({ maxTs, nextAfter } = advanceCursor(maxTs, nextAfter, ts, f.fileName));
     reports.push({
       report_id: parsed.report_id || null,
       file_name: f.fileName,
@@ -453,7 +482,7 @@ async function handleReport(request, env, url) {
     });
   }
 
-  const advanced = reports.length > 0 || skippedVersion > 0 || skippedCorrupt > 0 || skippedFiled > 0;
+  const advanced = picked.length > 0 || skippedVersion > 0 || skippedFiled > 0;
   return json({
     ok: true,
     since,
@@ -470,6 +499,8 @@ async function handleReport(request, env, url) {
     skipped_corrupt: skippedCorrupt,
     skipped_filed: skippedFiled,
     filed_filter: filed ? "on" : "off",
+    linked_signature: linked.length,
+    linked,
     reports,
   });
 }

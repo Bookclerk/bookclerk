@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync, verify as rsaVerify } from "node:crypto";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { OAUTH_COOKIE, pkceChallenge } from "./dashboard/auth.js";
-import { afterFixCounts, all, indexReport, first, run, topSignatures } from "./dashboard/db.js";
+import { afterFixCounts, all, getReport, indexReport, first, linkBySignature, listIssues, run, sameVersionLine, topSignatures } from "./dashboard/db.js";
 import { appJwt, clearTokenCache, githubConfig, INSTALLATION_PERMISSIONS, pkcs8FromPem } from "./dashboard/github.js";
 import { escapeHtml, fmtTime, html, isoTime } from "./dashboard/html.js";
 import { buckets } from "./dashboard/pages.js";
@@ -580,24 +580,93 @@ describe("pages", () => {
     assert.equal(log[0].report_id, ID1);
   });
 
-  it("shows the newest issue and how many older ones list a report", async () => {
+  it("counts a report filed twice under the older issue and flags the conflict", async () => {
     gh = scriptGitHub([]);
     const env = makeEnv();
     await seed(env, ID1);
+    await seed(env, ID2);
     for (const number of [400, 403]) {
       await storeIssue(env.DASHBOARD_DB, {
         number,
         title: `[diagnostics] batch ${number}`,
         state: number === 400 ? "closed" : "open",
-        body: `<!-- bookclerk-diagnostics: workers-ai triage -->\nx\n\n### Report IDs\n- \`${ID1}\`\n`,
+        body: `<!-- bookclerk-diagnostics: workers-ai triage -->\nx\n\n### Report IDs\n- \`${ID1}\`\n${number === 403 ? `- \`${ID2}\`\n` : ""}`,
         created_at: new Date(NOW - 86_400_000).toISOString(),
         updated_at: new Date(NOW - 86_400_000).toISOString(),
       });
     }
     const cookie = await signedIn(env);
     const list = await (await call(env, new Request(`${ORIGIN}/reports`, { headers: { cookie } }))).text();
-    assert.match(list, /issues\/403">#403<\/a> <a class="quiet" href="\/reports\/[^"]+" title="Listed in 2 issues">\+1<\/a>/);
-    assert.doesNotMatch(list, /issues\/400"/);
+    assert.match(list, /issues\/400">#400<\/a> <a class="quiet" href="\/reports\/[^"]+" title="Listed in 2 issues">\+1<\/a>/);
+    assert.match(list, /issues\/403">#403<\/a><\/td>/, "the report only #403 lists shows no +1");
+    const page = await (await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))).text();
+    assert.match(page, /#400 \[diagnostics\] batch 400<\/a> <span class="fine">listed when filed<\/span>/);
+    assert.match(page, /#403 \[diagnostics\] batch 403<\/a> <span class="fine">also lists it<\/span>/);
+    assert.match(page, /Conflict<\/span> 2 issues list this report; it counts under #400/);
+    const issues = await listIssues(env.DASHBOARD_DB, "all", 0, 10);
+    assert.deepEqual(
+      issues.map((i) => [i.number, Number(i.reports)]).sort(),
+      [[400, 1], [403, 1]],
+      "each report counts once, under the issue that tracks it",
+    );
+  });
+
+  it("links a report to the open issue tracking its signature, on the same version line", async () => {
+    gh = scriptGitHub([]);
+    const env = makeEnv();
+    await seed(env, ID1, NOW - 2 * 86_400_000);
+    const same = "d2b80f13-0000-4000-8000-000000000003";
+    const otherLine = "d2b80f13-0000-4000-8000-000000000004";
+    const noSignature = "d2b80f13-0000-4000-8000-000000000005";
+    await seed(env, same, NOW - 3_600_000, { version: "0.9.1" });
+    await seed(env, otherLine, NOW - 3_600_000, { version: "0.10.0" });
+    await seed(env, noSignature, NOW - 3_600_000, { events: [] });
+    const issue = (number, state, marker = "workers-ai triage") => ({
+      number,
+      title: `[diagnostics] issue ${number}`,
+      state,
+      body: `<!-- bookclerk-diagnostics: ${marker} -->\nx\n\n### Report IDs\n- \`${ID1}\`\n`,
+      created_at: new Date(NOW - 86_400_000).toISOString(),
+      updated_at: new Date(NOW - 86_400_000).toISOString(),
+    });
+    // A closed issue and the holding issue track the signature too; neither attracts reports.
+    await storeIssue(env.DASHBOARD_DB, issue(390, "closed"));
+    await storeIssue(env.DASHBOARD_DB, issue(395, "open", "triage fallback"));
+    await storeIssue(env.DASHBOARD_DB, issue(412, "open"));
+    await storeIssue(env.DASHBOARD_DB, issue(413, "open"));
+    const linked = await linkBySignature(env.DASHBOARD_DB, [same, otherLine, noSignature, ID1, "not-indexed"], NOW);
+    assert.deepEqual([...linked], [[same, 412]], "the oldest open triaged issue wins");
+    const rows = await all(env.DASHBOARD_DB, "SELECT * FROM report_issue WHERE report_id = ?", same);
+    assert.deepEqual(rows, [{ report_id: same, issue_number: 412, source: "signature", linked_by: "ingest", linked_at: NOW }]);
+    assert.deepEqual([...(await linkBySignature(env.DASHBOARD_DB, [same], NOW + 1))], [], "already linked");
+
+    // The sync keeps the signature link while replacing the body's links,
+    // and a body that comes to list the report makes the link `filed`.
+    await storeIssue(env.DASHBOARD_DB, { ...issue(412, "open"), updated_at: new Date(NOW).toISOString() });
+    assert.equal((await all(env.DASHBOARD_DB, "SELECT source FROM report_issue WHERE report_id = ?", same))[0].source, "signature");
+    await storeIssue(env.DASHBOARD_DB, { ...issue(412, "open"), body: `${issue(412, "open").body}- \`${same}\`\n` });
+    assert.equal((await all(env.DASHBOARD_DB, "SELECT source FROM report_issue WHERE report_id = ?", same))[0].source, "filed");
+    // A report a member excluded from an issue is not linked to it again,
+    // but may still join another issue tracking the signature on its line.
+    const sixth = "d2b80f13-0000-4000-8000-000000000006";
+    await seed(env, sixth, NOW - 60_000, { version: "0.10.1" });
+    await storeIssue(env.DASHBOARD_DB, { ...issue(413, "open"), body: `${issue(413, "open").body}- \`${sixth}\`\n` });
+    await run(env.DASHBOARD_DB, "UPDATE reports SET version = '0.10.0' WHERE report_id = ?", ID1);
+    await run(env.DASHBOARD_DB, "INSERT INTO report_issue (report_id, issue_number, source) VALUES (?, 412, 'excluded')", otherLine);
+    assert.deepEqual([...(await linkBySignature(env.DASHBOARD_DB, [otherLine], NOW))], [[otherLine, 413]], "excluded from #412, joins #413");
+
+    // The holding issue never outranks a triaged issue that lists a report.
+    const held = "d2b80f13-0000-4000-8000-000000000007";
+    await seed(env, held);
+    await storeIssue(env.DASHBOARD_DB, { ...issue(395, "open", "triage fallback"), body: `${issue(395, "open", "triage fallback").body}- \`${held}\`\n` });
+    await storeIssue(env.DASHBOARD_DB, { ...issue(413, "open"), body: `${issue(413, "open").body}- \`${sixth}\`\n- \`${held}\`\n` });
+    const tracked = new Map((await listIssues(env.DASHBOARD_DB, "all", 0, 10)).map((i) => [i.number, Number(i.reports)]));
+    assert.equal(tracked.get(395), 0, "the held report counts under the triaged issue");
+    assert.equal(tracked.get(413), 3);
+    assert.equal((await getReport(env.DASHBOARD_DB, held)).report.issue_number, 413);
+    assert.equal(sameVersionLine("v1.2.3", "1.2.0-rc.1"), true);
+    assert.equal(sameVersionLine("1.2", "1.20"), false);
+    assert.equal(sameVersionLine("1.2.3", ""), false);
   });
 
   it("says when a report is not indexed", async () => {

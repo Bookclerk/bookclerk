@@ -24,6 +24,7 @@ import {
   first,
   getState,
   indexCapReached,
+  linkBySignature,
   linkFingerprint,
   listIssues,
   listReports,
@@ -463,8 +464,26 @@ export async function dashboardIssueNotify(env, number, now) {
  */
 export async function dashboardFiledReportIds(env) {
   if (!env.DASHBOARD_DB) return null;
-  const rows = await all(env.DASHBOARD_DB, "SELECT DISTINCT report_id FROM report_issue");
+  const rows = await all(env.DASHBOARD_DB, "SELECT DISTINCT report_id FROM report_issue WHERE source <> 'excluded'");
   return new Set(rows.map((r) => String(r.report_id)));
+}
+
+/**
+ * `GET /report?unfiled=1`: links pulled reports to the open issue that
+ * already tracks their signature (`linkBySignature`), so they join that
+ * issue instead of going to triage, and tells open pages when any did.
+ *
+ * @param {Record<string, any>} env Worker bindings.
+ * @param {string[]} reportIds Lowercase report UUIDs pulled by ingest.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {Promise<Map<string, number>>} Report ID → issue number linked;
+ *   empty when the dashboard database is not bound.
+ */
+export async function dashboardLinkBySignature(env, reportIds, now) {
+  if (!env.DASHBOARD_DB || reportIds.length === 0) return new Map();
+  const linked = await linkBySignature(env.DASHBOARD_DB, reportIds, now);
+  if (linked.size) await announceChange(env);
+  return linked;
 }
 
 /**
