@@ -9,6 +9,7 @@ import {
   handleTriage,
   inputTokenBound,
   neuronsFor,
+  readCapped,
   utcDay,
 } from "./triage.js";
 
@@ -169,6 +170,34 @@ describe("handleTriage", () => {
     assert.equal((await handleTriage(triageRequest({ a: 1 }), env)).status, 400);
     const big = [{ report_id: "x", blob: "a".repeat(200 * 1024) }];
     assert.equal((await handleTriage(triageRequest(big), env)).status, 413);
+  });
+
+  it("stops reading a streamed body without Content-Length at the cap", async () => {
+    let pulled = 0;
+    let cancelled = false;
+    const chunk = new Uint8Array(64 * 1024).fill(0x61);
+    const body = new ReadableStream({
+      pull(controller) {
+        pulled += 1;
+        controller.enqueue(chunk);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const request = new Request("https://collector.test/triage", {
+      method: "POST",
+      body,
+      duplex: "half",
+    });
+    assert.equal(request.headers.get("content-length"), null);
+    const env = { TRIAGE_BUDGET: fakeBudget(), AI: { run: async () => assert.fail("model called") } };
+    assert.equal((await handleTriage(request, env)).status, 413);
+    assert.ok(cancelled, "the rest of the body is cancelled");
+    assert.ok(pulled <= 5, `read ${pulled} chunks`);
+    const small = new Request("https://collector.test/triage", { method: "POST", body: "é[1]" });
+    assert.equal(await readCapped(small, 5), "é[1]");
+    assert.equal(await readCapped(new Request("https://collector.test/triage", { method: "POST", body: "é[1]" }), 4), null);
   });
 
   it("clamps the daily cap below the free allocation", async () => {

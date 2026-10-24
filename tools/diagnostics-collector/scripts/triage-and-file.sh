@@ -81,6 +81,35 @@ for item in data:
 json.dump(kept, sys.stdout, separators=(",", ":"), ensure_ascii=False)
 ' > "$DATA_FILE"
 
+# Report IDs as a Markdown list, one per line. IDs are collector object names
+# or report UUIDs; anything else is listed as "unknown" so a report cannot
+# write Markdown into an issue through its ID.
+id_list() {
+  jq -r "$1"' | if type == "string" and test("^[A-Za-z0-9._:-]{1,128}$") then . else "unknown" end | "- `\(.)`"' "$2"
+}
+ALL_IDS=$(id_list '.reports[] | (.report_id // .report.report_id // .file_name)' "$REPORTS_FILE")
+KEPT_IDS=$(id_list '.[] | .report_id' "$DATA_FILE")
+# Reports the size cap left out of the batch: the plan cannot cover them.
+OMITTED_IDS=$(comm -23 <(sort <<<"$ALL_IDS") <(sort <<<"$KEPT_IDS"))
+
+# One issue tracking reports no plan covers, by ID only.
+# Usage: file_fallback <report count> <reason> <ID list>.
+file_fallback() {
+  gh label create diagnostics --color "0E8A16" --description "Automated diagnostics reports" 2>/dev/null || true
+  {
+    echo "<!-- bookclerk-diagnostics: triage fallback -->"
+    echo "## Diagnostics batch ($1 report(s))"
+    echo
+    echo "### Report IDs"
+    printf '%s\n' "$3"
+    echo
+    echo "Automated triage did not cover these reports ($2). Review them"
+    echo "by ID in the collector's storage; report contents are not posted here."
+    echo
+    echo "Workflow run: ${GITHUB_SERVER_URL:-https://github.com}/${REPO}/actions/runs/${GITHUB_RUN_ID:-unknown}"
+  } | gh issue create --repo "$REPO" --title "[diagnostics] unattended batch ($1)" --label diagnostics --body-file -
+}
+
 # The prompt lives in the collector (triage.js), next to the model and its
 # neuron budget; this only sends the batch. The key goes in a header read
 # from stdin, never on argv.
@@ -93,6 +122,9 @@ http=$(printf 'header = "Authorization: Bearer %s"\n' "$REPORT_API_KEY" \
       "${BASE%/}/triage")
 curl_status=$?
 set -e
+# Only curl needs the key; nothing after it (the plan validator reads
+# report-steered model output) inherits it.
+unset REPORT_API_KEY
 status=1
 reason="the collector could not be reached"
 if [[ $curl_status -eq 0 ]]; then
@@ -139,25 +171,18 @@ if [[ $status -eq 0 ]]; then
       --body-file "$dir/body" || failed=1
   done
   echo "Triage planned ${planned} issue(s) for ${count} report(s)."
+  if [[ -n "$OMITTED_IDS" ]]; then
+    omitted=$(wc -l <<<"$OMITTED_IDS")
+    echo "${omitted} report(s) did not fit in the triage batch; tracking them in a fallback issue." >&2
+    file_fallback "$omitted" "they did not fit in the batch's size limit" "$OMITTED_IDS" || failed=1
+  fi
   if [[ $failed -ne 0 ]]; then
     echo "::error::Some planned diagnostics issues could not be filed" >&2
     exit 1
   fi
 else
   echo "No valid triage plan (${reason}); creating a single fallback issue via gh." >&2
-  gh label create diagnostics --color "0E8A16" --description "Automated diagnostics reports" 2>/dev/null || true
-  {
-    echo "<!-- bookclerk-diagnostics: triage fallback -->"
-    echo "## Diagnostics batch (${count} report(s))"
-    echo
-    echo "### Report IDs"
-    jq -r '.[] | "- `\(.report_id // "unknown")`"' "$DATA_FILE" 2>/dev/null || true
-    echo
-    echo "Automated triage did not run (${reason}). Review the reports"
-    echo "by ID in the collector's storage; report contents are not posted here."
-    echo
-    echo "Workflow run: ${GITHUB_SERVER_URL:-https://github.com}/${REPO}/actions/runs/${GITHUB_RUN_ID:-unknown}"
-  } | gh issue create --repo "$REPO" --title "[diagnostics] unattended batch (${count})" --label diagnostics --body-file -
+  file_fallback "$count" "$reason" "$ALL_IDS"
 fi
 
 exit 0

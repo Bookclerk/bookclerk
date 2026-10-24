@@ -784,8 +784,10 @@ class DiagnosticsReportKeyTests(unittest.TestCase):
         for path in [*workflows.glob("*.yml"), *workflows.glob("*.yaml")]:
             text = path.read_text(encoding="utf-8")
             # Either would hand every secret, this key included, onward.
-            self.assertNotIn("secrets: inherit", text, path.name)
-            self.assertNotRegex(text, r"toJSON\(\s*secrets\s*\)", path.name)
+            # Expression functions are case-insensitive and YAML reads a
+            # quoted "inherit" as the same value.
+            self.assertNotRegex(text, r"(?m)^\s*secrets\s*:\s*[\"']?inherit\b", path.name)
+            self.assertNotRegex(text, r"(?i)tojson\(\s*secrets\s*\)", path.name)
             if path.name not in allowed:
                 self.assertNotIn("DIAGNOSTICS_REPORT_API_KEY", text, path.name)
 

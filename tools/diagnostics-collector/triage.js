@@ -199,6 +199,41 @@ export class BudgetLedger {
 }
 
 /**
+ * Reads a request body as UTF-8 text, stopping as soon as it passes a limit.
+ *
+ * Content-Length is the client's claim and a chunked body has none, so the
+ * bytes are counted as they arrive rather than buffered first.
+ *
+ * @param {Request} request Request whose body to read.
+ * @param {number} limit Most bytes accepted.
+ * @returns {Promise<string|null>} The body text, or null when it is longer
+ *   than `limit` bytes (the rest of the stream is cancelled).
+ */
+export async function readCapped(request, limit) {
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+/**
  * Admits a /triage request body: parses it, sizes the prompt the model will
  * see and prices its worst case. Sans-IO, so the fuzz test drives the same
  * code the Worker runs.
@@ -272,7 +307,11 @@ export async function handleTriage(request, env, opts = {}) {
   if (len > MAX_TRIAGE_BODY_BYTES) {
     return json({ error: "batch too large" }, 413);
   }
-  const admitted = admitBatch(await request.text(), rates);
+  const raw = await readCapped(request, MAX_TRIAGE_BODY_BYTES);
+  if (raw === null) {
+    return json({ error: "batch too large" }, 413);
+  }
+  const admitted = admitBatch(raw, rates);
   if (!admitted.ok) {
     return json({ error: admitted.error }, admitted.status);
   }

@@ -68,7 +68,9 @@ context) for an
 issue plan as JSON. The model has no tools, so a crafted report can at most
 shape that plan. The workflow then validates it before anything is filed: at
 most five issues, fixed labels, only report IDs from the batch, bounded sizes,
-links removed, and mentions and issue references defanged.
+links removed, and mentions and issue references defanged. Reports that do not
+fit in the batch's 120,000-byte limit are listed by ID in a separate fallback
+issue, so every pulled report is tracked.
 
 Spend is capped per UTC day by `TRIAGE_DAILY_NEURONS` (default 2,000, a fifth
 of the account's 10,000 free Workers AI neurons a day; values above 9,000 are
@@ -76,7 +78,7 @@ clamped so a typo cannot reach paid usage). Each call reserves its
 worst case (input bytes plus the 2,048-token output cap) in the
 `TRIAGE_BUDGET` KV namespace (one key per UTC day, expiring after two days)
 before the model runs and settles to the reported usage after; a call that
-would pass the cap gets `429`, and ingest files one issue listing the report
+would exceed the cap gets `429`, and ingest files one issue listing the report
 IDs instead. A call costs at most a few hundred neurons. KV has no atomic
 increment and its reads can be up to a minute stale, so two calls close
 together (concurrent, or back-to-back runs such as a scheduled run followed by
