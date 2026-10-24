@@ -1,4 +1,4 @@
-// Readers for bytes the demo Worker did not produce: the visitor's cookies,
+// Readers for bytes the demo Worker did not produce: the visitor's cookies and launch form,
 // Turnstile's verdict, and answers from the visitor's container. Sans-IO, so
 // test/inputs.fuzz.test.js drives the same code the Worker runs.
 //

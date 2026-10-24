@@ -23,6 +23,7 @@ import {
   rewriteSetCookie,
   siteverifyPassed,
 } from "../src/inputs.js";
+import { decodeApiResponse, findWidget, MAX_DOMAINS, widgetKeys, WIDGET_NAME } from "../scripts/worker-secrets.mjs";
 import { mutate, rng } from "../test-support/fuzz.js";
 
 /** Mutated inputs per seed. */
@@ -299,6 +300,61 @@ describe("demo input boundaries", () => {
     const big = enc(`cf-turnstile-response=t&pad=${"a".repeat(MAX_FORM_BYTES)}`);
     assert.equal(decodeLaunchForm(big), null, "body over limit");
     assert.equal(decodeLaunchForm(enc("cf-turnstile-response=t")), "t", "small body");
+  });
+
+  it("deploy helper reads Cloudflare answers into well-formed widget data", () => {
+    const printable = (v, max) => {
+      if (typeof v !== "string" || v.length < 1 || v.length > max) return false;
+      for (let i = 0; i < v.length; i++) {
+        const c = v.charCodeAt(i);
+        if (c <= 0x20 || c >= 0x7f) return false;
+      }
+      return true;
+    };
+    const plain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+    fuzz("cf_api", ["{", "}", "[", "]", ",", ":", '"', "true", "false", "null", "1.5", "-1", '"bookclerk-demo"', '"sitekey"', '"secret"', '"domains"', '"mode"', '"invisible"', '"success"', '"errors"', '"code"', " ", "\\u0000"], (input, label) => {
+      let v;
+      try {
+        v = JSON.parse(input);
+      } catch {
+        v = undefined;
+      }
+      for (const status of [200, 500]) {
+        const got = decodeApiResponse(status, input);
+        if (status === 200 && plain(v) && v.success === true) {
+          assert.deepEqual(got, { ok: true, result: v.result }, label);
+          continue;
+        }
+        assert.equal(got.ok, false, label);
+        const codes = [];
+        if (plain(v) && Array.isArray(v.errors)) {
+          for (const e of v.errors) if (plain(e) && Number.isInteger(e.code) && Math.abs(e.code) <= Number.MAX_SAFE_INTEGER) codes.push(e.code);
+        }
+        assert.equal(got.codes, codes.slice(0, 10).join(","), label);
+      }
+      const result = plain(v) ? v.result : v;
+      // Widget lookup: the first well-named widget with a usable site key.
+      let expected = null;
+      if (Array.isArray(result)) {
+        for (const w of result) {
+          if (!plain(w) || w.name !== WIDGET_NAME || !printable(w.sitekey, 512)) continue;
+          const seen = new Set();
+          for (const d of Array.isArray(w.domains) ? w.domains : []) {
+            if (seen.size < MAX_DOMAINS && printable(d, 253)) seen.add(d);
+          }
+          const mode = ["managed", "non-interactive", "invisible"].includes(w.mode) ? w.mode : "managed";
+          expected = { sitekey: w.sitekey, domains: [...seen], mode };
+          break;
+        }
+      }
+      assert.deepEqual(findWidget(result), expected, label);
+      // Keys: both present and printable, or nothing.
+      const keys =
+        plain(result) && printable(result.sitekey, 512) && printable(result.secret, 512)
+          ? { siteKey: result.sitekey, secret: result.secret }
+          : null;
+      assert.deepEqual(widgetKeys(result), keys, label);
+    });
   });
 
   it("Siteverify passes only success for this host and action", () => {

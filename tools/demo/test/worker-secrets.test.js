@@ -78,6 +78,15 @@ describe("workerSecrets", () => {
     await assert.rejects(workerSecrets({ ...ENV, DEMO_HOST: "" }, scripted({}).fetchFn), /DEMO_HOST is not set/);
   });
 
+  it("refuses to add a host to a widget that allows the most already", async () => {
+    const full = Array.from({ length: 10 }, (_, i) => `h${i}.example.test`);
+    const { fetchFn, seen } = scripted({
+      [`GET ${BASE}?per_page=100`]: [{ name: WIDGET_NAME, sitekey: "0x4AAA", domains: full }],
+    });
+    await assert.rejects(workerSecrets(ENV, fetchFn), /most hostnames/);
+    assert.equal(seen.length, 1);
+  });
+
   it("makes distinct session keys", () => {
     assert.notEqual(newSessionKey(), newSessionKey());
   });
