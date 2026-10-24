@@ -166,8 +166,8 @@ function checkCallback(input, label) {
   const q = new URLSearchParams(input.search);
   const state = q.get("state") ?? "";
   const code = q.get("code") ?? "";
-  const escaped = OAUTH_COOKIE.replace(/[-]/g, "\\-");
-  const m = new RegExp(`(?:^|;)\\s*${escaped}\\s*=([^;]*)`).exec(input.cookie);
+  assert.equal(OAUTH_COOKIE, "__Host-bc_oauth");
+  const m = /(?:^|;)\s*__Host-bc_oauth\s*=([^;]*)/.exec(input.cookie);
   const value = m ? m[1].trim() : "";
   const token = /^[A-Za-z0-9_-]{43}$/;
   const cm = /^([A-Za-z0-9_-]{43})\.([A-Za-z0-9_-]{43})$/.exec(value);
