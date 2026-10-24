@@ -191,6 +191,16 @@ class CoverageAndLinkTests(unittest.TestCase):
         for bad in (None, "", "http://d.test", "https://d.test/path", "https://u@d.test", "https://d.test?q", "https://d.test)", "javascript:x"):
             self.assertIsNone(vp.dashboard_origin(bad), bad)
 
+    def test_every_accepted_origin_fits_the_dashboard_parser(self) -> None:
+        # dashboard/report-ids.js reads a link of at most 300 characters.
+        uuid = next(iter(KNOWN))
+        longest = "https://" + "a" * (vp.MAX_DASHBOARD_ORIGIN_CHARS - len("https://") - 6) + ":65535"
+        self.assertEqual(vp.dashboard_origin(longest), longest)
+        line = vp.id_line(uuid, longest)
+        url = re.search(r"\]\(([^)]*)\)", line).group(1)
+        self.assertLessEqual(len(url), 300)
+        self.assertIsNone(vp.dashboard_origin("https://" + "a" * 250 + ".test"))
+
     def test_only_uuids_get_links(self) -> None:
         self.assertEqual(vp.id_line("not-a-uuid", DASHBOARD), "- `not-a-uuid`\n")
         uuid = next(iter(KNOWN))
