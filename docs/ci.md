@@ -1070,7 +1070,9 @@ secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`:
 The demo deploy builds the production builder and image from the deployed
 commit, then lets `wrangler deploy` build `packaging/demo/Dockerfile` on top
 of them and push it to Cloudflare's container registry. It runs when the demo
-changes on `main`, when a release is published, nightly, and on demand; a
+changes on `main`, when a release is published, nightly, and on demand. A
+nightly or release run first asks the live demo's `/_demo/health` which commit
+it runs and stops before building when it is the same one. A
 repository without the two Cloudflare secrets gets a notice instead of a
 failure.
 

@@ -9,6 +9,7 @@
   --accent: #3d7f7a;
   --accent-ink: #ffffff;
   --alert: #a33b28;
+  --brick: #c84a34;
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -21,6 +22,7 @@
     --accent: #5aa8a2;
     --accent-ink: #0b1520;
     --alert: #f08c77;
+    --brick: #e06a52;
   }
 }
 * { box-sizing: border-box; }
@@ -64,3 +66,21 @@ a { color: var(--accent); }
 }
 .demo-start button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
 .demo-small { font-size: 0.9rem; margin-top: 20px; }
+/* Waiting page: the app's waveform throbber (ui/src/index.css). */
+.demo-throbber { display: block; width: 56px; height: 44px; margin: 0 0 16px; color: var(--brick); }
+.demo-throbber[hidden] { display: none; }
+.waveform-bar {
+  fill: currentColor;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: wavePulse 1.05s ease-in-out infinite;
+}
+.waveform-bar:nth-child(2) { animation-delay: 140ms; }
+.waveform-bar:nth-child(3) { animation-delay: 280ms; }
+@keyframes wavePulse {
+  0%, 100% { transform: scaleY(0.42); opacity: 0.72; }
+  50% { transform: scaleY(1); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .waveform-bar { animation: none; opacity: 0.9; transform: none; }
+}

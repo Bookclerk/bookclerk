@@ -5,7 +5,8 @@
 # (packaging/demo/Dockerfile), so every crate and plugin in the demo is the
 # version that commit ships. It is a full release build, so the workflow runs
 # when the demo itself changes, when a release is published, nightly from
-# main, and by hand.
+# main, and by hand. A nightly or release run whose commit the live demo
+# already runs stops before building.
 #
 # GitHub repository secrets (without the first two the workflow only prints a
 # notice, so a fork without Cloudflare credentials stays green):
@@ -78,23 +79,52 @@ jobs:
             echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # The nightly and release runs rebuild the same commit when main has not
+      # moved; the live demo reports its commit, so skip the 20-minute build.
+      # Pushes and manual runs always deploy.
+      - name: Check whether the live demo already runs this commit
+        id: gate
+        working-directory: .
+        env:
+          READY: ${{ steps.secrets.outputs.ready }}
+          EVENT: ${{ github.event_name }}
+          DOMAIN: ${{ vars.DOMAIN }}
+          DEMO_URL: ${{ vars.DEMO_URL }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          deploy="$READY"
+          if [ "$READY" = true ] && { [ "$EVENT" = schedule ] || [ "$EVENT" = release ]; }; then
+            url="${DEMO_URL}"
+            if [ -n "$DOMAIN" ]; then url="https://demo.${DOMAIN}"; fi
+            if [ -n "$url" ] \
+              && body=$(curl -fsS --max-time 10 "$url/_demo/health") \
+              && jq -e --arg sha "$SHA" '.configured == true and .version == $sha' <<<"$body" >/dev/null; then
+              echo "::notice::$url already runs $SHA; nothing to deploy"
+              deploy=false
+            fi
+          fi
+          echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: steps.secrets.outputs.ready == 'true'
+        if: steps.gate.outputs.deploy == 'true'
         with:
           persist-credentials: false
 
       # The release build and two images need more than the runner's free
       # space; these preinstalled toolchains are never used here.
       - name: Free disk space
-        if: steps.secrets.outputs.ready == 'true'
+        if: steps.gate.outputs.deploy == 'true'
         working-directory: .
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
 
       # Both from the commit being deployed: the demo image starts FROM them.
+      # The second build reuses every builder layer of the first (the log
+      # shows them CACHED) and only assembles the runtime image.
       - name: Build the production builder and image
-        if: steps.secrets.outputs.ready == 'true'
+        if: steps.gate.outputs.deploy == 'true'
         working-directory: .
         run: |
           set -euo pipefail
@@ -103,19 +133,19 @@ jobs:
           git rev-parse HEAD > packaging/demo/version.txt
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        if: steps.secrets.outputs.ready == 'true'
+        if: steps.gate.outputs.deploy == 'true'
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: tools/demo/package-lock.json
 
       - name: Install dependencies
-        if: steps.secrets.outputs.ready == 'true'
+        if: steps.gate.outputs.deploy == 'true'
         run: npm ci
 
       - name: Route the Worker
         id: route
-        if: steps.secrets.outputs.ready == 'true'
+        if: steps.gate.outputs.deploy == 'true'
         env:
           DOMAIN: ${{ vars.DOMAIN }}
         run: |
@@ -144,7 +174,7 @@ jobs:
       # registry.
       - name: Deploy Worker and container
         id: deploy
-        if: steps.secrets.outputs.ready == 'true'
+        if: steps.gate.outputs.deploy == 'true'
         uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -157,7 +187,7 @@ jobs:
       # The binding has no id: wrangler created the database on deploy, so
       # migrations can only run now. Applied migrations are skipped.
       - name: Apply database migrations
-        if: steps.secrets.outputs.ready == 'true'
+        if: steps.gate.outputs.deploy == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -165,7 +195,7 @@ jobs:
 
       - name: Resolve the demo URL
         id: url
-        if: steps.secrets.outputs.ready == 'true'
+        if: steps.gate.outputs.deploy == 'true'
         env:
           MODE: ${{ steps.route.outputs.mode }}
           ROUTE_URL: ${{ steps.route.outputs.url }}
@@ -191,7 +221,7 @@ jobs:
       # Rotating SESSION_KEY would end every live session, so an existing one
       # is kept.
       - name: Upload Worker secrets
-        if: steps.secrets.outputs.ready == 'true'
+        if: steps.gate.outputs.deploy == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -213,7 +243,7 @@ jobs:
       # Worker is configured, serves the launch page, and refuses the API
       # without a session before any container starts.
       - name: Check the demo answers
-        if: steps.secrets.outputs.ready == 'true'
+        if: steps.gate.outputs.deploy == 'true'
         env:
           URL: ${{ steps.url.outputs.url }}
           SHA: ${{ github.sha }}
@@ -243,7 +273,7 @@ jobs:
       # Only the workers.dev URL needs storing; DOMAIN readers derive theirs.
       - name: Check whether the demo URL variable needs writing
         id: record
-        if: steps.secrets.outputs.ready == 'true' && steps.route.outputs.mode == 'workers_dev'
+        if: steps.gate.outputs.deploy == 'true' && steps.route.outputs.mode == 'workers_dev'
         env:
           URL: ${{ steps.url.outputs.url }}
           CURRENT: ${{ vars.DEMO_URL }}
