@@ -243,13 +243,13 @@ package-platform`) under `/opt/bookclerk`: `bookclerk`, `bookclerkd`,
 
 On every start, before it looks for the database plugin, `bookclerkd` (and the
 CLI) installs any platform plugin from the `plugins/` directory beside its
-executable that the files directory lacks, holds an untrusted copy of, or holds
-a different build of at the same or an older version, and records it in
-`install-ledger.json`. A fresh `/config` volume therefore boots with a working
-database and local output, and an image upgrade updates both. A newer trusted
-install is kept, and a directory that another install owns under the same
-name (`sqlite`, `local`) is left alone with a warning. The same applies to an
-unpacked platform archive run from its own directory.
+executable unless the files directory already holds a trusted, byte-identical
+copy, and records it in `install-ledger.json`. A fresh `/config` volume
+therefore boots with a working database and local output, and an image upgrade
+(or rollback) brings the plugins to the build that image was released with.
+A directory that another install owns under the same name (`sqlite`, `local`)
+is left alone with a warning. The same applies to an unpacked platform archive
+run from its own directory.
 
 For day-to-day compile/test with a controlled OpenSSL/Node toolchain (and host-
 runnable `target/` binaries), use the [Dev Container](devcontainer.md) instead

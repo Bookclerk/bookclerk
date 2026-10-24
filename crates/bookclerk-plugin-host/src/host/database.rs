@@ -382,7 +382,7 @@ impl DatabaseRegistry {
 /// Returns an error when the operation fails.
 pub async fn load_external_database(config: &Config) -> PluginResult<DatabaseRegistry> {
     // A release's bundled sqlite/local must be installed before discovery.
-    crate::install_bundled_platform_plugins(&config.paths().files_dir);
+    crate::install_bundled_platform_plugins(&config.paths().files_dir).await;
     let mut registry = DatabaseRegistry::default();
     let spec = config.database.plugin.trim();
     let plugins = crate::discover_plugins(config)?;

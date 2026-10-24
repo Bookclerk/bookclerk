@@ -6,15 +6,21 @@
 //! and a fresh or long-lived files directory (a container's `/config` volume)
 //! has no such row. [`sync_bundled_platform`] closes that gap on startup: for
 //! every [`PLATFORM_ARTIFACTS`] entry the bundle carries, it installs the tree
-//! into `$FILES_DIR/plugins/<fs-id>` when it is missing, untrusted, or differs
-//! from the bundled copy, and stamps the ledger row through
-//! [`stamp_platform_receipt`].
+//! into `$FILES_DIR/plugins/<fs-id>` unless a trusted, byte-identical copy is
+//! already there, and stamps the ledger row through [`stamp_platform_receipt`].
 //!
-//! The bundle is as trusted as the host executable it sits beside, so its
-//! receipt is never consulted: the installed copy is re-hashed and stamped by
-//! the host. Only the two known platform packages are ever installed this way,
-//! a newer trusted install is kept, and a tree that another PluginKey owns
-//! under the same alias is left alone.
+//! The bundle is as trusted as the host executable it sits beside and is the
+//! build of the platform plugins that host was released with, so it is
+//! authoritative: a different installed build (newer or older) is replaced,
+//! which keeps the host and its database adapter from the same release. The
+//! bundled receipt is never consulted; the installed copy is re-hashed and
+//! stamped by the host. Only the known platform packages are installed this
+//! way, and a directory that another install owns under the same alias is left
+//! alone.
+//!
+//! The steady state (everything current) takes no lock and writes nothing; the
+//! host mutation lock is taken only when something has to be installed, and
+//! the decision is re-checked under it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,13 +34,21 @@ use crate::identity::{PlatformArtifact, PluginProvenance, PLATFORM_ARTIFACTS};
 use crate::ledger::{restore_ledger_entry, InstallLedger};
 use crate::mutation_lock::PluginMutationLock;
 use crate::payload::{manifest_sha256, payload_root_sha256};
-use crate::version::Version;
 
 /// Directory beside the host executable that holds bundled platform plugins.
 pub const BUNDLED_PLUGINS_DIR: &str = "plugins";
 
 /// Version recorded for a bundled manifest that declares none.
 const UNVERSIONED: &str = "0.0.0";
+
+/// Host-owned scratch directory under `$FILES_DIR/plugins` (shared with the installer).
+const STAGING_DIR: &str = ".staging";
+
+/// Name prefix of this module's staging trees under [`STAGING_DIR`].
+const STAGING_PREFIX: &str = "bundled-";
+
+/// Name suffix of this module's backup trees under [`STAGING_DIR`].
+const BACKUP_SUFFIX: &str = ".bundled-backup";
 
 /// What [`sync_bundled_platform`] did for one platform artifact.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,15 +59,15 @@ pub enum BundledSyncAction {
     Updated,
     /// The installed tree is trusted and byte-identical to the bundled copy.
     Current,
-    /// A trusted install with a newer version than the bundle was kept.
-    KeptNewer {
-        /// Version of the install that was kept.
-        installed: String,
-    },
-    /// Another tree under `$FILES_DIR/plugins` claims this alias; nothing was touched.
+    /// Another directory under `$FILES_DIR/plugins` claims this alias; nothing was touched.
     AliasOccupied {
-        /// The occupying install directory.
+        /// The occupying directory.
         path: PathBuf,
+    },
+    /// This artifact could not be checked or installed; the others were still synced.
+    Failed {
+        /// Operator-facing reason.
+        reason: String,
     },
 }
 
@@ -62,8 +76,6 @@ pub enum BundledSyncAction {
 pub struct BundledSync {
     /// The platform package this row is about.
     pub artifact: &'static PlatformArtifact,
-    /// Version the bundled `plugin.toml` declares (`0.0.0` when it declares none).
-    pub bundled_version: String,
     /// What was done.
     pub action: BundledSyncAction,
 }
@@ -89,10 +101,14 @@ pub fn bundled_plugins_dir_beside(exe: &Path) -> Option<PathBuf> {
 
 /// Installs bundled platform plugins from `bundle` into `files_dir`.
 ///
-/// Runs under the files directory's [`PluginMutationLock`]. Artifacts the
-/// bundle does not carry are skipped and get no row in the result. When
-/// `bundle` is `files_dir/plugins` itself (a release bundle used directly as
-/// the files directory) there is nothing to copy and the result is empty.
+/// Artifacts the bundle does not carry get no row. When `bundle` is
+/// `files_dir/plugins` itself (a release bundle used directly as the files
+/// directory) there is nothing to copy and the result is empty. A failure for
+/// one artifact is reported in its row and does not stop the others.
+///
+/// When an install is needed this blocks on the files directory's
+/// [`PluginMutationLock`], so it must not be called while this process holds
+/// that lock.
 ///
 /// # Arguments
 ///
@@ -105,37 +121,127 @@ pub fn bundled_plugins_dir_beside(exe: &Path) -> Option<PathBuf> {
 ///
 /// # Errors
 ///
-/// Returns an error when the lock cannot be taken, a bundled tree is not the
-/// platform package its directory names, contains a symlink, cannot be
-/// copied, or the copy does not hash to the bundled bytes, or the ledger
-/// cannot be written. A failed replacement puts the previous tree and ledger
-/// row back before returning.
+/// Returns an error only when the bundle or `files_dir/plugins` cannot be
+/// resolved, or the mutation lock cannot be taken.
 pub fn sync_bundled_platform(bundle: &Path, files_dir: &Path) -> Result<Vec<BundledSync>> {
-    let mut out = Vec::new();
     if !bundle.is_dir() {
-        return Ok(out);
+        return Ok(Vec::new());
     }
-    let _lock = PluginMutationLock::acquire(files_dir)?;
     let plugins_root = files_dir.join("plugins");
-    fs::create_dir_all(&plugins_root)?;
-    if bundle.canonicalize()? == plugins_root.canonicalize()? {
-        return Ok(out);
+    if plugins_root.is_dir() && bundle.canonicalize()? == plugins_root.canonicalize()? {
+        return Ok(Vec::new());
     }
+
+    let mut rows = Vec::new();
+    let mut pending = Vec::new();
     for artifact in PLATFORM_ARTIFACTS {
-        if let Some(row) = sync_one(artifact, bundle, files_dir, &plugins_root)? {
-            out.push(row);
+        match inspect(artifact, bundle, files_dir, &plugins_root) {
+            Ok(None) => {}
+            Ok(Some(Inspection {
+                plan: Plan::Install { .. },
+                ..
+            })) => pending.push(artifact),
+            Ok(Some(found)) => rows.push(found.into_row()),
+            Err(err) => rows.push(failed(artifact, &err)),
         }
     }
-    Ok(out)
+    if pending.is_empty() {
+        return Ok(rows);
+    }
+
+    let _lock = PluginMutationLock::acquire(files_dir)?;
+    fs::create_dir_all(&plugins_root)?;
+    sweep_leftovers(&plugins_root);
+    for artifact in pending {
+        // Another process may have installed it while we waited for the lock.
+        let row = match inspect(artifact, bundle, files_dir, &plugins_root) {
+            Ok(None) => continue,
+            Ok(Some(found)) => match found.plan {
+                Plan::Install { existed } => match install(&found, files_dir, &plugins_root) {
+                    Ok(()) => BundledSync {
+                        artifact,
+                        action: if existed {
+                            BundledSyncAction::Updated
+                        } else {
+                            BundledSyncAction::Installed
+                        },
+                    },
+                    Err(err) => failed(artifact, &err),
+                },
+                _ => found.into_row(),
+            },
+            Err(err) => failed(artifact, &err),
+        };
+        rows.push(row);
+    }
+    Ok(rows)
 }
 
-/// Syncs one platform artifact; `None` when the bundle does not carry it.
-fn sync_one(
+/// A [`BundledSyncAction::Failed`] row for `artifact`.
+fn failed(artifact: &'static PlatformArtifact, err: &CatalogError) -> BundledSync {
+    BundledSync {
+        artifact,
+        action: BundledSyncAction::Failed {
+            reason: err.to_string(),
+        },
+    }
+}
+
+/// What has to happen for one artifact.
+enum Plan {
+    /// Trusted and byte-identical; nothing to do.
+    Current,
+    /// Another directory owns the alias; leave everything alone.
+    AliasOccupied(PathBuf),
+    /// Copy the bundled tree in; `existed` when a tree is already at the destination.
+    Install {
+        /// A tree (untrusted or a different build) occupies the destination.
+        existed: bool,
+    },
+}
+
+/// A bundled artifact, its digests, and what to do with it.
+struct Inspection {
+    /// The platform package.
+    artifact: &'static PlatformArtifact,
+    /// Bundled tree.
+    src: PathBuf,
+    /// Parsed bundled `plugin.toml`.
+    manifest: PluginManifest,
+    /// SHA-256 of the bundled `plugin.toml`.
+    manifest_sha256: String,
+    /// Payload root of the bundled tree.
+    payload_root_sha256: String,
+    /// Decision.
+    plan: Plan,
+}
+
+impl Inspection {
+    /// The result row for a plan that needs no install.
+    fn into_row(self) -> BundledSync {
+        let action = match self.plan {
+            Plan::Current => BundledSyncAction::Current,
+            Plan::AliasOccupied(path) => BundledSyncAction::AliasOccupied { path },
+            Plan::Install { .. } => BundledSyncAction::Failed {
+                reason: "install was not attempted".into(),
+            },
+        };
+        BundledSync {
+            artifact: self.artifact,
+            action,
+        }
+    }
+}
+
+/// Reads and hashes the bundled tree for `artifact` and decides what to do.
+///
+/// `None` when the bundle does not carry the artifact.
+fn inspect(
     artifact: &'static PlatformArtifact,
     bundle: &Path,
     files_dir: &Path,
     plugins_root: &Path,
-) -> Result<Option<BundledSync>> {
+) -> Result<Option<Inspection>> {
     let leaf = artifact.plugin_key().fs_id();
     let src = bundle.join(&leaf);
     match fs::symlink_metadata(&src) {
@@ -157,97 +263,66 @@ fn sync_one(
             artifact.manifest_id
         )));
     }
-    let bundled_version = manifest
-        .version
-        .clone()
-        .unwrap_or_else(|| UNVERSIONED.into());
-    let src_manifest_sha = manifest_sha256(&src)?;
-    let src_payload_sha = payload_root_sha256(&src)?;
-    let row = |action| {
-        Ok(Some(BundledSync {
-            artifact,
-            bundled_version: bundled_version.clone(),
-            action,
-        }))
-    };
-
-    if let Some(path) = alias_occupant(plugins_root, &leaf, artifact.manifest_id) {
-        return row(BundledSyncAction::AliasOccupied { path });
-    }
+    let manifest_sha = manifest_sha256(&src)?;
+    let payload_sha = payload_root_sha256(&src)?;
 
     let dest = plugins_root.join(&leaf);
-    let existed = fs::symlink_metadata(&dest).is_ok();
-    if existed {
-        if let Some(installed) = trusted_install(&dest, files_dir) {
-            if installed
-                .manifest_sha256
-                .eq_ignore_ascii_case(&src_manifest_sha)
-                && installed
-                    .payload_root_sha256
-                    .eq_ignore_ascii_case(&src_payload_sha)
-            {
-                return row(BundledSyncAction::Current);
-            }
-            if is_newer(&installed.version, &bundled_version) {
-                return row(BundledSyncAction::KeptNewer {
-                    installed: installed.version,
-                });
-            }
-        }
-    }
-
-    replace_tree(
-        artifact,
-        &src,
-        &dest,
-        plugins_root,
-        (&src_manifest_sha, &src_payload_sha),
-    )?;
-    let installed = read_manifest(&dest)?;
-    stamp_or_restore(artifact, &dest, files_dir, plugins_root, &installed)?;
-    row(if existed {
-        BundledSyncAction::Updated
+    let plan = if let Some(path) = alias_occupant(plugins_root, &leaf, artifact.manifest_id)? {
+        Plan::AliasOccupied(path)
+    } else if fs::symlink_metadata(&dest).is_err() {
+        Plan::Install { existed: false }
+    } else if is_trusted_copy(&dest, files_dir, &manifest_sha, &payload_sha) {
+        Plan::Current
     } else {
-        BundledSyncAction::Installed
-    })
+        Plan::Install { existed: true }
+    };
+    Ok(Some(Inspection {
+        artifact,
+        src,
+        manifest,
+        manifest_sha256: manifest_sha,
+        payload_root_sha256: payload_sha,
+        plan,
+    }))
 }
 
-/// Digests and version of an install the host already trusts as platform-bundled.
-struct TrustedInstall {
-    /// Declared version (`0.0.0` when none).
-    version: String,
-    /// SHA-256 of the installed `plugin.toml`.
-    manifest_sha256: String,
-    /// Payload root of the installed tree.
-    payload_root_sha256: String,
+/// True when the ledger trusts `dest` as platform-bundled with exactly these digests.
+fn is_trusted_copy(dest: &Path, files_dir: &Path, manifest_sha: &str, payload_sha: &str) -> bool {
+    let Ok(manifest) = read_manifest(dest) else {
+        return false;
+    };
+    let Ok(identity) = evaluate_install_in(dest, &manifest, Some(files_dir)) else {
+        return false;
+    };
+    identity.provenance == PluginProvenance::PlatformBundled
+        && identity
+            .artifact
+            .manifest_sha256
+            .eq_ignore_ascii_case(manifest_sha)
+        && identity
+            .artifact
+            .payload_root_sha256
+            .eq_ignore_ascii_case(payload_sha)
 }
 
-/// The install at `dest` when the ledger trusts it as platform-bundled.
-fn trusted_install(dest: &Path, files_dir: &Path) -> Option<TrustedInstall> {
-    let manifest = read_manifest(dest).ok()?;
-    let identity = evaluate_install_in(dest, &manifest, Some(files_dir)).ok()?;
-    if identity.provenance != PluginProvenance::PlatformBundled {
-        return None;
-    }
-    Some(TrustedInstall {
-        version: identity.artifact.version,
-        manifest_sha256: identity.artifact.manifest_sha256,
-        payload_root_sha256: identity.artifact.payload_root_sha256,
-    })
-}
-
-/// True when `installed` parses as a strictly newer version than `bundled`.
-fn is_newer(installed: &str, bundled: &str) -> bool {
-    match (Version::parse(installed), Version::parse(bundled)) {
-        (Some(installed), Some(bundled)) => installed > bundled,
-        _ => false,
-    }
-}
-
-/// Another top-level install under `plugins_root` whose `plugin.toml` uses `alias`.
-fn alias_occupant(plugins_root: &Path, own_leaf: &str, alias: &str) -> Option<PathBuf> {
-    let entries = fs::read_dir(plugins_root).ok()?;
-    for entry in entries.flatten() {
+/// Another top-level directory under `plugins_root` that claims `alias`.
+///
+/// A directory named after the alias counts even when its `plugin.toml` is
+/// missing or unparseable (ownership cannot be established, so it is not
+/// ours to shadow); any other directory counts when its manifest declares the
+/// alias.
+///
+/// # Errors
+///
+/// Returns when `plugins_root` exists but cannot be listed.
+fn alias_occupant(plugins_root: &Path, own_leaf: &str, alias: &str) -> Result<Option<PathBuf>> {
+    let entries = match fs::read_dir(plugins_root) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    for entry in entries {
+        let entry = entry?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
         if name == own_leaf || name.starts_with('.') {
@@ -257,13 +332,16 @@ fn alias_occupant(plugins_root: &Path, own_leaf: &str, alias: &str) -> Option<Pa
         if !path.is_dir() {
             continue;
         }
+        if name.eq_ignore_ascii_case(alias) {
+            return Ok(Some(path));
+        }
         if let Ok(manifest) = read_manifest(&path) {
             if manifest.id.eq_ignore_ascii_case(alias) {
-                return Some(path);
+                return Ok(Some(path));
             }
         }
     }
-    None
+    Ok(None)
 }
 
 /// Parses `<root>/plugin.toml`.
@@ -274,36 +352,57 @@ fn read_manifest(root: &Path) -> Result<PluginManifest> {
         .map_err(|err| CatalogError::message(format!("parse {}: {err}", path.display())))
 }
 
-/// Copies `src` into a staging tree, checks its digests, and swaps it in at `dest`.
+/// Removes staging and backup trees a crashed sync left under `.staging`.
 ///
-/// The previous tree, if any, is moved to `.staging` first and put back when
-/// the swap fails. On success the backup is left for [`stamp_or_restore`].
-fn replace_tree(
-    artifact: &PlatformArtifact,
-    src: &Path,
-    dest: &Path,
-    plugins_root: &Path,
-    (manifest_sha, payload_sha): (&str, &str),
-) -> Result<()> {
-    let staging_parent = require_mutable_child(plugins_root, &plugins_root.join(".staging"))?;
+/// Called under the mutation lock. A backup is never the only good copy: if a
+/// sync died after moving the old tree aside, this sync reinstalls from the
+/// bundle anyway.
+fn sweep_leftovers(plugins_root: &Path) {
+    let Ok(staging) = require_mutable_child(plugins_root, &plugins_root.join(STAGING_DIR)) else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(&staging) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !(name.starts_with(STAGING_PREFIX) || name.ends_with(BACKUP_SUFFIX)) {
+            continue;
+        }
+        if let Ok(path) = require_mutable_child(plugins_root, &entry.path()) {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+}
+
+/// Copies the bundled tree in, swaps it into place, and stamps it.
+///
+/// The copy is staged under `.staging` and checked against the bundled
+/// digests before the swap. A failed swap or stamp puts the previous tree
+/// and ledger row back.
+fn install(found: &Inspection, files_dir: &Path, plugins_root: &Path) -> Result<()> {
+    let key = found.artifact.plugin_key();
+    let leaf = key.fs_id();
+    let staging_parent = require_mutable_child(plugins_root, &plugins_root.join(STAGING_DIR))?;
     fs::create_dir_all(&staging_parent)?;
-    let leaf = artifact.plugin_key().fs_id();
     let staging = require_mutable_child(
         plugins_root,
-        &staging_parent.join(format!("bundled-{leaf}.{}", std::process::id())),
+        &staging_parent.join(format!("{STAGING_PREFIX}{leaf}.{}", std::process::id())),
     )?;
     if fs::symlink_metadata(&staging).is_ok() {
         fs::remove_dir_all(&staging)?;
     }
-    let copied = copy_tree(src, &staging).and_then(|()| {
-        let manifest_ok = manifest_sha256(&staging)?.eq_ignore_ascii_case(manifest_sha);
-        let payload_ok = payload_root_sha256(&staging)?.eq_ignore_ascii_case(payload_sha);
+    let copied = copy_tree(&found.src, &staging).and_then(|()| {
+        let manifest_ok = manifest_sha256(&staging)?.eq_ignore_ascii_case(&found.manifest_sha256);
+        let payload_ok =
+            payload_root_sha256(&staging)?.eq_ignore_ascii_case(&found.payload_root_sha256);
         if manifest_ok && payload_ok {
             Ok(())
         } else {
             Err(CatalogError::message(format!(
                 "copy of bundled plugin {} does not match the bundled bytes",
-                src.display()
+                found.src.display()
             )))
         }
     });
@@ -312,8 +411,11 @@ fn replace_tree(
         return Err(err);
     }
 
-    let dest = require_mutable_child(plugins_root, dest)?;
-    let backup = backup_path(plugins_root, &leaf)?;
+    let dest = require_mutable_child(plugins_root, &plugins_root.join(&leaf))?;
+    let backup = require_mutable_child(
+        plugins_root,
+        &staging_parent.join(format!("{leaf}{BACKUP_SUFFIX}")),
+    )?;
     if fs::symlink_metadata(&backup).is_ok() {
         fs::remove_dir_all(&backup)?;
     }
@@ -324,60 +426,47 @@ fn replace_tree(
             return Err(err.into());
         }
     }
-    if let Err(err) = fs::rename(&staging, &dest) {
-        let _ = fs::remove_dir_all(&staging);
+    let restore_tree = || {
+        let _ = fs::remove_dir_all(&dest);
         if had_previous {
             let _ = fs::rename(&backup, &dest);
         }
+    };
+    if let Err(err) = fs::rename(&staging, &dest) {
+        let _ = fs::remove_dir_all(&staging);
+        restore_tree();
         return Err(err.into());
     }
-    Ok(())
-}
 
-/// Stamps the receipt and ledger row for a freshly swapped-in tree.
-///
-/// On failure the new tree is removed and the previous tree and ledger row
-/// are put back. On success the backup is deleted.
-fn stamp_or_restore(
-    artifact: &PlatformArtifact,
-    dest: &Path,
-    files_dir: &Path,
-    plugins_root: &Path,
-    manifest: &PluginManifest,
-) -> Result<()> {
-    let key = artifact.plugin_key();
-    let backup = backup_path(plugins_root, &key.fs_id())?;
-    let previous_row = InstallLedger::load(files_dir)?.get(&key).cloned();
-    let version = manifest
+    let previous_row = match InstallLedger::load(files_dir) {
+        Ok(ledger) => ledger.get(&key).cloned(),
+        Err(err) => {
+            restore_tree();
+            return Err(err);
+        }
+    };
+    let version = found
+        .manifest
         .version
         .clone()
         .unwrap_or_else(|| UNVERSIONED.into());
-    match stamp_platform_receipt(dest, files_dir, artifact.package_name, manifest, &version) {
-        Ok(_) => {
-            if fs::symlink_metadata(&backup).is_ok() {
-                let _ = fs::remove_dir_all(&backup);
-            }
-            Ok(())
-        }
-        Err(err) => {
-            let _ = fs::remove_dir_all(dest);
-            if fs::symlink_metadata(&backup).is_ok() {
-                let _ = fs::rename(&backup, dest);
-            }
-            let _ = restore_ledger_entry(files_dir, &key, previous_row);
-            Err(err)
-        }
+    // The staged copy hashed to the bundled bytes, so the bundled manifest is
+    // the installed one.
+    if let Err(err) = stamp_platform_receipt(
+        &dest,
+        files_dir,
+        found.artifact.package_name,
+        &found.manifest,
+        &version,
+    ) {
+        restore_tree();
+        let _ = restore_ledger_entry(files_dir, &key, previous_row);
+        return Err(err);
     }
-}
-
-/// `.staging/<fs-id>.bundled-backup` under `plugins_root`, refusing a symlinked leaf.
-fn backup_path(plugins_root: &Path, leaf: &str) -> Result<PathBuf> {
-    require_mutable_child(
-        plugins_root,
-        &plugins_root
-            .join(".staging")
-            .join(format!("{leaf}.bundled-backup")),
-    )
+    if had_previous {
+        let _ = fs::remove_dir_all(&backup);
+    }
+    Ok(())
 }
 
 /// Copies regular files and directories from `src` to `dest`, refusing symlinks.
@@ -419,18 +508,28 @@ mod tests {
         &PLATFORM_ARTIFACTS[0]
     }
 
-    /// Writes a sqlite-shaped tree with `version` and guest bytes `guest` at `root`.
-    fn write_sqlite(root: &Path, version: &str, guest: &[u8]) {
+    /// The local platform artifact row.
+    fn local() -> &'static PlatformArtifact {
+        &PLATFORM_ARTIFACTS[1]
+    }
+
+    /// Writes a tree for `id` with `version` and guest bytes `guest` at `root`.
+    fn write_tree(root: &Path, id: &str, version: &str, guest: &[u8]) {
+        let entrypoint = if id == "local" {
+            "storage"
+        } else {
+            "databaseAdapter"
+        };
         write_file(
             &root.join("plugin.toml"),
             format!(
                 r#"
 api_version = 3
-id = "sqlite"
+id = "{id}"
 version = "{version}"
 runtime = "native"
 command = "./guest"
-entrypoints = ["databaseAdapter"]
+entrypoints = ["{entrypoint}"]
 
 [capabilities.network]
 mode = "deny"
@@ -440,6 +539,11 @@ mode = "deny"
         )
         .unwrap();
         write_file(&root.join("guest"), guest).unwrap();
+    }
+
+    /// Writes a sqlite-shaped tree at `root`.
+    fn write_sqlite(root: &Path, version: &str, guest: &[u8]) {
+        write_tree(root, "sqlite", version, guest);
     }
 
     /// A bundle dir holding a sqlite tree at its canonical leaf.
@@ -453,13 +557,24 @@ mode = "deny"
         bundle
     }
 
+    /// Installed sqlite directory under `files`.
+    fn sqlite_dest(files: &Path) -> PathBuf {
+        files.join("plugins").join(sqlite().plugin_key().fs_id())
+    }
+
     /// Discovery's view of the installed sqlite tree.
     fn provenance(files: &Path) -> PluginProvenance {
-        let dest = files.join("plugins").join(sqlite().plugin_key().fs_id());
+        let dest = sqlite_dest(files);
         let manifest = read_manifest(&dest).unwrap();
         evaluate_install_in(&dest, &manifest, Some(files))
             .unwrap()
             .provenance
+    }
+
+    /// The single row's action.
+    fn only_action(rows: &[BundledSync]) -> &BundledSyncAction {
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        &rows[0].action
     }
 
     #[test]
@@ -467,72 +582,62 @@ mode = "deny"
         let bundle = bundle_with_sqlite("0.1.0", b"guest-v1");
         let files = tempfile::tempdir().unwrap();
         let rows = sync_bundled_platform(bundle.path(), files.path()).unwrap();
-        assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].artifact, sqlite());
-        assert_eq!(rows[0].action, BundledSyncAction::Installed);
+        assert_eq!(only_action(&rows), &BundledSyncAction::Installed);
         assert_eq!(provenance(files.path()), PluginProvenance::PlatformBundled);
-        let staging = files.path().join("plugins").join(".staging");
+        let staging = files.path().join("plugins").join(STAGING_DIR);
         assert_eq!(fs::read_dir(staging).unwrap().count(), 0);
     }
 
     #[test]
-    fn second_sync_is_current() {
+    fn second_sync_is_current_and_takes_no_lock() {
         let bundle = bundle_with_sqlite("0.1.0", b"guest-v1");
         let files = tempfile::tempdir().unwrap();
         sync_bundled_platform(bundle.path(), files.path()).unwrap();
+        // Holding the lock would deadlock a sync that tried to take it.
+        let _held = PluginMutationLock::acquire(files.path()).unwrap();
         let rows = sync_bundled_platform(bundle.path(), files.path()).unwrap();
-        assert_eq!(rows[0].action, BundledSyncAction::Current);
+        assert_eq!(only_action(&rows), &BundledSyncAction::Current);
     }
 
     #[test]
-    fn same_version_rebuild_replaces_the_install() {
+    fn different_build_replaces_the_install() {
         let files = tempfile::tempdir().unwrap();
         sync_bundled_platform(bundle_with_sqlite("0.1.0", b"old").path(), files.path()).unwrap();
         let rows = sync_bundled_platform(bundle_with_sqlite("0.1.0", b"new").path(), files.path())
             .unwrap();
-        assert_eq!(rows[0].action, BundledSyncAction::Updated);
-        let dest = files
-            .path()
-            .join("plugins")
-            .join(sqlite().plugin_key().fs_id());
-        assert_eq!(fs::read(dest.join("guest")).unwrap(), b"new");
+        assert_eq!(only_action(&rows), &BundledSyncAction::Updated);
+        assert_eq!(
+            fs::read(sqlite_dest(files.path()).join("guest")).unwrap(),
+            b"new"
+        );
         assert_eq!(provenance(files.path()), PluginProvenance::PlatformBundled);
     }
 
     #[test]
-    fn newer_trusted_install_is_kept() {
+    fn bundle_is_authoritative_over_a_newer_install() {
         let files = tempfile::tempdir().unwrap();
         sync_bundled_platform(bundle_with_sqlite("0.2.0", b"newer").path(), files.path()).unwrap();
         let rows =
             sync_bundled_platform(bundle_with_sqlite("0.1.0", b"older").path(), files.path())
                 .unwrap();
+        assert_eq!(only_action(&rows), &BundledSyncAction::Updated);
         assert_eq!(
-            rows[0].action,
-            BundledSyncAction::KeptNewer {
-                installed: "0.2.0".into()
-            }
+            fs::read(sqlite_dest(files.path()).join("guest")).unwrap(),
+            b"older"
         );
-        let dest = files
-            .path()
-            .join("plugins")
-            .join(sqlite().plugin_key().fs_id());
-        assert_eq!(fs::read(dest.join("guest")).unwrap(), b"newer");
     }
 
     #[test]
-    fn modified_install_is_repaired_even_when_newer() {
+    fn modified_install_is_repaired() {
         let files = tempfile::tempdir().unwrap();
-        sync_bundled_platform(bundle_with_sqlite("0.2.0", b"newer").path(), files.path()).unwrap();
-        let dest = files
-            .path()
-            .join("plugins")
-            .join(sqlite().plugin_key().fs_id());
+        let bundle = bundle_with_sqlite("0.1.0", b"bundled");
+        sync_bundled_platform(bundle.path(), files.path()).unwrap();
+        let dest = sqlite_dest(files.path());
         fs::write(dest.join("guest"), b"tampered").unwrap();
         assert_eq!(provenance(files.path()), PluginProvenance::Modified);
-        let rows =
-            sync_bundled_platform(bundle_with_sqlite("0.1.0", b"bundled").path(), files.path())
-                .unwrap();
-        assert_eq!(rows[0].action, BundledSyncAction::Updated);
+        let rows = sync_bundled_platform(bundle.path(), files.path()).unwrap();
+        assert_eq!(only_action(&rows), &BundledSyncAction::Updated);
         assert_eq!(fs::read(dest.join("guest")).unwrap(), b"bundled");
         assert_eq!(provenance(files.path()), PluginProvenance::PlatformBundled);
     }
@@ -540,20 +645,16 @@ mode = "deny"
     #[test]
     fn alias_owned_by_another_tree_is_left_alone() {
         let files = tempfile::tempdir().unwrap();
-        let other = files.path().join("plugins").join("sqlite");
+        let other = files.path().join("plugins").join("third-party-db");
         write_sqlite(&other, "9.9.9", b"third-party");
         let rows =
             sync_bundled_platform(bundle_with_sqlite("0.1.0", b"guest").path(), files.path())
                 .unwrap();
         assert_eq!(
-            rows[0].action,
-            BundledSyncAction::AliasOccupied { path: other }
+            only_action(&rows),
+            &BundledSyncAction::AliasOccupied { path: other }
         );
-        assert!(!files
-            .path()
-            .join("plugins")
-            .join(sqlite().plugin_key().fs_id())
-            .exists());
+        assert!(!sqlite_dest(files.path()).exists());
         assert!(InstallLedger::load(files.path())
             .unwrap()
             .artifacts
@@ -561,20 +662,47 @@ mode = "deny"
     }
 
     #[test]
-    fn wrong_id_under_a_platform_leaf_is_refused() {
-        let bundle = tempfile::tempdir().unwrap();
-        let leaf = bundle.path().join(sqlite().plugin_key().fs_id());
-        write_sqlite(&leaf, "0.1.0", b"guest");
-        let text = fs::read_to_string(leaf.join("plugin.toml"))
-            .unwrap()
-            .replace("id = \"sqlite\"", "id = \"local\"");
-        fs::write(leaf.join("plugin.toml"), text).unwrap();
+    fn unparseable_directory_named_after_the_alias_is_an_occupant() {
         let files = tempfile::tempdir().unwrap();
-        assert!(sync_bundled_platform(bundle.path(), files.path()).is_err());
-        assert!(InstallLedger::load(files.path())
-            .unwrap()
-            .artifacts
-            .is_empty());
+        let legacy = files.path().join("plugins").join("sqlite");
+        fs::create_dir_all(&legacy).unwrap();
+        let rows =
+            sync_bundled_platform(bundle_with_sqlite("0.1.0", b"guest").path(), files.path())
+                .unwrap();
+        assert_eq!(
+            only_action(&rows),
+            &BundledSyncAction::AliasOccupied { path: legacy }
+        );
+    }
+
+    #[test]
+    fn one_broken_artifact_does_not_stop_the_other() {
+        let bundle = tempfile::tempdir().unwrap();
+        // sqlite's leaf holds a manifest with the wrong id; local is fine.
+        write_tree(
+            &bundle.path().join(sqlite().plugin_key().fs_id()),
+            "local",
+            "0.1.0",
+            b"guest",
+        );
+        write_tree(
+            &bundle.path().join(local().plugin_key().fs_id()),
+            "local",
+            "0.1.0",
+            b"guest",
+        );
+        let files = tempfile::tempdir().unwrap();
+        let rows = sync_bundled_platform(bundle.path(), files.path()).unwrap();
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        let by = |a: &PlatformArtifact| rows.iter().find(|r| r.artifact == a).unwrap();
+        assert!(matches!(
+            by(sqlite()).action,
+            BundledSyncAction::Failed { .. }
+        ));
+        assert_eq!(by(local()).action, BundledSyncAction::Installed);
+        let ledger = InstallLedger::load(files.path()).unwrap();
+        assert!(ledger.get(&local().plugin_key()).is_some());
+        assert!(ledger.get(&sqlite().plugin_key()).is_none());
     }
 
     #[test]
@@ -600,6 +728,22 @@ mode = "deny"
         assert!(rows.is_empty());
     }
 
+    #[test]
+    fn leftovers_from_a_crashed_sync_are_swept() {
+        let files = tempfile::tempdir().unwrap();
+        let staging = files.path().join("plugins").join(STAGING_DIR);
+        let stale = staging.join(format!("{STAGING_PREFIX}pk-dead.1"));
+        let backup = staging.join(format!("pk-dead{BACKUP_SUFFIX}"));
+        let foreign = staging.join("other.1");
+        for dir in [&stale, &backup, &foreign] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        sync_bundled_platform(bundle_with_sqlite("0.1.0", b"g").path(), files.path()).unwrap();
+        assert!(!stale.exists());
+        assert!(!backup.exists());
+        assert!(foreign.exists(), "the installer's own staging is not ours");
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlink_in_bundle_is_refused() {
@@ -607,12 +751,12 @@ mode = "deny"
         let leaf = bundle.path().join(sqlite().plugin_key().fs_id());
         std::os::unix::fs::symlink("/etc/passwd", leaf.join("link")).unwrap();
         let files = tempfile::tempdir().unwrap();
-        assert!(sync_bundled_platform(bundle.path(), files.path()).is_err());
-        assert!(!files
-            .path()
-            .join("plugins")
-            .join(sqlite().plugin_key().fs_id())
-            .exists());
+        let rows = sync_bundled_platform(bundle.path(), files.path()).unwrap();
+        assert!(matches!(
+            only_action(&rows),
+            BundledSyncAction::Failed { .. }
+        ));
+        assert!(!sqlite_dest(files.path()).exists());
     }
 
     #[test]

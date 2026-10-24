@@ -13,9 +13,13 @@ on:
       - "packaging/docker/**"
       - ".dockerignore"
       - ".github/workflows/docker-image.yml"
-      - "crates/bookclerk-dev/src/package.rs"
+      - "crates/bookclerk-dev/src/**"
+      - "crates/bookclerk-plugins/platform/**"
       - "crates/bookclerk-plugin-catalog/src/bundled.rs"
+      - "crates/bookclerk-plugin-catalog/src/evaluate.rs"
+      - "crates/bookclerk-plugin-catalog/src/ledger.rs"
       - "crates/bookclerk-plugin-host/src/bundled_platform.rs"
+      - "crates/bookclerk-plugin-host/src/host/database.rs"
       - "crates/bookclerk-workerd/workerd-pin.json"
   workflow_dispatch:
   schedule:

@@ -289,8 +289,8 @@ default isolation, the second must reinstall nothing, and the image must not
 override `BOOKCLERK_PLUGIN_ISOLATION` / `BOOKCLERK_MEDIA_ISOLATION`. It is a
 full release build, so it runs on pull requests that touch the image or its
 startup install path (`packaging/docker/**`, `.dockerignore`, the workflow,
-`bookclerk-dev` packaging, the bundled-install modules, the workerd pin), weekly,
-and on demand. It is not part of `CI Gate`.
+`bookclerk-dev`, the platform plugin sources, the bundled-install, trust and
+ledger modules, the database loader, the workerd pin), weekly, and on demand. It is not part of `CI Gate`.
 
 ### Fuzzing
 

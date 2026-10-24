@@ -78,7 +78,7 @@ boot first
 expect first 'installed bundled platform plugin.*sqlite|sqlite.*installed bundled platform plugin'
 expect first 'installed bundled platform plugin.*local|local.*installed bundled platform plugin'
 expect first 'loaded external database plugin'
-refuse first 'could not install the platform plugins bundled'
+refuse first 'could not install the (platform plugins bundled|bundled platform plugin)|did not install the bundled platform plugin'
 
 boot second
 refuse second 'installed bundled platform plugin|updated platform plugin from the bundled copy'
