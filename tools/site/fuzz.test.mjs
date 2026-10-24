@@ -9,11 +9,12 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { pickEncoding } from "./worker.js";
 
 /** This directory. */
-const HERE = new URL(".", import.meta.url).pathname;
+const HERE = fileURLToPath(new URL(".", import.meta.url));
 
 /** PRNG seed for this run. */
 const SEED = Number(process.env.FUZZ_SEED ?? 0x5eed);
