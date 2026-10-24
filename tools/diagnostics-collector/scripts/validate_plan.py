@@ -29,7 +29,7 @@ MAX_BODY_CHARS = 8000
 #: Prefix every issue title carries.
 TITLE_PREFIX = "[diagnostics] "
 #: First line of every body, so filed issues can be found again.
-MARKER = "<!-- bookclerk-diagnostics: copilot triage -->"
+MARKER = "<!-- bookclerk-diagnostics: workers-ai triage -->"
 
 
 class PlanError(Exception):

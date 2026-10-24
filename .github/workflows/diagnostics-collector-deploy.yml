@@ -5,6 +5,8 @@
 #   CLOUDFLARE_API_TOKEN   scoped to the Worker `bookclerk-diagnostics` (Workers,
 #                          Editor role) and the DOMAIN zone (Workers Routes
 #                          edit); the first deploy needs the Worker to exist,
+#                          and the deploy that creates the TRIAGE_BUDGET KV
+#                          namespace needs account Workers KV Storage edit,
 #                          see docs/ci.md#cloudflare-worker-deploys
 #   CLOUDFLARE_ACCOUNT_ID
 #   DIAGNOSTICS_REPORT_API_KEY   → Worker REPORT_API_KEY (+ ingest workflow)
@@ -116,6 +118,9 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: tools/diagnostics-collector
+          # Matches package-lock.json; 4.45+ creates the TRIAGE_BUDGET KV
+          # namespace on first deploy.
+          wranglerVersion: "4.151.0"
           command: deploy
           secrets: |
             B2_KEY_ID

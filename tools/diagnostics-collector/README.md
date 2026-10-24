@@ -15,10 +15,11 @@ fallback).
 |--------|------|-----|------|
 | `POST` | `/submit` | Bookclerk clients | none (validated + secret heuristics) |
 | `GET` | `/report?since=<ms>&after=<name>` | GitHub Action | `Authorization: Bearer <REPORT_API_KEY>` |
+| `POST` | `/triage` | GitHub Action | `Authorization: Bearer <REPORT_API_KEY>` |
 | `GET` | `/health` | probes | none |
 
 Each `/submit` is assigned a **`report_id` UUID**; the B2 object is
-`diagnostics/<version>/<report_id>.json`. Ingest/Copilot issues list these IDs
+`diagnostics/<version>/<report_id>.json`. Triage issues list these IDs
 for manual review.
 
 ### `/report` version filter
@@ -52,9 +53,14 @@ checks `/health`. `GITHUB_TOKEN` cannot write repository variables, so in
 workers.dev mode the URL is stored with an automation App token
 (`AUTOMATION_APP_CLIENT_ID` / `AUTOMATION_APP_PRIVATE_KEY`, organization
 and/or repository permission "Variables: write"); without those secrets the run prints the
-`gh variable set` command to run by hand. Ingest uses
-`copilot-requests: write` + `issues: write` per
-[gh-aw Copilot auth guidance](https://github.com/github/gh-aw).
+`gh variable set` command to run by hand. Ingest needs only `contents: read` and `issues: write`.
+
+### `/triage`
+
+Takes the sanitized batch the ingest workflow builds and returns a Workers AI
+issue plan (`plan_text`) plus the neurons it used. Bindings: `AI` and the
+`TRIAGE_BUDGET` KV namespace (created on first deploy), which caps spend per UTC day
+at `TRIAGE_DAILY_NEURONS`; see [`docs/diagnostics.md`](../../docs/diagnostics.md#triage).
 
 ## Bookclerk client
 

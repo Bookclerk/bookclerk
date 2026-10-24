@@ -754,6 +754,44 @@ def step_selects(step: dict, test: dict) -> bool:
     return any(f in name for f in step["filters"])
 
 
+class DiagnosticsReportKeyTests(unittest.TestCase):
+    """The collector's report key must never reach a Bookclerk build.
+
+    Releases bake only the collector URL. ``REPORT_API_KEY`` (Worker) /
+    ``DIAGNOSTICS_REPORT_API_KEY`` (Actions) authorizes reading and triaging
+    every report, so no crate may name it and no build step may receive it.
+    """
+
+    KEY_NAMES = ("REPORT_API_KEY", "DIAGNOSTICS_REPORT_API_KEY")
+
+    # Everything a Bookclerk build or package draws on.
+    BUILD_ROOTS = ("crates", "ui", "packages", "examples")
+    SOURCE_SUFFIXES = {".rs", ".toml", ".ts", ".tsx", ".js", ".mjs", ".json", ".py", ".capnp"}
+    SKIP_DIRS = {"node_modules", "dist", "target"}
+
+    def test_no_build_source_names_the_report_key(self) -> None:
+        for root in self.BUILD_ROOTS:
+            for path in (REPO / root).rglob("*"):
+                if path.suffix not in self.SOURCE_SUFFIXES or self.SKIP_DIRS & set(path.parts):
+                    continue
+                text = path.read_text(encoding="utf-8", errors="replace")
+                for name in self.KEY_NAMES:
+                    self.assertNotIn(name, text, f"{path} names {name}")
+
+    def test_only_diagnostics_workflows_receive_the_report_key(self) -> None:
+        allowed = {"diagnostics-collector-deploy.yml", "diagnostics-ingest.yml"}
+        workflows = REPO / ".github" / "workflows"
+        for path in [*workflows.glob("*.yml"), *workflows.glob("*.yaml")]:
+            text = path.read_text(encoding="utf-8")
+            # Either would hand every secret, this key included, onward.
+            # Expression functions are case-insensitive and YAML reads a
+            # quoted "inherit" as the same value.
+            self.assertNotRegex(text, r"(?m)^\s*secrets\s*:\s*[\"']?inherit\b", path.name)
+            self.assertNotRegex(text, r"(?i)tojson\(\s*secrets\s*\)", path.name)
+            if path.name not in allowed:
+                self.assertNotIn("DIAGNOSTICS_REPORT_API_KEY", text, path.name)
+
+
 class PostgresTestSelectionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
