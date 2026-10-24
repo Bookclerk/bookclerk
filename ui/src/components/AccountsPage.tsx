@@ -39,7 +39,10 @@ export function AccountsPage({
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [oauthUrl, setOauthUrl] = useState<string | null>(null);
-  const canConnect = role === "administrator" || role === "host" || role === "member";
+  // Every library user links their own store accounts; only the operator
+  // (a token, not a user) cannot.
+  const canConnect =
+    role === "owner" || role === "administrator" || role === "host" || role === "member";
 
   async function refresh() {
     setError(null);

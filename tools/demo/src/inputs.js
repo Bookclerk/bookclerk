@@ -266,7 +266,8 @@ export function decodeLaunchForm(bytes) {
 }
 
 /**
- * Reads the claim ticket from `POST /api/users` (or `/api/auth/bootstrap`).
+ * Reads the claim ticket from `POST /api/auth/bootstrap` (`POST /api/users`
+ * answers the same way).
  *
  * @param {string} text Response body.
  * @returns {string | null} The ticket when it is 16 to 512 URL-safe

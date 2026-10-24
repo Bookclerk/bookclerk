@@ -179,7 +179,7 @@ export class DemoSession extends Container {
    *
    * The Worker has already checked the route and stripped every credential
    * but the visitor's portal session, so bookclerkd authorizes the request
-   * as the visitor's administrator account, never as the operator.
+   * as the visitor's Owner account, never as the operator.
    *
    * @param {Request} request Request from the Worker.
    * @returns {Promise<Response>} bookclerkd's answer, or 503 when the session
