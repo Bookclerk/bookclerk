@@ -235,14 +235,14 @@ function dropStatements(db, number) {
  * can starve the rest. Issues that lost the label are dropped. Old rows are
  * swept first.
  *
- * Issue pages are read as one pass over everything changed since
- * `issues_since`, saving the page reached after each page. A pass longer
- * than one run's budget continues in the next run, which reads the last
- * page again (issues updated meanwhile move to the end of the listing and
- * shift the rest back). Once the pass is drained, `issues_since` moves to
- * one second before the newest update seen, so issues sharing that second
- * are read again next run; re-reading a stored issue keeps its place in the
- * refresh queue.
+ * Issue pages are read by update time, oldest first. After each page,
+ * `issues_since` moves to one second before the newest update on it and
+ * reading starts again at that time's first page, so an issue updated
+ * meanwhile (which moves to the end of the listing) cannot shift unread
+ * issues behind the cursor, and a backlog longer than one run continues in
+ * the next. Issues in the last second are read again; re-reading a stored
+ * issue keeps its place in the refresh queue. Only a page whose updates all
+ * fall within one second, where the time cannot move, pages on instead.
  *
  * @param {{DASHBOARD_DB: D1Database}} env Worker bindings; a handle already
  *   wrapped by `metered` shares that invocation's budget.
@@ -256,33 +256,32 @@ export async function syncIssues(env, cfg, now) {
   const budget = db.budget;
   await sweep(db, now);
   const token = await installationToken(cfg, now);
-  const state = await getStates(db, ["issues_since", "issues_page", "issues_newest"]);
-  const since = state.get("issues_since") ?? "";
-  const startPage = Math.max(1, Number.parseInt(state.get("issues_page") ?? "1", 10) || 1);
-  let newest = state.get("issues_newest") ?? since;
+  const state = await getStates(db, ["issues_since", "issues_page"]);
+  let since = state.get("issues_since") ?? "";
+  let page = Math.max(1, Number.parseInt(state.get("issues_page") ?? "1", 10) || 1);
   let stored = 0;
-  for (let page = startPage; page < startPage + MAX_ISSUE_PAGES; page++) {
+  for (let reads = 0; reads < MAX_ISSUE_PAGES; reads++) {
     if (budget.left() < ISSUE_PAGE_CALLS + SYNC_RESERVE) break;
     const result = await listDiagnosticsIssues(cfg, token, since, page);
-    if (result.newest > newest) newest = result.newest;
-    let cursor;
-    if (result.full) {
-      const more = page + 1 < startPage + MAX_ISSUE_PAGES && budget.left() >= 2 * ISSUE_PAGE_CALLS + SYNC_RESERVE;
-      // Stopping mid-pass: read this page again next run, unless it is the
-      // only page this run read, so every run moves forward.
-      const resumeAt = more || page === startPage ? page + 1 : page;
-      cursor = [stateStatement(db, "issues_page", String(resumeAt)), stateStatement(db, "issues_newest", newest)];
+    const newest = isoMs(result.newest);
+    const back = newest === null ? since : new Date(newest - 1000).toISOString();
+    if (back > since) {
+      since = back;
+      page = 1;
+    } else if (result.full) {
+      // The whole page sits in the second after `since`, so the time cannot
+      // move: page on. When this run stops here, the next one reads this
+      // page again (unless it was this run's only read, so every run moves
+      // forward), in case updates meanwhile shifted the order.
+      const more = reads + 1 < MAX_ISSUE_PAGES && budget.left() >= 2 * ISSUE_PAGE_CALLS + SYNC_RESERVE;
+      page = more || reads === 0 ? page + 1 : page;
     } else {
-      const resume = isoMs(newest);
-      const back = resume === null ? since : new Date(resume - 1000).toISOString();
-      const next = back > since ? back : since;
-      cursor = [
-        stateStatement(db, "issues_since", next || null),
-        stateStatement(db, "issues_page", null),
-        stateStatement(db, "issues_newest", null),
-      ];
+      page = 1;
     }
-    await storeIssuePage(db, result.issues, cursor);
+    await storeIssuePage(db, result.issues, [
+      stateStatement(db, "issues_since", since || null),
+      stateStatement(db, "issues_page", page === 1 ? null : String(page)),
+    ]);
     stored += result.issues.length;
     if (!result.full) break;
   }

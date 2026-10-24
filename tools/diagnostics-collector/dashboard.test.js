@@ -677,7 +677,7 @@ describe("issue paging and filtered trends", () => {
     ]);
     const page = async () => (await first(env.DASHBOARD_DB, "SELECT value FROM sync_state WHERE key = 'issues_page'"))?.value ?? null;
     await syncIssues(env, githubConfig(env), NOW);
-    assert.equal(await page(), "5", "the pass continues next run from the last page read");
+    assert.equal(await page(), "4", "the tied pass continues next run from the last page read");
     await syncIssues(env, githubConfig(env), NOW);
     assert.equal((await first(env.DASHBOARD_DB, "SELECT COUNT(*) AS n FROM issues")).n, 600);
     assert.equal(await page(), null, "back to the first page once drained");
@@ -783,9 +783,9 @@ describe("per-invocation D1 limit", () => {
       fetches = 0;
       await syncIssues({ ...env, DASHBOARD_DB: db }, githubConfig(env), NOW + runs);
       assert.ok(fetches <= 45, `run ${runs} made ${fetches} GitHub calls`);
-      if (!(await first(d1, "SELECT value FROM sync_state WHERE key = 'issues_page'"))) break;
+      if ((await first(d1, "SELECT COUNT(*) AS n FROM issues")).n === 1150) break;
     }
-    assert.ok(runs < 12, "the backlog drains");
+    assert.ok(runs < 4, `the backlog drains in ${runs + 1} runs`);
     assert.equal((await first(d1, "SELECT COUNT(*) AS n FROM issues")).n, 1150);
     assert.equal((await first(d1, "SELECT COUNT(*) AS n FROM report_issue")).n, 1150);
     assert.equal((await first(d1, "SELECT value FROM sync_state WHERE key = 'issues_since'")).value, new Date(Date.parse(t(1149)) - 1000).toISOString());
@@ -793,6 +793,35 @@ describe("per-invocation D1 limit", () => {
     assert.equal(linked, (runs + 1) * 100, "each run refreshes its share of the queue");
     const written = await first(d1, "SELECT title FROM issue_pr WHERE issue_number = 1");
     assert.equal(written.title, "fix");
+  });
+
+  it("does not lose issues that updates shift between runs", async () => {
+    const d1 = createD1();
+    const env = makeEnv();
+    const t = (i) => new Date(NOW - 86_400_000 + i * 1000).toISOString();
+    const issues = Array.from({ length: 600 }, (_, i) => ({ number: i + 1, title: "x", state: "open", body: "", created_at: t(i), updated_at: t(i) }));
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      [
+        "GET https://api.github.com/repos/Bookclerk/bookclerk/issues?",
+        ({ url }) => {
+          const q = new URL(url).searchParams;
+          const since = q.get("since") ?? "";
+          const page = Number(q.get("page"));
+          const listed = issues.filter((i) => i.updated_at >= since).sort((a, b) => a.updated_at.localeCompare(b.updated_at));
+          return Response.json(listed.slice((page - 1) * 100, page * 100));
+        },
+      ],
+      ["POST https://api.github.com/graphql", () => Response.json({ data: { repository: {} } })],
+    ]);
+    await syncIssues({ ...env, DASHBOARD_DB: limitedD1(d1, 50) }, githubConfig(env), NOW);
+    const first500 = (await first(d1, "SELECT COUNT(*) AS n FROM issues")).n;
+    assert.ok(first500 < 600, "the backlog outlasts one run");
+    // Issues already read are updated, moving them to the end of the listing.
+    for (let i = 0; i < 200; i++) issues[i].updated_at = t(1000 + i);
+    for (let run = 0; run < 3; run++) await syncIssues({ ...env, DASHBOARD_DB: limitedD1(d1, 50) }, githubConfig(env), NOW + run + 1);
+    assert.equal((await first(d1, "SELECT COUNT(*) AS n FROM issues")).n, 600);
+    assert.equal((await first(d1, "SELECT COUNT(*) AS n FROM issues WHERE updated_at = ?", Date.parse(t(1199)))).n, 1, "the updates were read too");
   });
 
   it("indexes stored reports over several presses within the limit", async () => {
