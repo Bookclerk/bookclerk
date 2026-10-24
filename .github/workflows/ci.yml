@@ -91,6 +91,7 @@ jobs:
       check_site_test: ${{ steps.resolve.outputs.check_site_test }}
       check_site_audit: ${{ steps.resolve.outputs.check_site_audit }}
       check_collector_test: ${{ steps.resolve.outputs.check_collector_test }}
+      check_demo_test: ${{ steps.resolve.outputs.check_demo_test }}
       check_needs_cargo: ${{ steps.resolve.outputs.check_needs_cargo }}
       check_needs_node: ${{ steps.resolve.outputs.check_needs_node }}
       check_needs_uv: ${{ steps.resolve.outputs.check_needs_uv }}
@@ -973,6 +974,7 @@ jobs:
             tools/site/package-lock.json
             tools/site/audit/package-lock.json
             tools/diagnostics-collector/package-lock.json
+            tools/demo/package-lock.json
 
       - name: Website tests
         if: needs.plan.outputs.check_site_test == 'true'
@@ -998,6 +1000,10 @@ jobs:
       - name: Diagnostics collector tests
         if: needs.plan.outputs.check_collector_test == 'true'
         run: python3 scripts/ci-exec.py run collector_test
+
+      - name: Hosted demo tests
+        if: needs.plan.outputs.check_demo_test == 'true'
+        run: python3 scripts/ci-exec.py run demo_test
 
   # A merge group, like an OSV remediation run, only needs to know whether it
   # can land. Once any job fails, cancel the rest of the run so CI Gate

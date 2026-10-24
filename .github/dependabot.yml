@@ -39,6 +39,15 @@ updates:
     cooldown:
       default-days: 7
 
+  # The hosted demo Worker (Containers library, wrangler).
+  - package-ecosystem: npm
+    directory: "/tools/demo"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+
   # Deploy tooling (wrangler) for the bookclerk.app website.
   - package-ecosystem: npm
     directory: "/tools/site"

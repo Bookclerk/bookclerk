@@ -1,0 +1,66 @@
+/* The demo Worker's own pages (launch, waiting, ended). Colors follow the
+   website's palette; system fonts only, so nothing loads from elsewhere. */
+:root {
+  --paper: #fbf7ee;
+  --card: #fffdf7;
+  --fold: #e7d3ac;
+  --ink: #0b3553;
+  --ink-soft: #1a4a6b;
+  --accent: #3d7f7a;
+  --accent-ink: #ffffff;
+  --alert: #a33b28;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #121c26;
+    --card: #1e2d3a;
+    --fold: #243240;
+    --ink: #f3e5c6;
+    --ink-soft: #d4c4a0;
+    --accent: #5aa8a2;
+    --accent-ink: #0b1520;
+    --alert: #f08c77;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px 16px;
+  background: var(--paper);
+  color: var(--ink);
+  font: 17px/1.55 "Segoe UI", Candara, system-ui, sans-serif;
+}
+.demo-card {
+  width: 100%;
+  max-width: 40rem;
+  background: var(--card);
+  border: 1px solid var(--fold);
+  border-radius: 12px;
+  padding: 28px 24px;
+}
+h1 {
+  margin: 0 0 12px;
+  font: 600 1.7rem/1.2 "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+}
+p, li { color: var(--ink-soft); }
+a { color: var(--accent); }
+.demo-notes { padding-left: 1.2em; }
+.demo-notes li { margin: 0 0 8px; }
+.demo-message { color: var(--alert); font-weight: 600; }
+.demo-start { display: grid; gap: 16px; justify-items: start; margin-top: 20px; }
+.demo-start button {
+  font: inherit;
+  font-weight: 600;
+  padding: 10px 22px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  cursor: pointer;
+}
+.demo-start button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+.demo-small { font-size: 0.9rem; margin-top: 20px; }

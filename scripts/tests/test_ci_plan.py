@@ -185,6 +185,21 @@ class ScenarioTests(unittest.TestCase):
         self.assertFalse(p.full_suite, p.reasons)
         self.assertEqual(sorted(p.checks), ["collector_test"])
 
+    def test_demo_only_runs_its_tests(self) -> None:
+        p = plan("tools/demo/src/app.js", "tools/demo/corpus/route/acquire")
+        self.assertFalse(p.full_suite, p.reasons)
+        self.assertEqual(sorted(p.checks), ["demo_test"])
+        self.assertEqual({j for j, on in p.jobs.items() if on}, {"site"})
+
+    def test_openapi_change_runs_the_demo_tests(self) -> None:
+        p = plan("crates/bookclerkd/openapi.json")
+        self.assertIn("demo_test", p.checks)
+
+    def test_demo_image_selects_no_check(self) -> None:
+        p = plan("packaging/demo/Dockerfile")
+        self.assertFalse(p.full_suite, p.reasons)
+        self.assertEqual(sorted(p.checks), [])
+
     def test_docker_image_files_select_no_check(self) -> None:
         p = plan("packaging/docker/Dockerfile", "packaging/docker/smoke.sh", ".dockerignore")
         self.assertFalse(p.full_suite, p.reasons)
