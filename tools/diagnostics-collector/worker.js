@@ -3,6 +3,9 @@
  *
  * POST /submit  — clients send redacted JSON; validated + enriched → B2
  * GET  /report  — GitHub Action pulls new objects since `since` (secret key)
+ * POST /triage  — GitHub Action sends the sanitized batch; Workers AI returns
+ *                 an issue plan, under a daily neuron budget (secret key; see
+ *                 triage.js)
  * GET  /health  — liveness
  *
  * Object layout: diagnostics/<version>/<report_id>.json
@@ -13,14 +16,22 @@
  *
  * Secrets (set by deploy workflow from GitHub secrets):
  *   B2_KEY_ID, B2_APPLICATION_KEY, B2_BUCKET_ID
- *   REPORT_API_KEY          — required for /report
+ *   REPORT_API_KEY          — required for /report and /triage
  *   CLIENT_IP_HASH_SALT     — optional; enables hashed client IP in enrichment
  *   GITHUB_TOKEN            — optional; higher GitHub API rate limits
  *
  * Vars:
  *   GITHUB_REPOSITORY       — owner/repo for releases/latest (e.g. Bookclerk/bookclerk)
+ *   TRIAGE_MODEL            — optional; Workers AI model for /triage
+ *   TRIAGE_DAILY_NEURONS    — optional; /triage neuron cap per UTC day
+ *
+ * Bindings: AI (Workers AI), TRIAGE_BUDGET (KV, the daily neuron ledger).
+ *
+ * REPORT_API_KEY only ever lives in the Worker and the GitHub Actions
+ * secrets; Bookclerk builds carry the collector URL, never this key.
  */
 
+import { handleTriage } from "./triage.js";
 import {
   extractVersionFromKey,
   normalizeVersion,
@@ -52,6 +63,13 @@ export default {
 
       if (request.method === "GET" && path === "/report") {
         return handleReport(request, env, url);
+      }
+
+      if (request.method === "POST" && path === "/triage") {
+        if (!requireReportAuth(request, env)) {
+          return json({ error: "unauthorized" }, 401);
+        }
+        return await handleTriage(request, env);
       }
 
       return json({ error: "not found" }, 404);
