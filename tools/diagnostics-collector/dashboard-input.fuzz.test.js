@@ -14,6 +14,10 @@
 //   GitHub.
 // - membershipDecision reads GitHub's organization membership answer; its
 //   result decides whether sign-in grants member or owner access.
+// - decodeIssuePage reads GitHub's issue listing; its result moves the
+//   sync cursor and is what storeIssue writes.
+// - decodeInstallationId, decodeInstallationToken, decodeAccessToken and
+//   decodeUser read GitHub's answers during sign-in and token minting.
 // - decodeListPage reads B2's file listing; its result names the objects
 //   report viewing downloads and where reindexing continues.
 // - decodePullRequests reads the GraphQL answer about each issue's labels
@@ -27,7 +31,16 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { MAX_CODE_CHARS, OAUTH_COOKIE, parseCallback } from "./dashboard/auth.js";
-import { DIAGNOSTICS_LABEL, decodePullRequests, membershipDecision } from "./dashboard/github.js";
+import {
+  DIAGNOSTICS_LABEL,
+  decodeAccessToken,
+  decodeInstallationId,
+  decodeInstallationToken,
+  decodeIssuePage,
+  decodePullRequests,
+  decodeUser,
+  membershipDecision,
+} from "./dashboard/github.js";
 import { eventLog } from "./dashboard/pages.js";
 import { decodeListPage } from "./dashboard/storage.js";
 import { memberFromRow, SESSION_COOKIE, sessionToken } from "./dashboard/session.js";
@@ -529,6 +542,127 @@ describe("B2 listing decoding", () => {
         data = text;
       }
       checkListPage(data, `iteration ${n}: ${text.slice(0, 300)}`);
+    }
+  });
+});
+
+/**
+ * Oracle for decodeIssuePage: entries that are objects with a positive
+ * integer number and no pull_request, text fields kept only as strings,
+ * "closed" only when GitHub says so; full when the raw page held 100
+ * entries; newest is the latest parseable updated_at over every object
+ * entry, as ISO-8601.
+ *
+ * @param {unknown} data Parsed page.
+ * @param {string} label Input name for failure messages.
+ */
+function checkIssuePage(data, label) {
+  const got = decodeIssuePage(data);
+  const isObj = (v) => v !== null && typeof v === "object";
+  const str = (v) => (typeof v === "string" ? v : "");
+  const list = Array.isArray(data) ? data : [];
+  const issues = [];
+  let newest = null;
+  for (const i of list) {
+    if (!isObj(i)) continue;
+    const t = new Date(str(i.updated_at)).getTime();
+    if (!Number.isNaN(t) && (newest === null || t > newest)) newest = t;
+    if (i.pull_request != null) continue;
+    if (typeof i.number !== "number" || !Number.isInteger(i.number) || i.number < 1 || i.number > Number.MAX_SAFE_INTEGER) continue;
+    issues.push({
+      number: i.number,
+      title: str(i.title),
+      state: i.state === "closed" ? "closed" : "open",
+      body: str(i.body),
+      created_at: str(i.created_at),
+      updated_at: str(i.updated_at),
+      closed_at: typeof i.closed_at === "string" ? i.closed_at : null,
+    });
+  }
+  assert.deepEqual(got, { issues, full: list.length >= 100, newest: newest === null ? "" : new Date(newest).toISOString() }, label);
+}
+
+/**
+ * Oracle for the sign-in and token decoders, by kind.
+ *
+ * @param {{kind: string, data: unknown}} input Decoder and body.
+ * @param {string} label Input name for failure messages.
+ */
+function checkAuthResponse(input, label) {
+  const d = input.data;
+  const o = d !== null && typeof d === "object" ? d : {};
+  const posInt = (v) => typeof v === "number" && Number.isInteger(v) && v > 0 && v <= Number.MAX_SAFE_INTEGER;
+  switch (input.kind) {
+    case "installation":
+      assert.equal(decodeInstallationId(d), posInt(o.id) ? o.id : null, label);
+      break;
+    case "token": {
+      const t = typeof o.expires_at === "string" ? new Date(o.expires_at).getTime() : NaN;
+      const ok = typeof o.token === "string" && o.token.length > 0 && !Number.isNaN(t);
+      assert.deepEqual(decodeInstallationToken(d), ok ? { token: o.token, expiresAt: t } : null, label);
+      break;
+    }
+    case "access":
+      assert.equal(decodeAccessToken(d), typeof o.access_token === "string" && o.access_token.length > 0 ? o.access_token : null, label);
+      break;
+    case "user": {
+      const ok = posInt(o.id) && typeof o.login === "string" && o.login.length >= 1 && o.login.length <= 39 && [...o.login].every((c) => /[A-Za-z0-9-]/.test(c));
+      assert.deepEqual(decodeUser(d), ok ? { id: o.id, login: o.login } : null, label);
+      break;
+    }
+    default:
+      assert.fail(`unknown kind ${input.kind}`);
+  }
+}
+
+const REST_FRAGMENTS = [
+  '"number":', '"state":', '"closed"', '"open"', '"pull_request":', '"updated_at":', '"2026-10-21T00:00:00Z"', '"9999-99-99"', '"zzz"',
+  '"title":', '"body":', '"id":', '"login":', '"token":', '"expires_at":', '"access_token":', '"octo"', '"a b"', '""',
+  "null", "{}", "[]", "0", "-1", "7.5", "1e400", "9007199254740993", ",", ":", "{", "}", "[", "]", '"', "é",
+];
+
+/**
+ * Mutates a seed's JSON text and parses it back, falling back to the text.
+ *
+ * @param {() => number} rand Random source.
+ * @param {unknown} value Seed value.
+ * @returns {unknown} Mutated value.
+ */
+function mutateJson(rand, value) {
+  const text = mutate(rand, JSON.stringify(value), REST_FRAGMENTS);
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+describe("GitHub REST decoding", () => {
+  it("replays the seed corpora", () => {
+    const pages = seeds("issue_page");
+    assert.ok(pages.length > 0);
+    for (const [name, raw] of pages) checkIssuePage(JSON.parse(raw), name);
+    const full = decodeIssuePage(JSON.parse(pages.find(([n]) => n === "full_page.json")[1]));
+    assert.equal(full.full, true);
+    const auth = seeds("github_auth");
+    assert.ok(auth.length > 0);
+    for (const [name, raw] of auth) checkAuthResponse(JSON.parse(raw), name);
+    assert.deepEqual(decodeUser(JSON.parse(auth.find(([n]) => n === "user.json")[1]).data), { id: 7, login: "octo" });
+  });
+
+  it("holds the oracles under seeded mutation", () => {
+    const pages = seeds("issue_page").map(([, raw]) => JSON.parse(raw));
+    const auth = seeds("github_auth").map(([, raw]) => JSON.parse(raw));
+    const rand = rng(20261031);
+    for (let n = 0; n < 3000; n++) {
+      if (rand() < 0.5) {
+        const data = mutateJson(rand, pages[Math.floor(rand() * pages.length)]);
+        checkIssuePage(data, `page ${n}: ${JSON.stringify(data)?.slice(0, 300)}`);
+      } else {
+        const base = auth[Math.floor(rand() * auth.length)];
+        const input = { kind: base.kind, data: mutateJson(rand, base.data) };
+        checkAuthResponse(input, `auth ${n}: ${JSON.stringify(input).slice(0, 300)}`);
+      }
     }
   });
 });

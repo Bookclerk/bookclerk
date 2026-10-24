@@ -186,26 +186,124 @@ export async function installationToken(cfg, now) {
   const jwt = await appJwt(cfg, now);
   const inst = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/installation`, { headers: apiHeaders(jwt) });
   if (!inst.ok) throw new Error(`app installation lookup failed: HTTP ${inst.status}`);
-  const { id } = await inst.json();
-  if (!Number.isSafeInteger(id)) throw new Error("app installation id missing");
+  const id = decodeInstallationId(await inst.json().catch(() => null));
+  if (id === null) throw new Error("app installation id missing");
   const res = await gh(`${API}/app/installations/${id}/access_tokens`, {
     method: "POST",
     headers: { ...apiHeaders(jwt), "Content-Type": "application/json" },
     body: JSON.stringify({ repositories: [cfg.repo], permissions: INSTALLATION_PERMISSIONS }),
   });
   if (!res.ok) throw new Error(`installation token failed: HTTP ${res.status}`);
-  const data = await res.json();
-  const expiresAt = Date.parse(data.expires_at);
-  if (typeof data.token !== "string" || !Number.isFinite(expiresAt)) {
-    throw new Error("installation token response malformed");
-  }
-  cachedToken = { key, token: data.token, expiresAt };
-  return data.token;
+  const got = decodeInstallationToken(await res.json().catch(() => null));
+  if (!got) throw new Error("installation token response malformed");
+  cachedToken = { key, ...got };
+  return got.token;
 }
 
 /** Forgets the cached installation token (tests). */
 export function clearTokenCache() {
   cachedToken = null;
+}
+
+// ---------------------------------------------------------------------------
+// Response decoders: sans-IO, so the fuzzer drives the same code as the
+// requests above. None of them throws.
+
+/** Whether a value is a non-null object. */
+const isObject = (v) => v !== null && typeof v === "object";
+
+/** A GitHub login: letters, digits and hyphens, at most 39. */
+const LOGIN = /^[A-Za-z0-9-]{1,39}$/;
+
+/**
+ * Reads `GET /repos/{owner}/{repo}/installation`.
+ *
+ * @param {unknown} data Parsed body.
+ * @returns {number | null} The installation id when it is a positive safe
+ *   integer.
+ */
+export function decodeInstallationId(data) {
+  const id = isObject(data) ? data.id : undefined;
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+/**
+ * Reads `POST /app/installations/{id}/access_tokens`.
+ *
+ * @param {unknown} data Parsed body.
+ * @returns {{token: string, expiresAt: number} | null} A non-empty token
+ *   and its expiry in milliseconds, or null when either is missing.
+ */
+export function decodeInstallationToken(data) {
+  if (!isObject(data) || typeof data.token !== "string" || data.token === "" || typeof data.expires_at !== "string") return null;
+  const expiresAt = Date.parse(data.expires_at);
+  return Number.isFinite(expiresAt) ? { token: data.token, expiresAt } : null;
+}
+
+/**
+ * Reads the sign-in code exchange answer.
+ *
+ * @param {unknown} data Parsed body.
+ * @returns {string | null} A non-empty `access_token`, or null.
+ */
+export function decodeAccessToken(data) {
+  return isObject(data) && typeof data.access_token === "string" && data.access_token !== "" ? data.access_token : null;
+}
+
+/**
+ * Reads `GET /user`.
+ *
+ * @param {unknown} data Parsed body.
+ * @returns {{id: number, login: string} | null} A positive safe integer id
+ *   and a GitHub-shaped login, or null.
+ */
+export function decodeUser(data) {
+  if (!isObject(data) || !Number.isSafeInteger(data.id) || data.id <= 0) return null;
+  if (typeof data.login !== "string" || !LOGIN.test(data.login)) return null;
+  return { id: data.id, login: data.login };
+}
+
+/**
+ * An issue as the sync stores it.
+ *
+ * @typedef {{number: number, title: string, state: "open" | "closed",
+ *   body: string, created_at: string, updated_at: string,
+ *   closed_at: string | null}} SyncedIssue
+ */
+
+/**
+ * Reads one page of `GET /repos/{owner}/{repo}/issues`.
+ *
+ * @param {unknown} data Parsed body.
+ * @returns {{issues: SyncedIssue[], full: boolean, newest: string}} Issues
+ *   with a positive safe integer number (pull requests left out; text
+ *   fields that are not strings become ""), whether the page held 100
+ *   entries (counted before filtering, so paging continues past a page of
+ *   pull requests), and the newest valid `updated_at` on the page as
+ *   ISO-8601, or "" when none parses.
+ */
+export function decodeIssuePage(data) {
+  const list = Array.isArray(data) ? data : [];
+  const str = (v) => (typeof v === "string" ? v : "");
+  let newestMs = -Infinity;
+  const issues = [];
+  for (const i of list) {
+    if (!isObject(i)) continue;
+    const t = Date.parse(str(i.updated_at));
+    if (Number.isFinite(t) && t > newestMs) newestMs = t;
+    if (i.pull_request !== undefined && i.pull_request !== null) continue;
+    if (!Number.isSafeInteger(i.number) || i.number <= 0) continue;
+    issues.push({
+      number: i.number,
+      title: str(i.title),
+      state: i.state === "closed" ? "closed" : "open",
+      body: str(i.body),
+      created_at: str(i.created_at),
+      updated_at: str(i.updated_at),
+      closed_at: typeof i.closed_at === "string" ? i.closed_at : null,
+    });
+  }
+  return { issues, full: list.length >= 100, newest: Number.isFinite(newestMs) ? new Date(newestMs).toISOString() : "" };
 }
 
 // ---------------------------------------------------------------------------
@@ -253,8 +351,7 @@ export async function exchangeCode(cfg, p) {
     }),
   });
   if (!res.ok) return null;
-  const data = await res.json().catch(() => null);
-  return data && typeof data.access_token === "string" && data.access_token ? data.access_token : null;
+  return decodeAccessToken(await res.json().catch(() => null));
 }
 
 /**
@@ -267,10 +364,7 @@ export async function exchangeCode(cfg, p) {
 export async function fetchUser(userToken) {
   const res = await gh(`${API}/user`, { headers: apiHeaders(userToken) });
   if (!res.ok) return null;
-  const u = await res.json().catch(() => null);
-  if (!u || !Number.isSafeInteger(u.id) || typeof u.login !== "string") return null;
-  if (!/^[A-Za-z0-9-]{1,39}$/.test(u.login)) return null;
-  return { id: u.id, login: u.login };
+  return decodeUser(await res.json().catch(() => null));
 }
 
 /**
@@ -383,13 +477,7 @@ export async function listDiagnosticsIssues(cfg, token, sinceIso, page) {
   if (sinceIso) q.set("since", sinceIso);
   const res = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/issues?${q}`, { headers: apiHeaders(token) });
   if (!res.ok) throw new Error(`issue list failed: HTTP ${res.status}`);
-  const items = await res.json();
-  const list = Array.isArray(items) ? items : [];
-  let newest = "";
-  for (const i of list) {
-    if (typeof i?.updated_at === "string" && i.updated_at > newest) newest = i.updated_at;
-  }
-  return { issues: list.filter((i) => i && !i.pull_request), full: list.length >= 100, newest };
+  return decodeIssuePage(await res.json().catch(() => null));
 }
 
 /** Label that marks a diagnostics issue. */
