@@ -108,16 +108,21 @@ RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${REPO}/actions/runs/${GITHUB_
 file_fallback() {
   gh label create diagnostics --color "0E8A16" --description "Automated diagnostics reports" 2>/dev/null || true
   local number body url
-  # The oldest open diagnostics issue with exactly this title.
-  number=$(gh issue list --repo "$REPO" --state open --label diagnostics --limit 100 --json number,title \
-    | jq -r --arg t "$HOLDING_TITLE" '[.[] | select(.title == $t) | .number] | min // empty') || number=""
+  # The newest open diagnostics issue with exactly this title (a full one
+  # stays open behind its successor). The search narrows the listing; the
+  # exact title match is done here.
+  number=$(gh issue list --repo "$REPO" --state open --label diagnostics --limit 100 \
+    --search "untriaged reports in:title" --json number,title \
+    | jq -r --arg t "$HOLDING_TITLE" '[.[] | select(.title == $t) | .number] | max // empty') || number=""
   if [[ -n "$number" ]]; then
     gh issue view "$number" --repo "$REPO" --json body --jq .body > "$WORK_DIR/holding-body"
     printf '%s\n' "$3" > "$WORK_DIR/holding-lines"
     if body=$(python3 -I "$SCRIPT_DIR/holding_issue.py" "$WORK_DIR/holding-body" "$WORK_DIR/holding-lines"); then
       printf '%s' "$body" > "$WORK_DIR/holding-new"
       gh issue edit "$number" --repo "$REPO" --body-file "$WORK_DIR/holding-new" >/dev/null || return 1
-      gh issue comment "$number" --repo "$REPO" --body "$1 more report(s) held: $2. Workflow run: $RUN_URL" >/dev/null || return 1
+      # The IDs are recorded once the edit succeeds; a failed comment only loses the reason.
+      gh issue comment "$number" --repo "$REPO" --body "$1 more report(s) held: $2. Workflow run: $RUN_URL" >/dev/null \
+        || echo "::warning::Could not comment on holding issue #${number}" >&2
       url="${GITHUB_SERVER_URL:-https://github.com}/${REPO}/issues/${number}"
       echo "$url"
       notify_issue "$url"

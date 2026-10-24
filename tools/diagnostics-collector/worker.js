@@ -443,9 +443,16 @@ async function handleReport(request, env, url) {
   // Reports an open issue already tracks by signature join that issue here
   // and are not returned: nothing to triage. Only with the filed filter on,
   // so a `force_full` run still re-triages everything.
-  const linkedBySignature = filed
-    ? await dashboardLinkBySignature(env, picked.map((p) => p.listedId).filter(Boolean), Date.now())
-    : new Map();
+  let linkedBySignature = new Map();
+  if (filed) {
+    try {
+      linkedBySignature = await dashboardLinkBySignature(env, picked.map((p) => p.listedId).filter(Boolean), Date.now());
+    } catch (err) {
+      // The pull needs only B2; without the links these reports go to
+      // triage as before.
+      console.error(`signature linking failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   const reports = [];
   const linked = [];

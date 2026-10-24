@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync, verify as rsaVerify } from "node:crypto";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { OAUTH_COOKIE, pkceChallenge } from "./dashboard/auth.js";
-import { afterFixCounts, all, indexReport, first, linkBySignature, listIssues, run, sameVersionLine, topSignatures } from "./dashboard/db.js";
+import { afterFixCounts, all, getReport, indexReport, first, linkBySignature, listIssues, run, sameVersionLine, topSignatures } from "./dashboard/db.js";
 import { appJwt, clearTokenCache, githubConfig, INSTALLATION_PERMISSIONS, pkcs8FromPem } from "./dashboard/github.js";
 import { escapeHtml, fmtTime, html, isoTime } from "./dashboard/html.js";
 import { buckets } from "./dashboard/pages.js";
@@ -537,6 +537,24 @@ describe("pages", () => {
     assert.equal((await all(env.DASHBOARD_DB, "SELECT source FROM report_issue WHERE report_id = ?", same))[0].source, "signature");
     await storeIssue(env.DASHBOARD_DB, { ...issue(412, "open"), body: `${issue(412, "open").body}- \`${same}\`\n` });
     assert.equal((await all(env.DASHBOARD_DB, "SELECT source FROM report_issue WHERE report_id = ?", same))[0].source, "filed");
+    // A report a member excluded from an issue is not linked to it again,
+    // but may still join another issue tracking the signature on its line.
+    const sixth = "d2b80f13-0000-4000-8000-000000000006";
+    await seed(env, sixth, NOW - 60_000, { version: "0.10.1" });
+    await storeIssue(env.DASHBOARD_DB, { ...issue(413, "open"), body: `${issue(413, "open").body}- \`${sixth}\`\n` });
+    await run(env.DASHBOARD_DB, "UPDATE reports SET version = '0.10.0' WHERE report_id = ?", ID1);
+    await run(env.DASHBOARD_DB, "INSERT INTO report_issue (report_id, issue_number, source) VALUES (?, 412, 'excluded')", otherLine);
+    assert.deepEqual([...(await linkBySignature(env.DASHBOARD_DB, [otherLine], NOW))], [[otherLine, 413]], "excluded from #412, joins #413");
+
+    // The holding issue never outranks a triaged issue that lists a report.
+    const held = "d2b80f13-0000-4000-8000-000000000007";
+    await seed(env, held);
+    await storeIssue(env.DASHBOARD_DB, { ...issue(395, "open", "triage fallback"), body: `${issue(395, "open", "triage fallback").body}- \`${held}\`\n` });
+    await storeIssue(env.DASHBOARD_DB, { ...issue(413, "open"), body: `${issue(413, "open").body}- \`${sixth}\`\n- \`${held}\`\n` });
+    const tracked = new Map((await listIssues(env.DASHBOARD_DB, "all", 0, 10)).map((i) => [i.number, Number(i.reports)]));
+    assert.equal(tracked.get(395), 0, "the held report counts under the triaged issue");
+    assert.equal(tracked.get(413), 3);
+    assert.equal((await getReport(env.DASHBOARD_DB, held)).report.issue_number, 413);
     assert.equal(sameVersionLine("v1.2.3", "1.2.0-rc.1"), true);
     assert.equal(sameVersionLine("1.2", "1.20"), false);
     assert.equal(sameVersionLine("1.2.3", ""), false);

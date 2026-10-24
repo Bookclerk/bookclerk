@@ -179,7 +179,7 @@ run or press.
 to and how (`source`): `filed` (listed in the issue body; the sync replaces
 these rows from GitHub), `signature` (linked at ingest, above), `triage` and
 `manual` (reserved for the model and for members attaching reports), and
-`excluded` (a member detached it; nothing links it again). Every count on the
+`excluded` (a member detached it from that issue; nothing links the pair again). Every count on the
 pages reads this ledger: a report counts once, under the issue that tracks
 it. A report two issues list is a conflict: the older issue keeps it, the
 report page says so, and the list shows "+1" after the issue chip.

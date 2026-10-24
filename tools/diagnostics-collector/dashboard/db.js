@@ -213,11 +213,17 @@ export function reportWhere(since, f = {}) {
 const LINKED = "ri.source <> 'excluded'";
 
 /**
- * The issue that tracks a report: the oldest issue it is linked to. One link
- * is the normal case; two mean the report was filed twice, and the older
- * issue keeps it until a member resolves the conflict.
+ * Order of a report's links when choosing the issue that tracks it: a
+ * triaged issue before the holding issue for untriaged reports, then the
+ * oldest. One link is the normal case; two triaged issues mean the report
+ * was filed twice, and the older keeps it until a member resolves the
+ * conflict; a held report that a real issue comes to list moves to it.
  */
-const TRACKER = `(SELECT MIN(ri.issue_number) FROM report_issue ri WHERE ri.report_id = r.report_id AND ${LINKED})`;
+const TRACKER_ORDER = "(COALESCE(ti.kind, '') = 'fallback'), ri.issue_number";
+
+/** The issue that tracks a report (alias `r`), by `TRACKER_ORDER`. */
+const TRACKER = `(SELECT ri.issue_number FROM report_issue ri LEFT JOIN issues ti ON ti.number = ri.issue_number
+  WHERE ri.report_id = r.report_id AND ${LINKED} ORDER BY ${TRACKER_ORDER} LIMIT 1)`;
 
 /**
  * Columns for a report row with its tracking issue, how that link was made
@@ -257,8 +263,9 @@ const LINK_LOOKUP_CHUNK = 90;
  * signature, source `signature`. A report qualifies when it is indexed with
  * a signature, is linked to no issue yet, and an open, triaged issue (not
  * the holding issue for untriaged reports) tracks a report with the same
- * signature on the same `major.minor` version line; with several such
- * issues the oldest wins. Writes nothing for reports that do not qualify.
+ * signature on the same `major.minor` version line, and a member has not
+ * excluded the report from that issue; with several such issues the oldest
+ * wins. Writes nothing for reports that do not qualify.
  *
  * @param {D1Database} db Database.
  * @param {string[]} reportIds Lowercase report UUIDs pulled by ingest.
@@ -269,16 +276,20 @@ export async function linkBySignature(db, reportIds, now) {
   const chosen = new Map();
   for (let i = 0; i < reportIds.length; i += LINK_LOOKUP_CHUNK) {
     const chunk = reportIds.slice(i, i + LINK_LOOKUP_CHUNK);
+    // One row per (report, tracked version, issue), however many reports
+    // share the signature; the version-line rule needs each version once.
     const rows = await all(
       db,
-      `SELECT r.report_id AS report_id, r.version AS version, t.version AS tracked_version,
+      `SELECT DISTINCT r.report_id AS report_id, r.version AS version, t.version AS tracked_version,
          ri.issue_number AS issue
        FROM reports r
        JOIN reports t ON t.signature = r.signature AND t.report_id <> r.report_id
        JOIN report_issue ri ON ri.report_id = t.report_id AND ${LINKED}
        JOIN issues i ON i.number = ri.issue_number AND i.state = 'open' AND i.kind <> 'fallback'
        WHERE r.signature IS NOT NULL AND r.report_id IN (${chunk.map(() => "?").join(", ")})
-         AND NOT EXISTS (SELECT 1 FROM report_issue x WHERE x.report_id = r.report_id AND x.source <> 'excluded')`,
+         AND NOT EXISTS (SELECT 1 FROM report_issue x WHERE x.report_id = r.report_id AND x.source <> 'excluded')
+         AND NOT EXISTS (SELECT 1 FROM report_issue x WHERE x.report_id = r.report_id
+           AND x.issue_number = ri.issue_number AND x.source = 'excluded')`,
       ...chunk,
     );
     for (const row of rows) {
@@ -550,12 +561,17 @@ export async function afterFixCounts(db) {
 }
 
 /**
- * Each report with the issue that tracks it, as a derived table `tr` with
- * `report_id` and `issue_number`; a report linked to two issues appears once,
- * under the older one, so issue counts add up to the number of reports.
+ * Common table expression `tr` (`report_id`, `issue_number`): each linked
+ * report with the issue that tracks it, by `TRACKER_ORDER`, computed once
+ * per statement. A report linked to two issues appears once, so issue
+ * counts add up to the number of reports.
  */
-const TRACKED = `(SELECT ri.report_id AS report_id, MIN(ri.issue_number) AS issue_number
-  FROM report_issue ri WHERE ${LINKED} GROUP BY ri.report_id) tr`;
+const WITH_TRACKED = `WITH tr AS (
+  SELECT report_id, issue_number FROM (
+    SELECT ri.report_id AS report_id, ri.issue_number AS issue_number,
+      ROW_NUMBER() OVER (PARTITION BY ri.report_id ORDER BY ${TRACKER_ORDER}) AS rn
+    FROM report_issue ri LEFT JOIN issues ti ON ti.number = ri.issue_number WHERE ${LINKED})
+  WHERE rn = 1)`;
 
 /**
  * Diagnostics issues with the counts of the reports they track, first and
@@ -573,14 +589,15 @@ export async function listIssues(db, state, since, limit) {
   const params = state === "all" ? [] : [state];
   const issues = await all(
     db,
-    `SELECT i.*, COUNT(r.report_id) AS reports, MIN(r.received_at) AS first_seen,
+    `${WITH_TRACKED}
+     SELECT i.*, COUNT(r.report_id) AS reports, MIN(r.received_at) AS first_seen,
        MAX(r.received_at) AS last_seen,
-       (SELECT r2.version FROM ${TRACKED} JOIN reports r2 ON r2.report_id = tr.report_id
-          WHERE tr.issue_number = i.number ORDER BY r2.received_at ASC LIMIT 1) AS first_version,
-       (SELECT r3.version FROM ${TRACKED} JOIN reports r3 ON r3.report_id = tr.report_id
-          WHERE tr.issue_number = i.number ORDER BY r3.received_at DESC LIMIT 1) AS last_version
+       (SELECT r2.version FROM tr t2 JOIN reports r2 ON r2.report_id = t2.report_id
+          WHERE t2.issue_number = i.number ORDER BY r2.received_at ASC LIMIT 1) AS first_version,
+       (SELECT r3.version FROM tr t3 JOIN reports r3 ON r3.report_id = t3.report_id
+          WHERE t3.issue_number = i.number ORDER BY r3.received_at DESC LIMIT 1) AS last_version
      FROM issues i
-     LEFT JOIN ${TRACKED} ON tr.issue_number = i.number
+     LEFT JOIN tr ON tr.issue_number = i.number
      LEFT JOIN reports r ON r.report_id = tr.report_id
      ${filter}
      GROUP BY i.number ORDER BY COALESCE(MAX(r.received_at), i.updated_at) DESC LIMIT ?`,
@@ -590,8 +607,9 @@ export async function listIssues(db, state, since, limit) {
   const [days, prs] = await Promise.all([
     all(
       db,
-      `SELECT tr.issue_number AS issue, CAST(r.received_at / ? AS INTEGER) AS day, COUNT(*) AS n
-       FROM ${TRACKED} JOIN reports r ON r.report_id = tr.report_id
+      `${WITH_TRACKED}
+       SELECT tr.issue_number AS issue, CAST(r.received_at / ? AS INTEGER) AS day, COUNT(*) AS n
+       FROM tr JOIN reports r ON r.report_id = tr.report_id
        WHERE r.received_at >= ? GROUP BY tr.issue_number, day`,
       DAY_MS,
       since,
