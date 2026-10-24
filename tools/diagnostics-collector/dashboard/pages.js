@@ -34,6 +34,7 @@ export function layout(p) {
         <a class="brand" href="/dash">${MARK}<span>Bookclerk</span> <small>Diagnostics</small></a>
         <nav aria-label="Dashboard">${navItem("overview", "Overview", "/dash")}${navItem("reports", "Reports", "/reports")}${navItem("issues", "Issues", "/issues")}</nav>
         <span class="spacer"></span>
+        <span class="live" id="live" hidden title="This page updates on its own when reports or issue links change">Live</span>
         <div class="who"><span>${p.member.login}${p.member.role === "admin" ? " · owner" : ""}</span>
           <form method="post" action="/auth/logout"><button type="submit">Sign out</button></form></div>
       </div></header>`
@@ -232,9 +233,9 @@ export function overviewPage(d) {
     member: d.member,
     nav: "overview",
     body: html`<div class="wrap">
-      ${d.capReached ? html`<p class="banner">Today's indexing limit is reached. New reports are stored but not shown here until an owner presses Index older reports.</p>` : ""}
+      <div data-live="cap">${d.capReached ? html`<p class="banner">Today's indexing limit is reached. New reports are stored but not shown here until an owner presses Index older reports.</p>` : ""}</div>
       <div class="toolbar"><h1>Overview</h1>${versionForm}${rangePicker(d.url, d.rangeId)}</div>
-      <div class="grid">
+      <div class="grid" data-live="overview">
         <section class="panel stat s2"><h2>Reports, 24h</h2><div class="v">${fmtInt(d.stats.last24h)}</div><div class="d">${delta >= 0 ? "+" : "−"}${fmtInt(Math.abs(delta))} on the day before</div></section>
         <section class="panel stat s2"><h2>Reports, ${range.label}</h2><div class="v">${fmtInt(d.stats.total)}</div><div class="d">from ${fmtInt(d.stats.installs)} installs</div>${sparkline(d.totalSeries, "teal", 120, 28, true)}</section>
         <section class="panel stat warn s2"><h2>Not filed</h2><div class="v">${fmtInt(d.stats.notFiled)}</div><div class="d">no issue lists them</div></section>
@@ -293,11 +294,11 @@ export function reportsPage(d) {
           ${sel("f-trig", "trigger", "Trigger", [["", "All triggers"], ...d.options.triggers.map((v) => [v, v])], d.filter.trigger ?? "")}
           ${sel("f-filed", "filed", "Filed", [["", "Filed or not"], ["no", "Not filed"], ["yes", "Filed"]], d.filter.filed ?? "")}
           <noscript><button class="button small" type="submit">Apply</button></noscript>
-          <span class="fine">${fmtInt(d.total)} reports · page ${d.page} of ${pages}${d.filter.signature ? html` · signature <span class="mono">${d.filter.signature}</span> <a href="/reports?range=${d.rangeId}">clear</a>` : ""}</span>
+          <span class="fine" data-live="total">${fmtInt(d.total)} reports · page ${d.page} of ${pages}${d.filter.signature ? html` · signature <span class="mono">${d.filter.signature}</span> <a href="/reports?range=${d.rangeId}">clear</a>` : ""}</span>
         </form>
-        <div class="tbl"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th><th>Trigger</th><th>Signature</th><th class="r">Errors</th><th class="r">Warnings</th><th>Issue</th></tr></thead>
+        <div class="tbl" data-live="rows"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th><th>Trigger</th><th>Signature</th><th class="r">Errors</th><th class="r">Warnings</th><th>Issue</th></tr></thead>
           <tbody>${d.rows.length ? reportRows(d.cfg, d.rows, true) : html`<tr><td colspan="9" class="empty">No reports match these filters.</td></tr>`}</tbody></table></div>
-        <div class="pager">${d.page > 1 ? pageLink(d.page - 1, "Newer") : ""}${d.page < pages ? pageLink(d.page + 1, "Older") : ""}</div>
+        <div class="pager" data-live="pager">${d.page > 1 ? pageLink(d.page - 1, "Newer") : ""}${d.page < pages ? pageLink(d.page + 1, "Older") : ""}</div>
       </section></div>`,
   });
 }
@@ -397,7 +398,7 @@ export function reportPage(d) {
           <div><dt>Signature</dt><dd class="mono">${r.signature ? html`<a href="/reports?range=90d&amp;signature=${r.signature}">${r.signature}</a>` : "none"}</dd></div>
           <div><dt>Install</dt><dd class="mono">${r.install_hash ? `${String(r.install_hash).slice(0, 4)}…${String(r.install_hash).slice(-4)}` : "not recorded"}</dd></div>
         </dl></section>
-        <section class="panel s4"><h2>Tracked by</h2><div class="links">
+        <section class="panel s4" data-live="tracked"><h2>Tracked by</h2><div class="links">
           ${d.issues.length
             ? d.issues.map((i) => html`<div class="link-item"><span class="chip ${i.state === "open" ? "open" : "closed"}">${i.state === "open" ? "Open" : "Closed"}</span><a href="${ghUrl(d.cfg, "issues", i.number)}">#${i.number} ${i.title}</a></div>`)
             : html`<p class="fine">No issue lists this report yet. Triage may have judged it noise, or ingest has not run since it arrived.</p>`}
@@ -409,8 +410,8 @@ export function reportPage(d) {
             ? html`<div class="filters" role="group" aria-label="Levels">${filters}</div><div class="log" id="log" role="log" aria-label="Report events">${log.rows}</div>`
             : html`<p class="banner">The stored report could not be read from storage. The index entry above is all that is available.</p>`}
         </section>
-        <section class="panel s6"><h2>Same signature, last 14 days</h2>${r.signature ? histogram(d.sigDays, d.sigMarker, "Reports per day with this signature") : html`<p class="fine">This report has no errors or warnings to group by.</p>`}</section>
-        <section class="panel s6"><h2>Similar reports</h2><div class="tbl"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th></tr></thead><tbody>${d.similar.length
+        <section class="panel s6" data-live="sig-days"><h2>Same signature, last 14 days</h2>${r.signature ? histogram(d.sigDays, d.sigMarker, "Reports per day with this signature") : html`<p class="fine">This report has no errors or warnings to group by.</p>`}</section>
+        <section class="panel s6" data-live="similar"><h2>Similar reports</h2><div class="tbl"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th></tr></thead><tbody>${d.similar.length
           ? d.similar.map((s) => html`<tr><td class="num">${fmtTime(s.received_at)}</td><td><a class="mono" href="/reports/${s.report_id}">${String(s.report_id).slice(0, 8)}</a></td><td class="mono">${s.version}</td><td>${`${s.os} ${s.arch}`.trim()}</td></tr>`)
           : html`<tr><td colspan="4" class="empty">No other report shares this signature.</td></tr>`}</tbody></table></div></section>
       </div></div>`,
@@ -431,7 +432,7 @@ export function issuesPage(d) {
     nav: "issues",
     body: html`<div class="wrap">
       <div class="toolbar"><h1>Issues and fixes</h1><nav class="picker" aria-label="Issue state">${tab("open", "Open")}${tab("closed", "Closed")}${tab("all", "All")}</nav></div>
-      <section class="panel"><h2>Diagnostics issues <span class="note">${d.syncedAt ? `synced from GitHub ${fmtTime(d.syncedAt)} UTC` : "not synced from GitHub yet"}</span></h2>
+      <section class="panel" data-live="issues"><h2>Diagnostics issues <span class="note">${d.syncedAt ? `synced from GitHub ${fmtTime(d.syncedAt)} UTC` : "not synced from GitHub yet"}</span></h2>
         <div class="tbl"><table><thead><tr><th>Issue</th><th>State</th><th class="r">Reports</th><th>Activity, 14d</th><th>First seen</th><th>Last seen</th><th>Fix</th><th class="r">After fix</th></tr></thead><tbody>${d.issues.length
           ? d.issues.map((i) => {
               const fix = d.afterFix.get(Number(i.number));

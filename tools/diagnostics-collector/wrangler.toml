@@ -53,3 +53,15 @@ binding = "ASSETS"
 # Issue and pull request sync for the dashboard, plus the session sweep.
 [triggers]
 crons = ["*/30 * * * *"]
+
+# Live dashboard updates (dashboard/live.js): one SQLite-backed Durable
+# Object holds open pages' WebSockets with the hibernation API and tells them
+# when the numbers change. SQLite-backed classes are the kind Workers Free
+# offers; idle hibernated sockets use no duration.
+[[durable_objects.bindings]]
+name = "LIVE"
+class_name = "LiveHub"
+
+[[migrations]]
+tag = "v1-live-hub"
+new_sqlite_classes = ["LiveHub"]

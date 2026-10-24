@@ -168,6 +168,23 @@ dropped, and a failed GraphQL call keeps the links already stored. Each sign-in 
 written to an access log kept 90 days and shown to owners. The overview also
 shows today's triage spend from `TRIAGE_BUDGET`.
 
+**Live updates.** Open pages update on their own, without polling. Each page
+opens a WebSocket to `/live` (same origin and a live session required), held
+by one SQLite-backed Durable Object, `LiveHub` (binding `LIVE`, created by
+the deploy's `[[migrations]]` entry), through the hibernation API so idle
+pages cost nothing. When `/submit` indexes a report, `/issues/notify` links an
+issue, or a sync or reindex stores something, the Worker tells the hub, and
+the hub sends each page the bare text `changed`. The page then fetches its
+own URL once with its session cookie and swaps in the elements marked
+`data-live` (at most one fetch every 3 seconds, none while the tab is
+hidden). The push carries no data, and the hub never reads what pages send.
+A live refresh of a report page skips the stored report and the access-log
+entry; the load that showed the report was logged. Sockets close when the
+session they were opened under expires or an owner signs everyone out, and
+the hub keeps at most 200. Without the `LIVE` binding pages simply stay as
+loaded. A Durable Object request is counted for each change, well inside
+Workers Free's daily allowance because indexing is capped (above).
+
 ## Version filter on ingest
 
 `GET /report` resolves the latest **stable** GitHub release (`releases/latest`)

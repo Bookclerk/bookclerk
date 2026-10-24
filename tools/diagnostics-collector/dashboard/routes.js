@@ -36,6 +36,7 @@ import {
   topSignatures,
 } from "./db.js";
 import { githubConfig } from "./github.js";
+import { announceChange, closeAllLive, connectLive } from "./live.js";
 import { fmtDay, html, htmlResponse, redirect } from "./html.js";
 import {
   dailySeries,
@@ -48,10 +49,10 @@ import {
 } from "./pages.js";
 import { currentMember, endAllSessions, sameOrigin } from "./session.js";
 import { readStoredReport } from "./storage.js";
-import { reindexSlice, syncIssueNow, syncIssues } from "./sync.js";
+import { indexSubmitted, reindexSlice, syncIssueNow, syncIssues } from "./sync.js";
 
 /** Paths the dashboard owns (exact). */
-const PATHS = new Set(["/", "/auth/github", "/auth/callback", "/auth/logout", "/dash", "/reports", "/issues", "/admin/reindex", "/admin/sync", "/admin/sign-out-all"]);
+const PATHS = new Set(["/", "/auth/github", "/auth/callback", "/auth/logout", "/dash", "/reports", "/issues", "/admin/reindex", "/admin/sync", "/admin/sign-out-all", "/live"]);
 
 /** `/reports/<uuid>`. */
 const REPORT_PATH = /^\/reports\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
@@ -166,6 +167,7 @@ export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now
     if (path === "/admin/sign-out-all") {
       await logAccess(db, member, "sign-out-all", null, now);
       await endAllSessions(db);
+      await closeAllLive(env);
       return redirect("/");
     }
     if (path === "/admin/sync") {
@@ -173,6 +175,7 @@ export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now
       try {
         const res = await syncIssues(env, cfg, now);
         note = `Issue sync: stored ${res.issues} changed issues, refreshed pull requests for ${res.refreshed}.`;
+        if (res.issues > 0 || res.refreshed > 0) await announceChange(env);
       } catch (err) {
         console.error(`issue sync failed: ${err instanceof Error ? err.message : String(err)}`);
         note = "Issue sync could not reach GitHub; try again.";
@@ -187,6 +190,7 @@ export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now
       note = res.done
         ? `Reindex finished: added ${res.indexed} reports.`
         : `Reindex added ${res.indexed} reports; press again to continue.`;
+      if (res.indexed > 0) await announceChange(env);
     } catch {
       note = "Reindex could not read storage; try again.";
     }
@@ -196,6 +200,17 @@ export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now
   }
 
   if (method !== "GET") return null;
+
+  if (path === "/live") {
+    // Same-origin pages only: a cookie alone would let another site's page
+    // open the socket (cross-site WebSocket hijacking), though it would
+    // learn nothing but when the numbers change.
+    if ((request.headers.get("upgrade") || "").toLowerCase() !== "websocket" || !sameOrigin(request)) {
+      return new Response("expected a same-origin WebSocket upgrade", { status: 400 });
+    }
+    return connectLive(env, member.expiresAt);
+  }
+
   const q = url.searchParams;
 
   if (path === "/dash") {
@@ -263,15 +278,19 @@ export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now
       return htmlResponse(messagePage("Report not found", html`<p>No indexed report has that ID. It may be older than the index; an owner can index older reports from the overview.</p>`), 404);
     }
     const r = found.report;
+    // A live refresh (dashboard.js after a push) swaps in only the links and
+    // counts, so it skips the stored report and the access-log entry: the
+    // load that showed the report was logged, and this answer omits it.
+    const liveRefresh = request.headers.get("bookclerk-live") === "1";
     const [stored, afterFix, similar, days] = await Promise.all([
-      readStoredReport(b2, String(r.object_key)).catch(() => null),
+      liveRefresh ? Promise.resolve(null) : readStoredReport(b2, String(r.object_key)).catch(() => null),
       afterFixCounts(db),
       r.signature
         ? all(db, "SELECT report_id, received_at, version, os, arch FROM reports WHERE signature = ? AND report_id <> ? ORDER BY received_at DESC LIMIT 8", r.signature, r.report_id)
         : Promise.resolve([]),
       r.signature ? signatureDays(db, r.signature, now - 14 * DAY_MS) : Promise.resolve(new Map()),
     ]);
-    await logAccess(db, member, "view-report", r.report_id, now);
+    if (!liveRefresh) await logAccess(db, member, "view-report", r.report_id, now);
     const fixes = found.issues.map((i) => afterFix.get(Number(i.number))).filter(Boolean);
     const fix = fixes.sort((a, b) => b.fixAt - a.fixAt)[0] ?? null;
     const today = Math.floor(now / DAY_MS);
@@ -313,7 +332,8 @@ export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now
 export async function dashboardScheduled(env, now) {
   const cfg = dashboardConfig(env);
   if (!cfg) return;
-  await syncIssues(env, cfg, now);
+  const res = await syncIssues(env, cfg, now);
+  if (res.issues > 0 || res.refreshed > 0) await announceChange(env);
 }
 
 /**
@@ -329,5 +349,22 @@ export async function dashboardScheduled(env, now) {
 export async function dashboardIssueNotify(env, number, now) {
   const cfg = dashboardConfig(env);
   if (!cfg) return null;
-  return syncIssueNow(env, cfg, number, now);
+  const result = await syncIssueNow(env, cfg, number, now);
+  await announceChange(env);
+  return result;
+}
+
+/**
+ * After `/submit`: indexes the stored report and, when a row was added,
+ * tells open pages. Failures are the caller's to swallow.
+ *
+ * @param {Record<string, any>} env Worker bindings.
+ * @param {object} enriched The object written to B2.
+ * @param {string} objectKey Its key.
+ * @returns {Promise<"indexed" | "capped">} What happened.
+ */
+export async function dashboardIndexSubmitted(env, enriched, objectKey) {
+  const result = await indexSubmitted(env.DASHBOARD_DB, enriched, objectKey, indexCap(env));
+  if (result === "indexed") await announceChange(env);
+  return result;
 }
