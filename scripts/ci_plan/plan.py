@@ -89,6 +89,10 @@ DOCS_PREFIX = "docs/"
 SITE_PREFIX = "tools/site/"
 BRAND_PREFIX = "assets/brand/"
 COLLECTOR_PREFIX = "tools/diagnostics-collector/"
+# The production image and its build context. No PR check builds them; the
+# path-filtered `docker-image.yml` workflow does.
+DOCKER_IMAGE_PREFIX = "packaging/docker/"
+DOCKER_IMAGE_FILES = frozenset({".dockerignore"})
 # Prose outside `docs/` that no build, test or script reads.
 DOC_FILES = frozenset(
     {
@@ -108,6 +112,7 @@ KNOWN_TOP_LEVEL = frozenset(
     {
         ".cargo",
         ".cursor",
+        ".dockerignore",
         ".devcontainer",
         ".github",
         ".vscode",
@@ -119,6 +124,7 @@ KNOWN_TOP_LEVEL = frozenset(
         "examples",
         "fuzz",
         "packages",
+        "packaging",
         "scripts",
         "third_party",
         "tools",
@@ -747,6 +753,8 @@ def build_plan(
             classified = True
         if path.startswith(COLLECTOR_PREFIX):
             surf.collector.append(path)
+            classified = True
+        if path.startswith(DOCKER_IMAGE_PREFIX) or path in DOCKER_IMAGE_FILES:
             classified = True
         if path.startswith(DOCS_PREFIX):
             # The site's tests check the links in the docs it publishes.

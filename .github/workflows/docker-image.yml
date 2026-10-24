@@ -1,0 +1,50 @@
+# Builds the production image (packaging/docker/Dockerfile) and boots it twice
+# on a fresh volume (packaging/docker/smoke.sh): the bundled sqlite and local
+# platform plugins must install, be trusted, and run under the default
+# ("required") isolation.
+#
+# A full release build, so it runs only when the image or its startup install
+# path changes, plus weekly to catch drift from the rest of the workspace.
+name: Docker image
+
+on:
+  pull_request:
+    paths:
+      - "packaging/docker/**"
+      - ".dockerignore"
+      - ".github/workflows/docker-image.yml"
+      - "crates/bookclerk-dev/src/**"
+      - "crates/bookclerk-plugins/platform/**"
+      - "crates/bookclerk-plugin-catalog/src/bundled.rs"
+      - "crates/bookclerk-plugin-catalog/src/evaluate.rs"
+      - "crates/bookclerk-plugin-catalog/src/ledger.rs"
+      - "crates/bookclerk-plugin-host/src/bundled_platform.rs"
+      - "crates/bookclerk-plugin-host/src/host/database.rs"
+      - "crates/bookclerk-workerd/workerd-pin.json"
+  workflow_dispatch:
+  schedule:
+    - cron: "41 5 * * 2"
+
+# Least privilege: checkout + local docker build only. Nothing is pushed.
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: build + boot
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build image
+        run: docker build -f packaging/docker/Dockerfile -t bookclerkd:ci .
+
+      - name: Boot twice on a fresh volume
+        run: bash packaging/docker/smoke.sh bookclerkd:ci

@@ -235,6 +235,21 @@ to `ReadWritePaths`.
 
 Dockerfile: [`packaging/docker/Dockerfile`](../packaging/docker/Dockerfile)
 (build from the repo root: `docker build -f packaging/docker/Dockerfile .`).
+The image ships the same bundle as a platform release (`cargo
+package-platform`) under `/opt/bookclerk`: `bookclerk`, `bookclerkd`,
+`bookclerk-media-worker`, `bookclerk-jail`, `bookclerk-workerd`, the pinned
+`workerd`, the web UI, and the `sqlite` and `local` platform plugins in
+`/opt/bookclerk/plugins/`.
+
+On every start, before it looks for the database plugin, `bookclerkd` (and the
+CLI) installs any platform plugin from the `plugins/` directory beside its
+executable unless the files directory already holds a trusted, byte-identical
+copy, and records it in `install-ledger.json`. A fresh `/config` volume
+therefore boots with a working database and local output, and an image upgrade
+(or rollback) brings the plugins to the build that image was released with.
+A directory that another install owns under the same name (`sqlite`, `local`)
+is left alone with a warning. The same applies to an unpacked platform archive
+run from its own directory.
 
 For day-to-day compile/test with a controlled OpenSSL/Node toolchain (and host-
 runnable `target/` binaries), use the [Dev Container](devcontainer.md) instead
@@ -242,34 +257,37 @@ of fighting missing `libssl-dev` on the host.
 
 ```bash
 docker build -f packaging/docker/Dockerfile -t bookclerkd .
+export BOOKCLERK_AUTH_PASSWORD   # set it in your shell or an env file, not on the command line
 docker run --rm \
   -v bookclerk-config:/config \
   -v bookclerk-data:/data \
-  -e BOOKCLERK_AUTH_PASSWORD='your-strong-passphrase' \
+  -e BOOKCLERK_AUTH_PASSWORD \
   bookclerkd
 ```
 
 | Path / env | Role |
 | --- | --- |
-| `/config` | `BOOKCLERK_FILES_DIR` (`config.toml`, `library.db` incl. `encrypted_secrets`) |
+| `/config` | `BOOKCLERK_FILES_DIR` (`config.toml`, `library.db` incl. `encrypted_secrets`, `master.key`, installed `plugins/`) |
 | `/data` | Books root (`bookclerk plugins config set local root /data/Audiobooks`) |
+| `/opt/bookclerk` | Read-only bundle: hosts, helpers, pinned `workerd`, UI, bundled platform plugins |
 | `BOOKCLERK_DAEMON_LISTEN` | Default loopback inside the container |
 
 To publish the UI / API (keep operator auth enabled; terminate TLS at a proxy):
 
 ```bash
-docker run … -e BOOKCLERK_DAEMON_LISTEN=0.0.0.0:8787 \
-  -e BOOKCLERK_OPERATOR_TOKEN="$(bookclerk daemon token)" \
-  -p 8787:8787 bookclerkd
+docker run … -e BOOKCLERK_DAEMON_LISTEN=0.0.0.0:8787 -p 8787:8787 bookclerkd
+docker exec <container> bookclerk daemon token   # the sealed operator token
 ```
 
-(Prefer sealing the token in `library.db` under `/config` and omitting the env
-override once the volume is initialized.)
+(`BOOKCLERK_OPERATOR_TOKEN` overrides the sealed token; pass it by name with
+`-e BOOKCLERK_OPERATOR_TOKEN` rather than putting the value on the command
+line.)
 
 Copy `/etc/bookclerk/config.example.toml` from the image as a starting config.
 
-Both confined tiers work under the default Docker seccomp profile, which has
-allowed the `landlock_*` syscalls since Docker 20.10.14. On an older engine the
+Plugin and media isolation keep their shipped default (`"required"`) in the
+image. Both confined tiers work under the default Docker seccomp profile,
+which has allowed the `landlock_*` syscalls since Docker 20.10.14. On an older engine the
 syscalls are refused, and `bookclerkd` says so at startup instead of quietly
 running codecs and plugin guests unconfined. Do not reach for
 `--security-opt seccomp=unconfined` to fix it: that removes a boundary rather

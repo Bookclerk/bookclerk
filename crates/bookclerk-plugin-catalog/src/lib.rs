@@ -10,6 +10,7 @@
 )]
 
 mod adapters;
+mod bundled;
 mod catalog;
 mod coordinate;
 mod error;
@@ -31,6 +32,10 @@ mod version;
 pub use adapters::{
     load_static_index, CargoAdapter, NpmAdapter, PypiAdapter, RegistryAdapter, StaticAdapter,
     StaticIndex, StaticPackage,
+};
+pub use bundled::{
+    bundled_plugins_dir_beside, sync_bundled_platform, BundledSync, BundledSyncAction,
+    BUNDLED_PLUGINS_DIR,
 };
 pub use catalog::{CatalogHit, SearchQuery, CATALOG_DTO_SCHEMA_VERSION};
 pub use coordinate::{PackageCoordinate, RegistrySource};

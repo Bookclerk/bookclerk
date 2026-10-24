@@ -1,0 +1,13 @@
+# Build context for packaging/docker/Dockerfile: sources only. Build outputs,
+# caches and local data stay out so the context is small and an image never
+# picks up a stale local binary or files directory.
+.git
+.cargo-home
+.tmp
+target
+BookclerkFiles
+**/node_modules
+ui/dist
+packages/**/dist
+examples/**/dist
+.env

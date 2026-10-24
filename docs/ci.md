@@ -166,6 +166,7 @@ Each changed path (renames contribute old and new paths) is classified:
 | Root `Cargo.toml` / `Cargo.lock`, toolchain, `.cargo/`, workflows, the planner, `fuzz/Cargo.*`, unknown or unclassified paths, planner errors | **Full suite** |
 | `fuzz/corpus/<target>/**`, `fuzz/oracles/<target>.rs` | Owning crate's tests (declared `test_input`; an undeclared corpus or oracle is unclassified) |
 | `fuzz/fuzz_targets/**`, `fuzz/dictionaries/**` | Nothing here; the ClusterFuzzLite workflows select themselves by path |
+| `packaging/docker/**`, `.dockerignore` | Nothing here; the [Docker image](#jobs) workflow selects itself by path |
 
 A planner error still uses that normal full plan when metadata, relations, and
 the guest inventory are available (an unavailable diff is the usual case).
@@ -279,6 +280,17 @@ differential (normalized `DbValue` / `DbErrorClass`). It is
 `workflow_dispatch` + weekly; PR CI keeps the modest in-crate case counts,
 deterministic corpus replay, and the postgres matrix (binding UTF8 readiness +
 sqlite/postgres differential).
+
+The **Docker image** job (`.github/workflows/docker-image.yml`) builds
+`packaging/docker/Dockerfile` and runs `packaging/docker/smoke.sh`, which boots
+the image twice on one fresh `/config` volume: the first boot must install the
+bundled `sqlite` and `local` plugins and load the database guest under the
+default isolation, the second must reinstall nothing, and the image must not
+override `BOOKCLERK_PLUGIN_ISOLATION` / `BOOKCLERK_MEDIA_ISOLATION`. It is a
+full release build, so it runs on pull requests that touch the image or its
+startup install path (`packaging/docker/**`, `.dockerignore`, the workflow,
+`bookclerk-dev`, the platform plugin sources, the bundled-install, trust and
+ledger modules, the database loader, the workerd pin), weekly, and on demand. It is not part of `CI Gate`.
 
 ### Fuzzing
 
@@ -608,7 +620,8 @@ Version updates (`.github/dependabot.yml`, weekly, 7-day cooldown) cover
 every lockfile of a shipped artifact or its build: Cargo at the workspace
 root, npm in `ui/`, `packages/plugin-sdk`, `tools/diagnostics-collector` and
 `tools/site`,
-uv in `packages/plugin-sdk-python`, and GitHub Actions. `examples/` lockfiles
+uv in `packages/plugin-sdk-python`, GitHub Actions, and the digest-pinned
+base images of `packaging/docker/Dockerfile`. `examples/` lockfiles
 are left out (reference plugins, never packaged); the full OSV scan still
 reports them.
 
