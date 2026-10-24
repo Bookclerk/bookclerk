@@ -129,7 +129,23 @@ returned code for a user token, reads `GET /user`, and revokes that token at
 once. It then checks `GET /orgs/<owner>/memberships/<login>` with its own
 installation token; only `state: active` passes, and organization owners get
 the owner tools. When the repository belongs to a user instead of an
-organization, only that user can sign in.
+organization, only that user can sign in. The page the member opened rides
+along as a `next` path in the same cookie (dashboard pages only: `/dash`,
+`/reports`, `/issues`, `/reports/<id>`, with a filter query), so sign-in
+returns to it.
+
+**Links from other sites.** The session cookie is SameSite=Strict, so a
+browser leaves it off a navigation that starts on another site, such as a
+report link in a GitHub issue, chat or email. A dashboard page opened that
+way by a click, without a session cookie (`Sec-Fetch-Site: cross-site`,
+`Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`, `Sec-Fetch-User: ?1`),
+answers with a tiny page that reloads the same address; that reload is
+same-site, carries the cookie when there is one, and otherwise lands on the
+sign-in page with the address kept as `next`. The reload is not
+user-activated, so it can never repeat. Only clicked top-level GET page
+loads get this: another site's scripts and frames still get the sign-in
+page, owner actions stay POSTs with a same-origin `Origin` check, and
+`/live` is never reloaded this way.
 
 **What the Worker holds.** The App can write to the repository, so every
 installation token the Worker mints is narrowed in the request to `metadata`,

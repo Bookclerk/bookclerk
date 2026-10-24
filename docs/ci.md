@@ -364,7 +364,9 @@ non-Rust tooling (decision 6):
   `dashboard/session.js`), which decides whether a request is signed in and
   as whom; the sign-in callback check (`parseCallback` in
   `dashboard/auth.js`), which decides from the callback query and cookies
-  whether a code is traded with GitHub; the membership decision
+  whether a code is traded with GitHub and which page the member lands on;
+  the return-page check (`safeNext`, same file), which turns a `next` query
+  parameter or cookie part into a redirect target; the membership decision
   (`membershipDecision` in `dashboard/github.js`), which decides from
   GitHub's membership answer whether sign-in grants member or owner access;
   the pull request decoder (`decodePullRequests`, same file), which
@@ -380,7 +382,7 @@ non-Rust tooling (decision 6):
   (`decodeListPage` in `dashboard/storage.js`), which names the objects
   report viewing downloads and where reindexing continues. `tools/diagnostics-collector/dashboard-input.fuzz.test.js` replays
   their seed corpora (`tools/diagnostics-collector/corpus/report_ids/`,
-  `corpus/signature/`, `corpus/oauth_callback/`, `corpus/session/`,
+  `corpus/signature/`, `corpus/oauth_callback/`, `corpus/next_path/`, `corpus/session/`,
   `corpus/membership/`, `corpus/pull_requests/`, `corpus/b2_list/`,
   `corpus/issue_page/`, `corpus/github_auth/`, `corpus/issue_notify/`,
   `corpus/issue/`) and runs seeded mutation
@@ -392,7 +394,9 @@ non-Rust tooling (decision 6):
   cookie walk finds a well-formed one, and a member only for a live row with
   a valid id and login, admin only when the row says so; a callback accepted exactly when a separate
   cookie walk finds a state that matches the query and well-formed code and
-  verifier, returning those values; membership granted only for an active
+  verifier, returning those values and a return page that the URL parser
+  resolves on the same origin to a dashboard page; a return page kept only
+  when it is such a page, never refused when it is one; membership granted only for an active
   membership with the same user id, or a 404 for the owner itself, admin
   only when GitHub says so, and an error for any other failed status; pull
   requests decoded to exactly the well-formed ones in this repository, the

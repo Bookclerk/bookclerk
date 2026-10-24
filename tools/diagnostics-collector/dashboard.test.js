@@ -260,7 +260,88 @@ describe("routing", () => {
     for (const p of ["/dash", "/reports", "/issues", `/reports/${ID1}`]) {
       const res = await call(env, new Request(ORIGIN + p));
       assert.equal(res.status, 303, p);
-      assert.equal(res.headers.get("location"), "/");
+      assert.equal(res.headers.get("location"), `/?next=${encodeURIComponent(p)}`);
+    }
+  });
+});
+
+describe("links from other sites", () => {
+  /** Headers of a top-level navigation that began on another site. */
+  const CROSS_SITE = { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document", "sec-fetch-user": "?1" };
+
+  it("reloads a page same-site instead of showing sign-in", async () => {
+    const env = makeEnv();
+    const target = `/reports/${ID1}`;
+    const res = await call(env, new Request(ORIGIN + target, { headers: CROSS_SITE }));
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    assert.equal(res.headers.get("set-cookie"), null);
+    const text = await res.text();
+    assert.match(text, new RegExp(`<meta http-equiv="refresh" content="0;url=${target}">`));
+    assert.doesNotMatch(text, /Sign in with GitHub/);
+  });
+
+  it("keeps a filter query and escapes it in the reload", async () => {
+    const env = makeEnv();
+    const res = await call(env, new Request(`${ORIGIN}/reports?version=0.9.0&page=2`, { headers: CROSS_SITE }));
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), /content="0;url=\/reports\?version=0\.9\.0&amp;page=2"/);
+  });
+
+  it("reloads the home page with its return page", async () => {
+    const env = makeEnv();
+    const res = await call(env, new Request(`${ORIGIN}/?next=${encodeURIComponent(`/reports/${ID1}`)}`, { headers: CROSS_SITE }));
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), new RegExp(`content="0;url=/\\?next=%2Freports%2F${ID1}"`));
+  });
+
+  it("shows sign-in on the same-site reload when there is no session", async () => {
+    const env = makeEnv();
+    const same = { "sec-fetch-site": "same-origin", "sec-fetch-mode": "navigate" };
+    const res = await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: same }));
+    assert.equal(res.status, 303, "no second reload, so no loop");
+    assert.equal(res.headers.get("location"), `/?next=%2Freports%2F${ID1}`);
+    const home = await call(env, new Request(ORIGIN + res.headers.get("location"), { headers: same }));
+    assert.equal(home.status, 200);
+    assert.match(await home.text(), new RegExp(`href="/auth/github\\?next=%2Freports%2F${ID1}"`));
+  });
+
+  it("does not reload for scripted, framed or same-site loads", async () => {
+    const env = makeEnv();
+    const { "sec-fetch-user": _, ...scripted } = CROSS_SITE;
+    for (const headers of [scripted, { ...CROSS_SITE, "sec-fetch-dest": "iframe" }, { ...CROSS_SITE, "sec-fetch-site": "same-site" }, {}]) {
+      const res = await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers }));
+      assert.equal(res.status, 303, JSON.stringify(headers));
+      assert.equal(res.headers.get("location"), `/?next=%2Freports%2F${ID1}`);
+    }
+  });
+
+  it("keeps a raw slash or colon in a filter query", async () => {
+    const env = makeEnv();
+    const res = await call(env, new Request(`${ORIGIN}/reports?platform=macos/arm64&version=1:2`));
+    assert.equal(res.headers.get("location"), `/?next=${encodeURIComponent("/reports?platform=macos/arm64&version=1:2")}`);
+  });
+
+  it("does not reload sign-in, owner or WebSocket paths", async () => {
+    const env = makeEnv();
+    for (const p of ["/live", "/admin/reindex"]) {
+      const res = await call(env, new Request(ORIGIN + p, { headers: CROSS_SITE }));
+      assert.equal(res.status, 303, p);
+      assert.equal(res.headers.get("location"), "/", p);
+    }
+    const start = await call(env, new Request(`${ORIGIN}/auth/github`, { headers: CROSS_SITE }));
+    assert.match(start.headers.get("location"), /^https:\/\/github\.com\//);
+  });
+
+  it("sends a signed-in member from / to the return page, never off-site", async () => {
+    const env = makeEnv();
+    const cookie = await signedIn(env);
+    const go = (next) => call(env, new Request(`${ORIGIN}/?next=${encodeURIComponent(next)}`, { headers: { cookie } }));
+    assert.equal((await go(`/reports/${ID1}`)).headers.get("location"), `/reports/${ID1}`);
+    for (const bad of ["//evil.test/dash", "https://evil.test/dash", "/\\evil.test", "/auth/github", "/admin/sign-out-all", "/dash/../auth/logout"]) {
+      const res = await go(bad);
+      assert.equal(res.status, 303, bad);
+      assert.equal(res.headers.get("location"), "/dash", bad);
     }
   });
 });
@@ -280,14 +361,26 @@ describe("sign-in", () => {
     assert.equal(loc.searchParams.get("code_challenge"), await pkceChallenge(verifier));
   });
 
-  /** Runs a callback with a valid state cookie. */
-  async function callback(env, ctx) {
+  it("carries a dashboard return page through the sign-in cookie", async () => {
+    const res = await call(makeEnv(), new Request(`${ORIGIN}/auth/github?next=${encodeURIComponent(`/reports/${ID1}`)}`));
+    const parts = res.headers.get("set-cookie").split(";")[0].split("=")[1].split(".");
+    assert.equal(parts.length, 3);
+    assert.equal(Buffer.from(parts[2], "base64url").toString("latin1"), `/reports/${ID1}`);
+    for (const bad of ["https://evil.test/", "//evil.test", "/auth/callback"]) {
+      const other = await call(makeEnv(), new Request(`${ORIGIN}/auth/github?next=${encodeURIComponent(bad)}`));
+      assert.equal(other.headers.get("set-cookie").split(";")[0].split("=")[1].split(".").length, 2, bad);
+    }
+  });
+
+  /** Runs a callback with a valid state cookie, optionally with a return page. */
+  async function callback(env, ctx, next) {
     const state = "s".repeat(43);
     const verifier = "v".repeat(43);
+    const tail = next === undefined ? "" : `.${Buffer.from(next).toString("base64url")}`;
     return call(
       env,
       new Request(`${ORIGIN}/auth/callback?code=abc123&state=${state}`, {
-        headers: { cookie: `${OAUTH_COOKIE}=${state}.${verifier}` },
+        headers: { cookie: `${OAUTH_COOKIE}=${state}.${verifier}${tail}` },
       }),
       makeB2(),
       ctx,
@@ -365,6 +458,22 @@ describe("sign-in", () => {
     const dash = await call(env, new Request(`${ORIGIN}/dash`, { headers: { cookie: session.split(";")[0] } }));
     assert.equal(dash.status, 200);
     assert.match(await dash.text(), /Owner tools/);
+  });
+
+  it("lands on the return page after sign-in, or the overview when it is not a dashboard page", async () => {
+    for (const [next, expected] of [[`/reports/${ID1}`, `/reports/${ID1}`], ["/issues?state=closed", "/issues?state=closed"], ["//evil.test", "/dash"]]) {
+      clearTokenCache();
+      gh = scriptGitHub([...userRoutes, ...appRoutes({ state: "active", role: "member", user: { id: 7 } })]);
+      const ctx = makeCtx();
+      const res = await callback(makeEnv(), ctx, next);
+      await Promise.all(ctx.pending);
+      assert.equal(res.status, 200, next);
+      const text = await res.text();
+      assert.ok(text.includes(`content="0;url=${expected}"`), next);
+      assert.ok(text.includes(`href="${expected}"`), next);
+      gh.restore();
+    }
+    gh = null;
   });
 
   it("refuses non-members, pending members and mismatched ids", async () => {
