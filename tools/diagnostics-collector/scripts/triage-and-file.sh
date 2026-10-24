@@ -33,6 +33,28 @@ RESPONSE_FILE=$(mktemp)
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$DATA_FILE" "$PLAN_FILE" "$RESPONSE_FILE" "$WORK_DIR"' EXIT
 
+# Reports the collector marked as regressions of a closed issue (they run the
+# version its fix shipped in, or a later one, and share its error signature)
+# get their own issue per closed issue and version line, filed below without
+# the model: regression_issue.py plans them and names the IDs it covers, which
+# leave the triage batch here.
+# The planner reads report-steered input, so the collector key is kept out
+# of its environment like the other readers below.
+REGRESS_DIR="$WORK_DIR/regressions"
+env -u REPORT_API_KEY python3 -I "$SCRIPT_DIR/regression_issue.py" "$REPORTS_FILE" "$REGRESS_DIR" "${BASE%/}"
+regressions=$(find "$REGRESS_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)
+if [[ $regressions -gt 0 ]]; then
+  TRIAGE_FILE="$WORK_DIR/triage-reports.json"
+  jq --slurpfile handled "$REGRESS_DIR/handled.json" '
+    ($handled[0].handled | map({key: ., value: true}) | from_entries) as $drop
+    | .reports |= map(select(($drop[(.report_id // .report.report_id // .file_name) | tostring] // false) | not))
+    | .count = (.reports | length)
+  ' "$REPORTS_FILE" > "$TRIAGE_FILE"
+  REPORTS_FILE=$TRIAGE_FILE
+  echo "$(jq '.handled | length' "$REGRESS_DIR/handled.json") report(s) are regressions of closed issues; ${regressions} regression issue(s) to file."
+  count=$(jq '.reports | length' "$REPORTS_FILE")
+fi
+
 # Cap by complete JSON array elements (never mid-object) so the model always gets valid JSON.
 jq -c '
   .reports
@@ -148,16 +170,23 @@ file_fallback() {
 
 # The prompt lives in the collector (triage.js), next to the model and its
 # neuron budget; this only sends the batch. The key goes in a header read
-# from stdin, never on argv.
-set +e
-http=$(printf 'header = "Authorization: Bearer %s"\n' "$REPORT_API_KEY" \
-  | curl -sS --config - -o "$RESPONSE_FILE" -w "%{http_code}" \
-      --max-time 120 \
-      -H "Content-Type: application/json" \
-      --data-binary "@$DATA_FILE" \
-      "${BASE%/}/triage")
-curl_status=$?
-set -e
+# from stdin, never on argv. A batch the regression issues emptied is not
+# sent: the empty plan below files nothing.
+http=200
+curl_status=0
+if [[ "$count" -gt 0 ]]; then
+  set +e
+  http=$(printf 'header = "Authorization: Bearer %s"\n' "$REPORT_API_KEY" \
+    | curl -sS --config - -o "$RESPONSE_FILE" -w "%{http_code}" \
+        --max-time 120 \
+        -H "Content-Type: application/json" \
+        --data-binary "@$DATA_FILE" \
+        "${BASE%/}/triage")
+  curl_status=$?
+  set -e
+else
+  printf '{"plan_text":"{\\"issues\\":[]}"}' > "$RESPONSE_FILE"
+fi
 # Only curl needs the key; nothing after it (the plan validator reads
 # report-steered model output) inherits it. A shell-only copy, never
 # exported, lets notify_issue tell the collector about filed issues.
@@ -187,13 +216,43 @@ if [[ $curl_status -eq 0 ]]; then
     200)
       if jq -er '.plan_text | strings' "$RESPONSE_FILE" >"$PLAN_FILE"; then
         status=0
-        jq -r '"Triage used \(.neurons) neurons on \(.model) (\(.spent_today)/\(.cap) today)"' "$RESPONSE_FILE" || true
+        [[ "$count" -eq 0 ]] || jq -r '"Triage used \(.neurons) neurons on \(.model) (\(.spent_today)/\(.cap) today)"' "$RESPONSE_FILE" || true
       else
         reason="the collector returned no plan"
       fi
       ;;
     429) reason="today's triage budget is used up" ;;
   esac
+fi
+
+# File the regression issues first: they do not depend on the model's plan.
+# A failure keeps the step red, so the pull cursor stays put and the run is
+# retried.
+regress_failed=0
+if [[ $regressions -gt 0 ]]; then
+  gh label create diagnostics --color "0E8A16" --description "Automated diagnostics reports" 2>/dev/null || true
+  gh label create bug --color "d73a4a" --description "Something isn't working" 2>/dev/null || true
+  gh label create regression --color "B60205" --description "A fixed problem came back in a later version" 2>/dev/null || true
+  for dir in "$REGRESS_DIR"/*/; do
+    [[ -d "$dir" ]] || continue
+    if url=$(gh issue create --repo "$REPO" \
+      --title "$(cat "$dir/title")" \
+      --label "$(cat "$dir/labels")" \
+      --body-file "$dir/body"); then
+      echo "$url"
+      notify_issue "$url"
+    else
+      regress_failed=1
+    fi
+  done
+  # Regressions of more closed issues than one run files are held like
+  # untriaged reports; a member files or attaches them from the dashboard.
+  OVERFLOW_IDS=$(id_list '.overflow[]' "$REGRESS_DIR/handled.json")
+  if [[ -n "$OVERFLOW_IDS" ]]; then
+    overflow=$(wc -l <<<"$OVERFLOW_IDS")
+    echo "${overflow} regression report(s) are beyond the run's regression issue cap; adding them to the holding issue." >&2
+    file_fallback "$overflow" "they are regressions of more closed issues than one run files" "$OVERFLOW_IDS" || regress_failed=1
+  fi
 fi
 
 # Validate the plan and turn it into issue files (validate_plan.py has the
@@ -247,13 +306,17 @@ if [[ $status -eq 0 ]]; then
     echo "${uncovered} report(s) are in no planned issue; adding them to the holding issue." >&2
     file_fallback "$uncovered" "the triage plan left them out" "$UNCOVERED_IDS" || failed=1
   fi
-  if [[ $failed -ne 0 ]]; then
+  if [[ $failed -ne 0 || $regress_failed -ne 0 ]]; then
     echo "::error::Some planned diagnostics issues could not be filed" >&2
     exit 1
   fi
 else
   echo "No valid triage plan (${reason}); adding every report to the holding issue." >&2
   file_fallback "$count" "$reason" "$ALL_IDS"
+  if [[ $regress_failed -ne 0 ]]; then
+    echo "::error::Some regression issues could not be filed" >&2
+    exit 1
+  fi
 fi
 
 exit 0

@@ -128,15 +128,15 @@ function isoMs(s) {
 function issueStatements(db, issue) {
   const number = Number(issue.number);
   if (!Number.isSafeInteger(number) || number <= 0) return [];
-  const { kind, ids } = parseIssueReportIds(issue.body);
+  const { kind, ids, regressionOf } = parseIssueReportIds(issue.body);
   const stmts = [
     db
       .prepare(
-        `INSERT INTO issues (number, title, state, kind, created_at, updated_at, closed_at, fixed_in_label)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO issues (number, title, state, kind, created_at, updated_at, closed_at, fixed_in_label, regression_of)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (number) DO UPDATE SET title = excluded.title, state = excluded.state,
            kind = excluded.kind, updated_at = excluded.updated_at, closed_at = excluded.closed_at,
-           fixed_in_label = excluded.fixed_in_label,
+           fixed_in_label = excluded.fixed_in_label, regression_of = excluded.regression_of,
            prs_synced_at = CASE WHEN issues.updated_at = excluded.updated_at
              THEN issues.prs_synced_at ELSE NULL END`,
       )
@@ -149,6 +149,8 @@ function issueStatements(db, issue) {
         isoMs(issue.updated_at) ?? 0,
         isoMs(issue.closed_at),
         typeof issue.fixed_in_label === "string" ? issue.fixed_in_label : null,
+        // An issue cannot be a regression of itself or of a later issue.
+        regressionOf !== null && regressionOf < number ? regressionOf : null,
       ),
     // Only the links the body lists are the body's to replace; links made by
     // signature, triage or a member live in the ledger alone.

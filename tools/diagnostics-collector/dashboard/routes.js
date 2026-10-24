@@ -27,6 +27,7 @@ import {
   getState,
   indexCapReached,
   linkBySignature,
+  matchClosedBySignature,
   linkFingerprint,
   listIssues,
   listReports,
@@ -496,6 +497,28 @@ export async function dashboardLinkBySignature(env, reportIds, now) {
   const linked = await linkBySignature(env.DASHBOARD_DB, reportIds, now);
   if (linked.size) await announceChange(env);
   return linked;
+}
+
+/**
+ * `GET /report?unfiled=1`, after `dashboardLinkBySignature`: sorts the
+ * reports still unlinked against closed issues (`matchClosedBySignature`),
+ * so a regression is handed to ingest with the issue it goes back to and a
+ * report from an old build joins the closed issue quietly; tells open pages
+ * when any was linked.
+ *
+ * @param {Record<string, any>} env Worker bindings.
+ * @param {string[]} reportIds Lowercase report UUIDs pulled by ingest and
+ *   not linked to an open issue.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {Promise<Awaited<ReturnType<typeof matchClosedBySignature>>>}
+ *   As `matchClosedBySignature`; both maps empty when the dashboard
+ *   database is not bound.
+ */
+export async function dashboardMatchClosed(env, reportIds, now) {
+  if (!env.DASHBOARD_DB || reportIds.length === 0) return { regressions: new Map(), linked: new Map() };
+  const out = await matchClosedBySignature(env.DASHBOARD_DB, reportIds, now);
+  if (out.linked.size) await announceChange(env);
+  return out;
 }
 
 /**

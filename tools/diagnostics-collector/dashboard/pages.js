@@ -103,6 +103,21 @@ function ghUrl(cfg, kind, n) {
 }
 
 /**
+ * Chip after an issue's title saying what kind of issue it is: an untriaged
+ * batch, or a regression issue linking the closed issue it goes back to.
+ *
+ * @param {object} cfg Dashboard config (for the GitHub URL).
+ * @param {object} i Issue row (`kind`, `regression_of`).
+ * @returns {import("./html.js").SafeHtml | string} The chip, or "" for a
+ *   plain triage issue.
+ */
+function issueKindChip(cfg, i) {
+  if (i.kind === "fallback") return html` <span class="chip none">untriaged batch</span>`;
+  if (i.regression_of != null) return html` <a class="chip crit" href="${ghUrl(cfg, "issues", i.regression_of)}">regression of #${i.regression_of}</a>`;
+  return "";
+}
+
+/**
  * Chip linking to an issue, or a "Not filed" chip.
  *
  * @param {{owner: string, repo: string}} cfg Repository.
@@ -451,7 +466,7 @@ export function reportPage(d) {
         </dl></section>
         <section class="panel s4" data-live="tracked"><h2>Tracked by</h2><div class="links">
           ${d.issues.length
-            ? d.issues.map((i, n) => html`<div class="link-item"><span class="chip ${i.state === "open" ? "open" : "closed"}">${i.state === "open" ? "Open" : "Closed"}</span><a href="${ghUrl(d.cfg, "issues", i.number)}">#${i.number} ${i.title}</a> <span class="fine">${n === 0 ? LINK_SOURCE[i.source] ?? "" : "also lists it"}</span></div>`)
+            ? d.issues.map((i, n) => html`<div class="link-item"><span class="chip ${i.state === "open" ? "open" : "closed"}">${i.state === "open" ? "Open" : "Closed"}</span><a href="${ghUrl(d.cfg, "issues", i.number)}">#${i.number} ${i.title}</a>${issueKindChip(d.cfg, i)} <span class="fine">${n === 0 ? LINK_SOURCE[i.source] ?? "" : "also lists it"}</span></div>`)
             : html`<p class="fine">No issue lists this report yet. Triage may have judged it noise, or ingest has not run since it arrived.</p>`}
           ${d.issues.length > 1 ? html`<p class="fine"><span class="chip crit">Conflict</span> ${d.issues.length} issues list this report; it counts under #${d.issues[0].number} until a member resolves it.</p>` : ""}
           ${d.prs.map((pr) => html`<div class="link-item"><span class="chip ${pr.state}">${{ open: "Open", closed: "Closed", merged: "Merged" }[pr.state] ?? pr.state}</span><a href="${ghUrl(d.cfg, "pull", pr.pr_number)}">#${pr.pr_number} ${pr.title}</a></div>`)}
@@ -493,7 +508,7 @@ export function issuesPage(d) {
               const open = i.prs.find((p) => p.state === "open");
               const pr = merged ?? open;
               return html`<tr>
-                <td class="issue-cell"><a href="${ghUrl(d.cfg, "issues", i.number)}"><b>#${i.number}</b> ${i.title}</a>${i.kind === "fallback" ? html` <span class="chip none">untriaged batch</span>` : ""}</td>
+                <td class="issue-cell"><a href="${ghUrl(d.cfg, "issues", i.number)}"><b>#${i.number}</b> ${i.title}</a>${issueKindChip(d.cfg, i)}</td>
                 <td><span class="chip ${i.state === "open" ? "open" : "closed"}">${i.state === "open" ? "Open" : "Closed"}</span></td>
                 <td class="r num">${fmtInt(i.reports)}</td>
                 <td>${sparkline(dailySeries(d.now, 14, i.days), fix && fix.after > 0 ? "brick" : "teal")}</td>

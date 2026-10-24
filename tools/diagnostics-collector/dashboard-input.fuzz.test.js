@@ -87,7 +87,16 @@ function checkIds(body, label) {
   const text = body.slice(0, 65536);
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const firstLine = lines[0].trim();
-  assert.equal(got.kind, firstLine === TRIAGE_MARKER ? "triage" : firstLine === FALLBACK_MARKER ? "fallback" : "other", label);
+  // A regression marker names an issue number: 1 to 9 digits, no leading zero.
+  const regression = /^<!-- bookclerk-diagnostics: regression of #(\d+) -->$/.exec(firstLine);
+  const regressionOf = regression && /^[1-9]\d{0,8}$/.test(regression[1]) ? Number(regression[1]) : null;
+  assert.equal(
+    got.kind,
+    firstLine === TRIAGE_MARKER ? "triage" : firstLine === FALLBACK_MARKER ? "fallback" : regressionOf !== null ? "regression" : "other",
+    label,
+  );
+  assert.equal(got.regressionOf, regressionOf, label);
+  if (regressionOf !== null) assert.ok(Number.isSafeInteger(got.regressionOf) && got.regressionOf > 0, label);
   const headings = lines.map((l, i) => (/^###\s+Report IDs\s*$/.test(l) ? i : -1)).filter((i) => i >= 0);
   const expected = [];
   if (headings.length) {
@@ -164,6 +173,7 @@ function checkEventLog(events, label) {
 const ID_FRAGMENTS = [
   "\n", "\r\n", "### Report IDs", "###  Report IDs ", "- `", "* `", "`", "\n- `7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4`",
   "diagnostics/", ".json", "../", "/", "-", "A", "f", " ", TRIAGE_MARKER, FALLBACK_MARKER, "é", "\0",
+  "<!-- bookclerk-diagnostics: regression of #412 -->", "regression of #", "#0", "#9999999999", "1",
   " · [dashboard](https://d.test/reports/x)", " · ", "[dashboard]", "(", ")", "\t",
 ];
 

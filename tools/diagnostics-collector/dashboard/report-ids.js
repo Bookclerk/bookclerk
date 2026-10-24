@@ -1,8 +1,9 @@
 /**
  * Reads the report IDs a diagnostics issue tracks.
  *
- * Triage (`scripts/validate_plan.py`) and its fallback
- * (`scripts/triage-and-file.sh`) end every issue they file with a
+ * Triage (`scripts/validate_plan.py`), its fallback
+ * (`scripts/triage-and-file.sh`) and regression issues
+ * (`scripts/regression_issue.py`) end every issue they file with a
  * `### Report IDs` heading followed by one `` - `<id>` `` line per report,
  * optionally followed by `` · [dashboard](<url>) `` linking the report's page.
  * Issue bodies can be edited by people with triage rights, so the body is
@@ -16,6 +17,13 @@ export const TRIAGE_MARKER = "<!-- bookclerk-diagnostics: workers-ai triage -->"
 
 /** First line of a fallback (untriaged batch) issue. */
 export const FALLBACK_MARKER = "<!-- bookclerk-diagnostics: triage fallback -->";
+
+/**
+ * First line of a regression issue (`scripts/regression_issue.py`), naming
+ * the closed issue whose fixed error came back: at most nine digits, no
+ * leading zero.
+ */
+export const REGRESSION_MARKER_RE = /^<!-- bookclerk-diagnostics: regression of #([1-9]\d{0,8}) -->$/;
 
 /** Most report IDs read from one issue. */
 export const MAX_IDS_PER_ISSUE = 500;
@@ -50,15 +58,19 @@ export function reportIdOf(id) {
  * Report UUIDs listed in an issue body, and what kind of issue it is.
  *
  * @param {unknown} body Issue body.
- * @returns {{kind: "triage" | "fallback" | "other", ids: string[]}} Distinct
- *   lowercase UUIDs in listed order, at most `MAX_IDS_PER_ISSUE`.
+ * @returns {{kind: "triage" | "fallback" | "regression" | "other",
+ *   ids: string[], regressionOf: number | null}} Distinct lowercase UUIDs
+ *   in listed order, at most `MAX_IDS_PER_ISSUE`, and for a regression
+ *   issue the number of the closed issue its marker names.
  */
 export function parseIssueReportIds(body) {
-  if (typeof body !== "string") return { kind: "other", ids: [] };
+  if (typeof body !== "string") return { kind: "other", ids: [], regressionOf: null };
   const text = body.slice(0, MAX_BODY_CHARS);
   const lines = text.split(/\r?\n/);
   const first = (lines[0] ?? "").trim();
-  const kind = first === TRIAGE_MARKER ? "triage" : first === FALLBACK_MARKER ? "fallback" : "other";
+  const regression = REGRESSION_MARKER_RE.exec(first);
+  const kind = first === TRIAGE_MARKER ? "triage" : first === FALLBACK_MARKER ? "fallback" : regression ? "regression" : "other";
+  const regressionOf = regression ? Number(regression[1]) : null;
   let start = -1;
   for (let i = lines.length - 1; i >= 0; i--) {
     if (/^###\s+Report IDs\s*$/.test(lines[i])) {
@@ -66,7 +78,7 @@ export function parseIssueReportIds(body) {
       break;
     }
   }
-  if (start < 0) return { kind, ids: [] };
+  if (start < 0) return { kind, ids: [], regressionOf };
   const seen = new Set();
   for (let i = start; i < lines.length && seen.size < MAX_IDS_PER_ISSUE; i++) {
     const m = LINE_RE.exec(lines[i]);
@@ -74,5 +86,5 @@ export function parseIssueReportIds(body) {
     const id = reportIdOf(m[1]);
     if (id) seen.add(id);
   }
-  return { kind, ids: [...seen] };
+  return { kind, ids: [...seen], regressionOf };
 }
