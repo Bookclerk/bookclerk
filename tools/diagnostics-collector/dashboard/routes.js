@@ -394,6 +394,21 @@ export async function dashboardIssueNotify(env, number, now) {
 }
 
 /**
+ * `GET /report?unfiled=1`: the reports some issue already lists, so ingest
+ * does not triage them again when its pull cursor is lost (the Actions cache
+ * that holds it can be evicted) or a run re-pulls from the start.
+ *
+ * @param {Record<string, any>} env Worker bindings.
+ * @returns {Promise<Set<string> | null>} Lowercase report UUIDs linked to at
+ *   least one issue, or null when the dashboard database is not bound.
+ */
+export async function dashboardFiledReportIds(env) {
+  if (!env.DASHBOARD_DB) return null;
+  const rows = await all(env.DASHBOARD_DB, "SELECT DISTINCT report_id FROM report_issue");
+  return new Set(rows.map((r) => String(r.report_id)));
+}
+
+/**
  * After `/submit`: indexes the stored report and, when a row was added,
  * tells open pages. Failures are the caller's to swallow.
  *

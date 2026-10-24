@@ -2,7 +2,8 @@
  * Bookclerk diagnostics Worker (deployed via GitHub Actions + wrangler-action).
  *
  * POST /submit  — clients send redacted JSON; validated + enriched → B2
- * GET  /report  — GitHub Action pulls new objects since `since` (secret key)
+ * GET  /report  — GitHub Action pulls new objects since `since` (secret key);
+ *                 with `unfiled=1` it skips reports an issue already lists
  * POST /triage  — GitHub Action sends the sanitized batch; Workers AI returns
  *                 an issue plan, under a daily neuron budget (secret key; see
  *                 triage.js)
@@ -43,7 +44,14 @@
  */
 
 import { parseIssueNotify } from "./dashboard/github.js";
-import { dashboardFetch, dashboardIndexSubmitted, dashboardIssueNotify, dashboardScheduled } from "./dashboard/routes.js";
+import { reportIdOf } from "./dashboard/report-ids.js";
+import {
+  dashboardFetch,
+  dashboardFiledReportIds,
+  dashboardIndexSubmitted,
+  dashboardIssueNotify,
+  dashboardScheduled,
+} from "./dashboard/routes.js";
 import { handleTriage, readCapped } from "./triage.js";
 import {
   extractVersionFromKey,
@@ -330,6 +338,10 @@ async function handleReport(request, env, url) {
   }
   // Secondary cursor: exclusive fileName within the same uploadTimestamp as `since`.
   const afterName = url.searchParams.get("after") || "";
+  // Reports an issue already lists are passed over (and the cursor moves past
+  // them) so a lost or reset cursor cannot file them a second time. Off when
+  // the dashboard database is not bound: nothing records the links then.
+  const filed = url.searchParams.get("unfiled") === "1" ? await dashboardFiledReportIds(env) : null;
 
   // Optional override for tests/ops; otherwise resolve latest stable from GitHub.
   let baselineVersion = null;
@@ -356,6 +368,7 @@ async function handleReport(request, env, url) {
   let nextAfter = afterName;
   let skippedVersion = 0;
   let skippedCorrupt = 0;
+  let skippedFiled = 0;
   let truncated = false;
   for (const f of newer) {
     const ts = Number(f.uploadTimestamp);
@@ -364,6 +377,12 @@ async function handleReport(request, env, url) {
       // Advance past rejected versions while scanning so they are not stuck forever.
       ({ maxTs, nextAfter } = advanceCursor(maxTs, nextAfter, ts, f.fileName));
       skippedVersion += 1;
+      continue;
+    }
+    const listedId = reportIdOf(f.fileName);
+    if (filed && listedId && filed.has(listedId)) {
+      ({ maxTs, nextAfter } = advanceCursor(maxTs, nextAfter, ts, f.fileName));
+      skippedFiled += 1;
       continue;
     }
     if (reports.length >= MAX_REPORT_FILES) {
@@ -392,7 +411,7 @@ async function handleReport(request, env, url) {
     });
   }
 
-  const advanced = reports.length > 0 || skippedVersion > 0 || skippedCorrupt > 0;
+  const advanced = reports.length > 0 || skippedVersion > 0 || skippedCorrupt > 0 || skippedFiled > 0;
   return json({
     ok: true,
     since,
@@ -406,6 +425,8 @@ async function handleReport(request, env, url) {
     baseline_source: baselineSource,
     skipped_version: skippedVersion,
     skipped_corrupt: skippedCorrupt,
+    skipped_filed: skippedFiled,
+    filed_filter: filed ? "on" : "off",
     reports,
   });
 }

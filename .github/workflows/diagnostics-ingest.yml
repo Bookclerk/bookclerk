@@ -24,7 +24,7 @@ on:
   workflow_dispatch:
     inputs:
       force_full:
-        description: "Ignore stored cursor and pull from epoch (0)"
+        description: "Ignore stored cursor, pull from epoch (0) and re-triage reports that already have an issue"
         type: boolean
         default: false
 
@@ -147,9 +147,17 @@ jobs:
           SINCE: ${{ steps.cursor.outputs.since }}
           AFTER: ${{ steps.cursor.outputs.after }}
           BASELINE_TAG: ${{ steps.baseline.outputs.tag }}
+          FORCE: ${{ inputs.force_full }}
         run: |
           set -euo pipefail
           mkdir -p /tmp/diagnostics-batch
+          # The cursor lives in the Actions cache, which evicts it under
+          # pressure; unfiled=1 has the collector pass over reports an issue
+          # already lists, so a lost cursor cannot file them again.
+          UNFILED_Q="&unfiled=1"
+          if [ "${FORCE:-false}" = "true" ]; then
+            UNFILED_Q=""
+          fi
           AFTER_Q=""
           if [ -n "${AFTER}" ]; then
             AFTER_Q="&after=$(python3 -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["AFTER"], safe=""))')"
@@ -158,7 +166,7 @@ jobs:
           HTTP=$(printf 'header = "Authorization: Bearer %s"\n' "$KEY" \
             | curl -sS --config - -o /tmp/diagnostics-batch/report.json -w "%{http_code}" \
             -H "Accept: application/json" \
-            "${BASE}/report?since=${SINCE}${AFTER_Q}&baseline_version=${BASELINE_TAG}")
+            "${BASE}/report?since=${SINCE}${AFTER_Q}${UNFILED_Q}&baseline_version=${BASELINE_TAG}")
           if [ "$HTTP" != "200" ]; then
             echo "::error::Worker /report returned HTTP $HTTP"
             head -c 2000 /tmp/diagnostics-batch/report.json || true
@@ -170,12 +178,13 @@ jobs:
           BASELINE=$(python3 -c 'import json; d=json.load(open("/tmp/diagnostics-batch/report.json")); print(d.get("baseline_version") or "(all versions)")')
           SOURCE=$(python3 -c 'import json; print(json.load(open("/tmp/diagnostics-batch/report.json")).get("baseline_source",""))')
           SKIPPED=$(python3 -c 'import json; print(json.load(open("/tmp/diagnostics-batch/report.json")).get("skipped_version",0))')
+          FILED=$(python3 -c 'import json; d=json.load(open("/tmp/diagnostics-batch/report.json")); print("%s (filter %s)" % (d.get("skipped_filed", 0), d.get("filed_filter", "off")))')
           {
             echo "count=$COUNT"
             echo "next_since=$NEXT"
             echo "next_after=$NEXT_AFTER"
           } >> "$GITHUB_OUTPUT"
-          echo "Pulled count=$COUNT next_since=$NEXT next_after=${NEXT_AFTER:-(none)} baseline=$BASELINE source=$SOURCE skipped_version=$SKIPPED"
+          echo "Pulled count=$COUNT next_since=$NEXT next_after=${NEXT_AFTER:-(none)} baseline=$BASELINE source=$SOURCE skipped_version=$SKIPPED skipped_filed=$FILED"
 
       - name: Triage and file issues
         if: steps.pull.outputs.count != '0'

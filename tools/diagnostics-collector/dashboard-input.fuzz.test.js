@@ -80,8 +80,10 @@ function checkIds(body, label) {
   const expected = [];
   if (headings.length) {
     for (const line of lines.slice(headings[headings.length - 1] + 1)) {
-      const m = line.match(/^[-*] `([^`]*)`\s*$/);
+      // An optional " · [dashboard](url)" suffix is allowed and ignored.
+      const m = line.match(/^[-*] `([^`]*)`( · \[dashboard\]\(([^)]*)\))?\s*$/);
       if (!m || !/^[A-Za-z0-9._:/+-]{1,160}$/.test(m[1])) break;
+      if (m[2] !== undefined && (m[3].length < 1 || m[3].length > 300 || /[\s(]/.test(m[3]))) break;
       const id = m[1].toLowerCase();
       const fromKey = id.match(/^diagnostics\/[a-z0-9._+-]{1,64}\/(.{36})\.json$/);
       const uuid = UUID.test(id) ? id : fromKey && UUID.test(fromKey[1]) ? fromKey[1] : null;
@@ -150,6 +152,7 @@ function checkEventLog(events, label) {
 const ID_FRAGMENTS = [
   "\n", "\r\n", "### Report IDs", "###  Report IDs ", "- `", "* `", "`", "\n- `7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4`",
   "diagnostics/", ".json", "../", "/", "-", "A", "f", " ", TRIAGE_MARKER, FALLBACK_MARKER, "é", "\0",
+  " · [dashboard](https://d.test/reports/x)", " · ", "[dashboard]", "(", ")", "\t",
 ];
 
 const JSON_FRAGMENTS = [
