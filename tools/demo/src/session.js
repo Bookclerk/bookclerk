@@ -8,7 +8,7 @@
 
 import { Container } from "@cloudflare/containers";
 import { finish } from "./limits.js";
-import { randomHex, signInVisitor, signOutStores, waitForHealth } from "./lifecycle.js";
+import { enableStorefronts, randomHex, signInVisitor, signOutStores, waitForHealth } from "./lifecycle.js";
 
 /** bookclerkd's port inside the container (BOOKCLERK_DAEMON_LISTEN in the image). */
 const PORT = 8787;
@@ -18,6 +18,12 @@ const BOOT_TIMEOUT_MS = 120_000;
 
 /** Longest wait for each store sign-out request at teardown. */
 const SIGN_OUT_TIMEOUT_MS = 10_000;
+
+/** Seconds between attempts to destroy a VM whose destroy failed. */
+const DESTROY_RETRY_SECONDS = 60;
+
+/** Attempts to destroy a VM before giving up (about an hour). */
+const DESTROY_ATTEMPTS = 60;
 
 /**
  * Where a session is.
@@ -121,6 +127,7 @@ export class DemoSession extends Container {
       if (await this.stillStarting()) {
         await waitForHealth(call, { timeoutMs: BOOT_TIMEOUT_MS, intervalMs: 1000 });
       }
+      if (await this.stillStarting()) await enableStorefronts(call, operatorToken);
       const portalSession = (await this.stillStarting()) ? await signInVisitor(call, operatorToken) : null;
       if (portalSession === null || !(await this.stillStarting())) {
         // Ended meanwhile: close() may have run before the VM was up, so
@@ -224,11 +231,7 @@ export class DemoSession extends Container {
     const meta = await this.meta();
     await this.ctx.storage.delete("secrets");
     if (meta && meta.state !== "failed") await this.setState("ended");
-    try {
-      await this.destroy();
-    } catch (err) {
-      console.error(`demo session ${meta?.id} destroy failed: ${String(err)}`);
-    }
+    await this.retryDestroy(0);
     if (meta) {
       await finish(this.env.DB, {
         id: meta.id,
@@ -237,6 +240,24 @@ export class DemoSession extends Container {
         revoked: result.revoked,
         failed: result.failed,
       });
+    }
+  }
+
+  /**
+   * Destroys the VM; when that fails, tries again every minute for about an
+   * hour, so a platform hiccup cannot leave a visitor's VM (and the tokens
+   * on its disk) running after the session ended.
+   *
+   * @param {number} attempt Attempts made before this one.
+   * @returns {Promise<void>}
+   */
+  async retryDestroy(attempt) {
+    try {
+      await this.destroy();
+    } catch (err) {
+      const id = (await this.meta())?.id;
+      console.error(`demo session ${id} destroy attempt ${attempt + 1} failed: ${String(err)}`);
+      if (attempt + 1 < DESTROY_ATTEMPTS) await this.schedule(DESTROY_RETRY_SECONDS, "retryDestroy", attempt + 1);
     }
   }
 

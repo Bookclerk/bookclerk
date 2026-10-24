@@ -15,8 +15,10 @@ downloaded, and their store sign-ins are revoked when the session ends.
    container with a fresh operator token and `master.key` password, and the
    demo's own origin as bookclerkd's `public_origin` (so bookclerkd's own
    cross-site checks and store sign-in callbacks use it), waits for
-   `/health`, creates the visitor's Owner account with the operator token and
-   redeems its claim ticket. The visitor waits on `/_demo/wait`.
+   `/health`, approves and deploys the four storefronts as the operator
+   (as an operator would in Settings; visitors cannot), creates the
+   visitor's Owner account with the operator token and redeems its claim
+   ticket. The visitor waits on `/_demo/wait`.
 3. `/_demo/enter` hands the browser the portal session cookie. From then on
    every request goes through the Worker (`src/app.js`), which:
    - refuses any operation not allowed for the demo (`src/routes.js`) before

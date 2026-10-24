@@ -208,6 +208,32 @@ export function decodeConnections(text) {
 }
 
 /**
+ * Reads this node's id and the default instance of each wanted plugin from
+ * `GET /api/config/plugin-instances`.
+ *
+ * @param {string} text Response body.
+ * @param {string[]} aliases Plugin ids (manifest `id`) to look for.
+ * @returns {{nodeId: string, instances: Map<string, string>} | null} The
+ *   node id and, per alias found, the id of its default instance (the first
+ *   well-formed entry wins); null when the body is not an object with a
+ *   well-formed `node_id` and an `instances` array.
+ */
+export function decodeInstances(text, aliases) {
+  const body = parseJson(text);
+  if (!isObject(body) || !isId(body.node_id) || !Array.isArray(body.instances)) return null;
+  const wanted = new Set(aliases);
+  // A Map, not an object: an alias such as "__proto__" stays a plain key.
+  /** @type {Map<string, string>} */
+  const instances = new Map();
+  for (const i of body.instances) {
+    if (!isObject(i) || i.is_default !== true || !isId(i.plugin_instance_id)) continue;
+    if (typeof i.alias !== "string" || !wanted.has(i.alias) || instances.has(i.alias)) continue;
+    instances.set(i.alias, i.plugin_instance_id);
+  }
+  return { nodeId: body.node_id, instances };
+}
+
+/**
  * Reads the claim ticket from `POST /api/auth/bootstrap`.
  *
  * @param {string} text Response body.

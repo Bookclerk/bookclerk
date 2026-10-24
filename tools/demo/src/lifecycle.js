@@ -10,7 +10,14 @@
 // Accounts page uses, so Audible deregisters the device it added, before
 // the container (and with it every token) is destroyed.
 
-import { decodeBootstrap, decodeConnections, portalSessionFrom, PORTAL_COOKIE } from "./inputs.js";
+import { decodeBootstrap, decodeConnections, decodeInstances, portalSessionFrom, PORTAL_COOKIE } from "./inputs.js";
+
+/**
+ * The storefront plugins the demo image ships (their manifest ids). The host
+ * discovers them but, as with any optional plugin, runs them only once the
+ * operator approves their grant and deploys them on the node.
+ */
+export const STOREFRONTS = ["audible", "libro", "chirp", "graphicaudio"];
 
 /**
  * Sends one request to bookclerkd in the container.
@@ -87,6 +94,42 @@ export async function signInVisitor(call, operatorToken) {
   const session = portalSessionFrom(redeem.headers.getSetCookie());
   if (redeem.status !== 200 || !session) throw new Error(`redeem answered ${redeem.status}`);
   return session;
+}
+
+/**
+ * Approves each storefront's requested grant as the operator and deploys its
+ * default instance on this node, as an operator would in Settings. Visitors
+ * cannot do either: the Worker refuses those routes.
+ *
+ * @param {ContainerCall} call Container request function.
+ * @param {string} operatorToken The session's operator token.
+ * @param {string[]} [ids] Plugin ids to enable.
+ * @returns {Promise<void>}
+ * @throws {Error} When a grant or deployment is refused, or a storefront has
+ *   no default instance (the image is missing it).
+ */
+export async function enableStorefronts(call, operatorToken, ids = STOREFRONTS) {
+  const json = { Authorization: `Bearer ${operatorToken}`, "Content-Type": "application/json" };
+  for (const id of ids) {
+    const res = await call(`/api/plugins/${encodeURIComponent(id)}/consent`, {
+      method: "POST",
+      headers: json,
+      body: JSON.stringify({ approve: true }),
+    });
+    await res.body?.cancel();
+    if (res.status !== 200) throw new Error(`consent for ${id} answered ${res.status}`);
+  }
+  const list = await call("/api/config/plugin-instances", { headers: { Authorization: json.Authorization } });
+  const found = list.status === 200 ? decodeInstances(await list.text(), ids) : null;
+  if (!found) throw new Error(`plugin instances answered ${list.status}`);
+  for (const id of ids) {
+    const instance = found.instances.get(id);
+    if (!instance) throw new Error(`no default instance for ${id}`);
+    const path = `/api/config/plugin-instances/${encodeURIComponent(instance)}/deployments/${encodeURIComponent(found.nodeId)}`;
+    const res = await call(path, { method: "PUT", headers: json, body: JSON.stringify({ desired: "present" }) });
+    await res.body?.cancel();
+    if (res.status !== 200) throw new Error(`deploying ${id} answered ${res.status}`);
+  }
 }
 
 /**

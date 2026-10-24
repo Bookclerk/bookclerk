@@ -12,6 +12,7 @@ import {
   cookiesForContainer,
   decodeBootstrap,
   decodeConnections,
+  decodeInstances,
   MAX_CONNECTIONS,
   MAX_ID_CHARS,
   portalSessionFrom,
@@ -208,6 +209,32 @@ describe("demo input boundaries", () => {
         expected.push({ source: c.source, accountId: c.account_id });
       }
       assert.deepEqual(got, expected, label);
+    });
+  });
+
+  it("plugin instance reader yields only wanted default instances with well-formed ids", () => {
+    const wanted = ["audible", "libro", "chirp", "graphicaudio", "__proto__"];
+    fuzz("plugin_instances", ["{", "}", "[", "]", ",", ":", '"', "true", "false", "null", '"audible"', '"is_default"', '"node_id"', "\\u0001"], (input, label) => {
+      let v;
+      try {
+        v = JSON.parse(input);
+      } catch {
+        v = undefined;
+      }
+      const ok = (s) => typeof s === "string" && s.length >= 1 && s.length <= MAX_ID_CHARS && !/[\u0000-\u001f\u007f]/.test(s);
+      const got = decodeInstances(input, wanted);
+      if (!(v !== null && typeof v === "object" && !Array.isArray(v) && ok(v.node_id) && Array.isArray(v.instances))) {
+        assert.equal(got, null, label);
+        return;
+      }
+      const expected = new Map();
+      for (const i of v.instances) {
+        if (i === null || typeof i !== "object" || Array.isArray(i)) continue;
+        if (i.is_default !== true || !ok(i.plugin_instance_id) || !wanted.includes(i.alias) || expected.has(i.alias)) continue;
+        expected.set(i.alias, i.plugin_instance_id);
+      }
+      assert.equal(got.nodeId, v.node_id, label);
+      assert.deepEqual(got.instances, expected, label);
     });
   });
 

@@ -70,13 +70,14 @@ describe("route list", () => {
   });
 
   it("counts every store sign-in start", () => {
-    for (const p of [
-      "/api/portal/audible/start",
-      "/api/portal/libro/login",
-      "/api/portal/sources/chirp/login",
-      "/api/portal/sources/audible/oauth/start",
-    ]) {
+    for (const p of ["/api/portal/libro/login", "/api/portal/sources/chirp/login"]) {
       assert.equal(classify("POST", p).verdict, "signin", p);
+    }
+  });
+
+  it("refuses browser sign-in until its callback is bridged", () => {
+    for (const p of ["/api/portal/audible/start", "/api/portal/sources/audible/oauth/start"]) {
+      assert.equal(classify("POST", p).verdict, "deny", p);
     }
   });
 

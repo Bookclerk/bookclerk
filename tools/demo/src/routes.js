@@ -192,10 +192,14 @@ export const OPERATIONS = Object.freeze([
   ["GET", "/api/portal/me", "allow"],
   ["GET", "/api/portal/sources", "allow"],
   ["GET", "/api/portal/connections", "allow"],
-  ["POST", "/api/portal/audible/start", "signin"],
+  // Browser (OAuth) sign-in is refused for now: the store's login page is
+  // served from a callback port inside the VM that the Worker does not
+  // bridge yet, so the link bookclerkd returns would point at the
+  // visitor's own machine. Password sign-in works. Tracked in #415.
+  ["POST", "/api/portal/audible/start", "deny"],
   ["POST", "/api/portal/libro/login", "signin"],
   ["POST", "/api/portal/sources/{id}/login", "signin"],
-  ["POST", "/api/portal/sources/{id}/oauth/start", "signin"],
+  ["POST", "/api/portal/sources/{id}/oauth/start", "deny"],
   ["POST", "/api/portal/sources/{source}/connections/{account_id}/revoke", "allow"],
   ["POST", "/api/portal/login/integration", "deny"],
   ["POST", "/api/portal/logout", "deny"],

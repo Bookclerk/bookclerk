@@ -1,0 +1,1 @@
+{"node_id":"node-1","instances":[{"plugin_instance_id":"aa","alias":"chirp","is_default":false},{"plugin_instance_id":"bb","alias":"chirp","is_default":true},{"plugin_instance_id":"cc","alias":"chirp","is_default":true}]}

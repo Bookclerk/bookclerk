@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { signInVisitor, signOutStores, waitForHealth } from "../src/lifecycle.js";
+import { enableStorefronts, signInVisitor, signOutStores, waitForHealth } from "../src/lifecycle.js";
 
 /**
  * A scripted bookclerkd: routes map `METHOD path` to a handler.
@@ -100,5 +100,54 @@ describe("waitForHealth", () => {
       waitForHealth(async () => new Response("", { status: 503 }), { timeoutMs: 20, intervalMs: 5 }),
       /did not become healthy: status 503/,
     );
+  });
+});
+
+describe("enableStorefronts", () => {
+  const instances = {
+    node_id: "node-1",
+    instances: [
+      { plugin_instance_id: "i-audible", alias: "audible", is_default: true },
+      { plugin_instance_id: "i-libro", alias: "libro", is_default: true },
+    ],
+  };
+
+  it("approves each grant, then deploys each default instance on this node", async () => {
+    const { call, seen } = scripted({
+      "POST /api/plugins/audible/consent": () => Response.json({}),
+      "POST /api/plugins/libro/consent": () => Response.json({}),
+      "GET /api/config/plugin-instances": () => Response.json(instances),
+      "PUT /api/config/plugin-instances/i-audible/deployments/node-1": () => Response.json({}),
+      "PUT /api/config/plugin-instances/i-libro/deployments/node-1": () => Response.json({}),
+    });
+    await enableStorefronts(call, "op", ["audible", "libro"]);
+    assert.deepEqual(
+      seen.map((s) => s.key),
+      [
+        "POST /api/plugins/audible/consent",
+        "POST /api/plugins/libro/consent",
+        "GET /api/config/plugin-instances",
+        "PUT /api/config/plugin-instances/i-audible/deployments/node-1",
+        "PUT /api/config/plugin-instances/i-libro/deployments/node-1",
+      ],
+    );
+    for (const s of seen) assert.equal(s.init.headers.Authorization, "Bearer op");
+    assert.deepEqual(JSON.parse(seen[0].init.body), { approve: true });
+    assert.deepEqual(JSON.parse(seen[3].init.body), { desired: "present" });
+  });
+
+  it("fails when a storefront is missing or refused", async () => {
+    await assert.rejects(
+      enableStorefronts(
+        scripted({
+          "POST /api/plugins/chirp/consent": () => Response.json({}),
+          "GET /api/config/plugin-instances": () => Response.json(instances),
+        }).call,
+        "op",
+        ["chirp"],
+      ),
+      /no default instance for chirp/,
+    );
+    await assert.rejects(enableStorefronts(scripted({}).call, "op", ["audible"]), /consent for audible answered 404/);
   });
 });

@@ -1,0 +1,1 @@
+{"node_id":"node-1","instances":[{"plugin_instance_id":"0b6e2d1c-3c54-4f0e-9c1e-1b0e7b8a9d10","plugin_key":"audible","alias":"audible","display_name":"","is_default":true,"deployments":[]},{"plugin_instance_id":"1c7f3e2d-4d65-4f1f-8d2f-2c1f8c9b0e21","plugin_key":"libro","alias":"libro","display_name":"","is_default":true,"deployments":[]}]}
