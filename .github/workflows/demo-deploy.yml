@@ -1,0 +1,298 @@
+# Builds the hosted demo image and deploys the demo Worker (tools/demo), which
+# gives each visitor their own container. See tools/demo/README.md.
+#
+# The image is layered on the production image built from the same commit
+# (packaging/demo/Dockerfile), so every crate and plugin in the demo is the
+# version that commit ships. It is a full release build, so the workflow runs
+# when the demo itself changes, when a release is published, nightly from
+# main, and by hand.
+#
+# GitHub repository secrets (without the first two the workflow only prints a
+# notice, so a fork without Cloudflare credentials stays green):
+#   CLOUDFLARE_API_TOKEN   Workers Scripts edit, Containers edit, D1 edit,
+#                          Turnstile edit and Workers Routes edit on the DOMAIN
+#                          zone; the first deploy creates the Worker, its D1
+#                          database and its container application, see
+#                          docs/ci.md#cloudflare-worker-deploys
+#   CLOUDFLARE_ACCOUNT_ID
+# Worker secrets are made here, never stored in GitHub: the Turnstile widget
+# "bookclerk-demo" and its keys (scripts/worker-secrets.mjs), and SESSION_KEY,
+# generated once and kept.
+#
+# Where the Worker is served:
+#   DOMAIN set (organization or repository variable): the custom domain
+#     demo.<DOMAIN>; the banner links visitors to https://<DOMAIN>.
+#   DOMAIN unset (a fork): the account's workers.dev subdomain, read from the
+#     deploy output and stored in Actions variable DEMO_URL with the
+#     automation App when its secrets are set (otherwise the `gh variable set`
+#     command is printed). The banner then has no site link.
+#
+# https://github.com/cloudflare/wrangler-action
+# GITHUB_TOKEN permission keys:
+# https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication#permissions-for-the-github_token
+
+name: demo-deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tools/demo/**"
+      - "packaging/demo/**"
+      - ".github/workflows/demo-deploy.yml"
+  release:
+    types: [published]
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+# Least privilege for GITHUB_TOKEN:
+#   contents → checkout
+permissions:
+  contents: read
+
+# A deploy is never cancelled half way; a newer run waits for it.
+concurrency:
+  group: demo-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: tools/demo
+    steps:
+      - name: Check for deploy secrets
+        id: secrets
+        working-directory: .
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CF_TOKEN" ] || [ -z "$CF_ACCOUNT" ]; then
+            echo "::notice::No demo deploy: set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID (see the workflow header)"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.secrets.outputs.ready == 'true'
+        with:
+          persist-credentials: false
+
+      # The release build and two images need more than the runner's free
+      # space; these preinstalled toolchains are never used here.
+      - name: Free disk space
+        if: steps.secrets.outputs.ready == 'true'
+        working-directory: .
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      # Both from the commit being deployed: the demo image starts FROM them.
+      - name: Build the production builder and image
+        if: steps.secrets.outputs.ready == 'true'
+        working-directory: .
+        run: |
+          set -euo pipefail
+          docker build -f packaging/docker/Dockerfile --target builder -t bookclerk-builder:demo .
+          docker build -f packaging/docker/Dockerfile -t bookclerk:demo .
+          git rev-parse HEAD > packaging/demo/version.txt
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.secrets.outputs.ready == 'true'
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tools/demo/package-lock.json
+
+      - name: Install dependencies
+        if: steps.secrets.outputs.ready == 'true'
+        run: npm ci
+
+      - name: Route the Worker
+        id: route
+        if: steps.secrets.outputs.ready == 'true'
+        env:
+          DOMAIN: ${{ vars.DOMAIN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DOMAIN" ]; then
+            # No custom domain: serve on the account's workers.dev subdomain.
+            sed -i 's/^workers_dev = false$/workers_dev = true/' wrangler.toml
+            grep -qx 'workers_dev = true' wrangler.toml
+            echo "mode=workers_dev" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # [[ =~ ]] matches the whole value, so a trailing newline is rejected.
+          hostname_re='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
+          if [[ ! "$DOMAIN" =~ $hostname_re ]]; then
+            echo "::error::DOMAIN is not a lowercase hostname: $DOMAIN"
+            exit 1
+          fi
+          host="demo.${DOMAIN}"
+          printf '\n[[routes]]\npattern = "%s"\ncustom_domain = true\n' "$host" >> wrangler.toml
+          echo "mode=custom_domain" >> "$GITHUB_OUTPUT"
+          echo "url=https://${host}" >> "$GITHUB_OUTPUT"
+          echo "site=https://${DOMAIN}" >> "$GITHUB_OUTPUT"
+
+      # Builds packaging/demo/Dockerfile with the local Docker daemon, so its
+      # FROM lines find the two images above, and pushes it to Cloudflare's
+      # registry.
+      - name: Deploy Worker and container
+        id: deploy
+        if: steps.secrets.outputs.ready == 'true'
+        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: tools/demo
+          # Matches package-lock.json.
+          wranglerVersion: "4.151.1"
+          command: deploy --var DEMO_VERSION:${{ github.sha }}${{ steps.route.outputs.site && format(' --var SITE_URL:{0}', steps.route.outputs.site) || '' }}
+
+      # The binding has no id: wrangler created the database on deploy, so
+      # migrations can only run now. Applied migrations are skipped.
+      - name: Apply database migrations
+        if: steps.secrets.outputs.ready == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler d1 migrations apply DB --remote
+
+      - name: Resolve the demo URL
+        id: url
+        if: steps.secrets.outputs.ready == 'true'
+        env:
+          MODE: ${{ steps.route.outputs.mode }}
+          ROUTE_URL: ${{ steps.route.outputs.url }}
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = custom_domain ]; then
+            url="$ROUTE_URL"
+          else
+            url="${DEPLOYMENT_URL%/}"
+            # <worker name from wrangler.toml>.<account subdomain>.workers.dev
+            workers_dev_re='^https://[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.workers\.dev$'
+            if [[ ! "$url" =~ $workers_dev_re ]]; then
+              echo "::error::Deploy did not report a workers.dev URL: $url"
+              exit 1
+            fi
+          fi
+          echo "Demo URL: $url"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "host=${url#https://}" >> "$GITHUB_OUTPUT"
+
+      # Values go to wrangler on stdin, never on a command line or in the log.
+      # Rotating SESSION_KEY would end every live session, so an existing one
+      # is kept.
+      - name: Upload Worker secrets
+        if: steps.secrets.outputs.ready == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DEMO_HOST: ${{ steps.url.outputs.host }}
+        run: |
+          set -euo pipefail
+          # A failed list must fail the step: treating it as "no key" would
+          # rotate SESSION_KEY and drop every live session.
+          secrets_json=$(npx wrangler secret list --format json)
+          if jq -e 'any(.[]; .name == "SESSION_KEY")' <<<"$secrets_json" >/dev/null; then
+            NEED_SESSION_KEY=false
+          else
+            NEED_SESSION_KEY=true
+          fi
+          export NEED_SESSION_KEY
+          node scripts/worker-secrets.mjs | npx wrangler secret bulk
+
+      # No visitor session here: Turnstile cannot be passed from CI. Checks the
+      # Worker is configured, serves the launch page, and refuses the API
+      # without a session before any container starts.
+      - name: Check the demo answers
+        if: steps.secrets.outputs.ready == 'true'
+        env:
+          URL: ${{ steps.url.outputs.url }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # A new custom domain or workers.dev subdomain can take a few
+          # minutes to answer; allow about six.
+          for attempt in 1 2 3 4 5 6 7 8; do
+            if body=$(curl -fsS --max-time 10 "$URL/_demo/health") \
+              && jq -e --arg sha "$SHA" '.ok == true and .configured == true and .version == $sha' <<<"$body" >/dev/null; then
+              echo "$body"
+              break
+            fi
+            if [ "$attempt" -eq 8 ]; then
+              echo "::error::$URL/_demo/health did not report this version, configured: ${body:-no answer}"
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
+          curl -fsS --max-time 10 "$URL/" | grep -q 'challenges.cloudflare.com/turnstile'
+          status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$URL/api/status")
+          if [ "$status" != 401 ]; then
+            echo "::error::$URL/api/status without a session answered $status, expected 401"
+            exit 1
+          fi
+
+      # Only the workers.dev URL needs storing; DOMAIN readers derive theirs.
+      - name: Check whether the demo URL variable needs writing
+        id: record
+        if: steps.secrets.outputs.ready == 'true' && steps.route.outputs.mode == 'workers_dev'
+        env:
+          URL: ${{ steps.url.outputs.url }}
+          CURRENT: ${{ vars.DEMO_URL }}
+          HAS_APP: ${{ secrets.AUTOMATION_APP_CLIENT_ID != '' && secrets.AUTOMATION_APP_PRIVATE_KEY != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$CURRENT" = "$URL" ]; then
+            echo "DEMO_URL is already $URL"
+            echo "write=false" >> "$GITHUB_OUTPUT"
+          elif [ "$HAS_APP" = true ]; then
+            echo "write=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Set the demo URL by hand: gh variable set DEMO_URL --repo $GITHUB_REPOSITORY --body $URL"
+            echo "write=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The installation-token API has no Variables permission to request
+      # (only listed permissions can be narrowed to), so the token carries the
+      # installation's permissions; it is used for this one write and revoked
+      # when the job ends.
+      - name: Mint variable-write token
+        id: app-token
+        if: steps.record.outputs.write == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+
+      - name: Store the demo URL
+        if: steps.record.outputs.write == 'true'
+        env:
+          URL: ${{ steps.url.outputs.url }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          name=DEMO_URL
+          owner="${GITHUB_REPOSITORY%%/*}"
+          # Prefer the organization (like DOMAIN); a user-owned fork, or an App
+          # without the organization "Variables" permission, falls back to
+          # the repository.
+          if gh variable set "$name" --org "$owner" --visibility all --body "$URL"; then
+            echo "Stored $name on organization $owner"
+            # A repository variable overrides the organization one, so keep a
+            # stale one from shadowing the new URL.
+            if gh variable get "$name" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh variable set "$name" --repo "$GITHUB_REPOSITORY" --body "$URL"
+              echo "Updated the repository's own $name too"
+            fi
+          else
+            echo "::notice::Organization variable write failed; storing $name on the repository"
+            gh variable set "$name" --repo "$GITHUB_REPOSITORY" --body "$URL"
+          fi

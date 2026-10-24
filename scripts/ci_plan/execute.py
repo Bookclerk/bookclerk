@@ -563,6 +563,12 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             Command("npm ci (tools/diagnostics-collector)", ["npm", "ci"], cwd=collector),
             Command("npm test (tools/diagnostics-collector)", ["npm", "test"], cwd=collector),
         ]
+    if check == "demo_test":
+        demo = str(ctx.workspace / "tools" / "demo")
+        return [
+            Command("npm ci (tools/demo)", ["npm", "ci"], cwd=demo),
+            Command("npm test (tools/demo)", ["npm", "test"], cwd=demo),
+        ]
     if check == "ui":
         ui = str(ctx.workspace / "ui")
         return [

@@ -163,10 +163,12 @@ Each changed path (renames contribute old and new paths) is classified:
 | `docs/**` | The website tests (`site_test`), whose link check covers the docs the site publishes |
 | `tools/site/**`, `assets/brand/**` | The website tests and audit (`site_test`, `site_audit`) |
 | `tools/diagnostics-collector/**` | The collector's tests (`collector_test`) |
+| `tools/demo/**`, `crates/bookclerkd/openapi.json` | The hosted demo Worker's tests (`demo_test`; the route table must cover every operation) |
 | Root `Cargo.toml` / `Cargo.lock`, toolchain, `.cargo/`, workflows, the planner, `fuzz/Cargo.*`, unknown or unclassified paths, planner errors | **Full suite** |
 | `fuzz/corpus/<target>/**`, `fuzz/oracles/<target>.rs` | Owning crate's tests (declared `test_input`; an undeclared corpus or oracle is unclassified) |
 | `fuzz/fuzz_targets/**`, `fuzz/dictionaries/**` | Nothing here; the ClusterFuzzLite workflows select themselves by path |
 | `packaging/docker/**`, `.dockerignore` | Nothing here; the [Docker image](#jobs) workflow selects itself by path |
+| `packaging/demo/**` | Nothing here; the demo image is built by the [demo deploy](#cloudflare-worker-deploys) |
 
 A planner error still uses that normal full plan when metadata, relations, and
 the guest inventory are available (an unavailable diff is the usual case).
@@ -264,7 +266,7 @@ when a step matches no test. Name such tests `postgres_*`.
 | `postgres 16/17/18` | An owning package's unit tests are affected (library, db-guest, postgres guest, plugin-host RPC LIKE) | Only the owners' steps, on every supported major |
 | `windows cluster startup + identity` | A `[windows_cluster].paths` input changed, or the full suite | On `windows-latest` only: identity create, restart/binding, and different-cluster rejection, then the full `cluster_secret_startup` target with the sqlite guest, jail, `bookclerk-workerd`, and pinned `workerd` |
 | `small-VPS envelope` | A `[envelope].paths` input changed (harness, seed, search rebuild, library book page, books HTTP handler), or the full suite | On the `ubuntu-latest` VM, release-build the hosts and compile the seed. `docker run --memory=1g --memory-swap=1g --cpus=1 ubuntu:24.04` then runs the seed, daemon, and load. `small-vps.sh` reads `memory.max` and `cpu.max` and refuses to record numbers when they are `max` or looser than 1 GiB / one core. It drops build and object file cache and writes `envelope-metrics.json` even when a later step fails. Books routes must return 200, `q=Title` must hit the rebuilt index, and daemon anonymous memory (`RssAnon` when `/proc/<pid>/status` reports it, otherwise `memory.stat` `anon`, or `memory.current` when anon is absent) stays under 256 MiB after idle and during the API windows. `memory.peak` is recorded and not gated: the container cannot reset it, so the lifetime peak includes the seed. One `cpu.max` core means 1 media worker. Latency is recorded and not gated. `available_parallelism` (daemon `logical_cpus`) is recorded separately from the affinity mask |
-| `website + collector Workers` | `tools/site/**` or `assets/brand/**` (site tests and audit), `docs/**` (site tests only), `tools/diagnostics-collector/**` (collector tests), or the full suite | `site_test`: `npm test` in `tools/site` (generator, Worker and the docs link check). `site_audit`: Lighthouse and axe-core on the built site (see [Website checks](#website-checks)). `collector_test`: `npm test` in `tools/diagnostics-collector`. No Rust toolchain |
+| `website + collector Workers` | `tools/site/**` or `assets/brand/**` (site tests and audit), `docs/**` (site tests only), `tools/diagnostics-collector/**` (collector tests), `tools/demo/**` (demo tests), or the full suite | `site_test`: `npm test` in `tools/site` (generator, Worker and the docs link check). `site_audit`: Lighthouse and axe-core on the built site (see [Website checks](#website-checks)). `collector_test`: `npm test` in `tools/diagnostics-collector`. `demo_test`: `npm test` in `tools/demo`. No Rust toolchain |
 | `CI Gate` | Always | Stable required check (see contract above) |
 
 OSV scanning remains a separate workflow/gate. A green OSV job that applies
@@ -313,7 +315,7 @@ a pull request that adds or widens a boundary extends it.
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape (`bookclerk-plugin-abi::GuestSqlPolicy`, lowered as the SQLite adapter lowers it) | Every table, column, function and schema action SQLite's own authorizer reports for an admitted statement is inside the policy; shared oracle `fuzz/oracles/guest_sql_authz.rs`, replayed from `bookclerk-library` |
 | `mux_peer` | Peer frames on the multiplexed byte link (`bookclerk-plugin-sdk::mux`: `Open`, `Data`, `Close`, `Window`, lengths and ids) | Settles within a bound once the peer's bytes end, delivers no more than the peer sent, accepts no more streams than the peer could open, leaves no task behind; shared oracle `fuzz/oracles/mux_peer.rs`, replayed from `bookclerk-plugin-sdk` |
 
-Five boundaries live outside the Rust workspace and follow the ADR's rule for
+These boundaries live outside the Rust workspace and follow the ADR's rule for
 non-Rust tooling (decision 6):
 
 - The diagnostics triage plan validator
@@ -419,6 +421,36 @@ non-Rust tooling (decision 6):
   `npm test`, checking every choice against an independent oracle (RFC 9110
   qvalues, `*` for unlisted codings, Brotli before gzip on a tie, nothing at
   `q=0`).
+- The hosted demo Worker's inputs (`tools/demo/src/routes.js` and
+  `src/inputs.js`): the route check (`classify`), which decides whether a
+  visitor's request may reach their container; the visitor's cookies
+  (`readSessionToken`, `cookiesForContainer`); the container's `Set-Cookie`
+  lines (`rewriteSetCookie`, `portalSessionFrom`) and JSON answers
+  (`decodeConnections`, `decodeClaimTicket`, `decodeInstances`); the launch
+  form (`decodeLaunchForm`); Turnstile's verdict (`siteverifyPassed`); and,
+  at deploy time, the Cloudflare API answers `scripts/worker-secrets.mjs`
+  reads (`decodeApiResponse`, `findWidget`, `widgetKeys`). `tools/demo/test/inputs.fuzz.test.js` replays their
+  seed corpora (`tools/demo/corpus/route/`, `cookie/`, `set_cookie/`,
+  `connections/`, `siteverify/`, `claim_ticket/`, `launch_form/`, `plugin_instances/`,
+  `cf_api/`) and runs seeded mutation
+  fuzzing in `npm test`, checking results against independent oracles (a
+  forwarded path decodes to clean segments and matches no refused
+  operation, a write matches a listed one and a sign-in start is always
+  counted; the session cookie found exactly when a separate walk finds a
+  well-formed `__Host-demo`, and no `__Host-` or `__Secure-` cookie
+  forwarded; a rewritten `Set-Cookie` keeps its name, has no `Domain`, ends
+  in exactly one `Secure` and no control characters; a portal session only
+  when exactly one well-formed value is set; connections deduplicated,
+  bounded and well-formed; Siteverify passed only for success on this host
+  and action; a claim ticket only when well-formed; only wanted default
+  plugin instances with well-formed ids, the first per plugin, on a
+  well-formed node id; the launch form's token equal to a separate
+  form-urlencoded parse's first `cf-turnstile-response` when that is
+  printable ASCII, and none from an oversized body or token; a Cloudflare
+  answer's `result` only on a 2xx with `success: true`, otherwise only its
+  integer error codes, the demo widget only with a printable site key and
+  printable, deduplicated, bounded hostnames, and keys only when both are
+  printable).
 
 Still to add (tracked in the fuzzing ADR's follow-ups): a full RPC session
 against a scripted guest, the workerd `egress.js` gate checked against
@@ -1009,22 +1041,30 @@ reports as the `site-audit` artifact. Locally: `npm run build` in
 
 ## Cloudflare Worker deploys
 
-Two workflows deploy Workers with `wrangler deploy`, sharing the repository
+Three workflows deploy Workers with `wrangler deploy`, sharing the repository
 secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`:
 
 | Workflow | Worker | Custom domain |
 |----------|--------|---------------|
 | `site-deploy.yml` | `bookclerk-site` | `<DOMAIN>` |
 | `diagnostics-collector-deploy.yml` | `bookclerk-diagnostics` | `diagnostics.<DOMAIN>` |
+| `demo-deploy.yml` | `bookclerk-demo` | `demo.<DOMAIN>` |
 
-`DOMAIN` is the organization variable (default `bookclerk.app` for the site). With `DOMAIN` unset the diagnostics collector is served on the account's workers.dev subdomain instead (see `docs/diagnostics.md`).
+`DOMAIN` is the organization variable (default `bookclerk.app` for the site). With `DOMAIN` unset the diagnostics collector and the demo are served on the account's workers.dev subdomain instead (see `docs/diagnostics.md` and `tools/demo/README.md`).
+
+The demo deploy builds the production builder and image from the deployed
+commit, then lets `wrangler deploy` build `packaging/demo/Dockerfile` on top
+of them and push it to Cloudflare's container registry. It runs when the demo
+changes on `main`, when a release is published, nightly, and on demand; a
+repository without the two Cloudflare secrets gets a notice instead of a
+failure.
 
 The API token is scoped to the Workers by name, so it needs, for each Worker
 the workflows deploy:
 
 - The **Workers** permission with the **Editor** role, scoped to
   *Individual Workers* and naming the Worker (`bookclerk-site`,
-  `bookclerk-diagnostics`). This is the current Workers permission; the
+  `bookclerk-diagnostics`, `bookclerk-demo`). This is the current Workers permission; the
   legacy *Workers Scripts: Edit* maps to Editor on all Workers, which is
   broader than the deploys need.
 - **Zone → Workers Routes → Edit** (Write in the API reference) on the
@@ -1037,6 +1077,12 @@ the workflows deploy:
   deploy creates the dashboard's `DASHBOARD_DB` database (no id in the
   binding), and every deploy applies its migrations with
   `wrangler d1 migrations apply`, so this one stays.
+- For `bookclerk-demo` only: **Account → D1 → Edit** for the same reasons
+  (its `DB` database); **Account → Containers → Edit**, since every deploy
+  pushes the image and updates the container application; and
+  **Account → Turnstile → Edit**, since every deploy finds or creates the
+  `bookclerk-demo` widget, keeps its hostnames current and reads its keys
+  (`tools/demo/scripts/worker-secrets.mjs`).
 
 Editor cannot create a Worker; creating one takes the **Admin** role on the
 Workers product. So the first deploy of a new Worker needs one of these:
@@ -1050,7 +1096,10 @@ Workers product. So the first deploy of a new Worker needs one of these:
 
 See [Workers roles and permissions](https://developers.cloudflare.com/workers/authorization/workers/).
 
-After that, only the two permissions above are needed. Renaming a Worker in
+After that, the two permissions above are enough, plus the per-Worker
+permissions listed for `bookclerk-diagnostics` and `bookclerk-demo` that
+every deploy uses (D1 for both; Containers and Turnstile for the demo).
+Renaming a Worker in
 `wrangler.toml` creates a new Worker, so it repeats this step and leaves the
 old one behind; keep the names as they are.
 
@@ -1061,6 +1110,7 @@ old one behind; keep the names as they are.
 | `docs/**` only | website + collector Workers (`site_test` only) | the site's link check covers the docs it publishes |
 | `tools/site/**` only | website + collector Workers (`site_test`, `site_audit`) | no Rust toolchain |
 | `tools/diagnostics-collector/**` only | website + collector Workers (`collector_test`) | no Rust toolchain |
+| `tools/demo/**` only | website + collector Workers (`demo_test`) | no Rust toolchain; `packaging/demo/**` selects nothing |
 | `README.md`, `AGENTS.md`, other top-level prose, `config/config.example.toml`, `scripts/tests/**` | none | the plan job runs the planner and lint tests on every event |
 | `ui/**` only | `fmt / clippy / docs` (UI + UI API docs) | no Rust toolchain checks |
 | `crates/bookclerk-cli/src/**` | check, test (`-p bookclerk-cli`), release (`bookclerk-cli`) | no postgres, no E2E |

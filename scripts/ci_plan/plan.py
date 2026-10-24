@@ -85,13 +85,21 @@ ABI_SYNC_PATHS = frozenset(
 )
 DOCS_PREFIX = "docs/"
 # The bookclerk.app website (Worker, generator and its tests), the brand
-# assets its build copies, and the diagnostics collector Worker.
+# assets its build copies, the diagnostics collector Worker and the hosted
+# demo Worker.
 SITE_PREFIX = "tools/site/"
 BRAND_PREFIX = "assets/brand/"
 COLLECTOR_PREFIX = "tools/diagnostics-collector/"
+DEMO_PREFIX = "tools/demo/"
+# Files outside tools/demo/ that its tests read: the route table must give
+# every operation in the daemon's OpenAPI document a verdict.
+DEMO_TEST_INPUTS = frozenset({"crates/bookclerkd/openapi.json"})
 # The production image and its build context. No PR check builds them; the
 # path-filtered `docker-image.yml` workflow does.
 DOCKER_IMAGE_PREFIX = "packaging/docker/"
+# The hosted demo's image, layered on the production image. No PR check
+# builds it; the path-filtered `demo-deploy.yml` workflow does.
+DEMO_IMAGE_PREFIX = "packaging/demo/"
 DOCKER_IMAGE_FILES = frozenset({".dockerignore"})
 # Prose outside `docs/` that no build, test or script reads.
 DOC_FILES = frozenset(
@@ -186,8 +194,8 @@ JOB_CHECKS: dict[str, tuple[str, ...]] = {
     "envelope": ("envelope",),
     # The Workers outside the Cargo workspace: the website's generator and
     # Worker tests, its Lighthouse and axe-core audit, and the diagnostics
-    # collector's tests. No Rust toolchain.
-    "site": ("site_test", "site_audit", "collector_test"),
+    # collector's tests and the hosted demo Worker's tests. No Rust toolchain.
+    "site": ("site_test", "site_audit", "collector_test", "demo_test"),
 }
 CHECK_JOB = {check: job for job, checks in JOB_CHECKS.items() for check in checks}
 ALL_CHECKS = tuple(CHECK_JOB)
@@ -643,6 +651,7 @@ class _Surfaces:
         self.abi: list[str] = []
         self.site: list[str] = []
         self.collector: list[str] = []
+        self.demo: list[str] = []
         self.docs: list[str] = []
         self.e2e_full: list[str] = []
         self.e2e_ids: dict[str, str] = {}
@@ -753,6 +762,14 @@ def build_plan(
             classified = True
         if path.startswith(COLLECTOR_PREFIX):
             surf.collector.append(path)
+            classified = True
+        if path.startswith(DEMO_PREFIX):
+            surf.demo.append(path)
+            classified = True
+        if path in DEMO_TEST_INPUTS:
+            # Also a bookclerkd file, classified with its package above.
+            surf.demo.append(path)
+        if path.startswith(DEMO_IMAGE_PREFIX):
             classified = True
         if path.startswith(DOCKER_IMAGE_PREFIX) or path in DOCKER_IMAGE_FILES:
             classified = True
@@ -901,6 +918,8 @@ def _select_checks(
         _select(plan, "site_audit", site_why)
     if surf.collector:
         _select(plan, "collector_test", [f"path {p}" for p in surf.collector])
+    if surf.demo:
+        _select(plan, "demo_test", [f"path {p}" for p in surf.demo])
 
     ui_why = [f"path {p}" for p in surf.ui]
     if UI_HOST_PACKAGE in compiled:

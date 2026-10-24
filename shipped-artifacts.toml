@@ -64,6 +64,12 @@ ecosystem = "other"
 package = "bookclerk-diagnostics"
 version = "release-tag"
 
+[artifacts.demo]
+title = "Hosted demo Worker"
+ecosystem = "other"
+package = "bookclerk-demo"
+version = "release-tag"
+
 # Which lockfile entries each artifact contains, and how that is proven:
 #
 #   cargo       - the dependency closure of `roots` in `cargo metadata`:
@@ -114,6 +120,11 @@ evidence = "npm"
 [[shipped]]
 artifact = "diagnostics-collector"
 lockfile = "tools/diagnostics-collector/package-lock.json"
+evidence = "npm"
+
+[[shipped]]
+artifact = "demo"
+lockfile = "tools/demo/package-lock.json"
 evidence = "npm"
 
 [[shipped]]

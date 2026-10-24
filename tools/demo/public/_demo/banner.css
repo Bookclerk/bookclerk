@@ -1,0 +1,30 @@
+/* The bar the demo Worker adds to the top of the app (banner.js). */
+#bookclerk-demo-banner {
+  position: sticky;
+  top: 0;
+  z-index: 2147483000;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 8px 16px;
+  background: #0b3553;
+  color: #f3e5c6;
+  font: 15px/1.4 "Segoe UI", Candara, system-ui, sans-serif;
+}
+#bookclerk-demo-banner strong { font-weight: 600; }
+#bookclerk-demo-banner .demo-spacer { flex: 1 1 auto; }
+#bookclerk-demo-banner a,
+#bookclerk-demo-banner button {
+  font: inherit;
+  color: #0b3553;
+  background: #f3e5c6;
+  border: 0;
+  border-radius: 6px;
+  padding: 4px 12px;
+  text-decoration: none;
+  cursor: pointer;
+}
+#bookclerk-demo-banner a:focus-visible,
+#bookclerk-demo-banner button:focus-visible { outline: 2px solid #5aa8a2; outline-offset: 2px; }
+#bookclerk-demo-banner form { margin: 0; }
