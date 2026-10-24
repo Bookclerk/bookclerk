@@ -317,13 +317,42 @@ export async function membershipRole(cfg, user, now) {
     `${API}/orgs/${cfg.owner}/memberships/${encodeURIComponent(user.login)}`,
     { headers: apiHeaders(token) },
   );
-  if (res.status === 404) {
+  const body = res.status === 404 || !res.ok ? "" : await res.text().catch(() => "");
+  return membershipDecision(res.status, body, user, cfg.owner);
+}
+
+/**
+ * Decides, from GitHub's answer to the organization membership request,
+ * whether a user may use the dashboard and with which role. Sans-IO, so the
+ * fuzzer drives the same code sign-in does.
+ *
+ * @param {number} status HTTP status of `GET /orgs/{owner}/memberships/{login}`.
+ * @param {string} body Response body text (read only for a 2xx status).
+ * @param {{id: number, login: string}} user Signed-in user from `GET /user`.
+ * @param {string} owner Repository owner (organization or user login).
+ * @returns {"admin" | "member" | null} Role, or null when not an active
+ *   member: a 404 passes only the owner itself (a user-owned repository);
+ *   a 2xx passes only an `active` membership for the same user id, as
+ *   "admin" exactly when GitHub says `role: "admin"`.
+ * @throws {Error} For any other status, so an outage or permission problem
+ *   is not reported as "not a member".
+ */
+export function membershipDecision(status, body, user, owner) {
+  if (status === 404) {
     // Not a member, or the owner is a user account.
-    return user.login.toLowerCase() === cfg.owner.toLowerCase() ? "admin" : null;
+    return typeof user?.login === "string" && typeof owner === "string" && user.login.toLowerCase() === owner.toLowerCase()
+      ? "admin"
+      : null;
   }
-  if (!res.ok) throw new Error(`membership check failed: HTTP ${res.status}`);
-  const m = await res.json().catch(() => null);
-  if (!m || m.state !== "active" || m.user?.id !== user.id) return null;
+  if (!(status >= 200 && status < 300)) throw new Error(`membership check failed: HTTP ${status}`);
+  let m;
+  try {
+    m = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (m === null || typeof m !== "object" || m.state !== "active") return null;
+  if (!Number.isSafeInteger(user?.id) || user.id <= 0 || m.user?.id !== user.id) return null;
   return m.role === "admin" ? "admin" : "member";
 }
 

@@ -329,12 +329,14 @@ non-Rust tooling (decision 6):
   report page's event log (`eventLog` in `dashboard/pages.js`), which renders
   stored events; the session check (`sessionToken` and `memberFromRow` in
   `dashboard/session.js`), which decides whether a request is signed in and
-  as whom; and
-  the sign-in callback check (`parseCallback` in `dashboard/auth.js`), which
-  decides from the callback query and cookies whether a code is traded with
-  GitHub. `tools/diagnostics-collector/dashboard-input.fuzz.test.js` replays
+  as whom; the sign-in callback check (`parseCallback` in
+  `dashboard/auth.js`), which decides from the callback query and cookies
+  whether a code is traded with GitHub; and the membership decision
+  (`membershipDecision` in `dashboard/github.js`), which decides from
+  GitHub's membership answer whether sign-in grants member or owner access. `tools/diagnostics-collector/dashboard-input.fuzz.test.js` replays
   their seed corpora (`tools/diagnostics-collector/corpus/report_ids/`,
-  `corpus/signature/`, `corpus/oauth_callback/`, `corpus/session/`) and runs seeded mutation
+  `corpus/signature/`, `corpus/oauth_callback/`, `corpus/session/`,
+  `corpus/membership/`) and runs seeded mutation
   fuzzing on every PR, checking results against independent oracles (IDs
   re-derived by a separate walk, all UUIDs present in the body, capped; level
   counts recounted, a signature exactly when an error or warning exists,
@@ -343,7 +345,9 @@ non-Rust tooling (decision 6):
   cookie walk finds a well-formed one, and a member only for a live row with
   a valid id and login, admin only when the row says so; a callback accepted exactly when a separate
   cookie walk finds a state that matches the query and well-formed code and
-  verifier, returning those values).
+  verifier, returning those values; membership granted only for an active
+  membership with the same user id, or a 404 for the owner itself, admin
+  only when GitHub says so, and an error for any other failed status).
 - The website Worker's `Accept-Encoding` parser (`pickEncoding` in
   `tools/site/worker.js`), which picks the response's content coding.
   `tools/site/fuzz.test.mjs` replays its seed corpus

@@ -1,0 +1,1 @@
+{"status": 200, "body": "{\"state\": \"active\", \"role\": \"admin\", \"user\": {\"id\": \"7\"}}", "user": {"id": 7, "login": "octo"}, "owner": "Bookclerk"}

@@ -12,6 +12,8 @@
 // - parseCallback reads the sign-in callback's query and cookies, which
 //   anyone can send; its result decides whether a code is traded with
 //   GitHub.
+// - membershipDecision reads GitHub's organization membership answer; its
+//   result decides whether sign-in grants member or owner access.
 //
 // Each result is checked against an independent oracle written without the
 // module's own helpers.
@@ -20,6 +22,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { MAX_CODE_CHARS, OAUTH_COOKIE, parseCallback } from "./dashboard/auth.js";
+import { membershipDecision } from "./dashboard/github.js";
 import { eventLog } from "./dashboard/pages.js";
 import { memberFromRow, SESSION_COOKIE, sessionToken } from "./dashboard/session.js";
 import { FALLBACK_MARKER, MAX_IDS_PER_ISSUE, TRIAGE_MARKER, parseIssueReportIds } from "./dashboard/report-ids.js";
@@ -298,6 +301,89 @@ describe("session decision", () => {
         input.now = Math.floor((rand() - 0.25) * 4000);
       }
       checkSession(input, `iteration ${n}: ${JSON.stringify(input).slice(0, 300)}`);
+    }
+  });
+});
+
+/**
+ * Oracle for membershipDecision: the access rules restated. A 404 passes
+ * only the owner itself; another non-2xx throws; a 2xx passes only a JSON
+ * object with `state: "active"` whose `user.id` is the signed-in user's
+ * positive integer id, as admin exactly when `role` is "admin".
+ *
+ * @param {{status: number, body: string, user: unknown, owner: unknown}} input Decision inputs.
+ * @param {string} label Input name for failure messages.
+ */
+function checkMembership(input, label) {
+  const { status, body, user, owner } = input;
+  const login = user !== null && typeof user === "object" ? user.login : undefined;
+  const id = user !== null && typeof user === "object" ? user.id : undefined;
+  let expected;
+  if (status === 404) {
+    expected = typeof login === "string" && typeof owner === "string" && login.toLowerCase() === owner.toLowerCase() ? "admin" : null;
+  } else if (typeof status !== "number" || status < 200 || status > 299) {
+    assert.throws(() => membershipDecision(status, body, user, owner), label);
+    return;
+  } else {
+    let m = null;
+    try {
+      m = JSON.parse(body);
+    } catch {
+      m = null;
+    }
+    const ok =
+      m !== null &&
+      typeof m === "object" &&
+      m.state === "active" &&
+      typeof id === "number" &&
+      Number.isInteger(id) &&
+      id > 0 &&
+      id <= Number.MAX_SAFE_INTEGER &&
+      m.user !== null &&
+      typeof m.user === "object" &&
+      m.user.id === id;
+    expected = ok ? (m.role === "admin" ? "admin" : "member") : null;
+  }
+  assert.equal(membershipDecision(status, body, user, owner), expected, label);
+}
+
+const MEMBERSHIP_FRAGMENTS = [
+  '"active"', '"pending"', '"admin"', '"member"', '"state":', '"role":', '"user":', '"id":', "7", "8", "-7", "0", "1e400",
+  "null", "{}", "[]", ",", ":", '"', "{", "}", "Bookclerk", "octo", "OCTO", "é", " ",
+];
+
+describe("membership decision", () => {
+  it("replays the seed corpus", () => {
+    const all = seeds("membership");
+    assert.ok(all.length > 0);
+    for (const [name, raw] of all) checkMembership(JSON.parse(raw), name);
+    const admin = JSON.parse(all.find(([n]) => n === "active_admin.json")[1]);
+    assert.equal(membershipDecision(admin.status, admin.body, admin.user, admin.owner), "admin");
+  });
+
+  it("holds the oracle under seeded mutation", () => {
+    const all = seeds("membership").map(([, raw]) => JSON.parse(raw));
+    const rand = rng(20261028);
+    const statuses = [200, 201, 204, 299, 300, 301, 401, 403, 404, 422, 500, 0, -1, 404.5];
+    for (let n = 0; n < 4000; n++) {
+      const base = all[Math.floor(rand() * all.length)];
+      const input = { ...base };
+      const pick = rand();
+      if (pick < 0.5) {
+        input.body = mutate(rand, base.body, MEMBERSHIP_FRAGMENTS);
+      } else if (pick < 0.75) {
+        const text = mutate(rand, JSON.stringify(base.user), MEMBERSHIP_FRAGMENTS);
+        try {
+          input.user = JSON.parse(text);
+        } catch {
+          input.user = text;
+        }
+      } else if (pick < 0.9) {
+        input.status = statuses[Math.floor(rand() * statuses.length)];
+      } else {
+        input.owner = mutate(rand, base.owner, MEMBERSHIP_FRAGMENTS);
+      }
+      checkMembership(input, `iteration ${n}: ${JSON.stringify(input).slice(0, 300)}`);
     }
   });
 });
