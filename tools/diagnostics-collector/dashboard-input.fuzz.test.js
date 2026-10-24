@@ -27,7 +27,13 @@
 //   report viewing downloads and where reindexing continues.
 // - decodePullRequests reads the GraphQL answer about each issue's labels
 //   and pull requests; its result decides whether the sync drops an issue
-//   or replaces its stored pull request links.
+//   or replaces its stored pull request links, and which merge commit the
+//   fixed-in lookup compares against release tags.
+// - fixedInLabel reads an issue's labels (people with triage rights can add
+//   them); its result overrides the version an issue was fixed in.
+// - decodeReleases and decodeCompare read GitHub's release list and compare
+//   answers; their results decide which release an issue's fix is recorded
+//   under, and so which reports count as regressions.
 //
 // Each result is checked against an independent oracle written without the
 // module's own helpers.
@@ -39,7 +45,10 @@ import { DEFAULT_NEXT, MAX_CODE_CHARS, MAX_NEXT_CHARS, OAUTH_COOKIE, parseCallba
 import {
   DIAGNOSTICS_LABEL,
   decodeAccessToken,
+  decodeCompare,
   decodeIssue,
+  decodeReleases,
+  fixedInLabel,
   parseIssueNotify,
   oauthErrorCode,
   decodeInstallationId,
@@ -521,7 +530,8 @@ describe("membership decision", () => {
  * each other issue is labeled unless its complete label list (no next page)
  * lacks `diagnostics` (any case), with one entry per positive integer pull request number in
  * this repository with a known state, the timeline's last word winning,
- * string fields only.
+ * string fields only, and a merge commit only for a merged pull request
+ * whose oid is 40 lowercase hex characters.
  *
  * @param {{data: unknown, numbers: number[], repository: string}} input Decoder inputs.
  * @param {string} label Input name for failure messages.
@@ -549,7 +559,9 @@ function checkPullRequests(input, label) {
       if (where.toLowerCase() !== repository.toLowerCase()) return;
       if (typeof pr.state !== "string" || !states.has(pr.state)) return;
       const t = Date.parse(str(pr.mergedAt));
-      prs.set(pr.number, { number: pr.number, title: str(pr.title).slice(0, 300), state: states.get(pr.state), mergedAt: Number.isNaN(t) ? null : t });
+      const oid = isObj(pr.mergeCommit) ? str(pr.mergeCommit.oid) : "";
+      const sha = pr.state === "MERGED" && oid.length === 40 && [...oid].every((c) => "0123456789abcdef".includes(c)) ? oid : null;
+      prs.set(pr.number, { number: pr.number, title: str(pr.title).slice(0, 300), state: states.get(pr.state), mergedAt: Number.isNaN(t) ? null : t, mergeSha: sha });
     };
     const nodes = (v) => (isObj(v) && Array.isArray(v.nodes) ? v.nodes : []);
     for (const pr of nodes(issue.closedByPullRequestsReferences)) consider(pr);
@@ -568,6 +580,7 @@ function checkPullRequests(input, label) {
 const PR_FRAGMENTS = [
   '"OPEN"', '"CLOSED"', '"MERGED"', '"__proto__"', '"diagnostics"', '"DIAGNOSTICS"', '"Bookclerk/bookclerk"', '"other/repo"',
   '"number":', '"state":', '"nodes":', '"errors":', '"repository":', '"mergedAt":', '"2026-10-20T00:00:00Z"', '"toString"',
+  '"mergeCommit":', '"oid":', '"' + "a".repeat(40) + '"', '"' + "A".repeat(40) + '"', '"abc"',
   "null", "{}", "[]", "0", "-1", "1e400", "9007199254740993", '"5"', ",", ":", "{", "}", "[", "]", '"',
   '"hasNextPage":', "true", "false",
 ];
@@ -685,10 +698,93 @@ function checkIssuePage(data, label) {
       created_at: str(i.created_at),
       updated_at: str(i.updated_at),
       closed_at: typeof i.closed_at === "string" ? i.closed_at : null,
+      fixed_in_label: expectedFixedIn(i.labels),
     });
   }
   assert.deepEqual(got, { issues, full: list.length >= 100, newest: newest === null ? "" : new Date(newest).toISOString() }, label);
 }
+
+/**
+ * Oracle for fixedInLabel: the first label (a string, or an object's string
+ * `name`) of at most 100 characters that is `fixed-in:` followed by an
+ * optional `v` and `N.N.N` (each number 1 to 6 digits), then optionally
+ * `-` and 1 to 64 identifier characters, then optionally `+` and 1 to 64,
+ * giving the part after the `v`.
+ *
+ * @param {unknown} labels Labels as GitHub lists them.
+ * @returns {string | null} Expected version.
+ */
+function expectedFixedIn(labels) {
+  if (!Array.isArray(labels)) return null;
+  const ident = (t) => t.length >= 1 && t.length <= 64 && [...t].every((c) => /[0-9A-Za-z.-]/.test(c));
+  const num = (t) => t.length >= 1 && t.length <= 6 && [...t].every((c) => c >= "0" && c <= "9");
+  for (const l of labels) {
+    const name = typeof l === "string" ? l : l !== null && typeof l === "object" && typeof l.name === "string" ? l.name : "";
+    if (name.length > 100 || !name.startsWith("fixed-in:")) continue;
+    let v = name.slice("fixed-in:".length);
+    if (v.startsWith("v")) v = v.slice(1);
+    const plus = v.indexOf("+");
+    const build = plus >= 0 ? v.slice(plus + 1) : null;
+    const beforeBuild = plus >= 0 ? v.slice(0, plus) : v;
+    const dash = beforeBuild.indexOf("-");
+    const pre = dash >= 0 ? beforeBuild.slice(dash + 1) : null;
+    const core = dash >= 0 ? beforeBuild.slice(0, dash) : beforeBuild;
+    const parts = core.split(".");
+    const ok = parts.length === 3 && parts.every(num) && (pre === null || ident(pre)) && (build === null || ident(build));
+    if (ok) return v;
+  }
+  return null;
+}
+
+/**
+ * Oracle for decodeReleases: never throws; keeps, oldest first (ties by
+ * tag), one entry per tag for the objects that are not drafts, whose
+ * `tag_name` is 1 to 100 characters of letters, digits, `.`, `_` or `-`,
+ * and whose `published_at` is a string the Date parser accepts; prerelease
+ * only when exactly true.
+ *
+ * @param {unknown} data Parsed body.
+ * @param {string} label Failure label.
+ */
+function checkReleases(data, label) {
+  const got = decodeReleases(data);
+  const seen = new Set();
+  const expected = [];
+  for (const r of Array.isArray(data) ? data : []) {
+    if (r === null || typeof r !== "object" || r.draft === true) continue;
+    const tag = typeof r.tag_name === "string" ? r.tag_name : "";
+    if (tag.length < 1 || tag.length > 100 || ![...tag].every((c) => /[A-Za-z0-9._-]/.test(c)) || seen.has(tag)) continue;
+    const t = typeof r.published_at === "string" ? new Date(r.published_at).getTime() : NaN;
+    if (Number.isNaN(t)) continue;
+    seen.add(tag);
+    expected.push({ tag, publishedAt: t, prerelease: r.prerelease === true });
+  }
+  expected.sort((a, b) => a.publishedAt - b.publishedAt || (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0));
+  assert.deepEqual(got, expected, label);
+}
+
+/**
+ * Oracle for decodeCompare: true for status `identical` or `behind`, false
+ * for `ahead` or `diverged`, null for anything else.
+ *
+ * @param {unknown} data Parsed body.
+ * @param {string} label Failure label.
+ */
+function checkCompare(data, label) {
+  const status = data !== null && typeof data === "object" && typeof data.status === "string" ? data.status : "";
+  const expected = { identical: true, behind: true, ahead: false, diverged: false }[status];
+  assert.equal(decodeCompare(data), expected === undefined ? null : expected, label);
+}
+
+const RELEASE_FRAGMENTS = [
+  '"tag_name":', '"published_at":', '"draft":', '"prerelease":', '"status":', '"behind"', '"ahead"', '"identical"', '"diverged"',
+  '"v0.4.0"', '"0.4.0-rc.1"', '"release/x"', '"2026-10-21T00:00:00Z"', '"zzz"', "true", "false", "null", "{}", "[]", "0", ",", ":", "{", "}", "[", "]", '"', "é",
+];
+
+const LABEL_FRAGMENTS = [
+  '"fixed-in:', '"fixed-in:v0.4.2"', '"fixed-in:0.4.2-rc.1+build.7"', '"fixed-in:1.2"', '"fixed-in:v"', '"diagnostics"', '"name":', '"labels":',
+  "0", "1234567", ".", "-", "+", "v", "é", "null", "{}", "[]", ",", ":", "{", "}", "[", "]", '"',
+];
 
 /**
  * Oracle for the sign-in and token decoders, by kind.
@@ -731,6 +827,7 @@ function checkAuthResponse(input, label) {
 const REST_FRAGMENTS = [
   '"number":', '"state":', '"closed"', '"open"', '"pull_request":', '"updated_at":', '"2026-10-21T00:00:00Z"', '"9999-99-99"', '"zzz"',
   '"title":', '"body":', '"id":', '"login":', '"token":', '"expires_at":', '"access_token":', '"octo"', '"a b"', '""',
+  '"labels":', '"name":', '"fixed-in:v0.4.2"', '"fixed-in:0.4"',
   "null", "{}", "[]", "0", "-1", "7.5", "1e400", "9007199254740993", ",", ":", "{", "}", "[", "]", '"', "é",
 ];
 
@@ -761,6 +858,54 @@ describe("GitHub REST decoding", () => {
     assert.ok(auth.length > 0);
     for (const [name, raw] of auth) checkAuthResponse(JSON.parse(raw), name);
     assert.deepEqual(decodeUser(JSON.parse(auth.find(([n]) => n === "user.json")[1]).data), { id: 7, login: "octo" });
+    const labeled = decodeIssuePage(JSON.parse(pages.find(([n]) => n === "labels.json")[1])).issues;
+    assert.deepEqual(labeled.map((i) => i.fixed_in_label), ["0.4.2", "0.4.2-rc.1+build.7", null, null]);
+    const releases = seeds("releases");
+    assert.ok(releases.length > 0);
+    for (const [name, raw] of releases) checkReleases(JSON.parse(raw), name);
+    assert.deepEqual(decodeReleases(JSON.parse(releases.find(([n]) => n === "normal.json")[1])).map((r) => r.tag), ["v0.3.2", "v0.4.0-rc.1", "v0.4.0"]);
+    const compares = seeds("compare");
+    assert.ok(compares.length > 0);
+    for (const [name, raw] of compares) checkCompare(JSON.parse(raw), name);
+    assert.equal(decodeCompare(JSON.parse(compares.find(([n]) => n === "behind.json")[1])), true);
+  });
+
+  it("holds the release, compare and label oracles under seeded mutation", () => {
+    const releases = seeds("releases").map(([, raw]) => JSON.parse(raw));
+    const compares = seeds("compare").map(([, raw]) => JSON.parse(raw));
+    const labels = [["diagnostics", "fixed-in:v0.4.2"], [{ name: "fixed-in:0.4.2-rc.1+build.7" }, { name: "bug" }], [{ name: "fixed-in:1.2" }], ["fixed-in:v1.2.3.4"], [{ name: `fixed-in:1.0.0-${"a".repeat(64)}` }]];
+    const rand = rng(20261101);
+    for (let n = 0; n < 3000; n++) {
+      const pick = rand();
+      if (pick < 0.4) {
+        const text = mutate(rand, JSON.stringify(releases[Math.floor(rand() * releases.length)]), RELEASE_FRAGMENTS);
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch {
+          data = text;
+        }
+        checkReleases(data, `releases ${n}: ${text.slice(0, 300)}`);
+      } else if (pick < 0.6) {
+        const text = mutate(rand, JSON.stringify(compares[Math.floor(rand() * compares.length)]), RELEASE_FRAGMENTS);
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch {
+          data = text;
+        }
+        checkCompare(data, `compare ${n}: ${text.slice(0, 300)}`);
+      } else {
+        const text = mutate(rand, JSON.stringify(labels[Math.floor(rand() * labels.length)]), LABEL_FRAGMENTS);
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch {
+          data = text;
+        }
+        assert.equal(fixedInLabel(data), expectedFixedIn(data), `labels ${n}: ${text.slice(0, 300)}`);
+      }
+    }
   });
 
   it("holds the oracles under seeded mutation", () => {

@@ -54,6 +54,17 @@ describe("versionAcceptable", () => {
     assert.equal(versionAcceptable("unknown", baseline), false);
   });
 
+  it("orders prerelease identifiers per semver, not as strings", () => {
+    assert.equal(compareSemver("0.9.2-rc.10", "0.9.2-rc.2"), 1);
+    assert.equal(compareSemver("0.9.2-rc.2", "0.9.2-rc.10"), -1);
+    assert.equal(compareSemver("0.9.2-rc.1", "0.9.2-rc.1"), 0);
+    assert.equal(compareSemver("0.9.2-alpha", "0.9.2-alpha.1"), -1);
+    assert.equal(compareSemver("0.9.2-alpha.1", "0.9.2-alpha.beta"), -1);
+    assert.equal(compareSemver("0.9.2-beta.11", "0.9.2-rc.1"), -1);
+    assert.equal(compareSemver("0.9.2-rc.1", "0.9.2"), -1);
+    assert.equal(compareSemver("0.9.2-rc.10+build.3", "0.9.2-rc.9"), 1);
+  });
+
   it("does not treat 1.2.30 as a packaging derivative of 1.2.3", () => {
     assert.equal(isPackagingDerivative("1.2.30", "1.2.3"), false);
     assert.equal(compareSemver("1.2.30", "1.2.3"), 1);
