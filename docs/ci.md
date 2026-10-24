@@ -331,6 +331,15 @@ non-Rust tooling (decision 6):
   oracle (a refusal has a cause; an admitted prompt is the re-serialized
   batch, fits the size cap and context window, and its reservation covers the
   call's worst case).
+- The collector's ingest cursor body (`parseCursor` in
+  `tools/diagnostics-collector/ingest-cursor.js`), which `POST /report/cursor`
+  stores and which decides where the next ingest run starts.
+  `tools/diagnostics-collector/ingest-cursor.fuzz.test.js` replays its seed
+  corpus (`tools/diagnostics-collector/corpus/ingest_cursor/`) and runs seeded
+  mutation fuzzing on every PR, checking each result against an independent
+  oracle (a cursor exactly when the body is a JSON object whose `since` is a
+  safe non-negative integer and whose `after`, absent or null meaning empty,
+  is a string of at most 1,024 characters with no control characters).
 - The member dashboard's readers of untrusted text: the issue-body
   Report IDs parser (`parseIssueReportIds` in
   `tools/diagnostics-collector/dashboard/report-ids.js`), which decides which

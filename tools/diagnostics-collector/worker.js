@@ -2,8 +2,11 @@
  * Bookclerk diagnostics Worker (deployed via GitHub Actions + wrangler-action).
  *
  * POST /submit  — clients send redacted JSON; validated + enriched → B2
- * GET  /report  — GitHub Action pulls new objects since `since` (secret key);
- *                 with `unfiled=1` it skips reports an issue already lists
+ * GET  /report  — GitHub Action pulls new objects since `since`, or since the
+ *                 stored cursor with `cursor=stored` (secret key); with
+ *                 `unfiled=1` it skips reports an issue already lists
+ * POST /report/cursor — GitHub Action stores where its last pull ended
+ *                 (secret key; see ingest-cursor.js)
  * POST /triage  — GitHub Action sends the sanitized batch; Workers AI returns
  *                 an issue plan, under a daily neuron budget (secret key; see
  *                 triage.js)
@@ -21,7 +24,8 @@
  *
  * Secrets (set by deploy workflow from GitHub secrets):
  *   B2_KEY_ID, B2_APPLICATION_KEY, B2_BUCKET_ID
- *   REPORT_API_KEY          — required for /report and /triage
+ *   REPORT_API_KEY          — required for /report, /report/cursor, /triage
+ *                             and /issues/notify
  *   CLIENT_IP_HASH_SALT     — optional; enables hashed client IP in enrichment
  *   GITHUB_TOKEN            — optional; higher GitHub API rate limits
  *   GITHUB_APP_CLIENT_ID, GITHUB_APP_CLIENT_SECRET, GITHUB_APP_PRIVATE_KEY
@@ -52,6 +56,7 @@ import {
   dashboardIssueNotify,
   dashboardScheduled,
 } from "./dashboard/routes.js";
+import { MAX_CURSOR_CHARS, commitCursor, parseCursor, readCursor } from "./ingest-cursor.js";
 import { handleTriage, readCapped } from "./triage.js";
 import {
   extractVersionFromKey,
@@ -187,6 +192,13 @@ export default {
         return await handleReport(request, env, url);
       }
 
+      if (request.method === "POST" && path === "/report/cursor") {
+        if (!requireReportAuth(request, env)) {
+          return json({ error: "unauthorized" }, 401);
+        }
+        return await handleCursorCommit(request, env);
+      }
+
       if (request.method === "POST" && path === "/issues/notify") {
         if (!requireReportAuth(request, env)) {
           return json({ error: "unauthorized" }, 401);
@@ -232,6 +244,26 @@ function b2Access(env) {
     downloadById: (auth, fileId) => b2DownloadById(auth, fileId),
     bucketId: env.B2_BUCKET_ID,
   };
+}
+
+/**
+ * `POST /report/cursor`: the ingest Action stores the cursor its last pull
+ * ended at, so the next run starts there. A cursor earlier than the stored
+ * one (a forced full pull) leaves it as is.
+ *
+ * @param {Request} request Authenticated request with body
+ *   `{"since": <ms>, "after": "<object name>"}`.
+ * @param {Record<string, any>} env Worker bindings.
+ * @returns {Promise<Response>} 200 with the stored cursor, 400 for a
+ *   malformed body, or 503 without the DASHBOARD_DB binding.
+ */
+async function handleCursorCommit(request, env) {
+  const text = await readCapped(request, MAX_CURSOR_CHARS);
+  const next = text === null ? null : parseCursor(text);
+  if (next === null) return json({ error: "expected {\"since\": <ms>, \"after\": \"<name>\"}" }, 400);
+  if (!env.DASHBOARD_DB) return json({ error: "no DASHBOARD_DB binding to store the cursor in" }, 503);
+  const { advanced, cursor } = await commitCursor(env.DASHBOARD_DB, next);
+  return json({ ok: true, advanced, since: cursor.since, after: cursor.after });
 }
 
 /**
@@ -331,16 +363,26 @@ async function handleReport(request, env, url) {
     return json({ error: "unauthorized" }, 401);
   }
 
-  const sinceRaw = url.searchParams.get("since");
-  const since = sinceRaw != null && sinceRaw !== "" ? Number(sinceRaw) : 0;
-  if (!Number.isFinite(since) || since < 0) {
-    return json({ error: "invalid since" }, 400);
+  let since;
+  let afterName;
+  let cursorSource;
+  if (url.searchParams.get("cursor") === "stored" && !url.searchParams.has("since")) {
+    if (!env.DASHBOARD_DB) return json({ error: "no DASHBOARD_DB binding holding a cursor" }, 503);
+    ({ since, after: afterName } = await readCursor(env.DASHBOARD_DB));
+    cursorSource = "stored";
+  } else {
+    const sinceRaw = url.searchParams.get("since");
+    since = sinceRaw != null && sinceRaw !== "" ? Number(sinceRaw) : 0;
+    if (!Number.isFinite(since) || since < 0) {
+      return json({ error: "invalid since" }, 400);
+    }
+    // Secondary cursor: exclusive fileName within the same uploadTimestamp as `since`.
+    afterName = url.searchParams.get("after") || "";
+    cursorSource = "query";
   }
-  // Secondary cursor: exclusive fileName within the same uploadTimestamp as `since`.
-  const afterName = url.searchParams.get("after") || "";
   // Reports an issue already lists are passed over (and the cursor moves past
-  // them) so a lost or reset cursor cannot file them a second time. Off when
-  // the dashboard database is not bound: nothing records the links then.
+  // them) so a re-pull cannot file them a second time. Off when the dashboard
+  // database is not bound: nothing records the links then.
   const filed = url.searchParams.get("unfiled") === "1" ? await dashboardFiledReportIds(env) : null;
 
   // Optional override for tests/ops; otherwise resolve latest stable from GitHub.
@@ -416,6 +458,7 @@ async function handleReport(request, env, url) {
     ok: true,
     since,
     after: afterName,
+    cursor_source: cursorSource,
     next_since: advanced ? maxTs : since,
     next_after: advanced ? nextAfter : afterName,
     count: reports.length,

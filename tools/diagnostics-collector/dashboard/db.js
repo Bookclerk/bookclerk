@@ -208,10 +208,14 @@ export function reportWhere(since, f = {}) {
   return { where: clauses.join(" AND "), params };
 }
 
-/** Columns for a report row with its newest linked issue. */
+/**
+ * Columns for a report row with its newest linked issue and how many issues
+ * list it in all, so a list can show that older issues exist too.
+ */
 const REPORT_COLUMNS = `r.report_id, r.object_key, r.received_at, r.version, r.os, r.arch, r.distro,
   r.trigger, r.events, r.errors, r.warnings, r.signature, r.signature_label, r.install_hash,
-  i.number AS issue_number, i.state AS issue_state`;
+  i.number AS issue_number, i.state AS issue_state,
+  (SELECT COUNT(*) FROM report_issue rc WHERE rc.report_id = r.report_id) AS issue_count`;
 
 /** Join to the newest issue that lists a report. */
 const ISSUE_JOIN = `LEFT JOIN issues i ON i.number = (
