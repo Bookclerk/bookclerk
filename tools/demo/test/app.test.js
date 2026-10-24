@@ -269,6 +269,8 @@ describe("a running session", () => {
           Cookie: `${cookie}; bookclerk_portal_session=${"p".repeat(64)}; __Secure-x=1`,
           Origin: ORIGIN,
           Authorization: "Bearer visitor-guess",
+          Forwarded: "for=127.0.0.1",
+          "X-Real-IP": "127.0.0.1",
           "Content-Type": "application/json",
         },
         body: "{}",
@@ -281,6 +283,8 @@ describe("a running session", () => {
     assert.equal(sent.headers.get("Cookie"), `bookclerk_portal_session=${"p".repeat(64)}`);
     assert.equal(sent.headers.get("Authorization"), null);
     assert.equal(sent.headers.get("Origin"), null);
+    assert.equal(sent.headers.get("Forwarded"), null);
+    assert.equal(sent.headers.get("X-Real-IP"), null);
     assert.equal(res.headers.get("X-Frame-Options"), "DENY");
   });
 

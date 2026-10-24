@@ -314,7 +314,21 @@ async function proxy(request, url, env, deps, id) {
     }
   }
   const forwarded = new Request(request);
-  for (const h of ["Authorization", "Origin", "Referer", "Cookie", "CF-Connecting-IP", "X-Forwarded-For"]) {
+  // The visitor's IP never reaches the container, and nothing the visitor
+  // sends can claim one for them.
+  for (const h of [
+    "Authorization",
+    "Origin",
+    "Referer",
+    "Cookie",
+    "CF-Connecting-IP",
+    "True-Client-IP",
+    "Forwarded",
+    "X-Forwarded-For",
+    "X-Forwarded-Host",
+    "X-Forwarded-Proto",
+    "X-Real-IP",
+  ]) {
     forwarded.headers.delete(h);
   }
   const cookies = cookiesForContainer(request.headers.get("Cookie"));
