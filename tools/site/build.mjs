@@ -1,8 +1,9 @@
 // Builds the static bookclerk.app website into dist/.
 //
-// The site is plain HTML and CSS with no client-side scripts. Its npm
-// packages are markdown-it (render.mjs, bundled into the Worker) and
-// wrangler. Beside the pages it writes what search engines, link previews and
+// The site is plain HTML and CSS with no client-side scripts of its own (the
+// edge adds Cloudflare's Web Analytics beacon; see SECURITY_HEADERS in
+// worker.js). Its npm packages are markdown-it (render.mjs, bundled into the
+// Worker) and wrangler. Beside the pages it writes what search engines, link previews and
 // agents read: canonical and Open Graph tags, JSON-LD, sitemap.xml,
 // robots.txt and llms.txt / llms-full.txt.
 //

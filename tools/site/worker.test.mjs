@@ -232,6 +232,23 @@ test("the Worker sends the same security headers as src/_headers", () => {
   assert.deepEqual(fromFile, SECURITY_HEADERS);
 });
 
+test("the CSP lets only Cloudflare's analytics beacon run and report", () => {
+  const directives = Object.fromEntries(
+    SECURITY_HEADERS["Content-Security-Policy"].split(";").map((d) => {
+      const [name, ...sources] = d.trim().split(/\s+/);
+      return [name, sources];
+    }),
+  );
+  assert.deepEqual(directives["default-src"], ["'none'"]);
+  assert.deepEqual(directives["script-src"], ["https://static.cloudflareinsights.com"]);
+  assert.deepEqual(directives["connect-src"], ["'self'", "https://cloudflareinsights.com"]);
+  assert.equal(directives["script-src-attr"], undefined);
+  for (const [name, sources] of Object.entries(directives)) {
+    if (name === "script-src" || name === "connect-src") continue;
+    for (const source of sources) assert.ok(source.startsWith("'"), `${name} names a host: ${source}`);
+  }
+});
+
 test("a Markdown request for a page gets its Markdown version", async () => {
   for (const [path, heading, canonical] of [
     ["/", "# Bookclerk: every purchase, properly placed", "/"],
