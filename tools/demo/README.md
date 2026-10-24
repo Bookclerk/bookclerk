@@ -93,3 +93,8 @@ npm test
 fuzzes every input boundary against independent oracles (see
 [`docs/ci.md`](../../docs/ci.md#fuzzing)). `test/routes.test.js` checks the
 route table against the OpenAPI document. CI runs these as `demo_test`.
+
+`package.json` overrides `undici` (a development dependency through
+wrangler's `miniflare`, which pins 7.29.1) to 7.30.1 for GHSA-xjj6-f33q-929c,
+GHSA-4qv8-2p9j-2685 and GHSA-f72v-6w45-q472. Drop the override once wrangler
+ships a `miniflare` with the fix.
