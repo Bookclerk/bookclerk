@@ -42,6 +42,55 @@ const MAX_BODY_BYTES = 256 * 1024;
 const DIAGNOSTICS_PREFIX = "diagnostics/";
 const MAX_REPORT_FILES = 100;
 
+/**
+ * A call to B2 or GitHub failed. The message names the stage, the HTTP
+ * status and, for B2, its short error code, and never carries credentials or
+ * response bodies, so it is safe to return to an authenticated caller.
+ */
+export class UpstreamError extends Error {
+  /**
+   * @param {string} stage Which call failed, e.g. "b2 list".
+   * @param {number} [status] HTTP status of the failed response.
+   * @param {string} [code] Upstream error code, kept only when it is a short
+   *   lowercase identifier.
+   */
+  constructor(stage, status, code) {
+    const parts = [`${stage} failed`];
+    if (status) parts.push(`HTTP ${status}`);
+    if (typeof code === "string" && /^[a-z_]{1,40}$/.test(code)) parts.push(code);
+    super(parts.join(": "));
+    this.name = "UpstreamError";
+  }
+}
+
+/**
+ * Builds the UpstreamError for a failed B2 response, reading B2's JSON error
+ * code when the body has one.
+ *
+ * @param {string} stage Which call failed.
+ * @param {Response} res The failed response.
+ * @returns {Promise<UpstreamError>} The error to throw.
+ */
+async function b2Error(stage, res) {
+  let code;
+  try {
+    code = (await res.json()).code;
+  } catch {
+    code = undefined;
+  }
+  return new UpstreamError(stage, res.status, code);
+}
+
+/**
+ * One-line description of a thrown value for the Worker log.
+ *
+ * @param {unknown} err What was thrown.
+ * @returns {string} Its name and message, or its string form.
+ */
+function errorText(err) {
+  return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -57,12 +106,14 @@ export default {
         });
       }
 
+      // Awaited so a rejection lands in the catch below instead of escaping
+      // as Cloudflare's opaque error 1101.
       if (request.method === "POST" && path === "/submit") {
-        return handleSubmit(request, env);
+        return await handleSubmit(request, env);
       }
 
       if (request.method === "GET" && path === "/report") {
-        return handleReport(request, env, url);
+        return await handleReport(request, env, url);
       }
 
       if (request.method === "POST" && path === "/triage") {
@@ -74,6 +125,13 @@ export default {
 
       return json({ error: "not found" }, 404);
     } catch (err) {
+      console.error(`${request.method} ${path} failed: ${errorText(err)}`);
+      if (err instanceof UpstreamError) {
+        // Only callers holding the report key learn which upstream failed;
+        // the messages carry a stage, an HTTP status and a short code only.
+        const detail = requireReportAuth(request, env) ? { detail: err.message } : {};
+        return json({ error: "upstream failed", ...detail }, 502);
+      }
       return json({ error: "internal error" }, 500);
     }
   },
@@ -291,7 +349,7 @@ async function resolveLatestStableBaseline(env) {
     return { version: null, source: "all" };
   }
   if (!res.ok) {
-    throw new Error(`github releases/latest failed: HTTP ${res.status}`);
+    throw new UpstreamError("github releases/latest", res.status);
   }
 
   const data = await res.json();
@@ -420,13 +478,13 @@ async function b2Authorize(env) {
   const id = env.B2_KEY_ID;
   const key = env.B2_APPLICATION_KEY;
   if (!id || !key || !env.B2_BUCKET_ID) {
-    throw new Error("missing B2 credentials");
+    throw new UpstreamError("b2 credentials check");
   }
   const basic = btoa(`${id}:${key}`);
   const res = await fetch(`${endpoint}/b2api/v2/b2_authorize_account`, {
     headers: { Authorization: `Basic ${basic}` },
   });
-  if (!res.ok) throw new Error("b2 authorize failed");
+  if (!res.ok) throw await b2Error("b2 authorize", res);
   return res.json();
 }
 
@@ -439,7 +497,7 @@ async function b2GetUploadUrl(auth, bucketId) {
     },
     body: JSON.stringify({ bucketId }),
   });
-  if (!res.ok) throw new Error("b2 get_upload_url failed");
+  if (!res.ok) throw await b2Error("b2 get_upload_url", res);
   return res.json();
 }
 
@@ -465,7 +523,7 @@ async function b2Upload(upload, fileName, bodyText, info = {}) {
     headers,
     body: bytes,
   });
-  if (!res.ok) throw new Error("b2 upload failed");
+  if (!res.ok) throw await b2Error("b2 upload", res);
 }
 
 async function b2ListIncoming(auth, bucketId) {
@@ -489,7 +547,7 @@ async function b2ListIncoming(auth, bucketId) {
       },
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error("b2 list failed");
+    if (!res.ok) throw await b2Error("b2 list", res);
     const data = await res.json();
     files.push(...(data.files || []));
     if (!data.nextFileName) {
@@ -504,7 +562,7 @@ async function b2DownloadById(auth, fileId) {
   const res = await fetch(`${auth.downloadUrl}/b2api/v2/b2_download_file_by_id?fileId=${encodeURIComponent(fileId)}`, {
     headers: { Authorization: auth.authorizationToken },
   });
-  if (!res.ok) throw new Error("b2 download failed");
+  if (!res.ok) throw await b2Error("b2 download", res);
   return res.text();
 }
 
