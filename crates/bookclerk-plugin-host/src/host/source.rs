@@ -574,21 +574,36 @@ impl ContentSource for ExternalSource {
                     account_id: account_id.to_string(),
                     credentials,
                 };
-                let call = self.cs_call(move |src| async move { src.revoke_account(params).await });
-                match tokio::time::timeout(REVOKE_ACCOUNT_TIMEOUT, call).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(err)) => tracing::warn!(
+                // The deadline runs on the vat side, so dropping the timed-out
+                // request also frees the session for the next storefront call.
+                // The outer bound covers waiting behind another call on the
+                // same session before this one starts.
+                let call = self.cs_call(move |src| async move {
+                    tokio::time::timeout(REVOKE_ACCOUNT_TIMEOUT, src.revoke_account(params))
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(bookclerk_plugin_sdk::PluginError::deadline_exceeded(
+                                format!(
+                                    "revokeAccount took longer than {} s",
+                                    REVOKE_ACCOUNT_TIMEOUT.as_secs()
+                                ),
+                            ))
+                        })
+                });
+                let outcome = tokio::time::timeout(REVOKE_ACCOUNT_TIMEOUT * 2, call)
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(bookclerk_source::SourceError::api(
+                            "store sign-out did not start in time".to_string(),
+                        ))
+                    });
+                if let Err(err) = outcome {
+                    tracing::warn!(
                         plugin = %self.id(),
                         account = %account_id,
                         error = %err,
                         "store sign-out failed; deleting stored credentials anyway"
-                    ),
-                    Err(_) => tracing::warn!(
-                        plugin = %self.id(),
-                        account = %account_id,
-                        timeout_secs = REVOKE_ACCOUNT_TIMEOUT.as_secs(),
-                        "store sign-out timed out; deleting stored credentials anyway"
-                    ),
+                    );
                 }
             }
             Err(err) => tracing::warn!(
