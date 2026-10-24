@@ -426,10 +426,10 @@ non-Rust tooling (decision 6):
   visitor's request may reach their container; the visitor's cookies
   (`readSessionToken`, `cookiesForContainer`); the container's `Set-Cookie`
   lines (`rewriteSetCookie`, `portalSessionFrom`) and JSON answers
-  (`decodeConnections`, `decodeBootstrap`, `decodeInstances`); and Turnstile's verdict
-  (`siteverifyPassed`). `tools/demo/test/inputs.fuzz.test.js` replays their
+  (`decodeConnections`, `decodeClaimTicket`, `decodeInstances`); the launch
+  form (`decodeLaunchForm`); and Turnstile's verdict (`siteverifyPassed`). `tools/demo/test/inputs.fuzz.test.js` replays their
   seed corpora (`tools/demo/corpus/route/`, `cookie/`, `set_cookie/`,
-  `connections/`, `siteverify/`, `bootstrap/`, `plugin_instances/`) and runs seeded mutation
+  `connections/`, `siteverify/`, `claim_ticket/`, `launch_form/`, `plugin_instances/`) and runs seeded mutation
   fuzzing in `npm test`, checking results against independent oracles (a
   forwarded path decodes to clean segments and matches no refused
   operation, a write matches a listed one and a sign-in start is always
@@ -441,7 +441,9 @@ non-Rust tooling (decision 6):
   bounded and well-formed; Siteverify passed only for success on this host
   and action; a claim ticket only when well-formed; only wanted default
   plugin instances with well-formed ids, the first per plugin, on a
-  well-formed node id).
+  well-formed node id; the launch form's token equal to a separate
+  form-urlencoded parse's first `cf-turnstile-response` when that is
+  printable ASCII, and none from an oversized body or token).
 
 Still to add (tracked in the fuzzing ADR's follow-ups): a full RPC session
 against a scripted guest, the workerd `egress.js` gate checked against

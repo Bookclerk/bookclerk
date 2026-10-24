@@ -34,6 +34,18 @@ export const MAX_ID_CHARS = 200;
 /** Longest JSON body the decoders parse. */
 export const MAX_BODY_CHARS = 256 * 1024;
 
+/** Largest launch form body read (a Turnstile token is about 2 KB). */
+export const MAX_FORM_BYTES = 16 * 1024;
+
+/** Longest Turnstile token accepted from the launch form. */
+export const MAX_TURNSTILE_TOKEN_CHARS = 4096;
+
+/** A Turnstile token: printable ASCII without spaces, within the limit. */
+const TURNSTILE_TOKEN_RE = /^[\x21-\x7e]+$/;
+
+/** The launch form field Turnstile fills in. */
+const TURNSTILE_FIELD = "cf-turnstile-response";
+
 /**
  * Splits a `Cookie` header into name/value pairs, in order.
  *
@@ -234,13 +246,33 @@ export function decodeInstances(text, aliases) {
 }
 
 /**
- * Reads the claim ticket from `POST /api/auth/bootstrap`.
+ * Reads the Turnstile token from the launch form's body
+ * (`application/x-www-form-urlencoded`, UTF-8).
+ *
+ * @param {Uint8Array} bytes The whole body.
+ * @returns {string | null} The first `cf-turnstile-response` value when the
+ *   body is at most {@link MAX_FORM_BYTES} bytes and the value is 1 to
+ *   {@link MAX_TURNSTILE_TOKEN_CHARS} printable ASCII characters other than
+ *   space; otherwise null. Siteverify decides whether the token is any good.
+ */
+export function decodeLaunchForm(bytes) {
+  if (bytes.byteLength > MAX_FORM_BYTES) return null;
+  // Keep a leading BOM, as the form-urlencoded parser does.
+  const text = new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
+  const token = new URLSearchParams(text).get(TURNSTILE_FIELD);
+  return token !== null && token.length <= MAX_TURNSTILE_TOKEN_CHARS && TURNSTILE_TOKEN_RE.test(token)
+    ? token
+    : null;
+}
+
+/**
+ * Reads the claim ticket from `POST /api/users` (or `/api/auth/bootstrap`).
  *
  * @param {string} text Response body.
  * @returns {string | null} The ticket when it is 16 to 512 URL-safe
  *   characters; otherwise null.
  */
-export function decodeBootstrap(text) {
+export function decodeClaimTicket(text) {
   const body = parseJson(text);
   if (!isObject(body) || body.ok !== true) return null;
   const t = body.claim_ticket;

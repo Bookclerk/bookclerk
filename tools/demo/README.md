@@ -16,9 +16,10 @@ downloaded, and their store sign-ins are revoked when the session ends.
    demo's own origin as bookclerkd's `public_origin` (so bookclerkd's own
    cross-site checks and store sign-in callbacks use it), waits for
    `/health`, approves and deploys the four storefronts as the operator
-   (as an operator would in Settings; visitors cannot), creates the
-   visitor's Owner account with the operator token and redeems its claim
-   ticket. The visitor waits on `/_demo/wait`.
+   (as an operator would in Settings; visitors cannot), sets up an Owner
+   nobody signs in as, creates the visitor as an administrator (who may
+   connect stores in Accounts) and redeems the visitor's claim ticket. The
+   Durable Object then forgets the operator token. The visitor waits on `/_demo/wait`.
 3. `/_demo/enter` hands the browser the portal session cookie. From then on
    every request goes through the Worker (`src/app.js`), which:
    - refuses any operation not allowed for the demo (`src/routes.js`) before
@@ -29,8 +30,9 @@ downloaded, and their store sign-ins are revoked when the session ends.
    - refuses cross-site writes itself, then strips `Authorization`,
      `Cookie` (other than bookclerkd's own) and client IP headers;
    - counts store sign-in starts against per-session and per-day limits;
-   - adds the operator token inside the Durable Object, so the browser never
-     sees it;
+   - forwards the request as the visitor's own session, so bookclerkd
+     authorizes everything as the visitor's administrator account and
+     scans only the visitor's store accounts;
    - rewrites `Set-Cookie` so the container cannot set the Worker's cookies,
      and adds a banner with the time left and a **Start over** button.
 4. The session ends when its time is up, after 10 idle minutes, or on

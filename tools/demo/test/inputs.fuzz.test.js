@@ -1,5 +1,5 @@
 // The demo Worker's untrusted-input boundaries (fuzzing ADR decision 6):
-// the route check, the visitor's cookies, the container's Set-Cookie lines
+// the route check, the launch form, the visitor's cookies, the container's Set-Cookie lines
 // and JSON answers, and Turnstile's verdict. Each replays its seed corpus
 // under corpus/<name>/ and runs seeded mutation fuzzing, checking every
 // result against an oracle written without the module's helpers.
@@ -10,10 +10,13 @@ import { describe, it } from "node:test";
 import { classify, OPERATIONS } from "../src/routes.js";
 import {
   cookiesForContainer,
-  decodeBootstrap,
+  decodeClaimTicket,
   decodeConnections,
   decodeInstances,
+  decodeLaunchForm,
   MAX_CONNECTIONS,
+  MAX_FORM_BYTES,
+  MAX_TURNSTILE_TOKEN_CHARS,
   MAX_ID_CHARS,
   portalSessionFrom,
   readSessionToken,
@@ -82,6 +85,42 @@ function oracleDecode(seg) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Oracle's own form-urlencoded reader: the first value of `name`, splitting
+ * the bytes on `&` and the first `=`, with `+` as a space and `%XX` escapes
+ * decoded (a broken escape stays as written) before UTF-8 decoding.
+ *
+ * @param {Uint8Array} bytes Form body.
+ * @param {string} name Field name.
+ * @returns {string | null} The value, or null when the field is absent.
+ */
+function oracleFormField(bytes, name) {
+  const hex = (b) => (b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x46) || (b >= 0x61 && b <= 0x66);
+  const decode = (part) => {
+    const out = [];
+    for (let i = 0; i < part.length; i++) {
+      const b = part[i];
+      if (b === 0x2b) out.push(0x20);
+      else if (b === 0x25 && i + 2 < part.length && hex(part[i + 1]) && hex(part[i + 2])) {
+        out.push(parseInt(String.fromCharCode(part[i + 1], part[i + 2]), 16));
+        i += 2;
+      } else out.push(b);
+    }
+    return new TextDecoder("utf-8", { ignoreBOM: true }).decode(new Uint8Array(out));
+  };
+  let start = 0;
+  for (let i = 0; i <= bytes.length; i++) {
+    if (i < bytes.length && bytes[i] !== 0x26) continue;
+    const seq = bytes.subarray(start, i);
+    start = i + 1;
+    if (seq.length === 0) continue;
+    const eq = seq.indexOf(0x3d);
+    const key = decode(eq === -1 ? seq : seq.subarray(0, eq));
+    if (key === name) return eq === -1 ? "" : decode(seq.subarray(eq + 1));
+  }
+  return null;
 }
 
 /** Each listed operation as a method and an anchored pattern over decoded segments. */
@@ -238,6 +277,30 @@ describe("demo input boundaries", () => {
     });
   });
 
+  it("launch form yields the first Turnstile field, bounded", () => {
+    const check = (bytes, label) => {
+      const value = bytes.length > MAX_FORM_BYTES ? null : oracleFormField(bytes, "cf-turnstile-response");
+      let ascii = value !== null && value.length >= 1 && value.length <= MAX_TURNSTILE_TOKEN_CHARS;
+      for (let i = 0; ascii && i < value.length; i++) {
+        const c = value.charCodeAt(i);
+        ascii = c > 0x20 && c < 0x7f;
+      }
+      const expected = ascii ? value : null;
+      assert.equal(decodeLaunchForm(bytes), expected, label);
+    };
+    fuzz("launch_form", ["&", "=", "+", "%", "%2", "%2B", "%26", "%3D", "%zz", "%E2%82%AC", "%FF", "\ufeff", "cf-turnstile-response", "cf-turnstile-response=", "€"], (input, label) => {
+      check(new TextEncoder().encode(input), label);
+    });
+    // Size bounds: a token just at and just over its limit, and a body just
+    // over the form limit.
+    const enc = (t) => new TextEncoder().encode(t);
+    check(enc(`cf-turnstile-response=${"a".repeat(MAX_TURNSTILE_TOKEN_CHARS)}`), "token at limit");
+    check(enc(`cf-turnstile-response=${"a".repeat(MAX_TURNSTILE_TOKEN_CHARS + 1)}`), "token over limit");
+    const big = enc(`cf-turnstile-response=t&pad=${"a".repeat(MAX_FORM_BYTES)}`);
+    assert.equal(decodeLaunchForm(big), null, "body over limit");
+    assert.equal(decodeLaunchForm(enc("cf-turnstile-response=t")), "t", "small body");
+  });
+
   it("Siteverify passes only success for this host and action", () => {
     const expect = { hostname: "demo.example.test", action: "demo_start" };
     fuzz("siteverify", ["true", "false", '"true"', "1", "null", '"demo.example.test"', '"demo_start"', ",", "}", "{"], (input, label) => {
@@ -258,8 +321,8 @@ describe("demo input boundaries", () => {
     });
   });
 
-  it("bootstrap reader takes only a well-formed claim ticket", () => {
-    fuzz("bootstrap", ["true", "false", '"', "-", "a", "{", "}", ",", ":", '"claim_ticket"', '"ok"'], (input, label) => {
+  it("claim ticket reader takes only a well-formed claim ticket", () => {
+    fuzz("claim_ticket", ["true", "false", '"', "-", "a", "{", "}", ",", ":", '"claim_ticket"', '"ok"'], (input, label) => {
       let v;
       try {
         v = JSON.parse(input);
@@ -268,7 +331,7 @@ describe("demo input boundaries", () => {
       }
       const t = v !== null && typeof v === "object" && !Array.isArray(v) && v.ok === true ? v.claim_ticket : undefined;
       const expected = typeof t === "string" && t.length >= 16 && t.length <= 512 && [...t].every((c) => /[A-Za-z0-9._~-]/.test(c)) ? t : null;
-      assert.equal(decodeBootstrap(input), expected, label);
+      assert.equal(decodeClaimTicket(input), expected, label);
     });
   });
 });

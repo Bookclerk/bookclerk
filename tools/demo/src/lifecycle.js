@@ -1,16 +1,17 @@
 // What a demo session does inside its container at the start and the end,
 // written against an injected `call` so the tests drive it without one.
 //
-// Start: wait for bookclerkd, create the visitor as the first Owner with the
-// per-session operator token, and redeem the Owner's claim ticket for a
-// portal session the visitor's browser keeps. Store accounts are connected
-// through the portal, so they belong to that identity.
+// Start: wait for bookclerkd, turn the storefronts on, and with the
+// per-session operator token create the visitor's account, then redeem its
+// claim ticket for a portal session the visitor's browser keeps. The visitor
+// acts only as that account: store accounts are connected through the
+// portal, so they belong to that identity.
 //
 // End: sign every connected store account out through the same route the
 // Accounts page uses, so Audible deregisters the device it added, before
 // the container (and with it every token) is destroyed.
 
-import { decodeBootstrap, decodeConnections, decodeInstances, portalSessionFrom, PORTAL_COOKIE } from "./inputs.js";
+import { decodeClaimTicket, decodeConnections, decodeInstances, portalSessionFrom, PORTAL_COOKIE } from "./inputs.js";
 
 /**
  * The storefront plugins the demo image ships (their manifest ids). The host
@@ -67,24 +68,44 @@ export async function waitForHealth(call, opts) {
 }
 
 /**
- * Creates the visitor's Owner account and returns its portal session.
+ * Sets the host up with an Owner nobody signs in as, creates the visitor as
+ * an administrator and returns the visitor's portal session.
  *
- * The Owner gets a random password nobody sees, so the claim ticket redeems
- * without one and nobody can sign in as the visitor some other way.
+ * The visitor is an administrator rather than the Owner because the web
+ * app's Accounts page lets administrators, hosts and members connect stores,
+ * and because an administrator cannot change sign-in settings or users the
+ * way an Owner can. Both accounts get random passwords nobody sees, so the
+ * claim ticket redeems without one and nobody can sign in as either some
+ * other way.
  *
  * @param {ContainerCall} call Container request function.
  * @param {string} operatorToken The session's operator token.
  * @returns {Promise<string>} The `bookclerk_portal_session` value.
- * @throws {Error} When bootstrap or redeem fails or answers unexpectedly.
+ * @throws {Error} When bootstrap, user creation or redeem fails or answers
+ *   unexpectedly.
  */
 export async function signInVisitor(call, operatorToken) {
+  const json = { Authorization: `Bearer ${operatorToken}`, "Content-Type": "application/json" };
   const boot = await call("/api/auth/bootstrap", {
     method: "POST",
-    headers: { Authorization: `Bearer ${operatorToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ display_name: "Demo visitor", login_name: "demo", password: randomHex(24) }),
+    headers: json,
+    body: JSON.stringify({ display_name: "Demo host", login_name: "demo-owner", password: randomHex(24) }),
   });
-  const ticket = decodeBootstrap(await boot.text());
-  if (boot.status !== 200 || !ticket) throw new Error(`bootstrap answered ${boot.status}`);
+  await boot.body?.cancel();
+  if (boot.status !== 200) throw new Error(`bootstrap answered ${boot.status}`);
+  const user = await call("/api/users", {
+    method: "POST",
+    headers: json,
+    body: JSON.stringify({
+      role: "administrator",
+      display_name: "Demo visitor",
+      login_name: "demo",
+      password: randomHex(24),
+      mint_invite: true,
+    }),
+  });
+  const ticket = decodeClaimTicket(await user.text());
+  if (user.status !== 200 || !ticket) throw new Error(`creating the visitor answered ${user.status}`);
   const redeem = await call("/api/portal/redeem", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

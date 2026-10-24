@@ -9,6 +9,8 @@ import { classify } from "./routes.js";
 import { admit, countSignin, finish, limitsFrom, overdue, prune, utcDay } from "./limits.js";
 import {
   cookiesForContainer,
+  decodeLaunchForm,
+  MAX_FORM_BYTES,
   PORTAL_COOKIE,
   readSessionToken,
   rewriteSetCookie,
@@ -22,9 +24,6 @@ const SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverif
 
 /** The widget action the launch page sets and Siteverify must echo. */
 export const TURNSTILE_ACTION = "demo_start";
-
-/** Largest launch form body read (a Turnstile token is about 2 KB). */
-const MAX_FORM_BYTES = 16 * 1024;
 
 /** Largest web app HTML document the banner is added to. */
 const MAX_BANNER_HTML_BYTES = 1024 * 1024;
@@ -247,9 +246,13 @@ async function turnstileToken(request) {
     await read.reader.cancel();
     return null;
   }
-  const text = decodeChunks(read.chunks);
-  const token = new URLSearchParams(text).get("cf-turnstile-response");
-  return token && token.length <= 4096 ? token : null;
+  const bytes = new Uint8Array(read.size);
+  let at = 0;
+  for (const c of read.chunks) {
+    bytes.set(c, at);
+    at += c.byteLength;
+  }
+  return decodeLaunchForm(bytes);
 }
 
 /**

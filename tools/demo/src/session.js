@@ -1,6 +1,7 @@
 // One demo session: a Cloudflare Container running the demo image, owned by
 // the Durable Object Cloudflare pairs with it. The object starts bookclerkd
-// with a fresh operator token, signs the visitor in, forwards their requests,
+// with a fresh operator token, which it uses only to set the host up and
+// sign the visitor in, forwards the visitor's requests as the visitor,
 // and on every way a session ends (Start over, 10 minutes idle, the hard
 // stop, the sweep) signs their store accounts out before destroying the VM.
 // The VM's disk is ephemeral, so destroying it deletes the library,
@@ -135,7 +136,9 @@ export class DemoSession extends Container {
         await this.destroy();
         return;
       }
-      await this.ctx.storage.put("secrets", { operatorToken, portalSession });
+      // The operator token is not kept: from here on bookclerkd sees only
+      // the visitor's own session.
+      await this.ctx.storage.put("secrets", { portalSession });
       await this.setState("ready");
     } catch (err) {
       if (!(await this.stillStarting())) {
@@ -172,10 +175,11 @@ export class DemoSession extends Container {
   }
 
   /**
-   * Forwards a visitor's request to bookclerkd with the operator token.
+   * Forwards a visitor's request to bookclerkd as is.
    *
-   * The Worker has already checked the route. The token never leaves this
-   * object: the browser holds only its portal session.
+   * The Worker has already checked the route and stripped every credential
+   * but the visitor's portal session, so bookclerkd authorizes the request
+   * as the visitor's administrator account, never as the operator.
    *
    * @param {Request} request Request from the Worker.
    * @returns {Promise<Response>} bookclerkd's answer, or 503 when the session
@@ -191,9 +195,7 @@ export class DemoSession extends Container {
         { status: 503, headers: { "X-Demo-State": meta?.state ?? "none" } },
       );
     }
-    const forwarded = new Request(request);
-    forwarded.headers.set("Authorization", `Bearer ${secrets.operatorToken}`);
-    return this.containerFetch(forwarded, PORT);
+    return this.containerFetch(request, PORT);
   }
 
   /**
