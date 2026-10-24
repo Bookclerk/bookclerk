@@ -344,7 +344,7 @@ export async function membershipRole(cfg, user, now) {
  */
 export async function listDiagnosticsIssues(cfg, token, sinceIso, page) {
   const q = new URLSearchParams({
-    labels: "diagnostics",
+    labels: DIAGNOSTICS_LABEL,
     state: "all",
     sort: "updated",
     direction: "asc",
@@ -363,19 +363,28 @@ export async function listDiagnosticsIssues(cfg, token, sinceIso, page) {
   return { issues: list.filter((i) => i && !i.pull_request), full: list.length >= 100, newest };
 }
 
+/** Label that marks a diagnostics issue. */
+export const DIAGNOSTICS_LABEL = "diagnostics";
+
 /** GraphQL fields read for a referencing pull request. */
 const PR_FIELDS = "number title state mergedAt repository { nameWithOwner }";
 
 /**
- * Pull requests that close or cross-reference each issue, in this repository.
+ * Pull requests that close or cross-reference each issue, in this
+ * repository, and whether each issue still carries the `diagnostics` label
+ * (the label-filtered issue listing cannot report a removal).
+ *
+ * Cross-references are read newest first (the last 50 timeline events), so
+ * a long-lived issue still shows the pull requests that mention it lately.
  *
  * @param {GitHubConfig} cfg Settings.
  * @param {string} token Installation token.
  * @param {number[]} numbers Issue numbers (at most 10 per call).
- * @returns {Promise<Map<number, {number: number, title: string,
- *   state: "open" | "closed" | "merged", mergedAt: number | null}[]>>}
- *   Issue number → distinct pull requests. An issue GitHub returned no data
- *   for is left out, so the caller keeps what it stored before.
+ * @returns {Promise<Map<number, {labeled: boolean, prs: {number: number,
+ *   title: string, state: "open" | "closed" | "merged",
+ *   mergedAt: number | null}[]}>>} Issue number → label check and distinct
+ *   pull requests. An issue GitHub returned no data for is left out, so the
+ *   caller keeps what it stored before.
  * @throws {Error} When the call fails or the response carries GraphQL
  *   errors, so a failed refresh never reads as "no pull requests".
  */
@@ -383,8 +392,9 @@ export async function pullRequestsFor(cfg, token, numbers) {
   const fields = numbers
     .map(
       (n, i) => `i${i}: issue(number: ${Number(n)}) {
+        labels(first: 50) { nodes { name } }
         closedByPullRequestsReferences(first: 10, includeClosedPrs: true) { nodes { ${PR_FIELDS} } }
-        timelineItems(first: 50, itemTypes: [CROSS_REFERENCED_EVENT, CONNECTED_EVENT]) { nodes {
+        timelineItems(last: 50, itemTypes: [CROSS_REFERENCED_EVENT, CONNECTED_EVENT]) { nodes {
           ... on CrossReferencedEvent { source { ... on PullRequest { ${PR_FIELDS} } } }
           ... on ConnectedEvent { subject { ... on PullRequest { ${PR_FIELDS} } } }
         } }
@@ -423,7 +433,10 @@ export async function pullRequestsFor(cfg, token, numbers) {
     };
     for (const pr of issue?.closedByPullRequestsReferences?.nodes ?? []) take(pr);
     for (const ev of issue?.timelineItems?.nodes ?? []) take(ev?.source ?? ev?.subject);
-    out.set(n, [...found.values()]);
+    const labels = Array.isArray(issue.labels?.nodes) ? issue.labels.nodes : null;
+    // Without a label list the check is unknown: keep the issue.
+    const labeled = labels === null || labels.some((l) => String(l?.name ?? "").toLowerCase() === DIAGNOSTICS_LABEL);
+    out.set(n, { labeled, prs: [...found.values()] });
   });
   return out;
 }

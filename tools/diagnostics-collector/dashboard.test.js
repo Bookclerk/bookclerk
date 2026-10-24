@@ -572,8 +572,36 @@ describe("pull request refresh", () => {
     assert.equal((await syncIssues(env, githubConfig(env), NOW)).refreshed, 100);
     assert.equal((await first(db, "SELECT COUNT(*) AS n FROM issues WHERE prs_synced_at IS NULL")).n, 5);
     seen.length = 0;
-    assert.equal((await syncIssues(env, githubConfig(env), NOW + 1)).refreshed, 5);
-    assert.deepEqual(seen, [101, 102, 103, 104, 105]);
+    await syncIssues(env, githubConfig(env), NOW + 1);
+    assert.deepEqual(seen.slice(0, 5), [101, 102, 103, 104, 105], "the carried-over issues go first");
+    assert.equal((await first(db, "SELECT COUNT(*) AS n FROM issues WHERE prs_synced_at IS NULL")).n, 0);
+  });
+
+  it("drops an issue that lost the diagnostics label", async () => {
+    const env = makeEnv();
+    const db = env.DASHBOARD_DB;
+    await queuedIssues(db, 1);
+    await run(db, "INSERT INTO report_issue (report_id, issue_number) VALUES (?, 1)", ID1);
+    await run(db, "INSERT INTO issue_pr (issue_number, pr_number, title, state, merged_at) VALUES (1, 9, 'fix', 'merged', ?)", NOW);
+    let query = "";
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      noNewIssues,
+      [
+        "POST https://api.github.com/graphql",
+        ({ body }) => {
+          query = body.query;
+          return Response.json({
+            data: { repository: { i0: { labels: { nodes: [{ name: "bug" }] }, closedByPullRequestsReferences: { nodes: [] }, timelineItems: { nodes: [] } } } },
+          });
+        },
+      ],
+    ]);
+    await syncIssues(env, githubConfig(env), NOW);
+    assert.match(query, /timelineItems\(last: 50/);
+    for (const table of ["issues", "report_issue", "issue_pr"]) {
+      assert.equal((await all(db, `SELECT * FROM ${table}`)).length, 0, table);
+    }
   });
 });
 
