@@ -26,6 +26,11 @@
 #     "required".
 #   - bookclerkd listens on all interfaces inside the VM, where only the
 #     Worker reaches it.
+#   - bookclerk-demo-seed runs once before bookclerkd: it adds a second
+#     library user with books, a wishlist and an offline branch
+#     (crates/bookclerk-demo-seed), so the library the visitor lands in is
+#     not empty. It goes through the library code of this commit, never raw
+#     SQL. If it fails, bookclerkd still starts, with an empty library.
 
 ARG BUILDER=bookclerk-builder:demo
 ARG RUNTIME=bookclerk:demo
@@ -36,7 +41,9 @@ WORKDIR /src
 RUN cargo stage-plugins --release --plugin audible --plugin libro --plugin chirp --plugin graphicaudio \
     && mkdir -p /out \
     && cp -a target/plugin-artifacts/. /out/ \
-    && test "$(find /out -mindepth 2 -maxdepth 2 -name plugin.toml | wc -l)" -eq 4
+    && test "$(find /out -mindepth 2 -maxdepth 2 -name plugin.toml | wc -l)" -eq 4 \
+    && cargo build --release -p bookclerk-demo-seed \
+    && install -m 0755 target/release/bookclerk-demo-seed /bookclerk-demo-seed
 
 FROM ${RUNTIME}
 USER root
@@ -48,8 +55,12 @@ RUN rm -f /opt/bookclerk/bookclerk-media-worker \
     && ! grep -rqx 'id = "local"' /opt/bookclerk/plugins \
     && grep -rqx 'id = "sqlite"' /opt/bookclerk/plugins
 COPY --from=storefronts /out/ /opt/bookclerk/storefronts/
+COPY --from=storefronts /bookclerk-demo-seed /opt/bookclerk/bookclerk-demo-seed
 COPY version.txt /opt/bookclerk/DEMO_VERSION
 ENV BOOKCLERK_PLUGIN_DIRS=/opt/bookclerk/storefronts \
     BOOKCLERK_PLUGIN_ISOLATION=best-effort \
     BOOKCLERK_DAEMON_LISTEN=0.0.0.0:8787
 USER bookclerk
+# Seed, then hand the process over to bookclerkd. A seed failure is logged
+# and the demo starts with an empty library rather than not at all.
+ENTRYPOINT ["/bin/sh", "-c", "/opt/bookclerk/bookclerk-demo-seed || echo 'bookclerk-demo-seed failed; starting with an empty library' >&2; exec /opt/bookclerk/bookclerkd"]

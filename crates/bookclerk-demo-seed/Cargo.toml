@@ -1,0 +1,32 @@
+[package]
+name = "bookclerk-demo-seed"
+description = "Fills a fresh hosted-demo library with a second member, their books, wishlist and offline branch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "bookclerk-demo-seed"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+bookclerk-config.workspace = true
+bookclerk-library.workspace = true
+bookclerk-node-proto.workspace = true
+bookclerk-plugin-host.workspace = true
+chrono.workspace = true
+sea-orm.workspace = true
+tokio.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+bookclerk-plugin-database-sqlite.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

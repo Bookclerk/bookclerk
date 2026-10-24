@@ -6,6 +6,7 @@ members = [
     "crates/bookclerk-config",
     "crates/bookclerk-db-exec",
     "crates/bookclerk-db-guest",
+    "crates/bookclerk-demo-seed",
     "crates/bookclerk-dev",
     "crates/bookclerk-discover",
     "crates/bookclerk-enrich",
