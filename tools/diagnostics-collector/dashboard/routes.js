@@ -351,9 +351,17 @@ export async function dashboardScheduled(env, now) {
  */
 async function announceIfLinksChanged(env, work) {
   const before = await linkFingerprint(env.DASHBOARD_DB);
-  const result = await work();
-  if ((await linkFingerprint(env.DASHBOARD_DB)) !== before) await announceChange(env);
-  return result;
+  try {
+    return await work();
+  } finally {
+    // The work can store part of its result before it fails; announce that
+    // too, without hiding the work's own error.
+    try {
+      if ((await linkFingerprint(env.DASHBOARD_DB)) !== before) await announceChange(env);
+    } catch (err) {
+      console.error(`live update check failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 }
 
 /**

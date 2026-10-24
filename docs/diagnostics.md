@@ -180,7 +180,8 @@ the hub sends each page the bare text `changed` (syncs push only when the
 stored issues, links or pull requests actually changed). The page then fetches its
 own URL once with its session cookie and swaps in the elements marked
 `data-live` (at most one fetch every 3 seconds, none while the tab is
-hidden). The push carries no data, and the hub never reads what pages send.
+hidden). A page that connects within 15 seconds of a change refreshes once,
+covering a change made between its own reads and its connect. The push carries no data, and the hub never reads what pages send.
 A live refresh of a report page skips the stored report, and skips the
 access-log entry only when that member's view of the report is already
 logged in the last 8 hours. Sockets close at the first push after the

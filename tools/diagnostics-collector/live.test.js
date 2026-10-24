@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { all } from "./dashboard/db.js";
+import { all, linkFingerprint, run } from "./dashboard/db.js";
 import { indexSubmitted } from "./dashboard/sync.js";
 import { CHANGED, LiveHub, MAX_SOCKETS } from "./dashboard/live.js";
 import { dashboardFetch, dashboardIndexSubmitted } from "./dashboard/routes.js";
@@ -37,7 +37,12 @@ function fakeSocket(expiresAt) {
 
 /** Durable Object state stand-in holding the given sockets. */
 function fakeState(sockets) {
-  return { getWebSockets: () => sockets.filter((s) => !s.closed) };
+  const stored = new Map();
+  return {
+    stored,
+    getWebSockets: () => sockets.filter((s) => !s.closed),
+    storage: { get: async (k) => stored.get(k), put: async (k, v) => void stored.set(k, v) },
+  };
 }
 
 describe("live hub", () => {
@@ -45,9 +50,12 @@ describe("live hub", () => {
     const current = fakeSocket(NOW + 60_000);
     const expired = fakeSocket(NOW - 1);
     const unreadable = fakeSocket(undefined);
-    const hub = new LiveHub(fakeState([current, expired, unreadable]), {});
+    const state = fakeState([current, expired, unreadable]);
+    const hub = new LiveHub(state, {});
     const res = await hub.fetch(new Request("https://live/changed", { method: "POST" }), NOW);
     assert.equal(res.status, 204);
+    // Remembered so a page connecting just after gets a catch-up refresh.
+    assert.equal(state.stored.get("last_changed"), NOW);
     assert.deepEqual(current.sent, [CHANGED]);
     assert.deepEqual(expired.sent, []);
     assert.equal(expired.closed.code, 1008);
@@ -118,6 +126,17 @@ function call(env, req, b2 = {}) {
   const path = new URL(req.url).pathname.replace(/\/+$/, "") || "/";
   return dashboardFetch(req, env, { waitUntil() {} }, path, b2, NOW);
 }
+
+describe("link fingerprint", () => {
+  it("changes with a pull request's title, even at the same length", async () => {
+    const db = createD1();
+    await run(db, "INSERT INTO issue_pr (issue_number, pr_number, title, state, merged_at) VALUES (400, 9, 'Fix A', 'open', NULL)");
+    const before = await linkFingerprint(db);
+    assert.equal(await linkFingerprint(db), before);
+    await run(db, "UPDATE issue_pr SET title = 'Fix B'");
+    assert.notEqual(await linkFingerprint(db), before);
+  });
+});
 
 describe("live route", () => {
   it("hands a signed-in, same-origin upgrade to the hub with the session expiry", async () => {
