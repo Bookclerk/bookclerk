@@ -679,10 +679,10 @@ export async function listReleases(cfg, token, since) {
  * contains the commit.
  *
  * @param {unknown} data Parsed body.
- * @returns {boolean | null} True when the commit is `identical` to the tag
- *   or the tag is `ahead` of it (the tag contains it), false when the
- *   commit is `ahead` of the tag or they `diverged`, null for any other
- *   answer.
+ * @returns {boolean | null} True for `identical` or `behind` (the commit
+ *   is the tag or one of its ancestors, so the tag contains it; the compare
+ *   is `{tag}...{sha}`, base first), false for `ahead` (the commit is newer
+ *   than the tag) or `diverged`, null for any other answer.
  */
 export function decodeCompare(data) {
   const status = isObject(data) && typeof data.status === "string" ? data.status : "";

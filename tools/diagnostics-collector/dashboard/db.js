@@ -555,11 +555,12 @@ export function isRegressionVersion(version, fixedIn) {
 
 /**
  * Common table expression `latest` (`issue_number`, `source`, `fixed_in`,
- * `pr_number`, `recorded_at`, `recorded_by`, `checked_until`): each issue's
+ * `pr_number`, `recorded_at`, `recorded_by`, `checked_until`, `checked_tag`):
+ * each issue's
  * newest fixed-in row.
  */
 export const LATEST_FIX = `latest AS (
-  SELECT f.issue_number, f.source, f.fixed_in, f.pr_number, f.recorded_at, f.recorded_by, f.checked_until FROM issue_fix f
+  SELECT f.issue_number, f.source, f.fixed_in, f.pr_number, f.recorded_at, f.recorded_by, f.checked_until, f.checked_tag FROM issue_fix f
   WHERE f.recorded_at = (SELECT MAX(g.recorded_at) FROM issue_fix g WHERE g.issue_number = f.issue_number))`;
 
 /**

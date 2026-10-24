@@ -357,16 +357,16 @@ export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now
       r.signature ? issuesTrackingSignature(db, r.signature) : Promise.resolve([]),
     ]);
     if (!liveRefresh) await logAccess(db, member, "view-report", r.report_id, now);
-    // The fix shown is a linked issue's: one with a fixed-in version first
-    // (it can tell a regression), then the newest merge. A report no issue
-    // lists yet shows the fix of an issue tracking its signature, so a
-    // regression is visible before anyone links it.
-    const linked = found.issues.map((i) => Number(i.number));
+    // The fix shown is the tracking issue's, the issue the report counts
+    // under, so the page agrees with the counts. A report no issue lists
+    // yet shows the fix of an issue tracking its signature (one with a
+    // fixed-in version first, since it can tell a regression, then the
+    // newest merge), so a regression is visible before anyone links it.
     const pick = (numbers) => numbers
       .filter((n) => afterFix.has(n))
       .map((n) => ({ ...afterFix.get(n), issue: n }))
       .sort((a, b) => Number(Boolean(b.fixedIn)) - Number(Boolean(a.fixedIn)) || (b.fixAt ?? 0) - (a.fixAt ?? 0))[0];
-    const fix = pick(linked) ?? pick(sameSignature.filter((n) => !linked.includes(n))) ?? null;
+    const fix = (r.issue_number == null ? pick(sameSignature) : pick([Number(r.issue_number)])) ?? null;
     const regression = Boolean(fix?.fixedIn && isRegressionVersion(String(r.version), fix.fixedIn));
     const today = Math.floor(now / DAY_MS);
     const counts = dailySeries(now, 14, days);
