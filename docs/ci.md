@@ -331,12 +331,15 @@ non-Rust tooling (decision 6):
   `dashboard/session.js`), which decides whether a request is signed in and
   as whom; the sign-in callback check (`parseCallback` in
   `dashboard/auth.js`), which decides from the callback query and cookies
-  whether a code is traded with GitHub; and the membership decision
+  whether a code is traded with GitHub; the membership decision
   (`membershipDecision` in `dashboard/github.js`), which decides from
-  GitHub's membership answer whether sign-in grants member or owner access. `tools/diagnostics-collector/dashboard-input.fuzz.test.js` replays
+  GitHub's membership answer whether sign-in grants member or owner access;
+  and the pull request decoder (`decodePullRequests`, same file), which
+  decides from GitHub's GraphQL answer whether the sync drops an issue or
+  replaces its pull request links. `tools/diagnostics-collector/dashboard-input.fuzz.test.js` replays
   their seed corpora (`tools/diagnostics-collector/corpus/report_ids/`,
   `corpus/signature/`, `corpus/oauth_callback/`, `corpus/session/`,
-  `corpus/membership/`) and runs seeded mutation
+  `corpus/membership/`, `corpus/pull_requests/`) and runs seeded mutation
   fuzzing on every PR, checking results against independent oracles (IDs
   re-derived by a separate walk, all UUIDs present in the body, capped; level
   counts recounted, a signature exactly when an error or warning exists,
@@ -347,7 +350,10 @@ non-Rust tooling (decision 6):
   cookie walk finds a state that matches the query and well-formed code and
   verifier, returning those values; membership granted only for an active
   membership with the same user id, or a 404 for the owner itself, admin
-  only when GitHub says so, and an error for any other failed status).
+  only when GitHub says so, and an error for any other failed status; pull
+  requests decoded to exactly the well-formed ones in this repository, the
+  label check failing only on a label list without `diagnostics`, and an
+  error for GraphQL errors or a missing repository).
 - The website Worker's `Accept-Encoding` parser (`pickEncoding` in
   `tools/site/worker.js`), which picks the response's content coding.
   `tools/site/fuzz.test.mjs` replays its seed corpus

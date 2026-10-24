@@ -14,6 +14,9 @@
 //   GitHub.
 // - membershipDecision reads GitHub's organization membership answer; its
 //   result decides whether sign-in grants member or owner access.
+// - decodePullRequests reads the GraphQL answer about each issue's labels
+//   and pull requests; its result decides whether the sync drops an issue
+//   or replaces its stored pull request links.
 //
 // Each result is checked against an independent oracle written without the
 // module's own helpers.
@@ -22,7 +25,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { MAX_CODE_CHARS, OAUTH_COOKIE, parseCallback } from "./dashboard/auth.js";
-import { membershipDecision } from "./dashboard/github.js";
+import { DIAGNOSTICS_LABEL, decodePullRequests, membershipDecision } from "./dashboard/github.js";
 import { eventLog } from "./dashboard/pages.js";
 import { memberFromRow, SESSION_COOKIE, sessionToken } from "./dashboard/session.js";
 import { FALLBACK_MARKER, MAX_IDS_PER_ISSUE, TRIAGE_MARKER, parseIssueReportIds } from "./dashboard/report-ids.js";
@@ -384,6 +387,89 @@ describe("membership decision", () => {
         input.owner = mutate(rand, base.owner, MEMBERSHIP_FRAGMENTS);
       }
       checkMembership(input, `iteration ${n}: ${JSON.stringify(input).slice(0, 300)}`);
+    }
+  });
+});
+
+/**
+ * Oracle for decodePullRequests: GraphQL errors or no repository object
+ * throw; otherwise an issue alias that is not an object is left out, and
+ * each other issue is labeled unless it lists labels without `diagnostics`
+ * (any case), with one entry per positive integer pull request number in
+ * this repository with a known state, the timeline's last word winning,
+ * string fields only.
+ *
+ * @param {{data: unknown, numbers: number[], repository: string}} input Decoder inputs.
+ * @param {string} label Input name for failure messages.
+ */
+function checkPullRequests(input, label) {
+  const { data, numbers, repository } = input;
+  const isObj = (v) => v !== null && typeof v === "object";
+  const errors = isObj(data) && Array.isArray(data.errors) && data.errors.length > 0;
+  const repo = isObj(data) && isObj(data.data) ? data.data.repository : undefined;
+  if (errors || !isObj(repo)) {
+    assert.throws(() => decodePullRequests(data, numbers, repository), label);
+    return;
+  }
+  const got = decodePullRequests(data, numbers, repository);
+  const str = (v) => (typeof v === "string" ? v : "");
+  const states = new Map([["OPEN", "open"], ["CLOSED", "closed"], ["MERGED", "merged"]]);
+  const expected = new Map();
+  numbers.forEach((n, i) => {
+    const issue = repo["i" + i];
+    if (!isObj(issue)) return;
+    const prs = new Map();
+    const consider = (pr) => {
+      if (!isObj(pr) || typeof pr.number !== "number" || !Number.isInteger(pr.number) || pr.number < 1 || pr.number > Number.MAX_SAFE_INTEGER) return;
+      const where = isObj(pr.repository) ? str(pr.repository.nameWithOwner) : "";
+      if (where.toLowerCase() !== repository.toLowerCase()) return;
+      if (typeof pr.state !== "string" || !states.has(pr.state)) return;
+      const t = Date.parse(str(pr.mergedAt));
+      prs.set(pr.number, { number: pr.number, title: str(pr.title).slice(0, 300), state: states.get(pr.state), mergedAt: Number.isNaN(t) ? null : t });
+    };
+    const nodes = (v) => (isObj(v) && Array.isArray(v.nodes) ? v.nodes : []);
+    for (const pr of nodes(issue.closedByPullRequestsReferences)) consider(pr);
+    for (const ev of nodes(issue.timelineItems)) {
+      if (!isObj(ev)) continue;
+      consider(ev.source !== undefined && ev.source !== null ? ev.source : ev.subject);
+    }
+    const labels = isObj(issue.labels) && Array.isArray(issue.labels.nodes) ? issue.labels.nodes : null;
+    const labeled = labels === null || labels.some((l) => isObj(l) && str(l.name).toLowerCase() === DIAGNOSTICS_LABEL);
+    expected.set(n, { labeled, prs: [...prs.values()] });
+  });
+  assert.deepEqual(got, expected, label);
+}
+
+const PR_FRAGMENTS = [
+  '"OPEN"', '"CLOSED"', '"MERGED"', '"__proto__"', '"diagnostics"', '"DIAGNOSTICS"', '"Bookclerk/bookclerk"', '"other/repo"',
+  '"number":', '"state":', '"nodes":', '"errors":', '"repository":', '"mergedAt":', '"2026-10-20T00:00:00Z"', '"toString"',
+  "null", "{}", "[]", "0", "-1", "1e400", "9007199254740993", '"5"', ",", ":", "{", "}", "[", "]", '"',
+];
+
+describe("pull request decoding", () => {
+  it("replays the seed corpus", () => {
+    const all = seeds("pull_requests");
+    assert.ok(all.length > 0);
+    for (const [name, raw] of all) checkPullRequests(JSON.parse(raw), name);
+    const normal = JSON.parse(all.find(([n]) => n === "normal.json")[1]);
+    const got = decodePullRequests(normal.data, normal.numbers, normal.repository);
+    assert.deepEqual(got.get(5).prs.map((p) => p.number), [10, 11, 12]);
+    assert.equal(got.get(6).labeled, false);
+  });
+
+  it("holds the oracle under seeded mutation", () => {
+    const all = seeds("pull_requests").map(([, raw]) => JSON.parse(raw));
+    const rand = rng(20261029);
+    for (let n = 0; n < 3000; n++) {
+      const base = all[Math.floor(rand() * all.length)];
+      const text = mutate(rand, JSON.stringify(base.data), PR_FRAGMENTS);
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = text;
+      }
+      checkPullRequests({ ...base, data }, `iteration ${n}: ${text.slice(0, 300)}`);
     }
   });
 });

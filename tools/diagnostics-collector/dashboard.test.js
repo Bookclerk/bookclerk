@@ -8,6 +8,7 @@ import { OAUTH_COOKIE, pkceChallenge } from "./dashboard/auth.js";
 import { afterFixCounts, all, indexReport, first, run, topSignatures } from "./dashboard/db.js";
 import { appJwt, clearTokenCache, githubConfig, INSTALLATION_PERMISSIONS, pkcs8FromPem } from "./dashboard/github.js";
 import { escapeHtml, fmtTime, html, isoTime } from "./dashboard/html.js";
+import { buckets } from "./dashboard/pages.js";
 import { parseIssueReportIds, reportIdOf } from "./dashboard/report-ids.js";
 import { dashboardFetch } from "./dashboard/routes.js";
 import { SESSION_COOKIE, createSession } from "./dashboard/session.js";
@@ -606,6 +607,16 @@ describe("pull request refresh", () => {
 });
 
 describe("untrusted times and pages", () => {
+  it("charts the partial oldest bucket the totals count", () => {
+    const hour = 3_600_000;
+    const now = Date.UTC(2026, 9, 24, 12, 30);
+    const oldest = Math.floor((now - 24 * hour) / hour);
+    const out = buckets(now, { ms: 24 * hour, bucket: hour }, new Map([[oldest, { panic: 1 }]]));
+    assert.equal(out.length, 25);
+    assert.deepEqual(out[0], { label: "12:00", values: { panic: 1 } });
+    assert.equal(buckets(Date.UTC(2026, 9, 24, 12), { ms: 24 * hour, bucket: hour }, new Map()).length, 25);
+  });
+
   it("formats out-of-range times as empty instead of throwing", () => {
     assert.equal(isoTime(1e20), "");
     assert.equal(isoTime(Number.NaN), "");

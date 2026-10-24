@@ -437,34 +437,54 @@ export async function pullRequestsFor(cfg, token, numbers) {
     body: JSON.stringify({ query, variables: { owner: cfg.owner, name: cfg.repo } }),
   });
   if (!res.ok) throw new Error(`graphql failed: HTTP ${res.status}`);
-  const data = await res.json();
+  return decodePullRequests(await res.json(), numbers, `${cfg.owner}/${cfg.repo}`);
+}
+
+/**
+ * Reads the GraphQL answer `pullRequestsFor` asked for. Sans-IO, so the
+ * fuzzer drives the same code the sync does.
+ *
+ * @param {unknown} data Parsed response body.
+ * @param {number[]} numbers Issue numbers, in the order of the `i0`, `i1`, …
+ *   aliases.
+ * @param {string} repository `owner/name`; pull requests elsewhere are
+ *   ignored.
+ * @returns {Map<number, {labeled: boolean, prs: {number: number,
+ *   title: string, state: "open" | "closed" | "merged",
+ *   mergedAt: number | null}[]}>} As `pullRequestsFor` returns.
+ * @throws {Error} When the response carries GraphQL errors or no
+ *   repository object.
+ */
+export function decodePullRequests(data, numbers, repository) {
+  const text = (v) => (typeof v === "string" ? v : "");
   if (Array.isArray(data?.errors) && data.errors.length) throw new Error("graphql returned errors");
   const repoData = data?.data?.repository;
   if (!repoData || typeof repoData !== "object") throw new Error("graphql returned no repository");
-  const self = `${cfg.owner}/${cfg.repo}`.toLowerCase();
+  const self = repository.toLowerCase();
   const out = new Map();
   numbers.forEach((n, i) => {
     const issue = repoData[`i${i}`];
     if (!issue || typeof issue !== "object") return;
     const found = new Map();
     const take = (pr) => {
-      if (!pr || !Number.isSafeInteger(pr.number)) return;
-      if (String(pr.repository?.nameWithOwner ?? "").toLowerCase() !== self) return;
-      const state = { OPEN: "open", CLOSED: "closed", MERGED: "merged" }[pr.state];
+      if (!pr || !Number.isSafeInteger(pr.number) || pr.number <= 0) return;
+      if (text(pr.repository?.nameWithOwner).toLowerCase() !== self) return;
+      const state = pr.state === "OPEN" ? "open" : pr.state === "CLOSED" ? "closed" : pr.state === "MERGED" ? "merged" : null;
       if (!state) return;
-      const mergedAt = pr.mergedAt ? Date.parse(pr.mergedAt) : null;
+      const mergedAt = Date.parse(text(pr.mergedAt));
       found.set(pr.number, {
         number: pr.number,
-        title: String(pr.title ?? "").slice(0, 300),
+        title: text(pr.title).slice(0, 300),
         state,
         mergedAt: Number.isFinite(mergedAt) ? mergedAt : null,
       });
     };
-    for (const pr of issue?.closedByPullRequestsReferences?.nodes ?? []) take(pr);
-    for (const ev of issue?.timelineItems?.nodes ?? []) take(ev?.source ?? ev?.subject);
+    const list = (v) => (Array.isArray(v) ? v : []);
+    for (const pr of list(issue.closedByPullRequestsReferences?.nodes)) take(pr);
+    for (const ev of list(issue.timelineItems?.nodes)) take(ev?.source ?? ev?.subject);
     const labels = Array.isArray(issue.labels?.nodes) ? issue.labels.nodes : null;
     // Without a label list the check is unknown: keep the issue.
-    const labeled = labels === null || labels.some((l) => String(l?.name ?? "").toLowerCase() === DIAGNOSTICS_LABEL);
+    const labeled = labels === null || labels.some((l) => text(l?.name).toLowerCase() === DIAGNOSTICS_LABEL);
     out.set(n, { labeled, prs: [...found.values()] });
   });
   return out;

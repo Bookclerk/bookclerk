@@ -128,18 +128,19 @@ function rangePicker(url, current) {
 }
 
 /**
- * Bucket labels and values for a range, oldest first.
+ * Bucket labels and values for a range, oldest first, from the bucket that
+ * holds the range start (often partial) to the current one, so every report
+ * the range's totals count has a bar.
  *
  * @param {number} now Unix time in milliseconds.
  * @param {{ms: number, bucket: number}} range Range.
  * @param {Map<number, Record<string, number>>} byBucket Bucket index → values.
  * @returns {{label: string, values: Record<string, number>}[]} One per bucket.
  */
-function buckets(now, range, byBucket) {
+export function buckets(now, range, byBucket) {
   const last = Math.floor(now / range.bucket);
-  const count = Math.round(range.ms / range.bucket);
   const out = [];
-  for (let b = last - count + 1; b <= last; b++) {
+  for (let b = Math.floor((now - range.ms) / range.bucket); b <= last; b++) {
     const t = b * range.bucket;
     const label = range.bucket < 86_400_000 ? `${String(new Date(t).getUTCHours()).padStart(2, "0")}:00` : fmtDay(t);
     out.push({ label, values: byBucket.get(b) ?? {} });
