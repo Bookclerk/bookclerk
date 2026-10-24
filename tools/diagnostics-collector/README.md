@@ -17,6 +17,12 @@ fallback).
 | `GET` | `/report?since=<ms>&after=<name>` | GitHub Action | `Authorization: Bearer <REPORT_API_KEY>` |
 | `POST` | `/triage` | GitHub Action | `Authorization: Bearer <REPORT_API_KEY>` |
 | `GET` | `/health` | probes | none |
+| `GET` | `/`, `/dash`, `/reports`, `/reports/<id>`, `/issues` | organization members | GitHub sign-in (`/auth/github`), session cookie |
+
+The member dashboard is on only when the automation App's secrets are set;
+see [Member dashboard](../../docs/diagnostics.md#member-dashboard). Its code
+is under `dashboard/`, its D1 schema under `migrations/`, and its styles,
+script and fonts under `public/static/`.
 
 Each `/submit` is assigned a **`report_id` UUID**; the B2 object is
 `diagnostics/<version>/<report_id>.json`. Triage issues list these IDs
@@ -45,6 +51,7 @@ key within that timestamp) so a truncated batch cannot skip same-ms siblings.
 | `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` | Deploy |
 | `DIAGNOSTICS_REPORT_API_KEY` | Worker `REPORT_API_KEY` + ingest |
 | `DIAGNOSTICS_B2_*` | B2 → Worker secrets |
+| `AUTOMATION_APP_CLIENT_ID` / `AUTOMATION_APP_CLIENT_SECRET` / `AUTOMATION_APP_PRIVATE_KEY` | Optional: member dashboard sign-in and issue sync (Worker `GITHUB_APP_*`) |
 
 ### Workflow token permissions
 
@@ -61,6 +68,21 @@ Takes the sanitized batch the ingest workflow builds and returns a Workers AI
 issue plan (`plan_text`) plus the neurons it used. Bindings: `AI` and the
 `TRIAGE_BUDGET` KV namespace (created on first deploy), which caps spend per UTC day
 at `TRIAGE_DAILY_NEURONS`; see [`docs/diagnostics.md`](../../docs/diagnostics.md#triage).
+
+### Member dashboard setup
+
+1. In the automation App's settings: add the callback URL
+   `https://diagnostics.<DOMAIN>/auth/callback` (or the workers.dev URL),
+   generate a client secret, and add the organization permission
+   **Members: read**; accept the new permission on the installation.
+2. Add the client secret as Actions secret `AUTOMATION_APP_CLIENT_SECRET`
+   (the client ID and private key secrets already exist).
+3. Give the Cloudflare token **Account → D1 → Edit** and deploy.
+4. Sign in as an organization owner and press **Index older reports** until
+   it reports the reindex finished.
+
+Run the tests with `npm test` (Node 22.13 or newer: the dashboard tests use
+`node:sqlite` as a stand-in for D1).
 
 ## Bookclerk client
 

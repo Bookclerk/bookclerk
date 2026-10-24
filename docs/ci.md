@@ -301,7 +301,7 @@ a pull request that adds or widens a boundary extends it.
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape (`bookclerk-plugin-abi::GuestSqlPolicy`, lowered as the SQLite adapter lowers it) | Every table, column, function and schema action SQLite's own authorizer reports for an admitted statement is inside the policy; shared oracle `fuzz/oracles/guest_sql_authz.rs`, replayed from `bookclerk-library` |
 | `mux_peer` | Peer frames on the multiplexed byte link (`bookclerk-plugin-sdk::mux`: `Open`, `Data`, `Close`, `Window`, lengths and ids) | Settles within a bound once the peer's bytes end, delivers no more than the peer sent, accepts no more streams than the peer could open, leaves no task behind; shared oracle `fuzz/oracles/mux_peer.rs`, replayed from `bookclerk-plugin-sdk` |
 
-Two boundaries live outside the Rust workspace and follow the ADR's rule for
+Three boundaries live outside the Rust workspace and follow the ADR's rule for
 non-Rust tooling (decision 6):
 
 - The diagnostics triage plan validator
@@ -321,6 +321,17 @@ non-Rust tooling (decision 6):
   oracle (a refusal has a cause; an admitted prompt is the re-serialized
   batch, fits the size cap and context window, and its reservation covers the
   call's worst case).
+- The member dashboard's readers of untrusted text: the issue-body
+  Report IDs parser (`parseIssueReportIds` in
+  `tools/diagnostics-collector/dashboard/report-ids.js`), which decides which
+  reports an issue claims, and the stored-report summary (`summarizeReport`
+  in `dashboard/signature.js`), which writes every report's index row.
+  `tools/diagnostics-collector/dashboard-input.fuzz.test.js` replays their
+  seed corpora (`tools/diagnostics-collector/corpus/report_ids/`,
+  `corpus/signature/`) and runs seeded mutation fuzzing on every PR, checking
+  results against independent oracles (IDs re-derived by a separate walk, all
+  UUIDs present in the body, capped; level counts recounted, a signature
+  exactly when an error or warning exists, bounded control-free fields).
 
 Still to add (tracked in the fuzzing ADR's follow-ups): a full RPC session
 against a scripted guest, the workerd `egress.js` gate checked against
@@ -934,6 +945,10 @@ the workflows deploy:
   for the deploy that first creates its `TRIAGE_BUDGET` namespace (the
   binding has no id, so wrangler creates it). Deploying bindings needs only
   Editor on the Worker, so this can be removed once the namespace exists.
+- For `bookclerk-diagnostics` only, **Account → D1 → Edit**: the first
+  deploy creates the dashboard's `DASHBOARD_DB` database (no id in the
+  binding), and every deploy applies its migrations with
+  `wrangler d1 migrations apply`, so this one stays.
 
 Editor cannot create a Worker; creating one takes the **Admin** role on the
 Workers product. So the first deploy of a new Worker needs one of these:

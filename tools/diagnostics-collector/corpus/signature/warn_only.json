@@ -1,0 +1,1 @@
+{"report_id":"x","payload":{"trigger":"warn_burst","version":"v1","os":"windows","arch":"x86_64","events":[{"level":"warning","target":"C:\\Users\\a","message":"retry 2 of 3 for 'C:\\Users\\a\\b.mp3' 0xDEADBEEF 7C1E4A90-2B6F-4D0E-9A51-3F8E2D61B0C4"}]}}
