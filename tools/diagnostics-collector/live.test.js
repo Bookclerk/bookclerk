@@ -37,7 +37,12 @@ function fakeSocket(expiresAt) {
 
 /** Durable Object state stand-in holding the given sockets. */
 function fakeState(sockets) {
-  return { getWebSockets: () => sockets.filter((s) => !s.closed) };
+  const stored = new Map();
+  return {
+    stored,
+    getWebSockets: () => sockets.filter((s) => !s.closed),
+    storage: { get: async (k) => stored.get(k), put: async (k, v) => void stored.set(k, v) },
+  };
 }
 
 describe("live hub", () => {
@@ -45,9 +50,12 @@ describe("live hub", () => {
     const current = fakeSocket(NOW + 60_000);
     const expired = fakeSocket(NOW - 1);
     const unreadable = fakeSocket(undefined);
-    const hub = new LiveHub(fakeState([current, expired, unreadable]), {});
+    const state = fakeState([current, expired, unreadable]);
+    const hub = new LiveHub(state, {});
     const res = await hub.fetch(new Request("https://live/changed", { method: "POST" }), NOW);
     assert.equal(res.status, 204);
+    // Remembered so a page connecting just after gets a catch-up refresh.
+    assert.equal(state.stored.get("last_changed"), NOW);
     assert.deepEqual(current.sent, [CHANGED]);
     assert.deepEqual(expired.sent, []);
     assert.equal(expired.closed.code, 1008);

@@ -30,6 +30,16 @@ export const MAX_SOCKETS = 200;
 /** Message pages receive when they should refresh. */
 export const CHANGED = "changed";
 
+/** Storage key for when the hub last announced a change, Unix ms. */
+const LAST_CHANGED_KEY = "last_changed";
+
+/**
+ * How recent a change must be for a newly connected page to refresh once:
+ * longer than a page normally takes between its database reads and opening
+ * its socket.
+ */
+export const CATCH_UP_MS = 15_000;
+
 /** `WebSocket.readyState` of an open socket. */
 const OPEN = 1;
 
@@ -162,6 +172,7 @@ export class LiveHub {
     const url = new URL(request.url);
     if (url.pathname === "/connect") return this.connect(request, url, now);
     if (request.method === "POST" && url.pathname === "/changed") {
+      await this.state.storage.put(LAST_CHANGED_KEY, now);
       this.broadcast(now);
       return new Response(null, { status: 204 });
     }
@@ -178,10 +189,10 @@ export class LiveHub {
    * @param {Request} request Upgrade request.
    * @param {URL} url Its URL, carrying `expires`.
    * @param {number} now Unix ms.
-   * @returns {Response} 101 with the client end, 426 without an upgrade,
-   *   400 for a bad expiry, or 503 at `MAX_SOCKETS`.
+   * @returns {Promise<Response>} 101 with the client end, 426 without an
+   *   upgrade, 400 for a bad expiry, or 503 at `MAX_SOCKETS`.
    */
-  connect(request, url, now) {
+  async connect(request, url, now) {
     if ((request.headers.get("upgrade") || "").toLowerCase() !== "websocket") {
       return new Response("expected a WebSocket upgrade", { status: 426 });
     }
@@ -197,6 +208,10 @@ export class LiveHub {
     const [client, server] = Object.values(new WebSocketPair());
     this.state.acceptWebSocket(server);
     server.serializeAttachment({ expiresAt });
+    // A change between the page's own reads and this connect reached no
+    // socket of that page; a recent one gets this page a catch-up refresh.
+    const last = Number(await this.state.storage.get(LAST_CHANGED_KEY));
+    if (Number.isFinite(last) && last > now - CATCH_UP_MS) server.send(CHANGED);
     return new Response(null, { status: 101, webSocket: client });
   }
 
