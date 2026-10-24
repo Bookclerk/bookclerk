@@ -191,6 +191,27 @@ describe("handleTriage", () => {
     }
   });
 
+  it("keeps the reservation and returns the plan when settling fails", async () => {
+    const budget = fakeBudget();
+    const put = budget.put;
+    let puts = 0;
+    budget.put = async (...args) => {
+      if (++puts > 1) throw new Error("KV PUT failed: 429 Too Many Requests");
+      return put(...args);
+    };
+    const env = {
+      TRIAGE_BUDGET: budget,
+      AI: { run: async () => ({ response: '{"issues":[]}', usage: { prompt_tokens: 1, completion_tokens: 1 } }) },
+    };
+    const res = await handleTriage(triageRequest(BATCH), env, { now: () => NOW });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.plan_text, '{"issues":[]}');
+    const reserved = await budget.ledger.spent(utcDay(NOW));
+    assert.ok(reserved > body.neurons);
+    assert.equal(body.spent_today, reserved);
+  });
+
   it("reads OpenAI-style replies", async () => {
     const env = {
       TRIAGE_BUDGET: fakeBudget(),

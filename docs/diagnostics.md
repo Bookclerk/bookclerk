@@ -78,11 +78,13 @@ worst case (input bytes plus the 2,048-token output cap) in the
 before the model runs and settles to the reported usage after; a call that
 would pass the cap gets `429`, and ingest files one issue listing the report
 IDs instead. A call costs at most a few hundred neurons. KV has no atomic
-increment, so two racing calls could both fit under the cap; ingest runs under
-one concurrency group, and a lost update stays far inside the gap between the
-cap and the free allocation. Wrangler creates the namespace on the first
-deploy (the binding has no id), so the Cloudflare API token needs Workers KV
-Storage edit as well as Workers AI.
+increment and its reads can be up to a minute stale, so two calls close
+together (concurrent, or back-to-back runs such as a scheduled run followed by
+a manual one) can each read an old total and undercount. Each such lost update
+is one call's cost, far inside the gap between the cap and the free
+allocation. Wrangler creates the namespace on the first deploy (the binding
+has no id), so that deploy's Cloudflare API token needs Workers KV Storage
+edit; see [Cloudflare Worker deploys](ci.md#cloudflare-worker-deploys).
 
 `REPORT_API_KEY` exists only as a Worker secret and the
 `DIAGNOSTICS_REPORT_API_KEY` Actions secret. Bookclerk builds carry only the

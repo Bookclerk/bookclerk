@@ -69,7 +69,7 @@ export default {
         if (!requireReportAuth(request, env)) {
           return json({ error: "unauthorized" }, 401);
         }
-        return handleTriage(request, env);
+        return await handleTriage(request, env);
       }
 
       return json({ error: "not found" }, 404);

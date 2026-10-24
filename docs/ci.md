@@ -919,6 +919,10 @@ the workflows deploy:
   broader than the deploys need.
 - **Zone → Workers Routes → Edit** (Write in the API reference) on the
   `<DOMAIN>` zone, for the custom domain.
+- For `bookclerk-diagnostics` only, **Account → Workers KV Storage → Edit**
+  for the deploy that first creates its `TRIAGE_BUDGET` namespace (the
+  binding has no id, so wrangler creates it). Deploying bindings needs only
+  Editor on the Worker, so this can be removed once the namespace exists.
 
 Editor cannot create a Worker; creating one takes the **Admin** role on the
 Workers product. So the first deploy of a new Worker needs one of these:

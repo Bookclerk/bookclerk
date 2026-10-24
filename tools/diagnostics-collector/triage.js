@@ -125,10 +125,11 @@ const BUDGET_TTL_SECONDS = 2 * 24 * 60 * 60;
  * Daily neuron ledger in Workers KV: one key per UTC day holding the day's
  * spent and reserved neurons, expiring after two days.
  *
- * KV has no atomic increment, so two calls racing could both fit under the
- * cap. Triage runs from one workflow under a concurrency group, and one call
- * costs at most a few hundred neurons, so a lost update stays far below the
- * gap between the cap and the free allocation.
+ * KV has no atomic increment and reads can be up to a minute stale, so two
+ * calls close together (concurrent, or back-to-back workflow runs) can both
+ * read an old total and undercount. One call costs at most a few hundred
+ * neurons, so each lost update stays far below the gap between the cap and
+ * the free allocation.
  */
 export class BudgetLedger {
   /**
@@ -288,7 +289,15 @@ export async function handleTriage(request, env, opts = {}) {
     promptTokens !== null && completionTokens !== null
       ? neuronsFor(rates, promptTokens, completionTokens)
       : reserved;
-  const spentToday = await budget.settle(day, reserved, actual);
+  let spentToday;
+  try {
+    spentToday = await budget.settle(day, reserved, actual);
+  } catch {
+    // KV allows one write per second per key, and a fast call can settle
+    // right after reserving. Keep the worst-case reservation and still
+    // return the plan the call paid for.
+    spentToday = reservation.spent;
+  }
 
   // Older models answer in `response`; OpenAI-style ones in `choices`.
   const response = result?.response ?? result?.choices?.[0]?.message?.content;
