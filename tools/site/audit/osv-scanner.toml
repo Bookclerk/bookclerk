@@ -1,0 +1,18 @@
+# OSV-Scanner config for the website audit's lockfile (CI tooling, never
+# shipped; see shipped-artifacts.toml). The scanner uses the nearest config to
+# each lockfile, so this file replaces the root osv-scanner.toml here; the root
+# one only holds Rust exceptions. Vulnerabilities are not ignored here.
+
+[[PackageOverrides]]
+name = "@opentelemetry/sdk-trace-base"
+version = "2.12.0"
+ecosystem = "npm"
+ignore = true
+effectiveUntil = 2026-12-23
+reason = """
+Deprecated on npm in favor of @opentelemetry/sdk-trace with no successor
+release; it has no known vulnerabilities. Lighthouse 13.5.0 pulls it in through
+its @sentry/node 10 telemetry dependency, which the audit never enables, and
+there is no newer Lighthouse that drops it. Version-pinned so a new release is
+scanned again; re-evaluate when @sentry/node moves to @opentelemetry/sdk-trace.
+"""

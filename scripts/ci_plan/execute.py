@@ -30,6 +30,7 @@ from .plan import (
     E2E_PACKAGE,
     JOB_CHECKS,
     NON_CARGO_CHECKS,
+    STEP_GATED_JOBS,
     PlanError,
     Plan,
     discover_guests,
@@ -316,8 +317,9 @@ def job_outputs(artifact: Mapping[str, Any]) -> dict[str, str]:
     out: dict[str, str] = {"mode": artifact["mode"]}
     for job, on in plan.jobs.items():
         out[f"job_{job.replace('-', '_')}"] = _b(on)
-    for check in JOB_CHECKS["check"]:
-        out[f"check_{check}"] = _b(plan.selected(check))
+    for job in STEP_GATED_JOBS:
+        for check in JOB_CHECKS[job]:
+            out[f"check_{check}"] = _b(plan.selected(check))
     check_job = [c for c in JOB_CHECKS["check"] if plan.selected(c)]
     out["check_needs_cargo"] = _b(any(c not in NON_CARGO_CHECKS for c in check_job))
     docs = plan.params("api_docs")
@@ -442,11 +444,12 @@ def _nextest_filter(custom: Sequence[tuple[str, str]]) -> list[str]:
     return ["-E", f"not ({ids})"]
 
 
-def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "") -> list[Command]:
+def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", commit: str = "") -> list[Command]:
     """Commands for ``check`` (prerequisites excluded).
 
     ``event`` is the GitHub event the plan was resolved for; merge-group runs
-    retry a failed ``rust_test`` test once.
+    retry a failed ``rust_test`` test once. ``commit`` is the checked-out
+    commit, which the website build stamps on its pages.
     """
     params = plan.params(check)
     ws = str(ctx.workspace)
@@ -534,6 +537,31 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "") -> 
             ),
             Command("ruff", [py, "-m", "ruff", "check", "packages/plugin-sdk-python"]),
             Command("pytest", [py, "-m", "pytest", "packages/plugin-sdk-python/tests", "-q"], env=src),
+        ]
+    if check == "site_test":
+        site = str(ctx.workspace / "tools" / "site")
+        return [
+            Command("npm ci (tools/site)", ["npm", "ci"], cwd=site),
+            Command("npm test (tools/site)", ["npm", "test"], cwd=site),
+        ]
+    if check == "site_audit":
+        site = ctx.workspace / "tools" / "site"
+        return [
+            Command("npm ci (tools/site)", ["npm", "ci"], cwd=str(site)),
+            Command("npm run build (tools/site)", ["npm", "run", "build"], cwd=str(site), env={"SITE_COMMIT": commit}),
+            Command("npm ci (tools/site/audit)", ["npm", "ci"], cwd=str(site / "audit")),
+            Command("npm test (tools/site/audit)", ["npm", "test"], cwd=str(site / "audit")),
+            Command(
+                "Lighthouse + axe-core (tools/site/audit)",
+                ["node", "audit.mjs", "--out", str(ctx.tmp / "site-audit")],
+                cwd=str(site / "audit"),
+            ),
+        ]
+    if check == "collector_test":
+        collector = str(ctx.workspace / "tools" / "diagnostics-collector")
+        return [
+            Command("npm ci (tools/diagnostics-collector)", ["npm", "ci"], cwd=collector),
+            Command("npm test (tools/diagnostics-collector)", ["npm", "test"], cwd=collector),
         ]
     if check == "ui":
         ui = str(ctx.workspace / "ui")
@@ -844,7 +872,9 @@ def planned_commands(
         key = hashlib.sha256(key_src.encode()).hexdigest()[:16]
         for i, cmd in enumerate(prereq_commands(prereq, ctx)):
             out.append((f"{prereq['kind']}-{key}-{i}", cmd))
-    for cmd in check_commands(check, plan, ctx, event=str(artifact.get("event", ""))):
+    for cmd in check_commands(
+        check, plan, ctx, event=str(artifact.get("event", "")), commit=str(artifact.get("checkout_sha", ""))
+    ):
         if build_only:
             built = build_only_command(cmd)
             if built is not None:

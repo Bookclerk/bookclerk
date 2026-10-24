@@ -28,7 +28,7 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 REPO = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
 
-from ci_plan.plan import CHECK_JOB, JOB_CHECKS  # noqa: E402
+from ci_plan.plan import CHECK_JOB, JOB_CHECKS, STEP_GATED_JOBS  # noqa: E402
 
 WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
 OUTPUT_REF = re.compile(r"needs\.plan\.outputs\.([A-Za-z0-9_]+)")
@@ -47,7 +47,7 @@ def _load() -> dict:
 def _emitted_keys() -> set[str]:
     keys = {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode"}
     keys |= {f"job_{j.replace('-', '_')}" for j in JOB_CHECKS}
-    keys |= {f"check_{c}" for c in JOB_CHECKS["check"]}
+    keys |= {f"check_{c}" for j in STEP_GATED_JOBS for c in JOB_CHECKS[j]}
     return keys
 
 
@@ -115,7 +115,7 @@ class WorkflowContractTests(unittest.TestCase):
                     self.assertNotIn(check, seen, f"{check} run in {seen.get(check)} and {job_name}")
                     self.assertEqual(CHECK_JOB.get(check), job_name, f"{check} runs in wrong job {job_name}")
                     seen[check] = job_name
-                    if job_name == "check":
+                    if job_name in STEP_GATED_JOBS:
                         self.assertEqual(step.get("if"), f"needs.plan.outputs.check_{check} == 'true'")
         self.assertEqual(set(seen), set(CHECK_JOB))
 
@@ -170,7 +170,11 @@ class WorkflowContractTests(unittest.TestCase):
         steps = job["steps"]
         capnp = {s.get("if") for s in steps if "capnp" in s.get("run", "") and "ci-exec.py" not in s.get("run", "")}
         self.assertEqual(
-            capnp, {"runner.os == 'Linux'", "runner.os == 'macOS'", "runner.os == 'Windows'"}
+            capnp,
+            {
+                f"runner.os == '{os}' && env.CI_SAVED_CACHE_CURRENT != 'true'"
+                for os in ("Linux", "macOS", "Windows")
+            },
         )
         run = [s for s in steps if "ci-exec.py run native_gateway" in s.get("run", "")]
         self.assertEqual(len(run), 1)
@@ -276,6 +280,18 @@ class WorkflowContractTests(unittest.TestCase):
                 # Anything beyond the hit may only widen the skip within build-only runs.
                 rest = skip["if"].removeprefix("steps.saved.outputs.cache-hit == 'true'")
                 self.assertIn(rest, ("", " || (env.CI_BUILD_ONLY == 'true' && runner.os == 'Linux')"))
+
+    def test_site_job_needs_no_rust_and_keeps_private_reports(self) -> None:
+        job = self.jobs["site"]
+        self.assertEqual(job["runs-on"], "ubuntu-latest")
+        uses = [str(s.get("uses", "")) for s in job["steps"]]
+        self.assertFalse([u for u in uses if u.startswith(("dtolnay/", "Swatinem/"))], "the site job runs no cargo")
+        upload = [s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
+        self.assertEqual(len(upload), 1)
+        self.assertIn("!inputs.private-head", upload[0]["if"])
+        node = next(s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/setup-node@"))
+        for lock in ("tools/site/package-lock.json", "tools/site/audit/package-lock.json", "tools/diagnostics-collector/package-lock.json"):
+            self.assertIn(lock, node["with"]["cache-dependency-path"])
 
     def test_fail_fast_job_is_merge_group_only_and_alone_can_cancel(self) -> None:
         job = self.jobs[FAIL_FAST_JOB]

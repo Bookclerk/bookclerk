@@ -39,6 +39,15 @@ updates:
     cooldown:
       default-days: 7
 
+  # Lighthouse and axe-core for the website's CI audit.
+  - package-ecosystem: npm
+    directory: "/tools/site/audit"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+
   # Web UI bundled into ui/dist and served by bookclerkd.
   - package-ecosystem: npm
     directory: "/ui"

@@ -41,6 +41,17 @@ SITE_COMMIT=$(git rev-parse HEAD) npm run build      # writes dist/ and generate
 npx wrangler dev                                       # docs pages need network access to GitHub
 ```
 
+## Audit
+
+CI runs Lighthouse and axe-core on every pull request that changes the site
+(`audit/`, see `docs/ci.md#website-checks`). It serves `dist/` through the
+Worker with docs read from this checkout's `docs/`, so it needs no network:
+
+```bash
+SITE_COMMIT=$(git rev-parse HEAD) npm run build
+cd audit && npm ci && node audit.mjs      # --chrome <path> or CHROME_PATH picks the browser
+```
+
 ## Layout
 
 - `src/*.html` – pages. `{{name}}` inserts an escaped value, `{{> name}}` a
@@ -48,6 +59,9 @@ npx wrangler dev                                       # docs pages need network
   `{{#released}}…{{/released}}` keep content for one release state.
 - `src/site.css` – styles; colors and fonts follow `ui/src/index.css` and
   `assets/brand/README.md`, with a dark scheme from `prefers-color-scheme`.
+- `src/fonts/` – the web fonts, served from the site itself (no third-party
+  requests), with their licenses and the fallback metrics `site.css` uses to
+  keep the layout from shifting while they load; see its README.
 - Docs pages – see [Docs](#docs) below. `src/doc.html` is their template,
   `render.mjs` renders them (shared by the build and the Worker), and
   `docs.mjs` reads the local `docs/` for the build. `NAV` in `render.mjs`
