@@ -3,8 +3,14 @@
 (() => {
   const status = document.getElementById("demo-wait-status");
   const started = Date.now();
+  const throbber = document.getElementById("demo-wait-throbber");
   const say = (text) => {
     if (status) status.textContent = text;
+  };
+  // Starting has stopped: the throbber must not suggest it is still going.
+  const giveUp = (text) => {
+    if (throbber) throbber.setAttribute("hidden", "");
+    say(text);
   };
   const poll = async () => {
     let state = "unknown";
@@ -19,11 +25,11 @@
       return;
     }
     if (state === "failed" || state === "ended" || state === "none") {
-      say("Your copy of Bookclerk could not start. Please go back and try again.");
+      giveUp("Your copy of Bookclerk could not start. Please go back and try again.");
       return;
     }
     if (Date.now() - started > 180000) {
-      say("This is taking longer than it should. Please go back and try again.");
+      giveUp("This is taking longer than it should. Please go back and try again.");
       return;
     }
     if (Date.now() - started > 30000) say("Still starting. Thanks for your patience.");

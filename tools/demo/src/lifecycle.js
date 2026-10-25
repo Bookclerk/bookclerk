@@ -68,44 +68,28 @@ export async function waitForHealth(call, opts) {
 }
 
 /**
- * Sets the host up with an Owner nobody signs in as, creates the visitor as
- * an administrator and returns the visitor's portal session.
+ * Makes the visitor the host's Owner and returns the visitor's portal
+ * session.
  *
- * The visitor is an administrator rather than the Owner because the web
- * app's Accounts page lets administrators, hosts and members connect stores,
- * and because an administrator cannot change sign-in settings or users the
- * way an Owner can. Both accounts get random passwords nobody sees, so the
- * claim ticket redeems without one and nobody can sign in as either some
- * other way.
+ * The visitor gets the account a person who installs Bookclerk has, so the
+ * demo shows everything the Owner sees. The Worker still refuses the routes
+ * the demo does not allow (src/routes.js) whatever the role. The Owner gets a
+ * random password nobody sees, so the claim ticket redeems without one and
+ * nobody can sign in as the visitor some other way.
  *
  * @param {ContainerCall} call Container request function.
  * @param {string} operatorToken The session's operator token.
  * @returns {Promise<string>} The `bookclerk_portal_session` value.
- * @throws {Error} When bootstrap, user creation or redeem fails or answers
- *   unexpectedly.
+ * @throws {Error} When bootstrap or redeem fails or answers unexpectedly.
  */
 export async function signInVisitor(call, operatorToken) {
-  const json = { Authorization: `Bearer ${operatorToken}`, "Content-Type": "application/json" };
   const boot = await call("/api/auth/bootstrap", {
     method: "POST",
-    headers: json,
-    body: JSON.stringify({ display_name: "Demo host", login_name: "demo-owner", password: randomHex(24) }),
+    headers: { Authorization: `Bearer ${operatorToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ display_name: "Demo visitor", login_name: "demo", password: randomHex(24) }),
   });
-  await boot.body?.cancel();
-  if (boot.status !== 200) throw new Error(`bootstrap answered ${boot.status}`);
-  const user = await call("/api/users", {
-    method: "POST",
-    headers: json,
-    body: JSON.stringify({
-      role: "administrator",
-      display_name: "Demo visitor",
-      login_name: "demo",
-      password: randomHex(24),
-      mint_invite: true,
-    }),
-  });
-  const ticket = decodeClaimTicket(await user.text());
-  if (user.status !== 200 || !ticket) throw new Error(`creating the visitor answered ${user.status}`);
+  const ticket = decodeClaimTicket(await boot.text());
+  if (boot.status !== 200 || !ticket) throw new Error(`bootstrap answered ${boot.status}`);
   const redeem = await call("/api/portal/redeem", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

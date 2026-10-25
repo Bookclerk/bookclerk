@@ -30,50 +30,38 @@ describe("signInVisitor", () => {
     return new Response('{"ok":true}', { headers: h });
   };
 
-  it("sets up an Owner, creates the visitor as an administrator and redeems its ticket", async () => {
+  it("makes the visitor the Owner and redeems its ticket", async () => {
     const ticket = "0b6e2d1c-3c54-4f0e-9c1e-1b0e7b8a9d10";
     const { call, seen } = scripted({
-      "POST /api/auth/bootstrap": () => Response.json({ ok: true, claim_ticket: "o".repeat(36) }),
-      "POST /api/users": () => Response.json({ ok: true, user: { id: 2 }, claim_ticket: ticket }),
+      "POST /api/auth/bootstrap": () => Response.json({ ok: true, user_id: 1, claim_ticket: ticket }),
       "POST /api/portal/redeem": redeemed,
     });
     assert.equal(await signInVisitor(call, "op-token"), "a".repeat(64));
+    assert.equal(seen.length, 2);
     assert.equal(seen[0].init.headers.Authorization, "Bearer op-token");
     const boot = JSON.parse(seen[0].init.body);
-    assert.equal(boot.login_name, "demo-owner");
+    assert.equal(boot.login_name, "demo");
+    assert.equal(boot.display_name, "Demo visitor");
     assert.match(boot.password, /^[0-9a-f]{48}$/);
-    assert.equal(seen[1].init.headers.Authorization, "Bearer op-token");
-    const user = JSON.parse(seen[1].init.body);
-    assert.equal(user.role, "administrator");
-    assert.equal(user.login_name, "demo");
-    assert.equal(user.mint_invite, true);
-    assert.match(user.password, /^[0-9a-f]{48}$/);
-    assert.notEqual(user.password, boot.password);
-    const redeem = JSON.parse(seen[2].init.body);
+    const redeem = JSON.parse(seen[1].init.body);
     assert.equal(redeem.ticket, ticket);
     assert.match(redeem.nonce, /^[0-9a-f]{64}$/);
-    assert.equal(seen[2].init.headers.Authorization, undefined);
+    assert.equal(seen[1].init.headers.Authorization, undefined);
   });
 
-  it("fails when bootstrap, user creation or redeem goes wrong", async () => {
+  it("fails when bootstrap or redeem goes wrong", async () => {
     await assert.rejects(
       signInVisitor(scripted({ "POST /api/auth/bootstrap": () => new Response("", { status: 409 }) }).call, "t"),
       /bootstrap answered 409/,
     );
-    const booted = { "POST /api/auth/bootstrap": () => Response.json({ ok: true }) };
     await assert.rejects(
-      signInVisitor(scripted({ ...booted, "POST /api/users": () => new Response("", { status: 403 }) }).call, "t"),
-      /creating the visitor answered 403/,
-    );
-    await assert.rejects(
-      signInVisitor(scripted({ ...booted, "POST /api/users": () => Response.json({ ok: true, claim_ticket: "short" }) }).call, "t"),
-      /creating the visitor answered 200/,
+      signInVisitor(scripted({ "POST /api/auth/bootstrap": () => Response.json({ ok: true, claim_ticket: "short" }) }).call, "t"),
+      /bootstrap answered 200/,
     );
     await assert.rejects(
       signInVisitor(
         scripted({
-          ...booted,
-          "POST /api/users": () => Response.json({ ok: true, claim_ticket: "x".repeat(36) }),
+          "POST /api/auth/bootstrap": () => Response.json({ ok: true, claim_ticket: "x".repeat(36) }),
           "POST /api/portal/redeem": () => new Response("{}"),
         }).call,
         "t",

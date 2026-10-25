@@ -1,19 +1,38 @@
-/* The bar the demo Worker adds to the top of the app (banner.js). */
-#bookclerk-demo-banner {
-  position: sticky;
-  top: 0;
-  z-index: 2147483000;
+/* The bar the demo Worker adds to the top of the app (banner.js).
+
+   The app fills the viewport (html, body and #root are 100% tall) and
+   scrolls inside its own panes, so the bar takes its height from #root
+   rather than sitting on top of it: body becomes a column, the bar keeps its
+   own height and #root gets the rest. Nothing then scrolls the page itself.
+   The bar stays in the page flow below the app's overlays (menus, dialogs
+   from z-index 40 up), so they cover it instead of losing their top edge. */
+body:has(> #bookclerk-demo-banner) {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  overflow: hidden;
+}
+body:has(> #bookclerk-demo-banner) > #root {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+#bookclerk-demo-banner {
+  flex: none;
+  position: relative;
+  z-index: 30;
+  display: flex;
   align-items: center;
   gap: 8px 16px;
   padding: 8px 16px;
   background: #0b3553;
   color: #f3e5c6;
   font: 15px/1.4 "Segoe UI", Candara, system-ui, sans-serif;
+  white-space: nowrap;
 }
 #bookclerk-demo-banner strong { font-weight: 600; }
+#bookclerk-demo-banner .demo-left { font-variant-numeric: tabular-nums; }
 #bookclerk-demo-banner .demo-spacer { flex: 1 1 auto; }
+#bookclerk-demo-banner .demo-short { display: none; }
 #bookclerk-demo-banner a,
 #bookclerk-demo-banner button {
   font: inherit;
@@ -28,3 +47,20 @@
 #bookclerk-demo-banner a:focus-visible,
 #bookclerk-demo-banner button:focus-visible { outline: 2px solid #5aa8a2; outline-offset: 2px; }
 #bookclerk-demo-banner form { margin: 0; }
+/* Phones: one short row. "Bookclerk demo" becomes "Demo" and the buttons
+   shrink, so the bar stays one row about 38px tall. */
+@media (max-width: 560px) {
+  #bookclerk-demo-banner {
+    gap: 8px;
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+  #bookclerk-demo-banner .demo-long { display: none; }
+  #bookclerk-demo-banner .demo-short { display: inline; }
+  #bookclerk-demo-banner a,
+  #bookclerk-demo-banner button { padding: 4px 8px; }
+}
+/* The narrowest phones (320px): the time and both buttons still fit. */
+@media (max-width: 360px) {
+  #bookclerk-demo-banner strong { display: none; }
+}

@@ -6,9 +6,17 @@
   bar.setAttribute("role", "region");
   bar.setAttribute("aria-label", "Bookclerk demo");
 
+  // "Bookclerk demo" on wide screens, "Demo" on phones (banner.css).
   const label = document.createElement("strong");
-  label.textContent = "Bookclerk demo";
+  const long = document.createElement("span");
+  long.className = "demo-long";
+  long.textContent = "Bookclerk demo";
+  const short = document.createElement("span");
+  short.className = "demo-short";
+  short.textContent = "Demo";
+  label.append(long, short);
   const left = document.createElement("span");
+  left.className = "demo-left";
   left.setAttribute("aria-live", "polite");
   const spacer = document.createElement("span");
   spacer.className = "demo-spacer";
@@ -36,7 +44,7 @@
     if (!endsAt) return;
     const s = Math.max(0, endsAt - Math.floor(Date.now() / 1000));
     const m = Math.floor(s / 60);
-    left.textContent = s > 0 ? `${m} min ${String(s % 60).padStart(2, "0")} s left` : "Time is up";
+    left.textContent = s > 0 ? `${m}:${String(s % 60).padStart(2, "0")} left` : "Time is up";
     if (s === 0) window.location.assign("/");
   };
   fetch("/_demo/session", { headers: { Accept: "application/json" } })

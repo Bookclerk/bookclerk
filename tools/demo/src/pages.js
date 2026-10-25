@@ -122,6 +122,17 @@ ${back}`,
 }
 
 /**
+ * The app's waveform loading indicator (ui/src/components/WaveformThrobber.tsx):
+ * the logo's three bars pulsing from their centers. Animated by demo.css, so
+ * the page's CSP needs no inline styles; wait.js stops it when starting fails.
+ */
+const WAVEFORM_THROBBER = `<svg id="demo-wait-throbber" class="demo-throbber" viewBox="0 0 79 114" aria-hidden="true" focusable="false">
+<rect class="waveform-bar" x="0" y="23" width="17" height="68" rx="8.5"/>
+<rect class="waveform-bar" x="31" y="0" width="17" height="114" rx="8.5"/>
+<rect class="waveform-bar" x="62" y="26" width="17" height="62" rx="8.5"/>
+</svg>`;
+
+/**
  * The page shown while the visitor's copy starts. /_demo/wait.js polls the
  * session and moves on when it is ready.
  *
@@ -130,7 +141,8 @@ ${back}`,
 export function waitPage() {
   return documentHtml(
     "Starting your demo",
-    `<h1>Starting your copy of Bookclerk</h1>
+    `${WAVEFORM_THROBBER}
+<h1>Starting your copy of Bookclerk</h1>
 <p id="demo-wait-status" role="status">This takes about half a minute.</p>
 <noscript><p>This page needs JavaScript to notice when your copy is ready. <a href="/_demo/enter">Continue</a></p></noscript>`,
     { scripts: ["/_demo/wait.js"] },

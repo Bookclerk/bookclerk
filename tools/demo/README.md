@@ -16,9 +16,8 @@ downloaded, and their store sign-ins are revoked when the session ends.
    demo's own origin as bookclerkd's `public_origin` (so bookclerkd's own
    cross-site checks and store sign-in callbacks use it), waits for
    `/health`, approves and deploys the four storefronts as the operator
-   (as an operator would in Settings; visitors cannot), sets up an Owner
-   nobody signs in as, creates the visitor as an administrator (who may
-   connect stores in Accounts) and redeems the visitor's claim ticket. The
+   (as an operator would in Settings; visitors cannot), makes the visitor
+   the host's Owner and redeems the Owner's claim ticket. The
    Durable Object then forgets the operator token. The visitor waits on `/_demo/wait`.
 3. `/_demo/enter` hands the browser the portal session cookie. From then on
    every request goes through the Worker (`src/app.js`), which:
@@ -31,7 +30,7 @@ downloaded, and their store sign-ins are revoked when the session ends.
      `Cookie` (other than bookclerkd's own) and client IP headers;
    - counts store sign-in starts against per-session and per-day limits;
    - forwards the request as the visitor's own session, so bookclerkd
-     authorizes everything as the visitor's administrator account and
+     authorizes everything as the visitor's Owner account and
      scans only the visitor's store accounts;
    - rewrites `Set-Cookie` so the container cannot set the Worker's cookies,
      and adds a banner with the time left and a **Start over** button.
@@ -69,7 +68,9 @@ IP addresses are stored only as a keyed hash that changes every day.
 ## Deploying
 
 `.github/workflows/demo-deploy.yml` deploys on demo changes to `main`, on
-each published release, nightly, and on demand. It needs the repository
+each published release, nightly, and on demand; a nightly or release run
+stops early when the live demo already runs that commit and an earlier run
+for it succeeded. It needs the repository
 secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; the token's
 permissions are listed in
 [`docs/ci.md`](../../docs/ci.md#cloudflare-worker-deploys). The workflow makes
