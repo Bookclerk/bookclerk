@@ -29,8 +29,9 @@
 #   - bookclerk-demo-seed runs once before bookclerkd: it adds a second
 #     library user with books, a wishlist and an offline branch
 #     (crates/bookclerk-demo-seed), so the library the visitor lands in is
-#     not empty. It fetches each title's record from its store's catalog
-#     through the storefront plugins, then writes through the library code
+#     not empty. It approves and deploys the storefronts (their manifest
+#     grants, as the Worker does later), fetches each title's record from
+#     its store's catalog through them, then writes through the library code
 #     of this commit, never raw SQL. If it fails, bookclerkd still starts,
 #     with an empty library.
 

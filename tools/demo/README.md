@@ -11,7 +11,9 @@ starts, the image runs `bookclerk-demo-seed` (`crates/bookclerk-demo-seed`),
 which adds a second library user, Sam, with accounts at Audible, Libro.fm,
 Chirp and GraphicAudio, ten well-known audiobooks bought from them, four
 wishlist items, and a branch, `sams-nas`, that shared four more titles and
-has been offline for three days. The seed first looks each title up in its
+has been offline for three days. The seed first approves and deploys the four
+storefronts, with exactly the grants their manifests request (the Worker does
+the same through the daemon once it is up), then looks each title up in its
 store's public catalog through the storefront plugins (the search Discover
 uses, at most 15 seconds) and writes the record the store returns, so
 product ids, cover art and descriptions match the store. A title it cannot

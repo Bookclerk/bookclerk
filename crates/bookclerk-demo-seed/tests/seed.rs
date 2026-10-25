@@ -8,8 +8,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use bookclerk_demo_seed::{
-    best_match, distinct_records, lookups, seed, Lookup, SeedReport, Seeded, StoreRecords,
-    SAMPLE_BRANCH, SAMPLE_LOGIN, STOREFRONTS,
+    best_match, distinct_records, lookups, search_query, seed, Lookup, SeedReport, Seeded,
+    StoreRecords, SAMPLE_BRANCH, SAMPLE_LOGIN, STOREFRONTS,
 };
 use bookclerk_library::control_plane::branch_title_counts;
 use bookclerk_library::entities::nodes;
@@ -197,6 +197,24 @@ fn matches_the_store_record_of_the_title_and_author() {
     ];
     assert_eq!(best_match(&mistborn, &parts).unwrap().product_id, "GA2");
 
+    // GraphicAudio returns no authors; its titles add a series number.
+    let authorless = |id: &str, title: &str| CatalogHit {
+        product_id: id.into(),
+        title: title.into(),
+        ..CatalogHit::default()
+    };
+    let ga = [
+        authorless("GA1", "Mistborn 1: The Final Empire 1 of 3"),
+        authorless("GA2", "Mistborn 1: The Final Empire 2 of 3"),
+    ];
+    assert_eq!(best_match(&mistborn, &ga).unwrap().product_id, "GA2");
+    assert_eq!(
+        best_match(&lookup("demo-mistborn-1-part-1"), &ga)
+            .unwrap()
+            .product_id,
+        "GA1"
+    );
+
     // The store's first-ranked hit wins a tie.
     let twice = [
         hit("A", "Circe", "Madeline Miller"),
@@ -208,6 +226,23 @@ fn matches_the_store_record_of_the_title_and_author() {
             .product_id,
         "A"
     );
+}
+
+#[test]
+fn searches_stay_short() {
+    assert_eq!(
+        search_query(&lookup("demo-mistborn-1-part-1")),
+        "Mistborn: The Final Empire sanderson"
+    );
+    assert_eq!(
+        search_query(&lookup("demo-project-hail-mary")),
+        "Project Hail Mary weir"
+    );
+    // GraphicAudio cuts a query at about 40 characters.
+    assert!(lookups()
+        .iter()
+        .filter(|l| l.store == "graphicaudio")
+        .all(|l| search_query(l).len() <= 40));
 }
 
 #[test]

@@ -378,18 +378,39 @@ fn lists_author(authors: &str, wanted: &str) -> bool {
         })
 }
 
+/// The catalog search text for `lookup`: the title up to any `(…)` part,
+/// then the author's surname.
+///
+/// Kept short on purpose: GraphicAudio's catalog cuts a query at about 40
+/// characters and then answers with its whole catalog, and every store
+/// finds a title from its main words and the author's surname.
+#[must_use]
+pub fn search_query(lookup: &Lookup) -> String {
+    let title = lookup
+        .title
+        .split('(')
+        .next()
+        .unwrap_or(lookup.title)
+        .trim();
+    match words(lookup.author).pop() {
+        Some(surname) => format!("{title} {surname}"),
+        None => title.to_owned(),
+    }
+}
+
 /// The search hit that is the wanted title by the wanted author, or `None`.
 ///
-/// The hit must list the author: same surname and first initial. Among matching hits the
-/// closest title wins, then the store's own ranking.
+/// A hit that lists authors must list the wanted one (same surname and
+/// first initial). A hit without authors is judged on its title alone,
+/// because some storefronts (GraphicAudio) never return them. Among
+/// matching hits the closest title wins, then the store's own ranking.
 #[must_use]
 pub fn best_match<'a>(lookup: &Lookup, hits: &'a [CatalogHit]) -> Option<&'a CatalogHit> {
     hits.iter()
         .filter(|hit| !hit.product_id.trim().is_empty())
-        .filter(|hit| {
-            hit.authors
-                .as_deref()
-                .is_some_and(|authors| lists_author(authors, lookup.author))
+        .filter(|hit| match present(hit.authors.as_ref()) {
+            Some(authors) => lists_author(&authors, lookup.author),
+            None => true,
         })
         .filter_map(|hit| title_score(lookup.title, &hit.title).map(|score| (score, hit)))
         // `max_by_key` keeps the last of equal keys; reverse so the store's
