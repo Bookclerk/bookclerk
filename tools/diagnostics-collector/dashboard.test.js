@@ -1978,16 +1978,28 @@ describe("issue page and ledger corrections", () => {
     assert.deepEqual(await ledger(env, 405), [[ID2, "excluded", "octo"]]);
     assert.deepEqual(await ledger(env, 403), [[ID1, "filed", null], [ID2, "manual", "octo"]]);
 
-    // A merge takes what it moves from every other issue and leaves the merged issue with nothing.
+    // A merge takes every report the merged issue linked from every other
+    // issue, including one the chosen issue already listed itself, and
+    // leaves the merged issue with nothing.
+    await seed(env, ID4, NOW - 3_600_000);
     await run(d1, "INSERT INTO report_issue (report_id, issue_number, source, linked_by, linked_at) VALUES (?, 405, 'manual', 'octo', ?)", ID3, NOW);
     await run(d1, "INSERT INTO report_issue (report_id, issue_number, source, linked_by, linked_at) VALUES (?, 400, 'manual', 'octo', ?)", ID3, NOW - 1);
     await run(d1, "INSERT INTO report_issue (report_id, issue_number, source, linked_by, linked_at) VALUES (?, 405, 'signature', 'ingest', ?)", ID1, NOW);
-    assert.deepEqual(await counted(), { 400: 1, 403: 2 });
+    await run(d1, "INSERT INTO report_issue (report_id, issue_number, source) VALUES (?, 400, 'filed')", ID4);
+    await run(d1, "INSERT INTO report_issue (report_id, issue_number, source) VALUES (?, 403, 'filed')", ID4);
+    await run(d1, "INSERT INTO report_issue (report_id, issue_number, source, linked_by, linked_at) VALUES (?, 405, 'signature', 'ingest', ?)", ID4, NOW);
+    assert.deepEqual(await counted(), { 400: 2, 403: 2 });
     assert.equal((await correct(env, cookie, { action: "merge", issue: "405", to: "403" })).status, 303);
-    assert.deepEqual(await ledger(env, 405), [[ID1, "excluded", "octo"], [ID2, "excluded", "octo"], [ID3, "excluded", "octo"]]);
-    assert.deepEqual((await ledger(env, 400)).find(([id]) => id === ID3), [ID3, "excluded", "octo"], "#400 counted it, so the merge takes it");
-    assert.deepEqual((await ledger(env, 403)).map(([id, source]) => [id, source]), [[ID1, "filed"], [ID2, "manual"], [ID3, "manual"]]);
-    assert.deepEqual(await counted(), { 403: 3 }, "#400 tracks nothing now (its summary, never written here, is not handed out)");
+    assert.deepEqual(await ledger(env, 405), [[ID1, "excluded", "octo"], [ID2, "excluded", "octo"], [ID3, "excluded", "octo"], [ID4, "excluded", "octo"]]);
+    assert.deepEqual((await ledger(env, 400)).filter(([id]) => id === ID3 || id === ID4), [[ID3, "excluded", "octo"], [ID4, "excluded", "octo"]], "#400 counted both, so the merge takes them");
+    assert.deepEqual((await ledger(env, 403)).map(([id, source]) => [id, source]), [[ID1, "filed"], [ID2, "manual"], [ID3, "manual"], [ID4, "filed"]]);
+    assert.deepEqual(await counted(), { 403: 4 }, "#400 tracks nothing now (its summary, never written here, is not handed out)");
+
+    // A move from an issue whose row the sync already dropped still records the exclusion there.
+    await run(d1, "DELETE FROM report_issue WHERE report_id = ? AND issue_number = 403", ID2);
+    assert.equal((await correct(env, cookie, { action: "move", issue: "403", report: ID2, to: "405" })).status, 303);
+    assert.deepEqual((await ledger(env, 403)).find(([id]) => id === ID2), [ID2, "excluded", "octo"]);
+    assert.deepEqual(await ledger(env, 405), [[ID1, "excluded", "octo"], [ID2, "manual", "octo"], [ID3, "excluded", "octo"], [ID4, "excluded", "octo"]]);
   });
 
   it("clears the pending banner once ingest records the summary", async () => {

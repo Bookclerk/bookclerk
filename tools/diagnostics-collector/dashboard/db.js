@@ -1274,7 +1274,8 @@ function detachStatement(db, issue, reportId, login, now) {
  * linking the report gets an exclusion (source `excluded`), so the report
  * counts under the issue the member chose rather than under the oldest
  * issue listing it, and the sync does not relink it from those issues'
- * descriptions.
+ * descriptions. The exclusion is the member's, like a detach: a later
+ * attach on one of those issues replaces it.
  *
  * @param {D1Database} db Database.
  * @param {number} issue The issue the member chose.
@@ -1296,10 +1297,12 @@ function takeStatement(db, issue, reportId, login, now) {
  * Applies a member's correction to the ledger (`parseLinkAction`): `attach`
  * links the report to the issue and takes it from every other issue
  * (`takeStatement`), `detach` writes one exclusion, `move` is an attach to
- * the other issue (which takes it from this one), and `merge` attaches every
- * report linked to the issue to the other one (by the member's hand, so it
- * also replaces an exclusion there), takes the ones it moved from every other
- * issue, and excludes them all from this one, in one batch. The caller has checked that the
+ * the other issue plus a detach from this one (the take covers issues with a
+ * row; the detach records the exclusion even when this issue's row is gone),
+ * and `merge` attaches every report linked to the issue to the other one (by
+ * the member's hand, so it also replaces an exclusion there), takes them
+ * from every other issue, and excludes them all from this one, in one
+ * batch. The caller has checked that the
  * issues and the report exist.
  *
  * @param {D1Database} db Database.
@@ -1315,7 +1318,11 @@ export async function applyLinkAction(db, change, login, now) {
   } else if (action === "detach" && report !== null) {
     await detachStatement(db, issue, report, login, now).run();
   } else if (action === "move" && report !== null && to !== null) {
-    await db.batch([attachStatement(db, to, report, login, now), takeStatement(db, to, report, login, now)]);
+    await db.batch([
+      attachStatement(db, to, report, login, now),
+      detachStatement(db, issue, report, login, now),
+      takeStatement(db, to, report, login, now),
+    ]);
   } else if (action === "merge" && to !== null) {
     await db.batch([
       db
@@ -1326,15 +1333,17 @@ export async function applyLinkAction(db, change, login, now) {
            WHERE report_issue.source = 'excluded'`,
         )
         .bind(to, login, now, issue),
-      // Every other issue listing the reports just attached gives them up:
-      // the member said they belong to the chosen issue.
+      // Every other issue listing the reports the merged issue linked gives
+      // them up (the chosen issue included when it already linked one): the
+      // member said they belong to the chosen issue. Runs before the merged
+      // issue's rows are excluded below, which it reads.
       db
         .prepare(
           `UPDATE report_issue SET source = 'excluded', linked_by = ?, linked_at = ?
            WHERE issue_number <> ? AND source <> 'excluded'
-             AND report_id IN (SELECT x.report_id FROM report_issue x WHERE x.issue_number = ? AND x.source = 'manual' AND x.linked_at = ?)`,
+             AND report_id IN (SELECT x.report_id FROM report_issue x WHERE x.issue_number = ? AND x.source <> 'excluded')`,
         )
-        .bind(login, now, to, to, now),
+        .bind(login, now, to, issue),
       // The merged issue keeps nothing, not even reports the other issue
       // already linked.
       db
