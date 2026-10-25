@@ -34,6 +34,14 @@
 // - decodeReleases and decodeCompare read GitHub's release list and compare
 //   answers; their results decide which release an issue's fix is recorded
 //   under, and so which reports count as regressions.
+// - parseLinkAction reads the ledger correction forms members post; its
+//   result decides which report is attached to, detached from or moved
+//   between which issues, and which issue is merged into which.
+// - decodeComments reads one page of an issue's comments; its result is the
+//   comment the owner's "Update GitHub now" button edits in place, or that a
+//   new one is posted. isLockedMessage reads GitHub's refusal of that write;
+//   its result decides whether the issue is recorded as written (locked, no
+//   retry) or left for the next run.
 //
 // Each result is checked against an independent oracle written without the
 // module's own helpers.
@@ -46,6 +54,8 @@ import {
   DIAGNOSTICS_LABEL,
   decodeAccessToken,
   decodeCompare,
+  decodeComments,
+  isLockedMessage,
   decodeIssue,
   decodeReleases,
   fixedInLabel,
@@ -59,6 +69,7 @@ import {
   decodeUser,
   membershipDecision,
 } from "./dashboard/github.js";
+import { LINK_ACTIONS, MAX_FORM_CHARS, MAX_ISSUE_NUMBER, parseLinkAction } from "./dashboard/links.js";
 import { eventLog } from "./dashboard/pages.js";
 import { decodeListPage } from "./dashboard/storage.js";
 import { memberFromRow, SESSION_COOKIE, sessionToken } from "./dashboard/session.js";
@@ -252,7 +263,9 @@ function isDashboardPage(next) {
     return false;
   }
   const pages = new Set(["/dash", "/reports", "/issues"]);
-  const page = pages.has(url.pathname) || (url.pathname.startsWith("/reports/") && UUID.test(url.pathname.slice(9)));
+  const page = pages.has(url.pathname)
+    || (url.pathname.startsWith("/reports/") && UUID.test(url.pathname.slice(9)))
+    || (url.pathname.startsWith("/issues/") && /^[1-9][0-9]{0,8}$/.test(url.pathname.slice(8)));
   return (
     url.origin === ORACLE_ORIGIN &&
     page &&
@@ -1049,6 +1062,209 @@ describe("issue notice decoding", () => {
         const data = mutateJson(rand, issues[Math.floor(rand() * issues.length)]);
         checkIssue(data, `issue ${n}: ${JSON.stringify(data)?.slice(0, 300)}`);
       }
+    }
+  });
+});
+
+/**
+ * Oracle for parseLinkAction: re-derives the expected correction with a
+ * separate walk over the body (split on `&`, first value per name, `+` as
+ * space, strict percent-decoding) and separate rules for each field.
+ *
+ * @param {unknown} body Form body.
+ * @param {string} label Input name for failure messages.
+ */
+function checkLinkAction(body, label) {
+  const got = parseLinkAction(body);
+  if (typeof body !== "string" || body.length > MAX_FORM_CHARS) {
+    assert.equal(got, null, label);
+    return;
+  }
+  const fields = new Map();
+  for (const pair of body.split("&")) {
+    if (pair === "") continue;
+    const eq = pair.indexOf("=");
+    const rawName = eq < 0 ? pair : pair.slice(0, eq);
+    const rawValue = eq < 0 ? "" : pair.slice(eq + 1);
+    const decode = (t) => {
+      try {
+        return decodeURIComponent(t.replace(/\+/g, " "));
+      } catch {
+        return "\u0000malformed";
+      }
+    };
+    const name = decode(rawName);
+    if (!fields.has(name)) fields.set(name, decode(rawValue));
+  }
+  const action = fields.get("action");
+  const number = (t) => (t !== undefined && /^[1-9][0-9]{0,9}$/.test(t) && Number(t) <= MAX_ISSUE_NUMBER ? Number(t) : null);
+  const issue = number(fields.get("issue"));
+  const report = fields.get("report");
+  const to = number(fields.get("to"));
+  const ok = LINK_ACTIONS.includes(action) && issue !== null
+    && (action === "merge" || (report !== undefined && UUID.test(report)))
+    && (!(action === "move" || action === "merge") || (to !== null && to !== issue));
+  if (!ok) {
+    assert.equal(got, null, label);
+    return;
+  }
+  assert.deepEqual(
+    got,
+    {
+      action,
+      issue,
+      report: action === "merge" ? null : report,
+      to: action === "move" || action === "merge" ? to : null,
+    },
+    label,
+  );
+}
+
+const LINK_FRAGMENTS = [
+  "&", "=", "+", "%", "%2", "%30", "action=", "issue=", "report=", "to=", "back=", "attach", "detach", "move", "merge",
+  "400", "403", "0", "-1", "1000000001", "7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4", "A", "f", "-", " ", "\u0000", "é",
+];
+
+/** The marker the summary comment starts with (spelled out, not imported). */
+const ORACLE_MARKER = "<!-- bookclerk-diagnostics: summary -->";
+
+/**
+ * Oracle for decodeComments: walks the first hundred entries by hand and
+ * takes the first with a positive safe integer `id`, a `user` object whose
+ * `type` is exactly "Bot", and a string `body` that begins with the marker.
+ *
+ * @param {unknown} data Parsed comments page.
+ * @param {string} label Input name for failure messages.
+ */
+function checkComments(data, label) {
+  const got = decodeComments(data);
+  if (!Array.isArray(data)) {
+    assert.equal(got, null, label);
+    return;
+  }
+  const page = data.slice(0, 100);
+  let summary = null;
+  for (const c of page) {
+    if (summary !== null || c === null || typeof c !== "object") continue;
+    const idOk = typeof c.id === "number" && Number.isSafeInteger(c.id) && c.id >= 1;
+    const userOk = c.user !== null && typeof c.user === "object" && c.user.type === "Bot";
+    const bodyOk = typeof c.body === "string" && c.body.slice(0, ORACLE_MARKER.length) === ORACLE_MARKER;
+    if (idOk && userOk && bodyOk) summary = c.id;
+  }
+  assert.deepEqual(got, { summary, count: page.length }, label);
+}
+
+const COMMENT_FRAGMENTS = ['"id"', '"user"', '"type"', '"Bot"', '"User"', '"body"', ORACLE_MARKER, "<!-- ", "-->", " ", "\n", "0", "-1", "1.5", "9007199254740993", "null", "[", "]", "{", "}", ",", ":", '"', "é", "\u0000"];
+
+describe("ledger correction form", () => {
+  it("replays the seed corpus", () => {
+    const all = seeds("link_action");
+    assert.ok(all.length > 0);
+    for (const [name, raw] of all) checkLinkAction(raw, name);
+    const byName = Object.fromEntries(all);
+    assert.deepEqual(parseLinkAction(byName["move.txt"]), { action: "move", issue: 400, report: "7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4", to: 403 });
+    assert.deepEqual(parseLinkAction(byName["merge.txt"]), { action: "merge", issue: 400, report: null, to: 403 });
+    assert.equal(parseLinkAction(byName["encoded_digits.txt"])?.issue, 400);
+    for (const off of ["merge_self.txt", "missing_report.txt", "upper_uuid.txt", "bad_action.txt", "zero_issue.txt", "huge_target.txt", "plus_issue.txt", "too_long.txt", "empty.txt", "json.txt"]) {
+      assert.equal(parseLinkAction(byName[off]), null, off);
+    }
+    for (const v of [null, undefined, 7, {}, ["action=merge"]]) checkLinkAction(v, String(v));
+  });
+
+  it("holds the oracle under seeded mutation", () => {
+    const all = seeds("link_action").map(([, raw]) => raw);
+    const rand = rng(20261025);
+    for (let n = 0; n < 6000; n++) {
+      const input = mutate(rand, all[Math.floor(rand() * all.length)], LINK_FRAGMENTS);
+      checkLinkAction(input, `iteration ${n}: ${JSON.stringify(input).slice(0, 300)}`);
+    }
+  });
+});
+
+/**
+ * Oracle for isLockedMessage: true only for a plain object whose `message`
+ * is a string of at most 1000 characters containing "issue is locked" in
+ * any ASCII letter case, single-spaced, with no word character (ASCII letter,
+ * digit or underscore) touching either end.
+ *
+ * @param {unknown} data Parsed 403 body.
+ * @param {string} label Input name for failure messages.
+ */
+function checkLockedMessage(data, label) {
+  const got = isLockedMessage(data);
+  let want = false;
+  if (data !== null && typeof data === "object" && typeof data.message === "string" && data.message.length <= 1000) {
+    const text = data.message.replace(/[A-Z]/g, (c) => c.toLowerCase());
+    const isWord = (ch) => ch !== undefined && /[a-z0-9_]/.test(ch);
+    for (let at = text.indexOf("issue is locked"); at !== -1 && !want; at = text.indexOf("issue is locked", at + 1)) {
+      want = !isWord(text[at - 1]) && !isWord(text[at + "issue is locked".length]);
+    }
+  }
+  assert.equal(got, want, label);
+}
+
+const LOCKED_FRAGMENTS = ['"message"', "issue is locked", "ISSUE IS LOCKED", "issue", "is", "locked", "unlocked", "issues", "_", " ", ".", '"', "{", "}", "[", "]", "null", "é", "\u0000", "x".repeat(200)];
+
+describe("issue comments decoding", () => {
+  it("replays the seed corpus", () => {
+    const all = seeds("issue_comments");
+    assert.ok(all.length > 0);
+    for (const [name, raw] of all) checkComments(JSON.parse(raw), name);
+    const byName = Object.fromEntries(all);
+    assert.deepEqual(decodeComments(JSON.parse(byName["normal.json"])), { summary: 202, count: 3 });
+    assert.deepEqual(decodeComments(JSON.parse(byName["user_marker.json"])), { summary: 205, count: 2 }, "a member's forged marker is not the summary");
+    assert.deepEqual(decodeComments(JSON.parse(byName["first_wins.json"])), { summary: 207, count: 2 });
+    assert.deepEqual(decodeComments(JSON.parse(byName["bad_id.json"])), { summary: 210, count: 5 });
+    assert.deepEqual(decodeComments(JSON.parse(byName["full_page.json"])), { summary: 399, count: 100 });
+    assert.deepEqual(decodeComments(JSON.parse(byName["over_page.json"])), { summary: null, count: 100 }, "past the page size is not read");
+    for (const none of ["empty.json", "no_marker.json", "marker_inside.json", "no_user.json", "body_not_string.json"]) {
+      assert.equal(decodeComments(JSON.parse(byName[none])).summary, null, none);
+    }
+    for (const off of ["not_array.json", "null.json", "string.json"]) assert.equal(decodeComments(JSON.parse(byName[off])), null, off);
+  });
+
+  it("holds the oracle under seeded mutation", () => {
+    const all = seeds("issue_comments").filter(([n]) => n !== "full_page.json" && n !== "over_page.json").map(([, raw]) => raw);
+    const rand = rng(20261026);
+    for (let n = 0; n < 3000; n++) {
+      const text = mutate(rand, all[Math.floor(rand() * all.length)], COMMENT_FRAGMENTS);
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = text;
+      }
+      checkComments(data, `iteration ${n}: ${text.slice(0, 300)}`);
+    }
+  });
+});
+
+describe("locked issue message", () => {
+  it("replays the seed corpus", () => {
+    const all = seeds("locked_message");
+    assert.ok(all.length > 0);
+    for (const [name, raw] of all) checkLockedMessage(JSON.parse(raw), name);
+    const byName = Object.fromEntries(all);
+    assert.equal(isLockedMessage(JSON.parse(byName["locked.json"])), true);
+    assert.equal(isLockedMessage(JSON.parse(byName["locked_edit.json"])), true);
+    for (const off of ["rate_limit.json", "secondary_limit.json", "forbidden.json", "account_locked.json", "message_not_string.json", "array.json", "null.json", "long.json"]) {
+      assert.equal(isLockedMessage(JSON.parse(byName[off])), false, off);
+    }
+    for (const v of [undefined, "issue is locked", 7, {}, { message: null }]) assert.equal(isLockedMessage(v), false, String(v));
+  });
+
+  it("holds the oracle under seeded mutation", () => {
+    const all = seeds("locked_message").map(([, raw]) => raw);
+    const rand = rng(20261028);
+    for (let n = 0; n < 3000; n++) {
+      const text = mutate(rand, all[Math.floor(rand() * all.length)], LOCKED_FRAGMENTS);
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = text;
+      }
+      checkLockedMessage(data, `iteration ${n}: ${text.slice(0, 300)}`);
     }
   });
 });

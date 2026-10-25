@@ -13,11 +13,17 @@ import { BudgetLedger, DEFAULT_DAILY_NEURONS, MAX_DAILY_NEURONS, utcDay } from "
 import { DEFAULT_NEXT, finishSignIn, safeNext, sameSiteHop, signOut, startSignIn } from "./auth.js";
 import { metered } from "./budget.js";
 import {
+  applyLinkAction,
   fixStatus,
   isRegressionVersion,
+  issueDetail,
   issuesTrackingSignature,
   issueSummaries,
   markSummarySent,
+  claimSummaryWrite,
+  handOutSummaries,
+  releaseSummaryWrite,
+  openIssueOptions,
   SUMMARY_BATCH,
   all,
   countsByBucket,
@@ -44,11 +50,14 @@ import {
   topBy,
   topSignatures,
 } from "./db.js";
-import { githubConfig } from "./github.js";
+import { githubConfig, writeSummaryComment } from "./github.js";
+import { MAX_FORM_CHARS, issueNumber, parseLinkAction } from "./links.js";
+import { dashboardOrigin, renderSummary } from "./summary.js";
 import { announceChange, closeAllLive, connectLive } from "./live.js";
 import { fmtDay, html, htmlResponse, redirect } from "./html.js";
 import {
   dailySeries,
+  issuePage,
   issuesPage,
   messagePage,
   overviewPage,
@@ -61,10 +70,109 @@ import { readStoredReport } from "./storage.js";
 import { indexSubmitted, reindexSlice, syncIssueNow, syncIssues } from "./sync.js";
 
 /** Paths the dashboard owns (exact). */
-const PATHS = new Set(["/", "/auth/github", "/auth/callback", "/auth/logout", "/dash", "/reports", "/issues", "/admin/reindex", "/admin/sync", "/admin/sign-out-all", "/live"]);
+const PATHS = new Set(["/", "/auth/github", "/auth/callback", "/auth/logout", "/dash", "/reports", "/issues", "/issues/link", "/admin/reindex", "/admin/sync", "/admin/sign-out-all", "/admin/update-issue", "/live"]);
 
 /** `/reports/<uuid>`. */
 const REPORT_PATH = /^\/reports\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+
+/** `/issues/<number>`. */
+const ISSUE_PATH = /^\/issues\/([1-9][0-9]{0,8})$/;
+
+/**
+ * Cursor that holds what the owner's last "Update GitHub now" press said, as
+ * `<issue number>\t<unix ms>\t<text>`, shown on that issue's page for
+ * `UPDATE_NOTE_TTL_MS`.
+ */
+const UPDATE_NOTE = "issue_update_note";
+
+/** How long the note of an "Update GitHub now" press stays on the issue page. */
+const UPDATE_NOTE_TTL_MS = 10 * 60_000;
+
+/**
+ * The note of the last "Update GitHub now" press when it concerns this issue
+ * and is recent.
+ *
+ * @param {string | null} stored The `UPDATE_NOTE` cursor.
+ * @param {number} issue Issue number of the page.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {{at: number, text: string} | null} The note, or null.
+ */
+function updateNoteFor(stored, issue, now) {
+  const [forIssue, at, ...rest] = (stored ?? "").split("\t");
+  const when = Number(at);
+  if (forIssue !== String(issue) || !Number.isFinite(when) || now - when > UPDATE_NOTE_TTL_MS || rest.length === 0) return null;
+  return { at: when, text: rest.join("\t") };
+}
+
+/**
+ * What the page tells the owner after a failed comment write, from the
+ * error `writeSummaryComment` threw (its messages carry a stage and an HTTP
+ * status, never a token).
+ *
+ * @param {unknown} err The error.
+ * @returns {string} One sentence.
+ */
+function updateFailure(err) {
+  const text = err instanceof Error ? err.message : String(err);
+  if (text.startsWith("installation token failed")) {
+    return `GitHub refused the token to edit the comment (${text}); the App needs Issues: write on the repository. The scheduled ingest run will write it.`;
+  }
+  return `GitHub did not take the comment (${text}); try again later, or the scheduled ingest run will write it.`;
+}
+
+/**
+ * The owner's "Update GitHub now" press: renders the issue's summary from
+ * the ledger and writes it to GitHub as the ingest run would, then records
+ * the fingerprint written so the run does not write it again. A refusal for
+ * good (locked or gone issue) is recorded the same way, as the run does.
+ *
+ * @param {Record<string, any>} env Worker bindings.
+ * @param {import("./github.js").GitHubConfig} cfg Settings.
+ * @param {Request} request The form post.
+ * @param {number} issue Issue number.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {Promise<string>} The note for the issue page.
+ */
+async function updateIssueNow(env, cfg, request, issue, now) {
+  const db = env.DASHBOARD_DB;
+  // The ingest run and this press take turns per issue, so neither writes
+  // over the other's comment and then records the other's figures.
+  if (!(await claimSummaryWrite(db, issue, now))) {
+    return "The ingest run (or another owner) is writing this comment now; look again in a few minutes.";
+  }
+  try {
+    const [summary] = await issueSummaries(db, 1, issue);
+    if (!summary) return "GitHub already shows the current figures for this issue.";
+    // Report links point at this deployment: the Worker serves on exactly one
+    // origin (the custom domain, or workers.dev without one), which is the
+    // collector URL the ingest run renders with, so both write the same links.
+    const rendered = renderSummary(summary, dashboardOrigin(new URL(request.url).origin));
+    if (!rendered) return "The summary could not be rendered; the scheduled ingest run will report it.";
+    let result;
+    try {
+      result = await writeSummaryComment(cfg, now, issue, rendered.body);
+    } catch (err) {
+      console.error(`summary comment write failed: ${err instanceof Error ? err.message : String(err)}`);
+      return updateFailure(err);
+    }
+    await markSummarySent(db, issue, rendered.fingerprint, now);
+    await announceChange(env);
+    switch (result.outcome) {
+      case "updated":
+        return "The summary comment on GitHub was updated.";
+      case "created":
+        return "The summary comment was written to GitHub.";
+      case "refused":
+        return result.reason === "locked"
+          ? "The issue is locked, so GitHub refuses the comment; it is not retried until the figures change."
+          : "GitHub has no such issue any more (deleted or transferred); the comment is not retried until the figures change.";
+      default:
+        return "";
+    }
+  } finally {
+    await releaseSummaryWrite(db, issue);
+  }
+}
 
 /**
  * Whether the dashboard is configured in this deployment.
@@ -83,7 +191,7 @@ export function dashboardConfig(env) {
  * @returns {boolean} True for dashboard paths other than `/`.
  */
 export function isDashboardPath(path) {
-  return (path !== "/" && PATHS.has(path)) || REPORT_PATH.test(path);
+  return (path !== "/" && PATHS.has(path)) || REPORT_PATH.test(path) || ISSUE_PATH.test(path);
 }
 
 /**
@@ -198,7 +306,7 @@ async function triageBudget(env, now) {
  */
 export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now()) {
   const cfg = dashboardConfig(env);
-  if (!cfg || !(PATHS.has(path) || REPORT_PATH.test(path))) return null;
+  if (!cfg || !(PATHS.has(path) || REPORT_PATH.test(path) || ISSUE_PATH.test(path))) return null;
   // One D1 call budget for the whole request; the reindex stops within it.
   env = { ...env, DASHBOARD_DB: metered(env.DASHBOARD_DB) };
   const db = env.DASHBOARD_DB;
@@ -228,9 +336,28 @@ export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now
     return htmlResponse(messagePage("Signed out", html`<p>Your session ended. Sign in again.</p>`), 401);
   }
 
-  if (method === "POST" && (path === "/admin/reindex" || path === "/admin/sync" || path === "/admin/sign-out-all")) {
+  if (method === "POST" && path === "/issues/link") {
+    if (!sameOrigin(request)) {
+      return htmlResponse(messagePage("Request refused", html`<p>Corrections are made from the dashboard's own buttons.</p>`), 403);
+    }
+    return correctLinks(request, env, member, now);
+  }
+
+  if (method === "POST" && (path === "/admin/reindex" || path === "/admin/sync" || path === "/admin/sign-out-all" || path === "/admin/update-issue")) {
     if (member.role !== "admin" || !sameOrigin(request)) {
       return htmlResponse(messagePage("Request refused", html`<p>Only organization owners can do this, from the dashboard's own buttons.</p>`), 403);
+    }
+    if (path === "/admin/update-issue") {
+      const form = await readForm(request);
+      const back = safeNext(formField(form, "back")) ?? "/issues";
+      const issue = issueNumber(formField(form, "issue") ?? "");
+      if (issue === null) {
+        return htmlResponse(messagePage("Request refused", html`<p>The form names no issue.</p>`), 400);
+      }
+      const note = await updateIssueNow(env, cfg, request, issue, now);
+      await setState(db, UPDATE_NOTE, `${issue}\t${now}\t${note}`);
+      await logAccess(db, member, "update-issue", null, now);
+      return redirect(back);
     }
     if (path === "/admin/sign-out-all") {
       await logAccess(db, member, "sign-out-all", null, now);
@@ -380,10 +507,14 @@ export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now
     });
     const markerIndex = fix?.fixAt ? Math.floor(fix.fixAt / DAY_MS) - (today - 13) : -1;
     const fixPr = found.prs.filter((p) => p.state === "merged").sort((a, b) => Number(b.merged_at) - Number(a.merged_at))[0];
+    // A report no issue tracks gets a picker to attach it; one issue is the
+    // normal case and needs none.
+    const openIssues = found.issues.length === 0 ? await openIssueOptions(db) : [];
     return htmlResponse(
       reportPage({
         cfg, member, report: r, stored, issues: found.issues, prs: found.prs, fix, regression, similar, sigDays,
         sigMarker: fix?.fixAt && fixPr ? { index: markerIndex, label: `#${fixPr.pr_number} merged` } : null,
+        openIssues,
       }),
     );
   }
@@ -398,7 +529,103 @@ export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now
     ]);
     return htmlResponse(issuesPage({ cfg, member, now, state, issues, afterFix, syncedAt: syncedAt ? Number(syncedAt) : null }));
   }
+
+  const im = ISSUE_PATH.exec(path);
+  if (im) {
+    const number = Number(im[1]);
+    const [detail, afterFix, openIssues, updateNote] = await Promise.all([
+      issueDetail(db, number, now - 14 * DAY_MS),
+      fixStatus(db),
+      openIssueOptions(db),
+      member.role === "admin" ? getState(db, UPDATE_NOTE) : Promise.resolve(null),
+    ]);
+    if (!detail) {
+      return htmlResponse(messagePage("Issue not found", html`<p>No diagnostics issue with that number is synced. The sync lists issues labeled <code>diagnostics</code>; an owner can run it from the overview.</p>`), 404);
+    }
+    return htmlResponse(
+      issuePage({
+        cfg, member, now, detail, fix: afterFix.get(number) ?? null, updateNote: updateNoteFor(updateNote, number, now),
+        openIssues: openIssues.filter((i) => i.number !== number),
+      }),
+    );
+  }
   return null;
+}
+
+/**
+ * Reads a posted form body, bounded.
+ *
+ * @param {Request} request Incoming POST.
+ * @returns {Promise<string | null>} The body, or null when it is longer
+ *   than `MAX_FORM_CHARS` bytes or cannot be read.
+ */
+async function readForm(request) {
+  const len = Number(request.headers.get("content-length") || "0");
+  if (!Number.isFinite(len) || len > MAX_FORM_CHARS) return null;
+  try {
+    const text = await request.text();
+    return text.length > MAX_FORM_CHARS ? null : text;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One field of a form body.
+ *
+ * @param {string | null} body From `readForm`.
+ * @param {string} name Field name.
+ * @returns {string | null} Its value.
+ */
+function formField(body, name) {
+  if (body === null) return null;
+  try {
+    return new URLSearchParams(body).get(name);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `POST /issues/link` (members, same origin): applies one correction to the
+ * ledger, logs it under the member's name and tells open pages. The issues
+ * named must be synced and the report indexed; a correction that names
+ * neither answers 404 so a stale form cannot write a dangling link.
+ *
+ * @param {Request} request Incoming POST.
+ * @param {Record<string, any>} env Worker bindings with a metered handle.
+ * @param {import("./session.js").Member} member Signed-in member.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {Promise<Response>} A redirect back to the page the form named
+ *   (a dashboard page), else to the issue's page.
+ */
+async function correctLinks(request, env, member, now) {
+  const db = env.DASHBOARD_DB;
+  const body = await readForm(request);
+  const change = parseLinkAction(body);
+  if (!change) {
+    return htmlResponse(messagePage("Request not understood", html`<p>The correction form was incomplete. Go back and try again.</p>`), 400);
+  }
+  const numbers = change.to === null ? [change.issue] : [change.issue, change.to];
+  const [issues, report] = await Promise.all([
+    all(db, `SELECT number, kind FROM issues WHERE number IN (${numbers.map(() => "?").join(", ")})`, ...numbers),
+    change.report === null ? Promise.resolve({ ok: 1 }) : first(db, "SELECT 1 AS ok FROM reports WHERE report_id = ?", change.report),
+  ]);
+  if (issues.length !== numbers.length || !report) {
+    return htmlResponse(messagePage("Not found", html`<p>That issue is not synced or that report is not indexed, so nothing was changed.</p>`), 404);
+  }
+  // Reports are attached to triaged issues only: the holding issue for
+  // untriaged reports is ingest's, and a report given to it by hand would
+  // never reach a summary comment.
+  const destination = change.action === "attach" ? change.issue : change.to;
+  if (destination !== null && issues.some((i) => Number(i.number) === destination && i.kind === "fallback")) {
+    return htmlResponse(messagePage("Request refused", html`<p>Reports cannot be attached to the holding issue for untriaged reports; attach them to a triaged issue instead.</p>`), 400);
+  }
+  await applyLinkAction(db, change, member.login, now);
+  await logAccess(db, member, change.action, change.report, now);
+  await announceChange(env);
+  const back = safeNext(formField(body, "back"));
+  return redirect(back ?? `/issues/${change.action === "merge" ? change.to : change.issue}`);
 }
 
 /**
@@ -474,12 +701,14 @@ export async function dashboardIssueNotify(env, number, now) {
  * whose summary comment is out of date, with the figures to render.
  *
  * @param {Record<string, any>} env Worker bindings.
+ * @param {number} now Unix time in milliseconds.
  * @returns {Promise<Awaited<ReturnType<typeof issueSummaries>> | null>}
  *   Summaries, or null when the dashboard database is not bound.
  */
-export async function dashboardIssueSummaries(env) {
+export async function dashboardIssueSummaries(env, now) {
   if (!env.DASHBOARD_DB) return null;
-  return issueSummaries(metered(env.DASHBOARD_DB), SUMMARY_BATCH);
+  const db = metered(env.DASHBOARD_DB);
+  return handOutSummaries(db, await issueSummaries(db, SUMMARY_BATCH), now);
 }
 
 /**
@@ -488,12 +717,13 @@ export async function dashboardIssueSummaries(env) {
  *
  * @param {Record<string, any>} env Worker bindings.
  * @param {{issue: number, fingerprint: string}} done From `parseSummaryDone`.
+ * @param {number} now Unix time in milliseconds.
  * @returns {Promise<boolean | null>} Whether the issue exists, or null when
  *   the dashboard database is not bound.
  */
-export async function dashboardSummarySent(env, done) {
+export async function dashboardSummarySent(env, done, now) {
   if (!env.DASHBOARD_DB) return null;
-  return markSummarySent(metered(env.DASHBOARD_DB), done.issue, done.fingerprint);
+  return markSummarySent(metered(env.DASHBOARD_DB), done.issue, done.fingerprint, now);
 }
 
 /**

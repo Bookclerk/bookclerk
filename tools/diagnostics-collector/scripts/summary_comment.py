@@ -17,7 +17,9 @@ carry a link, a mention or a reference of its own, and report IDs link only
 to their own dashboard page on the given collector origin. The module is
 sans-IO (``render_summaries``); ``scripts/tests/test_summary_comment.py``
 replays a seed corpus and runs seeded mutation fuzzing against an
-independent oracle.
+independent oracle. ``tools/diagnostics-collector/dashboard/summary.js`` is
+the same renderer in JavaScript, for the dashboard's own comment update;
+its fuzz test runs this module as the oracle, so the two cannot drift.
 
 Usage: ``summary_comment.py SUMMARIES_FILE OUT_DIR [DASHBOARD_URL]``. Each
 summary becomes ``OUT_DIR/<n>/{issue,fingerprint,body}``. Exits 0 with no
@@ -73,10 +75,14 @@ MAX_NEWEST = 10
 MAX_BODY_CHARS = 8000
 #: A report ID as the collector names them (object name or UUID).
 ID_RE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
-#: A version as reports carry it, or the collector's "others" bucket.
-VERSION_RE = re.compile(r"v?\d{1,6}\.\d{1,6}(?:\.\d{1,6})?(?:[-+._~][0-9A-Za-z.+_~-]{1,40})?")
+#: A version as reports carry it, or the collector's "others" bucket (ASCII
+#: digits only, as in the dashboard's port of this renderer).
+VERSION_RE = re.compile(r"v?[0-9]{1,6}\.[0-9]{1,6}(?:\.[0-9]{1,6})?(?:[-+._~][0-9A-Za-z.+_~-]{1,40})?")
 #: A platform (``os arch``) as reports carry it.
 PLATFORM_RE = re.compile(r"[A-Za-z0-9._-]{1,32}(?: [A-Za-z0-9._-]{1,32})?")
+#: Whitespace trimmed from versions and collapsed in platforms: the ASCII
+#: set, so the dashboard's port (`dashboard/summary.js`) agrees exactly.
+ASCII_WS = " \t\n\r\x0b\x0c"
 #: A collector fingerprint: lowercase hex SHA-256.
 FINGERPRINT_RE = re.compile(r"[0-9a-f]{64}")
 #: Largest issue number or count taken.
@@ -117,7 +123,7 @@ def _day(value: object) -> str | None:
 def _version(value: object) -> str:
     """A version for the comment: validated and rewritten, else ``unknown``."""
     if isinstance(value, str):
-        text = value.strip()
+        text = value.strip(ASCII_WS)
         if text == "others" or VERSION_RE.fullmatch(text):
             return defang(text)
     return "unknown"
@@ -126,7 +132,7 @@ def _version(value: object) -> str:
 def _platform(value: object) -> str:
     """A platform for the comment: validated and rewritten, else ``unknown``."""
     if isinstance(value, str):
-        text = " ".join(value.split())
+        text = " ".join(part for part in re.split(f"[{ASCII_WS}]+", value) if part)
         if text == "others" or PLATFORM_RE.fullmatch(text):
             return defang(text)
     return "unknown"

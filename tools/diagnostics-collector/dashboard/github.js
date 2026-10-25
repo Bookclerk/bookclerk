@@ -6,11 +6,16 @@
  * The App can write to the repository, so the Worker narrows what it holds:
  * - every installation token it mints is down-scoped in the request to
  *   `INSTALLATION_PERMISSIONS` on the one configured repository, so no token
- *   the Worker ever holds can write;
+ *   the Worker holds can write to pull requests or code; the one exception
+ *   is the owner's "Update GitHub now" button, which mints a separate,
+ *   uncached token with `SUMMARY_PERMISSIONS` (`issues: write`, nothing
+ *   else), edits one issue's summary comment with it and drops it;
  * - the user token from sign-in is used for one `GET /user` call and then
  *   revoked, never stored, logged or sent to the browser;
  * - the private key and client secret are Worker secrets read only here.
  */
+
+import { MARKER } from "./summary.js";
 
 /** GitHub REST and GraphQL host. */
 export const API = "https://api.github.com";
@@ -30,6 +35,28 @@ export const INSTALLATION_PERMISSIONS = Object.freeze({
   members: "read",
   contents: "read",
 });
+
+/**
+ * Permissions of the token that edits an issue's summary comment
+ * (`writeSummaryComment`): the one `issues: write` the comment edit needs,
+ * which the ingest workflow's own token also has. It is never cached.
+ */
+export const SUMMARY_PERMISSIONS = Object.freeze({
+  issues: "write",
+});
+
+/**
+ * Comments per page when looking for the summary comment (GitHub's most),
+ * and the most comments `decodeComments` reads from one page.
+ */
+export const COMMENT_PAGE = 100;
+
+/**
+ * Most comment pages read to find the summary comment. An issue with more
+ * comments than that is left to the ingest run, which pages through all of
+ * them, rather than risk a second summary comment.
+ */
+const MAX_COMMENT_PAGES = 20;
 
 /** Time allowed for one GitHub call, in milliseconds. */
 const TIMEOUT_MS = 10_000;
@@ -190,6 +217,25 @@ export async function installationToken(cfg, now) {
   if (cachedToken && cachedToken.key === key && cachedToken.expiresAt - TOKEN_REFRESH_MARGIN_MS > now) {
     return cachedToken.token;
   }
+  const got = await mintToken(cfg, now, INSTALLATION_PERMISSIONS);
+  cachedToken = { key, ...got };
+  return got.token;
+}
+
+/**
+ * Mints an installation token narrowed to `permissions` on the configured
+ * repository.
+ *
+ * @param {GitHubConfig} cfg Settings.
+ * @param {number} now Unix time in milliseconds.
+ * @param {Readonly<Record<string, string>>} permissions Permissions asked
+ *   for; GitHub refuses any the installation does not grant.
+ * @returns {Promise<{token: string, expiresAt: number}>} The token and when
+ *   it expires.
+ * @throws {Error} When the App is not installed on the repository or GitHub
+ *   refuses the permissions.
+ */
+async function mintToken(cfg, now, permissions) {
   const jwt = await appJwt(cfg, now);
   const inst = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/installation`, { headers: apiHeaders(jwt) });
   if (!inst.ok) throw new Error(`app installation lookup failed: HTTP ${inst.status}`);
@@ -198,13 +244,94 @@ export async function installationToken(cfg, now) {
   const res = await gh(`${API}/app/installations/${id}/access_tokens`, {
     method: "POST",
     headers: { ...apiHeaders(jwt), "Content-Type": "application/json" },
-    body: JSON.stringify({ repositories: [cfg.repo], permissions: INSTALLATION_PERMISSIONS }),
+    body: JSON.stringify({ repositories: [cfg.repo], permissions }),
   });
   if (!res.ok) throw new Error(`installation token failed: HTTP ${res.status}`);
   const got = decodeInstallationToken(await res.json().catch(() => null));
   if (!got) throw new Error("installation token response malformed");
-  cachedToken = { key, ...got };
-  return got.token;
+  return got;
+}
+
+/**
+ * One outcome of `writeSummaryComment`.
+ *
+ * @typedef {{outcome: "updated" | "created"} | {outcome: "refused", reason: "locked" | "gone"}} SummaryWrite
+ *   `updated` when the existing summary comment was edited, `created` when
+ *   one was posted, `refused` when GitHub will not take the comment for
+ *   good: the issue is locked (`reason` "locked") or gone (deleted or
+ *   transferred, `reason` "gone").
+ */
+
+/**
+ * Writes an issue's summary comment, for the owner's "Update GitHub now"
+ * button, as the ingest Action's `update-summaries.sh` does with the
+ * workflow's token: the first comment a bot account posted that starts
+ * with the summary marker is edited in place (editing notifies nobody), else
+ * the comment is posted; both write as a bot, so either finds the other's
+ * comment. The token is minted for this call alone with
+ * `SUMMARY_PERMISSIONS` and not kept.
+ *
+ * @param {GitHubConfig} cfg Settings.
+ * @param {number} now Unix time in milliseconds.
+ * @param {number} issue Issue number.
+ * @param {string} body The comment, starting with the marker.
+ * @returns {Promise<SummaryWrite>} What happened.
+ * @throws {Error} When the App lacks `issues: write` on the repository, the
+ *   comments cannot be listed (any failure, like the run, which skips the
+ *   issue and retries), the issue has more than `MAX_COMMENT_PAGES` pages
+ *   of comments, or GitHub answers the write with anything but success or
+ *   a refusal for good (a rate limit, an outage). Messages carry a stage
+ *   and an HTTP status, never the token.
+ */
+export async function writeSummaryComment(cfg, now, issue, body) {
+  const { token } = await mintToken(cfg, now, SUMMARY_PERMISSIONS);
+  const base = `${API}/repos/${cfg.owner}/${cfg.repo}/issues`;
+  let found = null;
+  let last = false;
+  for (let page = 1; page <= MAX_COMMENT_PAGES && found === null && !last; page++) {
+    const res = await gh(`${base}/${issue}/comments?per_page=${COMMENT_PAGE}&page=${page}`, { headers: apiHeaders(token) });
+    if (!res.ok) throw new Error(`comment listing failed: HTTP ${res.status}`);
+    const comments = decodeComments(await res.json().catch(() => null));
+    if (comments === null) throw new Error("comment listing malformed");
+    found = comments.summary;
+    last = comments.count < COMMENT_PAGE;
+  }
+  if (found === null && !last) throw new Error(`comment listing longer than ${MAX_COMMENT_PAGES} pages`);
+  const write = (method, url) => gh(url, { method, headers: { ...apiHeaders(token), "Content-Type": "application/json" }, body: JSON.stringify({ body }) });
+  if (found !== null) {
+    const res = await write("PATCH", `${base}/comments/${found}`);
+    if (res.ok) return { outcome: "updated" };
+    // 404 or 410 here means the comment went away since the listing (someone
+    // deleted it), not the issue: a new one is posted below.
+    if (res.status !== 404 && res.status !== 410) return refusal("edit", res, await res.text().catch(() => ""));
+  }
+  const res = await write("POST", `${base}/${issue}/comments`);
+  if (res.ok) return { outcome: "created" };
+  if (res.status === 404 || res.status === 410) return { outcome: "refused", reason: "gone" };
+  return refusal("post", res, await res.text().catch(() => ""));
+}
+
+/**
+ * Classifies a failed comment write: a locked issue is a refusal for good,
+ * anything else is thrown for a retry.
+ *
+ * @param {"edit" | "post"} verb Which write.
+ * @param {Response} res The failed response.
+ * @param {string} text Its body.
+ * @returns {SummaryWrite} The refusal.
+ * @throws {Error} For every other failure.
+ */
+function refusal(verb, res, text) {
+  if (res.status === 403) {
+    let data = null;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = null;
+    }
+    if (isLockedMessage(data)) return { outcome: "refused", reason: "locked" };
+  }
+  throw new Error(`comment ${verb} failed: HTTP ${res.status}`);
 }
 
 /** Forgets the cached installation token (tests). */
@@ -245,6 +372,46 @@ export function decodeInstallationToken(data) {
   if (!isObject(data) || typeof data.token !== "string" || data.token === "" || typeof data.expires_at !== "string") return null;
   const expiresAt = Date.parse(data.expires_at);
   return Number.isFinite(expiresAt) ? { token: data.token, expiresAt } : null;
+}
+
+/**
+ * Reads one page of `GET /repos/{owner}/{repo}/issues/{n}/comments` for the
+ * summary comment: the first comment on the page that a bot account posted
+ * (`user.type` "Bot": the ingest workflow's token and the App both write as
+ * one) and whose body starts with the summary marker.
+ *
+ * @param {unknown} data Parsed body.
+ * @returns {{summary: number | null, count: number} | null} The comment's
+ *   id when one is on the page, and how many comments the page holds (at
+ *   most `COMMENT_PAGE`; a shorter page is the last); null when the body is
+ *   not a list.
+ */
+export function decodeComments(data) {
+  if (!Array.isArray(data)) return null;
+  const page = data.slice(0, COMMENT_PAGE);
+  for (const c of page) {
+    if (!isObject(c) || !Number.isSafeInteger(c.id) || c.id <= 0) continue;
+    if (!isObject(c.user) || c.user.type !== "Bot") continue;
+    if (typeof c.body === "string" && c.body.startsWith(MARKER)) return { summary: c.id, count: page.length };
+  }
+  return { summary: null, count: page.length };
+}
+
+/** What GitHub's 403 says when an issue is locked (the one wording treated as final). */
+const LOCKED_MESSAGE = /\bissue is locked\b/i;
+
+/**
+ * Reads the body of a 403 to a comment write: whether GitHub refused
+ * because the issue is locked ("Unable to create comment because issue is
+ * locked."), which no retry changes. A rate limit answers 403 too, with
+ * another message, and is retried.
+ *
+ * @param {unknown} data Parsed body.
+ * @returns {boolean} True only for an object whose `message` is a string
+ *   saying the issue is locked.
+ */
+export function isLockedMessage(data) {
+  return isObject(data) && typeof data.message === "string" && data.message.length <= 1000 && LOCKED_MESSAGE.test(data.message);
 }
 
 /**

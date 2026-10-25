@@ -4,7 +4,7 @@
  */
 
 import { histogram, meter, sparkline, stackedBars } from "./charts.js";
-import { RANGES } from "./db.js";
+import { DETAIL_LINKS as DETAIL_LINKS_SHOWN, RANGES } from "./db.js";
 import { fmtDay, fmtInt, fmtTime, html, isoTime, raw } from "./html.js";
 
 /** Stack order and color class for known triggers; others draw as "other". */
@@ -177,6 +177,42 @@ const LINK_SOURCE = {
   triage: "attached by triage",
   manual: "attached by a member",
 };
+
+/**
+ * A one-button form that posts a ledger correction to `/issues/link`.
+ *
+ * @param {{action: "attach" | "detach" | "move" | "merge", issue?: number,
+ *   report?: string | null, back: string, label: string, danger?: boolean,
+ *   options?: Array<{number: number, title: string}>, pickerLabel?: string}} f
+ *   The correction. `options` adds a picker: for `move` and `merge` it
+ *   chooses the `to` issue next to the fixed `issue`; for `attach` with no
+ *   `issue` it chooses the issue itself.
+ * @returns {import("./html.js").SafeHtml} The form.
+ */
+function linkForm(f) {
+  const field = f.issue === undefined ? "issue" : "to";
+  const id = `${field}-${f.action}-${f.issue ?? "pick"}-${f.report ?? "all"}`;
+  const picker = f.options
+    ? html`<label class="sr" for="${id}">${f.pickerLabel ?? "Issue"}</label>
+        <select class="sel" id="${id}" name="${field}" required>${f.options.map(
+          (o) => html`<option value="${o.number}">#${o.number} ${o.title.slice(0, 60)}</option>`,
+        )}</select>`
+    : "";
+  return html`<form method="post" action="/issues/link" class="inline"><input type="hidden" name="action" value="${f.action}">${f.issue === undefined ? "" : html`<input type="hidden" name="issue" value="${f.issue}">`}${f.report ? html`<input type="hidden" name="report" value="${f.report}">` : ""}<input type="hidden" name="back" value="${f.back}">${picker}<button class="button small${f.danger ? " danger" : ""}" type="submit">${f.label}</button></form>`;
+}
+
+/**
+ * How a ledger row reads: its source and, for a member's change, who made
+ * it and when.
+ *
+ * @param {{source: string, linked_by: string | null, linked_at: number | null}} l Ledger row.
+ * @returns {string} Short text.
+ */
+function linkHow(l) {
+  const base = { filed: "filed", signature: "signature", triage: "triage", manual: "attached", excluded: "detached", none: "not linked" }[l.source] ?? "";
+  if ((l.source === "manual" || l.source === "excluded") && l.linked_by) return `${base} by ${l.linked_by}${l.linked_at ? ` on ${fmtDay(l.linked_at)}` : ""}`;
+  return base;
+}
 
 /**
  * Range picker links that keep the other query parameters.
@@ -466,9 +502,10 @@ export function reportPage(d) {
         </dl></section>
         <section class="panel s4" data-live="tracked"><h2>Tracked by</h2><div class="links">
           ${d.issues.length
-            ? d.issues.map((i, n) => html`<div class="link-item"><span class="chip ${i.state === "open" ? "open" : "closed"}">${i.state === "open" ? "Open" : "Closed"}</span><a href="${ghUrl(d.cfg, "issues", i.number)}">#${i.number} ${i.title}</a>${issueKindChip(d.cfg, i)} <span class="fine">${n === 0 ? LINK_SOURCE[i.source] ?? "" : "also lists it"}</span></div>`)
+            ? d.issues.map((i, n) => html`<div class="link-item"><span class="chip ${i.state === "open" ? "open" : "closed"}">${i.state === "open" ? "Open" : "Closed"}</span><a href="/issues/${i.number}">#${i.number} ${i.title}</a>${issueKindChip(d.cfg, i)} <span class="fine">${n === 0 ? LINK_SOURCE[i.source] ?? "" : "also lists it"}</span> ${linkForm({ action: "detach", issue: Number(i.number), report: String(r.report_id), back: `/reports/${r.report_id}`, label: "Detach" })}</div>`)
             : html`<p class="fine">No issue lists this report yet. Triage may have judged it noise, or ingest has not run since it arrived.</p>`}
-          ${d.issues.length > 1 ? html`<p class="fine"><span class="chip crit">Conflict</span> ${d.issues.length} issues list this report; it counts under #${d.issues[0].number} until a member resolves it.</p>` : ""}
+          ${d.issues.length === 0 && d.openIssues?.length ? html`<div class="link-item">${linkForm({ action: "attach", report: String(r.report_id), back: `/reports/${r.report_id}`, label: "Attach", options: d.openIssues, pickerLabel: "Attach to issue" })}</div>` : ""}
+          ${d.issues.length > 1 ? html`<p class="fine"><span class="chip crit">Conflict</span> ${d.issues.length} issues list this report; it counts under #${d.issues[0].number} until a member detaches it from the others.</p>` : ""}
           ${d.prs.map((pr) => html`<div class="link-item"><span class="chip ${pr.state}">${{ open: "Open", closed: "Closed", merged: "Merged" }[pr.state] ?? pr.state}</span><a href="${ghUrl(d.cfg, "pull", pr.pr_number)}">#${pr.pr_number} ${pr.title}</a></div>`)}
           ${fix && fixNote(fix) ? html`<div class="link-item"><span class="chip ${fix.fixedIn ? "merged" : "none"}">${fix.fixedIn ? "Fixed" : "Merged"}</span><span class="fine">${fixNote(fix)}${d.issues.some((i) => Number(i.number) === fix.issue) ? "" : html`, per <a href="${ghUrl(d.cfg, "issues", fix.issue)}">#${fix.issue}</a>, which tracks this signature`}</span></div>` : ""}
           ${fix && (d.regression || fix.after > 0) ? html`<div class="link-item"><span class="chip crit">${d.regression ? "Regression" : "Seen after fix"}</span><span class="fine">${d.regression ? `this report runs ${r.version}, after the fix; ` : ""}${afterFixText(fix)}</span></div>` : ""}
@@ -508,7 +545,7 @@ export function issuesPage(d) {
               const open = i.prs.find((p) => p.state === "open");
               const pr = merged ?? open;
               return html`<tr>
-                <td class="issue-cell"><a href="${ghUrl(d.cfg, "issues", i.number)}"><b>#${i.number}</b> ${i.title}</a>${issueKindChip(d.cfg, i)}</td>
+                <td class="issue-cell"><a href="/issues/${i.number}"><b>#${i.number}</b> ${i.title}</a>${issueKindChip(d.cfg, i)} <a class="quiet" href="${ghUrl(d.cfg, "issues", i.number)}">GitHub</a></td>
                 <td><span class="chip ${i.state === "open" ? "open" : "closed"}">${i.state === "open" ? "Open" : "Closed"}</span></td>
                 <td class="r num">${fmtInt(i.reports)}</td>
                 <td>${sparkline(dailySeries(d.now, 14, i.days), fix && fix.after > 0 ? "brick" : "teal")}</td>
@@ -519,5 +556,84 @@ export function issuesPage(d) {
             })
           : html`<tr><td colspan="8" class="empty">No diagnostics issues in this view.</td></tr>`}</tbody></table></div>
       </section></div>`,
+  });
+}
+
+/**
+ * One issue: its GitHub state and fix, the reports it tracks, the ledger
+ * rows a member can correct (detach, move), reports that share a tracked
+ * signature without an issue (attach, dismiss), a merge into another issue,
+ * and for owners the changes GitHub has not seen with a button that starts
+ * the ingest run.
+ *
+ * @param {object} d Query results assembled by routes.js.
+ * @returns {import("./html.js").SafeHtml} The document.
+ */
+export function issuePage(d) {
+  const { detail: t, fix } = d;
+  const i = t.issue;
+  const n = Number(i.number);
+  const back = `/issues/${n}`;
+  const merged = t.prs.find((p) => p.state === "merged");
+  const filed = t.links.filter((l) => l.source === "filed");
+  const correlated = t.links.filter((l) => l.source === "signature" || l.source === "triage" || l.source === "manual");
+  const excluded = t.links.filter((l) => l.source === "excluded");
+  const breakdown = (list) => list.length ? list.map((v) => html`<span class="chip none">${v.key || "unknown"} <b class="num">${fmtInt(v.n)}</b></span>`) : html`<span class="fine">none</span>`;
+  const row = (l, actions) => html`<tr>
+    <td class="num">${fmtTime(l.received_at)}</td>
+    <td><a class="mono" href="/reports/${l.report_id}">${String(l.report_id).slice(0, 8)}</a></td>
+    <td class="mono">${l.version}</td>
+    <td>${`${l.os} ${l.arch}`.trim()}</td>
+    <td class="fine">${linkHow(l)}${l.source !== "excluded" && !l.tracked ? html` · <span class="chip crit" title="An older issue also lists this report, so it counts there">counts elsewhere</span>` : ""}</td>
+    <td class="actions">${actions}</td></tr>`;
+  const table = (rows, empty) => html`<div class="tbl"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th><th>How</th><th>Actions</th></tr></thead><tbody>${rows.length ? rows : html`<tr><td colspan="6" class="empty">${empty}</td></tr>`}</tbody></table></div>`;
+  const moveForm = (l) => d.openIssues.length
+    ? linkForm({ action: "move", issue: n, report: String(l.report_id), back, label: "Move", options: d.openIssues, pickerLabel: "Move to issue" })
+    : "";
+  const owner = d.member.role === "admin";
+  return layout({
+    title: `Issue #${n}`,
+    member: d.member,
+    nav: "issues",
+    body: html`<div class="wrap">
+      <div class="toolbar column"><span class="crumb"><a href="/issues">Issues</a> / #${n}</span>
+        <h1>#${n} ${i.title}</h1>
+        <span class="links-row"><span class="chip ${i.state === "open" ? "open" : "closed"}">${i.state === "open" ? "Open" : "Closed"}</span>${issueKindChip(d.cfg, i)} <a href="${ghUrl(d.cfg, "issues", n)}">Open on GitHub</a></span></div>
+      <div data-live="pending">${t.outdated || d.updateNote ? html`<div class="banner">${t.outdated ? html`The summary comment on GitHub is out of date${t.summarySentAt ? ` (last written ${fmtTime(t.summarySentAt)} UTC` : " (never written"}${t.pending > 0 ? `; ${plural(t.pending, "ledger change")} since)` : ")"}; the next ingest run rewrites it.
+        ${owner ? html`<form method="post" action="/admin/update-issue" class="inline"><input type="hidden" name="issue" value="${n}"><input type="hidden" name="back" value="${back}"><button class="button small" type="submit">Update GitHub now</button></form>` : ""}` : ""}
+        ${d.updateNote ? html` <span class="fine">${fmtTime(d.updateNote.at)} UTC: ${d.updateNote.text}</span>` : ""}</div>` : ""}</div>
+      <div class="grid">
+        <section class="panel s7" data-live="stats"><h2>Reports tracked</h2><dl class="meta">
+          <div><dt>Reports</dt><dd class="num">${fmtInt(t.reports)} from ${plural(t.installs, "installation")}</dd></div>
+          <div><dt>First seen</dt><dd class="num">${t.first_seen ? `${fmtTime(t.first_seen)} UTC` : "no report yet"}</dd></div>
+          <div><dt>Last seen</dt><dd class="num">${t.last_seen ? `${fmtTime(t.last_seen)} UTC` : ""}</dd></div>
+          <div><dt>Last 14 days</dt><dd>${sparkline(dailySeries(d.now, 14, t.days), fix && fix.after > 0 ? "brick" : "teal")}</dd></div>
+          <div><dt>Versions</dt><dd class="chips">${breakdown(t.versions)}</dd></div>
+          <div><dt>Platforms</dt><dd class="chips">${breakdown(t.platforms)}</dd></div>
+        </dl></section>
+        <section class="panel s5"><h2>Fix</h2><div class="links">
+          ${t.prs.length
+            ? t.prs.map((pr) => html`<div class="link-item"><span class="chip ${pr.state}">${{ open: "Open", closed: "Closed", merged: "Merged" }[pr.state] ?? pr.state}</span><a href="${ghUrl(d.cfg, "pull", pr.pr_number)}">#${pr.pr_number} ${pr.title}</a></div>`)
+            : html`<p class="fine">No pull request references this issue.</p>`}
+          ${fix && fixNote(fix) ? html`<div class="link-item"><span class="chip ${fix.fixedIn ? "merged" : "none"}">${fix.fixedIn ? "Fixed" : "Merged"}</span><span class="fine">${fixNote(fix)}</span></div>` : ""}
+          ${fix && fix.after > 0 ? html`<div class="link-item"><span class="chip crit">${fix.fixedIn ? "Regressions" : "Seen after fix"}</span><span class="fine">${afterFixText(fix)}</span></div>` : ""}
+          ${merged && i.state === "open" ? html`<p class="fine">The fix merged; the issue is still open on GitHub.</p>` : ""}
+        </div></section>
+        <section class="panel s12" data-live="links"><h2>Filed <span class="note">listed in the issue body when it was filed</span></h2>
+          ${table(filed.map((l) => row(l, html`${linkForm({ action: "detach", issue: n, report: String(l.report_id), back, label: "Detach", danger: true })} ${moveForm(l)}`)), "The issue body lists no indexed report.")}
+          <h2>Correlated <span class="note">linked later by signature, triage or a member</span></h2>
+          ${table(correlated.map((l) => row(l, html`${linkForm({ action: "detach", issue: n, report: String(l.report_id), back, label: "Detach", danger: true })} ${moveForm(l)}`)), "No report was linked after filing.")}
+          ${excluded.length ? html`<details><summary class="fine">${plural(excluded.length, "report")} detached from this issue (nothing links them to it again unless a member does)</summary>
+            ${table(excluded.map((l) => row(l, linkForm({ action: "attach", issue: n, report: String(l.report_id), back, label: "Attach again" }))), "")}</details>` : ""}
+          ${t.links.length >= DETAIL_LINKS_SHOWN ? html`<p class="fine">Only the newest ${fmtInt(DETAIL_LINKS_SHOWN)} ledger rows are shown.</p>` : ""}
+        </section>
+        <section class="panel s12" data-live="suggested"><h2>Suggested <span class="note">unlinked reports with a signature this issue tracks</span></h2>
+          ${table(t.suggested.map((l) => row({ ...l, source: "none", tracked: true }, html`${linkForm({ action: "attach", issue: n, report: String(l.report_id), back, label: "Attach" })} ${linkForm({ action: "detach", issue: n, report: String(l.report_id), back, label: "Dismiss" })}`)), "Every report with these signatures is linked to an issue.")}
+        </section>
+        ${filed.length + correlated.length > 0 && d.openIssues.length
+          ? html`<section class="panel s12"><h2>Merge</h2><div class="owner-row">${linkForm({ action: "merge", issue: n, back, label: "Merge into", danger: true, options: d.openIssues, pickerLabel: "Merge into issue" })}
+              <span class="fine">Every report linked here is attached to the chosen issue and detached from this one; close this issue on GitHub as a duplicate yourself.</span></div></section>`
+          : ""}
+      </div></div>`,
   });
 }

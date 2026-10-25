@@ -188,6 +188,14 @@ tbody tr:hover { background: var(--parchment); }
 
 .owner-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .owner-row form { margin: 0; }
+.links-row { display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 14px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips .chip b { margin-left: 2px; }
+td.actions { white-space: nowrap; }
+td.actions form { margin-right: 6px; }
+td.actions form:last-child { margin-right: 0; }
+.banner form.inline { margin-left: 8px; vertical-align: middle; }
+details summary { cursor: pointer; margin-top: 8px; }
 .filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0; }
 .pager { display: flex; gap: 8px; justify-content: flex-end; }
 

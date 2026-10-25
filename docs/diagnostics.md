@@ -165,9 +165,10 @@ collector URL, so a release can submit reports but never read or triage them.
 With the automation GitHub App's credentials set, the collector serves a
 dashboard for members of the repository owner's organization: `/` signs in
 with GitHub, and `/dash` (overview), `/reports` (filterable list),
-`/reports/<report_id>` (one report with its event log) and `/issues`
+`/reports/<report_id>` (one report with its event log), `/issues`
 (diagnostics issues, their pull requests, the version each fix shipped in,
-and reports that keep arriving from that version on) are member-only. Without the credentials the routes stay
+and reports that keep arriving from that version on) and `/issues/<number>`
+(one issue's reports, with the corrections below) are member-only. Without the credentials the routes stay
 off and `/` answers like `/health`. The deploy only uploads the credentials;
 removing the Actions secrets later leaves the Worker's copies in place, so to
 turn the dashboard off, delete the Worker secrets `GITHUB_APP_CLIENT_ID`,
@@ -203,14 +204,21 @@ installation token the Worker mints is narrowed in the request to `metadata`,
 `issues`, `pull_requests`, `members` and `contents` (for the release list
 and compare reads below), all `read`, on this one repository; the App's
 installation must grant each of them, or the token cannot be minted and
-sign-in fails.
+sign-in fails. The one write the Worker can ask GitHub for is an issue's
+summary comment (the owner's **Update GitHub now** button, below): for that
+call alone it mints a separate token narrowed to `issues: write` and nothing
+else, lists the issue's comments and edits or posts the one comment with it,
+and keeps no copy. It still cannot write pull requests, code or workflows,
+and if the installation does not grant Issues: write the button reports that
+and the scheduled run writes the comment instead.
 The client secret and private key are Worker secrets only. Neither, nor any
 user token, is logged, stored or sent to a browser, and
 `scripts/tests/test_ci_contract.py` keeps them out of Bookclerk builds and
 other workflows. The App needs the organization permission **Members: read**
-(accepted on its installation) and the callback URL
-`https://diagnostics.<DOMAIN>/auth/callback` (or the workers.dev URL) in its
-settings.
+(accepted on its installation; the repository permission **Issues: write**
+the ingest Action already uses covers the owner's **Update GitHub now**
+button) and the callback URL `https://diagnostics.<DOMAIN>/auth/callback`
+(or the workers.dev URL) in its settings.
 
 **Sessions.** A random 32-byte `__Host-bc_session` cookie (HttpOnly, Secure,
 SameSite=Strict) names a row in D1 that stores only its SHA-256. Sessions end
@@ -241,11 +249,45 @@ run or press.
 **Report ledger.** `report_issue` records which issue each report is linked
 to and how (`source`): `filed` (listed in the issue body; the sync replaces
 these rows from GitHub), `signature` (linked at ingest, above), `triage` and
-`manual` (reserved for the model and for members attaching reports), and
-`excluded` (a member detached it from that issue; nothing links the pair again). Every count on the
+`manual` (a member attached it on the dashboard; reserved for the model
+too), and `excluded` (a member detached it from that issue; the sync,
+signature matching and triage leave the pair alone from then on). Every count on the
 pages reads this ledger: a report counts once, under the issue that tracks
 it. A report two issues list is a conflict: the older issue keeps it, the
 report page says so, and the list shows "+1" after the issue chip.
+
+**Corrections.** Members fix the ledger from the dashboard; the pages are
+plain forms that post to `/issues/link` from the same origin, every change
+is written to the access log under the member's login, and open pages
+refresh. The issue page lists the reports the issue body filed, the ones
+linked later (by signature, triage or a member, each saying how and by
+whom), the ones detached from it, and suggestions: indexed reports that
+share a signature with the issue's reports and are linked to no issue.
+**Detach** writes `excluded` for the pair (a filed report stays detached
+when the sync next reads the body); **Attach** writes `manual`, replacing an
+earlier exclusion since the member now asks for it; **Move** detaches from
+one issue and attaches to another in one batch; **Merge into** attaches
+every report linked to the issue to the chosen open issue and detaches them
+all from the first (the member closes the emptied issue on GitHub as a
+duplicate; the Worker does not). **Dismiss** on a suggestion writes the
+exclusion so ingest does not link it by signature later. The report page
+offers **Detach** under each issue that lists it (how a conflict is
+resolved) and an **Attach to issue** picker when none does. None of this
+reaches GitHub directly: the issue page counts the ledger rows written since
+the ingest Action last recorded the issue's summary comment
+(`issues.summary_sent_at`), and the next run renders them into that
+comment. Owners get **Update GitHub now** next to that count, which writes
+that comment at once: the Worker renders the issue's summary with the same
+renderer as the run (`dashboard/summary.js`, a port of
+`scripts/summary_comment.py` that the collector's tests hold to identical
+output), edits the bot comment carrying the summary marker in place or posts
+it, and records the fingerprint written so the run does not write it again.
+A refusal is shown on the page (a locked or deleted issue is recorded as the
+run would record it; anything else is left for the scheduled run). The two
+writers take turns per issue: a summary handed to the run is not written by
+the button until the run acknowledges it (or ten minutes pass), and an issue
+a press holds is left out of the run's next hand-out, so neither writes over
+the other's comment and then records the other's figures.
 
 Every 30 minutes a cron lists issues labeled `diagnostics` changed since the
 last run, reads the report IDs from each issue's `### Report IDs` section (the

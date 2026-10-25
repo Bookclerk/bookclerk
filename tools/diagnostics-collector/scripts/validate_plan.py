@@ -96,7 +96,7 @@ def dashboard_origin(raw: str | None) -> str | None:
     """
     if not raw:
         return None
-    origin = raw.strip().rstrip("/").lower()
+    origin = raw.strip(" \t\n\r\x0b\x0c").rstrip("/").lower()
     if len(origin) > MAX_DASHBOARD_ORIGIN_CHARS or not DASHBOARD_RE.fullmatch(origin):
         return None
     return origin
@@ -119,13 +119,17 @@ def defang(text: str) -> str:
         / ``GH-123`` references broken by a zero-width space.
     """
     # `](` and `]:` are what make inline links and reference definitions.
+    # ASCII matching throughout (`re.ASCII`: `\b`, `\d`, `\S` and case
+    # folding over ASCII only), so the dashboard's JavaScript port of this
+    # function (`dashboard/summary.js`) is the same function, as its
+    # cross-language fuzz test checks.
     text = re.sub(r"\](?=[(:])", "]\u200b", text)
-    text = re.sub(r"(?i)[a-z0-9+.-]*://\S*|\bwww\.\S*", "[link removed]", text)
+    text = re.sub(r"(?i)[a-z0-9+.-]*://\S*|\bwww\.\S*", "[link removed]", text, flags=re.ASCII)
     text = re.sub(r"&(?=#|[A-Za-z][A-Za-z0-9]*;)", "&amp;", text)
     text = re.sub(r"<(?=[A-Za-z/!?])", "&lt;", text)
     text = re.sub(r"@(?=[A-Za-z0-9])", "@\u200b", text)
-    text = re.sub(r"(?i)\bGH-(?=\d)", "GH-\u200b", text)
-    return re.sub(r"#(?=\d)", "#\u200b", text)
+    text = re.sub(r"(?i)\bGH-(?=\d)", "GH-\u200b", text, flags=re.ASCII)
+    return re.sub(r"#(?=\d)", "#\u200b", text, flags=re.ASCII)
 
 
 def find_plan(text: str) -> list[object]:

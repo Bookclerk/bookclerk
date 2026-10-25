@@ -761,6 +761,20 @@ const WITH_TRACKED = `WITH tr AS (
   WHERE rn = 1)`;
 
 /**
+ * `WITH_TRACKED` limited to the reports one issue has a ledger row for (the
+ * first bound parameter), so a page about one issue ranks only those
+ * reports' links. The result is the same for that issue as the full table's,
+ * since a report's tracker depends only on its own rows.
+ */
+const WITH_TRACKED_FOR = `WITH tr AS (
+  SELECT report_id, issue_number FROM (
+    SELECT ri.report_id AS report_id, ri.issue_number AS issue_number,
+      ROW_NUMBER() OVER (PARTITION BY ri.report_id ORDER BY ${TRACKER_ORDER}) AS rn
+    FROM report_issue ri LEFT JOIN issues ti ON ti.number = ri.issue_number
+    WHERE ${LINKED} AND ri.report_id IN (SELECT x.report_id FROM report_issue x WHERE x.issue_number = ?))
+  WHERE rn = 1)`;
+
+/**
  * Diagnostics issues with the counts of the reports they track, first and
  * last receipt, daily activity in a range and linked pull requests.
  *
@@ -826,7 +840,8 @@ export async function recentAccess(db, limit) {
  *
  * @param {D1Database} db Database.
  * @param {{userId: number, login: string}} who Signed-in member.
- * @param {"sign-in" | "view-report" | "sign-out-all" | "reindex" | "sync"} action What they did.
+ * @param {"sign-in" | "view-report" | "sign-out-all" | "reindex" | "sync" | "attach" | "detach" | "move"
+ *   | "merge" | "update-issue"} action What they did.
  * @param {string | null} reportId Report viewed, when any.
  * @param {number} now Unix time in milliseconds.
  * @returns {Promise<void>}
@@ -866,6 +881,8 @@ const SUMMARY_NEWEST = 10;
  *
  * @param {D1Database} db Database.
  * @param {number} limit Most issues to return, most recently active first.
+ * @param {number | null} [only] One issue number to answer for (its page
+ *   asks whether its comment is out of date), or null for every issue.
  * @returns {Promise<Array<{issue: number, fingerprint: string,
  *   reports: number, installs: number, first_seen: number | null,
  *   last_seen: number | null, sources: {filed: number, signature: number,
@@ -875,11 +892,13 @@ const SUMMARY_NEWEST = 10;
  *   Summaries to render; `fingerprint` is echoed back through
  *   `markSummarySent` once the comment is written.
  */
-export async function issueSummaries(db, limit) {
+export async function issueSummaries(db, limit, only = null) {
+  const tracked = only === null ? WITH_TRACKED : WITH_TRACKED_FOR;
+  const scope = only === null ? [] : [only];
   const [totals, versions, platforms, newest] = await Promise.all([
     all(
       db,
-      `${WITH_TRACKED}
+      `${tracked}
        SELECT i.number AS issue, i.summary_sent AS sent,
          COUNT(r.report_id) AS reports, COUNT(DISTINCT NULLIF(r.install_hash, '')) AS installs,
          MIN(r.received_at) AS first_seen, MAX(r.received_at) AS last_seen,
@@ -889,32 +908,37 @@ export async function issueSummaries(db, limit) {
        LEFT JOIN tr ON tr.issue_number = i.number
        LEFT JOIN reports r ON r.report_id = tr.report_id
        LEFT JOIN report_issue ri ON ri.report_id = tr.report_id AND ri.issue_number = tr.issue_number
-       WHERE i.kind <> 'fallback'
+       WHERE i.kind <> 'fallback' ${only === null ? "" : "AND i.number = ?"}
        GROUP BY i.number
        HAVING COUNT(r.report_id) > 0 OR i.summary_sent IS NOT NULL`,
+      ...scope,
+      ...scope,
     ),
     all(
       db,
-      `${WITH_TRACKED}
+      `${tracked}
        SELECT tr.issue_number AS issue, r.version AS version, COUNT(*) AS n
        FROM tr JOIN reports r ON r.report_id = tr.report_id
        GROUP BY tr.issue_number, r.version ORDER BY tr.issue_number, n DESC, r.version`,
+      ...scope,
     ),
     all(
       db,
-      `${WITH_TRACKED}
+      `${tracked}
        SELECT tr.issue_number AS issue, TRIM(r.os || ' ' || r.arch) AS platform, COUNT(*) AS n
        FROM tr JOIN reports r ON r.report_id = tr.report_id
        GROUP BY tr.issue_number, platform ORDER BY tr.issue_number, n DESC, platform`,
+      ...scope,
     ),
     all(
       db,
-      `${WITH_TRACKED}
+      `${tracked}
        SELECT issue, report_id, version, received_at FROM (
          SELECT tr.issue_number AS issue, r.report_id AS report_id, r.version AS version, r.received_at AS received_at,
            ROW_NUMBER() OVER (PARTITION BY tr.issue_number ORDER BY r.received_at DESC, r.report_id) AS rn
          FROM tr JOIN reports r ON r.report_id = tr.report_id)
        WHERE rn <= ? ORDER BY issue, received_at DESC, report_id`,
+      ...scope,
       SUMMARY_NEWEST,
     ),
   ]);
@@ -960,16 +984,330 @@ export async function issueSummaries(db, limit) {
 }
 
 /**
- * Records the summary the ingest Action wrote on an issue.
+ * Records the summary the ingest Action (or the owner's "Update GitHub now"
+ * button) wrote on an issue.
  *
  * @param {D1Database} db Database.
  * @param {number} issue Issue number.
  * @param {string} fingerprint The `issueSummaries` fingerprint it rendered.
+ * @param {number} now Unix time in milliseconds, kept as when it was written.
  * @returns {Promise<boolean>} Whether the issue exists.
  */
-export async function markSummarySent(db, issue, fingerprint) {
-  const res = await db.prepare("UPDATE issues SET summary_sent = ? WHERE number = ?").bind(fingerprint, issue).run();
+export async function markSummarySent(db, issue, fingerprint, now) {
+  const res = await db
+    .prepare("UPDATE issues SET summary_sent = ?, summary_sent_at = ? WHERE number = ?")
+    .bind(fingerprint, now, issue)
+    .run();
   return Number(res?.meta?.changes ?? 0) > 0;
+}
+
+/**
+ * How long a summary handed to the ingest run blocks the owner's "Update
+ * GitHub now" press, in milliseconds, when the run never acknowledges it
+ * (a run that failed or was cancelled).
+ */
+export const SUMMARY_HOLD_MS = 10 * 60_000;
+
+/**
+ * How long one "Update GitHub now" press holds an issue, in milliseconds,
+ * should the Worker die before releasing it.
+ */
+const SUMMARY_LOCK_MS = 2 * 60_000;
+
+/**
+ * Hands summaries to the ingest run: leaves out the issues an owner's press
+ * holds at the moment, and stamps the rest as handed out so a press waits
+ * for the run's acknowledgement (`markSummarySent`) or `SUMMARY_HOLD_MS`.
+ *
+ * @template {{issue: number}} T
+ * @param {D1Database} db Database.
+ * @param {T[]} summaries From `issueSummaries`.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {Promise<T[]>} The summaries to render.
+ */
+export async function handOutSummaries(db, summaries, now) {
+  if (summaries.length === 0) return summaries;
+  const locked = new Set((await all(db, "SELECT number FROM issues WHERE summary_lock_until > ?", now)).map((r) => Number(r.number)));
+  const out = summaries.filter((s) => !locked.has(s.issue));
+  if (out.length) {
+    await run(db, `UPDATE issues SET summary_handed_at = ? WHERE number IN (${out.map(() => "?").join(", ")})`, now, ...out.map((s) => s.issue));
+  }
+  return out;
+}
+
+/**
+ * Takes an issue for one "Update GitHub now" press, in one statement: fails
+ * when another press holds it, or the ingest run was handed its summary
+ * within `SUMMARY_HOLD_MS` and has not acknowledged it yet.
+ *
+ * @param {D1Database} db Database.
+ * @param {number} issue Issue number.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {Promise<boolean>} Whether the press holds the issue; release it
+ *   with `releaseSummaryWrite`.
+ */
+export async function claimSummaryWrite(db, issue, now) {
+  const res = await db
+    .prepare(
+      `UPDATE issues SET summary_lock_until = ?
+       WHERE number = ? AND (summary_lock_until IS NULL OR summary_lock_until <= ?)
+         AND (summary_handed_at IS NULL OR summary_handed_at <= COALESCE(summary_sent_at, 0) OR summary_handed_at <= ?)`,
+    )
+    .bind(now + SUMMARY_LOCK_MS, issue, now, now - SUMMARY_HOLD_MS)
+    .run();
+  return Number(res?.meta?.changes ?? 0) > 0;
+}
+
+/**
+ * Releases an issue a press held (`claimSummaryWrite`).
+ *
+ * @param {D1Database} db Database.
+ * @param {number} issue Issue number.
+ * @returns {Promise<void>}
+ */
+export async function releaseSummaryWrite(db, issue) {
+  await run(db, "UPDATE issues SET summary_lock_until = NULL WHERE number = ?", issue);
+}
+
+/** Most versions or platforms the issue page breaks down. */
+const DETAIL_TOP = 8;
+
+/** Most linked reports the issue page lists per section. */
+export const DETAIL_LINKS = 200;
+
+/** Most suggested reports the issue page lists. */
+export const DETAIL_SUGGESTIONS = 50;
+
+/** Most issues offered in the move and merge pickers. */
+const PICKER_ISSUES = 100;
+
+/**
+ * One issue as its dashboard page shows it: the stored issue with its pull
+ * requests, the counts of the reports it tracks (ledger rule, as the board),
+ * the versions and platforms among them, the ledger rows that name the
+ * issue (so a member can detach or move a report), whether the issue's
+ * summary comment on GitHub is out of date (`issueSummaries` would hand the
+ * issue out again) and how many ledger rows were written since it was last
+ * recorded, and the reports that share a tracked signature without being
+ * linked to any issue (suggestions).
+ *
+ * @param {D1Database} db Database.
+ * @param {number} number Issue number.
+ * @param {number} since Activity range start for `days`, in milliseconds.
+ * @returns {Promise<{issue: object, prs: object[], reports: number,
+ *   installs: number, first_seen: number | null, last_seen: number | null,
+ *   versions: Array<{key: string, n: number}>, platforms: Array<{key: string, n: number}>,
+ *   days: Map<number, number>, links: object[], suggested: object[],
+ *   outdated: boolean, pending: number, summarySentAt: number | null} | null>}
+ *   The detail, or null when the issue is not stored.
+ */
+export async function issueDetail(db, number, since) {
+  const issue = await first(db, "SELECT * FROM issues WHERE number = ?", number);
+  if (!issue) return null;
+  const [prs, totals, versions, platforms, days, links, suggested, pending, summaries] = await Promise.all([
+    all(db, "SELECT * FROM issue_pr WHERE issue_number = ? ORDER BY pr_number DESC", number),
+    first(
+      db,
+      `${WITH_TRACKED_FOR}
+       SELECT COUNT(r.report_id) AS reports, COUNT(DISTINCT NULLIF(r.install_hash, '')) AS installs,
+         MIN(r.received_at) AS first_seen, MAX(r.received_at) AS last_seen
+       FROM tr JOIN reports r ON r.report_id = tr.report_id WHERE tr.issue_number = ?`,
+      number,
+      number,
+    ),
+    all(
+      db,
+      `${WITH_TRACKED_FOR}
+       SELECT r.version AS key, COUNT(*) AS n FROM tr JOIN reports r ON r.report_id = tr.report_id
+       WHERE tr.issue_number = ? GROUP BY r.version ORDER BY n DESC, r.version LIMIT ?`,
+      number,
+      number,
+      DETAIL_TOP,
+    ),
+    all(
+      db,
+      `${WITH_TRACKED_FOR}
+       SELECT TRIM(r.os || ' ' || r.arch) AS key, COUNT(*) AS n FROM tr JOIN reports r ON r.report_id = tr.report_id
+       WHERE tr.issue_number = ? GROUP BY key ORDER BY n DESC, key LIMIT ?`,
+      number,
+      number,
+      DETAIL_TOP,
+    ),
+    all(
+      db,
+      `${WITH_TRACKED_FOR}
+       SELECT CAST(r.received_at / ? AS INTEGER) AS day, COUNT(*) AS n FROM tr JOIN reports r ON r.report_id = tr.report_id
+       WHERE tr.issue_number = ? AND r.received_at >= ? GROUP BY day`,
+      number,
+      DAY_MS,
+      number,
+      since,
+    ),
+    // Every ledger row naming the issue, with whether this issue is the one
+    // the report counts under (another, older issue may track it instead).
+    all(
+      db,
+      `${WITH_TRACKED_FOR}
+       SELECT r.report_id, r.received_at, r.version, r.os, r.arch, r.signature, ri.source, ri.linked_by, ri.linked_at,
+         (tr.issue_number IS NOT NULL) AS tracked
+       FROM report_issue ri JOIN reports r ON r.report_id = ri.report_id
+       LEFT JOIN tr ON tr.report_id = ri.report_id AND tr.issue_number = ri.issue_number
+       WHERE ri.issue_number = ? ORDER BY r.received_at DESC, r.report_id LIMIT ?`,
+      number,
+      number,
+      DETAIL_LINKS,
+    ),
+    all(
+      db,
+      `${WITH_TRACKED_FOR}
+       SELECT r.report_id, r.received_at, r.version, r.os, r.arch FROM reports r
+       WHERE r.signature IS NOT NULL
+         AND r.signature IN (SELECT t.signature FROM tr JOIN reports t ON t.report_id = tr.report_id WHERE tr.issue_number = ?)
+         AND NOT EXISTS (SELECT 1 FROM report_issue x WHERE x.report_id = r.report_id AND (x.source <> 'excluded' OR x.issue_number = ?))
+       ORDER BY r.received_at DESC, r.report_id LIMIT ?`,
+      number,
+      number,
+      number,
+      DETAIL_SUGGESTIONS,
+    ),
+    first(
+      db,
+      `SELECT COUNT(*) AS n FROM report_issue ri WHERE ri.issue_number = ? AND ri.linked_at IS NOT NULL
+         AND ri.linked_at > COALESCE((SELECT summary_sent_at FROM issues WHERE number = ?), 0)`,
+      number,
+      number,
+    ),
+    issueSummaries(db, 1, number),
+  ]);
+  return {
+    issue,
+    prs,
+    reports: Number(totals?.reports ?? 0),
+    installs: Number(totals?.installs ?? 0),
+    first_seen: totals?.first_seen == null ? null : Number(totals.first_seen),
+    last_seen: totals?.last_seen == null ? null : Number(totals.last_seen),
+    versions: versions.map((v) => ({ key: String(v.key ?? ""), n: Number(v.n) })),
+    platforms: platforms.map((v) => ({ key: String(v.key ?? ""), n: Number(v.n) })),
+    days: new Map(days.map((d) => [Number(d.day), Number(d.n)])),
+    links,
+    suggested,
+    outdated: summaries.length > 0,
+    pending: Number(pending?.n ?? 0),
+    summarySentAt: issue.summary_sent_at == null ? null : Number(issue.summary_sent_at),
+  };
+}
+
+/**
+ * Open triaged issues for the move, merge and attach pickers.
+ *
+ * @param {D1Database} db Database.
+ * @returns {Promise<Array<{number: number, title: string}>>} Newest first.
+ */
+export async function openIssueOptions(db) {
+  const rows = await all(
+    db,
+    "SELECT number, title FROM issues WHERE state = 'open' AND kind <> 'fallback' ORDER BY number DESC LIMIT ?",
+    PICKER_ISSUES,
+  );
+  return rows.map((r) => ({ number: Number(r.number), title: String(r.title) }));
+}
+
+/**
+ * The statement that writes one ledger row by a member's hand: inserted
+ * when the pair has none, else updated only where `guard` holds on the
+ * existing row.
+ *
+ * @param {D1Database} db Database.
+ * @param {"manual" | "excluded"} source The row's source.
+ * @param {string} guard SQL condition on the existing `report_issue` row.
+ * @param {number} issue Issue number.
+ * @param {string} reportId Report UUID.
+ * @param {string} login Member making the change.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {D1PreparedStatement} The bound statement.
+ */
+function ledgerUpsert(db, source, guard, issue, reportId, login, now) {
+  return db
+    .prepare(
+      `INSERT INTO report_issue (report_id, issue_number, source, linked_by, linked_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (report_id, issue_number) DO UPDATE SET source = excluded.source, linked_by = excluded.linked_by, linked_at = excluded.linked_at
+       WHERE ${guard}`,
+    )
+    .bind(reportId, issue, source, login, now);
+}
+
+/**
+ * The statement that links a report to an issue by a member's hand (source
+ * `manual`). A link made another way stays as it is; a member's earlier
+ * exclusion is replaced, since the member now asks for the link.
+ *
+ * @param {D1Database} db Database.
+ * @param {number} issue Issue number.
+ * @param {string} reportId Report UUID.
+ * @param {string} login Member making the change.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {D1PreparedStatement} The bound statement.
+ */
+function attachStatement(db, issue, reportId, login, now) {
+  return ledgerUpsert(db, "manual", "report_issue.source = 'excluded'", issue, reportId, login, now);
+}
+
+/**
+ * The statement that detaches a report from an issue (source `excluded`):
+ * the link, however it was made, is replaced, and the sync, signature
+ * matching and triage leave the pair alone from then on. A report never
+ * linked to the issue (a dismissed suggestion) gets the exclusion too.
+ *
+ * @param {D1Database} db Database.
+ * @param {number} issue Issue number.
+ * @param {string} reportId Report UUID.
+ * @param {string} login Member making the change.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {D1PreparedStatement} The bound statement.
+ */
+function detachStatement(db, issue, reportId, login, now) {
+  return ledgerUpsert(db, "excluded", "report_issue.source <> 'excluded'", issue, reportId, login, now);
+}
+
+/**
+ * Applies a member's correction to the ledger (`parseLinkAction`): `attach`
+ * and `detach` write one row, `move` detaches from one issue and attaches to
+ * the other, and `merge` attaches every report linked to the issue to the
+ * other one (by the member's hand, so it also replaces an exclusion there)
+ * and excludes them all from the first, in one batch. The caller has checked
+ * that the issues and the report exist.
+ *
+ * @param {D1Database} db Database.
+ * @param {import("./links.js").LinkAction} change The correction.
+ * @param {string} login Member making the change.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {Promise<void>}
+ */
+export async function applyLinkAction(db, change, login, now) {
+  const { action, issue, report, to } = change;
+  if (action === "attach" && report !== null) {
+    await attachStatement(db, issue, report, login, now).run();
+  } else if (action === "detach" && report !== null) {
+    await detachStatement(db, issue, report, login, now).run();
+  } else if (action === "move" && report !== null && to !== null) {
+    await db.batch([detachStatement(db, issue, report, login, now), attachStatement(db, to, report, login, now)]);
+  } else if (action === "merge" && to !== null) {
+    await db.batch([
+      db
+        .prepare(
+          `INSERT INTO report_issue (report_id, issue_number, source, linked_by, linked_at)
+           SELECT ri.report_id, ?, 'manual', ?, ? FROM report_issue ri WHERE ri.issue_number = ? AND ${LINKED}
+           ON CONFLICT (report_id, issue_number) DO UPDATE SET source = 'manual', linked_by = excluded.linked_by, linked_at = excluded.linked_at
+           WHERE report_issue.source = 'excluded'`,
+        )
+        .bind(to, login, now, issue),
+      db
+        .prepare(
+          `UPDATE report_issue SET source = 'excluded', linked_by = ?, linked_at = ? WHERE issue_number = ? AND source <> 'excluded'`,
+        )
+        .bind(login, now, issue),
+    ]);
+  }
 }
 
 

@@ -602,6 +602,7 @@ describe("pages", () => {
     assert.match(report, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
     assert.match(report, /\[REDACTED\]/);
     const issues = await (await call(env, new Request(`${ORIGIN}/issues`, { headers: { cookie } }), b2)).text();
+    assert.match(issues, /href="\/issues\/412"/);
     assert.match(issues, /https:\/\/github.com\/Bookclerk\/bookclerk\/issues\/412/);
     const log = await all(env.DASHBOARD_DB, "SELECT action, report_id FROM access_log WHERE action = 'view-report'");
     assert.equal(log.length, 2);
@@ -1826,5 +1827,340 @@ describe("per-invocation D1 limit", () => {
     assert.equal((await first(d1, "SELECT COUNT(*) AS n FROM reports")).n, 130);
     assert.equal((await first(d1, "SELECT rows FROM index_days")).rows, 130, "the ledger counts each report once");
     assert.equal(await first(d1, "SELECT value FROM sync_state WHERE key = 'reindex_cursor'"), null);
+  });
+});
+
+describe("issue page and ledger corrections", () => {
+  const ID3 = "d2b80f13-0000-4000-8000-000000000003";
+  const ID4 = "d2b80f13-0000-4000-8000-000000000004";
+
+  /** Stores an open triaged issue listing the given reports. */
+  async function openIssue(env, number, ids) {
+    await storeIssue(env.DASHBOARD_DB, {
+      number,
+      title: `[diagnostics] issue ${number}`,
+      state: "open",
+      body: `<!-- bookclerk-diagnostics: workers-ai triage -->\nx\n\n### Report IDs\n${ids.map((id) => `- \`${id}\`\n`).join("")}`,
+      created_at: new Date(NOW - 86_400_000).toISOString(),
+      updated_at: new Date(NOW - 86_400_000).toISOString(),
+    });
+  }
+
+  /** Posts a correction form as the member with the given cookie. */
+  function correct(env, cookie, fields, headers = { origin: ORIGIN }) {
+    return call(env, new Request(`${ORIGIN}/issues/link`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded", ...headers },
+      body: new URLSearchParams(fields).toString(),
+    }));
+  }
+
+  /** The ledger rows of one issue as `[report, source, by]`. */
+  async function ledger(env, issue) {
+    return (await all(env.DASHBOARD_DB, "SELECT report_id, source, linked_by FROM report_issue WHERE issue_number = ? ORDER BY report_id", issue))
+      .map((r) => [r.report_id, r.source, r.linked_by]);
+  }
+
+  it("shows filed, correlated and suggested reports and lets a member attach, detach, move and merge", async () => {
+    gh = scriptGitHub([]);
+    const env = makeEnv();
+    const d1 = env.DASHBOARD_DB;
+    for (const id of [ID1, ID2, ID3, ID4]) await seed(env, id, NOW - 3_600_000 - Number(id.slice(-1)) * 60_000);
+    await openIssue(env, 400, [ID1]);
+    assert.deepEqual([...(await linkBySignature(d1, [ID2], NOW - 60_000))], [[ID2, 400]]);
+    const cookie = await signedIn(env, "member");
+
+    const page = await call({ ...env, DASHBOARD_DB: limitedD1(d1, 50) }, new Request(`${ORIGIN}/issues/400`, { headers: { cookie } }));
+    assert.equal(page.status, 200);
+    let body = await page.text();
+    assert.match(body, /<h1>#400 \[diagnostics\] issue 400<\/h1>/);
+    assert.match(body, new RegExp(`href="/reports/${ID1}">7c1e4a90</a>[^]*?<td class="fine">filed<`), "the filed report with its source");
+    assert.match(body, new RegExp(`href="/reports/${ID2}">d2b80f13</a>[^]*?<td class="fine">signature<`), "the signature link");
+    assert.match(body, new RegExp(`name="report" value="${ID3}"[^]*?>Attach<`), "an unlinked report with the signature is suggested");
+    assert.match(body, /summary comment on GitHub is out of date \(never written; 1 ledger change since\)/, "the signature link is pending on GitHub");
+    assert.ok(!body.includes("Update GitHub now"), "members do not see the owner button");
+    assert.ok(!body.includes("<b>stalls"));
+    assert.equal((await call(env, new Request(`${ORIGIN}/issues/999`, { headers: { cookie } }))).status, 404);
+
+    // Origin check, malformed form, unknown issue and unknown report.
+    assert.equal((await correct(env, cookie, { action: "attach", issue: "400", report: ID3 }, {})).status, 403);
+    assert.equal((await correct(env, cookie, { action: "attach", issue: "400" })).status, 400);
+    assert.equal((await correct(env, cookie, { action: "attach", issue: "999", report: ID3 })).status, 404);
+    assert.equal((await correct(env, cookie, { action: "attach", issue: "400", report: "d2b80f13-0000-4000-8000-00000000000f" })).status, 404);
+    assert.deepEqual(await ledger(env, 400), [[ID1, "filed", null], [ID2, "signature", "ingest"]], "refusals write nothing");
+
+    // Attach a suggestion, by name, and return to the page the form named.
+    let res = await correct(env, cookie, { action: "attach", issue: "400", report: ID3, back: `/reports/${ID3}` });
+    assert.equal(res.status, 303);
+    assert.equal(res.headers.get("location"), `/reports/${ID3}`);
+    res = await correct(env, cookie, { action: "detach", issue: "400", report: ID4, back: "https://evil.example/" });
+    assert.equal(res.headers.get("location"), "/issues/400", "an outside return page is dropped");
+    assert.deepEqual(await ledger(env, 400), [[ID1, "filed", null], [ID2, "signature", "ingest"], [ID3, "manual", "octo"], [ID4, "excluded", "octo"]]);
+    assert.deepEqual([...(await linkBySignature(d1, [ID4], NOW))], [], "a dismissed report is not linked by signature again");
+    body = await (await call(env, new Request(`${ORIGIN}/issues/400`, { headers: { cookie } }))).text();
+    assert.ok(!body.includes(`name="report" value="${ID4}"`) || /Attach again/.test(body), "a dismissed report leaves the suggestions");
+    assert.match(body, /attached by octo on Oct 23/);
+
+    // Detach a filed report; the next sync of the body must not relink it.
+    assert.equal((await correct(env, cookie, { action: "detach", issue: "400", report: ID1 })).status, 303);
+    await openIssue(env, 400, [ID1]);
+    assert.deepEqual((await ledger(env, 400)).find(([id]) => id === ID1), [ID1, "excluded", "octo"]);
+    assert.equal(Number((await listIssues(d1, "open", 0, 10)).find((i) => i.number === 400).reports), 2, "the board counts only linked reports");
+    body = await (await call(env, new Request(`${ORIGIN}/issues/400`, { headers: { cookie } }))).text();
+    assert.match(body, /2 reports detached from this issue/);
+    assert.match(body, />Attach again</);
+
+    // Move one report to another issue, then merge that issue back.
+    await openIssue(env, 403, []);
+    res = await correct(env, cookie, { action: "move", issue: "400", report: ID2, to: "403" });
+    assert.equal(res.headers.get("location"), "/issues/400");
+    assert.deepEqual(await ledger(env, 403), [[ID2, "manual", "octo"]]);
+    assert.deepEqual((await ledger(env, 400)).find(([id]) => id === ID2), [ID2, "excluded", "octo"]);
+    assert.equal((await correct(env, cookie, { action: "move", issue: "400", report: ID3, to: "400" })).status, 400, "a move onto itself is refused");
+    res = await correct(env, cookie, { action: "merge", issue: "403", to: "400" });
+    assert.equal(res.headers.get("location"), "/issues/400", "a merge lands on the surviving issue");
+    assert.deepEqual(await ledger(env, 403), [[ID2, "excluded", "octo"]]);
+    assert.deepEqual((await ledger(env, 400)).find(([id]) => id === ID2), [ID2, "manual", "octo"], "a merge by hand replaces an earlier exclusion");
+    assert.deepEqual(
+      (await all(d1, "SELECT action, report_id FROM access_log WHERE action IN ('attach', 'detach', 'move', 'merge') ORDER BY id")).map((r) => [r.action, r.report_id]),
+      [["attach", ID3], ["detach", ID4], ["detach", ID1], ["move", ID2], ["merge", null]],
+    );
+
+    // The report page offers a picker to an untracked report and detach on a tracked one.
+    const untracked = await (await call(env, new Request(`${ORIGIN}/reports/${ID4}`, { headers: { cookie } }))).text();
+    assert.match(untracked, /Attach to issue<\/label>\s*<select[^>]*name="issue"/, "the picker chooses the issue itself");
+    assert.ok(!/name="issue" value=/.test(untracked.slice(untracked.indexOf("Attach to issue"))), "no hidden issue competes with the picker");
+    assert.match(untracked, /<option value="403">#403/);
+    res = await correct(env, cookie, { action: "attach", report: ID4, issue: "403", back: `/reports/${ID4}` });
+    assert.equal(res.headers.get("location"), `/reports/${ID4}`);
+    assert.deepEqual((await ledger(env, 403)).find(([id]) => id === ID4), [ID4, "manual", "octo"], "the picked issue gets the report");
+    // The holding issue for untriaged reports takes no report by hand.
+    await storeIssue(d1, { number: 410, title: "[diagnostics] untriaged reports", state: "open", body: "<!-- bookclerk-diagnostics: triage fallback -->\n### Report IDs\n", created_at: new Date(NOW).toISOString(), updated_at: new Date(NOW).toISOString() });
+    assert.equal((await correct(env, cookie, { action: "attach", issue: "410", report: ID4 })).status, 400);
+    assert.equal((await correct(env, cookie, { action: "merge", issue: "403", to: "410" })).status, 400);
+    assert.equal((await correct(env, cookie, { action: "detach", issue: "410", report: ID4 })).status, 303, "detaching from it is allowed");
+    const tracked = await (await call(env, new Request(`${ORIGIN}/reports/${ID3}`, { headers: { cookie } }))).text();
+    assert.match(tracked, /href="\/issues\/400">#400 \[diagnostics\] issue 400<\/a>[^]*?>Detach</);
+  });
+
+  it("clears the pending banner once ingest records the summary", async () => {
+    gh = scriptGitHub([]);
+    const KEY = "r".repeat(32);
+    const env = makeEnv({ REPORT_API_KEY: KEY });
+    await seed(env, ID1);
+    await seed(env, ID2);
+    await openIssue(env, 400, [ID1]);
+    await linkBySignature(env.DASHBOARD_DB, [ID2], NOW - 60_000);
+    const cookie = await signedIn(env, "member");
+    assert.match(await (await call(env, new Request(`${ORIGIN}/issues/400`, { headers: { cookie } }))).text(), /out of date \(never written; 1 ledger change since\)/);
+    const handed = await (await worker.fetch(new Request(`${ORIGIN}/issues/summaries`, { headers: { authorization: `Bearer ${KEY}` } }), env, makeCtx())).json();
+    const fingerprint = handed.issues.find((i) => i.issue === 400).fingerprint;
+    const done = await worker.fetch(
+      new Request(`${ORIGIN}/issues/summary`, { method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: JSON.stringify({ issue: 400, fingerprint }) }),
+      env,
+      makeCtx(),
+    );
+    assert.equal(done.status, 200);
+    assert.ok(Number((await first(env.DASHBOARD_DB, "SELECT summary_sent_at AS at FROM issues WHERE number = 400")).at) >= NOW);
+    const after = await (await call(env, new Request(`${ORIGIN}/issues/400`, { headers: { cookie } }), makeB2(), makeCtx(), NOW + 1000)).text();
+    assert.ok(!after.includes("out of date"), "nothing pending once the summary is recorded");
+    // A dismissed suggestion changes nothing the comment shows, so GitHub
+    // stays current; detaching a tracked report makes it out of date again.
+    const ID3 = "d2b80f13-0000-4000-8000-000000000003";
+    await seed(env, ID3);
+    // The receipt was stamped with the real clock, so later changes are too.
+    const later = Date.now() + 60_000;
+    const fresh = (await createSession(env.DASHBOARD_DB, { userId: 7, login: "octo", role: "member" }, later)).split(";")[0];
+    const post = (fields) => call(env, new Request(`${ORIGIN}/issues/link`, { method: "POST", headers: { cookie: fresh, origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(fields).toString() }), makeB2(), makeCtx(), later);
+    const page = async () => (await call(env, new Request(`${ORIGIN}/issues/400`, { headers: { cookie: fresh } }), makeB2(), makeCtx(), later)).text();
+    assert.equal((await post({ action: "detach", issue: "400", report: ID3 })).status, 303);
+    assert.ok(!(await page()).includes("out of date"));
+    assert.equal((await post({ action: "detach", issue: "400", report: ID2 })).status, 303);
+    assert.match(await page(), /out of date \(last written [^)]*; 2 ledger changes since\)/);
+  });
+
+  it("lets an owner write the summary comment with an issues-only token", async () => {
+    const env = makeEnv();
+    await seed(env, ID1);
+    await seed(env, ID2);
+    await openIssue(env, 400, [ID1]);
+    await linkBySignature(env.DASHBOARD_DB, [ID2], NOW - 60_000);
+    const MARKER = "<!-- bookclerk-diagnostics: summary -->";
+    let comments = [{ id: 11, user: { login: "octo", type: "User" }, body: "me too" }];
+    let writeStatus = 200;
+    let writeBody = "{}";
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues/400/comments", () => Response.json(comments)],
+      ["POST https://api.github.com/repos/Bookclerk/bookclerk/issues/400/comments", () => new Response(writeBody, { status: writeStatus })],
+      ["PATCH https://api.github.com/repos/Bookclerk/bookclerk/issues/comments/", () => new Response(writeBody, { status: writeStatus })],
+    ]);
+    const member = await signedIn(env, "member");
+    const press = (cookie, now, headers = { origin: ORIGIN }, body = "issue=400&back=%2Fissues%2F400") => call(env, new Request(`${ORIGIN}/admin/update-issue`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded", ...headers },
+      body,
+    }), makeB2(), makeCtx(), now);
+    assert.equal((await press(member, NOW)).status, 403);
+    const owner = await signedIn(env, "admin");
+    assert.equal((await press(owner, NOW, {})).status, 403, "needs the dashboard's own form");
+    assert.equal((await press(owner, NOW, { origin: ORIGIN }, "back=%2Fissues%2F400")).status, 400, "names an issue");
+    const page = async (n = 400) => (await call(env, new Request(`${ORIGIN}/issues/${n}`, { headers: { cookie: owner } }), makeB2(), makeCtx(), NOW + 1000)).text();
+    assert.match(await page(), /out of date[^]*?Update GitHub now/);
+
+    // The first write posts the comment: no bot comment carries the marker.
+    const res = await press(owner, NOW);
+    assert.equal(res.status, 303);
+    assert.equal(res.headers.get("location"), "/issues/400");
+    const mint = gh.calls.find((c) => c.url.endsWith("/access_tokens"));
+    assert.deepEqual(mint.body, { repositories: ["bookclerk"], permissions: { issues: "write" } }, "the token can only write issues");
+    const posted = gh.calls.find((c) => c.method === "POST" && c.url.endsWith("/issues/400/comments"));
+    assert.equal(posted.headers.Authorization, "Bearer ghs_installation");
+    assert.ok(posted.body.body.startsWith(`${MARKER}\n**Diagnostics summary** · 2 reports from 1 installation`), posted.body.body);
+    assert.match(posted.body.body, /- Linked: 1 listed in this issue, 1 matched by error signature, 0 added by triage, 0 attached by members/);
+    assert.ok(posted.body.body.includes(`[dashboard](${ORIGIN}/reports/${ID1})`), "report links point at this dashboard");
+    const sent = await first(env.DASHBOARD_DB, "SELECT summary_sent AS fp, summary_sent_at AS at FROM issues WHERE number = 400");
+    assert.match(sent.fp, /^[0-9a-f]{64}$/);
+    assert.equal(Number(sent.at), NOW);
+    assert.equal((await first(env.DASHBOARD_DB, "SELECT action FROM access_log ORDER BY id DESC LIMIT 1")).action, "update-issue");
+    let shown = await page();
+    assert.match(shown, /The summary comment was written to GitHub/);
+    assert.ok(!shown.includes("out of date"), "the banner clears once the comment is written");
+    assert.ok(!shown.includes("Update GitHub now"), "nothing to update");
+    // The same figures again reach no GitHub write.
+    assert.equal((await press(owner, NOW + 2000)).status, 303);
+    assert.equal(gh.calls.filter((c) => c.method === "POST" && c.url.endsWith("/issues/400/comments")).length, 1);
+    assert.match(await page(), /already shows the current figures/);
+
+    // A later change edits the existing bot comment in place.
+    comments = [{ id: 11, user: { login: "octo", type: "User" }, body: `${MARKER} not a bot` }, { id: 12, user: { login: "github-actions[bot]", type: "Bot" }, body: `${MARKER}\nold` }];
+    await linkBySignature(env.DASHBOARD_DB, [ID2], NOW + 3000); // no change: already tracked
+    await seed(env, "d2b80f13-0000-4000-8000-000000000005", NOW + 3000);
+    await linkBySignature(env.DASHBOARD_DB, ["d2b80f13-0000-4000-8000-000000000005"], NOW + 3000);
+    assert.equal((await press(owner, NOW + 4000)).status, 303);
+    const patched = gh.calls.find((c) => c.method === "PATCH");
+    assert.ok(patched.url.endsWith("/issues/comments/12"), "the bot's marker comment, not the member's");
+    assert.match(patched.body.body, /3 reports/);
+    assert.match(await page(), /summary comment on GitHub was updated/);
+    assert.equal(gh.calls.filter((c) => c.method === "POST" && c.url.endsWith("/issues/400/comments")).length, 1);
+
+    // The comment was deleted between the listing and the edit: a new one
+    // is posted rather than the issue given up on.
+    await seed(env, "d2b80f13-0000-4000-8000-000000000008", NOW + 4500);
+    await linkBySignature(env.DASHBOARD_DB, ["d2b80f13-0000-4000-8000-000000000008"], NOW + 4500);
+    let patchGone = true;
+    writeStatus = 201;
+    gh.restore();
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues/400/comments", () => Response.json(comments)],
+      ["PATCH https://api.github.com/repos/Bookclerk/bookclerk/issues/comments/", () => (patchGone ? new Response("{}", { status: 404 }) : new Response(writeBody, { status: writeStatus }))],
+      ["POST https://api.github.com/repos/Bookclerk/bookclerk/issues/400/comments", () => new Response(writeBody, { status: writeStatus })],
+    ]);
+    assert.equal((await press(owner, NOW + 4600)).status, 303);
+    assert.equal(gh.calls.filter((c) => c.method === "PATCH").length, 1);
+    assert.equal(gh.calls.filter((c) => c.method === "POST" && c.url.endsWith("/issues/400/comments")).length, 1, "posted once more");
+    assert.match(await page(), /summary comment was written to GitHub/);
+    assert.equal(Number((await first(env.DASHBOARD_DB, "SELECT summary_sent_at AS at FROM issues WHERE number = 400")).at), NOW + 4600);
+    patchGone = false;
+
+    // A locked issue is a refusal for good: recorded, reported, not retried.
+    await seed(env, "d2b80f13-0000-4000-8000-000000000006", NOW + 5000);
+    await linkBySignature(env.DASHBOARD_DB, ["d2b80f13-0000-4000-8000-000000000006"], NOW + 5000);
+    writeStatus = 403;
+    writeBody = JSON.stringify({ message: "Unable to create comment because issue is locked." });
+    assert.equal((await press(owner, NOW + 6000)).status, 303);
+    assert.match(await page(), /The issue is locked/);
+    assert.equal(Number((await first(env.DASHBOARD_DB, "SELECT summary_sent_at AS at FROM issues WHERE number = 400")).at), NOW + 6000);
+
+    // A rate limit is not: nothing is recorded, so the scheduled run retries.
+    await seed(env, "d2b80f13-0000-4000-8000-000000000007", NOW + 7000);
+    await linkBySignature(env.DASHBOARD_DB, ["d2b80f13-0000-4000-8000-000000000007"], NOW + 7000);
+    writeBody = JSON.stringify({ message: "API rate limit exceeded" });
+    assert.equal((await press(owner, NOW + 8000)).status, 303);
+    assert.match(await page(), /GitHub did not take the comment \(comment edit failed: HTTP 403\)/);
+    assert.equal(Number((await first(env.DASHBOARD_DB, "SELECT summary_sent_at AS at FROM issues WHERE number = 400")).at), NOW + 6000);
+    assert.match(await page(), /out of date/);
+    // The note belongs to #400 only, and fades after ten minutes.
+    await openIssue(env, 403, [ID2]);
+    assert.ok(!(await page(403)).includes("did not take the comment"));
+    const later = await (await call(env, new Request(`${ORIGIN}/issues/400`, { headers: { cookie: owner } }), makeB2(), makeCtx(), NOW + 8000 + 11 * 60_000)).text();
+    assert.ok(!later.includes("did not take the comment"), "an old note is not shown");
+
+    // A failed listing is left for the scheduled run, like a rate limit.
+    gh.restore();
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues/400/comments", () => new Response("{}", { status: 404 })],
+    ]);
+    assert.equal((await press(owner, NOW + 9000)).status, 303);
+    assert.match(await page(), /comment listing failed: HTTP 404/);
+    assert.equal(Number((await first(env.DASHBOARD_DB, "SELECT summary_sent_at AS at FROM issues WHERE number = 400")).at), NOW + 6000);
+    // While the ingest run holds the issue's summary (handed out, not yet
+    // acknowledged) the press waits; the acknowledgement frees it. (The
+    // hand-out and the acknowledgement are stamped with the real clock, so
+    // this comes last.)
+    const KEY = "r".repeat(32);
+    const keyed = makeEnv({ REPORT_API_KEY: KEY });
+    keyed.DASHBOARD_DB = env.DASHBOARD_DB;
+    const handed = await (await worker.fetch(new Request(`${ORIGIN}/issues/summaries`, { headers: { authorization: `Bearer ${KEY}` } }), keyed, makeCtx())).json();
+    const mine = handed.issues.find((i) => i.issue === 400);
+    assert.ok(mine, "the run is handed the pending summary");
+    gh.restore();
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues/400/comments", () => Response.json(comments)],
+      ["PATCH https://api.github.com/repos/Bookclerk/bookclerk/issues/comments/", () => Response.json({})],
+    ]);
+    assert.equal((await press(owner, NOW + 9500)).status, 303);
+    assert.match(await page(), /ingest run \(or another owner\) is writing this comment now/);
+    assert.equal(gh.calls.length, 0, "GitHub is not called while the run holds it");
+    const ack = await worker.fetch(
+      new Request(`${ORIGIN}/issues/summary`, { method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: JSON.stringify({ issue: 400, fingerprint: mine.fingerprint }) }),
+      keyed,
+      makeCtx(),
+    );
+    assert.equal(ack.status, 200);
+    await seed(env, "d2b80f13-0000-4000-8000-000000000009", NOW + 9600);
+    await linkBySignature(env.DASHBOARD_DB, ["d2b80f13-0000-4000-8000-000000000009"], NOW + 9600);
+    assert.equal((await press(owner, NOW + 9700)).status, 303);
+    assert.match(await page(), /summary comment on GitHub was updated/);
+    // A press in flight keeps the issue out of the run's hand-out.
+    await env.DASHBOARD_DB.prepare("UPDATE issues SET summary_lock_until = ? WHERE number = 400").bind(Date.now() + 60_000).run();
+    await seed(env, "d2b80f13-0000-4000-8000-000000000010", NOW + 9800);
+    await linkBySignature(env.DASHBOARD_DB, ["d2b80f13-0000-4000-8000-000000000010"], NOW + 9800);
+    const held = await (await worker.fetch(new Request(`${ORIGIN}/issues/summaries`, { headers: { authorization: `Bearer ${KEY}` } }), keyed, makeCtx())).json();
+    assert.ok(!held.issues.some((i) => i.issue === 400), "a held issue is not handed out");
+    await env.DASHBOARD_DB.prepare("UPDATE issues SET summary_lock_until = NULL WHERE number = 400").run();
+
+  });
+
+  it("finds the summary comment past the first page of comments", async () => {
+    const env = makeEnv();
+    await seed(env, ID1);
+    await openIssue(env, 400, [ID1]);
+    const MARKER = "<!-- bookclerk-diagnostics: summary -->";
+    const human = (i) => ({ id: 1000 + i, user: { login: "octo", type: "User" }, body: `comment ${i}` });
+    const pages = {
+      1: Array.from({ length: 100 }, (_, i) => human(i)),
+      2: Array.from({ length: 100 }, (_, i) => human(100 + i)),
+      3: [human(200), { id: 7, user: { login: "github-actions[bot]", type: "Bot" }, body: `${MARKER}\nold` }],
+    };
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues/400/comments", ({ url }) => Response.json(pages[new URL(url).searchParams.get("page")] ?? [])],
+      ["PATCH https://api.github.com/repos/Bookclerk/bookclerk/issues/comments/7", () => Response.json({})],
+    ]);
+    const owner = await signedIn(env, "admin");
+    const res = await call(env, new Request(`${ORIGIN}/admin/update-issue`, {
+      method: "POST",
+      headers: { cookie: owner, origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+      body: "issue=400&back=%2Fissues%2F400",
+    }));
+    assert.equal(res.status, 303);
+    const listings = gh.calls.filter((c) => c.method === "GET" && c.url.includes("/issues/400/comments"));
+    assert.deepEqual(listings.map((c) => new URL(c.url).searchParams.get("page")), ["1", "2", "3"]);
+    assert.equal(gh.calls.filter((c) => c.method === "PATCH").length, 1);
+    assert.equal(gh.calls.filter((c) => c.method === "POST" && c.url.endsWith("/comments")).length, 0, "nothing posted");
   });
 });

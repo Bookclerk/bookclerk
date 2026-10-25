@@ -195,6 +195,11 @@ class ScenarioTests(unittest.TestCase):
         p = plan("crates/bookclerkd/openapi.json")
         self.assertIn("demo_test", p.checks)
 
+    def test_summary_corpus_change_runs_the_collector_tests(self) -> None:
+        p = plan("scripts/tests/summary_comment_corpus/normal.json", "scripts/tests/summary_comment_oracle.py")
+        self.assertFalse(p.full_suite, p.reasons)
+        self.assertIn("collector_test", p.checks)
+
     def test_demo_image_selects_no_check(self) -> None:
         p = plan("packaging/demo/Dockerfile")
         self.assertFalse(p.full_suite, p.reasons)
