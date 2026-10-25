@@ -37,8 +37,11 @@
 // - parseLinkAction reads the ledger correction forms members post; its
 //   result decides which report is attached to, detached from or moved
 //   between which issues, and which issue is merged into which.
-// - decodeDefaultBranch reads GitHub's repository answer; its result is the
-//   ref the owner's "Update GitHub now" button starts the ingest workflow on.
+// - decodeComments reads one page of an issue's comments; its result is the
+//   comment the owner's "Update GitHub now" button edits in place, or that a
+//   new one is posted. isLockedMessage reads GitHub's refusal of that write;
+//   its result decides whether the issue is recorded as written (locked, no
+//   retry) or left for the next run.
 //
 // Each result is checked against an independent oracle written without the
 // module's own helpers.
@@ -51,7 +54,8 @@ import {
   DIAGNOSTICS_LABEL,
   decodeAccessToken,
   decodeCompare,
-  decodeDefaultBranch,
+  decodeComments,
+  isLockedMessage,
   decodeIssue,
   decodeReleases,
   fixedInLabel,
@@ -1121,29 +1125,36 @@ const LINK_FRAGMENTS = [
   "400", "403", "0", "-1", "1000000001", "7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4", "A", "f", "-", " ", "\u0000", "é",
 ];
 
+/** The marker the summary comment starts with (spelled out, not imported). */
+const ORACLE_MARKER = "<!-- bookclerk-diagnostics: summary -->";
+
 /**
- * Oracle for decodeDefaultBranch: checks GitHub's `default_branch` field
- * against git's branch-name rules written out one by one.
+ * Oracle for decodeComments: walks the first hundred entries by hand and
+ * takes the first with a positive safe integer `id`, a `user` object whose
+ * `type` is exactly "Bot", and a string `body` that begins with the marker.
  *
- * @param {unknown} data Parsed repository answer.
+ * @param {unknown} data Parsed comments page.
  * @param {string} label Input name for failure messages.
  */
-function checkDefaultBranch(data, label) {
-  const got = decodeDefaultBranch(data);
-  const name = data !== null && typeof data === "object" && !Array.isArray(data) ? data.default_branch : undefined;
-  let ok = typeof name === "string" && name.length >= 1 && name.length <= 255;
-  if (ok) {
-    for (const ch of name) {
-      if (!/[A-Za-z0-9._/-]/.test(ch)) ok = false;
-    }
-    if (!/^[A-Za-z0-9]/.test(name)) ok = false;
-    if (name.includes("..") || name.includes("//") || name.includes("@{")) ok = false;
-    if (name.endsWith("/") || name.endsWith(".") || name.endsWith(".lock")) ok = false;
+function checkComments(data, label) {
+  const got = decodeComments(data);
+  if (!Array.isArray(data)) {
+    assert.equal(got, null, label);
+    return;
   }
-  assert.equal(got, ok ? name : null, label);
+  const page = data.slice(0, 100);
+  let summary = null;
+  for (const c of page) {
+    if (summary !== null || c === null || typeof c !== "object") continue;
+    const idOk = typeof c.id === "number" && Number.isSafeInteger(c.id) && c.id >= 1;
+    const userOk = c.user !== null && typeof c.user === "object" && c.user.type === "Bot";
+    const bodyOk = typeof c.body === "string" && c.body.slice(0, ORACLE_MARKER.length) === ORACLE_MARKER;
+    if (idOk && userOk && bodyOk) summary = c.id;
+  }
+  assert.deepEqual(got, { summary, count: page.length }, label);
 }
 
-const BRANCH_FRAGMENTS = ['"default_branch"', "main", "/", "..", ".", "@{", ".lock", " ", "\u0000", "-", "é", '"', "{", "}", "null", "7"];
+const COMMENT_FRAGMENTS = ['"id"', '"user"', '"type"', '"Bot"', '"User"', '"body"', ORACLE_MARKER, "<!-- ", "-->", " ", "\n", "0", "-1", "1.5", "9007199254740993", "null", "[", "]", "{", "}", ",", ":", '"', "é", "\u0000"];
 
 describe("ledger correction form", () => {
   it("replays the seed corpus", () => {
@@ -1170,31 +1181,90 @@ describe("ledger correction form", () => {
   });
 });
 
-describe("repository decoding", () => {
-  it("replays the seed corpus", () => {
-    const all = seeds("repository");
-    assert.ok(all.length > 0);
-    for (const [name, raw] of all) checkDefaultBranch(JSON.parse(raw), name);
-    const byName = Object.fromEntries(all);
-    assert.equal(decodeDefaultBranch(JSON.parse(byName["normal.json"])), "main");
-    assert.equal(decodeDefaultBranch(JSON.parse(byName["slash.json"])), "release/1.x");
-    for (const off of ["dotdot.json", "trailing_slash.json", "lock.json", "space.json", "leading_dot.json", "at_brace.json", "missing.json", "number.json", "null.json", "array.json", "long.json"]) {
-      assert.equal(decodeDefaultBranch(JSON.parse(byName[off])), null, off);
+/**
+ * Oracle for isLockedMessage: true only for a plain object whose `message`
+ * is a string of at most 1000 characters containing "issue is locked" in
+ * any ASCII letter case, single-spaced, with no word character (ASCII letter,
+ * digit or underscore) touching either end.
+ *
+ * @param {unknown} data Parsed 403 body.
+ * @param {string} label Input name for failure messages.
+ */
+function checkLockedMessage(data, label) {
+  const got = isLockedMessage(data);
+  let want = false;
+  if (data !== null && typeof data === "object" && typeof data.message === "string" && data.message.length <= 1000) {
+    const text = data.message.replace(/[A-Z]/g, (c) => c.toLowerCase());
+    const isWord = (ch) => ch !== undefined && /[a-z0-9_]/.test(ch);
+    for (let at = text.indexOf("issue is locked"); at !== -1 && !want; at = text.indexOf("issue is locked", at + 1)) {
+      want = !isWord(text[at - 1]) && !isWord(text[at + "issue is locked".length]);
     }
+  }
+  assert.equal(got, want, label);
+}
+
+const LOCKED_FRAGMENTS = ['"message"', "issue is locked", "ISSUE IS LOCKED", "issue", "is", "locked", "unlocked", "issues", "_", " ", ".", '"', "{", "}", "[", "]", "null", "é", "\u0000", "x".repeat(200)];
+
+describe("issue comments decoding", () => {
+  it("replays the seed corpus", () => {
+    const all = seeds("issue_comments");
+    assert.ok(all.length > 0);
+    for (const [name, raw] of all) checkComments(JSON.parse(raw), name);
+    const byName = Object.fromEntries(all);
+    assert.deepEqual(decodeComments(JSON.parse(byName["normal.json"])), { summary: 202, count: 3 });
+    assert.deepEqual(decodeComments(JSON.parse(byName["user_marker.json"])), { summary: 205, count: 2 }, "a member's forged marker is not the summary");
+    assert.deepEqual(decodeComments(JSON.parse(byName["first_wins.json"])), { summary: 207, count: 2 });
+    assert.deepEqual(decodeComments(JSON.parse(byName["bad_id.json"])), { summary: 210, count: 5 });
+    assert.deepEqual(decodeComments(JSON.parse(byName["full_page.json"])), { summary: 399, count: 100 });
+    assert.deepEqual(decodeComments(JSON.parse(byName["over_page.json"])), { summary: null, count: 100 }, "past the page size is not read");
+    for (const none of ["empty.json", "no_marker.json", "marker_inside.json", "no_user.json", "body_not_string.json"]) {
+      assert.equal(decodeComments(JSON.parse(byName[none])).summary, null, none);
+    }
+    for (const off of ["not_array.json", "null.json", "string.json"]) assert.equal(decodeComments(JSON.parse(byName[off])), null, off);
   });
 
   it("holds the oracle under seeded mutation", () => {
-    const all = seeds("repository").map(([, raw]) => raw);
+    const all = seeds("issue_comments").filter(([n]) => n !== "full_page.json" && n !== "over_page.json").map(([, raw]) => raw);
     const rand = rng(20261026);
     for (let n = 0; n < 3000; n++) {
-      const text = mutate(rand, all[Math.floor(rand() * all.length)], BRANCH_FRAGMENTS);
+      const text = mutate(rand, all[Math.floor(rand() * all.length)], COMMENT_FRAGMENTS);
       let data;
       try {
         data = JSON.parse(text);
       } catch {
         data = text;
       }
-      checkDefaultBranch(data, `iteration ${n}: ${text.slice(0, 300)}`);
+      checkComments(data, `iteration ${n}: ${text.slice(0, 300)}`);
+    }
+  });
+});
+
+describe("locked issue message", () => {
+  it("replays the seed corpus", () => {
+    const all = seeds("locked_message");
+    assert.ok(all.length > 0);
+    for (const [name, raw] of all) checkLockedMessage(JSON.parse(raw), name);
+    const byName = Object.fromEntries(all);
+    assert.equal(isLockedMessage(JSON.parse(byName["locked.json"])), true);
+    assert.equal(isLockedMessage(JSON.parse(byName["locked_edit.json"])), true);
+    for (const off of ["rate_limit.json", "secondary_limit.json", "forbidden.json", "account_locked.json", "message_not_string.json", "array.json", "null.json", "long.json"]) {
+      assert.equal(isLockedMessage(JSON.parse(byName[off])), false, off);
+    }
+    for (const v of [undefined, "issue is locked", 7, {}, { message: null }]) assert.equal(isLockedMessage(v), false, String(v));
+  });
+
+  it("holds the oracle under seeded mutation", () => {
+    const all = seeds("locked_message").map(([, raw]) => raw);
+    const rand = rng(20261028);
+    for (let n = 0; n < 3000; n++) {
+      const text = mutate(rand, all[Math.floor(rand() * all.length)], LOCKED_FRAGMENTS);
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = text;
+      }
+      checkLockedMessage(data, `iteration ${n}: ${text.slice(0, 300)}`);
     }
   });
 });

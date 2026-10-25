@@ -94,6 +94,10 @@ DEMO_PREFIX = "tools/demo/"
 # Files outside tools/demo/ that its tests read: the route table must give
 # every operation in the daemon's OpenAPI document a verdict.
 DEMO_TEST_INPUTS = frozenset({"crates/bookclerkd/openapi.json"})
+# Files outside tools/diagnostics-collector/ that its tests read: the summary
+# comment renderer's seed corpus and the Python oracle its JavaScript port is
+# fuzzed against (both also run in the plan job's Python tests).
+COLLECTOR_TEST_INPUT_PREFIXES = ("scripts/tests/summary_comment_corpus/", "scripts/tests/summary_comment_oracle.py")
 # The production image and its build context. No PR check builds them; the
 # path-filtered `docker-image.yml` workflow does.
 DOCKER_IMAGE_PREFIX = "packaging/docker/"
@@ -769,6 +773,9 @@ def build_plan(
         if path in DEMO_TEST_INPUTS:
             # Also a bookclerkd file, classified with its package above.
             surf.demo.append(path)
+        if path.startswith(COLLECTOR_TEST_INPUT_PREFIXES):
+            # Also plan-job test files, classified below.
+            surf.collector.append(path)
         if path.startswith(DEMO_IMAGE_PREFIX):
             classified = True
         if path.startswith(DOCKER_IMAGE_PREFIX) or path in DOCKER_IMAGE_FILES:

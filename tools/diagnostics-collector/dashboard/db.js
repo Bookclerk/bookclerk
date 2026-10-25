@@ -841,7 +841,7 @@ export async function recentAccess(db, limit) {
  * @param {D1Database} db Database.
  * @param {{userId: number, login: string}} who Signed-in member.
  * @param {"sign-in" | "view-report" | "sign-out-all" | "reindex" | "sync" | "attach" | "detach" | "move"
- *   | "merge" | "dispatch"} action What they did.
+ *   | "merge" | "update-issue"} action What they did.
  * @param {string | null} reportId Report viewed, when any.
  * @param {number} now Unix time in milliseconds.
  * @returns {Promise<void>}
@@ -984,11 +984,13 @@ export async function issueSummaries(db, limit, only = null) {
 }
 
 /**
- * Records the summary the ingest Action wrote on an issue.
+ * Records the summary the ingest Action (or the owner's "Update GitHub now"
+ * button) wrote on an issue.
  *
  * @param {D1Database} db Database.
  * @param {number} issue Issue number.
  * @param {string} fingerprint The `issueSummaries` fingerprint it rendered.
+ * @param {number} now Unix time in milliseconds, kept as when it was written.
  * @returns {Promise<boolean>} Whether the issue exists.
  */
 export async function markSummarySent(db, issue, fingerprint, now) {

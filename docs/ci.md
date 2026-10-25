@@ -361,7 +361,13 @@ non-Rust tooling (decision 6):
   independent re-derivation (the first valid entry per issue, at most twenty;
   the marker first; only the answer's report IDs, each linked only to its own
   dashboard page; no links, mentions, raw HTML or references outside code
-  spans; no Report IDs heading).
+  spans; no Report IDs heading). The dashboard's port of that renderer
+  (`tools/diagnostics-collector/dashboard/summary.js`, behind the owner's
+  "Update GitHub now" button) is held to the Python module as its oracle:
+  `tools/diagnostics-collector/summary.fuzz.test.js` renders the same seed
+  corpus and seeded text and value mutations of it on both sides (the Python
+  side through `scripts/tests/summary_comment_oracle.py`) and requires
+  identical comments, fingerprints and origin checks.
 - The diagnostics ingest release-tag reader
   (`tools/diagnostics-collector/scripts/release_baseline.py`), which turns the
   GitHub `releases/latest` response into the tag the ingest job writes to
@@ -415,9 +421,11 @@ non-Rust tooling (decision 6):
   same file), which decide which issue is re-read and whether it stays linked;
   the ingest Action's summary receipt (`parseSummaryDone`, same file), which
   decides which issue stops being handed out for a summary comment;
-  the repository decoder (`decodeDefaultBranch`, same file), which names the
-  branch the owner's "Update GitHub now" button starts the ingest workflow
-  on; the ledger correction form (`parseLinkAction` in
+  the issue comments decoder (`decodeComments`, same file), which names the
+  comment the owner's "Update GitHub now" button edits in place or decides
+  that one is posted, and the locked-issue reader (`isLockedMessage`, same
+  file), which decides whether GitHub's refusal of that write is final; the
+  ledger correction form (`parseLinkAction` in
   `dashboard/links.js`), which decides which report a member attaches to,
   detaches from or moves between which issues, and which issue is merged
   into which; and the B2 listing decoder
@@ -427,7 +435,7 @@ non-Rust tooling (decision 6):
   `corpus/signature/`, `corpus/oauth_callback/`, `corpus/next_path/`, `corpus/session/`,
   `corpus/membership/`, `corpus/pull_requests/`, `corpus/b2_list/`,
   `corpus/issue_page/`, `corpus/github_auth/`, `corpus/issue_notify/`,
-  `corpus/summary_done/`, `corpus/issue/`, `corpus/repository/`,
+  `corpus/summary_done/`, `corpus/issue/`, `corpus/issue_comments/`, `corpus/locked_message/`,
   `corpus/link_action/`) and runs seeded mutation
   fuzzing on every PR, checking results against independent oracles (IDs
   re-derived by a separate walk, all UUIDs present in the body, capped; level

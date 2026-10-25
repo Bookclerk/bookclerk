@@ -34,7 +34,7 @@
  *   GITHUB_APP_CLIENT_ID, GITHUB_APP_CLIENT_SECRET, GITHUB_APP_PRIVATE_KEY
  *                           — optional; the automation App, for dashboard
  *                             sign-in, read-only issue sync and the owner's
- *                             "Update GitHub now" workflow dispatch
+ *                             "Update GitHub now" comment edit (issues: write)
  *
  * Vars:
  *   GITHUB_REPOSITORY       — owner/repo for releases/latest (e.g. Bookclerk/bookclerk)

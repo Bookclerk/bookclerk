@@ -6,14 +6,16 @@
  * The App can write to the repository, so the Worker narrows what it holds:
  * - every installation token it mints is down-scoped in the request to
  *   `INSTALLATION_PERMISSIONS` on the one configured repository, so no token
- *   the Worker holds can write to issues, pull requests or code; the one
- *   exception is the owner's "Update GitHub now" button, which mints a
- *   separate, uncached token with `DISPATCH_PERMISSIONS` (`actions: write`,
- *   nothing else) to start the ingest workflow and drops it;
+ *   the Worker holds can write to pull requests or code; the one exception
+ *   is the owner's "Update GitHub now" button, which mints a separate,
+ *   uncached token with `SUMMARY_PERMISSIONS` (`issues: write`, nothing
+ *   else), edits one issue's summary comment with it and drops it;
  * - the user token from sign-in is used for one `GET /user` call and then
  *   revoked, never stored, logged or sent to the browser;
  * - the private key and client secret are Worker secrets read only here.
  */
+
+import { MARKER } from "./summary.js";
 
 /** GitHub REST and GraphQL host. */
 export const API = "https://api.github.com";
@@ -35,16 +37,26 @@ export const INSTALLATION_PERMISSIONS = Object.freeze({
 });
 
 /**
- * Permissions of the token that starts the ingest workflow (`dispatchIngest`):
- * the narrowest that `POST .../actions/workflows/{id}/dispatches` accepts.
- * It can start workflows, read nothing else, and is never cached.
+ * Permissions of the token that edits an issue's summary comment
+ * (`writeSummaryComment`): the one `issues: write` the comment edit needs,
+ * which the ingest workflow's own token also has. It is never cached.
  */
-export const DISPATCH_PERMISSIONS = Object.freeze({
-  actions: "write",
+export const SUMMARY_PERMISSIONS = Object.freeze({
+  issues: "write",
 });
 
-/** The ingest workflow file an owner can start from the dashboard. */
-export const INGEST_WORKFLOW = "diagnostics-ingest.yml";
+/**
+ * Comments per page when looking for the summary comment (GitHub's most),
+ * and the most comments `decodeComments` reads from one page.
+ */
+export const COMMENT_PAGE = 100;
+
+/**
+ * Most comment pages read to find the summary comment. An issue with more
+ * comments than that is left to the ingest run, which pages through all of
+ * them, rather than risk a second summary comment.
+ */
+const MAX_COMMENT_PAGES = 20;
 
 /** Time allowed for one GitHub call, in milliseconds. */
 const TIMEOUT_MS = 10_000;
@@ -241,30 +253,85 @@ async function mintToken(cfg, now, permissions) {
 }
 
 /**
- * Starts the ingest workflow on the repository's default branch, for the
- * owner's "Update GitHub now" button. The token is minted for this call
- * alone with `DISPATCH_PERMISSIONS` and not kept; the run then renders the
- * ledger into the issues' summary comments, as the scheduled run would.
+ * One outcome of `writeSummaryComment`.
+ *
+ * @typedef {{outcome: "updated" | "created"} | {outcome: "refused", reason: "locked" | "gone"}} SummaryWrite
+ *   `updated` when the existing summary comment was edited, `created` when
+ *   one was posted, `refused` when GitHub will not take the comment for
+ *   good: the issue is locked (`reason` "locked") or gone (deleted or
+ *   transferred, `reason` "gone").
+ */
+
+/**
+ * Writes an issue's summary comment, for the owner's "Update GitHub now"
+ * button, as the ingest Action's `update-summaries.sh` does with the
+ * workflow's token: the first comment a bot account posted that starts
+ * with the summary marker is edited in place (editing notifies nobody), else
+ * the comment is posted; both write as a bot, so either finds the other's
+ * comment. The token is minted for this call alone with
+ * `SUMMARY_PERMISSIONS` and not kept.
  *
  * @param {GitHubConfig} cfg Settings.
  * @param {number} now Unix time in milliseconds.
- * @returns {Promise<void>}
- * @throws {Error} When the App lacks `actions: write` on the repository, the
- *   repository or its default branch cannot be read, or GitHub refuses the
- *   dispatch (for example the workflow has no `workflow_dispatch` trigger).
+ * @param {number} issue Issue number.
+ * @param {string} body The comment, starting with the marker.
+ * @returns {Promise<SummaryWrite>} What happened.
+ * @throws {Error} When the App lacks `issues: write` on the repository, the
+ *   comments cannot be listed (any failure, like the run, which skips the
+ *   issue and retries), the issue has more than `MAX_COMMENT_PAGES` pages
+ *   of comments, or GitHub answers the write with anything but success or
+ *   a refusal for good (a rate limit, an outage). Messages carry a stage
+ *   and an HTTP status, never the token.
  */
-export async function dispatchIngest(cfg, now) {
-  const { token } = await mintToken(cfg, now, DISPATCH_PERMISSIONS);
-  const repo = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}`, { headers: apiHeaders(token) });
-  if (!repo.ok) throw new Error(`repository lookup failed: HTTP ${repo.status}`);
-  const ref = decodeDefaultBranch(await repo.json().catch(() => null));
-  if (ref === null) throw new Error("repository default branch missing");
-  const res = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/actions/workflows/${INGEST_WORKFLOW}/dispatches`, {
-    method: "POST",
-    headers: { ...apiHeaders(token), "Content-Type": "application/json" },
-    body: JSON.stringify({ ref }),
-  });
-  if (res.status !== 204) throw new Error(`workflow dispatch failed: HTTP ${res.status}`);
+export async function writeSummaryComment(cfg, now, issue, body) {
+  const { token } = await mintToken(cfg, now, SUMMARY_PERMISSIONS);
+  const base = `${API}/repos/${cfg.owner}/${cfg.repo}/issues`;
+  let found = null;
+  let last = false;
+  for (let page = 1; page <= MAX_COMMENT_PAGES && found === null && !last; page++) {
+    const res = await gh(`${base}/${issue}/comments?per_page=${COMMENT_PAGE}&page=${page}`, { headers: apiHeaders(token) });
+    if (!res.ok) throw new Error(`comment listing failed: HTTP ${res.status}`);
+    const comments = decodeComments(await res.json().catch(() => null));
+    if (comments === null) throw new Error("comment listing malformed");
+    found = comments.summary;
+    last = comments.count < COMMENT_PAGE;
+  }
+  if (found === null && !last) throw new Error(`comment listing longer than ${MAX_COMMENT_PAGES} pages`);
+  const write = (method, url) => gh(url, { method, headers: { ...apiHeaders(token), "Content-Type": "application/json" }, body: JSON.stringify({ body }) });
+  if (found !== null) {
+    const res = await write("PATCH", `${base}/comments/${found}`);
+    if (res.ok) return { outcome: "updated" };
+    // 404 or 410 here means the comment went away since the listing (someone
+    // deleted it), not the issue: a new one is posted below.
+    if (res.status !== 404 && res.status !== 410) return refusal("edit", res, await res.text().catch(() => ""));
+  }
+  const res = await write("POST", `${base}/${issue}/comments`);
+  if (res.ok) return { outcome: "created" };
+  if (res.status === 404 || res.status === 410) return { outcome: "refused", reason: "gone" };
+  return refusal("post", res, await res.text().catch(() => ""));
+}
+
+/**
+ * Classifies a failed comment write: a locked issue is a refusal for good,
+ * anything else is thrown for a retry.
+ *
+ * @param {"edit" | "post"} verb Which write.
+ * @param {Response} res The failed response.
+ * @param {string} text Its body.
+ * @returns {SummaryWrite} The refusal.
+ * @throws {Error} For every other failure.
+ */
+function refusal(verb, res, text) {
+  if (res.status === 403) {
+    let data = null;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = null;
+    }
+    if (isLockedMessage(data)) return { outcome: "refused", reason: "locked" };
+  }
+  throw new Error(`comment ${verb} failed: HTTP ${res.status}`);
 }
 
 /** Forgets the cached installation token (tests). */
@@ -307,21 +374,44 @@ export function decodeInstallationToken(data) {
   return Number.isFinite(expiresAt) ? { token: data.token, expiresAt } : null;
 }
 
-/** A branch name GitHub accepts as a workflow dispatch `ref`. */
-const BRANCH_NAME = /^(?!.*(?:\.\.|\/\/|@\{|\.lock$|\/$|\.$))[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/;
-
 /**
- * Reads `GET /repos/{owner}/{repo}` for the default branch the ingest
- * workflow is started on.
+ * Reads one page of `GET /repos/{owner}/{repo}/issues/{n}/comments` for the
+ * summary comment: the first comment on the page that a bot account posted
+ * (`user.type` "Bot": the ingest workflow's token and the App both write as
+ * one) and whose body starts with the summary marker.
  *
  * @param {unknown} data Parsed body.
- * @returns {string | null} The branch name when it is a plain git branch
- *   name (no `..`, `//`, `@{`, trailing `/` or `.`, `.lock` suffix, control
- *   or space characters), else null.
+ * @returns {{summary: number | null, count: number} | null} The comment's
+ *   id when one is on the page, and how many comments the page holds (at
+ *   most `COMMENT_PAGE`; a shorter page is the last); null when the body is
+ *   not a list.
  */
-export function decodeDefaultBranch(data) {
-  if (!isObject(data) || typeof data.default_branch !== "string") return null;
-  return BRANCH_NAME.test(data.default_branch) ? data.default_branch : null;
+export function decodeComments(data) {
+  if (!Array.isArray(data)) return null;
+  const page = data.slice(0, COMMENT_PAGE);
+  for (const c of page) {
+    if (!isObject(c) || !Number.isSafeInteger(c.id) || c.id <= 0) continue;
+    if (!isObject(c.user) || c.user.type !== "Bot") continue;
+    if (typeof c.body === "string" && c.body.startsWith(MARKER)) return { summary: c.id, count: page.length };
+  }
+  return { summary: null, count: page.length };
+}
+
+/** What GitHub's 403 says when an issue is locked (the one wording treated as final). */
+const LOCKED_MESSAGE = /\bissue is locked\b/i;
+
+/**
+ * Reads the body of a 403 to a comment write: whether GitHub refused
+ * because the issue is locked ("Unable to create comment because issue is
+ * locked."), which no retry changes. A rate limit answers 403 too, with
+ * another message, and is retried.
+ *
+ * @param {unknown} data Parsed body.
+ * @returns {boolean} True only for an object whose `message` is a string
+ *   saying the issue is locked.
+ */
+export function isLockedMessage(data) {
+  return isObject(data) && typeof data.message === "string" && data.message.length <= 1000 && LOCKED_MESSAGE.test(data.message);
 }
 
 /**

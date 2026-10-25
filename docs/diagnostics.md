@@ -204,21 +204,21 @@ installation token the Worker mints is narrowed in the request to `metadata`,
 `issues`, `pull_requests`, `members` and `contents` (for the release list
 and compare reads below), all `read`, on this one repository; the App's
 installation must grant each of them, or the token cannot be minted and
-sign-in fails. The one write the Worker can ask GitHub for is to start the
-ingest workflow (the owner's **Update GitHub now** button, below): for that
-call alone it mints a separate token narrowed to `actions: write` and
-nothing else, uses it for the one dispatch and keeps no copy. It still cannot
-write issues, comments or code, and if the installation does not grant
-Actions: write the button reports that and the scheduled run catches up.
+sign-in fails. The one write the Worker can ask GitHub for is an issue's
+summary comment (the owner's **Update GitHub now** button, below): for that
+call alone it mints a separate token narrowed to `issues: write` and nothing
+else, lists the issue's comments and edits or posts the one comment with it,
+and keeps no copy. It still cannot write pull requests, code or workflows,
+and if the installation does not grant Issues: write the button reports that
+and the scheduled run writes the comment instead.
 The client secret and private key are Worker secrets only. Neither, nor any
 user token, is logged, stored or sent to a browser, and
 `scripts/tests/test_ci_contract.py` keeps them out of Bookclerk builds and
 other workflows. The App needs the organization permission **Members: read**
-(accepted on its installation), the repository permission **Actions: write**
-for the owner's **Update GitHub now** button (optional; without it the button
-reports the refusal), and the callback URL
-`https://diagnostics.<DOMAIN>/auth/callback` (or the workers.dev URL) in its
-settings.
+(accepted on its installation; the repository permission **Issues: write**
+the ingest Action already uses covers the owner's **Update GitHub now**
+button) and the callback URL `https://diagnostics.<DOMAIN>/auth/callback`
+(or the workers.dev URL) in its settings.
 
 **Sessions.** A random 32-byte `__Host-bc_session` cookie (HttpOnly, Secure,
 SameSite=Strict) names a row in D1 that stores only its SHA-256. Sessions end
@@ -276,10 +276,14 @@ resolved) and an **Attach to issue** picker when none does. None of this
 reaches GitHub directly: the issue page counts the ledger rows written since
 the ingest Action last recorded the issue's summary comment
 (`issues.summary_sent_at`), and the next run renders them into that
-comment. Owners get **Update GitHub now** next to that count, which starts
-the `diagnostics-ingest` workflow on the default branch by `workflow_dispatch`
-(at most once every ten minutes; a refusal is shown on the page, and the
-scheduled run catches up).
+comment. Owners get **Update GitHub now** next to that count, which writes
+that comment at once: the Worker renders the issue's summary with the same
+renderer as the run (`dashboard/summary.js`, a port of
+`scripts/summary_comment.py` that the collector's tests hold to identical
+output), edits the bot comment carrying the summary marker in place or posts
+it, and records the fingerprint written so the run does not write it again.
+A refusal is shown on the page (a locked or deleted issue is recorded as the
+run would record it; anything else is left for the scheduled run).
 
 Every 30 minutes a cron lists issues labeled `diagnostics` changed since the
 last run, reads the report IDs from each issue's `### Report IDs` section (the

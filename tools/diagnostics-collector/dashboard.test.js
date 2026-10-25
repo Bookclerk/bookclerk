@@ -1979,56 +1979,151 @@ describe("issue page and ledger corrections", () => {
     assert.match(await page(), /out of date \(last written [^)]*; 2 ledger changes since\)/);
   });
 
-  it("lets an owner start the ingest run with an actions-only token, once per ten minutes", async () => {
+  it("lets an owner write the summary comment with an issues-only token", async () => {
     const env = makeEnv();
     await seed(env, ID1);
     await seed(env, ID2);
     await openIssue(env, 400, [ID1]);
     await linkBySignature(env.DASHBOARD_DB, [ID2], NOW - 60_000);
-    let dispatchStatus = 204;
+    const MARKER = "<!-- bookclerk-diagnostics: summary -->";
+    let comments = [{ id: 11, user: { login: "octo", type: "User" }, body: "me too" }];
+    let writeStatus = 200;
+    let writeBody = "{}";
     gh = scriptGitHub([
       ...appRoutes(null),
-      ["GET https://api.github.com/repos/Bookclerk/bookclerk/actions", () => new Response("", { status: 404 })],
-      ["GET https://api.github.com/repos/Bookclerk/bookclerk", () => Response.json({ default_branch: "main" })],
-      ["POST https://api.github.com/repos/Bookclerk/bookclerk/actions/workflows/diagnostics-ingest.yml/dispatches", () => new Response(null, { status: dispatchStatus })],
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues/400/comments", () => Response.json(comments)],
+      ["POST https://api.github.com/repos/Bookclerk/bookclerk/issues/400/comments", () => new Response(writeBody, { status: writeStatus })],
+      ["PATCH https://api.github.com/repos/Bookclerk/bookclerk/issues/comments/", () => new Response(writeBody, { status: writeStatus })],
     ]);
     const member = await signedIn(env, "member");
-    const press = (cookie, now, headers = { origin: ORIGIN }) => call(env, new Request(`${ORIGIN}/admin/dispatch`, {
+    const press = (cookie, now, headers = { origin: ORIGIN }, body = "issue=400&back=%2Fissues%2F400") => call(env, new Request(`${ORIGIN}/admin/update-issue`, {
       method: "POST",
       headers: { cookie, "content-type": "application/x-www-form-urlencoded", ...headers },
-      body: "back=%2Fissues%2F400",
+      body,
     }), makeB2(), makeCtx(), now);
     assert.equal((await press(member, NOW)).status, 403);
     const owner = await signedIn(env, "admin");
     assert.equal((await press(owner, NOW, {})).status, 403, "needs the dashboard's own form");
+    assert.equal((await press(owner, NOW, { origin: ORIGIN }, "back=%2Fissues%2F400")).status, 400, "names an issue");
+    const page = async (n = 400) => (await call(env, new Request(`${ORIGIN}/issues/${n}`, { headers: { cookie: owner } }), makeB2(), makeCtx(), NOW + 1000)).text();
+    assert.match(await page(), /out of date[^]*?Update GitHub now/);
+
+    // The first write posts the comment: no bot comment carries the marker.
     const res = await press(owner, NOW);
     assert.equal(res.status, 303);
     assert.equal(res.headers.get("location"), "/issues/400");
     const mint = gh.calls.find((c) => c.url.endsWith("/access_tokens"));
-    assert.deepEqual(mint.body, { repositories: ["bookclerk"], permissions: { actions: "write" } }, "the dispatch token can only start workflows");
-    const dispatch = gh.calls.find((c) => c.url.endsWith("/dispatches"));
-    assert.deepEqual(dispatch.body, { ref: "main" });
-    assert.equal(dispatch.headers.Authorization, "Bearer ghs_installation");
-    const page = await (await call(env, new Request(`${ORIGIN}/issues/400`, { headers: { cookie: owner } }))).text();
-    assert.match(page, /Update GitHub now/);
-    assert.match(page, /Ingest run started/);
-    assert.equal((await first(env.DASHBOARD_DB, "SELECT action FROM access_log ORDER BY id DESC LIMIT 1")).action, "dispatch");
+    assert.deepEqual(mint.body, { repositories: ["bookclerk"], permissions: { issues: "write" } }, "the token can only write issues");
+    const posted = gh.calls.find((c) => c.method === "POST" && c.url.endsWith("/issues/400/comments"));
+    assert.equal(posted.headers.Authorization, "Bearer ghs_installation");
+    assert.ok(posted.body.body.startsWith(`${MARKER}\n**Diagnostics summary** · 2 reports from 1 installation`), posted.body.body);
+    assert.match(posted.body.body, /- Linked: 1 listed in this issue, 1 matched by error signature, 0 added by triage, 0 attached by members/);
+    assert.ok(posted.body.body.includes(`[dashboard](${ORIGIN}/reports/${ID1})`), "report links point at this dashboard");
+    const sent = await first(env.DASHBOARD_DB, "SELECT summary_sent AS fp, summary_sent_at AS at FROM issues WHERE number = 400");
+    assert.match(sent.fp, /^[0-9a-f]{64}$/);
+    assert.equal(Number(sent.at), NOW);
+    assert.equal((await first(env.DASHBOARD_DB, "SELECT action FROM access_log ORDER BY id DESC LIMIT 1")).action, "update-issue");
+    let shown = await page();
+    assert.match(shown, /The summary comment was written to GitHub/);
+    assert.ok(!shown.includes("out of date"), "the banner clears once the comment is written");
+    assert.ok(!shown.includes("Update GitHub now"), "nothing to update");
+    // The same figures again reach no GitHub write.
+    assert.equal((await press(owner, NOW + 2000)).status, 303);
+    assert.equal(gh.calls.filter((c) => c.method === "POST" && c.url.endsWith("/issues/400/comments")).length, 1);
+    assert.match(await page(), /already shows the current figures/);
 
-    // A second press within the gap does not reach GitHub.
-    await press(owner, NOW + 5 * 60_000);
-    assert.equal(gh.calls.filter((c) => c.url.endsWith("/dispatches")).length, 1);
-    assert.match(await (await call(env, new Request(`${ORIGIN}/issues/400`, { headers: { cookie: owner } }))).text(), /started 5 min ago/);
+    // A later change edits the existing bot comment in place.
+    comments = [{ id: 11, user: { login: "octo", type: "User" }, body: `${MARKER} not a bot` }, { id: 12, user: { login: "github-actions[bot]", type: "Bot" }, body: `${MARKER}\nold` }];
+    await linkBySignature(env.DASHBOARD_DB, [ID2], NOW + 3000); // no change: already tracked
+    await seed(env, "d2b80f13-0000-4000-8000-000000000005", NOW + 3000);
+    await linkBySignature(env.DASHBOARD_DB, ["d2b80f13-0000-4000-8000-000000000005"], NOW + 3000);
+    assert.equal((await press(owner, NOW + 4000)).status, 303);
+    const patched = gh.calls.find((c) => c.method === "PATCH");
+    assert.ok(patched.url.endsWith("/issues/comments/12"), "the bot's marker comment, not the member's");
+    assert.match(patched.body.body, /3 reports/);
+    assert.match(await page(), /summary comment on GitHub was updated/);
+    assert.equal(gh.calls.filter((c) => c.method === "POST" && c.url.endsWith("/issues/400/comments")).length, 1);
 
-    // After the gap a refusal from GitHub is reported, not thrown.
-    dispatchStatus = 422;
-    assert.equal((await press(owner, NOW + 11 * 60_000)).status, 303);
-    assert.equal(gh.calls.filter((c) => c.url.endsWith("/dispatches")).length, 2);
-    assert.match(await (await call(env, new Request(`${ORIGIN}/issues/400`, { headers: { cookie: owner } }))).text(), /GitHub did not start the ingest run \(workflow dispatch failed: HTTP 422\)/);
-    // The failed attempt gave the slot back, and the note belongs to #400 only.
-    dispatchStatus = 204;
-    assert.equal((await press(owner, NOW + 12 * 60_000)).status, 303);
-    assert.equal(gh.calls.filter((c) => c.url.endsWith("/dispatches")).length, 3);
+    // The comment was deleted between the listing and the edit: a new one
+    // is posted rather than the issue given up on.
+    await seed(env, "d2b80f13-0000-4000-8000-000000000008", NOW + 4500);
+    await linkBySignature(env.DASHBOARD_DB, ["d2b80f13-0000-4000-8000-000000000008"], NOW + 4500);
+    let patchGone = true;
+    writeStatus = 201;
+    gh.restore();
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues/400/comments", () => Response.json(comments)],
+      ["PATCH https://api.github.com/repos/Bookclerk/bookclerk/issues/comments/", () => (patchGone ? new Response("{}", { status: 404 }) : new Response(writeBody, { status: writeStatus }))],
+      ["POST https://api.github.com/repos/Bookclerk/bookclerk/issues/400/comments", () => new Response(writeBody, { status: writeStatus })],
+    ]);
+    assert.equal((await press(owner, NOW + 4600)).status, 303);
+    assert.equal(gh.calls.filter((c) => c.method === "PATCH").length, 1);
+    assert.equal(gh.calls.filter((c) => c.method === "POST" && c.url.endsWith("/issues/400/comments")).length, 1, "posted once more");
+    assert.match(await page(), /summary comment was written to GitHub/);
+    assert.equal(Number((await first(env.DASHBOARD_DB, "SELECT summary_sent_at AS at FROM issues WHERE number = 400")).at), NOW + 4600);
+    patchGone = false;
+
+    // A locked issue is a refusal for good: recorded, reported, not retried.
+    await seed(env, "d2b80f13-0000-4000-8000-000000000006", NOW + 5000);
+    await linkBySignature(env.DASHBOARD_DB, ["d2b80f13-0000-4000-8000-000000000006"], NOW + 5000);
+    writeStatus = 403;
+    writeBody = JSON.stringify({ message: "Unable to create comment because issue is locked." });
+    assert.equal((await press(owner, NOW + 6000)).status, 303);
+    assert.match(await page(), /The issue is locked/);
+    assert.equal(Number((await first(env.DASHBOARD_DB, "SELECT summary_sent_at AS at FROM issues WHERE number = 400")).at), NOW + 6000);
+
+    // A rate limit is not: nothing is recorded, so the scheduled run retries.
+    await seed(env, "d2b80f13-0000-4000-8000-000000000007", NOW + 7000);
+    await linkBySignature(env.DASHBOARD_DB, ["d2b80f13-0000-4000-8000-000000000007"], NOW + 7000);
+    writeBody = JSON.stringify({ message: "API rate limit exceeded" });
+    assert.equal((await press(owner, NOW + 8000)).status, 303);
+    assert.match(await page(), /GitHub did not take the comment \(comment edit failed: HTTP 403\)/);
+    assert.equal(Number((await first(env.DASHBOARD_DB, "SELECT summary_sent_at AS at FROM issues WHERE number = 400")).at), NOW + 6000);
+    assert.match(await page(), /out of date/);
+    // The note belongs to #400 only, and fades after ten minutes.
     await openIssue(env, 403, [ID2]);
-    assert.ok(!(await (await call(env, new Request(`${ORIGIN}/issues/403`, { headers: { cookie: owner } }))).text()).includes("Ingest run started"));
+    assert.ok(!(await page(403)).includes("did not take the comment"));
+    const later = await (await call(env, new Request(`${ORIGIN}/issues/400`, { headers: { cookie: owner } }), makeB2(), makeCtx(), NOW + 8000 + 11 * 60_000)).text();
+    assert.ok(!later.includes("did not take the comment"), "an old note is not shown");
+
+    // A failed listing is left for the scheduled run, like a rate limit.
+    gh.restore();
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues/400/comments", () => new Response("{}", { status: 404 })],
+    ]);
+    assert.equal((await press(owner, NOW + 9000)).status, 303);
+    assert.match(await page(), /comment listing failed: HTTP 404/);
+    assert.equal(Number((await first(env.DASHBOARD_DB, "SELECT summary_sent_at AS at FROM issues WHERE number = 400")).at), NOW + 6000);
+  });
+
+  it("finds the summary comment past the first page of comments", async () => {
+    const env = makeEnv();
+    await seed(env, ID1);
+    await openIssue(env, 400, [ID1]);
+    const MARKER = "<!-- bookclerk-diagnostics: summary -->";
+    const human = (i) => ({ id: 1000 + i, user: { login: "octo", type: "User" }, body: `comment ${i}` });
+    const pages = {
+      1: Array.from({ length: 100 }, (_, i) => human(i)),
+      2: Array.from({ length: 100 }, (_, i) => human(100 + i)),
+      3: [human(200), { id: 7, user: { login: "github-actions[bot]", type: "Bot" }, body: `${MARKER}\nold` }],
+    };
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues/400/comments", ({ url }) => Response.json(pages[new URL(url).searchParams.get("page")] ?? [])],
+      ["PATCH https://api.github.com/repos/Bookclerk/bookclerk/issues/comments/7", () => Response.json({})],
+    ]);
+    const owner = await signedIn(env, "admin");
+    const res = await call(env, new Request(`${ORIGIN}/admin/update-issue`, {
+      method: "POST",
+      headers: { cookie: owner, origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+      body: "issue=400&back=%2Fissues%2F400",
+    }));
+    assert.equal(res.status, 303);
+    const listings = gh.calls.filter((c) => c.method === "GET" && c.url.includes("/issues/400/comments"));
+    assert.deepEqual(listings.map((c) => new URL(c.url).searchParams.get("page")), ["1", "2", "3"]);
+    assert.equal(gh.calls.filter((c) => c.method === "PATCH").length, 1);
+    assert.equal(gh.calls.filter((c) => c.method === "POST" && c.url.endsWith("/comments")).length, 0, "nothing posted");
   });
 });

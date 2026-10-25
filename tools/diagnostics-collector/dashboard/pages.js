@@ -599,9 +599,9 @@ export function issuePage(d) {
       <div class="toolbar column"><span class="crumb"><a href="/issues">Issues</a> / #${n}</span>
         <h1>#${n} ${i.title}</h1>
         <span class="links-row"><span class="chip ${i.state === "open" ? "open" : "closed"}">${i.state === "open" ? "Open" : "Closed"}</span>${issueKindChip(d.cfg, i)} <a href="${ghUrl(d.cfg, "issues", n)}">Open on GitHub</a></span></div>
-      <div data-live="pending">${t.outdated ? html`<div class="banner">The summary comment on GitHub is out of date${t.summarySentAt ? ` (last written ${fmtTime(t.summarySentAt)} UTC`: " (never written"}${t.pending > 0 ? `; ${plural(t.pending, "ledger change")} since)` : ")"}; the next ingest run rewrites it.
-        ${owner ? html`<form method="post" action="/admin/dispatch" class="inline"><input type="hidden" name="back" value="${back}"><button class="button small" type="submit">Update GitHub now</button></form>` : ""}
-        ${owner && d.dispatchNote ? html` <span class="fine">${d.dispatchNote}</span>` : ""}</div>` : ""}</div>
+      <div data-live="pending">${t.outdated || d.updateNote ? html`<div class="banner">${t.outdated ? html`The summary comment on GitHub is out of date${t.summarySentAt ? ` (last written ${fmtTime(t.summarySentAt)} UTC` : " (never written"}${t.pending > 0 ? `; ${plural(t.pending, "ledger change")} since)` : ")"}; the next ingest run rewrites it.
+        ${owner ? html`<form method="post" action="/admin/update-issue" class="inline"><input type="hidden" name="issue" value="${n}"><input type="hidden" name="back" value="${back}"><button class="button small" type="submit">Update GitHub now</button></form>` : ""}` : ""}
+        ${d.updateNote ? html` <span class="fine">${fmtTime(d.updateNote.at)} UTC: ${d.updateNote.text}</span>` : ""}</div>` : ""}</div>
       <div class="grid">
         <section class="panel s7" data-live="stats"><h2>Reports tracked</h2><dl class="meta">
           <div><dt>Reports</dt><dd class="num">${fmtInt(t.reports)} from ${plural(t.installs, "installation")}</dd></div>

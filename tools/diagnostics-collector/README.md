@@ -76,9 +76,9 @@ at `TRIAGE_DAILY_NEURONS`; see [`docs/diagnostics.md`](../../docs/diagnostics.md
 1. In the automation App's settings: add the callback URL
    `https://diagnostics.<DOMAIN>/auth/callback` (or the workers.dev URL),
    generate a client secret, and add the organization permission
-   **Members: read** (and, for the owner's **Update GitHub now** button, the
-   repository permission **Actions: write**); accept the new permissions on
-   the installation.
+   **Members: read**; accept the new permission on the installation. (The
+   owner's **Update GitHub now** button uses the repository permission
+   **Issues: write** the ingest Action already has.)
 2. Add the client secret as Actions secret `AUTOMATION_APP_CLIENT_SECRET`
    (the client ID and private key secrets already exist).
 3. Give the Cloudflare token **Account → D1 → Edit** and deploy.

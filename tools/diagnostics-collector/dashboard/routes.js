@@ -47,8 +47,9 @@ import {
   topBy,
   topSignatures,
 } from "./db.js";
-import { dispatchIngest, githubConfig } from "./github.js";
-import { MAX_FORM_CHARS, parseLinkAction } from "./links.js";
+import { githubConfig, writeSummaryComment } from "./github.js";
+import { MAX_FORM_CHARS, issueNumber, parseLinkAction } from "./links.js";
+import { dashboardOrigin, renderSummary } from "./summary.js";
 import { announceChange, closeAllLive, connectLive } from "./live.js";
 import { fmtDay, html, htmlResponse, redirect } from "./html.js";
 import {
@@ -66,7 +67,7 @@ import { readStoredReport } from "./storage.js";
 import { indexSubmitted, reindexSlice, syncIssueNow, syncIssues } from "./sync.js";
 
 /** Paths the dashboard owns (exact). */
-const PATHS = new Set(["/", "/auth/github", "/auth/callback", "/auth/logout", "/dash", "/reports", "/issues", "/issues/link", "/admin/reindex", "/admin/sync", "/admin/sign-out-all", "/admin/dispatch", "/live"]);
+const PATHS = new Set(["/", "/auth/github", "/auth/callback", "/auth/logout", "/dash", "/reports", "/issues", "/issues/link", "/admin/reindex", "/admin/sync", "/admin/sign-out-all", "/admin/update-issue", "/live"]);
 
 /** `/reports/<uuid>`. */
 const REPORT_PATH = /^\/reports\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
@@ -75,57 +76,90 @@ const REPORT_PATH = /^\/reports\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4
 const ISSUE_PATH = /^\/issues\/([1-9][0-9]{0,8})$/;
 
 /**
- * Least time between two owner dispatches of the ingest workflow, in
- * milliseconds: a run takes a few minutes, and a second one would only
- * find nothing new.
+ * Cursor that holds what the owner's last "Update GitHub now" press said, as
+ * `<issue number>\t<unix ms>\t<text>`, shown on that issue's page for
+ * `UPDATE_NOTE_TTL_MS`.
  */
-export const DISPATCH_GAP_MS = 10 * 60_000;
+const UPDATE_NOTE = "issue_update_note";
 
-/** Cursor that holds when the ingest workflow was last dispatched. */
-const DISPATCHED_AT = "ingest_dispatched_at";
+/** How long the note of an "Update GitHub now" press stays on the issue page. */
+const UPDATE_NOTE_TTL_MS = 10 * 60_000;
 
 /**
- * Cursor that holds what the last dispatch attempt said, as
- * `<issue number>\t<text>`, shown on that issue's page.
- */
-const DISPATCH_NOTE = "dispatch_note";
-
-/**
- * Takes the dispatch slot: writes `now` as the last dispatch time unless one
- * within `DISPATCH_GAP_MS` is already recorded, in one statement so two
- * owners pressing at once start one run.
+ * The note of the last "Update GitHub now" press when it concerns this issue
+ * and is recent.
  *
- * @param {D1Database} db Database.
+ * @param {string | null} stored The `UPDATE_NOTE` cursor.
+ * @param {number} issue Issue number of the page.
  * @param {number} now Unix time in milliseconds.
- * @returns {Promise<number | null>} Null when the slot was taken, else the
- *   time of the dispatch that holds it.
+ * @returns {{at: number, text: string} | null} The note, or null.
  */
-async function claimDispatch(db, now) {
-  const res = await db
-    .prepare(
-      `INSERT INTO sync_state (key, value) VALUES (?, ?)
-       ON CONFLICT (key) DO UPDATE SET value = excluded.value WHERE CAST(sync_state.value AS INTEGER) <= ?`,
-    )
-    .bind(DISPATCHED_AT, String(now), now - DISPATCH_GAP_MS)
-    .run();
-  if (Number(res?.meta?.changes ?? 0) > 0) return null;
-  return Number((await getState(db, DISPATCHED_AT)) ?? 0);
+function updateNoteFor(stored, issue, now) {
+  const [forIssue, at, ...rest] = (stored ?? "").split("\t");
+  const when = Number(at);
+  if (forIssue !== String(issue) || !Number.isFinite(when) || now - when > UPDATE_NOTE_TTL_MS || rest.length === 0) return null;
+  return { at: when, text: rest.join("\t") };
 }
 
 /**
- * What the page tells the owner after a failed dispatch, from the error
- * `dispatchIngest` threw (its messages carry a stage and an HTTP status,
- * never a token).
+ * What the page tells the owner after a failed comment write, from the
+ * error `writeSummaryComment` threw (its messages carry a stage and an HTTP
+ * status, never a token).
  *
  * @param {unknown} err The error.
  * @returns {string} One sentence.
  */
-function dispatchFailure(err) {
+function updateFailure(err) {
   const text = err instanceof Error ? err.message : String(err);
   if (text.startsWith("installation token failed")) {
-    return `GitHub refused the token to start the ingest run (${text}); the App needs Actions: write on the repository. The scheduled run will catch up.`;
+    return `GitHub refused the token to edit the comment (${text}); the App needs Issues: write on the repository. The scheduled ingest run will write it.`;
   }
-  return `GitHub did not start the ingest run (${text}); try again later, or the scheduled run will catch up.`;
+  return `GitHub did not take the comment (${text}); try again later, or the scheduled ingest run will write it.`;
+}
+
+/**
+ * The owner's "Update GitHub now" press: renders the issue's summary from
+ * the ledger and writes it to GitHub as the ingest run would, then records
+ * the fingerprint written so the run does not write it again. A refusal for
+ * good (locked or gone issue) is recorded the same way, as the run does.
+ *
+ * @param {Record<string, any>} env Worker bindings.
+ * @param {import("./github.js").GitHubConfig} cfg Settings.
+ * @param {Request} request The form post.
+ * @param {number} issue Issue number.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {Promise<string>} The note for the issue page.
+ */
+async function updateIssueNow(env, cfg, request, issue, now) {
+  const db = env.DASHBOARD_DB;
+  const [summary] = await issueSummaries(db, 1, issue);
+  if (!summary) return "GitHub already shows the current figures for this issue.";
+  // Report links point at this deployment: the Worker serves on exactly one
+  // origin (the custom domain, or workers.dev without one), which is the
+  // collector URL the ingest run renders with, so both write the same links.
+  const rendered = renderSummary(summary, dashboardOrigin(new URL(request.url).origin));
+  if (!rendered) return "The summary could not be rendered; the scheduled ingest run will report it.";
+  let result;
+  try {
+    result = await writeSummaryComment(cfg, now, issue, rendered.body);
+  } catch (err) {
+    console.error(`summary comment write failed: ${err instanceof Error ? err.message : String(err)}`);
+    return updateFailure(err);
+  }
+  await markSummarySent(db, issue, rendered.fingerprint, now);
+  await announceChange(env);
+  switch (result.outcome) {
+    case "updated":
+      return "The summary comment on GitHub was updated.";
+    case "created":
+      return "The summary comment was written to GitHub.";
+    case "refused":
+      return result.reason === "locked"
+        ? "The issue is locked, so GitHub refuses the comment; it is not retried until the figures change."
+        : "GitHub has no such issue any more (deleted or transferred); the comment is not retried until the figures change.";
+    default:
+      return "";
+  }
 }
 
 /**
@@ -297,30 +331,20 @@ export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now
     return correctLinks(request, env, member, now);
   }
 
-  if (method === "POST" && (path === "/admin/reindex" || path === "/admin/sync" || path === "/admin/sign-out-all" || path === "/admin/dispatch")) {
+  if (method === "POST" && (path === "/admin/reindex" || path === "/admin/sync" || path === "/admin/sign-out-all" || path === "/admin/update-issue")) {
     if (member.role !== "admin" || !sameOrigin(request)) {
       return htmlResponse(messagePage("Request refused", html`<p>Only organization owners can do this, from the dashboard's own buttons.</p>`), 403);
     }
-    if (path === "/admin/dispatch") {
-      const back = safeNext(formField(await readForm(request), "back")) ?? "/issues";
-      const issue = ISSUE_PATH.exec(back)?.[1] ?? "0";
-      const held = await claimDispatch(db, now);
-      let note;
-      if (held !== null) {
-        note = `The ingest run was started ${Math.max(1, Math.round((now - held) / 60_000))} min ago; it rewrites the summary comments when it finishes.`;
-      } else {
-        try {
-          await dispatchIngest(cfg, now);
-          note = "Ingest run started; it rewrites the summary comments in a few minutes.";
-        } catch (err) {
-          console.error(`ingest dispatch failed: ${err instanceof Error ? err.message : String(err)}`);
-          // Nothing started, so the slot is given back for a retry.
-          await setState(db, DISPATCHED_AT, "0");
-          note = dispatchFailure(err);
-        }
+    if (path === "/admin/update-issue") {
+      const form = await readForm(request);
+      const back = safeNext(formField(form, "back")) ?? "/issues";
+      const issue = issueNumber(formField(form, "issue") ?? "");
+      if (issue === null) {
+        return htmlResponse(messagePage("Request refused", html`<p>The form names no issue.</p>`), 400);
       }
-      await setState(db, DISPATCH_NOTE, `${issue}\t${new Date(now).toISOString().slice(0, 16).replace("T", " ")} UTC: ${note}`);
-      await logAccess(db, member, "dispatch", null, now);
+      const note = await updateIssueNow(env, cfg, request, issue, now);
+      await setState(db, UPDATE_NOTE, `${issue}\t${now}\t${note}`);
+      await logAccess(db, member, "update-issue", null, now);
       return redirect(back);
     }
     if (path === "/admin/sign-out-all") {
@@ -497,19 +521,18 @@ export async function dashboardFetch(request, env, ctx, path, b2, now = Date.now
   const im = ISSUE_PATH.exec(path);
   if (im) {
     const number = Number(im[1]);
-    const [detail, afterFix, openIssues, dispatchNote] = await Promise.all([
+    const [detail, afterFix, openIssues, updateNote] = await Promise.all([
       issueDetail(db, number, now - 14 * DAY_MS),
       fixStatus(db),
       openIssueOptions(db),
-      member.role === "admin" ? getState(db, DISPATCH_NOTE) : Promise.resolve(null),
+      member.role === "admin" ? getState(db, UPDATE_NOTE) : Promise.resolve(null),
     ]);
     if (!detail) {
       return htmlResponse(messagePage("Issue not found", html`<p>No diagnostics issue with that number is synced. The sync lists issues labeled <code>diagnostics</code>; an owner can run it from the overview.</p>`), 404);
     }
-    const noteFor = (dispatchNote ?? "").split("\t");
     return htmlResponse(
       issuePage({
-        cfg, member, now, detail, fix: afterFix.get(number) ?? null, dispatchNote: noteFor[0] === String(number) ? noteFor[1] ?? "" : "",
+        cfg, member, now, detail, fix: afterFix.get(number) ?? null, updateNote: updateNoteFor(updateNote, number, now),
         openIssues: openIssues.filter((i) => i.number !== number),
       }),
     );

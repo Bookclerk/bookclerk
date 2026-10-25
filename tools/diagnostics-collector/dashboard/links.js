@@ -30,7 +30,7 @@ const REPORT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
  * @returns {number | null} The number when it is a plain decimal integer
  *   from 1 to `MAX_ISSUE_NUMBER`.
  */
-function issueNumber(text) {
+export function issueNumber(text) {
   if (text === null || !/^[1-9][0-9]{0,9}$/.test(text)) return null;
   const n = Number(text);
   return n <= MAX_ISSUE_NUMBER ? n : null;
