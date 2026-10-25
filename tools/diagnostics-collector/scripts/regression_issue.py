@@ -35,10 +35,11 @@ import json
 import pathlib
 import re
 import sys
+import types
 from dataclasses import dataclass
 
 
-def _sibling(name: str):
+def _sibling(name: str) -> types.ModuleType:
     """Loads a module from this script's directory.
 
     ``python3 -I`` keeps the script's directory off ``sys.path`` so a planted

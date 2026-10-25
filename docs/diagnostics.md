@@ -118,6 +118,28 @@ exists is excluded from the model's batch and the holding issue. The pull log
 prints every count (`linked`, `regressions`). A `force_full` run turns the
 linking off and re-triages everything.
 
+**Summary comment.** After the pull, every run (whether or not it pulled
+anything) asks `GET /issues/summaries` for the issues whose figures changed
+since their summary was last written and keeps **one comment per issue**,
+marked `<!-- bookclerk-diagnostics: summary -->` on its first line, edited in
+place (`scripts/update-summaries.sh` and the sans-IO renderer
+`scripts/summary_comment.py`; editing a comment notifies nobody): how many
+reports the issue tracks and from how many installations, how they were
+linked (listed in the issue, matched by signature, added by triage, attached
+by members), first and last receipt, the versions and platforms seen (the
+top eight, the rest as "others") and the newest ten reports with dashboard
+links. The figures come from the collector's ledger, each report counted
+under the issue that tracks it, so a member's attach or detach on the
+dashboard reaches GitHub on the next run. The collector fingerprints each
+summary; the run echoes the fingerprint to `POST /issues/summary` once the
+comment is written, and the issue is not handed out again until its figures
+change (at most twenty issues per run). The comment edited is the first one
+the workflow's own account wrote with the marker; a marker someone else posts
+is ignored. The filed `### Report IDs` section of the issue body is never
+rewritten. Versions and platforms are untrusted report fields and are
+validated or rewritten before they reach the comment; report IDs link only to
+their own dashboard page.
+
 Spend is capped per UTC day by `TRIAGE_DAILY_NEURONS` (default 2,000, a fifth
 of the account's 10,000 free Workers AI neurons a day; values above 9,000 are
 clamped so a typo cannot reach paid usage). Each call reserves its
@@ -337,7 +359,7 @@ callers get no detail.
 | Workflow | Purpose |
 |----------|---------|
 | `diagnostics-collector-deploy` | Deploy Worker on `diagnostics.<DOMAIN>`, or on workers.dev when `DOMAIN` is unset (stores that URL in `DIAGNOSTICS_COLLECTOR_BASE_URL`); apply dashboard D1 migrations; upload the dashboard's App secrets when set; then check `/health` |
-| `diagnostics-ingest` | Daily `/report` pull, `/triage` on Workers AI, issues from the validated plan |
+| `diagnostics-ingest` | Daily `/report` pull, `/triage` on Workers AI, issues from the validated plan, regression issues, one summary comment per issue kept in place |
 | `ci` | Release builds with `BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL` set to the collector URL |
 
 ### Workflow permissions (least privilege)

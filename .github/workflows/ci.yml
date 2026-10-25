@@ -176,6 +176,7 @@ jobs:
           "$PY" scripts/tests/test_diagnostics_plan.py
           "$PY" scripts/tests/test_holding_issue.py
           "$PY" scripts/tests/test_regression_issue.py
+          "$PY" scripts/tests/test_summary_comment.py
           "$PY" scripts/tests/test_release_baseline.py
 
       - name: Database plugin isolation

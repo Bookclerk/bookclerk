@@ -5,6 +5,7 @@
  */
 
 import { compareSemver, isPackagingDerivative, normalizeVersion } from "../version-filter.js";
+import { sha256Hex } from "./session.js";
 
 /** One day, in milliseconds. */
 export const DAY_MS = 86_400_000;
@@ -841,6 +842,136 @@ export async function logAccess(db, who, action, reportId, now) {
     reportId,
   );
 }
+
+/** Most issues `issueSummaries` hands the ingest Action per call. */
+export const SUMMARY_BATCH = 20;
+
+/** Most versions and platforms a summary lists; the rest are "others". */
+const SUMMARY_TOP = 8;
+
+/** Most newest reports a summary lists. */
+const SUMMARY_NEWEST = 10;
+
+/**
+ * The summary the ingest Action keeps as one comment on each GitHub issue,
+ * for every issue whose current summary differs from the one last written
+ * (`issues.summary_sent`): how many reports the issue tracks and from how
+ * many installations, how they were linked, first and last receipt, the
+ * versions and platforms seen, and the newest reports. The counts come from
+ * the ledger (`report_issue`, each report counted under the issue that
+ * tracks it), so a member's attach or detach on the dashboard changes the
+ * fingerprint and reaches GitHub on the next run. An issue with no tracked
+ * report and no summary written is left out; one whose last report was
+ * detached gets an empty summary once.
+ *
+ * @param {D1Database} db Database.
+ * @param {number} limit Most issues to return, most recently active first.
+ * @returns {Promise<Array<{issue: number, fingerprint: string,
+ *   reports: number, installs: number, first_seen: number | null,
+ *   last_seen: number | null, sources: {filed: number, signature: number,
+ *   triage: number, manual: number}, versions: Array<{version: string, n: number}>,
+ *   platforms: Array<{platform: string, n: number}>,
+ *   newest: Array<{report_id: string, version: string, received_at: number}>}>>}
+ *   Summaries to render; `fingerprint` is echoed back through
+ *   `markSummarySent` once the comment is written.
+ */
+export async function issueSummaries(db, limit) {
+  const [totals, versions, platforms, newest] = await Promise.all([
+    all(
+      db,
+      `${WITH_TRACKED}
+       SELECT i.number AS issue, i.summary_sent AS sent,
+         COUNT(r.report_id) AS reports, COUNT(DISTINCT NULLIF(r.install_hash, '')) AS installs,
+         MIN(r.received_at) AS first_seen, MAX(r.received_at) AS last_seen,
+         COALESCE(SUM(ri.source = 'filed'), 0) AS filed, COALESCE(SUM(ri.source = 'signature'), 0) AS by_signature,
+         COALESCE(SUM(ri.source = 'triage'), 0) AS by_triage, COALESCE(SUM(ri.source = 'manual'), 0) AS by_manual
+       FROM issues i
+       LEFT JOIN tr ON tr.issue_number = i.number
+       LEFT JOIN reports r ON r.report_id = tr.report_id
+       LEFT JOIN report_issue ri ON ri.report_id = tr.report_id AND ri.issue_number = tr.issue_number
+       WHERE i.kind <> 'fallback'
+       GROUP BY i.number
+       HAVING COUNT(r.report_id) > 0 OR i.summary_sent IS NOT NULL`,
+    ),
+    all(
+      db,
+      `${WITH_TRACKED}
+       SELECT tr.issue_number AS issue, r.version AS version, COUNT(*) AS n
+       FROM tr JOIN reports r ON r.report_id = tr.report_id
+       GROUP BY tr.issue_number, r.version ORDER BY tr.issue_number, n DESC, r.version`,
+    ),
+    all(
+      db,
+      `${WITH_TRACKED}
+       SELECT tr.issue_number AS issue, TRIM(r.os || ' ' || r.arch) AS platform, COUNT(*) AS n
+       FROM tr JOIN reports r ON r.report_id = tr.report_id
+       GROUP BY tr.issue_number, platform ORDER BY tr.issue_number, n DESC, platform`,
+    ),
+    all(
+      db,
+      `${WITH_TRACKED}
+       SELECT issue, report_id, version, received_at FROM (
+         SELECT tr.issue_number AS issue, r.report_id AS report_id, r.version AS version, r.received_at AS received_at,
+           ROW_NUMBER() OVER (PARTITION BY tr.issue_number ORDER BY r.received_at DESC, r.report_id) AS rn
+         FROM tr JOIN reports r ON r.report_id = tr.report_id)
+       WHERE rn <= ? ORDER BY issue, received_at DESC, report_id`,
+      SUMMARY_NEWEST,
+    ),
+  ]);
+  const by = (rows, key) => {
+    const m = new Map();
+    for (const row of rows) {
+      const issue = Number(row.issue);
+      if (!m.has(issue)) m.set(issue, []);
+      m.get(issue).push(key(row));
+    }
+    return m;
+  };
+  const top = (list, key) => {
+    if (!list || list.length <= SUMMARY_TOP) return list ?? [];
+    const rest = list.slice(SUMMARY_TOP).reduce((sum, e) => sum + e.n, 0);
+    return [...list.slice(0, SUMMARY_TOP), { [key]: "others", n: rest }];
+  };
+  const v = by(versions, (r) => ({ version: String(r.version ?? ""), n: Number(r.n) }));
+  const pl = by(platforms, (r) => ({ platform: String(r.platform ?? ""), n: Number(r.n) }));
+  const nw = by(newest, (r) => ({ report_id: String(r.report_id), version: String(r.version ?? ""), received_at: Number(r.received_at) }));
+  const out = [];
+  for (const t of totals) {
+    const issue = Number(t.issue);
+    // Only what the comment shows is hashed: a close or reopen alone must
+    // not schedule a no-op edit.
+    const summary = {
+      issue,
+      reports: Number(t.reports),
+      installs: Number(t.installs),
+      first_seen: t.first_seen === null ? null : Number(t.first_seen),
+      last_seen: t.last_seen === null ? null : Number(t.last_seen),
+      sources: { filed: Number(t.filed), signature: Number(t.by_signature), triage: Number(t.by_triage), manual: Number(t.by_manual) },
+      versions: top(v.get(issue), "version"),
+      platforms: top(pl.get(issue), "platform"),
+      newest: nw.get(issue) ?? [],
+    };
+    const fingerprint = await sha256Hex(JSON.stringify(summary));
+    if (fingerprint === t.sent) continue;
+    out.push({ ...summary, fingerprint });
+  }
+  out.sort((a, b) => (b.last_seen ?? 0) - (a.last_seen ?? 0) || b.issue - a.issue);
+  return out.slice(0, limit);
+}
+
+/**
+ * Records the summary the ingest Action wrote on an issue.
+ *
+ * @param {D1Database} db Database.
+ * @param {number} issue Issue number.
+ * @param {string} fingerprint The `issueSummaries` fingerprint it rendered.
+ * @returns {Promise<boolean>} Whether the issue exists.
+ */
+export async function markSummarySent(db, issue, fingerprint) {
+  const res = await db.prepare("UPDATE issues SET summary_sent = ? WHERE number = ?").bind(fingerprint, issue).run();
+  return Number(res?.meta?.changes ?? 0) > 0;
+}
+
 
 /**
  * A fingerprint of everything the issue sync writes that pages show: issue

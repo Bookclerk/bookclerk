@@ -16,6 +16,9 @@ import {
   fixStatus,
   isRegressionVersion,
   issuesTrackingSignature,
+  issueSummaries,
+  markSummarySent,
+  SUMMARY_BATCH,
   all,
   countsByBucket,
   DAY_MS,
@@ -464,6 +467,33 @@ export async function dashboardIssueNotify(env, number, now) {
   if (!cfg) return null;
   env = { ...env, DASHBOARD_DB: metered(env.DASHBOARD_DB) };
   return announceIfLinksChanged(env, () => syncIssueNow(env, cfg, number, now));
+}
+
+/**
+ * `GET /issues/summaries` (ingest Action, `REPORT_API_KEY`): the issues
+ * whose summary comment is out of date, with the figures to render.
+ *
+ * @param {Record<string, any>} env Worker bindings.
+ * @returns {Promise<Awaited<ReturnType<typeof issueSummaries>> | null>}
+ *   Summaries, or null when the dashboard database is not bound.
+ */
+export async function dashboardIssueSummaries(env) {
+  if (!env.DASHBOARD_DB) return null;
+  return issueSummaries(metered(env.DASHBOARD_DB), SUMMARY_BATCH);
+}
+
+/**
+ * `POST /issues/summary` (ingest Action, `REPORT_API_KEY`): records the
+ * summary fingerprint the Action rendered on an issue.
+ *
+ * @param {Record<string, any>} env Worker bindings.
+ * @param {{issue: number, fingerprint: string}} done From `parseSummaryDone`.
+ * @returns {Promise<boolean | null>} Whether the issue exists, or null when
+ *   the dashboard database is not bound.
+ */
+export async function dashboardSummarySent(env, done) {
+  if (!env.DASHBOARD_DB) return null;
+  return markSummarySent(metered(env.DASHBOARD_DB), done.issue, done.fingerprint);
 }
 
 /**

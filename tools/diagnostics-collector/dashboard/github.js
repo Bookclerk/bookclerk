@@ -364,6 +364,35 @@ export function parseIssueNotify(text) {
   return Number.isSafeInteger(n) && n > 0 && n <= 1e9 ? n : null;
 }
 
+/** A `issueSummaries` fingerprint: lowercase hex SHA-256. */
+const FINGERPRINT = /^[0-9a-f]{64}$/;
+
+/**
+ * Reads the ingest Action's `POST /issues/summary` body, which says which
+ * issue it wrote a summary comment on and which `GET /issues/summaries`
+ * fingerprint it rendered.
+ *
+ * @param {unknown} text Request body, at most 512 characters.
+ * @returns {{issue: number, fingerprint: string} | null} The pair, or null
+ *   when the body is not a JSON object with a positive integer `issue` of at
+ *   most 1e9 and a 64-character lowercase hex `fingerprint`.
+ */
+export function parseSummaryDone(text) {
+  if (typeof text !== "string" || text.length > 512) return null;
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!isObject(data) || Array.isArray(data)) return null;
+  const n = data.issue;
+  const fp = data.fingerprint;
+  if (!Number.isSafeInteger(n) || n < 1 || n > 1e9) return null;
+  if (typeof fp !== "string" || !FINGERPRINT.test(fp)) return null;
+  return { issue: n, fingerprint: fp };
+}
+
 // ---------------------------------------------------------------------------
 // Sign-in
 
