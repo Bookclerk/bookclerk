@@ -1572,14 +1572,14 @@ function detachStatement(db: D1Database, issue: number, reportId: string, login:
  * descriptions. The exclusion is the member's, like a detach: a later
  * attach on one of those issues replaces it.
  *
- * @param {D1Database} db Database.
- * @param {number} issue The issue the member chose.
- * @param {string} reportId Report UUID.
- * @param {string} login Member making the change.
- * @param {number} now Unix time in milliseconds.
- * @returns {D1PreparedStatement} The bound statement.
+ * @param db - Database.
+ * @param issue - The issue the member chose.
+ * @param reportId - Report UUID.
+ * @param login - Member making the change.
+ * @param now - Unix time in milliseconds.
+ * @returns The bound statement.
  */
-function takeStatement(db, issue, reportId, login, now) {
+function takeStatement(db: D1Database, issue: number, reportId: string, login: string, now: number): D1PreparedStatement {
   return db
     .prepare(
       `UPDATE report_issue SET source = 'excluded', linked_by = ?, linked_at = ?

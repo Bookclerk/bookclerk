@@ -2261,7 +2261,7 @@ describe("issue page and ledger corrections", () => {
     await openIssue(env, 405, []);
     /** Reports counted per issue, as the summaries route hands them out. */
     const counted = async () => {
-      const handed = await (await worker.fetch(new Request(`${ORIGIN}/issues/summaries`, { headers: { authorization: `Bearer ${KEY}` } }), env, makeCtx())).json();
+      const handed = await (await worker.fetch(new Request(`${ORIGIN}/issues/summaries`, { headers: { authorization: `Bearer ${KEY}` } }), env, makeCtx())).json<Summaries>();
       return Object.fromEntries(handed.issues.map((i) => [i.issue, i.reports]));
     };
     assert.deepEqual(await counted(), { 400: 2 }, "the oldest issue tracks a report both list");
