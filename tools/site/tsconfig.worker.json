@@ -1,0 +1,11 @@
+{
+  // The Worker's own sources with only the Workers runtime types, so Node
+  // modules (node:*) and the Node globals the Workers types leave out fail the
+  // type check in code that runs on Cloudflare. tsconfig.json checks
+  // everything, build and tests included, with Node's types as well.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["@cloudflare/workers-types"]
+  },
+  "include": ["entry.ts", "worker.ts", "render.ts", "audit/entry.ts", "generated/docs-shell.d.json.ts"]
+}

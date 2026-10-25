@@ -104,7 +104,7 @@ jobs:
         run: npm ci
 
       # The newest published, non-prerelease release; none yet means the
-      # site renders its pre-release notices. build.mjs validates both values.
+      # site renders its pre-release notices. build.ts validates both values.
       - name: Read release state
         id: release
         env:
@@ -125,7 +125,7 @@ jobs:
             cat gh-err.txt >&2
             exit 1
           fi
-          # Same shape build.mjs enforces; checked here too because the next
+          # Same shape build.ts enforces; checked here too because the next
           # step passes the tag to git.
           if [[ -n "$tag" && ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::Unexpected release tag: $tag"
@@ -134,7 +134,7 @@ jobs:
           # Every published, non-prerelease release whose docs bookclerk-docs
           # has tagged, newest first, for the docs version picker. A release
           # whose docs are still being published is left out until the
-          # workflow_run redeploy. build.mjs checks each tag's shape again.
+          # workflow_run redeploy. build.ts checks each tag's shape again.
           tags=""
           if [[ -n "$tag" ]]; then
             published=$(gh api --paginate "repos/${DOCS_REPO}/tags?per_page=100" --jq '.[].name')
@@ -170,6 +170,11 @@ jobs:
           rm -rf ../../docs
           git checkout "refs/tags/${TAG}" -- ../../docs
 
+      # Wrangler bundles the Worker without checking its types, so a deploy
+      # of a commit CI did not test still has to pass tsc.
+      - name: Type-check the site
+        run: npm run typecheck
+
       # After the docs swap, so the link check covers the docs listed.
       - name: Test the site generator
         run: npm test
@@ -184,7 +189,7 @@ jobs:
           DEMO_URL: ${{ vars.DEMO_URL }}
         run: |
           set -euo pipefail
-          # build.mjs validates the result as https://<lowercase hostname>.
+          # build.ts validates the result as https://<lowercase hostname>.
           if [ "$DEMO_URL" = none ]; then
             SITE_DEMO_URL=""
           elif [ -n "$DOMAIN" ]; then

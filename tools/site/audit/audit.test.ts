@@ -1,20 +1,21 @@
-// Tests for audit.mjs's pure helpers. Run with `node --test audit.test.mjs`
+// Tests for audit.ts's pure helpers. Run with `node --test audit.test.ts`
 // (CI runs them before the audit).
 
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { ERROR_PAGE, PAGE, PAGES, UNAVAILABLE_KEY, docsFile, lighthouseMisses } from "./audit.mjs";
+import { ERROR_PAGE, PAGE, PAGES, UNAVAILABLE_KEY, docsFile, lighthouseMisses } from "./audit.ts";
+import type { LighthouseScores } from "./audit.ts";
 
 /**
  * A Lighthouse result with the given category scores (0-100) and CLS.
  *
- * @param {Record<string, number | null>} scores Category scores.
- * @param {number} [cls] Cumulative layout shift.
- * @returns {{categories: Record<string, {score: number | null}>, audits: Record<string, {numericValue?: number}>}}
+ * @param scores - Category scores.
+ * @param cls - Cumulative layout shift.
+ * @returns The parts of a Lighthouse result the thresholds read.
  */
-function lhr(scores, cls = 0) {
+function lhr(scores: Readonly<Record<string, number | null>>, cls = 0): LighthouseScores {
   const categories = Object.fromEntries(Object.entries(scores).map(([k, v]) => [k, { score: v === null ? null : v / 100 }]));
   return { categories, audits: { "cumulative-layout-shift": { numericValue: cls } } };
 }

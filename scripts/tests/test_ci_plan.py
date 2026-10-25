@@ -170,7 +170,7 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual({j for j, on in p.jobs.items() if on}, {"site"})
 
     def test_site_only_runs_the_site_checks(self) -> None:
-        p = plan("tools/site/worker.js", "tools/site/src/site.css")
+        p = plan("tools/site/worker.ts", "tools/site/src/site.css")
         self.assertFalse(p.full_suite, p.reasons)
         self.assertEqual(sorted(p.checks), ["site_audit", "site_test"])
         self.assertEqual({j for j, on in p.jobs.items() if on}, {"site"})
@@ -217,11 +217,16 @@ class ScenarioTests(unittest.TestCase):
         self.assertTrue(plan("tools/new-tool/main.js").full_suite)
 
     def test_site_audit_builds_the_checked_out_commit(self) -> None:
-        art = artifact(plan("tools/site/worker.js"))
+        art = artifact(plan("tools/site/worker.ts"))
         argv = {c.label: c for _, c in planned_commands(art, "site_audit", CTX)}
         build = argv["npm run build (tools/site)"]
         self.assertEqual(build.env["SITE_COMMIT"], art["checkout_sha"])
-        self.assertEqual(argv["Lighthouse + axe-core (tools/site/audit)"].argv[:2], ["node", "audit.mjs"])
+        self.assertEqual(argv["Lighthouse + axe-core (tools/site/audit)"].argv[:2], ["node", "audit.ts"])
+
+    def test_site_test_type_checks_before_testing(self) -> None:
+        art = artifact(plan("tools/site/worker.ts"))
+        labels = [c.label for _, c in planned_commands(art, "site_test", CTX)]
+        self.assertEqual(labels, ["npm ci (tools/site)", "tsc (tools/site)", "npm test (tools/site)"])
 
     def test_ui_only(self) -> None:
         p = plan("ui/src/App.tsx")

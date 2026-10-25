@@ -11,16 +11,17 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { pickEncoding } from "./worker.js";
+import { pickEncoding } from "./worker.ts";
+import type { Encoding } from "./worker.ts";
 
 /** This directory. */
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 
 /** PRNG seed for this run. */
-const SEED = Number(process.env.FUZZ_SEED ?? 0x5eed);
+const SEED = Number(process.env["FUZZ_SEED"] ?? 0x5eed);
 
 /** Mutated inputs checked per target. */
-const ITERATIONS = Number(process.env.FUZZ_ITERATIONS ?? 20000);
+const ITERATIONS = Number(process.env["FUZZ_ITERATIONS"] ?? 20000);
 
 /** Fragments mutations splice in: list and parameter syntax, codings, odd qvalues and whitespace. */
 const FRAGMENTS = [",", ";", "=", " ", "\t", "q", "Q", "q=", "br", "BR", "gzip", "*", "identity", "0", "1", ".", "0.5", "1.000", "1.0001", ".5", "0x1", "1e0", "-0", " ", "\u0000", "é"];
@@ -28,10 +29,10 @@ const FRAGMENTS = [",", ";", "=", " ", "\t", "q", "Q", "q=", "br", "BR", "gzip",
 /**
  * Seeds a small deterministic PRNG (mulberry32).
  *
- * @param {number} seed Any 32-bit integer.
- * @returns {() => number} A generator of floats in [0, 1).
+ * @param seed - Any 32-bit integer.
+ * @returns A generator of floats in [0, 1).
  */
-function prng(seed) {
+function prng(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
     a = (a + 0x6d2b79f5) >>> 0;
@@ -45,14 +46,14 @@ function prng(seed) {
 /**
  * Applies one to four random edits to an input.
  *
- * @param {string} input The input to mutate.
- * @param {string[]} seeds Every seed, for splicing.
- * @param {() => number} rand The PRNG.
- * @returns {string} The mutated input.
+ * @param input - The input to mutate.
+ * @param seeds - Every seed, for splicing.
+ * @param rand - The PRNG.
+ * @returns The mutated input.
  */
-function mutate(input, seeds, rand) {
+function mutate(input: string, seeds: readonly string[], rand: () => number): string {
   let out = input;
-  const pick = (list) => list[Math.floor(rand() * list.length)];
+  const pick = (list: readonly string[]): string => list[Math.floor(rand() * list.length)] ?? "";
   for (let n = 1 + Math.floor(rand() * 4); n > 0; n--) {
     const at = Math.floor(rand() * (out.length + 1));
     switch (Math.floor(rand() * 5)) {
@@ -80,10 +81,10 @@ function mutate(input, seeds, rand) {
  * expression: "0" or "1", optionally followed by "." and up to three digits,
  * which must be zeros after a "1".
  *
- * @param {string} text The parameter value.
- * @returns {number} The weight, or 0 for anything else.
+ * @param text - The parameter value.
+ * @returns The weight, or 0 for anything else.
  */
-function oracleQvalue(text) {
+function oracleQvalue(text: string): number {
   if (text !== "0" && text !== "1" && !text.startsWith("0.") && !text.startsWith("1.")) return 0;
   const decimals = text.slice(2);
   if (decimals.length > 3) return 0;
@@ -96,24 +97,24 @@ function oracleQvalue(text) {
 
 /**
  * The coding an Accept-Encoding header should get, computed independently of
- * worker.js: every member's weight is collected first, then Brotli and gzip
+ * worker.ts: every member's weight is collected first, then Brotli and gzip
  * are compared with `*` standing in for an unlisted coding.
  *
- * @param {string} header The header.
- * @returns {"br" | "gzip" | null} The expected choice.
+ * @param header - The header.
+ * @returns The expected choice.
  */
-function oracleEncoding(header) {
-  const weights = {};
+function oracleEncoding(header: string): Encoding | null {
+  const weights: Record<string, number> = Object.create(null);
   for (const member of header.split(",")) {
-    const [name, ...params] = member.split(";");
+    const [name = "", ...params] = member.split(";");
     const coding = name.trim().toLowerCase();
     if (coding === "") continue;
-    const qs = params.filter((p) => p.split("=")[0].trim().toLowerCase() === "q");
+    const qs = params.filter((p) => (p.split("=")[0] ?? "").trim().toLowerCase() === "q");
     const last = qs.at(-1);
     const weight = last === undefined ? 1 : last.includes("=") ? oracleQvalue(last.slice(last.indexOf("=") + 1).trim()) : 0;
     weights[coding] = Math.max(weights[coding] ?? 0, weight);
   }
-  const of = (coding) => (coding in weights ? weights[coding] : (weights["*"] ?? 0));
+  const of = (coding: string): number => (coding in weights ? (weights[coding] ?? 0) : (weights["*"] ?? 0));
   const br = of("br");
   const gzip = of("gzip");
   if (br === 0 && gzip === 0) return null;
@@ -123,10 +124,10 @@ function oracleEncoding(header) {
 /**
  * Reads a target's seed corpus.
  *
- * @param {string} target The directory under fuzz/.
- * @returns {string[]} The seeds.
+ * @param target - The directory under fuzz/.
+ * @returns The seeds.
  */
-function corpus(target) {
+function corpus(target: string): string[] {
   const dir = join(HERE, "fuzz", target);
   return readdirSync(dir)
     .sort()
@@ -143,7 +144,7 @@ test("pickEncoding agrees with the oracle on mutated inputs", () => {
   const seeds = corpus("accept_encoding");
   const rand = prng(SEED);
   for (let i = 0; i < ITERATIONS; i++) {
-    const input = mutate(seeds[Math.floor(rand() * seeds.length)], seeds, rand);
+    const input = mutate(seeds[Math.floor(rand() * seeds.length)] ?? "", seeds, rand);
     const got = pickEncoding(input);
     assert.ok(got === null || got === "br" || got === "gzip", JSON.stringify(input));
     assert.equal(got, oracleEncoding(input), `FUZZ_SEED=${SEED} iteration ${i}: ${JSON.stringify(input)}`);

@@ -1,0 +1,32 @@
+{
+  // Type checking only (`npm run typecheck`): wrangler bundles the Worker
+  // from its .ts sources and Node runs the build and the tests by stripping
+  // the types, so nothing is emitted. This config checks every module with
+  // both the Workers runtime types and Node's; tsconfig.worker.json checks
+  // the Worker's sources again without Node's.
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["@cloudflare/workers-types", "node"],
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "allowArbitraryExtensions": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "moduleDetection": "force",
+    "isolatedModules": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "useUnknownInCatchVariables": true,
+    "skipLibCheck": true
+  },
+  "include": ["*.ts", "audit/entry.ts", "generated/docs-shell.d.json.ts"]
+}

@@ -2,32 +2,41 @@
 // sitemap and llms.txt / llms-full.txt come from the docs checked out beside
 // the site (the newest release tag's docs once there is a release, else
 // main's). The pages themselves are rendered by the Worker from the docs
-// repository at request time (worker.js); render.mjs holds the rendering both
+// repository at request time (worker.ts); render.ts holds the rendering both
 // share.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
-import { buildNav, renderDoc } from "./render.mjs";
+import { buildNav, renderDoc } from "./render.ts";
+import type { NavGroup, RenderedDoc } from "./render.ts";
 
-export { docMarkdownUrl, docUrl, GENERATED_TITLES, NAV, rewriteLink, siteMarkdown, slugify } from "./render.mjs";
+export { docMarkdownUrl, docUrl, GENERATED_TITLES, NAV, rewriteLink, siteMarkdown, slugify } from "./render.ts";
 
 /**
  * Directories under docs/ that scripts/generate-api-docs.sh fills with
  * generated (gitignored) API reference. They are not docs; the published
  * reference comes from the docs repository.
  */
-export const GENERATED_DIRS = ["api/rust", "api/typescript", "api/ui", "api/python"];
+/** Every local doc rendered, and the sidebar built from them (see renderDocs). */
+export interface RenderedDocs {
+  /** The sidebar. */
+  nav: NavGroup[];
+  /** Each doc's key (path without `.md`) and its rendering. */
+  docs: (RenderedDoc & { key: string })[];
+}
+
+export const GENERATED_DIRS: readonly string[] = ["api/rust", "api/typescript", "api/ui", "api/python"];
 
 /**
  * Lists every Markdown file under a directory, skipping GENERATED_DIRS.
  *
- * @param {string} root The docs directory.
- * @returns {string[]} Paths relative to `root`, POSIX separators, sorted.
+ * @param root - The docs directory.
+ * @returns Paths relative to `root`, POSIX separators, sorted.
  */
-export function markdownFiles(root) {
-  const out = [];
-  const walk = (dir) => {
+export function markdownFiles(root: string): string[] {
+  const out: string[] = [];
+  const walk = (dir: string): void => {
     for (const name of readdirSync(dir)) {
       const full = join(dir, name);
       if (GENERATED_DIRS.includes(relative(root, full).split(sep).join("/"))) continue;
@@ -42,18 +51,16 @@ export function markdownFiles(root) {
 /**
  * Reads and renders every doc.
  *
- * @param {string} docsRoot The repository's docs/ directory.
- * @param {string} blobBase GitHub URL prefix for repository files at the
+ * @param docsRoot - The repository's docs/ directory.
+ * @param blobBase - GitHub URL prefix for repository files at the
  *   docs' ref, ending in `/blob/<ref>/`.
- * @param {Record<string, string>} [generatedTitles] Sidebar titles of
+ * @param generatedTitles - Sidebar titles of
  *   generated pages, which are not in `docsRoot` but are published.
- * @returns {{nav: ReturnType<typeof buildNav>,
- *   docs: {key: string, title: string, description: string, html: string, markdown: string}[]}}
- *   The sidebar and each doc's title, summary, HTML body and Markdown copy
- *   (see render.mjs).
+ * @returns The sidebar and each doc's title, summary, HTML body and Markdown copy
+ *   (see render.ts).
  * @throws {Error} When the docs index (`README.md`) is missing.
  */
-export function renderDocs(docsRoot, blobBase, generatedTitles = {}) {
+export function renderDocs(docsRoot: string, blobBase: string, generatedTitles: Readonly<Record<string, string>> = {}): RenderedDocs {
   const files = markdownFiles(docsRoot);
   const keys = new Set([...files.map((f) => f.slice(0, -".md".length)), ...Object.keys(generatedTitles)]);
   if (!keys.has("README")) throw new Error(`no README.md in ${docsRoot}`);
