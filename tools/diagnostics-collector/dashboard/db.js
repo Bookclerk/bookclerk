@@ -1270,12 +1270,37 @@ function detachStatement(db, issue, reportId, login, now) {
 }
 
 /**
+ * The statement that makes an explicit link the only one: every other issue
+ * linking the report gets an exclusion (source `excluded`), so the report
+ * counts under the issue the member chose rather than under the oldest
+ * issue listing it, and the sync does not relink it from those issues'
+ * descriptions.
+ *
+ * @param {D1Database} db Database.
+ * @param {number} issue The issue the member chose.
+ * @param {string} reportId Report UUID.
+ * @param {string} login Member making the change.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {D1PreparedStatement} The bound statement.
+ */
+function takeStatement(db, issue, reportId, login, now) {
+  return db
+    .prepare(
+      `UPDATE report_issue SET source = 'excluded', linked_by = ?, linked_at = ?
+       WHERE report_id = ? AND issue_number <> ? AND source <> 'excluded'`,
+    )
+    .bind(login, now, reportId, issue);
+}
+
+/**
  * Applies a member's correction to the ledger (`parseLinkAction`): `attach`
- * and `detach` write one row, `move` detaches from one issue and attaches to
- * the other, and `merge` attaches every report linked to the issue to the
- * other one (by the member's hand, so it also replaces an exclusion there)
- * and excludes them all from the first, in one batch. The caller has checked
- * that the issues and the report exist.
+ * links the report to the issue and takes it from every other issue
+ * (`takeStatement`), `detach` writes one exclusion, `move` is an attach to
+ * the other issue (which takes it from this one), and `merge` attaches every
+ * report linked to the issue to the other one (by the member's hand, so it
+ * also replaces an exclusion there), takes the ones it moved from every other
+ * issue, and excludes them all from this one, in one batch. The caller has checked that the
+ * issues and the report exist.
  *
  * @param {D1Database} db Database.
  * @param {import("./links.js").LinkAction} change The correction.
@@ -1286,11 +1311,11 @@ function detachStatement(db, issue, reportId, login, now) {
 export async function applyLinkAction(db, change, login, now) {
   const { action, issue, report, to } = change;
   if (action === "attach" && report !== null) {
-    await attachStatement(db, issue, report, login, now).run();
+    await db.batch([attachStatement(db, issue, report, login, now), takeStatement(db, issue, report, login, now)]);
   } else if (action === "detach" && report !== null) {
     await detachStatement(db, issue, report, login, now).run();
   } else if (action === "move" && report !== null && to !== null) {
-    await db.batch([detachStatement(db, issue, report, login, now), attachStatement(db, to, report, login, now)]);
+    await db.batch([attachStatement(db, to, report, login, now), takeStatement(db, to, report, login, now)]);
   } else if (action === "merge" && to !== null) {
     await db.batch([
       db
@@ -1301,10 +1326,19 @@ export async function applyLinkAction(db, change, login, now) {
            WHERE report_issue.source = 'excluded'`,
         )
         .bind(to, login, now, issue),
+      // Every other issue listing the reports just attached gives them up:
+      // the member said they belong to the chosen issue.
       db
         .prepare(
-          `UPDATE report_issue SET source = 'excluded', linked_by = ?, linked_at = ? WHERE issue_number = ? AND source <> 'excluded'`,
+          `UPDATE report_issue SET source = 'excluded', linked_by = ?, linked_at = ?
+           WHERE issue_number <> ? AND source <> 'excluded'
+             AND report_id IN (SELECT x.report_id FROM report_issue x WHERE x.issue_number = ? AND x.source = 'manual' AND x.linked_at = ?)`,
         )
+        .bind(login, now, to, to, now),
+      // The merged issue keeps nothing, not even reports the other issue
+      // already linked.
+      db
+        .prepare(`UPDATE report_issue SET source = 'excluded', linked_by = ?, linked_at = ? WHERE issue_number = ? AND source <> 'excluded'`)
         .bind(login, now, issue),
     ]);
   }
