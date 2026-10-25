@@ -149,7 +149,9 @@ summary; the run echoes the fingerprint to `POST /issues/summary` once the
 comment is written, and the issue is not handed out again until its figures
 change (at most twenty issues per run). The comment edited is the first one
 the workflow's own account wrote with the marker; a marker someone else posts
-is ignored. The report block in the issue body is never rewritten. Versions and platforms are untrusted report fields and are
+is ignored. The report block in a triage or regression issue's body is never
+rewritten (only the ingest run appends to the holding issue's block, above).
+Versions and platforms are untrusted report fields and are
 validated or rewritten before they reach the comment; report IDs link only to
 their own dashboard page.
 

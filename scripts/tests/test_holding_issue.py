@@ -102,9 +102,11 @@ def assert_appended(case: unittest.TestCase, body: str, lines_text: str, out: st
     out_lines = out.split("\n")
     in_lines = normalized.split("\n")
     case.assertEqual(len(out_lines), len(in_lines) + len(added), label)
+    # The inserted lines sit in the last block, so the search runs backward:
+    # an earlier block that already lists the ID is left as it was.
     cut = [line for line in out_lines]
     for rid in added:
-        idx = next(i for i, line in enumerate(cut) if line == rid)
+        idx = len(cut) - 1 - next(i for i, line in enumerate(reversed(cut)) if line == rid)
         del cut[idx]
     case.assertEqual(cut, in_lines, label)
     case.assertEqual(hi.append_ids(out, lines_text), out, f"{label}: idempotent")
