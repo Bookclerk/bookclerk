@@ -7,12 +7,12 @@ compatibility_date = "2026-01-01"
 # route from the DOMAIN organization variable.
 workers_dev = false
 
-# The Worker (entry.mjs → worker.js) runs first for page paths only: it
+# The Worker (entry.ts → worker.ts) runs first for page paths only: it
 # renders /docs/ from the docs repository and answers `Accept: text/markdown`
 # with each page's Markdown version. Everything else (styles, images, the .md
 # and .txt files under other paths) is served from dist/ without it.
-# `npm run build` must run first: entry.mjs imports generated/docs-shell.json.
-main = "entry.mjs"
+# `npm run build` must run first: entry.ts imports generated/docs-shell.json.
+main = "entry.ts"
 
 # `npm run build` writes dist/. /download serves download.html, and unknown
 # paths get 404.html with a 404 status.

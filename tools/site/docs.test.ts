@@ -1,12 +1,12 @@
-// Tests for docs.mjs and render.mjs: URLs, link rewriting and every doc in
+// Tests for docs.ts and render.ts: URLs, link rewriting and every doc in
 // docs/ rendered the way the Worker renders it. Run with `npm test`.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { docUrl, GENERATED_TITLES, markdownFiles, renderDocs, rewriteLink, siteMarkdown, slugify } from "./docs.mjs";
-import { docMarkdownUrl, fillShell, normalizePath, renderDoc } from "./render.mjs";
+import { docUrl, GENERATED_TITLES, markdownFiles, renderDocs, rewriteLink, siteMarkdown, slugify } from "./docs.ts";
+import { docMarkdownUrl, fillShell, normalizePath, renderDoc } from "./render.ts";
 
 /** The repository's docs/. */
 const DOCS = fileURLToPath(new URL("../../docs/", import.meta.url));
@@ -77,13 +77,14 @@ test("every doc renders, and every link between docs resolves", () => {
   const ids = new Map(docs.map((d) => [docUrl(d.key), new Set([...d.html.matchAll(/ id="([^"]+)"/g)].map((m) => m[1]))]));
   // Generated pages are not in docs/; links to them are checked by the docs build.
   const generated = new Set(Object.keys(GENERATED_TITLES).map((k) => docUrl(k)));
-  const broken = [];
+  const broken: string[] = [];
   for (const doc of docs) {
-    for (const [, href] of doc.html.matchAll(/href="(\/docs\/[^"]*)"/g)) {
-      const [path, hash] = href.split("#");
+    for (const [, href = ""] of doc.html.matchAll(/href="(\/docs\/[^"]*)"/g)) {
+      const [path = "", hash] = href.split("#");
       if (generated.has(path)) continue;
-      if (!ids.has(path)) broken.push(`${doc.key} -> ${href}`);
-      else if (hash && !ids.get(path).has(hash)) broken.push(`${doc.key} -> ${href} (no anchor)`);
+      const anchors = ids.get(path);
+      if (anchors === undefined) broken.push(`${doc.key} -> ${href}`);
+      else if (hash && !anchors.has(hash)) broken.push(`${doc.key} -> ${href} (no anchor)`);
     }
   }
   assert.deepEqual(broken, []);

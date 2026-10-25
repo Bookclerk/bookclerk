@@ -1,5 +1,5 @@
 // Renders one doc's Markdown into a site page body, with no file system or
-// Node APIs, so the build (docs.mjs) and the Worker (worker.js) share it.
+// Node APIs, so the build (docs.ts) and the Worker (worker.ts) share it.
 //
 // The Worker reads docs from the docs repository (Bookclerk/bookclerk-docs)
 // at the version a request names, so the renderer cannot list every doc. A
@@ -13,13 +13,63 @@
 // can add markup the site's CSP would have to trust.
 
 import MarkdownIt from "markdown-it";
+import type { MarkdownIt as Markdown, RendererRule, Token } from "markdown-it";
+
+/** One sidebar group: its heading and the docs it lists, by key. */
+export interface NavSpec {
+  /** The heading readers see. */
+  title: string;
+  /** Docs paths without `.md`, in sidebar order. */
+  pages: string[];
+}
+
+/** One sidebar group as the site renders it, holding only docs that exist. */
+export interface NavGroup {
+  /** The heading readers see. */
+  title: string;
+  /** Each doc's key (path without `.md`) and title, in sidebar order. */
+  pages: { key: string; title: string }[];
+}
+
+/** One docs version the site serves. */
+export interface DocsVersion {
+  /** Its git ref in the docs repository (`main` or a release tag). */
+  ref: string;
+  /** The name readers see in the version picker. */
+  label: string;
+  /** Its URL prefix, ending in `/` (`/docs/` or `/docs/v/<ref>/`). */
+  base: string;
+}
+
+/** A rendered doc: what the build and the Worker take from one Markdown file. */
+export interface RenderedDoc {
+  /** The doc's title (see docTitle). */
+  title: string;
+  /** Its summary for search results and previews (see describe); may be empty. */
+  description: string;
+  /** The HTML body. */
+  html: string;
+  /** The Markdown copy with links rewritten for the site (see siteMarkdown). */
+  markdown: string;
+}
+
+/** A full page and its Markdown version. */
+export interface RenderedPage {
+  /** The full HTML page. */
+  html: string;
+  /** The Markdown version. */
+  markdown: string;
+}
+
+/** Maps a doc's key to its site URL. */
+export type UrlFor = (key: string) => string;
 
 /**
  * Sidebar groups, in order. Each entry is a docs path without `.md`. A doc
  * that exists but is not listed lands in the final "More" group, so a new doc
  * is never left out of the site.
  */
-export const NAV = [
+export const NAV: NavSpec[] = [
   {
     title: "Using Bookclerk",
     pages: ["getting-started", "sources", "destinations", "integrations", "discovery", "configuration", "gui", "operations", "cluster-hosts", "migration", "libation-parity"],
@@ -57,7 +107,7 @@ export const NAV = [
 ];
 
 /** Sidebar titles for pages that are generated, not in docs/. */
-export const GENERATED_TITLES = {
+export const GENERATED_TITLES: Readonly<Record<string, string>> = {
   "api/typescript/README": "TypeScript plugin SDK",
   "api/python/README": "Python plugin SDK",
   "api/rust/bookclerk_plugin_sdk/index": "Rust plugin SDK",
@@ -67,12 +117,12 @@ export const GENERATED_TITLES = {
 /**
  * Normalizes a POSIX path the way `path.posix.normalize` does.
  *
- * @param {string} path A relative path.
- * @returns {string} The path without `.` segments and with `..` applied;
+ * @param path - A relative path.
+ * @returns The path without `.` segments and with `..` applied;
  *   leading `..` segments are kept, as is a trailing slash.
  */
-export function normalizePath(path) {
-  const out = [];
+export function normalizePath(path: string): string {
+  const out: string[] = [];
   for (const part of path.split("/")) {
     if (part === "" || part === ".") continue;
     if (part === ".." && out.length > 0 && out[out.length - 1] !== "..") out.pop();
@@ -85,10 +135,10 @@ export function normalizePath(path) {
 /**
  * The directory part of a docs key.
  *
- * @param {string} key Docs path without `.md`.
- * @returns {string} `adr` for `adr/control-plane`, `""` for `plugins`.
+ * @param key - Docs path without `.md`.
+ * @returns `adr` for `adr/control-plane`, `""` for `plugins`.
  */
-function keyDir(key) {
+function keyDir(key: string): string {
   const at = key.lastIndexOf("/");
   return at === -1 ? "" : key.slice(0, at);
 }
@@ -96,12 +146,12 @@ function keyDir(key) {
 /**
  * The site URL of a doc.
  *
- * @param {string} key Docs path without `.md` (`plugins`, `adr/control-plane`).
- * @param {string} [base] URL prefix of the docs version, ending in `/`.
- * @returns {string} `<base>` for the index, else `<base><key>`; a nested
+ * @param key - Docs path without `.md` (`plugins`, `adr/control-plane`).
+ * @param base - URL prefix of the docs version, ending in `/`.
+ * @returns `<base>` for the index, else `<base><key>`; a nested
  *   README or index maps to its directory (`api/README` → `<base>api/`).
  */
-export function docUrl(key, base = "/docs/") {
+export function docUrl(key: string, base = "/docs/"): string {
   if (key === "README") return base;
   if (key.endsWith("/README")) return base + key.slice(0, -"README".length);
   return base + key;
@@ -110,11 +160,11 @@ export function docUrl(key, base = "/docs/") {
 /**
  * The site URL of a doc's Markdown copy.
  *
- * @param {string} key Docs path without `.md`.
- * @param {string} [base] URL prefix of the docs version, ending in `/`.
- * @returns {string} `<base><key>.md`; the index is `<base>README.md`.
+ * @param key - Docs path without `.md`.
+ * @param base - URL prefix of the docs version, ending in `/`.
+ * @returns `<base><key>.md`; the index is `<base>README.md`.
  */
-export function docMarkdownUrl(key, base = "/docs/") {
+export function docMarkdownUrl(key: string, base = "/docs/"): string {
   return `${base}${key}.md`;
 }
 
@@ -122,10 +172,10 @@ export function docMarkdownUrl(key, base = "/docs/") {
  * Turns heading text into an anchor id the way GitHub does, so existing
  * `#section` links in the docs keep working.
  *
- * @param {string} text Heading text content.
- * @returns {string} Lowercase id: letters, digits, `-` and `_`.
+ * @param text - Heading text content.
+ * @returns Lowercase id: letters, digits, `-` and `_`.
  */
-export function slugify(text) {
+export function slugify(text: string): string {
   return text
     .trim()
     .toLowerCase()
@@ -136,18 +186,18 @@ export function slugify(text) {
 /**
  * Rewrites a link found in a doc.
  *
- * @param {string} href The link as written in the Markdown.
- * @param {string} docKey The doc the link appears in (path without `.md`).
- * @param {Set<string> | null} keys Every doc on the site, or null when any
+ * @param href - The link as written in the Markdown.
+ * @param docKey - The doc the link appears in (path without `.md`).
+ * @param keys - Every doc on the site, or null when any
  *   `.md` file inside the docs tree counts as a doc.
- * @param {string} blobBase GitHub URL prefix for files at the site's ref,
+ * @param blobBase - GitHub URL prefix for files at the site's ref,
  *   ending in `/blob/<ref>/`.
- * @param {(key: string) => string} [urlFor] Site URL of another doc:
+ * @param urlFor - Site URL of another doc:
  *   {@link docUrl} for pages, {@link docMarkdownUrl} for Markdown copies.
- * @returns {string} A site URL for another doc, a GitHub URL for any other
+ * @returns A site URL for another doc, a GitHub URL for any other
  *   repository file, or the link unchanged when it is absolute or an anchor.
  */
-export function rewriteLink(href, docKey, keys, blobBase, urlFor = docUrl) {
+export function rewriteLink(href: string, docKey: string, keys: ReadonlySet<string> | null, blobBase: string, urlFor: UrlFor = docUrl): string {
   if (href === "" || href.startsWith("#") || /^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("//")) {
     return href;
   }
@@ -176,42 +226,45 @@ export function rewriteLink(href, docKey, keys, blobBase, urlFor = docUrl) {
 /**
  * Builds the Markdown renderer for one doc.
  *
- * @param {string} docKey The doc being rendered.
- * @param {Set<string> | null} keys See {@link rewriteLink}.
- * @param {string} blobBase See {@link rewriteLink}.
- * @param {(key: string) => string} urlFor Site URL of another doc's page.
- * @returns {MarkdownIt} A renderer with raw HTML off, GitHub-style heading
+ * @param docKey - The doc being rendered.
+ * @param keys - See {@link rewriteLink}.
+ * @param blobBase - See {@link rewriteLink}.
+ * @param urlFor - Site URL of another doc's page.
+ * @returns A renderer with raw HTML off, GitHub-style heading
  *   ids, rewritten links, and code blocks and tables that keyboard users
  *   can scroll sideways.
  */
-function renderer(docKey, keys, blobBase, urlFor) {
+function renderer(docKey: string, keys: ReadonlySet<string> | null, blobBase: string, urlFor: UrlFor): Markdown {
   const md = new MarkdownIt({ html: false, linkify: false, typographer: false });
-  const seen = new Map();
+  const seen = new Map<string, number>();
   md.core.ruler.push("heading_ids", (state) => {
     const tokens = state.tokens;
-    for (let i = 0; i < tokens.length; i += 1) {
-      if (tokens[i].type !== "heading_open") continue;
-      const text = tokens[i + 1].children.filter((t) => t.type === "text" || t.type === "code_inline").map((t) => t.content).join("");
+    tokens.forEach((token, i) => {
+      if (token.type !== "heading_open") return;
+      const children = tokens[i + 1]?.children ?? [];
+      const text = children.filter((t) => t.type === "text" || t.type === "code_inline").map((t) => t.content).join("");
       const base = slugify(text);
       const n = seen.get(base) ?? 0;
       seen.set(base, n + 1);
-      tokens[i].attrSet("id", n === 0 ? base : `${base}-${n}`);
-    }
+      token.attrSet("id", n === 0 ? base : `${base}-${n}`);
+    });
   });
-  const linkOpen = md.renderer.rules.link_open ?? ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options));
-  md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+  const linkOpen: RendererRule = md.renderer.rules["link_open"] ?? ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
+  md.renderer.rules["link_open"] = (tokens, idx, options, env, self) => {
     const token = tokens[idx];
-    token.attrSet("href", rewriteLink(token.attrGet("href") ?? "", docKey, keys, blobBase, urlFor));
+    if (token === undefined) return linkOpen(tokens, idx, options, env, self);
+    token.attrSet("href", rewriteLink(String(token.attrGet("href") ?? ""), docKey, keys, blobBase, urlFor));
     return linkOpen(tokens, idx, options, env, self);
   };
   // Code blocks and wide tables scroll sideways on narrow screens; tabindex
   // lets keyboard users scroll them too.
-  for (const rule of ["fence", "code_block"]) {
+  for (const rule of ["fence", "code_block"] as const) {
     const base = md.renderer.rules[rule];
+    if (base === undefined) throw new Error(`markdown-it has no ${rule} rule`);
     md.renderer.rules[rule] = (tokens, idx, options, env, self) => base(tokens, idx, options, env, self).replace(/^<pre/, '<pre tabindex="0"');
   }
-  md.renderer.rules.table_open = () => '<div class="table-scroll" tabindex="0"><table>\n';
-  md.renderer.rules.table_close = () => "</table></div>\n";
+  md.renderer.rules["table_open"] = () => '<div class="table-scroll" tabindex="0"><table>\n';
+  md.renderer.rules["table_close"] = () => "</table></div>\n";
   return md;
 }
 
@@ -221,11 +274,11 @@ const DESCRIPTION_MAX = 160;
 /**
  * Plain text of an inline token's children.
  *
- * @param {import("markdown-it/lib/token.mjs").default} inline An `inline` token.
- * @returns {string} Its text and code spans, whitespace collapsed.
+ * @param inline - An `inline` token.
+ * @returns Its text and code spans, whitespace collapsed.
  */
-function inlineText(inline) {
-  return inline.children
+function inlineText(inline: Token | undefined): string {
+  return (inline?.children ?? [])
     .filter((t) => t.type === "text" || t.type === "code_inline" || t.type === "softbreak")
     .map((t) => (t.type === "softbreak" ? " " : t.content))
     .join("")
@@ -236,11 +289,11 @@ function inlineText(inline) {
 /**
  * Cuts text at a word boundary.
  *
- * @param {string} text Plain text.
- * @returns {string} The text, or at most DESCRIPTION_MAX characters of it
+ * @param text - Plain text.
+ * @returns The text, or at most DESCRIPTION_MAX characters of it
  *   ending in an ellipsis.
  */
-function shorten(text) {
+function shorten(text: string): string {
   if (text.length <= DESCRIPTION_MAX) return text;
   const cut = text.slice(0, DESCRIPTION_MAX - 1);
   return `${cut.slice(0, cut.lastIndexOf(" ")).replace(/[\s,;:.]+$/, "")}…`;
@@ -249,13 +302,12 @@ function shorten(text) {
 /**
  * Summarizes a doc for search results and link previews.
  *
- * @param {import("markdown-it/lib/token.mjs").default[]} tokens The doc's
- *   parsed tokens.
- * @returns {string} The doc's introduction (its first top-level paragraph,
+ * @param tokens - The doc's parsed tokens.
+ * @returns The doc's introduction (its first top-level paragraph,
  *   when that comes before the first section heading), else a list of its
  *   sections; shortened (see shorten). Empty when it has neither.
  */
-function describe(tokens) {
+function describe(tokens: Token[]): string {
   const firstSection = tokens.findIndex((t) => t.type === "heading_open" && t.tag !== "h1");
   const intro = tokens.findIndex((t) => t.type === "paragraph_open" && t.level === 0);
   if (intro !== -1 && (firstSection === -1 || intro < firstSection)) return shorten(inlineText(tokens[intro + 1]));
@@ -275,33 +327,33 @@ const REFERENCE_DEF_RE = /^( {0,3}\[[^\]]+\]:[ \t]*)(\S+)/gm;
  * Link targets in inline links and reference definitions are rewritten
  * whole; fenced code blocks and inline code spans are left alone.
  *
- * @param {string} source The doc's Markdown.
- * @param {string} docKey The doc's key.
- * @param {Set<string> | null} keys See {@link rewriteLink}.
- * @param {string} blobBase See {@link rewriteLink}.
- * @param {string} [base] URL prefix of the docs version, ending in `/`.
- * @returns {string} The Markdown with doc links pointing at the other
+ * @param source - The doc's Markdown.
+ * @param docKey - The doc's key.
+ * @param keys - See {@link rewriteLink}.
+ * @param blobBase - See {@link rewriteLink}.
+ * @param base - URL prefix of the docs version, ending in `/`.
+ * @returns The Markdown with doc links pointing at the other
  *   Markdown copies and repository links pointing at GitHub.
  */
-export function siteMarkdown(source, docKey, keys, blobBase, base = "/docs/") {
-  const urlFor = (key) => docMarkdownUrl(key, base);
-  const rewrite = (text) =>
+export function siteMarkdown(source: string, docKey: string, keys: ReadonlySet<string> | null, blobBase: string, base = "/docs/"): string {
+  const urlFor: UrlFor = (key) => docMarkdownUrl(key, base);
+  const rewrite = (text: string): string =>
     text
-      .replace(INLINE_LINK_RE, (_, href, title) => `](${rewriteLink(href, docKey, keys, blobBase, urlFor)}${title})`)
-      .replace(REFERENCE_DEF_RE, (_, head, href) => head + rewriteLink(href, docKey, keys, blobBase, urlFor));
+      .replace(INLINE_LINK_RE, (_, href: string, title: string) => `](${rewriteLink(href, docKey, keys, blobBase, urlFor)}${title})`)
+      .replace(REFERENCE_DEF_RE, (_, head: string, href: string) => head + rewriteLink(href, docKey, keys, blobBase, urlFor));
   // Odd-numbered pieces of a split on backtick runs are inline code.
-  const outsideCode = (line) =>
+  const outsideCode = (line: string): string =>
     line
       .split(/(`+[^`]*`+)/)
       .map((piece, i) => (i % 2 === 1 ? piece : rewrite(piece)))
       .join("");
-  let fence = null;
+  let fence: string | null = null;
   return source
     .split("\n")
     .map((line) => {
-      const marker = line.match(/^ {0,3}(`{3,}|~{3,})/);
-      if (marker && (fence === null || marker[1].startsWith(fence))) {
-        fence = fence === null ? marker[1] : null;
+      const run = line.match(/^ {0,3}(`{3,}|~{3,})/)?.[1];
+      if (run !== undefined && (fence === null || run.startsWith(fence))) {
+        fence = fence === null ? run : null;
         return line;
       }
       return fence === null ? outsideCode(line) : line;
@@ -312,28 +364,30 @@ export function siteMarkdown(source, docKey, keys, blobBase, base = "/docs/") {
 /**
  * A doc's title: its first `#` heading without code marks.
  *
- * @param {string} source The doc's Markdown.
- * @param {string} key Fallback: the doc's key.
- * @returns {string} The title.
+ * @param source - The doc's Markdown.
+ * @param key - Fallback: the doc's key.
+ * @returns The title.
  */
-export function docTitle(source, key) {
-  const heading = source.match(/^#\s+(.+?)\s*#*\s*$/m);
-  return heading ? heading[1].replace(/`/g, "") : key;
+export function docTitle(source: string, key: string): string {
+  const heading = source.match(/^#\s+(.+?)\s*#*\s*$/m)?.[1];
+  return heading === undefined ? key : heading.replace(/`/g, "");
 }
 
 /**
  * Renders one doc.
  *
- * @param {string} source The doc's Markdown.
- * @param {string} key The doc's key (path without `.md`).
- * @param {{keys?: Set<string> | null, blobBase: string, base?: string}} options
- *   Docs that exist (null: any `.md` in the tree), the GitHub prefix for
+ * @param source - The doc's Markdown.
+ * @param key - The doc's key (path without `.md`).
+ * @param options - Docs that exist (null: any `.md` in the tree), the GitHub prefix for
  *   repository files, and the URL prefix of the docs version.
- * @returns {{title: string, description: string, html: string, markdown: string}}
- *   The title (see docTitle), summary (see describe), HTML body and Markdown
+ * @returns The title (see docTitle), summary (see describe), HTML body and Markdown
  *   copy (see siteMarkdown).
  */
-export function renderDoc(source, key, { keys = null, blobBase, base = "/docs/" }) {
+export function renderDoc(
+  source: string,
+  key: string,
+  { keys = null, blobBase, base = "/docs/" }: { keys?: ReadonlySet<string> | null; blobBase: string; base?: string },
+): RenderedDoc {
   const md = renderer(key, keys, blobBase, (k) => docUrl(k, base));
   const tokens = md.parse(source, {});
   return {
@@ -347,10 +401,10 @@ export function renderDoc(source, key, { keys = null, blobBase, base = "/docs/" 
 /**
  * Escapes text for an HTML element body or a double-quoted attribute.
  *
- * @param {string} value Raw text.
- * @returns {string} The text with `& < > " '` replaced by entities.
+ * @param value - Raw text.
+ * @returns The text with `& < > " '` replaced by entities.
  */
-export function escapeHtml(value) {
+export function escapeHtml(value: string): string {
   return String(value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -362,11 +416,11 @@ export function escapeHtml(value) {
 /**
  * Serializes structured data for a `<script type="application/ld+json">`.
  *
- * @param {object | null} data A schema.org JSON-LD object, or null for none.
- * @returns {string} The script element, with `<` escaped so the JSON can
+ * @param data - A schema.org JSON-LD object, or null for none.
+ * @returns The script element, with `<` escaped so the JSON can
  *   never close it; empty when `data` is null.
  */
-export function jsonLd(data) {
+export function jsonLd(data: object | null): string {
   if (data === null) return "";
   return `<script type="application/ld+json">${JSON.stringify(data).replaceAll("<", "\\u003c")}</script>`;
 }
@@ -374,13 +428,13 @@ export function jsonLd(data) {
 /**
  * The schema.org description of one doc page.
  *
- * @param {string} origin The site's origin.
- * @param {string} base URL prefix of the docs version, ending in `/`.
- * @param {{key: string, title: string, description: string}} doc The doc.
- * @returns {object} A JSON-LD `@graph` with the TechArticle and its
+ * @param origin - The site's origin.
+ * @param base - URL prefix of the docs version, ending in `/`.
+ * @param doc - The doc.
+ * @returns A JSON-LD `@graph` with the TechArticle and its
  *   breadcrumb trail (Docs › title).
  */
-export function docJsonLd(origin, base, doc) {
+export function docJsonLd(origin: string, base: string, doc: { key: string; title: string; description: string }): object {
   const url = origin + docUrl(doc.key, base);
   const crumbs = [{ name: "Docs", item: origin + base }];
   if (doc.key !== "README") crumbs.push({ name: doc.title, item: url });
@@ -406,30 +460,32 @@ export function docJsonLd(origin, base, doc) {
 /**
  * Builds the sidebar from the docs that exist.
  *
- * @param {Map<string, string>} titles Title of every doc by key.
- * @returns {{title: string, pages: {key: string, title: string}[]}[]} NAV
- *   without missing docs, plus a "More" group for docs NAV leaves out.
+ * @param titles - Title of every doc by key.
+ * @returns NAV without missing docs, plus a "More" group for docs NAV leaves out.
  */
-export function buildNav(titles) {
+export function buildNav(titles: ReadonlyMap<string, string>): NavGroup[] {
   const listed = new Set(NAV.flatMap((g) => g.pages));
-  const nav = NAV.map((g) => ({
-    title: g.title,
-    pages: g.pages.filter((k) => titles.has(k)).map((k) => ({ key: k, title: titles.get(k) })),
-  })).filter((g) => g.pages.length > 0);
+  /** The docs among `keys` that exist, with their titles. */
+  const pages = (keys: string[]): NavGroup["pages"] =>
+    keys.flatMap((key) => {
+      const title = titles.get(key);
+      return title === undefined ? [] : [{ key, title }];
+    });
+  const nav = NAV.map((g) => ({ title: g.title, pages: pages(g.pages) })).filter((g) => g.pages.length > 0);
   const extra = [...titles.keys()].filter((k) => k !== "README" && !listed.has(k) && !k.startsWith("api/"));
-  if (extra.length > 0) nav.push({ title: "More", pages: extra.map((k) => ({ key: k, title: titles.get(k) })) });
+  if (extra.length > 0) nav.push({ title: "More", pages: pages(extra) });
   return nav;
 }
 
 /**
  * Renders the sidebar for one page.
  *
- * @param {ReturnType<typeof buildNav>} nav The sidebar groups.
- * @param {string} current Key of the page being shown.
- * @param {string} base URL prefix of the docs version, ending in `/`.
- * @returns {string} One heading and list per group.
+ * @param nav - The sidebar groups.
+ * @param current - Key of the page being shown.
+ * @param base - URL prefix of the docs version, ending in `/`.
+ * @returns One heading and list per group.
  */
-export function navHtml(nav, current, base) {
+export function navHtml(nav: readonly NavGroup[], current: string, base: string): string {
   return nav
     .map((group) => {
       const links = group.pages
@@ -446,15 +502,15 @@ export function navHtml(nav, current, base) {
 /**
  * Renders the version picker for one page.
  *
- * @param {{ref: string, label: string, base: string}[]} versions Every docs
- *   version, the default first.
- * @param {string} current The ref being shown.
- * @param {string} key Key of the page being shown; the picker links to the
+ * @param versions - Every docs version, the default first.
+ * @param current - The ref being shown.
+ * @param key - Key of the page being shown; the picker links to the
  *   same page in each version.
- * @returns {string} A `<details>` element listing the versions.
+ * @returns A `<details>` element listing the versions.
  */
-export function versionsHtml(versions, current, key) {
+export function versionsHtml(versions: readonly DocsVersion[], current: string, key: string): string {
   const shown = versions.find((v) => v.ref === current) ?? versions[0];
+  if (shown === undefined) return "";
   const badge = shown.ref === "main" ? ' <span class="badge unstable-badge">unstable</span>' : "";
   const items = versions
     .map((v) => {
@@ -475,63 +531,61 @@ export const SHELL_VALUES = ["pageTitle", "pageDescription", "pagePath", "markdo
 export const SHELL_MARKERS = ["jsonld", "doc-versions", "doc-nav", "doc-note", "doc-body", "doc-footer"];
 
 /**
- * Fills the docs page shell that build.mjs writes.
+ * Fills the docs page shell that build.ts writes.
  *
  * Values are HTML-escaped; markers take HTML the caller built (rendered
  * Markdown, which has raw HTML off, and the helpers above). Values are filled
  * before markers, and markers in one pass, so nothing inserted is ever read
  * as a hole or a marker.
  *
- * @param {string} shell The shell's HTML.
- * @param {Record<string, string>} values One entry per SHELL_VALUES name.
- * @param {Record<string, string>} markers One entry per SHELL_MARKERS name.
- * @returns {string} The page.
+ * @param shell - The shell's HTML.
+ * @param values - One entry per SHELL_VALUES name.
+ * @param markers - One entry per SHELL_MARKERS name.
+ * @returns The page.
  * @throws {Error} When a hole has no value or a marker is missing.
  */
-export function fillShell(shell, values, markers) {
-  const out = shell.replace(SHELL_VALUE_RE, (_, name) => {
-    if (!(name in values)) throw new Error(`docs shell hole ${name} has no value`);
-    return escapeHtml(values[name]);
+export function fillShell(shell: string, values: Readonly<Record<string, string>>, markers: Readonly<Record<string, string>>): string {
+  const out = shell.replace(SHELL_VALUE_RE, (_, name: string) => {
+    const value = Object.hasOwn(values, name) ? values[name] : undefined;
+    if (value === undefined) throw new Error(`docs shell hole ${name} has no value`);
+    return escapeHtml(value);
   });
   for (const name of SHELL_MARKERS) {
     if (!out.includes(`<!--${name}-->`)) throw new Error(`docs shell has no <!--${name}-->`);
   }
   // One pass, so HTML put in for one marker is never searched for another.
   const markerRe = new RegExp(`<!--(${SHELL_MARKERS.join("|")})-->`, "g");
-  return out.replace(markerRe, (_, name) => markers[name] ?? "");
+  return out.replace(markerRe, (_, name: string) => markers[name] ?? "");
 }
 
-/**
- * Everything build.mjs bakes into the Worker for docs pages.
- *
- * @typedef {object} DocsShell
- * @property {string} id A hash of the rest of the shell, so caches keyed by
- *   it drop pages from an earlier deploy.
- * @property {string} html src/doc.html rendered for the site, with
- *   SHELL_VALUES holes and SHELL_MARKERS markers left to fill.
- * @property {string} origin The site's origin.
- * @property {string} repository GitHub URL of the source repository.
- * @property {{ref: string, label: string, base: string}[]} versions Every
- *   docs version the site serves, the default (served at `/docs/`) first:
- *   its git ref in the docs repository, the name readers see, and its URL
- *   prefix.
- * @property {ReturnType<typeof buildNav>} nav The sidebar, from the docs the
- *   site was built with.
- */
+/** Everything build.ts bakes into the Worker for docs pages. */
+export interface DocsShell {
+  /** A hash of the rest of the shell, so caches keyed by it drop pages from an earlier deploy. */
+  id: string;
+  /** src/doc.html rendered for the site, with SHELL_VALUES holes and SHELL_MARKERS markers left to fill. */
+  html: string;
+  /** The site's origin. */
+  origin: string;
+  /** GitHub URL of the source repository. */
+  repository: string;
+  /** Every docs version the site serves, the default (served at `/docs/`) first. */
+  versions: DocsVersion[];
+  /** The sidebar, from the docs the site was built with. */
+  nav: NavGroup[];
+}
 
 /**
  * Renders one docs page from its Markdown.
  *
- * @param {DocsShell} shell The baked page shell.
- * @param {string} source The doc's Markdown.
- * @param {string} key The doc's key (path without `.md`).
- * @param {{ref: string, base: string, keys?: Set<string> | null}} at The
- *   docs version: its ref, its URL prefix and the docs it holds (null when
- *   unknown).
- * @returns {{html: string, markdown: string}} The full HTML page and the
- *   Markdown copy with links rewritten for the site.
+ * @param shell - The baked page shell.
+ * @param source - The doc's Markdown.
+ * @param key - The doc's key (path without `.md`).
+ * @param at - The docs version: its ref, its URL prefix and the docs it
+ *   holds (null when unknown).
+ * @returns The full HTML page and the Markdown copy with links rewritten for
+ *   the site.
  */
-export function renderDocPage(shell, source, key, at) {
+export function renderDocPage(shell: DocsShell, source: string, key: string, at: { ref: string; base: string; keys?: ReadonlySet<string> | null }): RenderedPage {
   const blobBase = `${shell.repository}/blob/${at.ref}/`;
   const doc = renderDoc(source, key, { keys: at.keys ?? null, blobBase, base: at.base });
   const markdownUrl = docMarkdownUrl(key, at.base);
@@ -575,16 +629,14 @@ export const DOCS_REPOSITORY_URL = "https://github.com/Bookclerk/bookclerk-docs"
  * message below the fold). It says the docs are unavailable for now and links
  * to the same doc on GitHub so the reader is not stuck.
  *
- * @param {DocsShell} shell The baked page shell.
- * @param {string} key The doc's most likely key (path without `.md`), for
+ * @param shell - The baked page shell.
+ * @param key - The doc's most likely key (path without `.md`), for
  *   the page's own links.
- * @param {{ref: string, base: string, githubKey?: string}} at The docs
- *   version: its ref and its URL prefix, and the key the GitHub link names
- *   (default: `key`).
- * @returns {{html: string, markdown: string}} The full HTML page and its
- *   Markdown version.
+ * @param at - The docs version: its ref and its URL prefix, and the key the
+ *   GitHub link names (default: `key`).
+ * @returns The full HTML page and its Markdown version.
  */
-export function renderUnavailablePage(shell, key, at) {
+export function renderUnavailablePage(shell: DocsShell, key: string, at: { ref: string; base: string; githubKey?: string }): RenderedPage {
   const github = `${DOCS_REPOSITORY_URL}/blob/${at.ref}/${at.githubKey ?? key}.md`;
   const all = `${DOCS_REPOSITORY_URL}/tree/${at.ref}`;
   const body = [

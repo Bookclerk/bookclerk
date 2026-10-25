@@ -3,7 +3,7 @@
 // `site_audit`). See docs/ci.md#website-checks.
 //
 // It serves tools/site/dist through the real Worker under `wrangler dev`
-// (audit/entry.mjs, with docs read from this checkout's docs/ through a local
+// (audit/entry.ts, with docs read from this checkout's docs/ through a local
 // server instead of the docs repository, so nothing leaves the machine), then:
 //
 //   Lighthouse  every page, mobile and desktop; pages that answer 200 must
@@ -15,7 +15,7 @@
 //
 // Run `npm run build` in tools/site first. Usage:
 //
-//   node audit.mjs [--out <dir>] [--chrome <path>]
+//   node audit.ts [--out <dir>] [--chrome <path>]
 //
 // --chrome (or CHROME_PATH) picks the browser; otherwise chrome-launcher
 // finds an installed Chrome. Reports (Lighthouse HTML and JSON, summary.md)
@@ -25,14 +25,50 @@ import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
+import type { AddressInfo } from "node:net";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import * as chromeLauncher from "chrome-launcher";
 import lighthouse from "lighthouse";
+import type { Flags, Result } from "lighthouse";
 import desktopConfig from "lighthouse/core/config/desktop-config.js";
 import { chromium } from "playwright-core";
+import type { AxeResults, RunOptions } from "axe-core";
+
+/** Minimum Lighthouse category scores (0-100) by category id, and optionally `cls`, the largest layout shift allowed. */
+export type Limits = Readonly<Record<string, number>>;
+
+/** The parts of a Lighthouse result the thresholds read. */
+export interface LighthouseScores {
+  /** Category scores (0-1, or null when Lighthouse could not score one) by category id. */
+  categories: Readonly<Record<string, { score: number | null }>>;
+  /** Audit results by audit id; only `cumulative-layout-shift` is read. */
+  audits: Readonly<Record<string, { numericValue?: number }>>;
+}
+
+/** One audited page. */
+export interface AuditPage {
+  /** Short name for reports and file names. */
+  name: string;
+  /** The path requested. */
+  path: string;
+  /** The status the page must answer with. */
+  status: number;
+  /** Its thresholds. */
+  limits: Limits;
+}
+
+/** A kept Lighthouse run: the result, its JSON and HTML reports, and the limits it misses. */
+interface LighthouseRun {
+  /** The Lighthouse result. */
+  lhr: Result;
+  /** The JSON report, then the HTML report. */
+  report: [string, string];
+  /** One line per missed limit. */
+  misses: string[];
+}
 
 /** This directory (tools/site/audit). */
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -49,17 +85,15 @@ export const UNAVAILABLE_KEY = "audit-docs-unavailable";
  * layout shift for pages that answer 200. Performance allows for lab noise on
  * shared CI runners.
  */
-export const PAGE = { performance: 90, accessibility: 100, "best-practices": 95, seo: 100, cls: 0.05 };
+export const PAGE: Limits = { performance: 90, accessibility: 100, "best-practices": 95, seo: 100, cls: 0.05 };
 /** The same for the 404 and docs-unavailable pages: accessibility only. */
-export const ERROR_PAGE = { accessibility: 100 };
+export const ERROR_PAGE: Limits = { accessibility: 100 };
 
 /**
  * Pages audited: a name, the path, the status it must answer with and its
  * thresholds.
- *
- * @type {{name: string, path: string, status: number, limits: Record<string, number>}[]}
  */
-export const PAGES = [
+export const PAGES: readonly AuditPage[] = [
   { name: "home", path: "/", status: 200, limits: PAGE },
   { name: "download", path: "/download", status: 200, limits: PAGE },
   { name: "docs", path: "/docs/getting-started", status: 200, limits: PAGE },
@@ -76,14 +110,13 @@ export const AXE_WIDTHS = [1350, 390];
 /**
  * Lists the Lighthouse misses for one report.
  *
- * @param {{categories: Record<string, {score: number | null}>, audits: Record<string, {numericValue?: number}>}} lhr
- *   The Lighthouse result.
- * @param {Record<string, number>} limits Minimum category scores (0-100) and
- *   optionally `cls`, the largest layout shift allowed.
- * @returns {string[]} One line per miss; empty when every limit holds.
+ * @param lhr - The Lighthouse result.
+ * @param limits - Minimum category scores (0-100) and optionally `cls`, the
+ *   largest layout shift allowed.
+ * @returns One line per miss; empty when every limit holds.
  */
-export function lighthouseMisses(lhr, limits) {
-  const misses = [];
+export function lighthouseMisses(lhr: LighthouseScores, limits: Limits): string[] {
+  const misses: string[] = [];
   for (const [key, limit] of Object.entries(limits)) {
     if (key === "cls") {
       const cls = lhr.audits["cumulative-layout-shift"]?.numericValue;
@@ -100,16 +133,16 @@ export function lighthouseMisses(lhr, limits) {
 /**
  * Maps a docs repository path (`<ref>/<key>.md`) to a file under docs/.
  *
- * @param {string} docsDir The docs directory.
- * @param {string} pathname The request path, `/<ref>/<key>.md`.
- * @returns {string | null} The file, or null when the path is malformed or
+ * @param docsDir - The docs directory.
+ * @param pathname - The request path, `/<ref>/<key>.md`.
+ * @returns The file, or null when the path is malformed or
  *   leaves docsDir.
  */
-export function docsFile(docsDir, pathname) {
-  const match = /^\/[^/]+\/(.+\.md)$/.exec(decodeURIComponent(pathname));
-  if (match === null) return null;
+export function docsFile(docsDir: string, pathname: string): string | null {
+  const key = /^\/[^/]+\/(.+\.md)$/.exec(decodeURIComponent(pathname))?.[1];
+  if (key === undefined) return null;
   const root = resolve(docsDir);
-  const file = resolve(root, match[1]);
+  const file = resolve(root, key);
   if (relative(root, file).startsWith("..") || !file.startsWith(root + sep)) return null;
   return file;
 }
@@ -118,9 +151,9 @@ export function docsFile(docsDir, pathname) {
  * Starts the local docs server: `/<ref>/<key>.md` answers docs/<key>.md for
  * any ref, UNAVAILABLE_KEY answers 503, anything else 404.
  *
- * @returns {Promise<{origin: string, close: () => void}>} Its origin and a stop function.
+ * @returns Its origin and a stop function.
  */
-function serveDocs() {
+function serveDocs(): Promise<{ origin: string; close: () => void }> {
   const server = createServer((req, res) => {
     const path = new URL(req.url ?? "/", "http://localhost").pathname;
     if (path.endsWith(`/${UNAVAILABLE_KEY}.md`)) {
@@ -136,7 +169,7 @@ function serveDocs() {
   });
   return new Promise((done) => {
     server.listen(0, "127.0.0.1", () => {
-      const { port } = /** @type {import("node:net").AddressInfo} */ (server.address());
+      const { port } = server.address() as AddressInfo;
       done({ origin: `http://127.0.0.1:${port}`, close: () => server.close() });
     });
   });
@@ -145,14 +178,14 @@ function serveDocs() {
 /**
  * Finds a free TCP port on 127.0.0.1.
  *
- * @returns {Promise<number>} The port.
+ * @returns The port.
  */
-function freePort() {
+function freePort(): Promise<number> {
   return new Promise((done, fail) => {
     const probe = createNetServer();
     probe.on("error", fail);
     probe.listen(0, "127.0.0.1", () => {
-      const { port } = /** @type {import("node:net").AddressInfo} */ (probe.address());
+      const { port } = probe.address() as AddressInfo;
       probe.close(() => done(port));
     });
   });
@@ -162,14 +195,14 @@ function freePort() {
  * Writes the audit Worker's wrangler config: ../wrangler.toml with the audit
  * entry point, so the assets and routing cannot drift from the deployed site.
  *
- * @returns {string} The config file.
+ * @returns The config file.
  * @throws {Error} When ../wrangler.toml no longer has the lines replaced.
  */
-function writeWranglerConfig() {
+function writeWranglerConfig(): string {
   const base = readFileSync(join(SITE, "wrangler.toml"), "utf8");
-  const replacements = [
+  const replacements: [RegExp, string][] = [
     [/^name = .*$/m, 'name = "bookclerk-site-audit"'],
-    [/^main = .*$/m, 'main = "entry.mjs"'],
+    [/^main = .*$/m, 'main = "entry.ts"'],
     [/^directory = .*$/m, 'directory = "../dist"'],
   ];
   let config = base;
@@ -185,12 +218,12 @@ function writeWranglerConfig() {
 /**
  * Starts `wrangler dev` on the audit Worker and waits until it serves `/`.
  *
- * @param {string} docsOrigin The local docs server.
- * @param {string} logFile Where wrangler's output goes.
- * @returns {Promise<{origin: string, stop: () => void}>} The site origin and a stop function.
+ * @param docsOrigin - The local docs server.
+ * @param logFile - Where wrangler's output goes.
+ * @returns The site origin and a stop function.
  * @throws {Error} When wrangler exits or does not serve within two minutes.
  */
-async function serveSite(docsOrigin, logFile) {
+async function serveSite(docsOrigin: string, logFile: string): Promise<{ origin: string; stop: () => void }> {
   const config = writeWranglerConfig();
   const port = await freePort();
   const inspector = await freePort();
@@ -204,8 +237,8 @@ async function serveSite(docsOrigin, logFile) {
   });
   child.stdout.on("data", (chunk) => appendFileSync(logFile, chunk));
   child.stderr.on("data", (chunk) => appendFileSync(logFile, chunk));
-  let exited = null;
-  child.on("exit", (code) => (exited = code));
+  let exited: number | null = null;
+  child.on("exit", (code) => (exited = code ?? -1));
   const origin = `http://127.0.0.1:${port}`;
   const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
@@ -226,14 +259,14 @@ async function serveSite(docsOrigin, logFile) {
  * Runs Lighthouse on one page, once more when only performance misses (lab
  * noise on shared runners), and keeps the better run.
  *
- * @param {string} url The page.
- * @param {"mobile" | "desktop"} form The form factor.
- * @param {number} port Chrome's debugging port.
- * @param {Record<string, number>} limits The page's thresholds.
- * @returns {Promise<{lhr: any, report: string[], misses: string[]}>} The kept run.
+ * @param url - The page.
+ * @param form - The form factor.
+ * @param port - Chrome's debugging port.
+ * @param limits - The page's thresholds.
+ * @returns The kept run.
  */
-async function runLighthouse(url, form, port, limits) {
-  const flags = {
+async function runLighthouse(url: string, form: "mobile" | "desktop", port: number, limits: Limits): Promise<LighthouseRun> {
+  const flags: Flags = {
     port,
     output: ["json", "html"],
     logLevel: "error",
@@ -241,31 +274,34 @@ async function runLighthouse(url, form, port, limits) {
     onlyCategories: ["performance", "accessibility", "best-practices", "seo"],
   };
   const config = form === "desktop" ? desktopConfig : undefined;
-  let best = null;
+  let best: LighthouseRun | null = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     const result = await lighthouse(url, flags, config);
     if (!result) throw new Error(`Lighthouse returned nothing for ${url}`);
-    const run = { lhr: result.lhr, report: /** @type {string[]} */ (result.report), misses: lighthouseMisses(result.lhr, limits) };
+    const [json, html] = result.report;
+    if (typeof json !== "string" || typeof html !== "string") throw new Error(`Lighthouse returned no JSON and HTML reports for ${url}`);
+    const run: LighthouseRun = { lhr: result.lhr, report: [json, html], misses: lighthouseMisses(result.lhr, limits) };
     if (best === null || run.misses.length < best.misses.length) best = run;
     if (!best.misses.every((m) => m.startsWith("performance "))) break;
     if (best.misses.length === 0) break;
   }
-  return /** @type {{lhr: any, report: string[], misses: string[]}} */ (best);
+  if (best === null) throw new Error(`Lighthouse did not run for ${url}`);
+  return best;
 }
 
 /**
  * Runs axe-core on every page, light and dark, at each AXE_WIDTHS width.
  *
- * @param {string} origin The site origin.
- * @param {string} chromePath The browser.
- * @returns {Promise<string[]>} One line per violation; empty when clean.
+ * @param origin - The site origin.
+ * @param chromePath - The browser.
+ * @returns One line per violation; empty when clean.
  */
-async function runAxe(origin, chromePath) {
+async function runAxe(origin: string, chromePath: string): Promise<string[]> {
   const axeSource = readFileSync(join(HERE, "node_modules", "axe-core", "axe.min.js"), "utf8");
   const browser = await chromium.launch({ executablePath: chromePath, args: ["--no-sandbox"] });
-  const found = [];
+  const found: string[] = [];
   try {
-    for (const colorScheme of /** @type {const} */ (["light", "dark"])) {
+    for (const colorScheme of ["light", "dark"] as const) {
       for (const width of AXE_WIDTHS) {
         for (const page of PAGES) {
           // The site's CSP forbids inline scripts; bypass it so axe can be injected.
@@ -274,8 +310,9 @@ async function runAxe(origin, chromePath) {
           await tab.goto(origin + page.path, { waitUntil: "load" });
           await tab.addScriptTag({ content: axeSource });
           const violations = await tab.evaluate(async (tags) => {
-            // @ts-ignore axe is the script just added.
-            const result = await window.axe.run(document, { runOnly: tags });
+            // axe is the script just added.
+            const { axe } = window as unknown as { axe: { run(context: Document, options: RunOptions): Promise<AxeResults> } };
+            const result = await axe.run(document, { runOnly: tags });
             return result.violations.map((v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => n.target.join(" ")).slice(0, 3).join(", ")}`);
           }, AXE_TAGS);
           for (const v of violations) found.push(`${page.name} ${colorScheme} ${width}px: ${v}`);
@@ -292,10 +329,10 @@ async function runAxe(origin, chromePath) {
 /**
  * Finds the browser: CHROME_PATH, else an installed Chrome.
  *
- * @returns {string} The executable.
+ * @returns The executable.
  * @throws {Error} When there is none.
  */
-function findChrome() {
+function findChrome(): string {
   try {
     return chromeLauncher.getChromePath();
   } catch {
@@ -306,23 +343,21 @@ function findChrome() {
 /**
  * Runs the whole audit.
  *
- * @returns {Promise<number>} The exit code: 0 when every page passes, 1 otherwise.
+ * @returns The exit code: 0 when every page passes, 1 otherwise.
  */
-async function main() {
+async function main(): Promise<number> {
   const { values } = parseArgs({
     options: { out: { type: "string", default: join(HERE, "report") }, chrome: { type: "string" } },
   });
-  const out = resolve(/** @type {string} */ (values.out));
+  const out = resolve(values.out);
   mkdirSync(out, { recursive: true });
   const chromePath = values.chrome ?? findChrome();
   if (!existsSync(join(SITE, "dist", "index.html"))) throw new Error("tools/site/dist is missing: run `npm run build` first");
 
   const docs = await serveDocs();
-  /** @type {{stop: () => void} | null} */
-  let site = null;
-  /** @type {import("chrome-launcher").LaunchedChrome | null} */
-  let chrome = null;
-  const failures = [];
+  let site: { stop: () => void } | null = null;
+  let chrome: chromeLauncher.LaunchedChrome | null = null;
+  const failures: string[] = [];
   const rows = ["| Page | Form | Status | Perf | A11y | BP | SEO | CLS | Result |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"];
   try {
     const served = await serveSite(docs.origin, join(out, "wrangler.log"));
@@ -334,15 +369,19 @@ async function main() {
 
     // The proxy flags only matter where HTTPS_PROXY is set (not on CI runners).
     const flags = ["--headless=new", "--no-sandbox", "--disable-gpu"];
-    if (process.env.HTTPS_PROXY) flags.push(`--proxy-server=${process.env.HTTPS_PROXY}`, "--proxy-bypass-list=127.0.0.1;localhost");
+    const proxy = process.env["HTTPS_PROXY"];
+    if (proxy) flags.push(`--proxy-server=${proxy}`, "--proxy-bypass-list=127.0.0.1;localhost");
     chrome = await chromeLauncher.launch({ chromePath, chromeFlags: flags });
     for (const page of PAGES) {
-      for (const form of /** @type {const} */ (["mobile", "desktop"])) {
+      for (const form of ["mobile", "desktop"] as const) {
         const run = await runLighthouse(served.origin + page.path, form, chrome.port, page.limits);
         writeFileSync(join(out, `${page.name}-${form}.json`), run.report[0]);
         writeFileSync(join(out, `${page.name}-${form}.html`), run.report[1]);
         const c = run.lhr.categories;
-        const pct = (/** @type {string} */ k) => (c[k]?.score == null ? "–" : String(Math.round(c[k].score * 100)));
+        const pct = (k: string): string => {
+          const score = c[k]?.score;
+          return score === null || score === undefined ? "–" : String(Math.round(score * 100));
+        };
         const cls = run.lhr.audits["cumulative-layout-shift"]?.numericValue;
         rows.push(
           `| ${page.name} | ${form} | ${page.status} | ${pct("performance")} | ${pct("accessibility")} | ${pct("best-practices")} | ${pct("seo")} | ${cls === undefined ? "–" : cls.toFixed(3)} | ${run.misses.length ? "❌ " + run.misses.join("; ") : "✅"} |`,
@@ -370,7 +409,8 @@ async function main() {
     "",
   ].join("\n");
   writeFileSync(join(out, "summary.md"), summary);
-  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
+  const stepSummary = process.env["GITHUB_STEP_SUMMARY"];
+  if (stepSummary) appendFileSync(stepSummary, summary);
   console.log(summary);
   return failures.length ? 1 : 0;
 }

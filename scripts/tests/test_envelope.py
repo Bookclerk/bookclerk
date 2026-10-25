@@ -205,7 +205,11 @@ class ContainerScriptTests(unittest.TestCase):
         self.assertIn("--memory=1g", host)
         self.assertIn("--memory-swap=1g", host)
         self.assertIn("--cpus=1", host)
-        self.assertIn("ubuntu:24.04", host)
+        # The container runs the build host's Ubuntu release, so it can load
+        # the hosts' glibc and libssl; other hosts fall back to 24.04.
+        self.assertIn('image="ubuntu:${host_version}"', host)
+        self.assertIn('image="ubuntu:24.04"', host)
+        self.assertIn('"${image}"', host)
         self.assertNotIn("slim", host)
         self.assertIn("bash ", host)
         self.assertIn("envelope-inside.sh", host)

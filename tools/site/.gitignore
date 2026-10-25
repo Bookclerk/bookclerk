@@ -1,7 +1,8 @@
 node_modules/
 .wrangler/
 dist/
-generated/
+generated/*
+!generated/docs-shell.d.json.ts
 audit/report/
 audit/wrangler.generated.toml
 audit/.wrangler/

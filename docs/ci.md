@@ -265,8 +265,8 @@ when a step matches no test. Name such tests `postgres_*`.
 | `tray` (3 OS) | `bookclerk-tray` affected | Clippy + tests |
 | `postgres 16/17/18` | An owning package's unit tests are affected (library, db-guest, postgres guest, plugin-host RPC LIKE) | Only the owners' steps, on every supported major |
 | `windows cluster startup + identity` | A `[windows_cluster].paths` input changed, or the full suite | On `windows-latest` only: identity create, restart/binding, and different-cluster rejection, then the full `cluster_secret_startup` target with the sqlite guest, jail, `bookclerk-workerd`, and pinned `workerd` |
-| `small-VPS envelope` | A `[envelope].paths` input changed (harness, seed, search rebuild, library book page, books HTTP handler), or the full suite | On the `ubuntu-latest` VM, release-build the hosts and compile the seed. `docker run --memory=1g --memory-swap=1g --cpus=1 ubuntu:24.04` then runs the seed, daemon, and load. `small-vps.sh` reads `memory.max` and `cpu.max` and refuses to record numbers when they are `max` or looser than 1 GiB / one core. It drops build and object file cache and writes `envelope-metrics.json` even when a later step fails. Books routes must return 200, `q=Title` must hit the rebuilt index, and daemon anonymous memory (`RssAnon` when `/proc/<pid>/status` reports it, otherwise `memory.stat` `anon`, or `memory.current` when anon is absent) stays under 256 MiB after idle and during the API windows. `memory.peak` is recorded and not gated: the container cannot reset it, so the lifetime peak includes the seed. One `cpu.max` core means 1 media worker. Latency is recorded and not gated. `available_parallelism` (daemon `logical_cpus`) is recorded separately from the affinity mask |
-| `website + collector Workers` | `tools/site/**` or `assets/brand/**` (site tests and audit), `docs/**` (site tests only), `tools/diagnostics-collector/**` (collector tests), `tools/demo/**` (demo tests), or the full suite | `site_test`: `npm test` in `tools/site` (generator, Worker and the docs link check). `site_audit`: Lighthouse and axe-core on the built site (see [Website checks](#website-checks)). `collector_test`: `npm test` in `tools/diagnostics-collector`. `demo_test`: `npm test` in `tools/demo`. No Rust toolchain |
+| `small-VPS envelope` | A `[envelope].paths` input changed (harness, seed, search rebuild, library book page, books HTTP handler), or the full suite | On the `ubuntu-latest` VM, release-build the hosts and compile the seed. `docker run --memory=1g --memory-swap=1g --cpus=1` then runs the seed, daemon, and load in an Ubuntu container of the runner's own release (`ubuntu:<VERSION_ID>` from `/etc/os-release`, `ubuntu:24.04` on a non-Ubuntu host), because the hosts link the runner's glibc and libssl. The job uploads `bookclerkd-envelope.log` with the metrics when it fails. `small-vps.sh` reads `memory.max` and `cpu.max` and refuses to record numbers when they are `max` or looser than 1 GiB / one core. It drops build and object file cache and writes `envelope-metrics.json` even when a later step fails. Books routes must return 200, `q=Title` must hit the rebuilt index, and daemon anonymous memory (`RssAnon` when `/proc/<pid>/status` reports it, otherwise `memory.stat` `anon`, or `memory.current` when anon is absent) stays under 256 MiB after idle and during the API windows. `memory.peak` is recorded and not gated: the container cannot reset it, so the lifetime peak includes the seed. One `cpu.max` core means 1 media worker. Latency is recorded and not gated. `available_parallelism` (daemon `logical_cpus`) is recorded separately from the affinity mask |
+| `website + collector Workers` | `tools/site/**` or `assets/brand/**` (site tests and audit), `docs/**` (site tests only), `tools/diagnostics-collector/**` (collector tests), `tools/demo/**` (demo tests), or the full suite | `site_test`: `npm run typecheck` (strict `tsc --noEmit`) and `npm test` in `tools/site` (generator, Worker and the docs link check). `site_audit`: `tsc` on the audit, then Lighthouse and axe-core on the built site (see [Website checks](#website-checks)). `collector_test`: `npm test` in `tools/diagnostics-collector`. `demo_test`: `npm test` in `tools/demo`. No Rust toolchain |
 | `CI Gate` | Always | Stable required check (see contract above) |
 
 OSV scanning remains a separate workflow/gate. A green OSV job that applies
@@ -480,8 +480,8 @@ non-Rust tooling (decision 6):
   (nothing, or exactly the body's own `code` when it is a 1–40 character
   lowercase identifier).
 - The website Worker's `Accept-Encoding` parser (`pickEncoding` in
-  `tools/site/worker.js`), which picks the response's content coding.
-  `tools/site/fuzz.test.mjs` replays its seed corpus
+  `tools/site/worker.ts`), which picks the response's content coding.
+  `tools/site/fuzz.test.ts` replays its seed corpus
   (`tools/site/fuzz/accept_encoding/`) and runs seeded mutation fuzzing in
   `npm test`, checking every choice against an independent oracle (RFC 9110
   qvalues, `*` for unlisted codings, Brotli before gzip on a tie, nothing at
@@ -1083,10 +1083,10 @@ documentation.
 
 ### Website checks
 
-`site_audit` (`tools/site/audit/audit.mjs`) builds the site, serves it
+`site_audit` (`tools/site/audit/audit.ts`) builds the site, serves it
 through the real Worker under `wrangler dev`, and audits it with the
 runner's Chrome. Docs pages are read from this checkout's `docs/` through a
-local server (`tools/site/audit/entry.mjs`), not from the docs repository,
+local server (`tools/site/audit/entry.ts`), not from the docs repository,
 so the audit covers the docs as the pull request has them and needs no
 network. A docs key the local server fails renders the docs-unavailable page.
 
@@ -1101,7 +1101,7 @@ page in light and dark color schemes at 1350 and 390 px against WCAG 2.0 to
 2.2 A/AA and its best-practice rules, and any violation fails the check. The
 results table goes to the job summary; a failed audit uploads the Lighthouse
 reports as the `site-audit` artifact. Locally: `npm run build` in
-`tools/site`, then `npm ci && node audit.mjs` in `tools/site/audit`
+`tools/site`, then `npm ci && node audit.ts` in `tools/site/audit`
 (`--chrome <path>` or `CHROME_PATH` picks the browser).
 
 ## Cloudflare Worker deploys

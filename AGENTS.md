@@ -46,6 +46,11 @@ Types:
   variant).
 - TypeScript is `strict` with no `any`; Python has type hints on every
   function.
+- Cloudflare Worker code (`tools/site`, `tools/demo`,
+  `tools/diagnostics-collector`), its build scripts and its tests are strict
+  TypeScript too. A Worker with a `tsconfig.json` takes only `.ts` modules
+  (never new `.js` / `.mjs`) and its CI check runs `tsc` before the tests;
+  Workers still in JavaScript are being converted.
 - Run `cargo fmt` before committing rather than formatting by hand.
 
 Untrusted input ([ADR](docs/adr/untrusted-input-fuzzing.md)):
