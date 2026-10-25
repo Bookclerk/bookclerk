@@ -298,7 +298,7 @@ the ingest Action last recorded the issue's summary comment
 (`issues.summary_sent_at`), and the next run renders them into that
 comment. Owners get **Update GitHub now** next to that count, which writes
 that comment at once: the Worker renders the issue's summary with the same
-renderer as the run (`dashboard/summary.js`, a port of
+renderer as the run (`dashboard/summary.ts`, a port of
 `scripts/summary_comment.py` that the collector's tests hold to identical
 output), edits the bot comment carrying the summary marker in place or posts
 it, and records the fingerprint written so the run does not write it again.

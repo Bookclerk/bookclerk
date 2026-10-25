@@ -17,8 +17,8 @@ carry a link, a mention or a reference of its own, and report IDs link only
 to their own dashboard page on the given collector origin. The module is
 sans-IO (``render_summaries``); ``scripts/tests/test_summary_comment.py``
 replays a seed corpus and runs seeded mutation fuzzing against an
-independent oracle. ``tools/diagnostics-collector/dashboard/summary.js`` is
-the same renderer in JavaScript, for the dashboard's own comment update;
+independent oracle. ``tools/diagnostics-collector/dashboard/summary.ts`` is
+the same renderer in TypeScript, for the dashboard's own comment update;
 its fuzz test runs this module as the oracle, so the two cannot drift.
 
 Usage: ``summary_comment.py SUMMARIES_FILE OUT_DIR [DASHBOARD_URL]``. Each
@@ -81,7 +81,7 @@ VERSION_RE = re.compile(r"v?[0-9]{1,6}\.[0-9]{1,6}(?:\.[0-9]{1,6})?(?:[-+._~][0-
 #: A platform (``os arch``) as reports carry it.
 PLATFORM_RE = re.compile(r"[A-Za-z0-9._-]{1,32}(?: [A-Za-z0-9._-]{1,32})?")
 #: Whitespace trimmed from versions and collapsed in platforms: the ASCII
-#: set, so the dashboard's port (`dashboard/summary.js`) agrees exactly.
+#: set, so the dashboard's port (`dashboard/summary.ts`) agrees exactly.
 ASCII_WS = " \t\n\r\x0b\x0c"
 #: A collector fingerprint: lowercase hex SHA-256.
 FINGERPRINT_RE = re.compile(r"[0-9a-f]{64}")

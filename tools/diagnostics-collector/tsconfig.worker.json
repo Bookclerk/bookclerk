@@ -1,0 +1,12 @@
+{
+  // The Worker's own modules against the Workers runtime types alone, so a
+  // Node-only API (node:* imports, Buffer, process) used by Worker code
+  // fails here even though tsconfig.json, which also covers the tests,
+  // allows it.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["@cloudflare/workers-types"]
+  },
+  "include": ["*.ts", "dashboard/*.ts"],
+  "exclude": ["*.test.ts"]
+}

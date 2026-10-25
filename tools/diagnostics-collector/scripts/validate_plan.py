@@ -43,7 +43,7 @@ DASHBOARD_RE = re.compile(r"https://[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::[0
 #: Longest dashboard origin, so ``<origin>/reports/<uuid>`` (45 more
 #: characters) stays a short link in the summary comment.
 MAX_DASHBOARD_ORIGIN_CHARS = 255
-#: Opening line of the hidden report block (``dashboard/report-ids.js``
+#: Opening line of the hidden report block (``dashboard/report-ids.ts``
 #: ``REPORT_BLOCK_OPEN``); the dashboard reads only the last one.
 REPORT_BLOCK_OPEN = "<!-- bookclerk-diagnostics: report ids"
 #: Closing line of the hidden report block.
@@ -132,8 +132,8 @@ def defang(text: str) -> str:
     """
     # `](` and `]:` are what make inline links and reference definitions.
     # ASCII matching throughout (`re.ASCII`: `\b`, `\d`, `\S` and case
-    # folding over ASCII only), so the dashboard's JavaScript port of this
-    # function (`dashboard/summary.js`) is the same function, as its
+    # folding over ASCII only), so the dashboard's TypeScript port of this
+    # function (`dashboard/summary.ts`) is the same function, as its
     # cross-language fuzz test checks.
     text = re.sub(r"\](?=[(:])", "]\u200b", text)
     text = re.sub(r"(?i)[a-z0-9+.-]*://\S*|\bwww\.\S*", "[link removed]", text, flags=re.ASCII)

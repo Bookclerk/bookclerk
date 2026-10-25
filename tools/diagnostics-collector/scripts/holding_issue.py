@@ -4,7 +4,7 @@
 Reports no triage plan covers are kept in one open issue,
 ``[diagnostics] untriaged reports``, instead of a new issue per run. Each run
 appends the IDs it could not place to that issue's hidden report block,
-which the dashboard reads (``dashboard/report-ids.js``: only the last
+which the dashboard reads (``dashboard/report-ids.ts``: only the last
 ``<!-- bookclerk-diagnostics: report ids`` line, the bare ID lines directly
 under it and the ``-->`` line that must close them). A holding issue filed
 before the block existed lists its IDs under a visible ``### Report IDs``
@@ -31,12 +31,12 @@ MAX_BODY_CHARS = 60_000
 #: Most IDs one holding issue lists, the dashboard parser's cap.
 MAX_IDS = 500
 #: Opening line of the block; only the last one in the body counts. Mirrors
-#: ``REPORT_BLOCK_OPEN`` in ``dashboard/report-ids.js``.
+#: ``REPORT_BLOCK_OPEN`` in ``dashboard/report-ids.ts``.
 BLOCK_OPEN = "<!-- bookclerk-diagnostics: report ids"
 #: Closing line of the block.
 BLOCK_CLOSE = "-->"
 #: One ID line, trailing spaces and tabs allowed. Mirrors ``BLOCK_LINE_RE`` in
-#: ``dashboard/report-ids.js``; the set has no ``>``, so an ID cannot close
+#: ``dashboard/report-ids.ts``; the set has no ``>``, so an ID cannot close
 #: the comment.
 LINE_RE = re.compile(r"^([A-Za-z0-9._:/+-]{1,160})[ \t]*$")
 

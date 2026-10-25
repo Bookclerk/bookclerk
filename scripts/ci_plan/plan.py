@@ -95,7 +95,7 @@ DEMO_PREFIX = "tools/demo/"
 # every operation in the daemon's OpenAPI document a verdict.
 DEMO_TEST_INPUTS = frozenset({"crates/bookclerkd/openapi.json"})
 # Files outside tools/diagnostics-collector/ that its tests read: the summary
-# comment renderer's seed corpus and the Python oracle its JavaScript port is
+# comment renderer's seed corpus and the Python oracle its TypeScript port is
 # fuzzed against (both also run in the plan job's Python tests).
 COLLECTOR_TEST_INPUT_PREFIXES = ("scripts/tests/summary_comment_corpus/", "scripts/tests/summary_comment_oracle.py")
 # The production image and its build context. No PR check builds them; the

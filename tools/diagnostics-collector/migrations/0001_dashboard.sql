@@ -4,7 +4,7 @@
 
 -- One row per stored report, written by /submit after the B2 upload and by
 -- the owner-only reindex. Raw event messages are not copied here; only a
--- normalized signature label (dashboard/signature.js).
+-- normalized signature label (dashboard/signature.ts).
 CREATE TABLE reports (
   report_id TEXT PRIMARY KEY,
   object_key TEXT NOT NULL,
