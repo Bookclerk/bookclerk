@@ -320,14 +320,15 @@ non-Rust tooling (decision 6):
 
 - The diagnostics holding issue editor
   (`tools/diagnostics-collector/scripts/holding_issue.py`), which appends
-  report IDs to the body of the GitHub issue that holds untriaged reports (a
-  body anyone with triage rights can edit). `scripts/tests/test_holding_issue.py`
-  replays its seed corpus (`scripts/tests/holding_issue_corpus/`) and runs
-  seeded mutation fuzzing on every PR, checking each accepted result against
-  an independent reading of the body (the dashboard's list rule: the new IDs
-  follow the listed ones under the last Report IDs heading, nothing else in
-  the body changes, the list and body stay within their caps, and a second
-  append changes nothing).
+  report IDs to the hidden report block in the body of the GitHub issue that
+  holds untriaged reports (a body anyone with triage rights can edit).
+  `scripts/tests/test_holding_issue.py` replays its seed corpus
+  (`scripts/tests/holding_issue_corpus/`) and runs seeded mutation fuzzing on
+  every PR, checking each accepted result against an independent reading of
+  the body (the dashboard's block rule: only a body whose last block's ID
+  lines end on its `-->` line is edited, the new IDs follow the listed ones
+  inside it, nothing else in the body changes, the list and body stay within
+  their caps, and a second append changes nothing).
 
 - The diagnostics triage plan validator
   (`tools/diagnostics-collector/scripts/validate_plan.py`), which decides what
@@ -335,9 +336,9 @@ non-Rust tooling (decision 6):
   `scripts/tests/test_diagnostics_plan.py` replays its seed corpus
   (`scripts/tests/diagnostics_plan_corpus/`) and runs seeded mutation fuzzing
   on every PR, checking each accepted plan against an independent oracle (no
-  links, mentions, cross-references, raw HTML or forged Report IDs; only batch
-  report IDs, each linked only to its own dashboard page on the given
-  collector origin; at most five issues).
+  links, mentions, cross-references, raw HTML, comments or forged Report IDs
+  or report blocks; only batch report IDs, listed bare in the one report
+  block that ends the body; at most five issues).
 - The diagnostics regression issue planner
   (`tools/diagnostics-collector/scripts/regression_issue.py`), which turns
   the `regression_of` entries of an ingest pull (versions and platforms from
@@ -346,8 +347,9 @@ non-Rust tooling (decision 6):
   its seed corpus (`scripts/tests/regression_issue_corpus/`) and runs seeded
   mutation fuzzing on every PR, checking each result against an independent
   re-derivation of the groups (one issue per closed issue and `major.minor`
-  line, at most ten; only the pull's report IDs, each linked only to its own
-  dashboard page; a marker line naming the validated issue number; no links,
+  line, at most ten; only the pull's report IDs, listed bare in the one
+  report block that ends the body; a marker line naming the validated issue
+  number; no links,
   mentions, raw HTML or references in the title and prose beyond the closed
   issue and its fix pull request, both validated integers). The dashboard's
   Report IDs parser (`dashboard/report-ids.js`, below) reads that marker.

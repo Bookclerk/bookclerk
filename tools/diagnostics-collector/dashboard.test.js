@@ -1659,6 +1659,21 @@ describe("issue summaries for the ingest Action", () => {
     assert.deepEqual((await (await call(env, "/issues/summaries")).json()).issues, []);
   });
 
+  it("summarizes the holding issue for untriaged reports like any other issue", async () => {
+    const env = makeEnv({ REPORT_API_KEY: KEY });
+    await seed(env, ID3, NOW - 60_000, { version: "0.9.2" });
+    await storeIssue(env.DASHBOARD_DB, {
+      number: 410,
+      title: "[diagnostics] untriaged reports",
+      state: "open",
+      body: `<!-- bookclerk-diagnostics: triage fallback -->\n## Untriaged reports\n\n<!-- bookclerk-diagnostics: report ids\n${ID3}\n-->\n`,
+      created_at: new Date(NOW).toISOString(),
+      updated_at: new Date(NOW).toISOString(),
+    });
+    const { issues } = await (await call(env, "/issues/summaries")).json();
+    assert.deepEqual(issues.map((i) => [i.issue, i.reports, i.sources.filed]), [[410, 1, 1]], "its body shows no IDs, so the comment is the list");
+  });
+
   it("folds long breakdowns into others and lists the ten newest reports", async () => {
     const env = makeEnv({ REPORT_API_KEY: KEY });
     const ids = [];

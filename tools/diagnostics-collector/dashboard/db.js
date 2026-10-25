@@ -875,9 +875,11 @@ const SUMMARY_NEWEST = 10;
  * versions and platforms seen, and the newest reports. The counts come from
  * the ledger (`report_issue`, each report counted under the issue that
  * tracks it), so a member's attach or detach on the dashboard changes the
- * fingerprint and reaches GitHub on the next run. An issue with no tracked
- * report and no summary written is left out; one whose last report was
- * detached gets an empty summary once.
+ * fingerprint and reaches GitHub on the next run. The holding issue for
+ * untriaged reports is summarized like any other (its body lists no
+ * visible IDs, so the comment is what people read). An issue with no
+ * tracked report and no summary written is left out; one whose last report
+ * was detached gets an empty summary once.
  *
  * @param {D1Database} db Database.
  * @param {number} limit Most issues to return, most recently active first.
@@ -908,7 +910,7 @@ export async function issueSummaries(db, limit, only = null) {
        LEFT JOIN tr ON tr.issue_number = i.number
        LEFT JOIN reports r ON r.report_id = tr.report_id
        LEFT JOIN report_issue ri ON ri.report_id = tr.report_id AND ri.issue_number = tr.issue_number
-       WHERE i.kind <> 'fallback' ${only === null ? "" : "AND i.number = ?"}
+       ${only === null ? "" : "WHERE i.number = ?"}
        GROUP BY i.number
        HAVING COUNT(r.report_id) > 0 OR i.summary_sent IS NOT NULL`,
       ...scope,

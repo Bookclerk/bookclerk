@@ -1,6 +1,7 @@
 <!-- bookclerk-diagnostics: triage fallback -->
 ## Untriaged reports
 
-### Report IDs
-
 nothing listed yet
+
+<!-- bookclerk-diagnostics: report ids
+-->

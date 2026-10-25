@@ -59,12 +59,24 @@ B2 reports, issues and pull requests synced from GitHub every 30 minutes)
 ## Report IDs
 
 Each `/submit` receives a UUID `report_id`. The B2 object is named
-`diagnostics/<version>/<report_id>.json`. Triage issues list these IDs so
-operators can pull the full object from B2 for manual review. Each listed
-UUID is followed by a link to its page on the member dashboard
-(`` - `<id>` · [dashboard](https://diagnostics.<DOMAIN>/reports/<id>) ``); only
-organization members can open it, by design. The dashboard reads only the ID
-and ignores the link.
+`diagnostics/<version>/<report_id>.json`. Every diagnostics issue ends with
+the IDs it was filed with, in an HTML comment GitHub does not render:
+
+```
+<!-- bookclerk-diagnostics: report ids
+<report_id>
+-->
+```
+
+The dashboard reads that block to link the reports to the issue, and
+operators can still copy an ID from the raw body to pull the full object
+from B2. People read the issue's summary comment instead (see
+[Triage](#triage)): it shows what the issue tracks now, with dashboard links
+(organization members only, by design), while the filed list stays as it was
+filed even after a member detaches or moves a report. Issues filed before
+the block existed list their IDs under a visible `### Report IDs` heading
+(`` - `<id>` · [dashboard](<url>) ``); the dashboard reads that list only
+when a body has no block.
 
 ## Triage
 
@@ -80,10 +92,12 @@ fit in the batch's 120,000-byte limit, reports a non-empty plan leaves out of
 every issue, and every report of a run whose reply held no valid plan (or
 that the budget or an outage kept from the model) go to one open **holding
 issue**, `[diagnostics] untriaged reports`: the run appends their IDs to its
-`### Report IDs` section (`scripts/holding_issue.py` edits only that list;
-when it holds 500 IDs a new one is opened) and comments once with the
+report block (`scripts/holding_issue.py` edits only that list;
+when it holds 500 IDs, or was filed with the visible `### Report IDs` list
+instead, a new one is opened) and comments once with the
 reason, so every pulled report is tracked and nothing is buried in a new
-issue per run. (An empty plan is the model deciding nothing needs an issue,
+issue per run; its summary comment, kept like every other issue's, is the
+list people read. (An empty plan is the model deciding nothing needs an issue,
 and files nothing.)
 
 Ingest asks `/report` with `unfiled=1`. When the dashboard database is bound
@@ -135,8 +149,9 @@ summary; the run echoes the fingerprint to `POST /issues/summary` once the
 comment is written, and the issue is not handed out again until its figures
 change (at most twenty issues per run). The comment edited is the first one
 the workflow's own account wrote with the marker; a marker someone else posts
-is ignored. The filed `### Report IDs` section of the issue body is never
-rewritten. Versions and platforms are untrusted report fields and are
+is ignored. The report block in a triage or regression issue's body is never
+rewritten (only the ingest run appends to the holding issue's block, above).
+Versions and platforms are untrusted report fields and are
 validated or rewritten before they reach the comment; report IDs link only to
 their own dashboard page.
 
@@ -295,8 +310,8 @@ a press holds is left out of the run's next hand-out, so neither writes over
 the other's comment and then records the other's figures.
 
 Every 30 minutes a cron lists issues labeled `diagnostics` changed since the
-last run, reads the report IDs from each issue's `### Report IDs` section (the
-format triage and the holding issue use), and asks GraphQL for the pull requests
+last run, reads the report IDs from each issue's hidden report block (or,
+for an issue filed before it, the `### Report IDs` list), and asks GraphQL for the pull requests
 that close or reference each issue (the newest 50 cross-references), up to
 100 issues a run: changed issues first, then the rest in turn, least
 recently checked first, so every issue is rechecked (an owner's **Sync issues

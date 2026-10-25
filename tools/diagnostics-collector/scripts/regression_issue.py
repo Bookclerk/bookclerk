@@ -7,9 +7,10 @@ the version the fix shipped in or a later one. This module groups such
 reports by the closed issue and the report's ``major.minor`` version line
 and writes one issue per group, naming the closed issue, its fix pull
 request and the fixed-in version (plain ``#<n>`` references, so GitHub
-cross-links them) and listing the report IDs the way every diagnostics
-issue does (``dashboard/report-ids.js`` reads the list; the first line is
-the marker that parser reads the closed issue's number from).
+cross-links them) and listing the report IDs in the hidden report block
+every diagnostics issue ends with (``dashboard/report-ids.js`` reads the
+block; the first line is the marker that parser reads the closed issue's
+number from).
 
 The pull is the collector's answer, but the versions, platforms and the
 closed issue's title in it come from reports anyone can submit and from an
@@ -19,7 +20,7 @@ a mention or a reference of its own. The module is sans-IO
 (``plan_regressions``); ``scripts/tests/test_regression_issue.py`` replays a
 seed corpus and runs seeded mutation fuzzing against an independent oracle.
 
-Usage: ``regression_issue.py REPORTS_FILE OUT_DIR [DASHBOARD_URL]``. Each
+Usage: ``regression_issue.py REPORTS_FILE OUT_DIR``. Each
 issue becomes ``OUT_DIR/<n>/{title,labels,body}`` and
 ``OUT_DIR/handled.json`` is ``{"handled": [...], "overflow": [...]}``: every
 report ID the pull marked as a usable regression (the caller keeps them out
@@ -56,14 +57,11 @@ def _sibling(name: str) -> types.ModuleType:
     return module
 
 
-#: The triage plan validator: one copy of the issue-text sanitizer, the
-#: dashboard origin check and the Report IDs line.
+#: The triage plan validator: one copy of the issue-text sanitizer and the
+#: report block.
 _vp = _sibling("validate_plan")
 defang = _vp.defang
-dashboard_origin = _vp.dashboard_origin
-id_line = _vp.id_line
-UUID_RE = _vp.UUID_RE
-MAX_DASHBOARD_ORIGIN_CHARS = _vp.MAX_DASHBOARD_ORIGIN_CHARS
+report_block = _vp.report_block
 
 #: Most regression issues one run files; the reports of later groups are
 #: handed back as overflow.
@@ -98,7 +96,7 @@ class Issue:
         title: Prefixed, single-line title of at most ``MAX_TITLE_CHARS``
             characters.
         labels: Comma-separated labels (``LABELS``).
-        body: Marker line, summary and the Report IDs section.
+        body: Marker line, summary and the hidden report block.
         report_ids: The report IDs the issue lists, in listed order.
         regression_of: The closed issue's number.
         version_line: The ``major.minor`` line the reports run.
@@ -213,13 +211,12 @@ def _groups(pull: object) -> dict[tuple[int, tuple[int, int]], dict]:
     return groups
 
 
-def plan_regressions(pull: object, dashboard: str | None = None) -> list[Issue]:
+def plan_regressions(pull: object) -> list[Issue]:
     """Turns a pull's regressions into the issues to file.
 
     Args:
         pull: The decoded ``GET /report`` answer (an object with ``reports``)
             or its ``reports`` list.
-        dashboard: Validated collector origin for report links, or None.
 
     Returns:
         At most ``MAX_ISSUES`` issues, one per closed issue and version
@@ -245,7 +242,7 @@ def plan_regressions(pull: object, dashboard: str | None = None) -> list[Issue]:
             "Filed by the diagnostics ingest run, which never posts report contents; "
             "organization members see each report on the dashboard. "
             "Further reports on this line join this issue while it is open.\n\n"
-            "### Report IDs\n" + "".join(id_line(i, dashboard) for i in group["ids"])
+            + report_block(group["ids"])
         )
         out.append(
             Issue(
@@ -277,23 +274,20 @@ def main(argv: list[str]) -> int:
     """Writes the regression issues of REPORTS_FILE to OUT_DIR.
 
     Args:
-        argv: ``[REPORTS_FILE, OUT_DIR]`` and optionally ``DASHBOARD_URL``.
+        argv: ``[REPORTS_FILE, OUT_DIR]``.
 
     Returns:
         0 when the file was read (possibly with no issues), 2 on bad usage.
     """
-    if len(argv) not in (2, 3):
-        print("usage: regression_issue.py REPORTS_FILE OUT_DIR [DASHBOARD_URL]", file=sys.stderr)
+    if len(argv) != 2:
+        print("usage: regression_issue.py REPORTS_FILE OUT_DIR", file=sys.stderr)
         return 2
     reports_path, out_dir = pathlib.Path(argv[0]), pathlib.Path(argv[1])
-    dashboard = dashboard_origin(argv[2]) if len(argv) == 3 else None
-    if len(argv) == 3 and dashboard is None:
-        print("dashboard URL is not a bare https:// origin; filing without report links", file=sys.stderr)
     try:
         pull = json.loads(reports_path.read_text(encoding="utf-8", errors="replace"))
     except (json.JSONDecodeError, RecursionError):
         pull = None
-    issues = plan_regressions(pull, dashboard)
+    issues = plan_regressions(pull)
     out_dir.mkdir(parents=True, exist_ok=True)
     for n, issue in enumerate(issues):
         d = out_dir / str(n)

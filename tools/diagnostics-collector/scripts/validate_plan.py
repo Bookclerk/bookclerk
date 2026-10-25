@@ -6,12 +6,14 @@ trusted: at most five issues, fixed labels, only report IDs from the batch
 (an issue needs at least one), bounded sizes, and no @-mentions,
 cross-references, links, raw HTML or forged Report IDs sections.
 
-Usage: ``validate_plan.py PLAN_FILE DATA_FILE OUT_DIR [DASHBOARD_URL]``.
+Each body ends in the hidden report block (``report_block``) the dashboard
+reads; GitHub does not render it, so people read the run's summary comment,
+which links each report's dashboard page, instead.
+
+Usage: ``validate_plan.py PLAN_FILE DATA_FILE OUT_DIR``.
 Each issue becomes ``OUT_DIR/<n>/{title,labels,body}``, and
 ``OUT_DIR/uncovered.json`` lists the batch's report IDs that a non-empty plan
-left out, so the caller can track them in its fallback issue. With
-``DASHBOARD_URL`` (the collector's ``https://`` origin), each listed report
-UUID links to its dashboard page; only organization members can open it.
+left out, so the caller can track them in its fallback issue.
 Exits non-zero when the reply holds no plan, or a non-empty plan holds no
 valid issue, so the caller files its fallback issue instead.
 """
@@ -28,20 +30,27 @@ from dataclasses import dataclass
 MAX_ISSUES = 5
 #: Longest issue title, in characters, after the prefix is added.
 MAX_TITLE_CHARS = 120
-#: Longest model-written body, in characters, before the Report IDs section.
+#: Longest model-written body, in characters, before the report block.
 MAX_BODY_CHARS = 8000
 #: Prefix every issue title carries.
 TITLE_PREFIX = "[diagnostics] "
 #: First line of every body, so filed issues can be found again.
 MARKER = "<!-- bookclerk-diagnostics: workers-ai triage -->"
-#: A report UUID, the only ID form that gets a dashboard link.
+#: A report UUID, the only ID form the summary comment links.
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 #: The collector origin a dashboard link may point at (no path, query or userinfo).
 DASHBOARD_RE = re.compile(r"https://[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::[0-9]{1,5})?")
 #: Longest dashboard origin, so ``<origin>/reports/<uuid>`` (45 more
-#: characters) fits the 300-character link the dashboard's Report IDs parser
-#: (``dashboard/report-ids.js``) reads.
+#: characters) stays a short link in the summary comment.
 MAX_DASHBOARD_ORIGIN_CHARS = 255
+#: Opening line of the hidden report block (``dashboard/report-ids.js``
+#: ``REPORT_BLOCK_OPEN``); the dashboard reads only the last one.
+REPORT_BLOCK_OPEN = "<!-- bookclerk-diagnostics: report ids"
+#: Closing line of the hidden report block.
+REPORT_BLOCK_CLOSE = "-->"
+#: An ID the block may list: the dashboard parser's character set, which has
+#: no ``>``, so no ID can end the comment early and render the rest.
+BLOCK_ID_RE = re.compile(r"[A-Za-z0-9._:/+-]{1,160}")
 
 
 class PlanError(Exception):
@@ -57,7 +66,7 @@ class Issue:
             ``MAX_TITLE_CHARS`` characters.
         labels: Comma-separated labels: ``diagnostics``, plus ``bug`` when the
             plan says so.
-        body: Defanged body ending in the script-written Report IDs section.
+        body: Defanged body ending in the script-written report block.
         report_ids: The batch report IDs the issue lists, in listed order.
     """
 
@@ -67,21 +76,24 @@ class Issue:
     report_ids: tuple[str, ...]
 
 
-def id_line(report_id: str, dashboard: str | None) -> str:
-    """Formats one line of the Report IDs section.
+def report_block(report_ids: list[str] | tuple[str, ...]) -> str:
+    """Formats the hidden report block that ends every filed issue.
 
     Args:
-        report_id: A report ID from the batch.
-        dashboard: Validated collector origin, or None for no link.
+        report_ids: IDs to list, each matching ``BLOCK_ID_RE``.
 
     Returns:
-        ``- `<id>```, followed by `` · [dashboard](<origin>/reports/<id>)``
-        when there is a dashboard and the ID is a report UUID, and a newline.
+        ``REPORT_BLOCK_OPEN``, one ID per line and ``REPORT_BLOCK_CLOSE``,
+        each followed by a newline.
+
+    Raises:
+        ValueError: An ID does not match ``BLOCK_ID_RE``; it could close the
+            comment early or would not be read back.
     """
-    line = f"- `{report_id}`"
-    if dashboard and UUID_RE.fullmatch(report_id):
-        line += f" \u00b7 [dashboard]({dashboard}/reports/{report_id})"
-    return line + "\n"
+    for report_id in report_ids:
+        if not BLOCK_ID_RE.fullmatch(report_id):
+            raise ValueError(f"report ID cannot be listed: {report_id!r}")
+    return REPORT_BLOCK_OPEN + "\n" + "".join(f"{i}\n" for i in report_ids) + REPORT_BLOCK_CLOSE + "\n"
 
 
 def dashboard_origin(raw: str | None) -> str | None:
@@ -162,13 +174,13 @@ def find_plan(text: str) -> list[object]:
     raise PlanError("reply has no JSON plan")
 
 
-def plan_issues(text: str, known: set[str], dashboard: str | None = None) -> list[Issue]:
+def plan_issues(text: str, known: set[str]) -> list[Issue]:
     """Validates a reply into the issues to file.
 
     Args:
         text: The model's whole reply.
-        known: Report IDs in the batch the model saw.
-        dashboard: Validated collector origin for report links, or None.
+        known: Report IDs in the batch the model saw; only those that fit
+            the report block (``BLOCK_ID_RE``) are listed.
 
     Returns:
         Up to ``MAX_ISSUES`` issues; empty when the plan is ``{"issues": []}``.
@@ -185,13 +197,14 @@ def plan_issues(text: str, known: set[str], dashboard: str | None = None) -> lis
         title, body, ids = issue.get("title"), issue.get("body"), issue.get("report_ids")
         if not isinstance(title, str) or not isinstance(body, str) or not isinstance(ids, list):
             continue
-        ids = list(dict.fromkeys(i for i in ids if isinstance(i, str) and i in known))
+        ids = list(dict.fromkeys(i for i in ids if isinstance(i, str) and i in known and BLOCK_ID_RE.fullmatch(i)))
         if not ids:
             continue
         title = " ".join(title.split())
         if not title.startswith(TITLE_PREFIX):
             title = TITLE_PREFIX + title
-        # Only this script writes the Report IDs section.
+        # Only this script lists report IDs. defang escapes `<!`, so the model
+        # cannot forge a report block; a legacy heading is dropped too.
         body = re.sub(r"(?im)^\s*#+\s*report ids\b.*$", "", body[:MAX_BODY_CHARS])
         out.append(
             Issue(
@@ -200,8 +213,8 @@ def plan_issues(text: str, known: set[str], dashboard: str | None = None) -> lis
                 body=MARKER
                 + "\n"
                 + defang(body)
-                + "\n\n### Report IDs\n"
-                + "".join(id_line(i, dashboard) for i in ids),
+                + "\n\n"
+                + report_block(ids),
                 report_ids=tuple(ids),
             )
         )
@@ -254,23 +267,19 @@ def main(argv: list[str]) -> int:
     """Validates PLAN_FILE against DATA_FILE and writes issue files to OUT_DIR.
 
     Args:
-        argv: ``[PLAN_FILE, DATA_FILE, OUT_DIR]`` and optionally
-            ``DASHBOARD_URL``.
+        argv: ``[PLAN_FILE, DATA_FILE, OUT_DIR]``.
 
     Returns:
         0 when the plan is valid (possibly with no issues), 1 otherwise.
     """
-    if len(argv) not in (3, 4):
-        print("usage: validate_plan.py PLAN_FILE DATA_FILE OUT_DIR [DASHBOARD_URL]", file=sys.stderr)
+    if len(argv) != 3:
+        print("usage: validate_plan.py PLAN_FILE DATA_FILE OUT_DIR", file=sys.stderr)
         return 2
-    plan_path, data_path, out_dir = (pathlib.Path(a) for a in argv[:3])
-    dashboard = dashboard_origin(argv[3]) if len(argv) == 4 else None
-    if len(argv) == 4 and dashboard is None:
-        print("dashboard URL is not a bare https:// origin; filing without report links", file=sys.stderr)
+    plan_path, data_path, out_dir = (pathlib.Path(a) for a in argv)
     text = plan_path.read_text(encoding="utf-8", errors="replace")
     known = known_ids(json.loads(data_path.read_text(encoding="utf-8")))
     try:
-        issues = plan_issues(text, known, dashboard)
+        issues = plan_issues(text, known)
     except PlanError as err:
         print(err, file=sys.stderr)
         return 1
