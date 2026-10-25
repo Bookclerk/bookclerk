@@ -785,7 +785,6 @@ export function SettingsPage({
       } else {
         setUsers([]);
       }
-      setUsersLoaded(true);
 
       try {
         setSessions(await listSessions());
@@ -809,6 +808,9 @@ export function SettingsPage({
       );
     } finally {
       setLoading(false);
+      // Also when operator settings failed before the user list was read:
+      // the panel then shows an empty list beside the error, not a spinner.
+      setUsersLoaded(true);
     }
   }, [canManageOperator, onSessionExpired, prefetchConsentCoverage, showUserAdmin]);
 

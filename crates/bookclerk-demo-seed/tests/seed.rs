@@ -124,7 +124,8 @@ async fn leaves_out_the_titles_of_a_storefront_that_is_not_enrolled() {
     let dir = tempfile::tempdir().unwrap();
     let store = fresh(dir.path()).await;
     let mut keys = plugin_keys();
-    keys.remove("graphicaudio");
+    // Audible has three library titles and two branch titles.
+    keys.remove("audible");
 
     let Seeded::Wrote(report) = seed(&store, "cluster", &keys, chrono::Utc::now())
         .await
@@ -132,7 +133,7 @@ async fn leaves_out_the_titles_of_a_storefront_that_is_not_enrolled() {
     else {
         panic!("a fresh library should be seeded");
     };
-    assert_eq!(report.books, 8);
+    assert_eq!((report.books, report.branch_titles), (7, 2));
     let books = store.list_books(Some("sam@example.com")).await.unwrap();
-    assert!(books.iter().all(|b| b.source != "graphicaudio"));
+    assert!(books.iter().all(|b| b.source != "audible"));
 }

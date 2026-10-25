@@ -390,7 +390,7 @@ pub async fn seed(
             .with_context(|| format!("wish for {title}"))?;
     }
 
-    let branch_titles = add_branch(store, cluster_id, user.id, when).await?;
+    let branch_titles = add_branch(store, cluster_id, user.id, plugin_keys, when).await?;
     Ok(Seeded::Wrote(SeedReport {
         user_id: user.id,
         books,
@@ -404,9 +404,9 @@ fn storage_key(sample: &SampleTitle) -> String {
     format!("{}/{}/{}.m4b", sample.author, sample.title, sample.title)
 }
 
-/// Enrolls Sam's branch, lets it share [`BRANCH`] through the same catalog
-/// code a live branch's sync uses, and leaves it silent for
-/// [`BRANCH_SILENT_FOR`].
+/// Enrolls Sam's branch, lets it share the [`BRANCH`] titles of the enrolled
+/// storefronts (`plugin_keys`) through the same catalog code a live branch's
+/// sync uses, and leaves it silent for [`BRANCH_SILENT_FOR`].
 ///
 /// # Returns
 ///
@@ -415,6 +415,7 @@ async fn add_branch(
     store: &LibraryStore,
     cluster_id: &str,
     owner: i64,
+    plugin_keys: &BTreeMap<&str, String>,
     when: DateTime<Utc>,
 ) -> anyhow::Result<u64> {
     let last_seen = (when - BRANCH_SILENT_FOR).to_rfc3339();
@@ -456,7 +457,12 @@ async fn add_branch(
         CatalogBegin::Opened(opened) => opened,
         CatalogBegin::Refused(reason) => bail!("the library refused the sample branch: {reason}"),
     };
-    let titles: Vec<CatalogTitle> = BRANCH.iter().map(catalog_title).collect();
+    // Like the library, only titles of storefronts the image enrolled.
+    let titles: Vec<CatalogTitle> = BRANCH
+        .iter()
+        .filter(|sample| plugin_keys.contains_key(sample.store.id))
+        .map(catalog_title)
+        .collect();
     let upserted = match accept_catalog_batch(
         store,
         SAMPLE_BRANCH,
