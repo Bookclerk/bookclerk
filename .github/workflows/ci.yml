@@ -941,6 +941,16 @@ jobs:
           path: ${{ runner.temp }}/BookclerkFiles/envelope-metrics.json
           if-no-files-found: warn
 
+      # The daemon's own log says why it stopped; the step output only says
+      # that it did. The daemon redacts secrets and runs on a throwaway seed.
+      - name: Upload the envelope daemon log
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: envelope-daemon-log
+          path: ${{ runner.temp }}/BookclerkFiles/envelope/bookclerkd-envelope.log
+          if-no-files-found: warn
+
   site:
     name: website + collector Workers
     needs: plan
