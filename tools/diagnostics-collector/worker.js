@@ -26,8 +26,9 @@
  *
  * Secrets (set by deploy workflow from GitHub secrets):
  *   B2_KEY_ID, B2_APPLICATION_KEY, B2_BUCKET_ID
- *   REPORT_API_KEY          — required for /report, /report/cursor, /triage
- *                             and /issues/notify
+ *   REPORT_API_KEY          — required for /report, /report/cursor, /triage,
+ *                             /issues/notify, /issues/summaries and
+ *                             /issues/summary
  *   CLIENT_IP_HASH_SALT     — optional; enables hashed client IP in enrichment
  *   GITHUB_TOKEN            — optional; higher GitHub API rate limits
  *   GITHUB_APP_CLIENT_ID, GITHUB_APP_CLIENT_SECRET, GITHUB_APP_PRIVATE_KEY
@@ -49,14 +50,16 @@
  * secrets; Bookclerk builds carry the collector URL, never this key.
  */
 
-import { parseIssueNotify } from "./dashboard/github.js";
+import { parseIssueNotify, parseSummaryDone } from "./dashboard/github.js";
 import { reportIdOf } from "./dashboard/report-ids.js";
 import {
   dashboardFetch,
   dashboardFiledReportIds,
   dashboardIndexSubmitted,
   dashboardIssueNotify,
+  dashboardIssueSummaries,
   dashboardLinkBySignature,
+  dashboardSummarySent,
   dashboardMatchClosed,
   dashboardScheduled,
 } from "./dashboard/routes.js";
@@ -210,6 +213,22 @@ export default {
         return await handleIssueNotify(request, env);
       }
 
+      if (request.method === "GET" && path === "/issues/summaries") {
+        if (!requireReportAuth(request, env)) {
+          return json({ error: "unauthorized" }, 401);
+        }
+        const summaries = await dashboardIssueSummaries(env);
+        if (summaries === null) return new Response(null, { status: 204 });
+        return json({ issues: summaries });
+      }
+
+      if (request.method === "POST" && path === "/issues/summary") {
+        if (!requireReportAuth(request, env)) {
+          return json({ error: "unauthorized" }, 401);
+        }
+        return await handleSummaryDone(request, env);
+      }
+
       if (request.method === "POST" && path === "/triage") {
         if (!requireReportAuth(request, env)) {
           return json({ error: "unauthorized" }, 401);
@@ -287,6 +306,26 @@ async function handleIssueNotify(request, env) {
   const result = await dashboardIssueNotify(env, number, Date.now());
   if (result === null) return new Response(null, { status: 204 });
   return json({ ok: true, issue: number, result }, 202);
+}
+
+/**
+ * `POST /issues/summary`: the ingest Action says which summary fingerprint
+ * it wrote on an issue, so `GET /issues/summaries` stops handing that issue
+ * back until its figures change. Answers 200, 204 when the dashboard is off,
+ * 404 for an issue the dashboard does not know, or 400 for a malformed body.
+ *
+ * @param {Request} request Authenticated request.
+ * @param {Record<string, any>} env Worker bindings.
+ * @returns {Promise<Response>} The answer.
+ */
+async function handleSummaryDone(request, env) {
+  const text = await readCapped(request, 512);
+  const done = text === null ? null : parseSummaryDone(text);
+  if (done === null) return json({ error: "expected {\"issue\": <number>, \"fingerprint\": \"<sha-256 hex>\"}" }, 400);
+  const known = await dashboardSummarySent(env, done);
+  if (known === null) return new Response(null, { status: 204 });
+  if (!known) return json({ error: "unknown issue" }, 404);
+  return json({ ok: true, issue: done.issue });
 }
 
 async function handleSubmit(request, env, ctx) {

@@ -1581,6 +1581,118 @@ describe("issue notice from the ingest Action", () => {
   });
 });
 
+describe("issue summaries for the ingest Action", () => {
+  const KEY = "r".repeat(32);
+  const ID3 = "d2b80f13-0000-4000-8000-000000000003";
+  const ID4 = "d2b80f13-0000-4000-8000-000000000004";
+
+  /** Calls the summaries route or the done route with the report key. */
+  function call(env, path, body, key = KEY) {
+    return worker.fetch(
+      new Request(`${ORIGIN}${path}`, {
+        method: body === undefined ? "GET" : "POST",
+        headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+        body,
+      }),
+      env,
+      makeCtx(),
+    );
+  }
+
+  /** Two issues: #400 tracks three reports, #401 tracks none. */
+  async function setup() {
+    const env = makeEnv({ REPORT_API_KEY: KEY });
+    await seed(env, ID1, NOW - 3 * 86_400_000, { version: "0.9.1", os: "linux", arch: "x86_64" });
+    await seed(env, ID2, NOW - 86_400_000, { version: "0.9.2", os: "windows", arch: "x86_64" });
+    await seed(env, ID3, NOW - 3_600_000, { version: "0.9.2", os: "linux", arch: "x86_64" });
+    await seed(env, ID4, NOW - 60_000, { version: "0.9.2" });
+    const issue = (number) => ({
+      number,
+      title: `[diagnostics] issue ${number}`,
+      state: "open",
+      body: `<!-- bookclerk-diagnostics: workers-ai triage -->\nx\n\n### Report IDs\n${number === 400 ? `- \`${ID1}\`\n` : ""}`,
+      created_at: new Date(NOW - 4 * 86_400_000).toISOString(),
+      updated_at: new Date(NOW - 4 * 86_400_000).toISOString(),
+    });
+    await storeIssue(env.DASHBOARD_DB, issue(400));
+    await storeIssue(env.DASHBOARD_DB, issue(401));
+    await run(env.DASHBOARD_DB, "INSERT INTO report_issue (report_id, issue_number, source, linked_by, linked_at) VALUES (?, 400, 'signature', 'ingest', ?)", ID2, NOW);
+    await run(env.DASHBOARD_DB, "INSERT INTO report_issue (report_id, issue_number, source, linked_by, linked_at) VALUES (?, 400, 'manual', 'octocat', ?)", ID3, NOW);
+    return env;
+  }
+
+  it("hands out the figures of issues whose summary is out of date, newest activity first", async () => {
+    const env = await setup();
+    const res = await call(env, "/issues/summaries");
+    assert.equal(res.status, 200);
+    const { issues } = await res.json();
+    assert.deepEqual(issues.map((i) => i.issue), [400], "an issue tracking nothing, never summarized, is left out");
+    const s = issues[0];
+    assert.match(s.fingerprint, /^[0-9a-f]{64}$/);
+    assert.equal(s.reports, 3);
+    assert.equal(s.first_seen, NOW - 3 * 86_400_000);
+    assert.equal(s.last_seen, NOW - 3_600_000);
+    assert.deepEqual(s.sources, { filed: 1, signature: 1, triage: 0, manual: 1 });
+    assert.deepEqual(s.versions, [{ version: "0.9.2", n: 2 }, { version: "0.9.1", n: 1 }]);
+    assert.deepEqual(s.platforms, [{ platform: "linux x86_64", n: 2 }, { platform: "windows x86_64", n: 1 }]);
+    assert.deepEqual(s.newest.map((r) => r.report_id), [ID3, ID2, ID1]);
+    assert.equal(s.state, undefined, "state is not shown, so it is not hashed");
+  });
+
+  it("stops handing out an issue once its fingerprint is recorded, until the figures change", async () => {
+    const env = await setup();
+    const { issues } = await (await call(env, "/issues/summaries")).json();
+    const done = await call(env, "/issues/summary", JSON.stringify({ issue: 400, fingerprint: issues[0].fingerprint }));
+    assert.equal(done.status, 200);
+    assert.deepEqual((await (await call(env, "/issues/summaries")).json()).issues, []);
+    // A member detaches a report: the figures, and so the fingerprint, change.
+    await run(env.DASHBOARD_DB, "UPDATE report_issue SET source = 'excluded' WHERE report_id = ?", ID3);
+    const again = (await (await call(env, "/issues/summaries")).json()).issues;
+    assert.deepEqual(again.map((i) => [i.issue, i.reports, i.sources.manual]), [[400, 2, 0]]);
+    assert.notEqual(again[0].fingerprint, issues[0].fingerprint);
+    // Detaching the last report yields one empty summary, then silence.
+    await run(env.DASHBOARD_DB, "UPDATE report_issue SET source = 'excluded' WHERE issue_number = 400");
+    const empty = (await (await call(env, "/issues/summaries")).json()).issues;
+    assert.deepEqual(empty.map((i) => [i.issue, i.reports, i.newest.length]), [[400, 0, 0]]);
+    await call(env, "/issues/summary", JSON.stringify({ issue: 400, fingerprint: empty[0].fingerprint }));
+    assert.deepEqual((await (await call(env, "/issues/summaries")).json()).issues, []);
+  });
+
+  it("folds long breakdowns into others and lists the ten newest reports", async () => {
+    const env = makeEnv({ REPORT_API_KEY: KEY });
+    const ids = [];
+    for (let i = 0; i < 12; i++) {
+      const id = `d2b80f13-0000-4000-8000-0000000000${String(i + 10).padStart(2, "0")}`;
+      ids.push(id);
+      await seed(env, id, NOW - i * 60_000, { version: `0.${i}.0` });
+    }
+    await storeIssue(env.DASHBOARD_DB, {
+      number: 400,
+      title: "x",
+      state: "open",
+      body: `<!-- bookclerk-diagnostics: workers-ai triage -->\nx\n\n### Report IDs\n${ids.map((i) => `- \`${i}\`\n`).join("")}`,
+      created_at: new Date(NOW).toISOString(),
+      updated_at: new Date(NOW).toISOString(),
+    });
+    const { issues } = await (await call(env, "/issues/summaries")).json();
+    assert.equal(issues[0].versions.length, 9);
+    assert.deepEqual(issues[0].versions[8], { version: "others", n: 4 });
+    assert.deepEqual(issues[0].newest.map((r) => r.report_id), ids.slice(0, 10));
+  });
+
+  it("refuses a missing key or a malformed body, and answers 204 when the dashboard is off", async () => {
+    const env = await setup();
+    assert.equal((await call(env, "/issues/summaries", undefined, "x".repeat(32))).status, 401);
+    assert.equal((await call({ REPORT_API_KEY: KEY }, "/issues/summaries")).status, 204);
+    const fp = "a".repeat(64);
+    for (const body of ["", "[]", '{"issue":"400"}', `{"issue":400,"fingerprint":"${"A".repeat(64)}"}`, '{"issue":400}', "x".repeat(600)]) {
+      assert.equal((await call(env, "/issues/summary", body)).status, 400, body.slice(0, 30));
+    }
+    assert.equal((await call(env, "/issues/summary", JSON.stringify({ issue: 999, fingerprint: fp }))).status, 404);
+    assert.equal((await call({ REPORT_API_KEY: KEY }, "/issues/summary", JSON.stringify({ issue: 400, fingerprint: fp }))).status, 204);
+  });
+});
+
 describe("per-invocation D1 limit", () => {
   it("works through an issue and pull request backlog in 50-call runs", async () => {
     const d1 = createD1();

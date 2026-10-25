@@ -1,0 +1,90 @@
+{
+ "issues": [
+  {
+   "issue": 412,
+   "state": "open",
+   "fingerprint": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+   "reports": 3,
+   "installs": 2,
+   "first_seen": 1791740800000,
+   "last_seen": 1792000000000,
+   "sources": {
+    "filed": 1,
+    "signature": 1,
+    "triage": 0,
+    "manual": 1
+   },
+   "versions": [
+    {
+     "version": "0.9.2",
+     "n": 2
+    },
+    {
+     "version": "0.9.1",
+     "n": 1
+    }
+   ],
+   "platforms": [
+    {
+     "platform": "linux x86_64",
+     "n": 2
+    },
+    {
+     "platform": "windows x86_64",
+     "n": 1
+    }
+   ],
+   "newest": [
+    {
+     "report_id": "33333333-3333-4333-8333-333333333333",
+     "version": "0.9.2",
+     "received_at": 1792000000000
+    },
+    {
+     "report_id": "22222222-2222-4222-8222-222222222222",
+     "version": "0.9.2",
+     "received_at": 1791913600000
+    },
+    {
+     "report_id": "11111111-1111-4111-8111-111111111111",
+     "version": "0.9.1",
+     "received_at": 1791740800000
+    }
+   ]
+  },
+  {
+   "issue": 7,
+   "state": "open",
+   "fingerprint": "a1fce4363854ff888cff4b8e7875d600c2682390412a8cf79b37d0b11148b0fa",
+   "reports": 1,
+   "installs": 1,
+   "first_seen": 1791740800000,
+   "last_seen": 1792000000000,
+   "sources": {
+    "filed": 1,
+    "signature": 1,
+    "triage": 0,
+    "manual": 1
+   },
+   "versions": [
+    {
+     "version": "1.0.0",
+     "n": 1
+    }
+   ],
+   "platforms": [
+    {
+     "platform": "macos aarch64",
+     "n": 1
+    }
+   ],
+   "newest": [
+    {
+     "report_id": "11111111-1111-4111-8111-111111111111",
+     "version": "1.0.0",
+     "received_at": 1792000000000
+    }
+   ]
+  }
+ ]
+}

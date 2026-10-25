@@ -351,6 +351,17 @@ non-Rust tooling (decision 6):
   mentions, raw HTML or references in the title and prose beyond the closed
   issue and its fix pull request, both validated integers). The dashboard's
   Report IDs parser (`dashboard/report-ids.js`, below) reads that marker.
+- The diagnostics summary comment renderer
+  (`tools/diagnostics-collector/scripts/summary_comment.py`), which turns
+  the collector's `GET /issues/summaries` answer (counts, plus versions and
+  platforms taken from reports anyone can submit) into the one comment the
+  ingest run keeps on each issue. `scripts/tests/test_summary_comment.py`
+  replays its seed corpus (`scripts/tests/summary_comment_corpus/`) and runs
+  seeded mutation fuzzing on every PR, checking each result against an
+  independent re-derivation (the first valid entry per issue, at most twenty;
+  the marker first; only the answer's report IDs, each linked only to its own
+  dashboard page; no links, mentions, raw HTML or references outside code
+  spans; no Report IDs heading).
 - The diagnostics ingest release-tag reader
   (`tools/diagnostics-collector/scripts/release_baseline.py`), which turns the
   GitHub `releases/latest` response into the tag the ingest job writes to
@@ -402,6 +413,8 @@ non-Rust tooling (decision 6):
   `decodeUser`, same file); the ingest Action's issue notice
   (`parseIssueNotify`, same file) and the single-issue decoder (`decodeIssue`,
   same file), which decide which issue is re-read and whether it stays linked;
+  the ingest Action's summary receipt (`parseSummaryDone`, same file), which
+  decides which issue stops being handed out for a summary comment;
   and the B2 listing decoder
   (`decodeListPage` in `dashboard/storage.js`), which names the objects
   report viewing downloads and where reindexing continues. `tools/diagnostics-collector/dashboard-input.fuzz.test.js` replays
@@ -409,7 +422,7 @@ non-Rust tooling (decision 6):
   `corpus/signature/`, `corpus/oauth_callback/`, `corpus/next_path/`, `corpus/session/`,
   `corpus/membership/`, `corpus/pull_requests/`, `corpus/b2_list/`,
   `corpus/issue_page/`, `corpus/github_auth/`, `corpus/issue_notify/`,
-  `corpus/issue/`) and runs seeded mutation
+  `corpus/summary_done/`, `corpus/issue/`) and runs seeded mutation
   fuzzing on every PR, checking results against independent oracles (IDs
   re-derived by a separate walk, all UUIDs present in the body, capped; level
   counts recounted, a signature exactly when an error or warning exists,

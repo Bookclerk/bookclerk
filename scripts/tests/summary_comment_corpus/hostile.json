@@ -1,0 +1,86 @@
+{
+ "issues": [
+  {
+   "issue": 412,
+   "state": "<b>",
+   "fingerprint": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+   "reports": 3,
+   "installs": -1,
+   "first_seen": "yesterday",
+   "last_seen": true,
+   "sources": {
+    "filed": 1,
+    "signature": 1,
+    "triage": 0,
+    "manual": 1
+   },
+   "versions": [
+    {
+     "version": "0.9.2-www.evil.test",
+     "n": 1
+    },
+    {
+     "version": "[x](https://evil.test)",
+     "n": 1
+    },
+    {
+     "version": "1.2.3+GH-7",
+     "n": 1
+    },
+    {
+     "version": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+     "n": 1
+    },
+    {
+     "version": null,
+     "n": 1
+    },
+    {
+     "version": "0.9.3",
+     "n": "2"
+    }
+   ],
+   "platforms": [
+    {
+     "platform": "<img src=x>",
+     "n": 1
+    },
+    {
+     "platform": "linux @octocat",
+     "n": 1
+    },
+    {
+     "platform": "linux  x86_64",
+     "n": 1
+    },
+    {
+     "platform": "linux #1",
+     "n": 2
+    }
+   ],
+   "newest": [
+    {
+     "report_id": "../../etc",
+     "version": "0.9.2",
+     "received_at": 1792000000000
+    },
+    {
+     "report_id": "11111111-1111-4111-8111-111111111111",
+     "version": "0.9.2",
+     "received_at": -5
+    },
+    {
+     "report_id": "diagnostics/0.9.2/22222222-2222-4222-8222-222222222222.json",
+     "version": "0.9.2",
+     "received_at": 1792000000000
+    },
+    {
+     "report_id": "33333333-3333-4333-8333-333333333333",
+     "version": "bad version",
+     "received_at": 100000000000000000000
+    },
+    "nope"
+   ]
+  }
+ ]
+}

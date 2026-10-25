@@ -50,6 +50,7 @@ import {
   decodeReleases,
   fixedInLabel,
   parseIssueNotify,
+  parseSummaryDone,
   oauthErrorCode,
   decodeInstallationId,
   decodeInstallationToken,
@@ -960,6 +961,33 @@ function checkIssueNotify(text, label) {
 }
 
 /**
+ * Oracle for parseSummaryDone: a separate walk over the parsed value, the
+ * fingerprint checked character by character.
+ *
+ * @param {string} text Body.
+ * @param {string} label Failure label.
+ */
+function checkSummaryDone(text, label) {
+  let expected = null;
+  if (text.length <= 512) {
+    let v;
+    let ok = true;
+    try {
+      v = JSON.parse(text);
+    } catch {
+      ok = false;
+    }
+    if (ok && v !== null && typeof v === "object" && !Array.isArray(v)) {
+      const n = v.issue;
+      const fp = v.fingerprint;
+      const hex = typeof fp === "string" && fp.length === 64 && [...fp].every((c) => "0123456789abcdef".includes(c));
+      if (typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= 1_000_000_000 && hex) expected = { issue: n, fingerprint: fp };
+    }
+  }
+  assert.deepEqual(parseSummaryDone(text), expected, label);
+}
+
+/**
  * Oracle for decodeIssue: one well-numbered non-PR issue, labeled exactly
  * when a label (string or object name) is "diagnostics".
  *
@@ -993,6 +1021,11 @@ describe("issue notice decoding", () => {
     assert.ok(notices.length > 0);
     for (const [name, raw] of notices) checkIssueNotify(raw, name);
     assert.equal(parseIssueNotify(notices.find(([n]) => n === "normal.json")[1]), 400);
+    const done = seeds("summary_done");
+    assert.ok(done.length > 0);
+    for (const [name, raw] of done) checkSummaryDone(raw, name);
+    assert.equal(parseSummaryDone(done.find(([n]) => n === "normal.json")[1])?.issue, 400);
+    assert.equal(parseSummaryDone(done.find(([n]) => n === "uppercase.json")[1]), null);
     const issues = seeds("issue");
     assert.ok(issues.length > 0);
     for (const [name, raw] of issues) checkIssue(JSON.parse(raw), name);
@@ -1002,11 +1035,16 @@ describe("issue notice decoding", () => {
   it("holds the oracles under seeded mutation", () => {
     const notices = seeds("issue_notify").map(([, raw]) => raw);
     const issues = seeds("issue").map(([, raw]) => JSON.parse(raw));
+    const done = seeds("summary_done").map(([, raw]) => raw);
     const rand = rng(20261024);
     for (let n = 0; n < 3000; n++) {
-      if (rand() < 0.5) {
+      const pick = rand();
+      if (pick < 0.35) {
         const text = mutate(rand, notices[Math.floor(rand() * notices.length)], ['"issue"', "1e9", "-1", "null", "{}", "[]", "9007199254740993", '"', ":"]);
         checkIssueNotify(text, `notice ${n}: ${text.slice(0, 200)}`);
+      } else if (pick < 0.7) {
+        const text = mutate(rand, done[Math.floor(rand() * done.length)], ['"issue"', '"fingerprint"', "1e9", "-1", "null", "{}", "[]", '"', ":", "A", "g", "0", "\u0000"]);
+        checkSummaryDone(text, `summary done ${n}: ${text.slice(0, 200)}`);
       } else {
         const data = mutateJson(rand, issues[Math.floor(rand() * issues.length)]);
         checkIssue(data, `issue ${n}: ${JSON.stringify(data)?.slice(0, 300)}`);

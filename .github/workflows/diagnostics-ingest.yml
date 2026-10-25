@@ -5,7 +5,8 @@
 # Required repository secret:
 #   DIAGNOSTICS_REPORT_API_KEY — Worker REPORT_API_KEY (set on deploy via wrangler-action);
 #     authorizes /report, /report/cursor (where the collector keeps this
-#     workflow's pull cursor), /triage and /issues/notify (which links a filed
+#     workflow's pull cursor), /triage, /issues/summaries and /issues/summary
+#     (the summary comment kept on each issue) and /issues/notify (which links a filed
 #     issue to its reports on the dashboard at once). It exists only here and in the Worker,
 #     never in Bookclerk builds.
 #
@@ -199,3 +200,18 @@ jobs:
             --data-binary @/tmp/diagnostics-cursor.json \
             "${BASE}/report/cursor"
           echo
+
+      - name: Update issue summary comments
+        # Every issue whose figures changed (new reports, a member's attach or
+        # detach on the dashboard) gets its one summary comment edited in
+        # place, whether or not this run pulled anything.
+        if: ${{ always() && steps.collector.outcome == 'success' }}
+        env:
+          COLLECTOR_BASE_URL: ${{ steps.collector.outputs.base }}
+          REPORT_API_KEY: ${{ secrets.DIAGNOSTICS_REPORT_API_KEY }}
+          # The script edits the summary comment this token's bot account
+          # wrote; a different token writes as another account and starts a
+          # new comment.
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: tools/diagnostics-collector/scripts/update-summaries.sh
