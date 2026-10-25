@@ -221,7 +221,7 @@ class ScenarioTests(unittest.TestCase):
         argv = {c.label: c for _, c in planned_commands(art, "site_audit", CTX)}
         build = argv["npm run build (tools/site)"]
         self.assertEqual(build.env["SITE_COMMIT"], art["checkout_sha"])
-        self.assertEqual(argv["Lighthouse + axe-core (tools/site/audit)"].argv[:2], ["node", "audit.mjs"])
+        self.assertEqual(argv["Lighthouse + axe-core (tools/site/audit)"].argv[:2], ["node", "audit.ts"])
 
     def test_site_test_type_checks_before_testing(self) -> None:
         art = artifact(plan("tools/site/worker.ts"))

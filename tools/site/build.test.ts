@@ -128,11 +128,11 @@ test("render fails on unknown names instead of leaving holes", () => {
 });
 
 test("repository links follow the docs' release tag", () => {
-  assert.match(templateContext(readState(PRE)).values["blobBase"] ?? "", /\/blob\/[0-9a-f]{7,40}\/$/);
-  assert.match(templateContext(readState(REL)).values["blobBase"] ?? "", /\/blob\/v0\.1\.0\/$/);
+  assert.match(templateContext(readState(PRE)).values.blobBase, /\/blob\/[0-9a-f]{7,40}\/$/);
+  assert.match(templateContext(readState(REL)).values.blobBase, /\/blob\/v0\.1\.0\/$/);
   const unpublished = templateContext(readState({ ...REL, SITE_DOCS_VERSIONS: "" }));
-  assert.match(unpublished.values["blobBase"] ?? "", /\/blob\/[0-9a-f]{7,40}\/$/);
-  assert.equal(unpublished.values["docsVersion"], "Development (main)");
+  assert.match(unpublished.values.blobBase, /\/blob\/[0-9a-f]{7,40}\/$/);
+  assert.equal(unpublished.values.docsVersion, "Development (main)");
 });
 
 test("inlineLogo keeps the wordmark recolorable and drops editor attributes", () => {

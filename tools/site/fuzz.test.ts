@@ -104,7 +104,7 @@ function oracleQvalue(text: string): number {
  * @returns The expected choice.
  */
 function oracleEncoding(header: string): Encoding | null {
-  const weights = new Map<string, number>();
+  const weights: Record<string, number> = Object.create(null);
   for (const member of header.split(",")) {
     const [name = "", ...params] = member.split(";");
     const coding = name.trim().toLowerCase();
@@ -112,9 +112,9 @@ function oracleEncoding(header: string): Encoding | null {
     const qs = params.filter((p) => (p.split("=")[0] ?? "").trim().toLowerCase() === "q");
     const last = qs.at(-1);
     const weight = last === undefined ? 1 : last.includes("=") ? oracleQvalue(last.slice(last.indexOf("=") + 1).trim()) : 0;
-    weights.set(coding, Math.max(weights.get(coding) ?? 0, weight));
+    weights[coding] = Math.max(weights[coding] ?? 0, weight);
   }
-  const of = (coding: string): number => weights.get(coding) ?? weights.get("*") ?? 0;
+  const of = (coding: string): number => (coding in weights ? (weights[coding] ?? 0) : (weights["*"] ?? 0));
   const br = of("br");
   const gzip = of("gzip");
   if (br === 0 && gzip === 0) return null;

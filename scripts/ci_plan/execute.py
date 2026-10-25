@@ -551,10 +551,11 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             Command("npm ci (tools/site)", ["npm", "ci"], cwd=str(site)),
             Command("npm run build (tools/site)", ["npm", "run", "build"], cwd=str(site), env={"SITE_COMMIT": commit}),
             Command("npm ci (tools/site/audit)", ["npm", "ci"], cwd=str(site / "audit")),
+            Command("tsc (tools/site/audit)", ["npm", "run", "typecheck"], cwd=str(site / "audit")),
             Command("npm test (tools/site/audit)", ["npm", "test"], cwd=str(site / "audit")),
             Command(
                 "Lighthouse + axe-core (tools/site/audit)",
-                ["node", "audit.mjs", "--out", str(ctx.tmp / "site-audit")],
+                ["node", "audit.ts", "--out", str(ctx.tmp / "site-audit")],
                 cwd=str(site / "audit"),
             ),
         ]

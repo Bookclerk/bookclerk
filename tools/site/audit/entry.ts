@@ -1,5 +1,5 @@
-// Worker entry point for the site audit (audit.mjs). It is entry.ts with one
-// change: docs are read from a local server that audit.mjs runs over this
+// Worker entry point for the site audit (audit.ts). It is entry.ts with one
+// change: docs are read from a local server that audit.ts runs over this
 // checkout's docs/, instead of from the docs repository, so the audit needs
 // no network and covers the docs as this commit has them. Never deployed.
 
@@ -9,7 +9,7 @@ import type { DocsFetch, Env } from "../worker.ts";
 
 /** Bindings of the audit Worker. */
 interface AuditEnv extends Env {
-  /** Origin of audit.mjs's local docs server. */
+  /** Origin of audit.ts's local docs server. */
   AUDIT_DOCS_ORIGIN: string;
 }
 
@@ -18,7 +18,7 @@ export default {
    * Handles one request.
    *
    * @param request - The incoming request.
-   * @param env - Bindings: the static assets and the origin of audit.mjs's
+   * @param env - Bindings: the static assets and the origin of audit.ts's
    *   local docs server.
    * @returns The response.
    */

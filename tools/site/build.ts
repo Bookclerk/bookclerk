@@ -65,13 +65,81 @@ export interface ReleaseState {
   docsTags: string[];
 }
 
-/** What templates can read: `{{name}}` values and `{{#name}}` flags. */
-export interface TemplateContext {
+/**
+ * What templates can read: `{{name}}` values and `{{#name}}` flags.
+ *
+ * @typeParam V - The values; SiteValues for the site-wide context.
+ * @typeParam F - The flags; SiteFlags for the site-wide context.
+ */
+export interface TemplateContext<V extends Readonly<Record<string, string>> = Readonly<Record<string, string>>, F extends Readonly<Record<string, boolean>> = Readonly<Record<string, boolean>>> {
   /** Values that fill `{{name}}` holes, unescaped. */
-  values: Record<string, string>;
+  values: V;
   /** Flags that drive `{{#name}}` and `{{^name}}` sections. */
-  flags: Record<string, boolean>;
+  flags: F;
 }
+
+/**
+ * The values every page's template can read (see templateContext). A type
+ * alias rather than an interface, so it stays assignable to the plain record
+ * render() takes.
+ */
+export type SiteValues = {
+  /** The site's origin. */
+  origin: string;
+  /** Absolute URL of the link-preview image. */
+  socialImage: string;
+  /** GitHub URL of the repository. */
+  repo: string;
+  /** The built commit, abbreviated to seven digits. */
+  commit: string;
+  /** GitHub URL of the built commit. */
+  commitUrl: string;
+  /** The build date for display. */
+  builtOn: string;
+  /** The public contact address. */
+  contactEmail: string;
+  /** URL path of the docs index. */
+  docsUrl: string;
+  /** URL path of the getting-started guide. */
+  gettingStartedUrl: string;
+  /** URL path of the plugins guide. */
+  pluginsUrl: string;
+  /** URL path of the architecture guide. */
+  architectureUrl: string;
+  /** GitHub URL prefix for repository files at the docs' ref, ending in `/blob/<ref>/`. */
+  blobBase: string;
+  /** The default docs version's name. */
+  docsVersion: string;
+  /** GitHub URL of the releases page. */
+  releasesUrl: string;
+  /** The newest release tag, or empty before the first release. */
+  releaseTag: string;
+  /** That release's date for display, or empty. */
+  releaseDate: string;
+  /** GitHub URL of that release, or empty. */
+  releaseUrl: string;
+  /** The hosted demo's origin, or empty when there is none. */
+  demoUrl: string;
+};
+
+/** The flags every page's template can read (see templateContext). */
+export type SiteFlags = {
+  /** No release yet. */
+  prerelease: boolean;
+  /** At least one release. */
+  released: boolean;
+  /** The deployment has a hosted demo. */
+  demo: boolean;
+  /** A demo and no release: the demo is the main way to try Bookclerk. */
+  demolead: boolean;
+  /** A demo and a release: the demo follows the download. */
+  demofollow: boolean;
+  /** No demo and no release. */
+  previewlead: boolean;
+};
+
+/** The site-wide template context. */
+export type SiteContext = TemplateContext<SiteValues, SiteFlags>;
 
 /** One page rendered from src/ (see PAGES). */
 export interface Page {
@@ -287,7 +355,7 @@ export function docsVersions(state: ReleaseState): DocsVersion[] {
  * @param state - Validated release state.
  * @returns `values` fill `{{name}}` holes; `flags` drive `{{#name}}` sections.
  */
-export function templateContext(state: ReleaseState): TemplateContext {
+export function templateContext(state: ReleaseState): SiteContext {
   const short = state.commit.slice(0, 7);
   // Source links follow the commit the docs came from, so line anchors and
   // moved files stay right until the next deploy.
@@ -408,7 +476,7 @@ const JSONLD_MARKER = "<!--jsonld-->";
  * @returns The context for that page.
  */
 function pageContext(
-  context: TemplateContext,
+  context: SiteContext,
   page: Omit<Page, "file"> & { type?: string },
   extra: Readonly<Record<string, string>> = {},
 ): TemplateContext {
@@ -418,7 +486,7 @@ function pageContext(
       ...extra,
       pageTitle: page.title,
       pageDescription: page.description,
-      pageUrl: (context.values["origin"] ?? "") + page.path,
+      pageUrl: context.values.origin + page.path,
       pageType: page.type ?? "website",
       markdownUrl: page.markdown ?? "",
     },
@@ -489,8 +557,8 @@ export function homeFacts(html: string): HomeFacts {
  * @returns A JSON-LD `@graph` with the WebSite, the organization
  *   behind it, the SoftwareApplication, its source code and the FAQ.
  */
-function homeJsonLd(context: TemplateContext, facts: HomeFacts): object {
-  const { origin = "", releaseTag = "", socialImage = "", contactEmail = "" } = context.values;
+function homeJsonLd(context: SiteContext, facts: HomeFacts): object {
+  const { origin, releaseTag, socialImage, contactEmail } = context.values;
   const organization = `${origin}/#organization`;
   return {
     "@context": "https://schema.org",
@@ -568,7 +636,7 @@ function homeJsonLd(context: TemplateContext, facts: HomeFacts): object {
  *   does not fill, or lacks one it does.
  */
 export function buildDocsShell(
-  context: TemplateContext,
+  context: SiteContext,
   partials: Readonly<Record<string, string>>,
   rendered: RenderedDocs,
   versions: DocsVersion[],
@@ -592,7 +660,7 @@ export function buildDocsShell(
   for (const marker of SHELL_MARKERS) {
     if (html.split(`<!--${marker}-->`).length !== 2) throw new Error(`docs shell needs exactly one <!--${marker}-->`);
   }
-  const shell = { html, origin: context.values["origin"] ?? "", repository: REPOSITORY_URL, versions, nav: rendered.nav };
+  const shell = { html, origin: context.values.origin, repository: REPOSITORY_URL, versions, nav: rendered.nav };
   const id = createHash("sha256").update(JSON.stringify(shell)).digest("hex").slice(0, 16);
   return { id, ...shell };
 }
@@ -616,10 +684,10 @@ function markdownLinkText(text: string): string {
  * @param facts - What the home page shows, so llms.txt states the same facts in the same words.
  * @param outDir - Output directory.
  */
-function writeLlmsTxt(context: TemplateContext, rendered: RenderedDocs, facts: HomeFacts, outDir: string): void {
-  const { origin = "", docsVersion = "", repo = "" } = context.values;
+function writeLlmsTxt(context: SiteContext, rendered: RenderedDocs, facts: HomeFacts, outDir: string): void {
+  const { origin, docsVersion, repo } = context.values;
   const byKey = new Map(rendered.docs.map((d) => [d.key, d]));
-  const status = context.flags["prerelease"]
+  const status = context.flags.prerelease
     ? "Bookclerk has not had a release yet: these docs describe the unstable development version on main."
     : `These docs describe Bookclerk ${docsVersion}.`;
   const lines = [
@@ -630,9 +698,9 @@ function writeLlmsTxt(context: TemplateContext, rendered: RenderedDocs, facts: H
     `${status} Each doc below is Markdown; the same page as HTML is at the URL without \`.md\`. Source code: ${repo}. Every doc in one file: ${origin}/llms-full.txt. Every page also answers a request with \`Accept: text/markdown\` in Markdown; the home and download pages are at ${origin}/index.md and ${origin}/download.md.`,
     "",
   ];
-  if (context.flags["demo"]) {
+  if (context.flags.demo) {
     lines.push(
-      `Live demo: ${context.values["demoUrl"]} gives a visitor their own private copy of Bookclerk in the browser for 30 minutes, to sign in to their stores, scan their library and search it. It cannot download books, and it signs the stores out and deletes the copy when the demo ends.`,
+      `Live demo: ${context.values.demoUrl} gives a visitor their own private copy of Bookclerk in the browser for 30 minutes, to sign in to their stores, scan their library and search it. It cannot download books, and it signs the stores out and deletes the copy when the demo ends.`,
       "",
     );
   }
@@ -671,8 +739,8 @@ function writeLlmsTxt(context: TemplateContext, rendered: RenderedDocs, facts: H
  * @param paths - URL paths of every indexable page.
  * @param outDir - Output directory.
  */
-function writeCrawlerFiles(context: TemplateContext, paths: readonly string[], outDir: string): void {
-  const { origin = "" } = context.values;
+function writeCrawlerFiles(context: SiteContext, paths: readonly string[], outDir: string): void {
+  const { origin } = context.values;
   const urls = paths.map((p) => `  <url><loc>${escapeHtml(origin + p)}</loc></url>`).join("\n");
   writeFileSync(
     join(outDir, "sitemap.xml"),
@@ -716,7 +784,7 @@ export function build(env: BuildEnv, outDir: string, shellFile: string = DOCS_SH
     }
     if (page.indexable) indexable.push(page.path);
   }
-  const rendered = renderDocs(join(REPO_ROOT, "docs"), context.values["blobBase"] ?? "", GENERATED_TITLES);
+  const rendered = renderDocs(join(REPO_ROOT, "docs"), context.values.blobBase, GENERATED_TITLES);
   indexable.push(docUrl("README"), ...rendered.nav.flatMap((g) => g.pages.map((p) => docUrl(p.key))));
   mkdirSync(dirname(shellFile), { recursive: true });
   writeFileSync(shellFile, JSON.stringify(buildDocsShell(context, partials, rendered, docsVersions(state))));

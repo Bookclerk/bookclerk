@@ -1,9 +1,9 @@
 {
   // Type checking only (`npm run typecheck`): wrangler bundles the Worker
   // from its .ts sources and Node runs the build and the tests by stripping
-  // the types, so nothing is emitted. One config covers both: the Worker
-  // files see the Workers runtime types and the build and tests also see
-  // Node's.
+  // the types, so nothing is emitted. This config checks every module with
+  // both the Workers runtime types and Node's; tsconfig.worker.json checks
+  // the Worker's sources again without Node's.
   "compilerOptions": {
     "target": "ES2023",
     "lib": ["ES2023"],

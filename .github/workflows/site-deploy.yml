@@ -170,6 +170,11 @@ jobs:
           rm -rf ../../docs
           git checkout "refs/tags/${TAG}" -- ../../docs
 
+      # Wrangler bundles the Worker without checking its types, so a deploy
+      # of a commit CI did not test still has to pass tsc.
+      - name: Type-check the site
+        run: npm run typecheck
+
       # After the docs swap, so the link check covers the docs listed.
       - name: Test the site generator
         run: npm test
