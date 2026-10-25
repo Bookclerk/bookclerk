@@ -570,6 +570,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         demo = str(ctx.workspace / "tools" / "demo")
         return [
             Command("npm ci (tools/demo)", ["npm", "ci"], cwd=demo),
+            Command("tsc (tools/demo)", ["npm", "run", "typecheck"], cwd=demo),
             Command("npm test (tools/demo)", ["npm", "test"], cwd=demo),
         ]
     if check == "ui":

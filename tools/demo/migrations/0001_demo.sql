@@ -1,4 +1,4 @@
--- Hosted demo bookkeeping (tools/demo/src/limits.js). Nothing here names a
+-- Hosted demo bookkeeping (tools/demo/src/limits.ts). Nothing here names a
 -- visitor: sessions and rate rows key on HMACs of the session cookie and of
 -- the client address salted with the UTC day, so rows cannot be linked to an
 -- address or across days.

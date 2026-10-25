@@ -194,10 +194,15 @@ class ScenarioTests(unittest.TestCase):
         )
 
     def test_demo_only_runs_its_tests(self) -> None:
-        p = plan("tools/demo/src/app.js", "tools/demo/corpus/route/acquire")
+        p = plan("tools/demo/src/app.ts", "tools/demo/corpus/route/acquire")
         self.assertFalse(p.full_suite, p.reasons)
         self.assertEqual(sorted(p.checks), ["demo_test"])
         self.assertEqual({j for j, on in p.jobs.items() if on}, {"site"})
+
+    def test_demo_test_type_checks_before_testing(self) -> None:
+        art = artifact(plan("tools/demo/src/app.ts"))
+        labels = [c.label for _, c in planned_commands(art, "demo_test", CTX)]
+        self.assertEqual(labels, ["npm ci (tools/demo)", "tsc (tools/demo)", "npm test (tools/demo)"])
 
     def test_openapi_change_runs_the_demo_tests(self) -> None:
         p = plan("crates/bookclerkd/openapi.json")

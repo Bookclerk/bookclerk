@@ -27,7 +27,7 @@ fresh database in CI, so a schema change that breaks it fails there.
 1. The launch page (`GET /`) asks for a Turnstile check. `POST /_demo/start`
    verifies it with Siteverify (hostname and action must match), then admits
    the session against the limits below and records it in D1.
-2. The visitor's `DemoSession` Durable Object (`src/session.js`) starts the
+2. The visitor's `DemoSession` Durable Object (`src/session.ts`) starts the
    container with a fresh operator token and `master.key` password, and the
    demo's own origin as bookclerkd's `public_origin` (so bookclerkd's own
    cross-site checks and store sign-in callbacks use it), waits for
@@ -36,8 +36,8 @@ fresh database in CI, so a schema change that breaks it fails there.
    the host's Owner and redeems the Owner's claim ticket. The
    Durable Object then forgets the operator token. The visitor waits on `/_demo/wait`.
 3. `/_demo/enter` hands the browser the portal session cookie. From then on
-   every request goes through the Worker (`src/app.js`), which:
-   - refuses any operation not allowed for the demo (`src/routes.js`) before
+   every request goes through the Worker (`src/app.ts`), which:
+   - refuses any operation not allowed for the demo (`src/routes.ts`) before
      the container sees it: acquire and download, plugin installs and
      settings, users, auth changes, node and cluster routes, among others.
      Every operation in `crates/bookclerkd/openapi.json` has an explicit verdict and a
@@ -94,7 +94,7 @@ the Worker secrets itself:
 
 | Secret | Source |
 | --- | --- |
-| `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET` | The `bookclerk-demo` Turnstile widget, created on the first deploy (`scripts/worker-secrets.mjs`) |
+| `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET` | The `bookclerk-demo` Turnstile widget, created on the first deploy (`scripts/worker-secrets.ts`) |
 | `SESSION_KEY` | Random, generated once; keyed hashes of session tokens and IPs |
 
 With the `DOMAIN` variable set the demo is served on `demo.<DOMAIN>` and the
@@ -109,12 +109,21 @@ needs a Turnstile answer from a person.
 
 ```bash
 npm ci
+npm run typecheck
 npm test
 ```
 
-`test/inputs.fuzz.test.js` replays the seed corpora under `corpus/` and
+The Worker, its deploy script and the tests are strict TypeScript. Wrangler
+bundles the `.ts` sources and Node 22.18 or newer runs the tests and
+`scripts/worker-secrets.ts` by stripping types, so nothing is compiled.
+`npm run typecheck` checks everything with the Workers and Node types
+(`tsconfig.json`) and the Worker's sources again with the Workers types only
+(`tsconfig.worker.json`). The scripts under `public/_demo/` are browser
+scripts the Worker serves, not Worker code, and stay JavaScript.
+
+`test/inputs.fuzz.test.ts` replays the seed corpora under `corpus/` and
 fuzzes every input boundary against independent oracles (see
-[`docs/ci.md`](../../docs/ci.md#fuzzing)). `test/routes.test.js` checks the
+[`docs/ci.md`](../../docs/ci.md#fuzzing)). `test/routes.test.ts` checks the
 route table against the OpenAPI document. CI runs these as `demo_test`.
 
 `package.json` overrides `undici` (a development dependency through

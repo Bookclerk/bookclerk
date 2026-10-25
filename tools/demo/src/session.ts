@@ -8,8 +8,9 @@
 // master.key and every token with it.
 
 import { Container } from "@cloudflare/containers";
-import { finish } from "./limits.js";
-import { enableStorefronts, randomHex, signInVisitor, signOutStores, waitForHealth } from "./lifecycle.js";
+import type { Env } from "./env.ts";
+import { finish } from "./limits.ts";
+import { type ContainerCall, enableStorefronts, randomHex, signInVisitor, signOutStores, waitForHealth } from "./lifecycle.ts";
 
 /** bookclerkd's port inside the container (BOOKCLERK_DAEMON_LISTEN in the image). */
 const PORT = 8787;
@@ -26,50 +27,56 @@ const DESTROY_RETRY_SECONDS = 60;
 /** Attempts to destroy a VM before giving up (about an hour). */
 const DESTROY_ATTEMPTS = 60;
 
-/**
- * Where a session is.
- *
- * @typedef {"starting" | "ready" | "ending" | "ended" | "failed"} SessionState
- */
+/** Where a session is. */
+export type SessionState = "starting" | "ready" | "ending" | "ended" | "failed";
 
 /**
  * What the object keeps in its storage. `secrets` is deleted when the
  * session ends.
- *
- * @typedef {object} SessionMeta
- * @property {string} id Session id (the D1 row and this object's name).
- * @property {number} endsAt Hard stop, Unix seconds.
- * @property {SessionState} state Where the session is.
- * @property {string} version Image version shown in the banner.
- * @property {string} origin The demo's origin (`https://host`), which
- *   bookclerkd serves as its `public_origin`.
  */
+export type SessionMeta = {
+  /** Session id (the D1 row and this object's name). */
+  id: string;
+  /** Hard stop, Unix seconds. */
+  endsAt: number;
+  /** Where the session is. */
+  state: SessionState;
+  /** Image version shown in the banner. */
+  version: string;
+  /** The demo's origin (`https://host`), which bookclerkd serves as its `public_origin`. */
+  origin: string;
+};
+
+/** What the object keeps in storage while the session runs. */
+type SessionSecrets = {
+  /** The visitor's bookclerkd portal session. */
+  portalSession: string;
+};
 
 /** A visitor's container and the object that owns it. */
-export class DemoSession extends Container {
+export class DemoSession extends Container<Env> {
   /** bookclerkd's port. */
-  defaultPort = PORT;
+  override defaultPort = PORT;
   /** Idle time before onActivityExpired ends the session. */
-  sleepAfter = "10m";
+  override sleepAfter = "10m";
   /** Store traffic leaves the VM directly; the jail applies each plugin's grants. */
-  enableInternet = true;
+  override enableInternet = true;
 
   /**
    * Reads the session's metadata.
    *
-   * @returns {Promise<SessionMeta | undefined>} The metadata, if opened.
+   * @returns The metadata, if opened.
    */
-  async meta() {
-    return this.ctx.storage.get("meta");
+  async meta(): Promise<SessionMeta | undefined> {
+    return this.ctx.storage.get<SessionMeta>("meta");
   }
 
   /**
    * Updates the session's state.
    *
-   * @param {SessionState} state New state.
-   * @returns {Promise<void>}
+   * @param state - New state.
    */
-  async setState(state) {
+  async setState(state: SessionState): Promise<void> {
     const meta = await this.meta();
     if (meta) await this.ctx.storage.put("meta", { ...meta, state });
   }
@@ -78,11 +85,9 @@ export class DemoSession extends Container {
    * Opens the session: records it and schedules the boot and the hard stop.
    * Calling it again for an open session does nothing.
    *
-   * @param {{id: string, endsAt: number, version: string, origin: string}} params
-   *   Session id, hard stop (Unix seconds), image version and the demo's origin.
-   * @returns {Promise<void>}
+   * @param params - Session id, hard stop (Unix seconds), image version and the demo's origin.
    */
-  async open(params) {
+  async open(params: { id: string; endsAt: number; version: string; origin: string; }): Promise<void> {
     if (await this.meta()) return;
     await this.ctx.storage.put("meta", { ...params, state: "starting" });
     await this.schedule(1, "boot");
@@ -94,18 +99,17 @@ export class DemoSession extends Container {
    * waits on the VM (Start over, the hard stop, the sweep); boot then must
    * not bring it back.
    *
-   * @returns {Promise<boolean>} True while the state is still "starting".
+   * @returns True while the state is still "starting".
    */
-  async stillStarting() {
+  async stillStarting(): Promise<boolean> {
     return (await this.meta())?.state === "starting";
   }
 
   /**
    * Starts the VM and signs the visitor in. Scheduled by {@link open}.
    *
-   * @returns {Promise<void>}
    */
-  async boot() {
+  async boot(): Promise<void> {
     const meta = await this.meta();
     if (!meta || meta.state !== "starting") return;
     const operatorToken = randomHex(32);
@@ -124,7 +128,7 @@ export class DemoSession extends Container {
         },
         cancellationOptions: { portReadyTimeoutMS: BOOT_TIMEOUT_MS },
       });
-      const call = (path, init) => this.containerFetch(`http://container${path}`, init, PORT);
+      const call: ContainerCall = (path, init) => this.containerFetch(`http://container${path}`, init, PORT);
       if (await this.stillStarting()) {
         await waitForHealth(call, { timeoutMs: BOOT_TIMEOUT_MS, intervalMs: 1000 });
       }
@@ -154,9 +158,8 @@ export class DemoSession extends Container {
   /**
    * Where the session is, for the waiting page and the banner.
    *
-   * @returns {Promise<{state: SessionState | "none", endsAt: number, version: string}>}
    */
-  async status() {
+  async status(): Promise<{ state: SessionState | "none"; endsAt: number; version: string; }> {
     const meta = await this.meta();
     if (!meta) return { state: "none", endsAt: 0, version: "" };
     return { state: meta.state, endsAt: meta.endsAt, version: meta.version };
@@ -165,12 +168,12 @@ export class DemoSession extends Container {
   /**
    * The visitor's portal session, handed to their browser once on entry.
    *
-   * @returns {Promise<string | null>} The session when ready; otherwise null.
+   * @returns The session when ready; otherwise null.
    */
-  async portalSession() {
+  async portalSession(): Promise<string | null> {
     const meta = await this.meta();
     if (meta?.state !== "ready") return null;
-    const secrets = await this.ctx.storage.get("secrets");
+    const secrets = await this.ctx.storage.get<SessionSecrets>("secrets");
     return secrets?.portalSession ?? null;
   }
 
@@ -181,13 +184,13 @@ export class DemoSession extends Container {
    * but the visitor's portal session, so bookclerkd authorizes the request
    * as the visitor's Owner account, never as the operator.
    *
-   * @param {Request} request Request from the Worker.
-   * @returns {Promise<Response>} bookclerkd's answer, or 503 when the session
+   * @param request - Request from the Worker.
+   * @returns bookclerkd's answer, or 503 when the session
    *   is not running.
    */
-  async fetch(request) {
+  override async fetch(request: Request): Promise<Response> {
     const meta = await this.meta();
-    const secrets = meta?.state === "ready" ? await this.ctx.storage.get("secrets") : undefined;
+    const secrets = meta?.state === "ready" ? await this.ctx.storage.get<SessionSecrets>("secrets") : undefined;
     if (!secrets) {
       // The Worker turns this into the waiting page or the ended page.
       return Response.json(
@@ -201,11 +204,11 @@ export class DemoSession extends Container {
   /**
    * Ends the session: signs store accounts out, destroys the VM, records it.
    *
-   * @param {string} reason Why: visitor, idle, time or sweep.
-   * @returns {Promise<{revoked: number, failed: number}>} Accounts signed out
+   * @param reason - Why: visitor, idle, time or sweep.
+   * @returns Accounts signed out
    *   and failed sign-outs (zeros when it had already ended).
    */
-  async end(reason) {
+  async end(reason: string): Promise<{ revoked: number; failed: number; }> {
     const meta = await this.meta();
     if (!meta || meta.state === "ending" || meta.state === "ended" || meta.state === "failed") {
       return { revoked: 0, failed: 0 };
@@ -213,9 +216,9 @@ export class DemoSession extends Container {
     const wasReady = meta.state === "ready";
     await this.setState("ending");
     let result = { revoked: 0, failed: 0 };
-    const secrets = await this.ctx.storage.get("secrets");
+    const secrets = await this.ctx.storage.get<SessionSecrets>("secrets");
     if (wasReady && secrets) {
-      const call = (path, init) => this.containerFetch(`http://container${path}`, init, PORT);
+      const call: ContainerCall = (path, init) => this.containerFetch(`http://container${path}`, init, PORT);
       result = await signOutStores(call, secrets.portalSession, SIGN_OUT_TIMEOUT_MS, meta.origin);
     }
     await this.close(reason, result);
@@ -225,11 +228,10 @@ export class DemoSession extends Container {
   /**
    * Destroys the VM, forgets the secrets and writes the session's end to D1.
    *
-   * @param {string} reason Why the session ended.
-   * @param {{revoked: number, failed: number}} result Sign-out counts.
-   * @returns {Promise<void>}
+   * @param reason - Why the session ended.
+   * @param result - Sign-out counts.
    */
-  async close(reason, result) {
+  async close(reason: string, result: { revoked: number; failed: number; }): Promise<void> {
     const meta = await this.meta();
     await this.ctx.storage.delete("secrets");
     if (meta && meta.state !== "failed") await this.setState("ended");
@@ -250,10 +252,9 @@ export class DemoSession extends Container {
    * hour, so a platform hiccup cannot leave a visitor's VM (and the tokens
    * on its disk) running after the session ended.
    *
-   * @param {number} attempt Attempts made before this one.
-   * @returns {Promise<void>}
+   * @param attempt - Attempts made before this one.
    */
-  async retryDestroy(attempt) {
+  async retryDestroy(attempt: number): Promise<void> {
     try {
       await this.destroy();
     } catch (err) {
@@ -264,12 +265,12 @@ export class DemoSession extends Container {
   }
 
   /** The hard stop, scheduled by {@link open}. */
-  async expire() {
+  async expire(): Promise<void> {
     await this.end("time");
   }
 
   /** Ten minutes without a request: end the session rather than just sleep. */
-  async onActivityExpired() {
+  override async onActivityExpired(): Promise<void> {
     await this.end("idle");
   }
 
@@ -277,9 +278,8 @@ export class DemoSession extends Container {
    * The VM stopped. When that was not teardown (a crash, or the platform
    * stopping it), the stores cannot be signed out any more; record it.
    *
-   * @returns {Promise<void>}
    */
-  async onStop() {
+  override async onStop(): Promise<void> {
     const meta = await this.meta();
     if (meta && (meta.state === "ready" || meta.state === "starting")) {
       await this.ctx.storage.delete("secrets");

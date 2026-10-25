@@ -1,12 +1,12 @@
 // The demo Worker's request handling, apart from the container class so the
-// tests can run it under Node. worker.js wires it to Cloudflare.
+// tests can run it under Node. worker.ts wires it to Cloudflare.
 //
 // Every visitor request goes through here: Worker endpoints under /_demo/,
 // the launch page for a browser without a session, and otherwise the route
-// check (routes.js) before the request reaches the visitor's own container.
+// check (routes.ts) before the request reaches the visitor's own container.
 
-import { classify } from "./routes.js";
-import { admit, countSignin, finish, limitsFrom, overdue, prune, utcDay } from "./limits.js";
+import { classify } from "./routes.ts";
+import { admit, countSignin, finish, limitsFrom, overdue, prune, utcDay } from "./limits.ts";
 import {
   cookiesForContainer,
   decodeLaunchForm,
@@ -16,8 +16,9 @@ import {
   rewriteSetCookie,
   SESSION_COOKIE,
   siteverifyPassed,
-} from "./inputs.js";
-import { endedPage, htmlResponse, launchPage, REFUSALS, SECURITY_HEADERS, waitPage } from "./pages.js";
+} from "./inputs.ts";
+import type { Env, SessionApi } from "./env.ts";
+import { endedPage, htmlResponse, launchPage, REFUSALS, SECURITY_HEADERS, waitPage } from "./pages.ts";
 
 /** Turnstile's server-side check. */
 const SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
@@ -41,35 +42,35 @@ const SWEEP_GRACE_SECONDS = 120;
  */
 const SWEEP_GIVE_UP_SECONDS = 3600;
 
-/**
- * What the handler needs from outside, injectable for tests.
- *
- * @typedef {object} Deps
- * @property {typeof fetch} fetch Outbound fetch (Siteverify).
- * @property {() => number} now Current time in milliseconds.
- */
+/** What the handler needs from outside, injectable for tests. */
+export type Deps = {
+  /** Outbound fetch (Siteverify): a string URL with options. */
+  fetch: (url: string, init: RequestInit) => Promise<Response>;
+  /** Current time in milliseconds. */
+  now: () => number;
+};
 
-/** @type {Deps} */
-const DEFAULT_DEPS = { fetch: (...a) => fetch(...a), now: () => Date.now() };
+const DEFAULT_DEPS: Deps = { fetch: (url, init) => fetch(url, init), now: () => Date.now() };
 
 /** The imported HMAC key, cached per key text (one Worker serves one key). */
-let hmacKey = { text: "", key: /** @type {Promise<CryptoKey> | null} */ (null) };
+let hmacKey: { text: string; key: Promise<CryptoKey> | null } = { text: "", key: null };
 
 /**
  * Lowercase hex HMAC-SHA256.
  *
- * @param {string} key Key text.
- * @param {string} message Message text.
- * @returns {Promise<string>} The MAC in hex.
+ * @param key - Key text.
+ * @param message - Message text.
+ * @returns The MAC in hex.
  */
-async function hmacHex(key, message) {
-  if (hmacKey.key === null || hmacKey.text !== key) {
-    const imported = crypto.subtle.importKey("raw", new TextEncoder().encode(key), { name: "HMAC", hash: "SHA-256" }, false, [
+async function hmacHex(key: string, message: string): Promise<string> {
+  let imported = hmacKey.text === key ? hmacKey.key : null;
+  if (imported === null) {
+    imported = crypto.subtle.importKey("raw", new TextEncoder().encode(key), { name: "HMAC", hash: "SHA-256" }, false, [
       "sign",
     ]);
     hmacKey = { text: key, key: imported };
   }
-  const k = await hmacKey.key;
+  const k = await imported;
   const mac = new Uint8Array(await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(message)));
   return Array.from(mac, (x) => x.toString(16).padStart(2, "0")).join("");
 }
@@ -77,9 +78,9 @@ async function hmacHex(key, message) {
 /**
  * A new session token: 16 random bytes, unpadded base64url.
  *
- * @returns {string} The token.
+ * @returns The token.
  */
-function newToken() {
+function newToken(): string {
   const b = new Uint8Array(16);
   crypto.getRandomValues(b);
   return btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -90,11 +91,11 @@ function newToken() {
  * so knowing an id does not give anyone the cookie, and a guessed cookie
  * names nobody's container.
  *
- * @param {Record<string, any>} env Worker env.
- * @param {string} token Session token.
- * @returns {Promise<string>} The id (hex).
+ * @param env - Worker env.
+ * @param token - Session token.
+ * @returns The id (hex).
  */
-function sessionId(env, token) {
+function sessionId(env: ConfiguredEnv, token: string): Promise<string> {
   return hmacHex(env.SESSION_KEY, `session|${token}`);
 }
 
@@ -102,66 +103,69 @@ function sessionId(env, token) {
  * The address hash for rate limits, salted with the UTC day so rows cannot
  * be linked across days or reversed by trying addresses without the key.
  *
- * @param {Record<string, any>} env Worker env.
- * @param {string} ip Client address.
- * @param {number} nowSeconds Current Unix seconds.
- * @returns {Promise<string>} The hash (hex, 32 characters).
+ * @param env - Worker env.
+ * @param ip - Client address.
+ * @param nowSeconds - Current Unix seconds.
+ * @returns The hash (hex, 32 characters).
  */
-async function ipHash(env, ip, nowSeconds) {
+async function ipHash(env: ConfiguredEnv, ip: string, nowSeconds: number): Promise<string> {
   return (await hmacHex(env.SESSION_KEY, `ip|${utcDay(nowSeconds)}|${ip}`)).slice(0, 32);
 }
 
 /**
  * The visitor's session object.
  *
- * @param {Record<string, any>} env Worker env.
- * @param {string} id Session id.
- * @returns {any} The Durable Object stub.
+ * @param env - Worker env.
+ * @param id - Session id.
+ * @returns The Durable Object stub.
  */
-function sessionStub(env, id) {
+function sessionStub(env: Env, id: string): SessionApi {
   return env.SESSIONS.get(env.SESSIONS.idFromName(id));
 }
+
+/** An env with the session key and both Turnstile keys set. */
+type ConfiguredEnv = Env & { SESSION_KEY: string; TURNSTILE_SITE_KEY: string; TURNSTILE_SECRET: string };
 
 /**
  * Whether the Worker has everything it needs to admit visitors.
  *
- * @param {Record<string, any>} env Worker env.
- * @returns {boolean} True when the session key and Turnstile keys are set.
+ * @param env - Worker env.
+ * @returns True when the session key and Turnstile keys are set.
  */
-function configured(env) {
+function configured(env: Env): env is ConfiguredEnv {
   return Boolean(env.SESSION_KEY && env.TURNSTILE_SITE_KEY && env.TURNSTILE_SECRET);
 }
 
 /**
  * The website to link back to.
  *
- * @param {Record<string, any>} env Worker env.
- * @returns {string} `SITE_URL` when it is an https URL; otherwise empty.
+ * @param env - Worker env.
+ * @returns `SITE_URL` when it is an https URL; otherwise empty.
  */
-function siteUrl(env) {
+function siteUrl(env: Pick<Env, "SITE_URL">): string {
   return typeof env.SITE_URL === "string" && /^https:\/\/[^\s"<>]+$/.test(env.SITE_URL) ? env.SITE_URL : "";
 }
 
 /**
  * A JSON response with the security headers.
  *
- * @param {unknown} body Body.
- * @param {number} status HTTP status.
- * @param {Record<string, string>} [extra] More headers.
- * @returns {Response} The response.
+ * @param body - Body.
+ * @param status - HTTP status.
+ * @param extra - More headers.
+ * @returns The response.
  */
-function json(body, status, extra = {}) {
+function json(body: unknown, status: number, extra: Record<string, string> = {}): Response {
   return Response.json(body, { status, headers: { "Cache-Control": "no-store", ...SECURITY_HEADERS, ...extra } });
 }
 
 /**
  * A redirect, optionally setting cookies.
  *
- * @param {string} location Target path.
- * @param {string[]} [cookies] `Set-Cookie` lines.
- * @returns {Response} 303 See Other.
+ * @param location - Target path.
+ * @param cookies - `Set-Cookie` lines.
+ * @returns 303 See Other.
  */
-function redirect(location, cookies = []) {
+function redirect(location: string, cookies: string[] = []): Response {
   const headers = new Headers({ Location: location, "Cache-Control": "no-store" });
   for (const c of cookies) headers.append("Set-Cookie", c);
   return new Response(null, { status: 303, headers });
@@ -176,10 +180,10 @@ const CLEAR_COOKIES = [
 /**
  * Whether a request is a browser loading a page (rather than the app's API calls).
  *
- * @param {Request} request Request.
- * @returns {boolean} True for a GET that accepts HTML.
+ * @param request - Request.
+ * @returns True for a GET that accepts HTML.
  */
-function isNavigation(request) {
+function isNavigation(request: Request): boolean {
   return request.method === "GET" && (request.headers.get("Accept") ?? "").includes("text/html");
 }
 
@@ -189,11 +193,11 @@ function isNavigation(request) {
  * bookclerkd checks `Origin` again against its `public_origin`, which is
  * this origin.
  *
- * @param {Request} request Request.
- * @param {URL} url The request's URL.
- * @returns {boolean} True when `Origin` (or, without it, `Referer`) is this origin.
+ * @param request - Request.
+ * @param url - The request's URL.
+ * @returns True when `Origin` (or, without it, `Referer`) is this origin.
  */
-function sameOrigin(request, url) {
+function sameOrigin(request: Request, url: URL): boolean {
   const origin = request.headers.get("Origin");
   if (origin !== null) return origin === url.origin;
   const referer = request.headers.get("Referer");
@@ -208,14 +212,16 @@ function sameOrigin(request, url) {
 /**
  * Reads a body up to `max` bytes, without buffering more than that.
  *
- * @param {ReadableStream<Uint8Array>} body The body.
- * @param {number} max Most bytes to hold.
- * @returns {Promise<{chunks: Uint8Array[], size: number, done: boolean,
- *   reader: ReadableStreamDefaultReader<Uint8Array>}>} The chunks read, their
+ * @param body - The body.
+ * @param max - Most bytes to hold.
+ * @returns The chunks read, their
  *   total size, whether the body ended within `max` (otherwise `chunks` holds
  *   just over `max` bytes and `reader` the rest).
  */
-async function readCapped(body, max) {
+async function readCapped(body: ReadableStream<Uint8Array>, max: number): Promise<{
+  chunks: Uint8Array[]; size: number; done: boolean;
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+}> {
   const reader = body.getReader();
   const chunks = [];
   let size = 0;
@@ -231,10 +237,10 @@ async function readCapped(body, max) {
 /**
  * Joins chunks into one UTF-8 string.
  *
- * @param {Uint8Array[]} chunks The chunks.
- * @returns {string} The text.
+ * @param chunks - The chunks.
+ * @returns The text.
  */
-function decodeChunks(chunks) {
+function decodeChunks(chunks: Uint8Array[]): string {
   const decoder = new TextDecoder();
   return chunks.map((c) => decoder.decode(c, { stream: true })).join("") + decoder.decode();
 }
@@ -242,10 +248,10 @@ function decodeChunks(chunks) {
 /**
  * Reads the Turnstile token from the launch form.
  *
- * @param {Request} request The form POST.
- * @returns {Promise<string | null>} The token, or null when absent or oversized.
+ * @param request - The form POST.
+ * @returns The token, or null when absent or oversized.
  */
-async function turnstileToken(request) {
+async function turnstileToken(request: Request): Promise<string | null> {
   const type = request.headers.get("Content-Type") ?? "";
   if (!type.startsWith("application/x-www-form-urlencoded") || !request.body) return null;
   const read = await readCapped(request.body, MAX_FORM_BYTES);
@@ -265,16 +271,16 @@ async function turnstileToken(request) {
 /**
  * `POST /_demo/start`: checks Turnstile and the limits, then opens a session.
  *
- * @param {Request} request The launch form POST.
- * @param {URL} url Its URL.
- * @param {Record<string, any>} env Worker env.
- * @param {Deps} deps Outside dependencies.
- * @returns {Promise<Response>} A redirect to the waiting page, or the launch
+ * @param request - The launch form POST.
+ * @param url - Its URL.
+ * @param env - Worker env.
+ * @param deps - Outside dependencies.
+ * @returns A redirect to the waiting page, or the launch
  *   page with the reason the session was refused.
  */
-async function start(request, url, env, deps) {
-  const page = (message, status) =>
-    htmlResponse(launchPage({ siteKey: configured(env) ? env.TURNSTILE_SITE_KEY : null, message, siteUrl: siteUrl(env) }), status);
+async function start(request: Request, url: URL, env: Env, deps: Deps): Promise<Response> {
+  const page = (message: string | undefined, status: number): Response =>
+    htmlResponse(launchPage({ siteKey: configured(env) ? env.TURNSTILE_SITE_KEY : null, siteUrl: siteUrl(env), ...(message === undefined ? {} : { message }) }), status);
   if (!configured(env)) return page(undefined, 503);
   if (!sameOrigin(request, url)) return page(REFUSALS.origin, 403);
   const token = await turnstileToken(request);
@@ -307,10 +313,10 @@ async function start(request, url, env, deps) {
  * Adds the demo banner (time left, Start over, Get Bookclerk) to the web
  * app's HTML document, just before `</head>`.
  *
- * @param {string} html The app's document.
- * @returns {string} The document with the banner's stylesheet and script.
+ * @param html - The app's document.
+ * @returns The document with the banner's stylesheet and script.
  */
-export function withBanner(html) {
+export function withBanner(html: string): string {
   const tags = '<link rel="stylesheet" href="/_demo/banner.css"><script src="/_demo/banner.js" defer></script>';
   const at = html.search(/<\/head\s*>/i);
   return at === -1 ? tags + html : html.slice(0, at) + tags + html.slice(at);
@@ -320,10 +326,10 @@ export function withBanner(html) {
  * Turns the container's answer into the visitor's response: rewritten
  * cookies, security headers, and the banner on HTML documents.
  *
- * @param {Response} upstream The container's response.
- * @returns {Promise<Response>} The response for the browser.
+ * @param upstream - The container's response.
+ * @returns The response for the browser.
  */
-async function forwardResponse(upstream) {
+async function forwardResponse(upstream: Response): Promise<Response> {
   if (upstream.webSocket) return upstream;
   const headers = new Headers(upstream.headers);
   headers.delete("Set-Cookie");
@@ -361,15 +367,15 @@ async function forwardResponse(upstream) {
 /**
  * Sends a visitor's request to their container, after the route check.
  *
- * @param {Request} request The visitor's request.
- * @param {URL} url Its URL.
- * @param {Record<string, any>} env Worker env.
- * @param {Deps} deps Outside dependencies.
- * @param {string} id Session id.
- * @returns {Promise<Response>} The container's answer, a refusal, or the
+ * @param request - The visitor's request.
+ * @param url - Its URL.
+ * @param env - Worker env.
+ * @param deps - Outside dependencies.
+ * @param id - Session id.
+ * @returns The container's answer, a refusal, or the
  *   page for a session that is not running.
  */
-async function proxy(request, url, env, deps, id) {
+async function proxy(request: Request, url: URL, env: ConfiguredEnv, deps: Deps, id: string): Promise<Response> {
   const { verdict } = classify(request.method, url.pathname);
   if (verdict === "deny") {
     return json({ error: "This is not available in the Bookclerk demo." }, 403);
@@ -416,12 +422,12 @@ async function proxy(request, url, env, deps, id) {
  * otherwise clear the cookies and say it ended. Only this answer clears the
  * cookies; a 410 from bookclerkd itself (an expired invite link) does not.
  *
- * @param {Request} request The visitor's request.
- * @param {string} state The session's state.
- * @param {Record<string, any>} [env] Worker env, for the website link.
- * @returns {Response} A page for a browser, JSON for the app.
+ * @param request - The visitor's request.
+ * @param state - The session's state.
+ * @param env - Worker env, for the website link.
+ * @returns A page for a browser, JSON for the app.
  */
-function notRunning(request, state, env = {}) {
+function notRunning(request: Request, state: string, env: Pick<Env, "SITE_URL"> = {}): Response {
   if (state === "starting") {
     return isNavigation(request) ? redirect("/_demo/wait") : json({ error: "Your demo is still starting." }, 503);
   }
@@ -435,14 +441,14 @@ function notRunning(request, state, env = {}) {
 /**
  * Handles one request to the demo Worker.
  *
- * @param {Request} request The request.
- * @param {Record<string, any>} env Worker env: `DB` (D1), `SESSIONS` (the
+ * @param request - The request.
+ * @param env - Worker env: `DB` (D1), `SESSIONS` (the
  *   session class), `SESSION_KEY`, `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET`,
  *   `DEMO_VERSION`, `SITE_URL` and the limit vars.
- * @param {Deps} [deps] Outside dependencies.
- * @returns {Promise<Response>} The response.
+ * @param deps - Outside dependencies.
+ * @returns The response.
  */
-export async function handle(request, env, deps = DEFAULT_DEPS) {
+export async function handle(request: Request, env: Env, deps: Deps = DEFAULT_DEPS): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
   if (path === "/_demo/health") {
@@ -452,7 +458,7 @@ export async function handle(request, env, deps = DEFAULT_DEPS) {
     return request.method === "POST" ? start(request, url, env, deps) : redirect("/");
   }
   const token = configured(env) ? readSessionToken(request.headers.get("Cookie")) : null;
-  const id = token ? await sessionId(env, token) : null;
+  const id = token && configured(env) ? await sessionId(env, token) : null;
 
   if (path === "/_demo/wait") {
     return id ? htmlResponse(waitPage()) : redirect("/");
@@ -476,7 +482,8 @@ export async function handle(request, env, deps = DEFAULT_DEPS) {
     return json({ error: "Not found." }, 404);
   }
 
-  if (!id) {
+  // An id implies a configured env; the second test only tells tsc so.
+  if (!id || !configured(env)) {
     if (path === "/" && request.method === "GET") {
       return htmlResponse(
         launchPage({ siteKey: configured(env) ? env.TURNSTILE_SITE_KEY : null, siteUrl: siteUrl(env) }),
@@ -492,11 +499,11 @@ export async function handle(request, env, deps = DEFAULT_DEPS) {
  * The five-minute sweep: ends sessions still marked live past their hard
  * stop (their own timer did not fire), and prunes old rows.
  *
- * @param {Record<string, any>} env Worker env.
- * @param {Deps} [deps] Outside dependencies.
- * @returns {Promise<number>} Sessions the sweep asked to end.
+ * @param env - Worker env.
+ * @param deps - Outside dependencies.
+ * @returns Sessions the sweep asked to end.
  */
-export async function sweep(env, deps = DEFAULT_DEPS) {
+export async function sweep(env: Env, deps: Deps = DEFAULT_DEPS): Promise<number> {
   const now = Math.floor(deps.now() / 1000);
   const rows = await overdue(env.DB, now, SWEEP_GRACE_SECONDS, SWEEP_BATCH);
   for (const { id, endsAt } of rows) {

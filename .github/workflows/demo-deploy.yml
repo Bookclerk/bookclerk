@@ -17,7 +17,7 @@
 #                          docs/ci.md#cloudflare-worker-deploys
 #   CLOUDFLARE_ACCOUNT_ID
 # Worker secrets are made here, never stored in GitHub: the Turnstile widget
-# "bookclerk-demo" and its keys (scripts/worker-secrets.mjs), and SESSION_KEY,
+# "bookclerk-demo" and its keys (scripts/worker-secrets.ts), and SESSION_KEY,
 # generated once and kept.
 #
 # Where the Worker is served:
@@ -154,6 +154,11 @@ jobs:
       - name: Install dependencies
         if: steps.gate.outputs.deploy == 'true'
         run: npm ci
+      # Wrangler bundles the Worker without checking its types, so a deploy
+      # of a commit CI did not test still has to pass tsc.
+      - name: Type-check the Worker
+        if: steps.gate.outputs.deploy == 'true'
+        run: npm run typecheck
 
       - name: Route the Worker
         id: route
@@ -249,7 +254,7 @@ jobs:
             NEED_SESSION_KEY=true
           fi
           export NEED_SESSION_KEY
-          node scripts/worker-secrets.mjs | npx wrangler secret bulk
+          node scripts/worker-secrets.ts | npx wrangler secret bulk
 
       # No visitor session here: Turnstile cannot be passed from CI. Checks the
       # Worker is configured, serves the launch page, and refuses the API

@@ -2,7 +2,7 @@
 // value appears on a command line or in a log. Run by
 // .github/workflows/demo-deploy.yml after each deploy:
 //
-//   node scripts/worker-secrets.mjs | npx wrangler secret bulk
+//   node scripts/worker-secrets.ts | npx wrangler secret bulk
 //
 // Environment:
 //   CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID  the deploy credentials (the
@@ -32,31 +32,44 @@ const HOST_RE = /^[\x21-\x7e]{1,253}$/;
 /** Widget modes Cloudflare accepts on update. */
 const MODES = ["managed", "non-interactive", "invisible"];
 
+/** The one kind of fetch the script makes: a string URL with options. */
+export type FetchFn = (url: string, init: RequestInit) => Promise<Response>;
+
 /** Most hostnames kept on the widget (Cloudflare allows ten). */
 export const MAX_DOMAINS = 10;
 
 /**
+ * Whether a parsed JSON value is an object (not null, not an array).
+ *
+ * @param value - Parsed JSON.
+ * @returns True for a plain JSON object.
+ */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
  * Reads a Cloudflare API answer. Sans-IO, so the fuzz test drives it.
  *
- * @param {number} status HTTP status.
- * @param {string} text Response body.
- * @returns {{ok: true, result: unknown} | {ok: false, codes: string}} The
+ * @param status - HTTP status.
+ * @param text - Response body.
+ * @returns The
  *   `result` when the status is 2xx and `success` is true; otherwise the
  *   numeric error codes (at most ten, comma-separated) for the log.
  */
-export function decodeApiResponse(status, text) {
-  let body;
+export function decodeApiResponse(status: number, text: string): { ok: true; result: unknown; } | { ok: false; codes: string; } {
+  let body: unknown;
   try {
     body = text.length <= MAX_RESPONSE_CHARS ? JSON.parse(text) : undefined;
   } catch {
     body = undefined;
   }
-  const obj = body !== null && typeof body === "object" && !Array.isArray(body) ? body : {};
+  const obj = isRecord(body) ? body : {};
   if (status >= 200 && status < 300 && obj.success === true) return { ok: true, result: obj.result };
   const codes = Array.isArray(obj.errors)
     ? obj.errors
-        .map((e) => (e !== null && typeof e === "object" ? e.code : undefined))
-        .filter((c) => Number.isSafeInteger(c))
+        .map((e: unknown) => (isRecord(e) ? e.code : undefined))
+        .filter((c: unknown) => Number.isSafeInteger(c))
         .slice(0, 10)
         .join(",")
     : "";
@@ -66,22 +79,22 @@ export function decodeApiResponse(status, text) {
 /**
  * Picks the demo's widget out of a widget list `result`.
  *
- * @param {unknown} result The list call's `result`.
- * @returns {{sitekey: string, domains: string[], mode: string} | null} The
+ * @param result - The list call's `result`.
+ * @returns The
  *   first widget named {@link WIDGET_NAME} with a well-formed site key; its
  *   well-formed hostnames (deduplicated, at most {@link MAX_DOMAINS}) and its
  *   mode (`managed` unless a known one). Null when there is none.
  */
-export function findWidget(result) {
+export function findWidget(result: unknown): { sitekey: string; domains: string[]; mode: string; } | null {
   if (!Array.isArray(result)) return null;
   for (const w of result) {
-    if (w === null || typeof w !== "object" || Array.isArray(w)) continue;
+    if (!isRecord(w)) continue;
     if (w.name !== WIDGET_NAME || typeof w.sitekey !== "string" || !KEY_RE.test(w.sitekey)) continue;
-    const domains = [];
-    for (const d of Array.isArray(w.domains) ? w.domains : []) {
+    const domains: string[] = [];
+    for (const d of Array.isArray(w.domains) ? (w.domains as unknown[]) : []) {
       if (typeof d === "string" && HOST_RE.test(d) && !domains.includes(d) && domains.length < MAX_DOMAINS) domains.push(d);
     }
-    return { sitekey: w.sitekey, domains, mode: MODES.includes(w.mode) ? w.mode : "managed" };
+    return { sitekey: w.sitekey, domains, mode: typeof w.mode === "string" && MODES.includes(w.mode) ? w.mode : "managed" };
   }
   return null;
 }
@@ -89,12 +102,12 @@ export function findWidget(result) {
 /**
  * Reads a widget's keys out of a create or get `result`.
  *
- * @param {unknown} result The call's `result`.
- * @returns {{siteKey: string, secret: string} | null} Both keys when each is
+ * @param result - The call's `result`.
+ * @returns Both keys when each is
  *   well-formed; otherwise null.
  */
-export function widgetKeys(result) {
-  if (result === null || typeof result !== "object" || Array.isArray(result)) return null;
+export function widgetKeys(result: unknown): { siteKey: string; secret: string; } | null {
+  if (!isRecord(result)) return null;
   const { sitekey, secret } = result;
   if (typeof sitekey !== "string" || typeof secret !== "string" || !KEY_RE.test(sitekey) || !KEY_RE.test(secret)) {
     return null;
@@ -105,15 +118,15 @@ export function widgetKeys(result) {
 /**
  * Calls the Cloudflare API and returns `result`.
  *
- * @param {typeof fetch} fetchFn Fetch.
- * @param {string} token API token.
- * @param {string} path Path under /client/v4.
- * @param {RequestInit} [init] Method and body.
- * @returns {Promise<unknown>} The response's `result`.
+ * @param fetchFn - Fetch.
+ * @param token - API token.
+ * @param path - Path under /client/v4.
+ * @param init - Method and body.
+ * @returns The response's `result`.
  * @throws {Error} When the call fails; the message names the path and
  *   Cloudflare's error codes, never a secret.
  */
-async function api(fetchFn, token, path, init = {}) {
+async function api(fetchFn: FetchFn, token: string, path: string, init: RequestInit = {}): Promise<unknown> {
   const res = await fetchFn(`https://api.cloudflare.com/client/v4${path}`, {
     ...init,
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -129,13 +142,12 @@ async function api(fetchFn, token, path, init = {}) {
  * Finds or creates the demo's Turnstile widget, allows `host` on it, and
  * returns its keys.
  *
- * @param {{fetchFn: typeof fetch, token: string, account: string, host: string}} p
- *   Fetch, API token, account id and the demo's hostname.
- * @returns {Promise<{siteKey: string, secret: string}>} The widget's keys.
+ * @param p - Fetch, API token, account id and the demo's hostname.
+ * @returns The widget's keys.
  * @throws {Error} When the API refuses, answers without keys, or the widget
  *   already has the most hostnames it can take.
  */
-export async function turnstileKeys({ fetchFn, token, account, host }) {
+export async function turnstileKeys({ fetchFn, token, account, host }: { fetchFn: FetchFn; token: string; account: string; host: string; }): Promise<{ siteKey: string; secret: string; }> {
   const base = `/accounts/${encodeURIComponent(account)}/challenges/widgets`;
   const found = findWidget(await api(fetchFn, token, `${base}?per_page=100`));
   let result;
@@ -162,9 +174,9 @@ export async function turnstileKeys({ fetchFn, token, account, host }) {
 /**
  * A new session key: 32 random bytes in hex.
  *
- * @returns {string} The key.
+ * @returns The key.
  */
-export function newSessionKey() {
+export function newSessionKey(): string {
   const b = new Uint8Array(32);
   crypto.getRandomValues(b);
   return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
@@ -173,22 +185,22 @@ export function newSessionKey() {
 /**
  * Builds the secrets object for `wrangler secret bulk`.
  *
- * @param {Record<string, string | undefined>} env Environment (see header).
- * @param {typeof fetch} fetchFn Fetch.
- * @returns {Promise<Record<string, string>>} Secret names and values.
+ * @param env - Environment (see header).
+ * @param fetchFn - Fetch.
+ * @returns Secret names and values.
  * @throws {Error} When a required variable is missing or the API fails.
  */
-export async function workerSecrets(env, fetchFn) {
-  for (const name of ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "DEMO_HOST"]) {
-    if (!env[name]) throw new Error(`${name} is not set`);
-  }
-  const { siteKey, secret } = await turnstileKeys({
-    fetchFn,
-    token: env.CLOUDFLARE_API_TOKEN,
-    account: env.CLOUDFLARE_ACCOUNT_ID,
-    host: env.DEMO_HOST,
-  });
-  const out = { TURNSTILE_SITE_KEY: siteKey, TURNSTILE_SECRET: secret };
+export async function workerSecrets(env: Record<string, string | undefined>, fetchFn: FetchFn): Promise<Record<string, string>> {
+  const required = (name: string): string => {
+    const value = env[name];
+    if (!value) throw new Error(`${name} is not set`);
+    return value;
+  };
+  const token = required("CLOUDFLARE_API_TOKEN");
+  const account = required("CLOUDFLARE_ACCOUNT_ID");
+  const host = required("DEMO_HOST");
+  const { siteKey, secret } = await turnstileKeys({ fetchFn, token, account, host });
+  const out: Record<string, string> = { TURNSTILE_SITE_KEY: siteKey, TURNSTILE_SECRET: secret };
   if (env.NEED_SESSION_KEY === "true") out.SESSION_KEY = newSessionKey();
   return out;
 }

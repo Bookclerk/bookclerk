@@ -4,20 +4,21 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { newSessionKey, WIDGET_NAME, workerSecrets } from "../scripts/worker-secrets.mjs";
+import { newSessionKey, WIDGET_NAME, workerSecrets } from "../scripts/worker-secrets.ts";
+import { type Sent, sent } from "../test-support/requests.ts";
 
 const BASE = "https://api.cloudflare.com/client/v4/accounts/acct/challenges/widgets";
 
 /**
  * A scripted Cloudflare API: routes map `METHOD url` to a `result`.
  *
- * @param {Record<string, unknown>} routes Results by `METHOD url`.
+ * @param routes - Results by `METHOD url`.
  */
-function scripted(routes) {
-  const seen = [];
-  const fetchFn = async (url, init = {}) => {
+function scripted(routes: Record<string, unknown>) {
+  const seen: Sent[] = [];
+  const fetchFn = async (url: string, init: RequestInit = {}): Promise<Response> => {
     const key = `${init.method ?? "GET"} ${url}`;
-    seen.push({ key, init });
+    seen.push(sent(key, init));
     if (!(key in routes)) return Response.json({ success: false, errors: [{ code: 10000 }] }, { status: 404 });
     return Response.json({ success: true, result: routes[key] });
   };
@@ -34,7 +35,7 @@ describe("workerSecrets", () => {
       [`POST ${BASE}`]: { name: WIDGET_NAME, ...KEYS },
     });
     assert.deepEqual(await workerSecrets(ENV, fetchFn), { TURNSTILE_SITE_KEY: "0x4AAA", TURNSTILE_SECRET: "0x4BBB" });
-    const body = JSON.parse(seen[1].init.body);
+    const body = JSON.parse(seen[1]!.init.body);
     assert.deepEqual(body, { name: WIDGET_NAME, domains: ["demo.example.test"], mode: "managed" });
     for (const s of seen) assert.equal(s.init.headers.Authorization, "Bearer tok");
   });
@@ -47,8 +48,8 @@ describe("workerSecrets", () => {
     });
     const out = await workerSecrets({ ...ENV, NEED_SESSION_KEY: "true" }, fetchFn);
     assert.equal(out.TURNSTILE_SECRET, "0x4BBB");
-    assert.match(out.SESSION_KEY, /^[0-9a-f]{64}$/);
-    assert.deepEqual(JSON.parse(seen[1].init.body).domains, ["old.example.test", "demo.example.test"]);
+    assert.match(out.SESSION_KEY ?? "", /^[0-9a-f]{64}$/);
+    assert.deepEqual(JSON.parse(seen[1]!.init.body).domains, ["old.example.test", "demo.example.test"]);
   });
 
   it("leaves a widget that already allows the host untouched", async () => {

@@ -266,7 +266,7 @@ when a step matches no test. Name such tests `postgres_*`.
 | `postgres 16/17/18` | An owning package's unit tests are affected (library, db-guest, postgres guest, plugin-host RPC LIKE) | Only the owners' steps, on every supported major |
 | `windows cluster startup + identity` | A `[windows_cluster].paths` input changed, or the full suite | On `windows-latest` only: identity create, restart/binding, and different-cluster rejection, then the full `cluster_secret_startup` target with the sqlite guest, jail, `bookclerk-workerd`, and pinned `workerd` |
 | `small-VPS envelope` | A `[envelope].paths` input changed (harness, seed, search rebuild, library book page, books HTTP handler), or the full suite | On the `ubuntu-latest` VM, release-build the hosts and compile the seed. `docker run --memory=1g --memory-swap=1g --cpus=1` then runs the seed, daemon, and load in an Ubuntu container of the runner's own release (`ubuntu:<VERSION_ID>` from `/etc/os-release`, `ubuntu:24.04` on a non-Ubuntu host), because the hosts link the runner's glibc and libssl. The job uploads `bookclerkd-envelope.log` with the metrics when it fails. `small-vps.sh` reads `memory.max` and `cpu.max` and refuses to record numbers when they are `max` or looser than 1 GiB / one core. It drops build and object file cache and writes `envelope-metrics.json` even when a later step fails. Books routes must return 200, `q=Title` must hit the rebuilt index, and daemon anonymous memory (`RssAnon` when `/proc/<pid>/status` reports it, otherwise `memory.stat` `anon`, or `memory.current` when anon is absent) stays under 256 MiB after idle and during the API windows. `memory.peak` is recorded and not gated: the container cannot reset it, so the lifetime peak includes the seed. One `cpu.max` core means 1 media worker. Latency is recorded and not gated. `available_parallelism` (daemon `logical_cpus`) is recorded separately from the affinity mask |
-| `website + collector Workers` | `tools/site/**` or `assets/brand/**` (site tests and audit), `docs/**` (site tests only), `tools/diagnostics-collector/**` (collector tests), `tools/demo/**` (demo tests), or the full suite | `site_test`: `npm run typecheck` (strict `tsc --noEmit`) and `npm test` in `tools/site` (generator, Worker and the docs link check). `site_audit`: `tsc` on the audit, then Lighthouse and axe-core on the built site (see [Website checks](#website-checks)). `collector_test`: `npm run typecheck` (strict `tsc --noEmit`) and `npm test` in `tools/diagnostics-collector`. `demo_test`: `npm test` in `tools/demo`. No Rust toolchain |
+| `website + collector Workers` | `tools/site/**` or `assets/brand/**` (site tests and audit), `docs/**` (site tests only), `tools/diagnostics-collector/**` (collector tests), `tools/demo/**` (demo tests), or the full suite | `site_test`: `npm run typecheck` (strict `tsc --noEmit`) and `npm test` in `tools/site` (generator, Worker and the docs link check). `site_audit`: `tsc` on the audit, then Lighthouse and axe-core on the built site (see [Website checks](#website-checks)). `collector_test`: `npm run typecheck` (strict `tsc --noEmit`) and `npm test` in `tools/diagnostics-collector`. `demo_test`: `npm run typecheck` (strict `tsc --noEmit`) and `npm test` in `tools/demo`. No Rust toolchain |
 | `CI Gate` | Always | Stable required check (see contract above) |
 
 OSV scanning remains a separate workflow/gate. A green OSV job that applies
@@ -488,15 +488,15 @@ non-Rust tooling (decision 6):
   `npm test`, checking every choice against an independent oracle (RFC 9110
   qvalues, `*` for unlisted codings, Brotli before gzip on a tie, nothing at
   `q=0`).
-- The hosted demo Worker's inputs (`tools/demo/src/routes.js` and
-  `src/inputs.js`): the route check (`classify`), which decides whether a
+- The hosted demo Worker's inputs (`tools/demo/src/routes.ts` and
+  `src/inputs.ts`): the route check (`classify`), which decides whether a
   visitor's request may reach their container; the visitor's cookies
   (`readSessionToken`, `cookiesForContainer`); the container's `Set-Cookie`
   lines (`rewriteSetCookie`, `portalSessionFrom`) and JSON answers
   (`decodeConnections`, `decodeClaimTicket`, `decodeInstances`); the launch
   form (`decodeLaunchForm`); Turnstile's verdict (`siteverifyPassed`); and,
-  at deploy time, the Cloudflare API answers `scripts/worker-secrets.mjs`
-  reads (`decodeApiResponse`, `findWidget`, `widgetKeys`). `tools/demo/test/inputs.fuzz.test.js` replays their
+  at deploy time, the Cloudflare API answers `scripts/worker-secrets.ts`
+  reads (`decodeApiResponse`, `findWidget`, `widgetKeys`). `tools/demo/test/inputs.fuzz.test.ts` replays their
   seed corpora (`tools/demo/corpus/route/`, `cookie/`, `set_cookie/`,
   `connections/`, `siteverify/`, `claim_ticket/`, `launch_form/`, `plugin_instances/`,
   `cf_api/`) and runs seeded mutation
@@ -1153,7 +1153,7 @@ the workflows deploy:
   pushes the image and updates the container application; and
   **Account → Turnstile → Edit**, since every deploy finds or creates the
   `bookclerk-demo` widget, keeps its hostnames current and reads its keys
-  (`tools/demo/scripts/worker-secrets.mjs`).
+  (`tools/demo/scripts/worker-secrets.ts`).
 
 Editor cannot create a Worker; creating one takes the **Admin** role on the
 Workers product. So the first deploy of a new Worker needs one of these:
