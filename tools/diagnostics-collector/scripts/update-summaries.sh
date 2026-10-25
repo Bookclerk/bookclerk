@@ -66,13 +66,14 @@ summary_done() {
         "${BASE%/}/issues/summary"
 }
 
-# A write GitHub refuses for good (a locked issue answers 403, a deleted or
-# transferred one 404 or 410) is acknowledged to the collector so the issue
-# stops taking a summary slot every run; any other failure is retried next
-# run and fails this step. Usage: settle <issue> <verb>; returns 0 when the
+# A write GitHub refuses for good (a locked issue answers 403 saying so, a
+# deleted or transferred one 404 or 410) is acknowledged to the collector so
+# the issue stops taking a summary slot every run; any other failure (a rate
+# limit, which GitHub answers with 403 or 429, an outage) is retried next run
+# and fails this step. Usage: settle <issue> <verb>; returns 0 when the
 # failure was acknowledged.
 settle() {
-  if grep -qE "HTTP (403|404|410)\b" "$WORK_DIR/err"; then
+  if grep -qE "HTTP (404|410)\b" "$WORK_DIR/err" || { grep -qE "HTTP 403\b" "$WORK_DIR/err" && grep -qi "locked" "$WORK_DIR/err"; }; then
     echo "::warning::GitHub refuses to ${2} the summary comment on issue #${1} ($(head -c 200 "$WORK_DIR/err")); not retrying until its figures change" >&2
     return 0
   fi
