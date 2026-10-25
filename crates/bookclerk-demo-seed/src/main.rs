@@ -46,10 +46,10 @@ async fn run() -> anyhow::Result<()> {
         .map(|e| e.plugin.plugin_key().to_string())
         .with_context(|| format!("the `{SAMPLE_STORE}` plugin is not enrolled"))?;
     match seed(&host.store, &host.session.cluster_id, &plugin_key).await? {
-        Seeded::Wrote(report) => eprintln!(
-            "bookclerk-demo-seed: added user {} with {} books, {} branch titles and {} wishlist items",
-            report.user_id, report.books, report.branch_titles, report.wishlist
-        ),
+        // No ids or counts: they come from the library and stay out of logs.
+        Seeded::Wrote(_) => {
+            eprintln!("bookclerk-demo-seed: added the sample member, books, branch and wishlist")
+        }
         Seeded::AlreadySeeded => eprintln!("bookclerk-demo-seed: already seeded"),
     }
     Ok(())
