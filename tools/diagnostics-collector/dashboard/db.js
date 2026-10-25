@@ -1001,6 +1001,74 @@ export async function markSummarySent(db, issue, fingerprint, now) {
   return Number(res?.meta?.changes ?? 0) > 0;
 }
 
+/**
+ * How long a summary handed to the ingest run blocks the owner's "Update
+ * GitHub now" press, in milliseconds, when the run never acknowledges it
+ * (a run that failed or was cancelled).
+ */
+export const SUMMARY_HOLD_MS = 10 * 60_000;
+
+/**
+ * How long one "Update GitHub now" press holds an issue, in milliseconds,
+ * should the Worker die before releasing it.
+ */
+const SUMMARY_LOCK_MS = 2 * 60_000;
+
+/**
+ * Hands summaries to the ingest run: leaves out the issues an owner's press
+ * holds at the moment, and stamps the rest as handed out so a press waits
+ * for the run's acknowledgement (`markSummarySent`) or `SUMMARY_HOLD_MS`.
+ *
+ * @template {{issue: number}} T
+ * @param {D1Database} db Database.
+ * @param {T[]} summaries From `issueSummaries`.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {Promise<T[]>} The summaries to render.
+ */
+export async function handOutSummaries(db, summaries, now) {
+  if (summaries.length === 0) return summaries;
+  const locked = new Set((await all(db, "SELECT number FROM issues WHERE summary_lock_until > ?", now)).map((r) => Number(r.number)));
+  const out = summaries.filter((s) => !locked.has(s.issue));
+  if (out.length) {
+    await run(db, `UPDATE issues SET summary_handed_at = ? WHERE number IN (${out.map(() => "?").join(", ")})`, now, ...out.map((s) => s.issue));
+  }
+  return out;
+}
+
+/**
+ * Takes an issue for one "Update GitHub now" press, in one statement: fails
+ * when another press holds it, or the ingest run was handed its summary
+ * within `SUMMARY_HOLD_MS` and has not acknowledged it yet.
+ *
+ * @param {D1Database} db Database.
+ * @param {number} issue Issue number.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {Promise<boolean>} Whether the press holds the issue; release it
+ *   with `releaseSummaryWrite`.
+ */
+export async function claimSummaryWrite(db, issue, now) {
+  const res = await db
+    .prepare(
+      `UPDATE issues SET summary_lock_until = ?
+       WHERE number = ? AND (summary_lock_until IS NULL OR summary_lock_until <= ?)
+         AND (summary_handed_at IS NULL OR summary_handed_at <= COALESCE(summary_sent_at, 0) OR summary_handed_at <= ?)`,
+    )
+    .bind(now + SUMMARY_LOCK_MS, issue, now, now - SUMMARY_HOLD_MS)
+    .run();
+  return Number(res?.meta?.changes ?? 0) > 0;
+}
+
+/**
+ * Releases an issue a press held (`claimSummaryWrite`).
+ *
+ * @param {D1Database} db Database.
+ * @param {number} issue Issue number.
+ * @returns {Promise<void>}
+ */
+export async function releaseSummaryWrite(db, issue) {
+  await run(db, "UPDATE issues SET summary_lock_until = NULL WHERE number = ?", issue);
+}
+
 /** Most versions or platforms the issue page breaks down. */
 const DETAIL_TOP = 8;
 

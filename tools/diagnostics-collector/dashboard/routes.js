@@ -20,6 +20,9 @@ import {
   issuesTrackingSignature,
   issueSummaries,
   markSummarySent,
+  claimSummaryWrite,
+  handOutSummaries,
+  releaseSummaryWrite,
   openIssueOptions,
   SUMMARY_BATCH,
   all,
@@ -132,33 +135,42 @@ function updateFailure(err) {
  */
 async function updateIssueNow(env, cfg, request, issue, now) {
   const db = env.DASHBOARD_DB;
-  const [summary] = await issueSummaries(db, 1, issue);
-  if (!summary) return "GitHub already shows the current figures for this issue.";
-  // Report links point at this deployment: the Worker serves on exactly one
-  // origin (the custom domain, or workers.dev without one), which is the
-  // collector URL the ingest run renders with, so both write the same links.
-  const rendered = renderSummary(summary, dashboardOrigin(new URL(request.url).origin));
-  if (!rendered) return "The summary could not be rendered; the scheduled ingest run will report it.";
-  let result;
-  try {
-    result = await writeSummaryComment(cfg, now, issue, rendered.body);
-  } catch (err) {
-    console.error(`summary comment write failed: ${err instanceof Error ? err.message : String(err)}`);
-    return updateFailure(err);
+  // The ingest run and this press take turns per issue, so neither writes
+  // over the other's comment and then records the other's figures.
+  if (!(await claimSummaryWrite(db, issue, now))) {
+    return "The ingest run (or another owner) is writing this comment now; look again in a few minutes.";
   }
-  await markSummarySent(db, issue, rendered.fingerprint, now);
-  await announceChange(env);
-  switch (result.outcome) {
-    case "updated":
-      return "The summary comment on GitHub was updated.";
-    case "created":
-      return "The summary comment was written to GitHub.";
-    case "refused":
-      return result.reason === "locked"
-        ? "The issue is locked, so GitHub refuses the comment; it is not retried until the figures change."
-        : "GitHub has no such issue any more (deleted or transferred); the comment is not retried until the figures change.";
-    default:
-      return "";
+  try {
+    const [summary] = await issueSummaries(db, 1, issue);
+    if (!summary) return "GitHub already shows the current figures for this issue.";
+    // Report links point at this deployment: the Worker serves on exactly one
+    // origin (the custom domain, or workers.dev without one), which is the
+    // collector URL the ingest run renders with, so both write the same links.
+    const rendered = renderSummary(summary, dashboardOrigin(new URL(request.url).origin));
+    if (!rendered) return "The summary could not be rendered; the scheduled ingest run will report it.";
+    let result;
+    try {
+      result = await writeSummaryComment(cfg, now, issue, rendered.body);
+    } catch (err) {
+      console.error(`summary comment write failed: ${err instanceof Error ? err.message : String(err)}`);
+      return updateFailure(err);
+    }
+    await markSummarySent(db, issue, rendered.fingerprint, now);
+    await announceChange(env);
+    switch (result.outcome) {
+      case "updated":
+        return "The summary comment on GitHub was updated.";
+      case "created":
+        return "The summary comment was written to GitHub.";
+      case "refused":
+        return result.reason === "locked"
+          ? "The issue is locked, so GitHub refuses the comment; it is not retried until the figures change."
+          : "GitHub has no such issue any more (deleted or transferred); the comment is not retried until the figures change.";
+      default:
+        return "";
+    }
+  } finally {
+    await releaseSummaryWrite(db, issue);
   }
 }
 
@@ -689,12 +701,14 @@ export async function dashboardIssueNotify(env, number, now) {
  * whose summary comment is out of date, with the figures to render.
  *
  * @param {Record<string, any>} env Worker bindings.
+ * @param {number} now Unix time in milliseconds.
  * @returns {Promise<Awaited<ReturnType<typeof issueSummaries>> | null>}
  *   Summaries, or null when the dashboard database is not bound.
  */
-export async function dashboardIssueSummaries(env) {
+export async function dashboardIssueSummaries(env, now) {
   if (!env.DASHBOARD_DB) return null;
-  return issueSummaries(metered(env.DASHBOARD_DB), SUMMARY_BATCH);
+  const db = metered(env.DASHBOARD_DB);
+  return handOutSummaries(db, await issueSummaries(db, SUMMARY_BATCH), now);
 }
 
 /**

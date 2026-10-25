@@ -2096,6 +2096,43 @@ describe("issue page and ledger corrections", () => {
     assert.equal((await press(owner, NOW + 9000)).status, 303);
     assert.match(await page(), /comment listing failed: HTTP 404/);
     assert.equal(Number((await first(env.DASHBOARD_DB, "SELECT summary_sent_at AS at FROM issues WHERE number = 400")).at), NOW + 6000);
+    // While the ingest run holds the issue's summary (handed out, not yet
+    // acknowledged) the press waits; the acknowledgement frees it. (The
+    // hand-out and the acknowledgement are stamped with the real clock, so
+    // this comes last.)
+    const KEY = "r".repeat(32);
+    const keyed = makeEnv({ REPORT_API_KEY: KEY });
+    keyed.DASHBOARD_DB = env.DASHBOARD_DB;
+    const handed = await (await worker.fetch(new Request(`${ORIGIN}/issues/summaries`, { headers: { authorization: `Bearer ${KEY}` } }), keyed, makeCtx())).json();
+    const mine = handed.issues.find((i) => i.issue === 400);
+    assert.ok(mine, "the run is handed the pending summary");
+    gh.restore();
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/issues/400/comments", () => Response.json(comments)],
+      ["PATCH https://api.github.com/repos/Bookclerk/bookclerk/issues/comments/", () => Response.json({})],
+    ]);
+    assert.equal((await press(owner, NOW + 9500)).status, 303);
+    assert.match(await page(), /ingest run \(or another owner\) is writing this comment now/);
+    assert.equal(gh.calls.length, 0, "GitHub is not called while the run holds it");
+    const ack = await worker.fetch(
+      new Request(`${ORIGIN}/issues/summary`, { method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: JSON.stringify({ issue: 400, fingerprint: mine.fingerprint }) }),
+      keyed,
+      makeCtx(),
+    );
+    assert.equal(ack.status, 200);
+    await seed(env, "d2b80f13-0000-4000-8000-000000000009", NOW + 9600);
+    await linkBySignature(env.DASHBOARD_DB, ["d2b80f13-0000-4000-8000-000000000009"], NOW + 9600);
+    assert.equal((await press(owner, NOW + 9700)).status, 303);
+    assert.match(await page(), /summary comment on GitHub was updated/);
+    // A press in flight keeps the issue out of the run's hand-out.
+    await env.DASHBOARD_DB.prepare("UPDATE issues SET summary_lock_until = ? WHERE number = 400").bind(Date.now() + 60_000).run();
+    await seed(env, "d2b80f13-0000-4000-8000-000000000010", NOW + 9800);
+    await linkBySignature(env.DASHBOARD_DB, ["d2b80f13-0000-4000-8000-000000000010"], NOW + 9800);
+    const held = await (await worker.fetch(new Request(`${ORIGIN}/issues/summaries`, { headers: { authorization: `Bearer ${KEY}` } }), keyed, makeCtx())).json();
+    assert.ok(!held.issues.some((i) => i.issue === 400), "a held issue is not handed out");
+    await env.DASHBOARD_DB.prepare("UPDATE issues SET summary_lock_until = NULL WHERE number = 400").run();
+
   });
 
   it("finds the summary comment past the first page of comments", async () => {

@@ -218,7 +218,7 @@ export default {
         if (!requireReportAuth(request, env)) {
           return json({ error: "unauthorized" }, 401);
         }
-        const summaries = await dashboardIssueSummaries(env);
+        const summaries = await dashboardIssueSummaries(env, Date.now());
         if (summaries === null) return new Response(null, { status: 204 });
         return json({ issues: summaries });
       }

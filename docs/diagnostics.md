@@ -283,7 +283,11 @@ renderer as the run (`dashboard/summary.js`, a port of
 output), edits the bot comment carrying the summary marker in place or posts
 it, and records the fingerprint written so the run does not write it again.
 A refusal is shown on the page (a locked or deleted issue is recorded as the
-run would record it; anything else is left for the scheduled run).
+run would record it; anything else is left for the scheduled run). The two
+writers take turns per issue: a summary handed to the run is not written by
+the button until the run acknowledges it (or ten minutes pass), and an issue
+a press holds is left out of the run's next hand-out, so neither writes over
+the other's comment and then records the other's figures.
 
 Every 30 minutes a cron lists issues labeled `diagnostics` changed since the
 last run, reads the report IDs from each issue's `### Report IDs` section (the
