@@ -35,6 +35,20 @@ seed="$(
   exit 1
 }
 
+# The hosts are built on this machine and link its glibc and libssl, so the
+# container runs the same Ubuntu release: an older one cannot load them
+# (ubuntu-latest moving to a newer release made bookclerkd exit at once).
+# Hosts that are not Ubuntu fall back to the LTS the envelope was sized on.
+image="ubuntu:24.04"
+if [[ -r /etc/os-release ]]; then
+  host_id="$(. /etc/os-release && printf '%s' "${ID:-}")"
+  host_version="$(. /etc/os-release && printf '%s' "${VERSION_ID:-}")"
+  if [[ "${host_id}" == "ubuntu" && "${host_version}" =~ ^[0-9]{2}\.[0-9]{2}$ ]]; then
+    image="ubuntu:${host_version}"
+  fi
+fi
+echo "envelope: container image ${image}"
+
 parent="$(dirname "${FILES}")"
 mkdir -p "${FILES}"
 mounts=(-v "${ROOT}:${ROOT}")
@@ -54,5 +68,5 @@ exec docker run --rm \
   -e BOOKCLERK_CLI_BIN="${CLI}" \
   -e ENVELOPE_LABEL="${LABEL}" \
   -e ENVELOPE_SEED_BIN="${seed}" \
-  ubuntu:24.04 \
+  "${image}" \
   bash "${ROOT}/scripts/bench/envelope-inside.sh"
