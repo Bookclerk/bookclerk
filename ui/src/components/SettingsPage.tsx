@@ -801,6 +801,15 @@ export function SettingsPage({
       setOperatorLoadError(
         err instanceof Error ? err.message : "Failed to load operator settings",
       );
+      if (showUserAdmin) {
+        // The user list is read after operator settings, so it was skipped;
+        // say so on the User Management tab, which hides the page error.
+        setUsersError(
+          err instanceof Error
+            ? `Users were not loaded: ${err.message}`
+            : "Users were not loaded",
+        );
+      }
       setError(
         err instanceof Error
           ? err.message
