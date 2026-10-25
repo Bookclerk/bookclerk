@@ -105,9 +105,9 @@ json.dump(kept, sys.stdout, separators=(",", ":"), ensure_ascii=False)
 
 # Report IDs, one per line, as the hidden report block lists them
 # (validate_plan.py writes it, dashboard/report-ids.js reads it). IDs are
-# collector object names or report UUIDs; anything else is listed as
-# "unknown", so a report cannot write into an issue through its ID or close
-# the block's HTML comment early.
+# collector object names or report UUIDs; anything else becomes "unknown"
+# (counted, never listed), so a report cannot write into an issue through
+# its ID or close the block's HTML comment early.
 id_list() {
   jq -r "$1"' | if type == "string" and test("^[A-Za-z0-9._:-]{1,128}$") then . else "unknown" end' "$2"
 }
@@ -126,7 +126,15 @@ RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${REPO}/actions/runs/${GITHUB_
 # full or was filed before the hidden block, a new one is opened. Usage: file_fallback <report count> <reason> <ID list>.
 file_fallback() {
   gh label create diagnostics --color "0E8A16" --description "Automated diagnostics reports" 2>/dev/null || true
-  local number body url
+  local number body url ids unlistable
+  # An ID id_list could not pass is "unknown": the block does not list it
+  # (the dashboard would ignore the line, and it would count toward the
+  # holding issue's cap), and the run says the report stays unlinked.
+  ids=$(grep -v '^unknown$' <<<"$3" || true)
+  unlistable=$(grep -c '^unknown$' <<<"$3" || true)
+  if [[ "$unlistable" -gt 0 ]]; then
+    echo "::warning::${unlistable} report(s) have IDs that cannot be listed in an issue and stay unlinked" >&2
+  fi
   # The newest open diagnostics issue with exactly this title (a full one
   # stays open behind its successor). The search narrows the listing; the
   # exact title match is done here.
@@ -135,7 +143,7 @@ file_fallback() {
     | jq -r --arg t "$HOLDING_TITLE" '[.[] | select(.title == $t) | .number] | max // empty') || number=""
   if [[ -n "$number" ]]; then
     gh issue view "$number" --repo "$REPO" --json body --jq .body > "$WORK_DIR/holding-body"
-    printf '%s\n' "$3" > "$WORK_DIR/holding-lines"
+    printf '%s\n' "$ids" > "$WORK_DIR/holding-lines"
     if body=$(python3 -I "$SCRIPT_DIR/holding_issue.py" "$WORK_DIR/holding-body" "$WORK_DIR/holding-lines"); then
       printf '%s' "$body" > "$WORK_DIR/holding-new"
       gh issue edit "$number" --repo "$REPO" --body-file "$WORK_DIR/holding-new" >/dev/null || return 1
@@ -161,7 +169,7 @@ file_fallback() {
     # A blank line would end the block before its closing line, and the
     # dashboard reads an unclosed block as listing nothing.
     echo "<!-- bookclerk-diagnostics: report ids"
-    printf '%s\n' "$3" | sed '/^[[:space:]]*$/d'
+    printf '%s\n' "$ids" | sed '/^[[:space:]]*$/d'
     echo "-->"
   } | gh issue create --repo "$REPO" --title "$HOLDING_TITLE" --label diagnostics --body-file -) || return 1
   echo "$url"

@@ -96,7 +96,8 @@ report block (`scripts/holding_issue.py` edits only that list;
 when it holds 500 IDs, or was filed with the visible `### Report IDs` list
 instead, a new one is opened) and comments once with the
 reason, so every pulled report is tracked and nothing is buried in a new
-issue per run. (An empty plan is the model deciding nothing needs an issue,
+issue per run; its summary comment, kept like every other issue's, is the
+list people read. (An empty plan is the model deciding nothing needs an issue,
 and files nothing.)
 
 Ingest asks `/report` with `unfiled=1`. When the dashboard database is bound

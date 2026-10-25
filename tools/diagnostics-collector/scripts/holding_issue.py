@@ -57,9 +57,11 @@ def parse_lines(text: str) -> list[str]:
         duplicates; other lines are dropped.
     """
     out: list[str] = []
+    seen: set[str] = set()
     for raw in text.splitlines():
         m = LINE_RE.match(raw.rstrip("\r"))
-        if m and m.group(1) not in out:
+        if m and m.group(1) not in seen:
+            seen.add(m.group(1))
             out.append(m.group(1))
     return out
 
