@@ -338,6 +338,19 @@ non-Rust tooling (decision 6):
   links, mentions, cross-references, raw HTML or forged Report IDs; only batch
   report IDs, each linked only to its own dashboard page on the given
   collector origin; at most five issues).
+- The diagnostics regression issue planner
+  (`tools/diagnostics-collector/scripts/regression_issue.py`), which turns
+  the `regression_of` entries of an ingest pull (versions and platforms from
+  reports anyone can submit, titles from issues anyone with triage rights can
+  edit) into public issues. `scripts/tests/test_regression_issue.py` replays
+  its seed corpus (`scripts/tests/regression_issue_corpus/`) and runs seeded
+  mutation fuzzing on every PR, checking each result against an independent
+  re-derivation of the groups (one issue per closed issue and `major.minor`
+  line, at most ten; only the pull's report IDs, each linked only to its own
+  dashboard page; a marker line naming the validated issue number; no links,
+  mentions, raw HTML or references in the title and prose beyond the closed
+  issue and its fix pull request, both validated integers). The dashboard's
+  Report IDs parser (`dashboard/report-ids.js`, below) reads that marker.
 - The diagnostics ingest release-tag reader
   (`tools/diagnostics-collector/scripts/release_baseline.py`), which turns the
   GitHub `releases/latest` response into the tag the ingest job writes to

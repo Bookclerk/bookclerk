@@ -317,6 +317,109 @@ export async function linkBySignature(db, reportIds, now) {
 }
 
 /**
+ * Sorts reports no issue links yet against the closed issues that tracked
+ * their error signature: a report from the version that fixed such an issue
+ * or a later one (`isRegressionVersion`) is a regression, for ingest to
+ * open a new issue over; one from an older version on the same
+ * `major.minor` line as a report the closed issue tracked is a known
+ * failure in an old build and is linked to that issue quietly (source
+ * `signature`, as `linkBySignature`), so it does not reach triage. A closed
+ * issue without a fixed-in version (no fix, or one not released yet) can
+ * only take the quiet link. With several closed issues the regression goes
+ * back to the one with the newest fixed-in version, the quiet link to the
+ * oldest issue; a member's exclusion of the pair is honored. Writes nothing
+ * for reports that match neither way.
+ *
+ * @param {D1Database} db Database.
+ * @param {string[]} reportIds Lowercase report UUIDs pulled by ingest and
+ *   not linked by `linkBySignature`.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {Promise<{regressions: Map<string, {issue: number, fixedIn: string,
+ *   prNumber: number | null, title: string}>, linked: Map<string, number>}>}
+ *   Report ID → the closed issue it regresses, and report ID → the closed
+ *   issue it was linked to.
+ */
+export async function matchClosedBySignature(db, reportIds, now) {
+  const regressions = new Map();
+  const linked = new Map();
+  for (let i = 0; i < reportIds.length; i += LINK_LOOKUP_CHUNK) {
+    const chunk = reportIds.slice(i, i + LINK_LOOKUP_CHUNK);
+    const rows = await all(
+      db,
+      `WITH ${LATEST_FIX}
+       SELECT DISTINCT r.report_id AS report_id, r.version AS version, t.version AS tracked_version,
+         ri.issue_number AS issue, i.title AS title, l.fixed_in AS fixed_in, l.pr_number AS pr_number
+       FROM reports r
+       JOIN reports t ON t.signature = r.signature AND t.report_id <> r.report_id
+       JOIN report_issue ri ON ri.report_id = t.report_id AND ${LINKED}
+       JOIN issues i ON i.number = ri.issue_number AND i.state = 'closed' AND i.kind <> 'fallback'
+       LEFT JOIN latest l ON l.issue_number = i.number
+       WHERE r.signature IS NOT NULL AND r.report_id IN (${chunk.map(() => "?").join(", ")})
+         AND NOT EXISTS (SELECT 1 FROM report_issue x WHERE x.report_id = r.report_id AND x.source <> 'excluded')
+         AND NOT EXISTS (SELECT 1 FROM report_issue x WHERE x.report_id = r.report_id
+           AND x.issue_number = ri.issue_number AND x.source = 'excluded')`,
+      ...chunk,
+    );
+    const byReport = new Map();
+    for (const row of rows) {
+      const id = String(row.report_id);
+      if (!byReport.has(id)) byReport.set(id, []);
+      byReport.get(id).push(row);
+    }
+    for (const [id, matches] of byReport) {
+      const version = String(matches[0].version ?? "");
+      // A closed issue on the same line with no fix recorded was closed by a
+      // decision (not a bug, will not fix, or a regression issue a member
+      // closed): the report joins it quietly rather than reopening the
+      // question with yet another regression issue.
+      const decided = matches.some((m) => (m.fixed_in === null || m.fixed_in === undefined) && sameVersionLine(version, m.tracked_version));
+      let regression = null;
+      for (const m of matches) {
+        if (decided) break;
+        const fixedIn = m.fixed_in === null || m.fixed_in === undefined ? null : String(m.fixed_in);
+        if (fixedIn === null || !isRegressionVersion(version, fixedIn)) continue;
+        const newer = regression === null || (compareSemver(fixedIn, regression.fixedIn) ?? 0) > 0
+          || ((compareSemver(fixedIn, regression.fixedIn) ?? 0) === 0 && Number(m.issue) > regression.issue);
+        if (newer) {
+          regression = {
+            issue: Number(m.issue),
+            fixedIn,
+            prNumber: m.pr_number === null || m.pr_number === undefined ? null : Number(m.pr_number),
+            title: String(m.title ?? ""),
+          };
+        }
+      }
+      if (regression) {
+        regressions.set(id, regression);
+        continue;
+      }
+      for (const m of matches) {
+        if (!sameVersionLine(version, m.tracked_version)) continue;
+        const unfixed = m.fixed_in === null || m.fixed_in === undefined;
+        if (decided && !unfixed) continue;
+        const issue = Number(m.issue);
+        // The newest decision wins; among fixed issues the oldest, as for open ones.
+        const better = !linked.has(id) || (decided ? issue > linked.get(id) : issue < linked.get(id));
+        if (better) linked.set(id, issue);
+      }
+    }
+  }
+  if (linked.size) {
+    await db.batch(
+      [...linked].map(([id, issue]) =>
+        db
+          .prepare(
+            `INSERT OR IGNORE INTO report_issue (report_id, issue_number, source, linked_by, linked_at)
+             VALUES (?, ?, 'signature', 'ingest', ?)`,
+          )
+          .bind(id, issue, now),
+      ),
+    );
+  }
+  return { regressions, linked };
+}
+
+/**
  * Overview figures for a range.
  *
  * @param {D1Database} db Database.

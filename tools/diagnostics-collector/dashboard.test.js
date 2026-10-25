@@ -191,9 +191,37 @@ describe("signature", () => {
 describe("report ids", () => {
   it("reads the triage and fallback sections", () => {
     const triage = `<!-- bookclerk-diagnostics: workers-ai triage -->\nSummary\n\n### Report IDs\n- \`${ID1}\`\n- \`diagnostics/0.9.0/${ID2}.json\`\n- \`unknown\`\n`;
-    assert.deepEqual(parseIssueReportIds(triage), { kind: "triage", ids: [ID1, ID2] });
+    assert.deepEqual(parseIssueReportIds(triage), { kind: "triage", ids: [ID1, ID2], regressionOf: null });
     const fallback = `<!-- bookclerk-diagnostics: triage fallback -->\n## Diagnostics batch\n\n### Report IDs\n- \`${ID2}\`\n\nAutomated triage did not cover these.`;
-    assert.deepEqual(parseIssueReportIds(fallback), { kind: "fallback", ids: [ID2] });
+    assert.deepEqual(parseIssueReportIds(fallback), { kind: "fallback", ids: [ID2], regressionOf: null });
+  });
+
+  it("reads the issue a regression issue goes back to", () => {
+    const body = `<!-- bookclerk-diagnostics: regression of #412 -->\n## Regression of #412\n\n### Report IDs\n- \`${ID1}\`\n`;
+    assert.deepEqual(parseIssueReportIds(body), { kind: "regression", ids: [ID1], regressionOf: 412 });
+    for (const bad of ["#0", "#012", "#1234567890", "# 12", "#12 ", "12"]) {
+      const out = parseIssueReportIds(`<!-- bookclerk-diagnostics: regression of ${bad} -->\n### Report IDs\n- \`${ID1}\`\n`);
+      assert.deepEqual([out.kind, out.regressionOf], ["other", null], bad);
+    }
+  });
+
+  it("stores which closed issue a regression issue goes back to", async () => {
+    const env = makeEnv();
+    const base = { state: "open", created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-02T00:00:00Z" };
+    const marker = (n) => `<!-- bookclerk-diagnostics: regression of #${n} -->\n## Regression of #${n}\n\n### Report IDs\n- \`${ID1}\`\n`;
+    await storeIssue(env.DASHBOARD_DB, { ...base, number: 500, title: "[diagnostics] Regression of #412 in 0.9", body: marker(412) });
+    // A marker naming a later issue cannot be a regression of it.
+    await storeIssue(env.DASHBOARD_DB, { ...base, number: 501, title: "x", body: marker(900) });
+    await storeIssue(env.DASHBOARD_DB, { ...base, number: 502, title: "x", body: `<!-- bookclerk-diagnostics: workers-ai triage -->\nx\n\n### Report IDs\n- \`${ID1}\`\n` });
+    const rows = await all(env.DASHBOARD_DB, "SELECT number, kind, regression_of FROM issues WHERE number >= 500 ORDER BY number");
+    assert.deepEqual(rows, [
+      { number: 500, kind: "regression", regression_of: 412 },
+      { number: 501, kind: "regression", regression_of: null },
+      { number: 502, kind: "triage", regression_of: null },
+    ]);
+    // An edit that removes the marker clears it.
+    await storeIssue(env.DASHBOARD_DB, { ...base, number: 500, title: "x", body: "edited", updated_at: "2026-10-03T00:00:00Z" });
+    assert.equal((await all(env.DASHBOARD_DB, "SELECT regression_of FROM issues WHERE number = 500"))[0].regression_of, null);
   });
 
   it("reads IDs followed by a dashboard link", () => {

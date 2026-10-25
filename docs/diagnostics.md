@@ -93,8 +93,30 @@ past) reports some issue already tracks, so a re-pull from the start cannot
 file them again; and a report whose error signature an open, triaged issue
 already tracks, on the same `major.minor` version line, is linked to that
 issue (`source = signature`) and not returned, so a known failure grows its
-issue instead of reaching the model. The pull log prints both counts. A
-`force_full` run turns both off and re-triages everything.
+issue instead of reaching the model. A report whose signature only a
+**closed** issue tracks is compared with that issue's fixed-in version (see
+[Fixed-in version and regressions](#member-dashboard)): one that runs an older
+version on the same `major.minor` line is linked to the closed issue the same
+way and not returned, while one that runs the fixed-in version or a later one
+is returned marked `regression_of` (the closed issue, its fixed-in version,
+fix pull request and title; when several closed issues qualify, the one with
+the newest fix). A closed issue on the same line with no fix recorded (closed
+as not a bug or will not fix, or an earlier regression issue a member closed)
+takes the report quietly instead, so a closed judgment is not reopened by a
+new issue each time. Ingest then files the regressions without the model
+(`scripts/regression_issue.py`): one `[diagnostics] Regression of #<n> in
+<major.minor>` issue per closed issue and version line (at most ten per run;
+the reports of further groups go to the holding issue), labeled
+`diagnostics,bug,regression`,
+whose body names the closed issue, the fix pull request and the fixed-in
+version as plain references and lists the report IDs; the first line is a
+marker naming the closed issue, which the dashboard reads so the issue shows
+as a regression of it. The closed issue is not reopened. While a regression
+issue is open, further reports on its line join it through the signature
+link above; a report from the same line that arrives before the issue
+exists is excluded from the model's batch and the holding issue. The pull log
+prints every count (`linked`, `regressions`). A `force_full` run turns the
+linking off and re-triages everything.
 
 Spend is capped per UTC day by `TRIAGE_DAILY_NEURONS` (default 2,000, a fifth
 of the account's 10,000 free Workers AI neurons a day; values above 9,000 are
@@ -247,7 +269,9 @@ issue, the overview counts issues with any, and the report page marks such a
 report "Regression" and names the fixed-in version. While a fix is
 unreleased the count is instead the reports that arrived after the merge.
 Reports from versions older than the fix are expected and not flagged.
-Nothing reopens an issue automatically. The installation token the Worker
+Nothing reopens an issue automatically: a regression that reaches ingest
+gets a new issue instead (see [Triage](#triage)), and the issues list marks
+that issue "regression of #n" with a link to the closed one. The installation token the Worker
 mints for these reads carries `contents: read` in addition to the issue,
 pull request, member and metadata reads; it still cannot write.
 

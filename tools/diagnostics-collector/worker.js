@@ -57,6 +57,7 @@ import {
   dashboardIndexSubmitted,
   dashboardIssueNotify,
   dashboardLinkBySignature,
+  dashboardMatchClosed,
   dashboardScheduled,
 } from "./dashboard/routes.js";
 import { MAX_CURSOR_CHARS, commitCursor, parseCursor, readCursor } from "./ingest-cursor.js";
@@ -454,12 +455,34 @@ async function handleReport(request, env, url) {
     }
   }
 
+  // The rest are sorted against closed issues: a report from the version
+  // that fixed one, or later, is returned as a regression of it for ingest
+  // to open a new issue over; one from an older build on the same version
+  // line joins the closed issue quietly and is not returned.
+  let closed = { regressions: new Map(), linked: new Map() };
+  if (filed) {
+    try {
+      closed = await dashboardMatchClosed(
+        env,
+        picked.map((p) => p.listedId).filter((id) => id && !linkedBySignature.has(id)),
+        Date.now(),
+      );
+    } catch (err) {
+      console.error(`closed-issue matching failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   const reports = [];
   const linked = [];
+  let regressions = 0;
   let skippedCorrupt = 0;
   for (const { f, ts, objectVersion, listedId } of picked) {
     if (listedId && linkedBySignature.has(listedId)) {
-      linked.push({ report_id: listedId, issue: linkedBySignature.get(listedId) });
+      linked.push({ report_id: listedId, issue: linkedBySignature.get(listedId), state: "open" });
+      continue;
+    }
+    if (listedId && closed.linked.has(listedId)) {
+      linked.push({ report_id: listedId, issue: closed.linked.get(listedId), state: "closed" });
       continue;
     }
     const downloaded = await b2DownloadById(auth, f.fileId);
@@ -471,6 +494,8 @@ async function handleReport(request, env, url) {
       skippedCorrupt += 1;
       continue;
     }
+    const regression = listedId ? closed.regressions.get(listedId) : undefined;
+    if (regression) regressions += 1;
     reports.push({
       report_id: parsed.report_id || null,
       file_name: f.fileName,
@@ -478,6 +503,11 @@ async function handleReport(request, env, url) {
       upload_timestamp_ms: ts,
       content_length: f.contentLength,
       object_version: objectVersion,
+      // The closed issue this report regresses, for ingest to name in the
+      // issue it opens (scripts/regression_issue.py); absent otherwise.
+      regression_of: regression
+        ? { issue: regression.issue, fixed_in: regression.fixedIn, pr_number: regression.prNumber, title: regression.title }
+        : null,
       report: parsed,
     });
   }
@@ -501,6 +531,7 @@ async function handleReport(request, env, url) {
     filed_filter: filed ? "on" : "off",
     linked_signature: linked.length,
     linked,
+    regressions,
     reports,
   });
 }
