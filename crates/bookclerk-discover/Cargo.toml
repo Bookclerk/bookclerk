@@ -31,6 +31,9 @@ fastembed = { version = "7", default-features = false, features = [
     "hf-hub-native-tls",
 ] }
 hex = "0.4"
+# Same `ort` as fastembed's; used only to load the runtime library up front
+# (`init_from` returns an error where `ort` itself would panic).
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic"] }
 reqwest = { version = "0.13", default-features = true, features = ["json", "query"] }
 serde.workspace = true
 serde_json.workspace = true

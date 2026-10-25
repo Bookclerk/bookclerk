@@ -19,8 +19,10 @@ pub const MODEL_LOCAL_HASH_V1: &str = "local-hash-v1";
 ///
 /// `ort` panics instead of returning an error when `libonnxruntime` cannot be
 /// loaded, and the panic poisons its global mutex, so every later attempt
-/// panics with "Mutex poisoned". After the first panic, [`open_embedder`]
-/// goes straight to the hash embedder for the rest of the process.
+/// panics with "Mutex poisoned". [`OnnxEmbedder::open`] loads the library
+/// itself first so a missing one is an error, not a panic; this flag is the
+/// backstop for any other load panic: after one, [`open_embedder`] goes
+/// straight to the hash embedder for the rest of the process.
 static ONNX_PANICKED: AtomicBool = AtomicBool::new(false);
 
 /// Resolve the configured model id.
@@ -147,6 +149,12 @@ impl OnnxEmbedder {
     /// Returns an error when the underlying I/O, parse, network, or store operation fails.
     pub fn open(cache_dir: &Path, intra_threads: usize) -> Result<Self> {
         std::fs::create_dir_all(cache_dir).map_err(|e| DiscoverError::Embed(e.to_string()))?;
+        // Load the runtime library first, the way `ort` would: `ort` panics
+        // when it cannot, while this returns the error.
+        drop(
+            ort::init_from(onnx_runtime_library())
+                .map_err(|e| DiscoverError::Embed(format!("ONNX Runtime library: {e}")))?,
+        );
         let options = fastembed::TextInitOptions::new(fastembed::EmbeddingModel::AllMiniLML6V2Q)
             .with_cache_dir(cache_dir.to_path_buf())
             .with_show_download_progress(true)
@@ -158,6 +166,18 @@ impl OnnxEmbedder {
             model_id: MODEL_ALL_MINILM_L6_V2_Q.to_string(),
             dims: 384,
         })
+    }
+}
+
+/// The ONNX Runtime library `ort` loads: `ORT_DYLIB_PATH` when set, else
+/// the platform's library name (found beside the executable or on the
+/// loader's search path).
+fn onnx_runtime_library() -> std::path::PathBuf {
+    match std::env::var_os("ORT_DYLIB_PATH") {
+        Some(path) if !path.is_empty() => path.into(),
+        _ if cfg!(target_os = "windows") => "onnxruntime.dll".into(),
+        _ if cfg!(target_os = "macos") => "libonnxruntime.dylib".into(),
+        _ => "libonnxruntime.so".into(),
     }
 }
 
@@ -546,6 +566,16 @@ mod tests {
         assert_eq!(panic_message(caught.as_ref()), "Mutex poisoned");
         let owned = panic::catch_unwind(|| panic!("{}", String::from("dylib"))).unwrap_err();
         assert_eq!(panic_message(owned.as_ref()), "dylib");
+    }
+
+    #[test]
+    fn a_missing_onnx_runtime_is_an_error_not_a_panic() {
+        // Only this test sets the variable; no other test loads ONNX.
+        std::env::set_var("ORT_DYLIB_PATH", "/nonexistent/libonnxruntime.so");
+        let dir = std::env::temp_dir().join("bookclerk-discover-onnx-missing");
+        let opened = panic::catch_unwind(|| OnnxEmbedder::open(&dir, 1));
+        std::env::remove_var("ORT_DYLIB_PATH");
+        assert!(matches!(opened, Ok(Err(DiscoverError::Embed(_)))));
     }
 
     #[test]

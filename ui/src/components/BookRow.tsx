@@ -67,6 +67,8 @@ export function BookRow({
           <img
             src={covers[coverIndex]}
             alt=""
+            loading="lazy"
+            referrerPolicy="no-referrer"
             className="h-full w-full object-cover"
             onError={() => setCoverIndex((i) => i + 1)}
           />

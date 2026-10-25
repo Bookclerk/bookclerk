@@ -14,15 +14,17 @@ use bookclerk_demo_seed::{
     STOREFRONTS,
 };
 use bookclerk_library::control_plane::{
-    default_instance_for_key, ensure_plugin_deployment, load_deployment_for_node,
-    replace_plugin_deployment, ConfigActor, DeploymentReplace, DesiredState,
+    default_instance_for_key, ensure_hand_managed, ensure_plugin_deployment,
+    load_deployment_for_node, replace_plugin_deployment, ConfigActor, DeploymentReplace,
+    DesiredState,
 };
 use bookclerk_plugin_host::{consent_request, HostControlPlane, PluginGrantStore, SessionServices};
 use bookclerk_source::{CatalogHit, CatalogSearchOpts};
 use chrono::Utc;
 
-/// How long all catalog lookups together may take. The visitor is waiting
-/// on this, and the seed falls back to its own fields for whatever is left.
+/// How long starting the storefronts and all catalog lookups together may
+/// take. The visitor is waiting on this; a title whose search has not
+/// answered by then keeps the seed's own fields.
 const LOOKUP_BUDGET: Duration = Duration::from_secs(15);
 
 /// Search hits asked of a storefront per title.
@@ -133,18 +135,27 @@ async fn run() -> anyhow::Result<()> {
 /// Never fails: a storefront that does not start, a search that errors or
 /// times out, or a title with no confident match just has no record.
 async fn store_records(host: &HostControlPlane) -> StoreRecords {
-    let sources = match host
-        .load_sources(&SessionServices::from_outbox(Some(&host.store)))
-        .await
-    {
-        Ok(sources) => sources,
-        Err(err) => {
+    let started = tokio::time::Instant::now();
+    let deadline = started + LOOKUP_BUDGET;
+    let services = SessionServices::from_outbox(Some(&host.store));
+    let loading = host.load_sources(&services);
+    let sources = match tokio::time::timeout_at(deadline, loading).await {
+        Ok(Ok(sources)) => sources,
+        Ok(Err(err)) => {
             eprintln!(
                 "bookclerk-demo-seed: storefronts did not start ({err}); using sample fields"
             );
             return StoreRecords::new();
         }
+        Err(_) => {
+            eprintln!(
+                "bookclerk-demo-seed: storefronts took too long to start; using sample fields"
+            );
+            return StoreRecords::new();
+        }
     };
+    // Each search has the rest of the budget, so a slow store costs only
+    // its own titles.
     let searches = lookups().into_iter().map(|lookup| {
         let source = sources.get(lookup.store);
         async move {
@@ -155,24 +166,21 @@ async fn store_records(host: &HostControlPlane) -> StoreRecords {
                 limit: LOOKUP_HITS,
                 ..CatalogSearchOpts::default()
             };
-            let hits = match source.search_catalog(&opts).await {
-                Ok(hits) => hits,
-                Err(err) => {
+            let hits = match tokio::time::timeout_at(deadline, source.search_catalog(&opts)).await {
+                Ok(Ok(hits)) => hits,
+                Ok(Err(err)) => {
                     tracing::warn!(store = lookup.store, %err, "catalog search failed");
+                    return None;
+                }
+                Err(_) => {
+                    tracing::warn!(store = lookup.store, "catalog search timed out");
                     return None;
                 }
             };
             best_match(&lookup, &hits).map(|hit| (lookup, hit.clone()))
         }
     });
-    let found: Vec<Option<(Lookup, CatalogHit)>> =
-        match tokio::time::timeout(LOOKUP_BUDGET, futures::future::join_all(searches)).await {
-            Ok(found) => found,
-            Err(_) => {
-                eprintln!("bookclerk-demo-seed: storefront lookups timed out; using sample fields");
-                Vec::new()
-            }
-        };
+    let found: Vec<Option<(Lookup, CatalogHit)>> = futures::future::join_all(searches).await;
     distinct_records(
         found
             .into_iter()
@@ -211,35 +219,40 @@ async fn enable_storefronts(host: &HostControlPlane) -> anyhow::Result<()> {
         let instance = default_instance_for_key(&host.store, key)
             .await?
             .with_context(|| format!("no default instance for {key}"))?;
+        // A scheduler-placed instance is not the seed's to deploy, as for
+        // `plugins deploy`.
+        ensure_hand_managed(&host.store, &instance.id).await?;
         let present = DesiredState::operator(true);
-        match load_deployment_for_node(&host.store, &instance.id, host.node_id()).await? {
+        let current = match load_deployment_for_node(&host.store, &instance.id, host.node_id())
+            .await?
+        {
+            Some(current) => current,
             None => {
-                ensure_plugin_deployment(
-                    &host.store,
-                    &actor,
-                    &instance.id,
-                    host.node_id(),
-                    present,
-                )
-                .await?;
+                ensure_plugin_deployment(&host.store, &actor, &instance.id, host.node_id(), present)
+                    .await?
             }
-            Some(current) if current.desired == present => {}
-            Some(current) => {
-                match replace_plugin_deployment(
-                    &host.store,
-                    &actor,
-                    &current.deployment_id,
-                    current.revision,
-                    present,
-                    &format!("demo-seed-deploy-{}", instance.id),
-                )
-                .await?
-                {
-                    DeploymentReplace::Applied(_) | DeploymentReplace::Replayed { .. } => {}
-                    DeploymentReplace::Conflict { current_revision } => {
-                        bail!("deployment of {key} changed concurrently (revision {current_revision})")
-                    }
-                }
+        };
+        if current.desired == present {
+            continue;
+        }
+        let operation = format!(
+            "demo-seed-deploy-{}-{}",
+            instance.id,
+            Utc::now().timestamp_micros()
+        );
+        match replace_plugin_deployment(
+            &host.store,
+            &actor,
+            &current.deployment_id,
+            current.revision,
+            present,
+            &operation,
+        )
+        .await?
+        {
+            DeploymentReplace::Applied(_) | DeploymentReplace::Replayed { .. } => {}
+            DeploymentReplace::Conflict { current_revision } => {
+                bail!("deployment of {key} changed concurrently (revision {current_revision})")
             }
         }
     }

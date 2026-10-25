@@ -404,8 +404,9 @@ pub fn search_query(lookup: &Lookup) -> String {
 /// The search hit that is the wanted title by the wanted author, or `None`.
 ///
 /// A hit that lists authors must list the wanted one (same surname and
-/// first initial). A hit without authors is judged on its title alone,
-/// because some storefronts (GraphicAudio) never return them. Among
+/// first initial). A GraphicAudio hit without authors is judged on its
+/// title alone, because that store never returns them; any other store's
+/// authorless hit is refused. Among
 /// matching hits the closest title wins, then the store's own ranking.
 #[must_use]
 pub fn best_match<'a>(lookup: &Lookup, hits: &'a [CatalogHit]) -> Option<&'a CatalogHit> {
@@ -413,7 +414,7 @@ pub fn best_match<'a>(lookup: &Lookup, hits: &'a [CatalogHit]) -> Option<&'a Cat
         .filter(|hit| !hit.product_id.trim().is_empty())
         .filter(|hit| match present(hit.authors.as_ref()) {
             Some(authors) => lists_author(&authors, lookup.author),
-            None => true,
+            None => lookup.store == GRAPHIC_AUDIO.id,
         })
         .filter_map(|hit| title_score(lookup.title, &hit.title).map(|score| (score, hit)))
         // `max_by_key` keeps the last of equal keys; reverse so the store's
@@ -645,8 +646,16 @@ fn new_book(sample: &SampleTitle, hit: Option<&CatalogHit>) -> NewBook {
     book.isbn = present(hit.isbn.as_ref());
     book.authors = present(hit.authors.as_ref()).or_else(|| Some(sample.author.to_owned()));
     book.narrators = present(hit.narrators.as_ref()).or_else(|| Some(sample.narrators.to_owned()));
-    book.series = present(hit.series.as_ref());
-    book.series_index = present(hit.series_index.as_ref());
+    // A store that leaves the series out keeps the sample's.
+    let (series, series_index) = match present(hit.series.as_ref()) {
+        Some(series) => (Some(series), present(hit.series_index.as_ref())),
+        None => (
+            sample.series.map(|(name, _)| name.to_owned()),
+            sample.series.map(|(_, index)| index.to_owned()),
+        ),
+    };
+    book.series = series;
+    book.series_index = series_index;
     book.subtitle = present(hit.subtitle.as_ref());
     book.publisher = present(hit.publisher.as_ref());
     book.categories = present(hit.categories.as_ref());
