@@ -4,7 +4,7 @@ Bookclerk stores library state (accounts, books, portal, discovery) in a
 **database plugin**. Exactly one backend is active — unlike destinations, which
 may fan out. Supported backends are **SQL-like only**: SQLite, PostgreSQL, and
 Cloudflare D1. Document / key-value stores are out of scope and must fail
-capability negotiation ([ADR: SQL database contract](adr/sql-database-contract.md)).
+capability negotiation ([ADR: SQL database contract](../adr/sql-database-contract.md)).
 
 Default: local SQLite file (`$BOOKCLERK_FILES_DIR/library.db`). Optional:
 Cloudflare D1 (remote SQLite via the Cloudflare HTTP API) or PostgreSQL.
@@ -12,7 +12,7 @@ Cloudflare D1 (remote SQLite via the Cloudflare HTTP API) or PostgreSQL.
 Which backend to open is **bootstrap** configuration (`[database]` and the
 database environment variables). After the connection is up, cluster identity,
 host registration, and the `[events]` configuration domain live in this
-database. See [ADR: Control plane](adr/control-plane.md). SQLite is the
+database. See [ADR: Control plane](../adr/control-plane.md). SQLite is the
 single-host database, not a shared-disk cluster.
 
 ## ORM choice (Prisma-like maintainability)
@@ -61,7 +61,7 @@ Bookclerk therefore:
 - Pins workspace `rusqlite` to **0.39** so it shares `libsqlite3-sys` 0.37
   with a single SQLite link. Host schema apply no longer uses
   `rusqlite_migration`.
-- Vendors `audible-rs` under [`third_party/audible-rs`](../third_party/audible-rs)
+- Vendors `audible-rs` under [`third_party/audible-rs`](../../third_party/audible-rs)
   (see `BOOKCLERK_PATCH.md` there). The plugin uses audible-rs as a library
   (`default-features = false`); its optional `cli` feature still pins
   `rusqlite` 0.39 so a CLI rebuild would share the same SQLite link.
@@ -167,7 +167,7 @@ the host library as guest SQL. Operator lifecycle:
 `bookclerk plugins db list` / `bookclerk plugins db drop <plugin> [binding]`
 (physical delete of the SQLite file / `DROP DATABASE` / D1 delete, then the
 registry row; unknown adapters fail closed).
-See [plugins.md — Isolated plugin database bindings](plugins.md#isolated-plugin-database-bindings).
+See [plugins.md — Isolated plugin database bindings](../plugins/README.md#isolated-plugin-database-bindings).
 
 ### Switching backends (opt-in migration)
 
@@ -233,12 +233,12 @@ BOOKCLERK_DATABASE_POSTGRES_URL_FILE=/run/secrets/postgres_url
 ```
 
 **Schema migrations**: Fresh databases apply
-[`current_canonical_schema`](../crates/bookclerk-library/src/migrations.rs)
+[`current_canonical_schema`](../../crates/bookclerk-library/src/migrations.rs)
 (today: derived from `unreleased_ops`; Postgres adapters lower each statement at execute to
 `BIGINT` identity + `BYTEA`, never `BIGSERIAL`) and persist
 `SchemaState::Unreleased { checksum }`. There is no production frozen v1
 pack (`host_migration_plan()` is empty). A frozen database newer than this
-binary **fails closed**; see [schema versioning](adr/schema-versioning.md)
+binary **fails closed**; see [schema versioning](../adr/schema-versioning.md)
 and `bookclerk db`. SQL-v1 / `SQL_CONTRACT_VERSION = 1` is the SQL
 grammar/ABI, not a library schema freeze.
 
@@ -313,12 +313,12 @@ because SeaORM 2.0’s driver currently fails to compile against `sea-query`
 
 | Crate | Owns |
 | --- | --- |
-| [`bookclerk-library`](../crates/bookclerk-library) | Greenfield DDL ([`migrations`](../crates/bookclerk-library/src/migrations.rs)), SeaORM entities, domain invariants, host-owned atomic SQL plans, schema application after connect, [`LibraryStore`](../crates/bookclerk-library) CRUD (`from_connection` only) |
+| [`bookclerk-library`](../../crates/bookclerk-library) | Greenfield DDL ([`migrations`](../../crates/bookclerk-library/src/migrations.rs)), SeaORM entities, domain invariants, host-owned atomic SQL plans, schema application after connect, [`LibraryStore`](../../crates/bookclerk-library) CRUD (`from_connection` only) |
 | `bookclerk-plugin-database-{sqlite,d1,postgres}` | Connection/transport, capability advertisement, bind encoding, generic query/execute/atomic-batch, error/timing normalization. **Not** Bookclerk table names, schema version selection, or named domain operations. |
 | Host (`bookclerk-plugin-host`) | Spawn guest, mediate secrets into tagged `DbConnectParams`, negotiate capabilities, apply remaining DDL, compile plans, validate result envelopes, interpret statement results, forward SeaORM via RPC proxy |
 
 Core stays database-agnostic: it sees a migrated `DatabaseConnection`, and
-the host always attaches [`AtomicTxnBackend`](../crates/bookclerk-library)
+the host always attaches [`AtomicTxnBackend`](../../crates/bookclerk-library)
 (generic atomic plan on the guest; host `interpret_plan` on the result)
 for atomic security, job, and event operations. Domain names stay in host
 code.
@@ -326,7 +326,7 @@ Hosts must install/stage the active database guest; missing guests are hard erro
 
 ### LibraryStore status
 
-The operator-facing [`LibraryStore`](../crates/bookclerk-library) is
+The operator-facing [`LibraryStore`](../../crates/bookclerk-library) is
 **SeaORM-backed and async**: it holds a `DatabaseConnection` and every method is
 an `async fn` returning `Result<…>`. Production opens go through
 `bookclerk_plugin_host::open_library_store` (external guest required). Tests may
@@ -335,7 +335,7 @@ use `bookclerk_plugin_database_sqlite::open_memory` /
 `LibraryStore::from_connection` when needed.
 
 CRUD runs on typed **SeaORM entities** (see
-[`crate::entities`](../crates/bookclerk-library/src/entities)): one
+[`crate::entities`](../../crates/bookclerk-library/src/entities)): one
 `DeriveEntityModel` per table (`accounts`, `books`, `works`, `title_requests`,
 `title_request_sources`, `encrypted_secrets`, …). Reads use `Entity::find()` + `QueryFilter` / `QueryOrder`;
 writes use `ActiveModel` insert/update. Upserts that previously relied on
@@ -354,17 +354,17 @@ Admin→Owner upgrade; testing and development hosts should recreate
 
 ### Unreleased host schema (no production freeze)
 
-[`migrations.rs`](../crates/bookclerk-library/src/migrations.rs) exposes
+[`migrations.rs`](../../crates/bookclerk-library/src/migrations.rs) exposes
 `current_canonical_schema()` as frozen ups plus `unreleased_ops`. Today the
 frozen plan is empty, so that helper equals `unreleased_sql()` — do not treat
 that equality as permanent. Postgres receives the same pack lowered
-mechanically ([`schema_postgres.rs`](../crates/bookclerk-db-exec/src/schema_postgres.rs)).
+mechanically ([`schema_postgres.rs`](../../crates/bookclerk-db-exec/src/schema_postgres.rs)).
 There is no live incremental chain. Land new DDL as already-separated
 `MigrationOp`s in `unreleased_ops` until a
 **release cut** copies them into a `HostMigrationStep`. See
-[ADR: schema versioning](adr/schema-versioning.md).
+[ADR: schema versioning](../adr/schema-versioning.md).
 
-Library open compares explicit [`SchemaState`](../crates/bookclerk-library/src/schema_state.rs).
+Library open compares explicit [`SchemaState`](../../crates/bookclerk-library/src/schema_state.rs).
 `SCHEMA_VERSION = 0` means there are **no frozen schema revisions**, not that
 a database is “at schema zero.”
 
@@ -447,7 +447,7 @@ Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. Tables include
 `domain_events`, `event_deliveries`, `event_subscriber_nodes`,
 `event_outbox_stats`, `bookclerk_slots`, `plugin_databases`, and
 `bookclerk_schema_migrations`. The `jobs` table is the durable daemon queue (see
-[jobs.md](jobs.md)). Domain events use a durable outbox with fenced
+[jobs.md](../internals/jobs.md)). Domain events use a durable outbox with fenced
 deliveries, per-node catalogs, and portable `bookclerk_slots` (no
 PostgreSQL advisory locks). Isolated plugin binding databases are
 registered in `plugin_databases`; plugins own their own DDL inside those

@@ -5,8 +5,8 @@
 //! Host acquire / library code that writes through [`StorageBackend`]. Guest
 //! plugins do not depend on this crate.
 //!
-//! Product narrative: destination sections in `docs/configuration.md`. Style:
-//! `docs/code-documentation.md`.
+//! Product narrative: destination sections in `docs/server/configuration.md`. Style:
+//! `docs/contributing/code-documentation.md`.
 
 // Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
 #![allow(

@@ -8,7 +8,7 @@ Usage:
 
 CI uses ``scripts/ci-exec.py resolve``, which wraps this prediction with the
 execution mode (shadow / full / selective) and writes the job outputs.
-See docs/ci.md and GitHub issue #157.
+See docs/contributing/ci.md and GitHub issue #157.
 """
 
 from __future__ import annotations

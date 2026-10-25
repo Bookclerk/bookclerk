@@ -31,7 +31,7 @@ Per matrix runner (`ubuntu-latest` → `linux-x64-gnu`, `macos-latest` →
 
 Node / Python publishers can call the same commands via
 `npx bookclerk-plugin` or `python -m bookclerk_plugin_sdk` in their own
-workflows (see [packaging.md](../../docs/packaging.md#plugin-author-tools-check--fmt--package)).
+workflows (see [packaging.md](../../docs/contributing/packaging.md#plugin-author-tools-check--fmt--package)).
 
 ## Caller permissions (attestations)
 
@@ -83,7 +83,7 @@ jobs:
 After the job finishes, download the matrix artifacts, attach them to a GitHub
 Release (or upload to S3/R2/CDN), and pin digests in your static registry /
 `[package.metadata.bookclerk].artifacts[]` entries. See
-[docs/plugin-registry.md](../../docs/plugin-registry.md).
+[docs/plugins/registry.md](../../docs/plugins/registry.md).
 
 ## Layout assumptions
 

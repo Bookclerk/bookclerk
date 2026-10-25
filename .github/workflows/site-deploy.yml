@@ -16,7 +16,7 @@
 #   CLOUDFLARE_API_TOKEN   scoped to the Worker `bookclerk-site` (Workers,
 #                          Editor role) and the DOMAIN zone (Workers Routes
 #                          edit, for the custom domain); see
-#                          docs/ci.md#cloudflare-worker-deploys
+#                          docs/contributing/ci.md#cloudflare-worker-deploys
 #   CLOUDFLARE_ACCOUNT_ID
 #
 # Organization variable DOMAIN (default bookclerk.app): the Worker is served on

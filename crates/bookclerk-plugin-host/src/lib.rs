@@ -28,8 +28,8 @@
 //! Third-party Rust plugins should depend on [`bookclerk_plugin_sdk`], not this
 //! crate. This host crate re-exports the protocol types for in-tree convenience.
 //!
-//! See `docs/plugins.md`, `docs/adr/plugin-workers-rpc-workerd.md`, and
-//! `docs/plugin-registry.md`.
+//! See `docs/plugins/README.md`, `docs/adr/plugin-workers-rpc-workerd.md`, and
+//! `docs/plugins/registry.md`.
 
 // Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
 #![allow(

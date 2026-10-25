@@ -1,7 +1,7 @@
 # Audiobook source candidates
 
 Research notes for **future** storefronts beyond the built-in sources (Audible,
-Libro.fm, Chirp, GraphicAudio — see [sources.md](sources.md)). Candidates would
+Libro.fm, Chirp, GraphicAudio — see [sources.md](../../guide/sources.md)). Candidates would
 plug into `bookclerk-source`'s `ContentSource` trait. Criteria:
 
 1. Public API **or** reverse-engineerable Android APK (Libro.fm pattern)

@@ -813,7 +813,7 @@ fn run_search(
                     if legacy.is_empty() {
                         println!(
                             "no crates.io plugins matching `{CRATE_NAME_PREFIX}*` yet \
-                             (see docs/plugin-registry.md)"
+                             (see docs/plugins/registry.md)"
                         );
                         return;
                     }

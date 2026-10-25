@@ -4,7 +4,7 @@ Bookclerk’s Dev Container gives a controlled Linux build environment (Debian
 Bookworm + Rust + OpenSSL headers + Node) so local hosts without `libssl-dev`
 (or with mismatched toolchains) can still compile.
 
-The image is [`.devcontainer/Dockerfile`](../.devcontainer/Dockerfile). It must
+The image is [`.devcontainer/Dockerfile`](../../.devcontainer/Dockerfile). It must
 **not** set `WORKDIR` or bake `CARGO_*` paths under the workspace; workspace
 cache paths are set by the Dev Container `remoteEnv`.
 
@@ -21,7 +21,7 @@ cargo stage-plugins   # or: cargo dev / cargo dev-cli -- …
 ```
 
 On a **Linux desktop host**, reopen with the alternate config
-[`.devcontainer/devcontainer.linux-desktop.json`](../.devcontainer/devcontainer.linux-desktop.json)
+[`.devcontainer/devcontainer.linux-desktop.json`](../../.devcontainer/devcontainer.linux-desktop.json)
 (Command Palette → **Dev Containers: Reopen in Container…** and pick that file, or
 set `"name"` / open via the config picker). That variant bind-mounts the host
 session runtime (`$XDG_RUNTIME_DIR` → `/run/host-user`) and `/tmp/.X11-unix`, and
@@ -57,16 +57,16 @@ natively.
 2. Command Palette → **Dev Containers: Reopen in Container**.
 3. Wait for the image build and `postCreateCommand` (`cargo fetch`, `ui` `npm ci`).
 
-Definition: [`.devcontainer/`](../.devcontainer/). The container config sets
+Definition: [`.devcontainer/`](../../.devcontainer/). The container config sets
 the rust-analyzer options the project expects (`rust-analyzer.check.command =
 "clippy"`, `cargo.allFeatures = false`) and recommends extensions; the repo
-commits only [`.vscode/extensions.json`](../.vscode/extensions.json), never
+commits only [`.vscode/extensions.json`](../../.vscode/extensions.json), never
 editor settings.
 
 ## Building on the host without a container
 
 Local host terminals use the default `~/.cargo`. Workspace `target/` and
-`BookclerkFiles/` come from [`.cargo/config.toml`](../.cargo/config.toml)
+`BookclerkFiles/` come from [`.cargo/config.toml`](../../.cargo/config.toml)
 relative values, which Cargo discovers in every environment. To match the
 editor setup outside the container, set rust-analyzer's check command to
 `clippy` in your own settings, and add `target/debug` to `PATH` if you want to
@@ -89,7 +89,7 @@ absolute workspace path via `remoteEnv`.
 | `openssh-client` | SSH commit signing in the Dev Container |
 | Node.js 22 | `ui/` Vite build |
 | Cargo registry/git | Workspace `.cargo-home/` (`CARGO_HOME` on the bind mount) |
-| Linux desktop + tray | Optional [`devcontainer.linux-desktop.json`](../.devcontainer/devcontainer.linux-desktop.json) |
+| Linux desktop + tray | Optional [`devcontainer.linux-desktop.json`](../../.devcontainer/devcontainer.linux-desktop.json) |
 | `PATH` | `target/debug` then `target/release` (via `remoteEnv`) |
 
 ## SSH commit signing (Dev Container)
@@ -111,7 +111,7 @@ git config --global user.signingkey "key::$(ssh-add -L | head -1)"
 git config --global commit.gpgsign true
 ```
 
-Then reopen the Dev Container. [`git-signing.sh`](../.devcontainer/git-signing.sh)
+Then reopen the Dev Container. [`git-signing.sh`](../../.devcontainer/git-signing.sh)
 only ensures `SSH_AUTH_SOCK` reaches a usable agent (`ssh-add -l` succeeds) and
 applies project-local (`.git/config`) tweaks when needed (e.g. host
 `user.signingkey` path missing in the container). It never rewrites the global
@@ -150,6 +150,6 @@ cd ui && npm run build
 cargo dev
 ```
 
-Mirrors [AGENTS.md](../AGENTS.md) / CI. For packaging the release image, see
+Mirrors [AGENTS.md](../../AGENTS.md) / CI. For packaging the release image, see
 [packaging.md](packaging.md) (`packaging/docker/Dockerfile`) — that path is
 separate from this Dev Container.

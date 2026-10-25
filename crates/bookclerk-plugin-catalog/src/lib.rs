@@ -1,6 +1,6 @@
 //! Registry-neutral plugin catalog, manifests, and secure installer.
 //!
-//! See `docs/plugin-registry.md`.
+//! See `docs/plugins/registry.md`.
 
 // Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
 #![allow(

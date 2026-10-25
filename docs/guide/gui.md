@@ -179,7 +179,7 @@ Branded daemon HTML (invite / 404) cannot read that row and only queries
     Branch invites are minted with **Add a branch** in User management (and
     each user's own menu), shown once. A fresh install's operator first sees
     a welcome screen: Start a new library, or Join a library. See
-    [Libraries and branches](cluster-hosts.md).
+    [Libraries and branches](../server/cluster-hosts.md).
 
 **Live updates.** The SPA holds one WebSocket, `GET /api/live`
 (subprotocol `bookclerk-live.v1`), that names topics whose data changed
@@ -190,11 +190,11 @@ exact `Origin` match and a signed-in session, and is scoped to the caller's
 role. While it is down, panels poll on their old timers and the client
 reconnects with backoff (1 s to 30 s). The Vite dev server proxies it
 (`/api/live` with `ws: true`). Details:
-[Libraries and branches](cluster-hosts.md#the-live-socket-apilive).
+[Libraries and branches](../server/cluster-hosts.md#the-live-socket-apilive).
 
 A future **plugin browser** (install/configure third-party plugins from a
-catalog) is sketched in [plugin-registry.md](plugin-registry.md); enablement and
-consent today live in Settings plus CLI / `config.toml` ([plugins.md](plugins.md)).
+catalog) is sketched in [plugin-registry.md](../plugins/registry.md); enablement and
+consent today live in Settings plus CLI / `config.toml` ([plugins.md](../plugins/README.md)).
 
 ## Run
 
@@ -251,7 +251,7 @@ GTK3 graph. Do not enable `tray-icon`/`muda` default features in this workspace.
 
 ## Brand assets
 
-Production logo/mark/favicons live under [`assets/brand/`](../assets/brand/).
+Production logo/mark/favicons live under [`assets/brand/`](../../assets/brand/).
 The UI copies web assets into `ui/public/`. Dark surfaces recolor the wordmark
 to parchment (inverted ink); the mark keeps the approved navy / teal / brick /
 parchment colors.

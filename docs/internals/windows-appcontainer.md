@@ -102,7 +102,7 @@ must **not** call CheckNetIsolation or ship a LoopbackExempt dependency.
 For Bookclerk: the host owns the browser TCP listener and proxies bytes to the
 guest over IPC (`callback_proxy` + `callback_ipc` on `login.start`). The Windows
 named pipe is ACLed to that guest’s Package SID (`GRGW`) with a Low mandatory
-label (`S:(ML;;NW;;;LW)`). See [plugins.md](plugins.md) (Interactive listeners).
+label (`S:(ML;;NW;;;LW)`). See [plugins.md](../plugins/README.md) (Interactive listeners).
 
 ## Availability
 
@@ -214,7 +214,7 @@ Privileged AppContainer (LPAC) ambient restrictions are not applied.
 Sandboxing ≠ publisher authentication. SHA-256 verifies artifact integrity, not
 publisher identity. Install UX should surface registry/publisher/network (and
 callback-transport if ever shipped) / signature before unattended install;
-unsigned installs need explicit approval. See [plugins.md](plugins.md).
+unsigned installs need explicit approval. See [plugins.md](../plugins/README.md).
 
 ## Upstream
 

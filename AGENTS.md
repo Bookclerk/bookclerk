@@ -24,7 +24,7 @@ the publish crates, by TypeDoc and lint checks on the TypeScript SDK and
 
 - Document **every** item, public and private, including struct fields and enum
   variants, in the style described in
-  [`docs/code-documentation.md`](docs/code-documentation.md).
+  [`docs/contributing/code-documentation.md`](docs/contributing/code-documentation.md).
 - Start with a one-sentence summary, then details. Say what the value means,
   its units and its invariants; never restate the identifier (`/// Path.` is
   rejected).
@@ -65,7 +65,7 @@ Untrusted input ([ADR](docs/adr/untrusted-input-fuzzing.md)):
   non-Rust tooling (CI scripts, Workers) instead ships with a sans-IO
   parser, seed corpus, replay test and fuzzing in its own language, checked
   against an oracle (ADR decision 6). The boundary list lives in
-  [`docs/ci.md`](docs/ci.md#fuzzing); keep it current.
+  [`docs/contributing/ci.md`](docs/contributing/ci.md#fuzzing); keep it current.
 - Write boundary parsing sans-IO (a function over a byte slice or a state
   machine fed by one) so the fuzzer and the unit tests drive the same code
   the server does.
@@ -159,7 +159,7 @@ Formatting and lints already enforced by rustfmt and Clippy.
 ## Environment and services
 
 This is a Rust workspace (edition 2021, `rust-toolchain.toml` pins the `stable`
-channel with `rustfmt` + `clippy`). The [Dev Container](docs/devcontainer.md)
+channel with `rustfmt` + `clippy`). The [Dev Container](docs/contributing/devcontainer.md)
 (`.devcontainer/`) provides a matching Linux toolchain; it inherits host
 `git config` and signs via the host SSH agent socket (the private key never
 enters the container), applying any signing tweaks to project-local
@@ -178,7 +178,7 @@ Workspace-local caches (gitignored; travel with the bind-mounted checkout):
 Product docs live under [`docs/`](docs/README.md). Bookclerk is a
 **multi-storefront** audiobook library manager (sources + destinations +
 integrations), not an Audible-only Libation fork. Public APIs use
-[Google-style inline docs](docs/code-documentation.md); regenerate HTML with
+[Google-style inline docs](docs/contributing/code-documentation.md); regenerate HTML with
 `./scripts/generate-api-docs.sh` into `docs/api/`.
 
 ### Services / binaries
@@ -191,13 +191,13 @@ Four binaries (the workspace `default-members`):
 - `bookclerk-media-worker` — confined child process that runs one codec job.
   Ship it beside the hosts: both look for it there and, with the default
   `media.isolation = "required"`, refuse media work when it is missing rather
-  than decode untrusted audio in-process. See `docs/media.md`.
+  than decode untrusted audio in-process. See `docs/server/media.md`.
 - `bookclerk-jail` — launcher that applies a confinement policy to itself and
   then `exec`s an external plugin guest, so the jail is host-imposed rather than
   requested from the plugin. Also ships beside the hosts; with the default
   `plugins.isolation = "required"` a plugin that cannot be jailed is not loaded.
   Policy travels as JSON in `BOOKCLERK_JAIL_SPEC`. See
-  `docs/plugins.md#the-guest-jail`.
+  `docs/plugins/README.md#the-guest-jail`.
 - `bookclerk-workerd` — the front door every plugin is spawned through: loads
   `runtime = "workerd"` isolates and fronts `runtime = "native"` guests as a
   sibling jail joined by inherited `fd:` / `handle:` links; ships beside
@@ -209,7 +209,7 @@ Optional companion (workspace member, not a default-member):
 
 - `bookclerk-tray` — in-process tray library linked into `bookclerkd` (opens the
   web UI in the browser; Linux `ksni`; Windows/macOS `tray-icon` with GTK
-  features off). See `docs/gui.md`.
+  features off). See `docs/guide/gui.md`.
 
 Frontend sources live in `ui/` (Vite/React); `cargo dev` / `cargo build-app --platform`
 rebuild `ui/dist` when SPA sources are newer than the last Vite output. Manual:
@@ -218,7 +218,7 @@ RUSTSEC advisories remain (tracked in `#44`).
 
 ### Build / lint / test (mirrors `.github/workflows/ci.yml`)
 
-Prefer the [Dev Container](docs/devcontainer.md) (`.devcontainer/`) when the host
+Prefer the [Dev Container](docs/contributing/devcontainer.md) (`.devcontainer/`) when the host
 lacks OpenSSL headers or a matching toolchain — `target/` and `.cargo-home/`
 stay on the bind mount so you can run built Linux binaries on the host afterward.
 
@@ -235,7 +235,7 @@ stay on the bind mount so you can run built Linux binaries on the host afterward
   `test_ci_contract.py` (needs PyYAML from `scripts/tests/requirements.txt`).
   Relationships Cargo cannot see (embedded SDK files, cross-package test
   inputs, executables tests launch) go in `scripts/ci_plan/relations.toml` —
-  see [`docs/ci.md`](docs/ci.md). Branch protection should require the stable
+  see [`docs/contributing/ci.md`](docs/contributing/ci.md). Branch protection should require the stable
   **`CI Gate`** job (not every matrix child).
 - Release binaries: `cargo build --release -p bookclerk-cli -p bookclerkd
   -p bookclerk-media-worker -p bookclerk-jail -p bookclerk-workerd`
@@ -272,15 +272,15 @@ cargo test-staged --plugin libro                  # platform + only libro
 cargo plugin -- check <dir>   # author CLI (crate bookclerk-plugin-tools)
 ```
 
-See `docs/plugins.md` and `crates/bookclerk-dev/README.md`.
+See `docs/plugins/README.md` and `crates/bookclerk-dev/README.md`.
 
 `cargo dev` defaults `BOOKCLERK_FILES_DIR` to `<workspace>/BookclerkFiles`
 (override with the env var). On first use the app creates `library.db` (SQLite
-by default via the `[database]` plugin — see `docs/database.md`; Cloudflare D1
+by default via the `[database]` plugin — see `docs/server/database.md`; Cloudflare D1
 optional), plus `cache/`, `logs/` (reserved; Bookclerk does not rotate log
 files), `search_index/`, and `plugins/` under it. Third-party plugins are discovered from `plugin.toml` under
 `plugins/` (and `BOOKCLERK_PLUGIN_DIRS`); enablement and knobs live in
-`config.toml` (see `docs/plugins.md`). A guest is confined to its install
+`config.toml` (see `docs/plugins/README.md`). A guest is confined to its install
 directory (read-only), `plugin-state/<PluginKey fs-id>/data` (its `HOME`), `plugin-state/<PluginKey fs-id>/tmp` (its
 `TMPDIR`), and the download cache root. Network consent uses
 `[capabilities.network]` domains (approve before enable); redirect hops after an
@@ -293,7 +293,7 @@ abort if a registered secret remains). Opt-in reports: `diagnostics.share_report
 sets `https://diagnostics.<DOMAIN>`, else `DIAGNOSTICS_COLLECTOR_BASE_URL`) or `collector_url` in config. The
 diagnostics ring always keeps TRACE+; stderr/OS facility honor `BOOKCLERK_LOG` /
 `RUST_LOG`. Each upload gets a Worker `report_id` UUID (B2 object name). See
-`docs/diagnostics.md`.
+`docs/server/diagnostics.md`.
 
 - CLI: `cargo run -p bookclerk-cli -- <cmd>` (or `cargo dev-cli -- <cmd>`).
   Examples: `version`, `library accounts`, `library list`.

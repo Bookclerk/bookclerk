@@ -8,4 +8,4 @@ npm run dev      # proxied to bookclerkd on :8787
 npm run build    # writes dist/ for bookclerkd ServeDir
 ```
 
-See [docs/gui.md](../docs/gui.md).
+See [docs/guide/gui.md](../docs/guide/gui.md).

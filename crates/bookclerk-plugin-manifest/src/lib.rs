@@ -27,7 +27,7 @@
 //! | [`types`] | `PluginManifest` and nested capability / workerd tables |
 //! | [`workerd_contract`] | Compatibility date, Python flag allowlist, module extensions |
 //!
-//! Product narrative: `docs/plugins.md` (network consent, egress matching,
+//! Product narrative: `docs/plugins/README.md` (network consent, egress matching,
 //! packaging). ABI contract: `bookclerk-plugin-abi`.
 //!
 //! # Examples

@@ -5,7 +5,7 @@
 //! instance document validated against the `[[settings]]` the plugin
 //! declares in `plugin.toml` (`bookclerk plugins deploy|config`, the
 //! Settings page). `[integrations]` keeps only the portal knobs. See
-//! `docs/plugins.md`.
+//! `docs/plugins/README.md`.
 
 use serde::{Deserialize, Serialize};
 

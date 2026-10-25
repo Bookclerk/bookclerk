@@ -8,7 +8,7 @@
 //! set, these helpers still block on `recvmsg` for a future native SCM_RIGHTS
 //! shortcut — do not set the env unless the host is actually sending an FD.
 //!
-//! See `docs/plugins.md` (guest jail / download cache).
+//! See `docs/plugins/README.md` (guest jail / download cache).
 
 #![cfg_attr(unix, allow(unsafe_code))]
 

@@ -6,8 +6,8 @@
 //! guest plugins. Parses `config.toml`, applies env overrides, resolves
 //! `BOOKCLERK_FILES_DIR`, and installs tracing / diagnostics.
 //!
-//! Product narrative: `docs/configuration.md`, `docs/diagnostics.md`. Style:
-//! `docs/code-documentation.md`.
+//! Product narrative: `docs/server/configuration.md`, `docs/server/diagnostics.md`. Style:
+//! `docs/contributing/code-documentation.md`.
 
 // Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
 #![allow(

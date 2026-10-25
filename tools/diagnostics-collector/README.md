@@ -20,7 +20,7 @@ fallback).
 | `GET` | `/`, `/dash`, `/reports`, `/reports/<id>`, `/issues` | organization members | GitHub sign-in (`/auth/github`), session cookie |
 
 The member dashboard is on only when the automation App's secrets are set;
-see [Member dashboard](../../docs/diagnostics.md#member-dashboard). Its code
+see [Member dashboard](../../docs/server/diagnostics.md#member-dashboard). Its code
 is under `dashboard/`, its D1 schema under `migrations/`, and its styles,
 script and fonts under `public/static/`.
 
@@ -69,7 +69,7 @@ and/or repository permission "Variables: write"); without those secrets the run 
 Takes the sanitized batch the ingest workflow builds and returns a Workers AI
 issue plan (`plan_text`) plus the neurons it used. Bindings: `AI` and the
 `TRIAGE_BUDGET` KV namespace (created on first deploy), which caps spend per UTC day
-at `TRIAGE_DAILY_NEURONS`; see [`docs/diagnostics.md`](../../docs/diagnostics.md#triage).
+at `TRIAGE_DAILY_NEURONS`; see [`docs/server/diagnostics.md`](../../docs/server/diagnostics.md#triage).
 
 ### Member dashboard setup
 
@@ -113,4 +113,4 @@ Override anytime with `collector_url` or runtime `BOOKCLERK_DIAGNOSTICS_COLLECTO
 `https://diagnostics.<DOMAIN>`, or `DIAGNOSTICS_COLLECTOR_BASE_URL` when
 `DOMAIN` is unset.
 
-See [`docs/diagnostics.md`](../../docs/diagnostics.md).
+See [`docs/server/diagnostics.md`](../../docs/server/diagnostics.md).

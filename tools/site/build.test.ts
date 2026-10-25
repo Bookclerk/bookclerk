@@ -343,13 +343,13 @@ test("crawler and agent files list the site", () => {
   try {
     const sitemap = site.page("sitemap.xml");
     assert.ok(sitemap.includes("<loc>https://bookclerk.app/</loc>"));
-    assert.ok(sitemap.includes("<loc>https://bookclerk.app/docs/plugins</loc>"));
+    assert.ok(sitemap.includes("<loc>https://bookclerk.app/docs/plugins/</loc>"));
     assert.ok(!sitemap.includes("/404"));
     assert.match(site.page("robots.txt"), /^Sitemap: https:\/\/bookclerk.app\/sitemap.xml$/m);
 
     const llms = site.page("llms.txt");
     assert.ok(llms.startsWith("# Bookclerk\n\n> "));
-    assert.match(llms, /^- \[[^\]]+\]\(https:\/\/bookclerk.app\/docs\/plugins.md\): \S/m);
+    assert.match(llms, /^- \[[^\]]+\]\(https:\/\/bookclerk.app\/docs\/plugins\/README.md\): \S/m);
     assert.match(llms, /^## Optional$/m);
     assert.ok(llms.includes("unstable development version"));
     assert.ok(llms.includes("- **One library for every store.** Search, tag and rate"));
@@ -358,7 +358,7 @@ test("crawler and agent files list the site", () => {
     assert.doesNotMatch(llms.slice(0, llms.indexOf("\n## ")), /\n#/);
     assert.match(llms, /^- \[Rust plugin SDK\]\(https:\/\/bookclerk.app\/docs\/api\/rust\/bookclerk_plugin_sdk\/index.md\)$/m);
     const full = site.page("llms-full.txt");
-    assert.ok(full.includes("Source: https://bookclerk.app/docs/plugins.md"));
+    assert.ok(full.includes("Source: https://bookclerk.app/docs/plugins/README.md"));
     // Links in the combined file point at the site, never at bare .md paths.
     assert.ok(full.includes("](/docs/"));
     assert.ok(!/\]\((?!https?:|\/|#|mailto:)[^)]*\.md/.test(full));

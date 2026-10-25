@@ -8,7 +8,7 @@
  * Parsed `plugin.toml` shape accepted by the TypeScript author tools.
  *
  * Field names match the TOML keys (snake_case), not the Workers RPC wire
- * (camelCase). See `docs/plugins.md` for the full manifest contract.
+ * (camelCase). See `docs/plugins/README.md` for the full manifest contract.
  */
 export type Manifest = {
   /** ABI version declared in `plugin.toml`; must be `3`. */

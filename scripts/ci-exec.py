@@ -11,7 +11,7 @@ Subcommands:
   show      Print commands (prerequisites + check) without running them.
 
 The artifact path is ``$BOOKCLERK_CI_PLAN`` or ``$RUNNER_TEMP/ci-plan/ci-plan.json``
-(``--plan`` overrides). See docs/ci.md.
+(``--plan`` overrides). See docs/contributing/ci.md.
 """
 
 from __future__ import annotations

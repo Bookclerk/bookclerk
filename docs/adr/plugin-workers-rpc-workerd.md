@@ -74,7 +74,7 @@ contract must be **identical** across runtimes.
    workerd is [not a hardened sandbox](https://github.com/cloudflare/workerd#warning-workerd-is-not-a-hardened-sandbox).
    Pin advances via a daily CI job with a **7-day publish cooldown**
    (same supply-chain posture as Dependabot); see
-   [packaging.md](../packaging.md#cloudflare-workerd-pin).
+   [packaging.md](../contributing/packaging.md#cloudflare-workerd-pin).
    Local embed only — not Cloudflare cloud execution. No JS-less stdio shim.
 6. **Network:**
    - **Workerd:** operator approves `capabilities.network.domains`. Isolate
@@ -125,7 +125,7 @@ contract must be **identical** across runtimes.
 - Every byte a guest can send the host crosses a fuzzed boundary per
   [Untrusted-input fuzzing](untrusted-input-fuzzing.md): Cap'n Proto replies
   and the granted HTTP channel have targets today; CONNECT handshakes and
-  mux frames are still to add ([`docs/ci.md`](../ci.md#fuzzing)).
+  mux frames are still to add ([`docs/contributing/ci.md`](../contributing/ci.md#fuzzing)).
 - CI requires the pinned `workerd` binary for the workerd contract suite; the job
   fails if the workerd adapter cannot start (`BOOKCLERK_SKIP_WORKERD=1` is
   local native-only).

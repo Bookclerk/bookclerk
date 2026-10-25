@@ -10,7 +10,7 @@ enrich_min_confidence = 90
 # When matching storage, relocate matched audio + sidecars onto the naming-profile layout.
 # fix_storage_layout = false
 
-# Durable daemon job queue (scan / acquire / listen_sync). See docs/jobs.md.
+# Durable daemon job queue (scan / acquire / listen_sync). See docs/internals/jobs.md.
 [jobs]
 max_pending = 32
 lease_seconds = 60
@@ -20,14 +20,14 @@ retention_days = 7
 [jobs.concurrency]
 network = 1
 
-# Durable domain-event outbox (independent of [jobs] retention). See docs/jobs.md.
+# Durable domain-event outbox (independent of [jobs] retention). See docs/internals/jobs.md.
 [events]
 retention_days = 7
 dead_letter_retention_days = 30
 concurrency = 1
 
 # Library database plugin — exactly one backend (default: local SQLite).
-# See docs/database.md (SeaORM; Cloudflare D1 and PostgreSQL supported).
+# See docs/server/database.md (SeaORM; Cloudflare D1 and PostgreSQL supported).
 [database]
 plugin = "sqlite"   # sqlite | d1 | postgres
 
@@ -94,7 +94,7 @@ plugin = "sqlite"   # sqlite | d1 | postgres
 
 # Codec worker pool. Decode, encode, and packaging run in short-lived
 # `bookclerk-media-worker` processes that confine themselves to the paths each
-# job declared. See docs/media.md.
+# job declared. See docs/server/media.md.
 [media]
 # Reloadable: a change applies to new jobs and the previous pool drains.
 # Concurrent codec jobs. 0 derives one per core, capped at 8.
@@ -110,7 +110,7 @@ isolation = "required"
 
 # How external plugin guests are run. `bookclerk-jail` confines a guest to its
 # install directory (read-only), its own data and scratch directories, and the
-# download cache — then becomes the plugin. See docs/plugins.md.
+# download cache — then becomes the plugin. See docs/plugins/README.md.
 [plugins]
 # required    — do not load a plugin that cannot be jailed (default)
 # best-effort — start it unconfined when the platform cannot jail, and warn
@@ -216,7 +216,7 @@ json_logs = true
 #   bookclerk plugins config set audiobookshelf base_url http://audiobookshelf:80
 #   bookclerk plugins config set audiobookshelf api_key --secret   # value on stdin
 
-# Recommendations / embeddings / request queue (see docs/discovery.md).
+# Recommendations / embeddings / request queue (see docs/guide/discovery.md).
 # Storefront candidates (Libro related + Audible catalog) are the primary
 # discovery path; local embeddings score those unowned hits.
 [discovery]
@@ -230,7 +230,7 @@ storefront_max_remote_calls = 32
 # Drop GraphicAudio Magento series-set SKUs from candidates (default: keep them).
 # exclude_graphicaudio_series_sets = true
 # Shelf visibility + default view are per-user DB prefs (GET/PATCH /api/preferences),
-# not TOML — see docs/gui.md and docs/discovery.md.
+# not TOML — see docs/guide/gui.md and docs/guide/discovery.md.
 # Open Library: low-volume gap-fill only (not bulk). Set a contact email so
 # requests are identified per https://openlibrary.org/developers/api
 openlibrary_enabled = true

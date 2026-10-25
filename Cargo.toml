@@ -230,7 +230,7 @@ strip = true
 # `deny` (not `forbid`) so platform FFI sinks can `#[allow(unsafe_code)]`
 # locally — e.g. Windows Event Log in bookclerk-config.
 unsafe_code = "deny"
-# Google-style public API docs (see docs/code-documentation.md). CI promotes
+# Google-style public API docs (see docs/contributing/code-documentation.md). CI promotes
 # warnings to errors via RUSTFLAGS="-D warnings".
 missing_docs = "warn"
 
@@ -238,7 +238,7 @@ missing_docs = "warn"
 # Keep CI green on defaults; tighten pedantic lints as crates mature.
 pedantic = { level = "allow", priority = -1 }
 # Google-style private-item docs (binaries + libs). CI promotes warnings to
-# errors via RUSTFLAGS="-D warnings". See docs/code-documentation.md.
+# errors via RUSTFLAGS="-D warnings". See docs/contributing/code-documentation.md.
 missing_docs_in_private_items = "warn"
 unwrap_used = "warn"
 expect_used = "warn"

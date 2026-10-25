@@ -295,7 +295,7 @@ pub trait StorageBackend: Send + Sync {
     /// stale, or non-advancing cursor returns [`StorageError::InvalidCursor`]
     /// and does not restart at the first page. `limit` is clamped to
     /// [`crate::bounded::MAX_LIST_PAGE`]. Ordering and mutation behavior are
-    /// backend-specific; see `docs/storage-bounds.md`.
+    /// backend-specific; see `docs/internals/storage-bounds.md`.
     ///
     /// # Errors
     ///

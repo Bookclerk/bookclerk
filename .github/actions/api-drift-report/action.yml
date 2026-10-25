@@ -3,7 +3,7 @@
 # branch and open (or update) a pull request that closes that issue (or only
 # references it, when the fix is partial).
 #
-# Callers mint a GitHub App token (see docs/ci.md#automation-app) and pass it
+# Callers mint a GitHub App token (see docs/contributing/ci.md#automation-app) and pass it
 # as `token`. Pull requests opened with GITHUB_TOKEN are blocked by the
 # organization's Actions policy and would not start CI on the PR anyway.
 #

@@ -851,7 +851,7 @@ def render_issue(finding: Finding, boundary: Boundary | None, run_url: str, bund
         "",
         "Fix it, then land the minimized input as",
         f"`fuzz/corpus/{finding.target}/regression_<name>` in the fixing pull request",
-        "(docs/ci.md#fuzzing).",
+        "(docs/contributing/ci.md#fuzzing).",
     ]
     return title, "\n".join(lines) + "\n"
 

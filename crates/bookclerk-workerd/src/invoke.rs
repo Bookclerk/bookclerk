@@ -8,7 +8,7 @@
 //! single-segment message and whose `200` reply body is the `$Results` struct
 //! — the same envelopes the generated `generated-wire.ts` codecs read and
 //! write in the isolate. No JSON projection of any ABI struct exists on this
-//! path; see `docs/workerd-bridge.md`.
+//! path; see `docs/internals/workerd-bridge.md`.
 //!
 //! Unpacked messages carry no capability table, so interface-typed fields are
 //! written as capability indexes and the table travels beside the message as

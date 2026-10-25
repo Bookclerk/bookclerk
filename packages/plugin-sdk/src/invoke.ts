@@ -2,7 +2,7 @@
  * `POST /invoke` dispatch for the trusted adapter isolate: decodes one
  * `<Interface>.<method>$Params` Cap'n Proto message, calls the author class
  * through its `bookclerk*` dispatch surface, and encodes the
- * `<Interface>.<method>$Results` reply. See `docs/workerd-bridge.md`.
+ * `<Interface>.<method>$Results` reply. See `docs/internals/workerd-bridge.md`.
  *
  * Author failures ride inside the reply union (`result.err`); only transport
  * failures (unknown method, malformed bytes, missing binding) surface as

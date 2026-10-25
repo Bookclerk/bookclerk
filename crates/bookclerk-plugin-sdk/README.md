@@ -47,6 +47,6 @@ cargo doc -p bookclerk-plugin-sdk --no-deps --all-features --open
 ```
 
 HTML lands under `docs/api/rust/` (gitignored). Style expectations are in
-[`docs/code-documentation.md`](../../docs/code-documentation.md). Product
-guides: [`docs/plugins.md`](../../docs/plugins.md),
-[`docs/plugin-registry.md`](../../docs/plugin-registry.md).
+[`docs/contributing/code-documentation.md`](../../docs/contributing/code-documentation.md). Product
+guides: [`docs/plugins/README.md`](../../docs/plugins/README.md),
+[`docs/plugins/registry.md`](../../docs/plugins/registry.md).

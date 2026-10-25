@@ -89,7 +89,7 @@ stops early when the live demo already runs that commit and an earlier run
 for it succeeded. It needs the repository
 secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; the token's
 permissions are listed in
-[`docs/ci.md`](../../docs/ci.md#cloudflare-worker-deploys). The workflow makes
+[`docs/contributing/ci.md`](../../docs/contributing/ci.md#cloudflare-worker-deploys). The workflow makes
 the Worker secrets itself:
 
 | Secret | Source |
@@ -114,7 +114,7 @@ npm test
 
 `test/inputs.fuzz.test.js` replays the seed corpora under `corpus/` and
 fuzzes every input boundary against independent oracles (see
-[`docs/ci.md`](../../docs/ci.md#fuzzing)). `test/routes.test.js` checks the
+[`docs/contributing/ci.md`](../../docs/contributing/ci.md#fuzzing)). `test/routes.test.js` checks the
 route table against the OpenAPI document. CI runs these as `demo_test`.
 
 `package.json` overrides `undici` (a development dependency through

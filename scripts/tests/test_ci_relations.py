@@ -12,7 +12,7 @@ Each recognized reference must be declared (embed / test_input / fixture /
 test_guests), already related through Cargo dependencies, under a
 full-suite path, or listed under ``[[reviewed]]`` with a reason. Computed
 paths, macro-generated includes and dynamically discovered fixtures are not
-detected; declare those explicitly (see docs/ci.md).
+detected; declare those explicitly (see docs/contributing/ci.md).
 """
 
 from __future__ import annotations

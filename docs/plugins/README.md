@@ -4,7 +4,7 @@ Bookclerk is built around pluggable **sources**, **destinations**, and
 **integrations**. First-party **guest** implementations live under
 `crates/bookclerk-plugins/{platform,optional}/` (one package per plugin). The
 **host** runtime is
-[`bookclerk-plugin-host`](../crates/bookclerk-plugin-host) — discovery, spawn,
+[`bookclerk-plugin-host`](../../crates/bookclerk-plugin-host) — discovery, spawn,
 jail, consent, and Workers RPC — distinct from the runtime install tree
 `$BOOKCLERK_FILES_DIR/plugins/`.
 
@@ -17,14 +17,14 @@ guests keep isolate `RpcTarget` stubs. Each HTTP/RPC request is
 method, and disposes stubs before the request completes. Survival across
 suspend is checkpoint data plus stable binding identifiers — never an
 in-memory `RpcTarget`, adapter map id, PID, or open connection. Decision
-records: [`docs/adr/plugin-capabilities-v3.md`](adr/plugin-capabilities-v3.md)
+records: [`docs/adr/plugin-capabilities-v3.md`](../adr/plugin-capabilities-v3.md)
 (v3 surface) and
-[`docs/adr/plugin-workers-rpc-workerd.md`](adr/plugin-workers-rpc-workerd.md)
+[`docs/adr/plugin-workers-rpc-workerd.md`](../adr/plugin-workers-rpc-workerd.md)
 (jail / workerd front door). Authoritative artifacts: Cap'n Proto
-[`schema/plugin.capnp`](../crates/bookclerk-plugin-abi/schema/plugin.capnp)
+[`schema/plugin.capnp`](../../crates/bookclerk-plugin-abi/schema/plugin.capnp)
 (append-only ordinals; unknown union members fail closed or return typed
 `unsupported`) and TypeScript
-[`packages/plugin-sdk/src/plugin.ts`](../packages/plugin-sdk/src/plugin.ts).
+[`packages/plugin-sdk/src/plugin.ts`](../../packages/plugin-sdk/src/plugin.ts).
 
 Authors write a Workers-shaped module. The default export extends
 **`BookclerkEntrypoint`** and implements the triggers `plugin.toml` declares —
@@ -49,21 +49,21 @@ On native guests, `serve` is the stdin/stdout Cap'n Proto runner for
 
 | Language | Package | Notes |
 | --- | --- | --- |
-| TypeScript | [`@bookclerk/plugin-sdk`](../packages/plugin-sdk/) | `/workerd` exports `BookclerkEntrypoint` + `*Entrypoint` bases; `bookclerk-plugin types` generates `Env` from `plugin.toml` |
-| Python | [`bookclerk-plugin-sdk`](../packages/plugin-sdk-python/) | `from bookclerk_plugin_sdk.workerd import BookclerkEntrypoint, CliEntrypoint, …`; module-level `Default` + named classes |
-| Rust | [`bookclerk-plugin-sdk`](../crates/bookclerk-plugin-sdk/) | `PluginWorker` + `serve`; workerd guests pair `BookclerkEntrypoint` JS glue with Wasm dispatch |
+| TypeScript | [`@bookclerk/plugin-sdk`](../../packages/plugin-sdk/) | `/workerd` exports `BookclerkEntrypoint` + `*Entrypoint` bases; `bookclerk-plugin types` generates `Env` from `plugin.toml` |
+| Python | [`bookclerk-plugin-sdk`](../../packages/plugin-sdk-python/) | `from bookclerk_plugin_sdk.workerd import BookclerkEntrypoint, CliEntrypoint, …`; module-level `Default` + named classes |
+| Rust | [`bookclerk-plugin-sdk`](../../crates/bookclerk-plugin-sdk/) | `PluginWorker` + `serve`; workerd guests pair `BookclerkEntrypoint` JS glue with Wasm dispatch |
 
 Runtimes in `plugin.toml`:
 
 | `runtime` | How it runs |
 | --- | --- |
 | `native` | OS binary speaking the same Workers RPC ABI. The host starts two sibling jails: `bookclerk-workerd` (control plane) and the native backend, joined by inherited duplex links |
-| `workerd` | Author `modules/` loaded by first-party [`bookclerk-workerd`](../crates/bookclerk-workerd/) — **one jail + one isolate per plugin** (local embed, not Cloudflare cloud execution) |
+| `workerd` | Author `modules/` loaded by first-party [`bookclerk-workerd`](../../crates/bookclerk-workerd/) — **one jail + one isolate per plugin** (local embed, not Cloudflare cloud execution) |
 
-For the product overview see the [documentation index](README.md). Built-in
-storefronts: [sources.md](sources.md). Audiobookshelf / Connect:
-[integrations.md](integrations.md). Publishing / crates.io taxonomy and
-standalone author repos: [plugin-registry.md](plugin-registry.md).
+For the product overview see the [documentation index](../README.md). Built-in
+storefronts: [sources.md](../guide/sources.md). Audiobookshelf / Connect:
+[integrations.md](../server/integrations.md). Publishing / crates.io taxonomy and
+standalone author repos: [plugin-registry.md](registry.md).
 
 ## Terminology
 
@@ -148,13 +148,13 @@ and `a_b` cannot collide after sanitization.
 
 | Path | Runtime |
 | --- | --- |
-| [`examples/plugins-echo-native-rust`](../examples/plugins-echo-native-rust/) | native Rust (`api_version = 3`) |
-| [`examples/plugins-echo-native-node`](../examples/plugins-echo-native-node/) | workerd JS (id `echo_native_node`) |
-| [`examples/plugins-echo-native-python`](../examples/plugins-echo-native-python/) | workerd Python (id `echo_native_python`) |
-| [`examples/plugins-echo-workerd-ts`](../examples/plugins-echo-workerd-ts/) | workerd TypeScript |
-| [`examples/plugins-echo-workerd-python`](../examples/plugins-echo-workerd-python/) | workerd Python Workers |
-| [`examples/plugins-echo-workerd-rust`](../examples/plugins-echo-workerd-rust/) | workerd Rust/Wasm |
-| [`examples/plugins-echo-workerd-fetch`](../examples/plugins-echo-workerd-fetch/) | workerd outbound `*.example.com` + logo |
+| [`examples/plugins-echo-native-rust`](../../examples/plugins-echo-native-rust/) | native Rust (`api_version = 3`) |
+| [`examples/plugins-echo-native-node`](../../examples/plugins-echo-native-node/) | workerd JS (id `echo_native_node`) |
+| [`examples/plugins-echo-native-python`](../../examples/plugins-echo-native-python/) | workerd Python (id `echo_native_python`) |
+| [`examples/plugins-echo-workerd-ts`](../../examples/plugins-echo-workerd-ts/) | workerd TypeScript |
+| [`examples/plugins-echo-workerd-python`](../../examples/plugins-echo-workerd-python/) | workerd Python Workers |
+| [`examples/plugins-echo-workerd-rust`](../../examples/plugins-echo-workerd-rust/) | workerd Rust/Wasm |
+| [`examples/plugins-echo-workerd-fetch`](../../examples/plugins-echo-workerd-fetch/) | workerd outbound `*.example.com` + logo |
 
 ```bash
 cd packages/plugin-sdk && npm ci && npm run build
@@ -385,7 +385,7 @@ native SCM_RIGHTS shortcut remains a possible host-selected optimization behind
 streams, not the public contract.
 
 A media job is confined far more tightly: one input file, one output directory,
-per job, in a process that exits when the job does. See [media.md](media.md).
+per job, in a process that exits when the job does. See [media.md](../server/media.md).
 
 ### Why a launcher and not self-confinement
 
@@ -466,7 +466,7 @@ tcp = [{ host = "api.example.com", ports = [443] }]
 
 When you need enforceable hostname allowlists for `fetch()`, ship a **workerd** plugin. Native plugins that need networking must use the SDK socket capability.
 
-The native path is exercised end to end on Linux, macOS and Windows by `cargo test -p bookclerk-plugin-e2e --test native_gateway --test native_gateway_isolation --test native_gateway_lifecycle --test native_gateway_authenticated_endpoint`: a granted loopback port round-trips through the proxy, an ungranted live port is refused with `403`, a direct socket from the sibling jail is blocked, both pids and the host session directory go away on drop, and concurrent sessions cannot read each other's gateway state (see [ci.md](ci.md#native-behind-workerd-gateway-smoke)).
+The native path is exercised end to end on Linux, macOS and Windows by `cargo test -p bookclerk-plugin-e2e --test native_gateway --test native_gateway_isolation --test native_gateway_lifecycle --test native_gateway_authenticated_endpoint`: a granted loopback port round-trips through the proxy, an ungranted live port is refused with `403`, a direct socket from the sibling jail is blocked, both pids and the host session directory go away on drop, and concurrent sessions cannot read each other's gateway state (see [ci.md](../contributing/ci.md#native-behind-workerd-gateway-smoke)).
 
 Workerd egress matching (shared `EgressPolicy` + `bridge/egress.js`):
 
@@ -909,7 +909,7 @@ origin_config_key = "integrations.echo.base_url"
 ```
 
 Workerd Echo (TypeScript / Python / Rust-Wasm under
-[`examples/plugins-echo-workerd-*`](../examples/); TOML shape matches TS):
+[`examples/plugins-echo-workerd-*`](../../examples/); TOML shape matches TS):
 
 ```toml
 api_version = 3
@@ -982,7 +982,7 @@ runtime supports. Bookclerk does the same with this release's pin
 (`2026-08-01`): `check` and load warn, then the isolate runs at the pin. An
 equal or older date is passed through unchanged. The pin itself is
 bumped on a **7-day publish cooldown** by CI — see
-[packaging.md](packaging.md#cloudflare-workerd-pin). The isolate runs at that
+[packaging.md](../contributing/packaging.md#cloudflare-workerd-pin). The isolate runs at that
 applied date. Host surfaces such as events and jobs do not yet choose behavior
 from it. When they do, a behavior change ships with an enable date in a
 Bookclerk release, and a plugin gets the behavior of the date this release
@@ -1310,7 +1310,7 @@ another cluster fetches an owner's `https:` artifact only when its host
 operator approved that exact URL, archive digest and payload digest (they
 are part of the reviewed request) and neither its host nor any redirect
 hop's is, or resolves to, a local or private address (checked on the
-addresses actually dialed; no proxy); see [Host consent](adr/control-plane.md#host-consent).
+addresses actually dialed; no proxy); see [Host consent](../adr/control-plane.md#host-consent).
 
 **The active version.** Each PluginKey has at most one active version. The
 first installed version becomes active; a later one becomes active with
@@ -1536,7 +1536,7 @@ received them, node-local ones included.
 ### Running on host nodes
 
 A host node (a separate install that joined the cluster, see
-[Libraries and branches](cluster-hosts.md)) runs an owner's plugin only
+[Libraries and branches](../server/cluster-hosts.md)) runs an owner's plugin only
 after **its own** operator approves it, with the same narrowing as above:
 `bookclerk clusters approve <plugin_key> --request <DIGEST> [--deny-domain
 …] [--deny-binding …] [--deny-network]` (the digest of the request being
@@ -1599,7 +1599,7 @@ generated `generated-wire.ts` codecs. Only the control handshake
 (`describe` / `open` / `shutdown`) is JSON, and object bodies stream over
 dedicated routes; `JobController` capabilities travel as grant-token
 descriptors the isolate redeems on `GRANTED`. Maintainer reference:
-[`workerd-bridge.md`](workerd-bridge.md).
+[`workerd-bridge.md`](../internals/workerd-bridge.md).
 
 `event(batch)` mirrors Workers `queue(batch)`: each `EventMessage` records one
 outcome — `ack()`, `retry({ retryAt | delaySeconds, reason })`, `reject(reason)`,
@@ -1958,7 +1958,7 @@ implement `event(batch)` on the default `BookclerkEntrypoint`.
 
 | Surface | Notes |
 | --- | --- |
-| `event(batch)` | Typed [`DomainEvent`](../packages/plugin-sdk/src/plugin.ts) batch (`eventId`, `eventType`, `schemaVersion`, correlation/causation, `source`, `deduplicationKey`, `deliveryAttempt`, bounded payload). Each `EventMessage` records `ack` / `retry` / `reject` / `deadLetter` / `suspend`. A `suspend` parks a checkpoint; the next delivery copies `checkpointJson`, `checkpointSchemaVersion`, `invocationSequence`, and `resumePending`. `wakeOnEventType` / `wakeOnFilterJson` ask the host to wake on a matching later event (empty = timestamp-only). Host delivery is at-least-once; guests must be idempotent on `deduplicationKey`. |
+| `event(batch)` | Typed [`DomainEvent`](../../packages/plugin-sdk/src/plugin.ts) batch (`eventId`, `eventType`, `schemaVersion`, correlation/causation, `source`, `deduplicationKey`, `deliveryAttempt`, bounded payload). Each `EventMessage` records `ack` / `retry` / `reject` / `deadLetter` / `suspend`. A `suspend` parks a checkpoint; the next delivery copies `checkpointJson`, `checkpointSchemaVersion`, `invocationSequence`, and `resumePending`. `wakeOnEventType` / `wakeOnFilterJson` ask the host to wake on a matching later event (empty = timestamp-only). Host delivery is at-least-once; guests must be idempotent on `deduplicationKey`. |
 | `remoteLibrary.health` / `diagnose` | Liveness and human-readable probe lines |
 | `remoteLibrary.start` / `stop` | Background watchers |
 | `remoteLibrary.scanLibrary` | `{ force: bool }` |
@@ -2031,12 +2031,12 @@ blocked by that cap. The delivery worker
 heartbeats the lease during `event(batch)` (`lease/3`); fence loss or operator
 `cancel_requested` cancels the in-flight RPC (including workerd/native).
 Expired-lease reclaim restores `resume_pending` when `checkpoint_json` is set.
-See [jobs.md](jobs.md).
+See [jobs.md](../internals/jobs.md).
 
 ### Storefront capabilities
 
 Export `storefront` (there is no `kind = "source"`). Typed Cap'n methods on
-[`ContentSource`](../packages/plugin-sdk/src/plugin.ts) / `StorefrontEntrypoint`:
+[`ContentSource`](../../packages/plugin-sdk/src/plugin.ts) / `StorefrontEntrypoint`:
 
 | Method | Notes |
 | --- | --- |
@@ -2051,7 +2051,7 @@ content keys on the wire — decrypt in the guest when needed.
 ### Storage entrypoints
 
 Export `storage` (there is no `kind = "output"`). Guests implement
-[`Destination`](../packages/plugin-sdk/src/plugin.ts) /
+[`Destination`](../../packages/plugin-sdk/src/plugin.ts) /
 `StorageEntrypoint`: `head` / `list` (paginated) / streamed `get` / streamed
 `put` / optional `copy`. The host never reassembles a large object into
 `Bytes` and never writes the full object to guest scratch then `put_file`. S3
@@ -2078,7 +2078,7 @@ Guests speak only canonical BookclerkSQL; adapters lower at execute
 (`bookclerk-plugin-database-sqlite` and optional d1/postgres guests); the host
 does not link SQL engines. The host owns schema, domain SQL, proofs, and
 Bookclerk invariants
-([ADR: SQL database contract](adr/sql-database-contract.md)). Guests must not
+([ADR: SQL database contract](../adr/sql-database-contract.md)). Guests must not
 import Bookclerk entities or embed application table names. The host opens the
 library through the external database loader (guest required — no in-process
 fallback). SQLite opens `library.db` at the jail-granted path
@@ -2197,7 +2197,7 @@ reloads types from that catalog. A matching no-op `CREATE TABLE IF NOT
 EXISTS` does not rewrite catalog or identity: the first admitted CREATE
 must persist complete canonical DDL, and a binding missing that catalog
 fails closed (reset/recreate).
-See [`docs/sql-contract/v1.md`](sql-contract/v1.md).
+See [`docs/sql-contract/v1.md`](../sql-contract/v1.md).
 Plugin schema apply is one atomic receipt per registered migration (slot
 lock, ops, journal append). Mixed guest `CREATE` + `INSERT` is not a product
 path: register/apply, then DML. Same-token DML replay must not double-insert.
@@ -2230,10 +2230,10 @@ records host-owned ledger identity. Aliases such as `echo` remain presentation
 handles for CLI/config.
 
 Workerd Echo — install `plugin.toml` + `modules/` from any of
-[`examples/plugins-echo-workerd-ts/`](../examples/plugins-echo-workerd-ts/),
-[`plugins-echo-workerd-python/`](../examples/plugins-echo-workerd-python/),
-[`plugins-echo-workerd-rust/`](../examples/plugins-echo-workerd-rust/), or
-[`plugins-echo-workerd-fetch/`](../examples/plugins-echo-workerd-fetch/)
+[`examples/plugins-echo-workerd-ts/`](../../examples/plugins-echo-workerd-ts/),
+[`plugins-echo-workerd-python/`](../../examples/plugins-echo-workerd-python/),
+[`plugins-echo-workerd-rust/`](../../examples/plugins-echo-workerd-rust/), or
+[`plugins-echo-workerd-fetch/`](../../examples/plugins-echo-workerd-fetch/)
 (outbound `*.example.com` + embedded logo; host spawns `bookclerk-workerd`,
 not a SEA binary).
 
@@ -2292,4 +2292,4 @@ cargo dev                       # stage + run bookclerkd
 
 For **crates.io naming**, release-asset conventions, and install-without-Rust
 (planned `bookclerk plugins search|install` + dashboard browser), see
-[plugin-registry.md](plugin-registry.md).
+[plugin-registry.md](registry.md).

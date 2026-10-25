@@ -5,7 +5,7 @@ Reference **native** Bookclerk guest implementing [`PluginWorker`](../../crates/
 `cliDescribe` / `cliInvoke` (`ping --message`) stay on the guest.
 
 See [docs/adr/plugin-workers-rpc-workerd.md](../../docs/adr/plugin-workers-rpc-workerd.md)
-and [docs/plugins.md](../../docs/plugins.md).
+and [docs/plugins/README.md](../../docs/plugins/README.md).
 
 ```bash
 cargo build -p bookclerk-plugin-echo-native-rust

@@ -6,7 +6,7 @@ may be enabled at once** and Bookclerk writes to every destination deployed on
 the host running the job. Per-destination settings are the plugin's
 `[[settings]]`, stored in the instance document
 (`bookclerk plugins config …` or **Settings → Plugins**); see
-[plugins.md](plugins.md#enabling-and-settings-database).
+[plugins.md](../plugins/README.md#enabling-and-settings-database).
 
 | Id | Package | Credentials | Default load |
 | --- | --- | --- | --- |
@@ -127,7 +127,7 @@ The shared `[output]` settings above are the `core.output` cluster document
 in the library database. The TOML table only seeds it on first enrollment;
 afterwards change them with `bookclerk config set output.<key> <value>`,
 **Settings → Output**, or `PATCH /api/settings` (see
-[configuration.md](configuration.md#output-shared)). Every host applies a
+[configuration.md](../server/configuration.md#output-shared)). Every host applies a
 committed revision on its next configuration wakeup.
 
 Artifact (sidecar) failures are logged and do not fail the audio acquire.

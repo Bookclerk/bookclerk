@@ -7,7 +7,7 @@
 //! ISO-BMFF reading and writing underneath is [`bookclerk_mp4`], which both this
 //! crate and those plugins share; the keys and ciphers stay with the plugin.
 //!
-//! Style: `docs/code-documentation.md`. Product narrative: `docs/media.md`.
+//! Style: `docs/contributing/code-documentation.md`. Product narrative: `docs/server/media.md`.
 //!
 //! # Where the work runs
 //!

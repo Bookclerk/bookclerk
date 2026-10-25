@@ -6,7 +6,7 @@
 # added (docs/adr/untrusted-input-fuzzing.md).
 #
 # Job logs and artifacts of this public repository are readable by anyone, so
-# nothing about a crash is published in the clear (docs/ci.md#fuzz-crash-triage):
+# nothing about a crash is published in the clear (docs/contributing/ci.md#fuzz-crash-triage):
 # - `batch` fuzzes through .github/actions/cflite-private-run, which keeps
 #   the fuzzer output and crash files in the workspace, and uploads them only
 #   sealed with the FUZZ_CRASH_BUNDLE_KEY secret.

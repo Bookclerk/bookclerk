@@ -5,7 +5,7 @@
 //! the database plugin (`bookclerk-plugin-database-sqlite` (and optional d1/postgres guests)); hosts open the store via
 //! the external guest RPC. This crate owns the greenfield schema
 //! ([`migrations`]), typed [`entities`], and the store API. See
-//! `docs/database.md`.
+//! `docs/server/database.md`.
 
 #![allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
 // Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284

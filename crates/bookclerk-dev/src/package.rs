@@ -1,4 +1,4 @@
-//! Release packaging aligned with `docs/plugin-registry.md` artifact naming.
+//! Release packaging aligned with `docs/plugins/registry.md` artifact naming.
 
 use std::fs::{self, File};
 use std::io::BufWriter;

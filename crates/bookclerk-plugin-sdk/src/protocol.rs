@@ -13,7 +13,7 @@
 //! host-mediated (login returns a blob the host seals; scan and fetch receive
 //! that blob from the host). Scan returns book DTOs for the host to upsert.
 //!
-//! Prefer product docs under `docs/plugins.md` for jail / capability rules.
+//! Prefer product docs under `docs/plugins/README.md` for jail / capability rules.
 
 pub use bookclerk_plugin_abi::{
     Abridgement, AccountCredential, AuthenticateUserParams, Brand, CatalogDetail,

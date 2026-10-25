@@ -71,24 +71,35 @@ export type UrlFor = (key: string) => string;
  */
 export const NAV: NavSpec[] = [
   {
-    title: "Using Bookclerk",
-    pages: ["getting-started", "sources", "destinations", "integrations", "discovery", "configuration", "gui", "operations", "cluster-hosts", "migration", "libation-parity"],
+    title: "Use Bookclerk",
+    pages: ["guide/getting-started", "guide/sources", "guide/destinations", "guide/discovery", "guide/gui", "guide/migration"],
   },
   {
-    title: "How it works",
-    pages: ["architecture", "database", "jobs", "storage-bounds", "media", "diagnostics", "windows-appcontainer"],
+    title: "Run a server",
+    pages: ["server/operations", "server/configuration", "server/database", "server/integrations", "server/cluster-hosts", "server/media", "server/diagnostics"],
   },
   {
-    title: "Plugins",
-    pages: ["plugins", "plugin-registry", "workerd-bridge", "sql-contract/v1", "source-candidates"],
+    title: "Build plugins",
+    pages: ["plugins/README", "plugins/registry", "sql-contract/v1"],
   },
   {
     title: "API reference",
     pages: ["api/README", "api/typescript/README", "api/python/README", "api/rust/bookclerk_plugin_sdk/index", "api/rust/README"],
   },
   {
-    title: "Contributing",
-    pages: ["devcontainer", "ci", "packaging", "code-documentation"],
+    title: "How it works",
+    pages: ["internals/architecture", "internals/jobs", "internals/storage-bounds", "internals/workerd-bridge", "internals/windows-appcontainer"],
+  },
+  {
+    title: "Contribute",
+    pages: [
+      "contributing/devcontainer",
+      "contributing/ci",
+      "contributing/packaging",
+      "contributing/code-documentation",
+      "contributing/research/source-candidates",
+      "contributing/research/libation-parity",
+    ],
   },
   {
     title: "Design decisions",

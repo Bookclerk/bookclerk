@@ -34,7 +34,7 @@ IdentityTokens and other store credentials are **not** converted by migrate
 from the Accounts UI (see [sources.md](sources.md)).
 
 Example AccountsSettings shape:
-[`examples/AccountsSettings.example.json`](../examples/AccountsSettings.example.json).
+[`examples/AccountsSettings.example.json`](../../examples/AccountsSettings.example.json).
 
 ## Export back to Libation Files
 
@@ -64,7 +64,7 @@ archive** (config, `library.db`, optional extras). It is not a schema walk.
 Schema state, in-place backups, and explicit migrate live on
 `bookclerk db`, not `export native` or `config database migrate` (backend
 switch) or `plugins db` (binding list/drop). See
-[ADR: schema versioning](adr/schema-versioning.md).
+[ADR: schema versioning](../adr/schema-versioning.md).
 
 ```bash
 bookclerk db version
@@ -101,7 +101,7 @@ Land new host DDL as already-separated `MigrationOp`s in `unreleased_ops`
 **release cut** may copy that bucket into
 immutable `HostMigrationStep` ops (`Schema` / `Data`); until then the frozen
 plan stays empty. Do not add a public plan version per PR. See
-[ADR: schema versioning](adr/schema-versioning.md).
+[ADR: schema versioning](../adr/schema-versioning.md).
 
 ## Postgres (`copydb`)
 
@@ -123,4 +123,4 @@ native flat layout. See `bookclerk export postgres --help`.
 4. Optionally `library scan --match-storage` if books already exist on disk/S3.
 5. Keep `library.auto_acquire = false` until a dry run looks right.
 
-Headless setting/CLI parity details: [libation-parity.md](libation-parity.md).
+Headless setting/CLI parity details: [libation-parity.md](../contributing/research/libation-parity.md).

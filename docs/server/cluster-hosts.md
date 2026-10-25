@@ -17,7 +17,7 @@ is a **host node** (`nodes`, `kind = host`). A branch invite is an **enrollment 
 branches join" is `core.host_enrollment`.
 
 This page is the operator's guide to both sides. The design record is
-[ADR: Control plane](adr/control-plane.md#host-node-enrollment-and-transport)
+[ADR: Control plane](../adr/control-plane.md#host-node-enrollment-and-transport)
 (H-4).
 
 ## First start
@@ -318,7 +318,7 @@ claim, so the owner never hands it a job it would refuse.
 For an approved plugin the host fetches the owner's archive over the
 signed artifact endpoint, checks its digest, and runs it jailed under the
 approved grant through `bookclerk-workerd`, exactly as it runs its own
-plugins ([Plugins → The guest jail](plugins.md#the-guest-jail)). There is no
+plugins ([Plugins → The guest jail](../plugins/README.md#the-guest-jail)). There is no
 in-process fallback.
 
 ## What a branch runs

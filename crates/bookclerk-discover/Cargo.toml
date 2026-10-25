@@ -24,7 +24,7 @@ chrono.workspace = true
 #   OnnxEmbedder::open downloads/loads the dylib or fails → hash fallback)
 # - download-binaries: fetch ORT shared lib for dynamic load when needed
 # Transitive crates.io `paste` is INFO/unmaintained (RUSTSEC-2024-0436); ignored in
-# osv-scanner.toml — see that file and docs/discovery.md.
+# osv-scanner.toml — see that file and docs/guide/discovery.md.
 fastembed = { version = "7", default-features = false, features = [
     "ort-load-dynamic",
     "ort-download-binaries-native-tls",

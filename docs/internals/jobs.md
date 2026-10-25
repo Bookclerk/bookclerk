@@ -33,8 +33,8 @@ dispatch receipts are per pair (`dispatch-{event_id}-{plugin_id}` /
 `reconcile-{event_id}-{plugin_id}`). Each VPS claims only PluginKeys loaded on
 that process **and** only events its own node catalog matches (type, schema
 version, filter). `[events]` retention and concurrency are stored in the database after the
-first import (`core.events`; see [configuration](configuration.md) and
-[ADR: Control plane](adr/control-plane.md)). `[events.concurrency]` is both the
+first import (`core.events`; see [configuration](../server/configuration.md) and
+[ADR: Control plane](../adr/control-plane.md)). `[events.concurrency]` is both the
 local worker count **and** the
 cluster-wide max `running` deliveries per `(plugin_id, resource_class)`
 (serialized with a portable `bookclerk_slots` row).
@@ -71,10 +71,10 @@ queues (`[queues]` in `plugin.toml`) ride the same outbox tables under their
 own `queue_name`; `GET /api/queues`, `GET /api/queues/{name}` and
 `bookclerk queues list|inspect <name>` show per-queue counters, live
 consumers, recent messages and deliveries (see
-[plugins.md#queues](plugins.md#queues)).
+[plugins.md#queues](../plugins/README.md#queues)).
 
-See [architecture.md](architecture.md), [plugins.md](plugins.md), and
-[operations.md](operations.md).
+See [architecture.md](architecture.md), [plugins.md](../plugins/README.md), and
+[operations.md](../server/operations.md).
 
 ## Command envelope
 
@@ -255,7 +255,7 @@ queueing. `library acquire` has no `--license` or `-o key=value` flags
 (both were removed, never implemented); a queued acquire runs with the
 settings of the node that claims it.
 A host node's operator asks its owner cluster for a scan with `bookclerk
-clusters scan` ([Clusters and host nodes](cluster-hosts.md)).
+clusters scan` ([Clusters and host nodes](../server/cluster-hosts.md)).
 
 ## Leases and crash recovery
 
@@ -444,8 +444,8 @@ pool.
 ## Adding a job kind
 
 1. Add a `JobKind` variant, envelope fields, and dedup-key rule in
-   [`crates/bookclerk-library/src/models.rs`](../crates/bookclerk-library/src/models.rs).
-2. Add a `JobCommand` arm on [`InProcessJobTransport`](../crates/bookclerkd/src/job_handler.rs).
+   [`crates/bookclerk-library/src/models.rs`](../../crates/bookclerk-library/src/models.rs).
+2. Add a `JobCommand` arm on [`InProcessJobTransport`](../../crates/bookclerkd/src/job_handler.rs).
 3. Enqueue from the API and/or scheduler with the same `EnqueueJobSpec`.
 4. Reserve scratch paths via `LibraryStore::reserve_job_temp_path` when the
    job creates temp files; unregister one path after it is gone.
@@ -453,7 +453,7 @@ pool.
 
 ## Configuration
 
-See [configuration.md](configuration.md) (`[jobs]` / `BOOKCLERK_JOBS_*` and
+See [configuration.md](../server/configuration.md) (`[jobs]` / `BOOKCLERK_JOBS_*` and
 `[events]` / `BOOKCLERK_EVENTS_*`).
 
 ## Cluster maintenance

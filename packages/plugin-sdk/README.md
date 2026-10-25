@@ -148,5 +148,5 @@ that single file with `scripts/build-embed.mjs` (esbuild; only
 the embed. The bundle is committed; CI fails when it is stale, and
 `scripts/gen-plugin-abi.py --check` / `scripts/sync-workerd-pin.py --check`
 keep the Rust and Python mirrors byte-identical. See
-[`docs/workerd-bridge.md`](../../docs/workerd-bridge.md) for the wire the
+[`docs/internals/workerd-bridge.md`](../../docs/internals/workerd-bridge.md) for the wire the
 launcher and the embedded adapter speak.

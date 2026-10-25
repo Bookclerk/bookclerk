@@ -5,11 +5,11 @@ health/diagnose probes, and optionally participate in the **SPA Accounts /
 claim-ticket** flow (external identities for Discover personalization).
 There is no plugin `kind = "integration"` — guests export `remoteLibrary`
 and/or declare `[[events.consumers]]` / `oidc` / `cli` (see
-[plugins.md](plugins.md)).
+[plugins.md](../plugins/README.md)).
 
 First-party today: **Audiobookshelf** (dual load — in-process `register()` for
 `cargo run`, plus `crates/bookclerk-plugins/integration-audiobookshelf/`).
-Third-party integrations install as external plugins ([plugins.md](plugins.md)).
+Third-party integrations install as external plugins ([plugins.md](../plugins/README.md)).
 
 The ABS plugin is **ABS-only** (scan, listening sync, credential auth, user
 observation via `pollEvents`). Claim tickets and the SPA Accounts portal live
@@ -85,7 +85,7 @@ Any enabled integration that advertises listening sync contributes; ranking
 reads the generic table and never imports adapter clients.
 
 OpenAPI pin / coverage notes:
-[`crates/bookclerk-plugins/integration-audiobookshelf/openapi/PIN.md`](../crates/bookclerk-plugins/integration-audiobookshelf/openapi/PIN.md).
+[`crates/bookclerk-plugins/optional/integration-audiobookshelf/openapi/PIN.md`](../../crates/bookclerk-plugins/optional/integration-audiobookshelf/openapi/PIN.md).
 
 ## Claim tickets & Accounts
 
@@ -138,7 +138,7 @@ issuer. Access/ID tokens are HS256 JWTs
 keyed from the operator token material (rotate token → existing JWTs stop
 verifying). Clients may opt out of refresh tokens and restrict scopes to
 `openid` / `profile` / `email`. Decision record:
-[plugin-provided OIDC clients](adr/plugin-oidc-clients.md).
+[plugin-provided OIDC clients](../adr/plugin-oidc-clients.md).
 
 See also the ABS plugin notes under
 `crates/bookclerk-plugins/optional/integration-audiobookshelf/`.
@@ -231,8 +231,8 @@ session is not terminated.
 | `GET`/`PUT /api/auth/mfa-policy` | Owner/operator: require TOTP or passkey for password login |
 | `POST /api/auth/totp/enroll/*` / `GET`/`DELETE /api/auth/totp` / `POST /api/auth/totp/login` | Authenticator-app TOTP |
 
-See [ADR: first-party identity](adr/first-party-identity.md) and
-[gui.md](gui.md).
+See [ADR: first-party identity](../adr/first-party-identity.md) and
+[gui.md](../guide/gui.md).
 
 ## Enabling third-party integrations
 
@@ -244,4 +244,4 @@ bookclerk plugins approve echo --yes
 bookclerk plugins deploy echo
 ```
 
-See the echo example walkthrough in [plugins.md](plugins.md).
+See the echo example walkthrough in [plugins.md](../plugins/README.md).

@@ -7,7 +7,7 @@
 # into other packages, workspace binary names in `tests/`) and fails when one
 # is neither declared nor reviewed below. Computed paths, macro-generated
 # includes, and dynamically discovered fixtures are not detected: declare
-# them here or rely on the planner's conservative fallbacks. See docs/ci.md.
+# them here or rely on the planner's conservative fallbacks. See docs/contributing/ci.md.
 
 # Files outside a package directory compiled into that package.
 [[embed]]

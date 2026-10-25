@@ -1,7 +1,7 @@
 # Code documentation (Google style)
 
 Bookclerk uses **Google-style** inline API documentation so each language can
-generate a browsable reference under [`docs/api/`](api/README.md). Regenerate
+generate a browsable reference under [`docs/api/`](../api/README.md). Regenerate
 with:
 
 ```bash
@@ -31,7 +31,7 @@ in this `docs/` tree; API reference HTML is generated into `docs/api/{rust,types
 2. Start with a **one-sentence summary** in third person (not “This function…”).
 3. Follow with details, then language-native sections for arguments, returns,
    errors / throws, and examples when useful.
-4. Prefer links to product docs (`docs/plugins.md`, ADRs) over duplicating
+4. Prefer links to product docs (`docs/plugins/README.md`, ADRs) over duplicating
    architecture essays in every item.
 5. Generated projections (SeaORM `entities/*` field mirrors, ABI `generated.ts` /
    `abi.py` synced from schema) still get field-level summaries — generators
@@ -138,7 +138,7 @@ review responsibility (see GitHub issue #157).
 | UI smoke | `npm run lint` + `npm run test:safe-html` when the UI is affected |
 | Private-docs regression | `python3 scripts/tests/test_private_docs_lint.py` (every workspace package has `[lints] workspace = true`) |
 
-Pull requests use a dependency-aware planner ([`scripts/ci-plan.py`](../scripts/ci-plan.py))
+Pull requests use a dependency-aware planner ([`scripts/ci-plan.py`](../../scripts/ci-plan.py))
 so only affected languages/packages run these checks. `merge_group` and `main`
 always run the full suite. See [ci.md](ci.md).
 

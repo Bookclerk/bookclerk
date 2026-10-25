@@ -1,69 +1,65 @@
 # Bookclerk documentation
 
-Bookclerk is a **multi-storefront audiobook library manager**: sync owned
-libraries from several stores, acquire and decrypt media, write to one or more
-destinations, and notify or connect external library servers.
+Bookclerk gathers the audiobooks you bought from several stores into one
+library that you control: it syncs what you own, downloads your copies, saves
+them where you choose, and connects to library servers such as Audiobookshelf.
 
-Start here if you are new:
+The docs are grouped by what you want to do. Start with the first group; the
+others go deeper.
 
-1. [Getting started](getting-started.md) — build, auth, first scan/acquire
-2. [Architecture](architecture.md) — how the pieces fit
-3. [Sources](sources.md) — Audible, Libro.fm, Chirp, GraphicAudio
-4. [Destinations](destinations.md) — local disk and S3/MinIO
-5. [Database](database.md) — SQLite default, Cloudflare D1, SeaORM
-6. [Integrations](integrations.md) — Audiobookshelf and SPA claim / Accounts
-7. [Discovery](discovery.md) — recommendations, embeddings, wishlist / global queue
-8. [Configuration](configuration.md) — `config.toml`, environment variables, and database-backed plugin instances
-9. [Durable job queue](jobs.md) — bounded admission, leases, crash recovery
-10. [Bounded storage](storage-bounds.md) — scalar caps, streams, paged scans, checkpoints
-11. [Media worker pool](media.md) — confined codecs, concurrency, isolation modes
-12. [Operations](operations.md) — `bookclerkd`, Docker, systemd
-    - [Libraries and branches](cluster-hosts.md) — Join a library, branch invites, host consent, uploads, node API, `/api/live`
-13. [Dev Container](devcontainer.md) — consistent Rust/OpenSSL/Node build env
-14. [GUI](gui.md) — web UI, operator auth, tray companion, desktop shell path
-15. [Continuous integration](ci.md) — dependency-aware planner, selective docs, `CI Gate`
+## Use Bookclerk
 
-## Extending Bookclerk
+- [Getting started](guide/getting-started.md): set up Bookclerk, connect a store, and bring in your library
+- [Stores](guide/sources.md): Audible, Libro.fm, Chirp and GraphicAudio
+- [Where your books go](guide/destinations.md): a folder on disk, S3 or MinIO, and how files are named
+- [Discover and wishlist](guide/discovery.md): recommendations, catalog search and the wishlist
+- [The web interface](guide/gui.md): screens, sign-in and the tray icon
+- [Coming from Libation](guide/migration.md): import your Libation files
 
-| Doc | When to read |
-| --- | --- |
-| [Plugins](plugins.md) | Ship or host a third-party source/integration (Workers RPC ABI, jail, workerd) |
-| [ADR: Plugin capabilities v3](adr/plugin-capabilities-v3.md) | Product `api_version = 3`: entrypoints, triggers, typed Cap'n Proto, `env.EVENTS`, workerd front door |
-| [ADR: Workers RPC + workerd](adr/plugin-workers-rpc-workerd.md) | Jail / isolation / workerd pin (role sections superseded by capabilities v3) |
-| [bookclerk-workerd bridge](workerd-bridge.md) | Maintainer reference: launcher ↔ isolate wire (`/invoke` Cap'n bytes, control plane, granted channel, bundled embed) |
-| [ADR: First-party identity](adr/first-party-identity.md) | Operator / Owner / Administrator / Member, optional multi-IdP broker, passkeys, OIDC for ABS |
-| [ADR: Plugin-provided OIDC clients](adr/plugin-oidc-clients.md) | Players declare IdP clients via `oidcClients` / `[[oidc.clients]]`; enable toggles; redirects from plugin settings |
-| [ADR: SQL database contract](adr/sql-database-contract.md) | SQL-only backends; host-resolved canonical SQL + proofs; adapter-owned lowering |
-| [ADR: Schema versioning](adr/schema-versioning.md) | Frozen schema integers, checksums, backups, fail-closed, last-reversible CLI |
-| [ADR: Control plane](adr/control-plane.md) | Bootstrap boundary, stable host id, database-backed `[events]` (spike for #192; not production HA) |
-| [ADR: Untrusted-input fuzzing](adr/untrusted-input-fuzzing.md) | Every host-guest, store, package and node boundary ships a fuzz target with an invariant oracle; crashes are security reports |
-| [ADR: Security advisory automation](adr/security-advisory-automation.md) | Draft advisories only for vulnerable code in shipped artifacts (before the first release too, with no proposed range), updated rather than duplicated; automatic fix releases are a future goal |
-| [Plugin registry](plugin-registry.md) | crates.io taxonomy, native vs workerd archives, catalog roadmap |
-| [Packaging](packaging.md) | `cargo package-*` aliases, platform bundles, release CI |
-| [Source candidates](source-candidates.md) | Research notes for stores not yet implemented |
-| [Diagnostics](diagnostics.md) | Opt-in crash/error reporting pipeline |
-| [Windows AppContainer](windows-appcontainer.md) | Job ordering, ACL sync, OAuth callback IPC, availability |
+## Run a server
 
-## Compatibility
+- [Running Bookclerk](server/operations.md): the daemon, systemd, Docker and logs
+- [Configuration](server/configuration.md): `config.toml`, environment variables and plugin settings
+- [Database](server/database.md): SQLite, PostgreSQL or Cloudflare D1, and encrypted secrets
+- [Integrations and sign-in](server/integrations.md): Audiobookshelf, invites and identity providers
+- [Libraries and branches](server/cluster-hosts.md): join a library, clerks, consent and the node API
+- [Media worker](server/media.md): the confined process that handles audio files
+- [Diagnostics](server/diagnostics.md): opt-in error reports
 
-| Doc | When to read |
-| --- | --- |
-| [Migration](migration.md) | Moving from classic Libation Files |
-| [Libation parity](libation-parity.md) | Headless CLI/settings matrix vs Libation Chardonnay |
-| [ADR: Plugin capabilities v3](adr/plugin-capabilities-v3.md) | Plugin ABI target state (capability entrypoints, typed Cap'n Proto / Workers RPC; not newline JSON as the product ABI) |
+## Build plugins
 
-## API reference (generated)
+- [Plugins](plugins/README.md): the plugin model, the guest jail, `plugin.toml`, consent and the ABI
+- [Plugin registry](plugins/registry.md): crate naming, archives and installing without Rust
+- [SQL contract v1](sql-contract/v1.md): the canonical SQL that database adapters implement
+- [API reference](api/README.md): the plugin SDKs, the web API and the Rust crates (generated)
 
-| Doc | When to read |
-| --- | --- |
-| [Code documentation (Google style)](code-documentation.md) | Inline `///` / JSDoc / Python docstring conventions |
-| [Generated API reference](api/README.md) | How to build rustdoc / TypeDoc / pdoc into `docs/api/` |
+## How it works
 
-```bash
-./scripts/generate-api-docs.sh
-```
+- [Architecture](internals/architecture.md): how the pieces fit
+- [Durable job queue](internals/jobs.md): admission, leases and crash recovery
+- [Bounded storage](internals/storage-bounds.md): size caps, streams, paged scans and checkpoints
+- [workerd bridge](internals/workerd-bridge.md): the wire between the launcher and a plugin isolate
+- [Windows AppContainer](internals/windows-appcontainer.md): confinement notes for Windows
 
-## Agent / contributor notes
+## Contribute
 
-Cloud-agent and local-dev conventions live in [`AGENTS.md`](../AGENTS.md) at
-the repository root (build commands, live-credential constraints, gotchas).
+- [Dev Container](contributing/devcontainer.md): a ready-made build environment
+- [Continuous integration](contributing/ci.md): the planner, `CI Gate`, fuzzing and deploys
+- [Release packaging](contributing/packaging.md): platform bundles and release CI
+- [Code documentation](contributing/code-documentation.md): how to document Rust, TypeScript, Python and shell
+- Research notes: [store candidates](contributing/research/source-candidates.md) and [Libation parity](contributing/research/libation-parity.md)
+
+Build and agent conventions for this repository live in
+[`AGENTS.md`](../AGENTS.md).
+
+## Design decisions
+
+- [Plugin capabilities v3](adr/plugin-capabilities-v3.md): entrypoints, triggers, typed Cap'n Proto and `env.EVENTS`
+- [Workers RPC and workerd](adr/plugin-workers-rpc-workerd.md): jail, isolation and the workerd pin (partly superseded by v3)
+- [First-party identity](adr/first-party-identity.md): Owner, Administrator and Member, passkeys and OIDC
+- [Plugin-provided OIDC clients](adr/plugin-oidc-clients.md): players declare identity-provider clients
+- [SQL database contract](adr/sql-database-contract.md): host-resolved canonical SQL, adapter-owned lowering
+- [Schema versioning](adr/schema-versioning.md): frozen schema numbers, checksums and backups
+- [Control plane](adr/control-plane.md): the bootstrap boundary, host identity and cluster coordination
+- [Untrusted-input fuzzing](adr/untrusted-input-fuzzing.md): every untrusted boundary ships a fuzz target
+- [Security advisory automation](adr/security-advisory-automation.md): draft advisories for shipped code

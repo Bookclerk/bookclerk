@@ -16,4 +16,4 @@ OpenID with:
 - Auth method: none / PKCE S256
 
 Consent and token minting require a **User** portal session. The shared operator
-token cannot obtain user access tokens. Details: [docs/integrations.md](../../../../docs/integrations.md).
+token cannot obtain user access tokens. Details: [docs/server/integrations.md](../../../../docs/server/integrations.md).
