@@ -428,6 +428,9 @@ describe("safeNext", () => {
   });
 });
 
+/** One parseCallback input: the callback's query and Cookie header. */
+type CallbackInput = { search: string; cookie: string };
+
 /**
  * Oracle for parseCallback: re-derives acceptance with a separate cookie
  * walk (a regex over the whole header) and checks what an accepted callback
@@ -437,9 +440,6 @@ describe("safeNext", () => {
  * @param input - Callback inputs.
  * @param label - Input name for failure messages.
  */
-/** One parseCallback input: the callback's query and Cookie header. */
-type CallbackInput = { search: string; cookie: string };
-
 function checkCallback(input: CallbackInput, label: string) {
   const got = parseCallback(input.search, input.cookie);
   const q = new URLSearchParams(input.search);
@@ -496,6 +496,9 @@ describe("parseCallback", () => {
   });
 });
 
+/** One session decision input: Cookie header, the row it names, and the time. */
+type SessionInput = { cookie: string; row: unknown; now: number };
+
 /**
  * Oracle for the session decision: a separate cookie walk for the token,
  * and the member rules restated (live, positive id, GitHub-shaped login,
@@ -504,9 +507,6 @@ describe("parseCallback", () => {
  * @param input - Decision inputs.
  * @param label - Input name for failure messages.
  */
-/** One session decision input: Cookie header, the row it names, and the time. */
-type SessionInput = { cookie: string; row: unknown; now: number };
-
 function checkSession(input: SessionInput, label: string) {
   assert.equal(SESSION_COOKIE, "__Host-bc_session");
   const m = /(?:^|;)\s*__Host-bc_session\s*=([^;]*)/.exec(input.cookie);
@@ -570,15 +570,6 @@ describe("session decision", () => {
 });
 
 /**
- * Oracle for membershipDecision: the access rules restated. A 404 passes
- * only the owner itself; another non-2xx throws; a 2xx passes only a JSON
- * object with `state: "active"` whose `user.id` is the signed-in user's
- * positive integer id, as admin exactly when `role` is "admin".
- *
- * @param input - Decision inputs.
- * @param label - Input name for failure messages.
- */
-/**
  * The signed-in user as membershipDecision takes it. The decision is
  * fuzzed with any JSON value there, so the value is passed through as is.
  *
@@ -592,6 +583,15 @@ function asUser(user: unknown): { id: number; login: string } {
 /** One membership decision input: GitHub's answer, the user and the owner. */
 type MembershipInput = { status: number; body: string; user: unknown; owner: string };
 
+/**
+ * Oracle for membershipDecision: the access rules restated. A 404 passes
+ * only the owner itself; another non-2xx throws; a 2xx passes only a JSON
+ * object with `state: "active"` whose `user.id` is the signed-in user's
+ * positive integer id, as admin exactly when `role` is "admin".
+ *
+ * @param input - Decision inputs.
+ * @param label - Input name for failure messages.
+ */
 function checkMembership(input: MembershipInput, label: string) {
   const { status, body, user, owner } = input;
   const login = isObj(user) ? user.login : undefined;
@@ -664,6 +664,9 @@ describe("membership decision", () => {
   });
 });
 
+/** One decodePullRequests input. */
+type PullRequestsInput = { data: unknown; numbers: number[]; repository: string };
+
 /**
  * Oracle for decodePullRequests: GraphQL errors or no repository object
  * throw; otherwise an issue alias that is not an object is left out, and
@@ -676,9 +679,6 @@ describe("membership decision", () => {
  * @param input - Decoder inputs.
  * @param label - Input name for failure messages.
  */
-/** One decodePullRequests input. */
-type PullRequestsInput = { data: unknown; numbers: number[]; repository: string };
-
 function checkPullRequests(input: PullRequestsInput, label: string) {
   const { data, numbers, repository } = input;
   const errors = isObj(data) && Array.isArray(data.errors) && data.errors.length > 0;
