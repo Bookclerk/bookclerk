@@ -415,14 +415,20 @@ non-Rust tooling (decision 6):
   same file), which decide which issue is re-read and whether it stays linked;
   the ingest Action's summary receipt (`parseSummaryDone`, same file), which
   decides which issue stops being handed out for a summary comment;
-  and the B2 listing decoder
+  the repository decoder (`decodeDefaultBranch`, same file), which names the
+  branch the owner's "Update GitHub now" button starts the ingest workflow
+  on; the ledger correction form (`parseLinkAction` in
+  `dashboard/links.js`), which decides which report a member attaches to,
+  detaches from or moves between which issues, and which issue is merged
+  into which; and the B2 listing decoder
   (`decodeListPage` in `dashboard/storage.js`), which names the objects
   report viewing downloads and where reindexing continues. `tools/diagnostics-collector/dashboard-input.fuzz.test.js` replays
   their seed corpora (`tools/diagnostics-collector/corpus/report_ids/`,
   `corpus/signature/`, `corpus/oauth_callback/`, `corpus/next_path/`, `corpus/session/`,
   `corpus/membership/`, `corpus/pull_requests/`, `corpus/b2_list/`,
   `corpus/issue_page/`, `corpus/github_auth/`, `corpus/issue_notify/`,
-  `corpus/summary_done/`, `corpus/issue/`) and runs seeded mutation
+  `corpus/summary_done/`, `corpus/issue/`, `corpus/repository/`,
+  `corpus/link_action/`) and runs seeded mutation
   fuzzing on every PR, checking results against independent oracles (IDs
   re-derived by a separate walk, all UUIDs present in the body, capped; level
   counts recounted, a signature exactly when an error or warning exists,
@@ -451,7 +457,12 @@ non-Rust tooling (decision 6):
   a well-formed `MAJOR.MINOR.PATCH` with optional prerelease and build;
   releases decoded to the published non-draft entries with a plain tag name,
   oldest first; a compare answer read as containing only for `identical` or
-  `behind`, as not containing only for `ahead` or `diverged`).
+  `behind`, as not containing only for `ahead` or `diverged`; a default
+  branch kept only when it is a plain git branch name by rules written out
+  one by one; a correction form accepted exactly when a separate walk over
+  its pairs finds a known action, an issue number, a lowercase UUID where the
+  action needs a report and a different issue number where it needs a
+  target).
 - The collector's B2 error-code reader (`b2ErrorCode` in
   `tools/diagnostics-collector/worker.js`), which picks the `code` out of a B2
   error body for logs and authenticated responses.

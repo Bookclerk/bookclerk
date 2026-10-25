@@ -88,7 +88,7 @@ export const DEFAULT_NEXT = "/dash";
 export const MAX_NEXT_CHARS = 512;
 
 /** Dashboard pages a sign-in may return to (GET pages only). */
-const NEXT_PAGE = /^\/(?:dash|reports|issues|reports\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+const NEXT_PAGE = /^\/(?:dash|reports|issues|issues\/[1-9][0-9]{0,8}|reports\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 
 /** A query string kept with the return page: URL-encoded filter text only. */
 const NEXT_QUERY = /^\?[A-Za-z0-9._~%&=+/:@-]+$/;
@@ -98,7 +98,7 @@ const NEXT_QUERY = /^\?[A-Za-z0-9._~%&=+/:@-]+$/;
  * a query parameter or the sign-in cookie, both untrusted).
  *
  * Accepts only a dashboard page path (`/dash`, `/reports`, `/issues`,
- * `/reports/<uuid>`), so the result can never name another origin (no
+ * `/issues/<number>`, `/reports/<uuid>`), so the result can never name another origin (no
  * scheme, no `//`, no backslash) or a sign-in, admin or WebSocket path. A
  * query of URL-encoded filter characters is kept; any other query is
  * dropped.

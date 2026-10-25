@@ -602,6 +602,7 @@ describe("pages", () => {
     assert.match(report, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
     assert.match(report, /\[REDACTED\]/);
     const issues = await (await call(env, new Request(`${ORIGIN}/issues`, { headers: { cookie } }), b2)).text();
+    assert.match(issues, /href="\/issues\/412"/);
     assert.match(issues, /https:\/\/github.com\/Bookclerk\/bookclerk\/issues\/412/);
     const log = await all(env.DASHBOARD_DB, "SELECT action, report_id FROM access_log WHERE action = 'view-report'");
     assert.equal(log.length, 2);
@@ -1826,5 +1827,208 @@ describe("per-invocation D1 limit", () => {
     assert.equal((await first(d1, "SELECT COUNT(*) AS n FROM reports")).n, 130);
     assert.equal((await first(d1, "SELECT rows FROM index_days")).rows, 130, "the ledger counts each report once");
     assert.equal(await first(d1, "SELECT value FROM sync_state WHERE key = 'reindex_cursor'"), null);
+  });
+});
+
+describe("issue page and ledger corrections", () => {
+  const ID3 = "d2b80f13-0000-4000-8000-000000000003";
+  const ID4 = "d2b80f13-0000-4000-8000-000000000004";
+
+  /** Stores an open triaged issue listing the given reports. */
+  async function openIssue(env, number, ids) {
+    await storeIssue(env.DASHBOARD_DB, {
+      number,
+      title: `[diagnostics] issue ${number}`,
+      state: "open",
+      body: `<!-- bookclerk-diagnostics: workers-ai triage -->\nx\n\n### Report IDs\n${ids.map((id) => `- \`${id}\`\n`).join("")}`,
+      created_at: new Date(NOW - 86_400_000).toISOString(),
+      updated_at: new Date(NOW - 86_400_000).toISOString(),
+    });
+  }
+
+  /** Posts a correction form as the member with the given cookie. */
+  function correct(env, cookie, fields, headers = { origin: ORIGIN }) {
+    return call(env, new Request(`${ORIGIN}/issues/link`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded", ...headers },
+      body: new URLSearchParams(fields).toString(),
+    }));
+  }
+
+  /** The ledger rows of one issue as `[report, source, by]`. */
+  async function ledger(env, issue) {
+    return (await all(env.DASHBOARD_DB, "SELECT report_id, source, linked_by FROM report_issue WHERE issue_number = ? ORDER BY report_id", issue))
+      .map((r) => [r.report_id, r.source, r.linked_by]);
+  }
+
+  it("shows filed, correlated and suggested reports and lets a member attach, detach, move and merge", async () => {
+    gh = scriptGitHub([]);
+    const env = makeEnv();
+    const d1 = env.DASHBOARD_DB;
+    for (const id of [ID1, ID2, ID3, ID4]) await seed(env, id, NOW - 3_600_000 - Number(id.slice(-1)) * 60_000);
+    await openIssue(env, 400, [ID1]);
+    assert.deepEqual([...(await linkBySignature(d1, [ID2], NOW - 60_000))], [[ID2, 400]]);
+    const cookie = await signedIn(env, "member");
+
+    const page = await call({ ...env, DASHBOARD_DB: limitedD1(d1, 50) }, new Request(`${ORIGIN}/issues/400`, { headers: { cookie } }));
+    assert.equal(page.status, 200);
+    let body = await page.text();
+    assert.match(body, /<h1>#400 \[diagnostics\] issue 400<\/h1>/);
+    assert.match(body, new RegExp(`href="/reports/${ID1}">7c1e4a90</a>[^]*?<td class="fine">filed<`), "the filed report with its source");
+    assert.match(body, new RegExp(`href="/reports/${ID2}">d2b80f13</a>[^]*?<td class="fine">signature<`), "the signature link");
+    assert.match(body, new RegExp(`name="report" value="${ID3}"[^]*?>Attach<`), "an unlinked report with the signature is suggested");
+    assert.match(body, /summary comment on GitHub is out of date \(never written; 1 ledger change since\)/, "the signature link is pending on GitHub");
+    assert.ok(!body.includes("Update GitHub now"), "members do not see the owner button");
+    assert.ok(!body.includes("<b>stalls"));
+    assert.equal((await call(env, new Request(`${ORIGIN}/issues/999`, { headers: { cookie } }))).status, 404);
+
+    // Origin check, malformed form, unknown issue and unknown report.
+    assert.equal((await correct(env, cookie, { action: "attach", issue: "400", report: ID3 }, {})).status, 403);
+    assert.equal((await correct(env, cookie, { action: "attach", issue: "400" })).status, 400);
+    assert.equal((await correct(env, cookie, { action: "attach", issue: "999", report: ID3 })).status, 404);
+    assert.equal((await correct(env, cookie, { action: "attach", issue: "400", report: "d2b80f13-0000-4000-8000-00000000000f" })).status, 404);
+    assert.deepEqual(await ledger(env, 400), [[ID1, "filed", null], [ID2, "signature", "ingest"]], "refusals write nothing");
+
+    // Attach a suggestion, by name, and return to the page the form named.
+    let res = await correct(env, cookie, { action: "attach", issue: "400", report: ID3, back: `/reports/${ID3}` });
+    assert.equal(res.status, 303);
+    assert.equal(res.headers.get("location"), `/reports/${ID3}`);
+    res = await correct(env, cookie, { action: "detach", issue: "400", report: ID4, back: "https://evil.example/" });
+    assert.equal(res.headers.get("location"), "/issues/400", "an outside return page is dropped");
+    assert.deepEqual(await ledger(env, 400), [[ID1, "filed", null], [ID2, "signature", "ingest"], [ID3, "manual", "octo"], [ID4, "excluded", "octo"]]);
+    assert.deepEqual([...(await linkBySignature(d1, [ID4], NOW))], [], "a dismissed report is not linked by signature again");
+    body = await (await call(env, new Request(`${ORIGIN}/issues/400`, { headers: { cookie } }))).text();
+    assert.ok(!body.includes(`name="report" value="${ID4}"`) || /Attach again/.test(body), "a dismissed report leaves the suggestions");
+    assert.match(body, /attached by octo on Oct 23/);
+
+    // Detach a filed report; the next sync of the body must not relink it.
+    assert.equal((await correct(env, cookie, { action: "detach", issue: "400", report: ID1 })).status, 303);
+    await openIssue(env, 400, [ID1]);
+    assert.deepEqual((await ledger(env, 400)).find(([id]) => id === ID1), [ID1, "excluded", "octo"]);
+    assert.equal(Number((await listIssues(d1, "open", 0, 10)).find((i) => i.number === 400).reports), 2, "the board counts only linked reports");
+    body = await (await call(env, new Request(`${ORIGIN}/issues/400`, { headers: { cookie } }))).text();
+    assert.match(body, /2 reports detached from this issue/);
+    assert.match(body, />Attach again</);
+
+    // Move one report to another issue, then merge that issue back.
+    await openIssue(env, 403, []);
+    res = await correct(env, cookie, { action: "move", issue: "400", report: ID2, to: "403" });
+    assert.equal(res.headers.get("location"), "/issues/400");
+    assert.deepEqual(await ledger(env, 403), [[ID2, "manual", "octo"]]);
+    assert.deepEqual((await ledger(env, 400)).find(([id]) => id === ID2), [ID2, "excluded", "octo"]);
+    assert.equal((await correct(env, cookie, { action: "move", issue: "400", report: ID3, to: "400" })).status, 400, "a move onto itself is refused");
+    res = await correct(env, cookie, { action: "merge", issue: "403", to: "400" });
+    assert.equal(res.headers.get("location"), "/issues/400", "a merge lands on the surviving issue");
+    assert.deepEqual(await ledger(env, 403), [[ID2, "excluded", "octo"]]);
+    assert.deepEqual((await ledger(env, 400)).find(([id]) => id === ID2), [ID2, "manual", "octo"], "a merge by hand replaces an earlier exclusion");
+    assert.deepEqual(
+      (await all(d1, "SELECT action, report_id FROM access_log WHERE action IN ('attach', 'detach', 'move', 'merge') ORDER BY id")).map((r) => [r.action, r.report_id]),
+      [["attach", ID3], ["detach", ID4], ["detach", ID1], ["move", ID2], ["merge", null]],
+    );
+
+    // The report page offers a picker to an untracked report and detach on a tracked one.
+    const untracked = await (await call(env, new Request(`${ORIGIN}/reports/${ID4}`, { headers: { cookie } }))).text();
+    assert.match(untracked, /Attach to issue<\/label>\s*<select[^>]*name="issue"/, "the picker chooses the issue itself");
+    assert.ok(!/name="issue" value=/.test(untracked.slice(untracked.indexOf("Attach to issue"))), "no hidden issue competes with the picker");
+    assert.match(untracked, /<option value="403">#403/);
+    res = await correct(env, cookie, { action: "attach", report: ID4, issue: "403", back: `/reports/${ID4}` });
+    assert.equal(res.headers.get("location"), `/reports/${ID4}`);
+    assert.deepEqual((await ledger(env, 403)).find(([id]) => id === ID4), [ID4, "manual", "octo"], "the picked issue gets the report");
+    // The holding issue for untriaged reports takes no report by hand.
+    await storeIssue(d1, { number: 410, title: "[diagnostics] untriaged reports", state: "open", body: "<!-- bookclerk-diagnostics: triage fallback -->\n### Report IDs\n", created_at: new Date(NOW).toISOString(), updated_at: new Date(NOW).toISOString() });
+    assert.equal((await correct(env, cookie, { action: "attach", issue: "410", report: ID4 })).status, 400);
+    assert.equal((await correct(env, cookie, { action: "merge", issue: "403", to: "410" })).status, 400);
+    assert.equal((await correct(env, cookie, { action: "detach", issue: "410", report: ID4 })).status, 303, "detaching from it is allowed");
+    const tracked = await (await call(env, new Request(`${ORIGIN}/reports/${ID3}`, { headers: { cookie } }))).text();
+    assert.match(tracked, /href="\/issues\/400">#400 \[diagnostics\] issue 400<\/a>[^]*?>Detach</);
+  });
+
+  it("clears the pending banner once ingest records the summary", async () => {
+    gh = scriptGitHub([]);
+    const KEY = "r".repeat(32);
+    const env = makeEnv({ REPORT_API_KEY: KEY });
+    await seed(env, ID1);
+    await seed(env, ID2);
+    await openIssue(env, 400, [ID1]);
+    await linkBySignature(env.DASHBOARD_DB, [ID2], NOW - 60_000);
+    const cookie = await signedIn(env, "member");
+    assert.match(await (await call(env, new Request(`${ORIGIN}/issues/400`, { headers: { cookie } }))).text(), /out of date \(never written; 1 ledger change since\)/);
+    const handed = await (await worker.fetch(new Request(`${ORIGIN}/issues/summaries`, { headers: { authorization: `Bearer ${KEY}` } }), env, makeCtx())).json();
+    const fingerprint = handed.issues.find((i) => i.issue === 400).fingerprint;
+    const done = await worker.fetch(
+      new Request(`${ORIGIN}/issues/summary`, { method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: JSON.stringify({ issue: 400, fingerprint }) }),
+      env,
+      makeCtx(),
+    );
+    assert.equal(done.status, 200);
+    assert.ok(Number((await first(env.DASHBOARD_DB, "SELECT summary_sent_at AS at FROM issues WHERE number = 400")).at) >= NOW);
+    const after = await (await call(env, new Request(`${ORIGIN}/issues/400`, { headers: { cookie } }), makeB2(), makeCtx(), NOW + 1000)).text();
+    assert.ok(!after.includes("out of date"), "nothing pending once the summary is recorded");
+    // A dismissed suggestion changes nothing the comment shows, so GitHub
+    // stays current; detaching a tracked report makes it out of date again.
+    const ID3 = "d2b80f13-0000-4000-8000-000000000003";
+    await seed(env, ID3);
+    // The receipt was stamped with the real clock, so later changes are too.
+    const later = Date.now() + 60_000;
+    const fresh = (await createSession(env.DASHBOARD_DB, { userId: 7, login: "octo", role: "member" }, later)).split(";")[0];
+    const post = (fields) => call(env, new Request(`${ORIGIN}/issues/link`, { method: "POST", headers: { cookie: fresh, origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(fields).toString() }), makeB2(), makeCtx(), later);
+    const page = async () => (await call(env, new Request(`${ORIGIN}/issues/400`, { headers: { cookie: fresh } }), makeB2(), makeCtx(), later)).text();
+    assert.equal((await post({ action: "detach", issue: "400", report: ID3 })).status, 303);
+    assert.ok(!(await page()).includes("out of date"));
+    assert.equal((await post({ action: "detach", issue: "400", report: ID2 })).status, 303);
+    assert.match(await page(), /out of date \(last written [^)]*; 2 ledger changes since\)/);
+  });
+
+  it("lets an owner start the ingest run with an actions-only token, once per ten minutes", async () => {
+    const env = makeEnv();
+    await seed(env, ID1);
+    await seed(env, ID2);
+    await openIssue(env, 400, [ID1]);
+    await linkBySignature(env.DASHBOARD_DB, [ID2], NOW - 60_000);
+    let dispatchStatus = 204;
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk/actions", () => new Response("", { status: 404 })],
+      ["GET https://api.github.com/repos/Bookclerk/bookclerk", () => Response.json({ default_branch: "main" })],
+      ["POST https://api.github.com/repos/Bookclerk/bookclerk/actions/workflows/diagnostics-ingest.yml/dispatches", () => new Response(null, { status: dispatchStatus })],
+    ]);
+    const member = await signedIn(env, "member");
+    const press = (cookie, now, headers = { origin: ORIGIN }) => call(env, new Request(`${ORIGIN}/admin/dispatch`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded", ...headers },
+      body: "back=%2Fissues%2F400",
+    }), makeB2(), makeCtx(), now);
+    assert.equal((await press(member, NOW)).status, 403);
+    const owner = await signedIn(env, "admin");
+    assert.equal((await press(owner, NOW, {})).status, 403, "needs the dashboard's own form");
+    const res = await press(owner, NOW);
+    assert.equal(res.status, 303);
+    assert.equal(res.headers.get("location"), "/issues/400");
+    const mint = gh.calls.find((c) => c.url.endsWith("/access_tokens"));
+    assert.deepEqual(mint.body, { repositories: ["bookclerk"], permissions: { actions: "write" } }, "the dispatch token can only start workflows");
+    const dispatch = gh.calls.find((c) => c.url.endsWith("/dispatches"));
+    assert.deepEqual(dispatch.body, { ref: "main" });
+    assert.equal(dispatch.headers.Authorization, "Bearer ghs_installation");
+    const page = await (await call(env, new Request(`${ORIGIN}/issues/400`, { headers: { cookie: owner } }))).text();
+    assert.match(page, /Update GitHub now/);
+    assert.match(page, /Ingest run started/);
+    assert.equal((await first(env.DASHBOARD_DB, "SELECT action FROM access_log ORDER BY id DESC LIMIT 1")).action, "dispatch");
+
+    // A second press within the gap does not reach GitHub.
+    await press(owner, NOW + 5 * 60_000);
+    assert.equal(gh.calls.filter((c) => c.url.endsWith("/dispatches")).length, 1);
+    assert.match(await (await call(env, new Request(`${ORIGIN}/issues/400`, { headers: { cookie: owner } }))).text(), /started 5 min ago/);
+
+    // After the gap a refusal from GitHub is reported, not thrown.
+    dispatchStatus = 422;
+    assert.equal((await press(owner, NOW + 11 * 60_000)).status, 303);
+    assert.equal(gh.calls.filter((c) => c.url.endsWith("/dispatches")).length, 2);
+    assert.match(await (await call(env, new Request(`${ORIGIN}/issues/400`, { headers: { cookie: owner } }))).text(), /GitHub did not start the ingest run \(workflow dispatch failed: HTTP 422\)/);
+    // The failed attempt gave the slot back, and the note belongs to #400 only.
+    dispatchStatus = 204;
+    assert.equal((await press(owner, NOW + 12 * 60_000)).status, 303);
+    assert.equal(gh.calls.filter((c) => c.url.endsWith("/dispatches")).length, 3);
+    await openIssue(env, 403, [ID2]);
+    assert.ok(!(await (await call(env, new Request(`${ORIGIN}/issues/403`, { headers: { cookie: owner } }))).text()).includes("Ingest run started"));
   });
 });

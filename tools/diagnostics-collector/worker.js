@@ -33,7 +33,8 @@
  *   GITHUB_TOKEN            — optional; higher GitHub API rate limits
  *   GITHUB_APP_CLIENT_ID, GITHUB_APP_CLIENT_SECRET, GITHUB_APP_PRIVATE_KEY
  *                           — optional; the automation App, for dashboard
- *                             sign-in and read-only issue sync
+ *                             sign-in, read-only issue sync and the owner's
+ *                             "Update GitHub now" workflow dispatch
  *
  * Vars:
  *   GITHUB_REPOSITORY       — owner/repo for releases/latest (e.g. Bookclerk/bookclerk)
@@ -322,7 +323,7 @@ async function handleSummaryDone(request, env) {
   const text = await readCapped(request, 512);
   const done = text === null ? null : parseSummaryDone(text);
   if (done === null) return json({ error: "expected {\"issue\": <number>, \"fingerprint\": \"<sha-256 hex>\"}" }, 400);
-  const known = await dashboardSummarySent(env, done);
+  const known = await dashboardSummarySent(env, done, Date.now());
   if (known === null) return new Response(null, { status: 204 });
   if (!known) return json({ error: "unknown issue" }, 404);
   return json({ ok: true, issue: done.issue });

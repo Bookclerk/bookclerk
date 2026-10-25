@@ -6,7 +6,10 @@
  * The App can write to the repository, so the Worker narrows what it holds:
  * - every installation token it mints is down-scoped in the request to
  *   `INSTALLATION_PERMISSIONS` on the one configured repository, so no token
- *   the Worker ever holds can write;
+ *   the Worker holds can write to issues, pull requests or code; the one
+ *   exception is the owner's "Update GitHub now" button, which mints a
+ *   separate, uncached token with `DISPATCH_PERMISSIONS` (`actions: write`,
+ *   nothing else) to start the ingest workflow and drops it;
  * - the user token from sign-in is used for one `GET /user` call and then
  *   revoked, never stored, logged or sent to the browser;
  * - the private key and client secret are Worker secrets read only here.
@@ -30,6 +33,18 @@ export const INSTALLATION_PERMISSIONS = Object.freeze({
   members: "read",
   contents: "read",
 });
+
+/**
+ * Permissions of the token that starts the ingest workflow (`dispatchIngest`):
+ * the narrowest that `POST .../actions/workflows/{id}/dispatches` accepts.
+ * It can start workflows, read nothing else, and is never cached.
+ */
+export const DISPATCH_PERMISSIONS = Object.freeze({
+  actions: "write",
+});
+
+/** The ingest workflow file an owner can start from the dashboard. */
+export const INGEST_WORKFLOW = "diagnostics-ingest.yml";
 
 /** Time allowed for one GitHub call, in milliseconds. */
 const TIMEOUT_MS = 10_000;
@@ -190,6 +205,25 @@ export async function installationToken(cfg, now) {
   if (cachedToken && cachedToken.key === key && cachedToken.expiresAt - TOKEN_REFRESH_MARGIN_MS > now) {
     return cachedToken.token;
   }
+  const got = await mintToken(cfg, now, INSTALLATION_PERMISSIONS);
+  cachedToken = { key, ...got };
+  return got.token;
+}
+
+/**
+ * Mints an installation token narrowed to `permissions` on the configured
+ * repository.
+ *
+ * @param {GitHubConfig} cfg Settings.
+ * @param {number} now Unix time in milliseconds.
+ * @param {Readonly<Record<string, string>>} permissions Permissions asked
+ *   for; GitHub refuses any the installation does not grant.
+ * @returns {Promise<{token: string, expiresAt: number}>} The token and when
+ *   it expires.
+ * @throws {Error} When the App is not installed on the repository or GitHub
+ *   refuses the permissions.
+ */
+async function mintToken(cfg, now, permissions) {
   const jwt = await appJwt(cfg, now);
   const inst = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/installation`, { headers: apiHeaders(jwt) });
   if (!inst.ok) throw new Error(`app installation lookup failed: HTTP ${inst.status}`);
@@ -198,13 +232,39 @@ export async function installationToken(cfg, now) {
   const res = await gh(`${API}/app/installations/${id}/access_tokens`, {
     method: "POST",
     headers: { ...apiHeaders(jwt), "Content-Type": "application/json" },
-    body: JSON.stringify({ repositories: [cfg.repo], permissions: INSTALLATION_PERMISSIONS }),
+    body: JSON.stringify({ repositories: [cfg.repo], permissions }),
   });
   if (!res.ok) throw new Error(`installation token failed: HTTP ${res.status}`);
   const got = decodeInstallationToken(await res.json().catch(() => null));
   if (!got) throw new Error("installation token response malformed");
-  cachedToken = { key, ...got };
-  return got.token;
+  return got;
+}
+
+/**
+ * Starts the ingest workflow on the repository's default branch, for the
+ * owner's "Update GitHub now" button. The token is minted for this call
+ * alone with `DISPATCH_PERMISSIONS` and not kept; the run then renders the
+ * ledger into the issues' summary comments, as the scheduled run would.
+ *
+ * @param {GitHubConfig} cfg Settings.
+ * @param {number} now Unix time in milliseconds.
+ * @returns {Promise<void>}
+ * @throws {Error} When the App lacks `actions: write` on the repository, the
+ *   repository or its default branch cannot be read, or GitHub refuses the
+ *   dispatch (for example the workflow has no `workflow_dispatch` trigger).
+ */
+export async function dispatchIngest(cfg, now) {
+  const { token } = await mintToken(cfg, now, DISPATCH_PERMISSIONS);
+  const repo = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}`, { headers: apiHeaders(token) });
+  if (!repo.ok) throw new Error(`repository lookup failed: HTTP ${repo.status}`);
+  const ref = decodeDefaultBranch(await repo.json().catch(() => null));
+  if (ref === null) throw new Error("repository default branch missing");
+  const res = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/actions/workflows/${INGEST_WORKFLOW}/dispatches`, {
+    method: "POST",
+    headers: { ...apiHeaders(token), "Content-Type": "application/json" },
+    body: JSON.stringify({ ref }),
+  });
+  if (res.status !== 204) throw new Error(`workflow dispatch failed: HTTP ${res.status}`);
 }
 
 /** Forgets the cached installation token (tests). */
@@ -245,6 +305,23 @@ export function decodeInstallationToken(data) {
   if (!isObject(data) || typeof data.token !== "string" || data.token === "" || typeof data.expires_at !== "string") return null;
   const expiresAt = Date.parse(data.expires_at);
   return Number.isFinite(expiresAt) ? { token: data.token, expiresAt } : null;
+}
+
+/** A branch name GitHub accepts as a workflow dispatch `ref`. */
+const BRANCH_NAME = /^(?!.*(?:\.\.|\/\/|@\{|\.lock$|\/$|\.$))[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/;
+
+/**
+ * Reads `GET /repos/{owner}/{repo}` for the default branch the ingest
+ * workflow is started on.
+ *
+ * @param {unknown} data Parsed body.
+ * @returns {string | null} The branch name when it is a plain git branch
+ *   name (no `..`, `//`, `@{`, trailing `/` or `.`, `.lock` suffix, control
+ *   or space characters), else null.
+ */
+export function decodeDefaultBranch(data) {
+  if (!isObject(data) || typeof data.default_branch !== "string") return null;
+  return BRANCH_NAME.test(data.default_branch) ? data.default_branch : null;
 }
 
 /**

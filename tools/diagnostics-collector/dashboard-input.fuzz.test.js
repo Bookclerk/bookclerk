@@ -34,6 +34,11 @@
 // - decodeReleases and decodeCompare read GitHub's release list and compare
 //   answers; their results decide which release an issue's fix is recorded
 //   under, and so which reports count as regressions.
+// - parseLinkAction reads the ledger correction forms members post; its
+//   result decides which report is attached to, detached from or moved
+//   between which issues, and which issue is merged into which.
+// - decodeDefaultBranch reads GitHub's repository answer; its result is the
+//   ref the owner's "Update GitHub now" button starts the ingest workflow on.
 //
 // Each result is checked against an independent oracle written without the
 // module's own helpers.
@@ -46,6 +51,7 @@ import {
   DIAGNOSTICS_LABEL,
   decodeAccessToken,
   decodeCompare,
+  decodeDefaultBranch,
   decodeIssue,
   decodeReleases,
   fixedInLabel,
@@ -59,6 +65,7 @@ import {
   decodeUser,
   membershipDecision,
 } from "./dashboard/github.js";
+import { LINK_ACTIONS, MAX_FORM_CHARS, MAX_ISSUE_NUMBER, parseLinkAction } from "./dashboard/links.js";
 import { eventLog } from "./dashboard/pages.js";
 import { decodeListPage } from "./dashboard/storage.js";
 import { memberFromRow, SESSION_COOKIE, sessionToken } from "./dashboard/session.js";
@@ -252,7 +259,9 @@ function isDashboardPage(next) {
     return false;
   }
   const pages = new Set(["/dash", "/reports", "/issues"]);
-  const page = pages.has(url.pathname) || (url.pathname.startsWith("/reports/") && UUID.test(url.pathname.slice(9)));
+  const page = pages.has(url.pathname)
+    || (url.pathname.startsWith("/reports/") && UUID.test(url.pathname.slice(9)))
+    || (url.pathname.startsWith("/issues/") && /^[1-9][0-9]{0,8}$/.test(url.pathname.slice(8)));
   return (
     url.origin === ORACLE_ORIGIN &&
     page &&
@@ -1049,6 +1058,143 @@ describe("issue notice decoding", () => {
         const data = mutateJson(rand, issues[Math.floor(rand() * issues.length)]);
         checkIssue(data, `issue ${n}: ${JSON.stringify(data)?.slice(0, 300)}`);
       }
+    }
+  });
+});
+
+/**
+ * Oracle for parseLinkAction: re-derives the expected correction with a
+ * separate walk over the body (split on `&`, first value per name, `+` as
+ * space, strict percent-decoding) and separate rules for each field.
+ *
+ * @param {unknown} body Form body.
+ * @param {string} label Input name for failure messages.
+ */
+function checkLinkAction(body, label) {
+  const got = parseLinkAction(body);
+  if (typeof body !== "string" || body.length > MAX_FORM_CHARS) {
+    assert.equal(got, null, label);
+    return;
+  }
+  const fields = new Map();
+  for (const pair of body.split("&")) {
+    if (pair === "") continue;
+    const eq = pair.indexOf("=");
+    const rawName = eq < 0 ? pair : pair.slice(0, eq);
+    const rawValue = eq < 0 ? "" : pair.slice(eq + 1);
+    const decode = (t) => {
+      try {
+        return decodeURIComponent(t.replace(/\+/g, " "));
+      } catch {
+        return "\u0000malformed";
+      }
+    };
+    const name = decode(rawName);
+    if (!fields.has(name)) fields.set(name, decode(rawValue));
+  }
+  const action = fields.get("action");
+  const number = (t) => (t !== undefined && /^[1-9][0-9]{0,9}$/.test(t) && Number(t) <= MAX_ISSUE_NUMBER ? Number(t) : null);
+  const issue = number(fields.get("issue"));
+  const report = fields.get("report");
+  const to = number(fields.get("to"));
+  const ok = LINK_ACTIONS.includes(action) && issue !== null
+    && (action === "merge" || (report !== undefined && UUID.test(report)))
+    && (!(action === "move" || action === "merge") || (to !== null && to !== issue));
+  if (!ok) {
+    assert.equal(got, null, label);
+    return;
+  }
+  assert.deepEqual(
+    got,
+    {
+      action,
+      issue,
+      report: action === "merge" ? null : report,
+      to: action === "move" || action === "merge" ? to : null,
+    },
+    label,
+  );
+}
+
+const LINK_FRAGMENTS = [
+  "&", "=", "+", "%", "%2", "%30", "action=", "issue=", "report=", "to=", "back=", "attach", "detach", "move", "merge",
+  "400", "403", "0", "-1", "1000000001", "7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4", "A", "f", "-", " ", "\u0000", "é",
+];
+
+/**
+ * Oracle for decodeDefaultBranch: checks GitHub's `default_branch` field
+ * against git's branch-name rules written out one by one.
+ *
+ * @param {unknown} data Parsed repository answer.
+ * @param {string} label Input name for failure messages.
+ */
+function checkDefaultBranch(data, label) {
+  const got = decodeDefaultBranch(data);
+  const name = data !== null && typeof data === "object" && !Array.isArray(data) ? data.default_branch : undefined;
+  let ok = typeof name === "string" && name.length >= 1 && name.length <= 255;
+  if (ok) {
+    for (const ch of name) {
+      if (!/[A-Za-z0-9._/-]/.test(ch)) ok = false;
+    }
+    if (!/^[A-Za-z0-9]/.test(name)) ok = false;
+    if (name.includes("..") || name.includes("//") || name.includes("@{")) ok = false;
+    if (name.endsWith("/") || name.endsWith(".") || name.endsWith(".lock")) ok = false;
+  }
+  assert.equal(got, ok ? name : null, label);
+}
+
+const BRANCH_FRAGMENTS = ['"default_branch"', "main", "/", "..", ".", "@{", ".lock", " ", "\u0000", "-", "é", '"', "{", "}", "null", "7"];
+
+describe("ledger correction form", () => {
+  it("replays the seed corpus", () => {
+    const all = seeds("link_action");
+    assert.ok(all.length > 0);
+    for (const [name, raw] of all) checkLinkAction(raw, name);
+    const byName = Object.fromEntries(all);
+    assert.deepEqual(parseLinkAction(byName["move.txt"]), { action: "move", issue: 400, report: "7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4", to: 403 });
+    assert.deepEqual(parseLinkAction(byName["merge.txt"]), { action: "merge", issue: 400, report: null, to: 403 });
+    assert.equal(parseLinkAction(byName["encoded_digits.txt"])?.issue, 400);
+    for (const off of ["merge_self.txt", "missing_report.txt", "upper_uuid.txt", "bad_action.txt", "zero_issue.txt", "huge_target.txt", "plus_issue.txt", "too_long.txt", "empty.txt", "json.txt"]) {
+      assert.equal(parseLinkAction(byName[off]), null, off);
+    }
+    for (const v of [null, undefined, 7, {}, ["action=merge"]]) checkLinkAction(v, String(v));
+  });
+
+  it("holds the oracle under seeded mutation", () => {
+    const all = seeds("link_action").map(([, raw]) => raw);
+    const rand = rng(20261025);
+    for (let n = 0; n < 6000; n++) {
+      const input = mutate(rand, all[Math.floor(rand() * all.length)], LINK_FRAGMENTS);
+      checkLinkAction(input, `iteration ${n}: ${JSON.stringify(input).slice(0, 300)}`);
+    }
+  });
+});
+
+describe("repository decoding", () => {
+  it("replays the seed corpus", () => {
+    const all = seeds("repository");
+    assert.ok(all.length > 0);
+    for (const [name, raw] of all) checkDefaultBranch(JSON.parse(raw), name);
+    const byName = Object.fromEntries(all);
+    assert.equal(decodeDefaultBranch(JSON.parse(byName["normal.json"])), "main");
+    assert.equal(decodeDefaultBranch(JSON.parse(byName["slash.json"])), "release/1.x");
+    for (const off of ["dotdot.json", "trailing_slash.json", "lock.json", "space.json", "leading_dot.json", "at_brace.json", "missing.json", "number.json", "null.json", "array.json", "long.json"]) {
+      assert.equal(decodeDefaultBranch(JSON.parse(byName[off])), null, off);
+    }
+  });
+
+  it("holds the oracle under seeded mutation", () => {
+    const all = seeds("repository").map(([, raw]) => raw);
+    const rand = rng(20261026);
+    for (let n = 0; n < 3000; n++) {
+      const text = mutate(rand, all[Math.floor(rand() * all.length)], BRANCH_FRAGMENTS);
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = text;
+      }
+      checkDefaultBranch(data, `iteration ${n}: ${text.slice(0, 300)}`);
     }
   });
 });
