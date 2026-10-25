@@ -229,20 +229,15 @@ fn matches_the_store_record_of_the_title_and_author() {
 }
 
 #[test]
-fn searches_stay_short() {
+fn searches_suit_each_store() {
     assert_eq!(
         search_query(&lookup("demo-mistborn-1-part-1")),
-        "Mistborn: The Final Empire sanderson"
+        "mistborn the final empire"
     );
     assert_eq!(
         search_query(&lookup("demo-project-hail-mary")),
         "Project Hail Mary weir"
     );
-    // GraphicAudio cuts a query at about 40 characters.
-    assert!(lookups()
-        .iter()
-        .filter(|l| l.store == "graphicaudio")
-        .all(|l| search_query(l).len() <= 40));
 }
 
 #[test]

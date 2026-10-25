@@ -381,9 +381,9 @@ fn lists_author(authors: &str, wanted: &str) -> bool {
 /// The catalog search text for `lookup`: the title up to any `(…)` part,
 /// then the author's surname.
 ///
-/// Kept short on purpose: GraphicAudio's catalog cuts a query at about 40
-/// characters and then answers with its whole catalog, and every store
-/// finds a title from its main words and the author's surname.
+/// GraphicAudio's catalog search finds a title only from its plain words:
+/// punctuation or an author name makes it fall back to an alphabetical
+/// listing of the whole catalog. Its query is the title's words alone.
 #[must_use]
 pub fn search_query(lookup: &Lookup) -> String {
     let title = lookup
@@ -392,6 +392,9 @@ pub fn search_query(lookup: &Lookup) -> String {
         .next()
         .unwrap_or(lookup.title)
         .trim();
+    if lookup.store == GRAPHIC_AUDIO.id {
+        return words(title).join(" ");
+    }
     match words(lookup.author).pop() {
         Some(surname) => format!("{title} {surname}"),
         None => title.to_owned(),
