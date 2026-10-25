@@ -3,14 +3,25 @@
 //! bookclerkd, with the same environment, so it opens the same library the
 //! same way the CLI does.
 
-use std::process::ExitCode;
-
 use std::collections::BTreeMap;
+use std::process::ExitCode;
+use std::time::Duration;
 
 use anyhow::{bail, Context};
 use bookclerk_config::Config;
-use bookclerk_demo_seed::{seed, Seeded, STOREFRONTS};
+use bookclerk_demo_seed::{
+    best_match, distinct_records, lookups, seed, Lookup, Seeded, StoreRecords, STOREFRONTS,
+};
+use bookclerk_plugin_host::{HostControlPlane, SessionServices};
+use bookclerk_source::{CatalogHit, CatalogSearchOpts};
 use chrono::Utc;
+
+/// How long all catalog lookups together may take. The visitor is waiting
+/// on this, and the seed falls back to its own fields for whatever is left.
+const LOOKUP_BUDGET: Duration = Duration::from_secs(15);
+
+/// Search hits asked of a storefront per title.
+const LOOKUP_HITS: usize = 10;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -62,10 +73,27 @@ async fn run() -> anyhow::Result<()> {
             );
         }
     }
+    if host
+        .store
+        .get_user_by_login_name(bookclerk_demo_seed::SAMPLE_LOGIN)
+        .await?
+        .is_some()
+    {
+        eprintln!("bookclerk-demo-seed: already seeded");
+        return Ok(());
+    }
+    let records = store_records(&host).await;
+    let missing = lookups().len().saturating_sub(records.len());
+    if missing > 0 {
+        eprintln!(
+            "bookclerk-demo-seed: {missing} title(s) had no storefront record; using sample fields"
+        );
+    }
     match seed(
         &host.store,
         &host.session.cluster_id,
         &plugin_keys,
+        &records,
         Utc::now(),
     )
     .await?
@@ -77,4 +105,59 @@ async fn run() -> anyhow::Result<()> {
         Seeded::AlreadySeeded => eprintln!("bookclerk-demo-seed: already seeded"),
     }
     Ok(())
+}
+
+/// Looks every sample title up in its storefront's public catalog, through
+/// the storefront plugins, within [`LOOKUP_BUDGET`].
+///
+/// Never fails: a storefront that does not start, a search that errors or
+/// times out, or a title with no confident match just has no record.
+async fn store_records(host: &HostControlPlane) -> StoreRecords {
+    let sources = match host
+        .load_sources(&SessionServices::from_outbox(Some(&host.store)))
+        .await
+    {
+        Ok(sources) => sources,
+        Err(err) => {
+            eprintln!(
+                "bookclerk-demo-seed: storefronts did not start ({err}); using sample fields"
+            );
+            return StoreRecords::new();
+        }
+    };
+    let searches = lookups().into_iter().map(|lookup| {
+        let source = sources.get(lookup.store);
+        async move {
+            let source = source?;
+            let opts = CatalogSearchOpts {
+                query: format!("{} {}", lookup.title, lookup.author),
+                region: "us".into(),
+                limit: LOOKUP_HITS,
+                ..CatalogSearchOpts::default()
+            };
+            let hits = match source.search_catalog(&opts).await {
+                Ok(hits) => hits,
+                Err(err) => {
+                    tracing::warn!(store = lookup.store, %err, "catalog search failed");
+                    return None;
+                }
+            };
+            best_match(&lookup, &hits).map(|hit| (lookup, hit.clone()))
+        }
+    });
+    let found: Vec<Option<(Lookup, CatalogHit)>> =
+        match tokio::time::timeout(LOOKUP_BUDGET, futures::future::join_all(searches)).await {
+            Ok(found) => found,
+            Err(_) => {
+                eprintln!("bookclerk-demo-seed: storefront lookups timed out; using sample fields");
+                Vec::new()
+            }
+        };
+    distinct_records(
+        found
+            .into_iter()
+            .flatten()
+            .map(|(lookup, hit)| (lookup.key, hit))
+            .collect(),
+    )
 }

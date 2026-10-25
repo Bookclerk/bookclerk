@@ -1,6 +1,8 @@
 //! Local text embeddings stored as f32 LE blobs in SQLite.
 
+use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use bookclerk_library::{LibraryStore, WorkRecord};
 use sha2::{Digest, Sha256};
@@ -12,6 +14,14 @@ pub const MODEL_ALL_MINILM_L6_V2_Q: &str = "all-minilm-l6-v2-q";
 
 /// Local hash embedder id used when ONNX is unavailable / disabled.
 pub const MODEL_LOCAL_HASH_V1: &str = "local-hash-v1";
+
+/// Set once the ONNX runtime has panicked while loading in this process.
+///
+/// `ort` panics instead of returning an error when `libonnxruntime` cannot be
+/// loaded, and the panic poisons its global mutex, so every later attempt
+/// panics with "Mutex poisoned". After the first panic, [`open_embedder`]
+/// goes straight to the hash embedder for the rest of the process.
+static ONNX_PANICKED: AtomicBool = AtomicBool::new(false);
 
 /// Resolve the configured model id.
 ///
@@ -440,18 +450,74 @@ pub fn open_embedder(
     intra_threads: usize,
     prefer_onnx: bool,
 ) -> Result<Box<dyn Embedder>> {
-    if prefer_onnx {
-        match OnnxEmbedder::open(models_dir, intra_threads) {
-            Ok(e) => return Ok(Box::new(e)),
-            Err(err) => {
+    open_embedder_with(&ONNX_PANICKED, models_dir, intra_threads, prefer_onnx)
+}
+
+/// [`open_embedder`] with the "runtime panicked" flag passed in, so tests can
+/// use their own flag instead of the process-wide one.
+///
+/// # Arguments
+///
+/// * `onnx_panicked` - Set when an ONNX load panicked; when set, ONNX is skipped.
+/// * `models_dir` - Directory that holds (or will hold) embedding model files.
+/// * `intra_threads` - ONNX intra-op thread count (clamped to at least 1).
+/// * `prefer_onnx` - When true, try MiniLM ONNX first and fall back to hash embeddings on failure.
+///
+/// # Returns
+///
+/// The ONNX embedder when it loads, otherwise the local-hash embedder.
+///
+/// # Errors
+///
+/// Currently never fails; the `Result` matches [`open_embedder`].
+fn open_embedder_with(
+    onnx_panicked: &AtomicBool,
+    models_dir: &Path,
+    intra_threads: usize,
+    prefer_onnx: bool,
+) -> Result<Box<dyn Embedder>> {
+    if prefer_onnx && !onnx_panicked.load(Ordering::Acquire) {
+        // The model and cache path are owned by the closure's caller and are
+        // not reused after a panic, so asserting unwind safety is sound.
+        match panic::catch_unwind(AssertUnwindSafe(|| {
+            OnnxEmbedder::open(models_dir, intra_threads)
+        })) {
+            Ok(Ok(e)) => return Ok(Box::new(e)),
+            Ok(Err(err)) => {
                 tracing::warn!(
                     error = %err,
                     "ONNX MiniLM embedder unavailable; falling back to local-hash embeddings"
                 );
             }
+            Err(payload) => {
+                onnx_panicked.store(true, Ordering::Release);
+                tracing::warn!(
+                    error = panic_message(payload.as_ref()),
+                    "ONNX runtime failed to load; using local-hash embeddings until restart"
+                );
+            }
         }
     }
     Ok(Box::new(HashEmbedder::new(384)))
+}
+
+/// Text of a caught panic payload, for the fallback warning.
+///
+/// # Arguments
+///
+/// * `payload` - Payload returned by [`panic::catch_unwind`].
+///
+/// # Returns
+///
+/// The panic message when it was a string, otherwise a fixed placeholder.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s
+    } else {
+        "non-string panic payload"
+    }
 }
 
 #[cfg(test)]
@@ -472,5 +538,21 @@ mod tests {
         let v = vec![0.1f32, -0.2, 0.3];
         let back = bytes_to_vector(&vector_to_bytes(&v));
         assert_eq!(v, back);
+    }
+
+    #[test]
+    fn panic_message_reads_string_payloads() {
+        let caught = panic::catch_unwind(|| panic!("Mutex poisoned")).unwrap_err();
+        assert_eq!(panic_message(caught.as_ref()), "Mutex poisoned");
+        let owned = panic::catch_unwind(|| panic!("{}", String::from("dylib"))).unwrap_err();
+        assert_eq!(panic_message(owned.as_ref()), "dylib");
+    }
+
+    #[test]
+    fn open_embedder_skips_onnx_after_a_runtime_panic() {
+        let panicked = AtomicBool::new(true);
+        let dir = std::env::temp_dir().join("bookclerk-discover-onnx-panicked");
+        let embedder = open_embedder_with(&panicked, &dir, 1, true).unwrap();
+        assert_eq!(embedder.model_id(), MODEL_LOCAL_HASH_V1);
     }
 }

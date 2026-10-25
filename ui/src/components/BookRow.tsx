@@ -35,7 +35,13 @@ export function BookRow({
   busy: boolean;
   showAcquire?: boolean;
 }) {
-  const [coverFailed, setCoverFailed] = useState(false);
+  // Local sidecar first (acquired titles), then the storefront's cover art,
+  // then the Bookclerk mark.
+  const remote = book.cover_url?.trim();
+  const covers = [coverUrl(book.uuid)];
+  if (remote) covers.push(remote.startsWith("//") ? `https:${remote}` : remote);
+  const [coverIndex, setCoverIndex] = useState(0);
+  const coverFailed = coverIndex >= covers.length;
   const meta = [book.authors, book.narrators ? `narr. ${book.narrators}` : null]
     .filter(Boolean)
     .join(" · ");
@@ -59,10 +65,10 @@ export function BookRow({
           />
         ) : (
           <img
-            src={coverUrl(book.uuid)}
+            src={covers[coverIndex]}
             alt=""
             className="h-full w-full object-cover"
-            onError={() => setCoverFailed(true)}
+            onError={() => setCoverIndex((i) => i + 1)}
           />
         )}
       </button>

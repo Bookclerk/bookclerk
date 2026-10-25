@@ -11,8 +11,12 @@ starts, the image runs `bookclerk-demo-seed` (`crates/bookclerk-demo-seed`),
 which adds a second library user, Sam, with accounts at Audible, Libro.fm,
 Chirp and GraphicAudio, ten well-known audiobooks bought from them, four
 wishlist items, and a branch, `sams-nas`, that shared four more titles and
-has been offline for three days. Titles, authors and narrators are real;
-product ids are made up (`demo-…`) and the accounts hold no tokens. It writes through the
+has been offline for three days. The seed first looks each title up in its
+store's public catalog through the storefront plugins (the search Discover
+uses, at most 15 seconds) and writes the record the store returns, so
+product ids, cover art and descriptions match the store. A title it cannot
+find keeps built-in fields under a made-up `demo-…` id. The accounts hold no
+tokens. It writes through the
 library code of the same commit, never raw SQL, and its test runs against a
 fresh database in CI, so a schema change that breaks it fails there.
 

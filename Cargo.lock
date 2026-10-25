@@ -1597,10 +1597,13 @@ dependencies = [
  "bookclerk-node-proto",
  "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-host",
+ "bookclerk-source",
  "chrono",
+ "futures",
  "sea-orm",
  "tempfile",
  "tokio",
+ "tracing",
  "tracing-subscriber",
 ]
 
