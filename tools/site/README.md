@@ -4,8 +4,8 @@ The public website: a landing page for people who want to use Bookclerk, a
 download page, and the documentation with its generated API reference under
 `/docs/`. It is plain HTML and CSS with no client-side scripts of its own, served by a
 Cloudflare Worker named **`bookclerk-site`** on the domain in the `DOMAIN`
-organization variable. `build.mjs` writes the static pages; the Worker
-(`entry.mjs` → `worker.js`) renders each docs page at request time from the
+organization variable. `build.ts` writes the static pages; the Worker
+(`entry.ts` → `worker.ts`) renders each docs page at request time from the
 docs repository [`Bookclerk/bookclerk-docs`](../../docs/ci.md#docs-publishing),
 and picks between a page's HTML and its Markdown version.
 
@@ -37,7 +37,7 @@ instead of `main`'s.
 
 ```bash
 npm ci
-npm test
+npm run typecheck && npm test
 SITE_COMMIT=$(git rev-parse HEAD) npm run build      # writes dist/ and generated/
 npx wrangler dev                                       # docs pages need network access to GitHub
 ```
@@ -68,29 +68,35 @@ cd audit && npm ci && node audit.mjs      # --chrome <path> or CHROME_PATH picks
   requests), with their licenses and the fallback metrics `site.css` uses to
   keep the layout from shifting while they load; see its README.
 - Docs pages – see [Docs](#docs) below. `src/doc.html` is their template,
-  `render.mjs` renders them (shared by the build and the Worker), and
-  `docs.mjs` reads the local `docs/` for the build. `NAV` in `render.mjs`
+  `render.ts` renders them (shared by the build and the Worker), and
+  `docs.ts` reads the local `docs/` for the build. `NAV` in `render.ts`
   orders the sidebar; a doc in `docs/` missing from it is listed under "More".
 - `src/index.md`, `src/download.md`, `src/404.md` – Markdown versions of
   those pages, rendered with the same template syntax. Keep them in step with
   the HTML: a test checks that every `<h2>` of the page is a `##` section of
   its Markdown version.
-- `worker.js` – the docs route and content negotiation (see below).
+- `worker.ts` – the docs route and content negotiation (see below).
   `wrangler.toml` runs it only for page paths (`run_worker_first`). It
   compresses what it answers with (Brotli, else gzip) itself, because
   Cloudflare's edge leaves `text/markdown` uncompressed; files served without
   it are compressed by the edge. Its `Accept-Encoding` parser is an
-  untrusted-input boundary: `fuzz.test.mjs` replays the seeds in
+  untrusted-input boundary: `fuzz.test.ts` replays the seeds in
   `fuzz/accept_encoding/` and fuzzes mutations of them against an
   independent oracle (`docs/ci.md#fuzzing`).
-  `entry.mjs` binds it to `generated/docs-shell.json`, which `npm run build`
+  `entry.ts` binds it to `generated/docs-shell.json`, which `npm run build`
   writes (gitignored), so build before `wrangler dev` or `deploy`.
+  `generated/docs-shell.d.json.ts`, checked in, types that file so the
+  Worker type-checks before a build.
+- TypeScript – every module here is strict TypeScript (`tsconfig.json`).
+  Wrangler bundles the Worker from the `.ts` sources and Node (22.18 or
+  later) runs the build and the tests by stripping the types, so nothing is
+  compiled; `npm run typecheck` runs `tsc`, and CI runs it before the tests.
 - `src/_headers` – security headers, and Markdown and `llms.txt` content
   types. The CSP allows no script except Cloudflare Web Analytics, which the
   edge injects into each page: `script-src https://static.cloudflareinsights.com`
   for the beacon and `connect-src https://cloudflareinsights.com` beside
   `'self'` for its reports. That beacon is the one approved exception to the
-  site's no-third-party-requests rule. `SECURITY_HEADERS` in `worker.js`
+  site's no-third-party-requests rule. `SECURITY_HEADERS` in `worker.ts`
   carries the same policy, and a test keeps the two equal.
 - Brand assets are copied from `assets/brand/` at build time.
 
@@ -121,7 +127,7 @@ versions.
   page: the "docs could not be loaded" page in the site's look (Markdown for
   Markdown readers), linking to the same doc in the docs repository on
   GitHub, with `Retry-After: 60`, `no-store` and `noindex`.
-- Each page is rendered into the shell `build.mjs` bakes from `src/doc.html`
+- Each page is rendered into the shell `build.ts` bakes from `src/doc.html`
   (`%%name%%` holes take escaped values, `<!--name-->` markers take the
   rendered parts). Links between docs stay in the same version, links to
   other repository files go to GitHub at the version's ref, and raw HTML in
@@ -143,13 +149,13 @@ versions.
 ## Search engines, link previews and agents
 
 - Every page gets a `<title>`, description, canonical link, Open Graph and
-  `twitter:card` tags (from `PAGES` in `build.mjs`, or from each doc: its
+  `twitter:card` tags (from `PAGES` in `build.ts`, or from each doc: its
   introduction, else its section names). The 404 page is `noindex`.
 - JSON-LD: the home page describes the site, its organization, the app
   (`SoftwareApplication` with the feature cards as `featureList`), its source
   code and the FAQ (`FAQPage`); each doc is a `TechArticle` with a
   breadcrumb. The features and questions are read from the rendered home page
-  (`homeFacts` in `build.mjs`), so structured data never says anything a
+  (`homeFacts` in `build.ts`), so structured data never says anything a
   visitor cannot see on the page. Search engines treat text shown only to
   crawlers as cloaking, so keep it that way.
 - `sitemap.xml` lists every indexable page; `robots.txt` allows all crawlers and points to it.

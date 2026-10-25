@@ -542,6 +542,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         site = str(ctx.workspace / "tools" / "site")
         return [
             Command("npm ci (tools/site)", ["npm", "ci"], cwd=site),
+            Command("tsc (tools/site)", ["npm", "run", "typecheck"], cwd=site),
             Command("npm test (tools/site)", ["npm", "test"], cwd=site),
         ]
     if check == "site_audit":

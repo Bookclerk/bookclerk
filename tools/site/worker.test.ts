@@ -1,4 +1,4 @@
-// Tests for worker.js: Accept parsing, path mapping and the responses the
+// Tests for worker.ts: Accept parsing, path mapping and the responses the
 // Worker gives for HTML and Markdown requests, against a real build served
 // by a stand-in for the ASSETS binding and the repository's docs/ served by
 // a stand-in for the docs repository. Run with `npm test`.
@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { after, before, test } from "node:test";
 
-import { build, PAGES } from "./build.mjs";
+import { build, PAGES } from "./build.ts";
 import {
   acceptWeights,
   docsTarget,
@@ -22,13 +22,16 @@ import {
   pickEncoding,
   prefersMarkdown,
   SECURITY_HEADERS,
-} from "./worker.js";
+} from "./worker.ts";
+import type { DocsFetch, Env, PageCache } from "./worker.ts";
+import type { BuildEnv } from "./build.ts";
+import type { DocsShell } from "./render.ts";
 
 /** This directory. */
 const HERE = new URL(".", import.meta.url).pathname;
 
 /** Release state after two releases: v0.2.0 is the default docs version. */
-const ENV = {
+const ENV: BuildEnv = {
   SITE_COMMIT: "b6adae4d0123456789abcdef0123456789abcdef",
   SITE_BUILT_ON: "2026-10-23",
   SITE_RELEASE_TAG: "v0.2.0",
@@ -40,7 +43,7 @@ const ENV = {
 const DOCS = join(HERE, "..", "..", "docs");
 
 /** Generated pages the stand-in docs repository adds to docs/. */
-const GENERATED = {
+const GENERATED: Readonly<Record<string, string>> = {
   "api/rust/demo/index.md": "# Crate `demo`\n\nA demo crate. See [the SDK](../../typescript/README.md) and [`Thing`](#thing).\n\n## Thing\n",
 };
 
@@ -48,14 +51,19 @@ const GENERATED = {
 const BROWSER = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
 
 /** Content types the stand-in assets serve, by extension. */
-const TYPES = { ".html": "text/html; charset=utf-8", ".md": "text/markdown; charset=utf-8", ".css": "text/css" };
+const TYPES: Readonly<Record<string, string>> = { ".html": "text/html; charset=utf-8", ".md": "text/markdown; charset=utf-8", ".css": "text/css" };
 
-let root;
-let dist;
-let shell;
+/** Temporary directory holding the build. */
+let root = "";
+
+/** The built dist/. */
+let dist = "";
+
+/** The docs shell the build baked. */
+let shell: DocsShell;
 
 /** URLs the stand-in docs repository was asked for. */
-const fetched = [];
+const fetched: string[] = [];
 
 /** Refs the stand-in docs repository holds. */
 const REFS = new Set(["main", "v0.1.0", "v0.2.0"]);
@@ -67,10 +75,10 @@ const REFS = new Set(["main", "v0.1.0", "v0.2.0"]);
  * TypeError for anything other than "follow" or "manual", so a stand-in that
  * accepted it would hide a Worker that fails on every docs request.
  *
- * @param {RequestInit} init Fetch options.
+ * @param init - Fetch options.
  * @throws {TypeError} When `redirect` is not "follow" or "manual".
  */
-function assertWorkersFetchInit(init) {
+function assertWorkersFetchInit(init: RequestInit): void {
   if (init.redirect !== undefined && init.redirect !== "follow" && init.redirect !== "manual") {
     throw new TypeError(`Invalid redirect value ${init.redirect}`);
   }
@@ -80,18 +88,19 @@ function assertWorkersFetchInit(init) {
  * Serves the repository's docs/ as raw.githubusercontent.com serves the docs
  * repository.
  *
- * @param {string} url The file's URL.
- * @param {RequestInit & {cf?: object}} init Fetch options.
- * @returns {Promise<Response>} The file, or 404.
+ * @param url - The file's URL.
+ * @param init - Fetch options.
+ * @returns The file, or 404.
  */
-async function docsFetch(url, init) {
+async function docsFetch(url: string, init: RequestInit): Promise<Response> {
   fetched.push(url);
   assertWorkersFetchInit(init);
   assert.ok(url.startsWith(DOCS_RAW_BASE), url);
-  const [ref, ...rest] = url.slice(DOCS_RAW_BASE.length).split("/");
+  const [ref = "", ...rest] = url.slice(DOCS_RAW_BASE.length).split("/");
   const file = rest.join("/");
   if (!REFS.has(ref)) return new Response("404: Not Found", { status: 404 });
-  if (file in GENERATED) return new Response(GENERATED[file]);
+  const generated = Object.hasOwn(GENERATED, file) ? GENERATED[file] : undefined;
+  if (generated !== undefined) return new Response(generated);
   const path = join(DOCS, file);
   if (!file.includes("..") && existsSync(path) && statSync(path).isFile()) return new Response(readFileSync(path));
   return new Response("404: Not Found", { status: 404 });
@@ -101,10 +110,10 @@ async function docsFetch(url, init) {
  * Serves dist/ roughly as Workers static assets do with
  * `html_handling = "auto-trailing-slash"` and `not_found_handling = "404-page"`.
  *
- * @param {Request | URL | string} input The asset request.
- * @returns {Promise<Response>} The asset, or 404.html with status 404.
+ * @param input - The asset request.
+ * @returns The asset, or 404.html with status 404.
  */
-async function assetsFetch(input) {
+async function assetsFetch(input: Request | URL | string): Promise<Response> {
   const path = new URL(input instanceof Request ? input.url : input).pathname;
   const candidates = path.endsWith("/") ? [`${path}index.html`] : [path, `${path}.html`];
   for (const candidate of candidates) {
@@ -113,21 +122,21 @@ async function assetsFetch(input) {
       return new Response(readFileSync(file), { status: 200, headers: { "Content-Type": TYPES[extname(file)] ?? "application/octet-stream" } });
     }
   }
-  return new Response(readFileSync(join(dist, "404.html")), { status: 404, headers: { "Content-Type": TYPES[".html"] } });
+  return new Response(readFileSync(join(dist, "404.html")), { status: 404, headers: { "Content-Type": "text/html; charset=utf-8" } });
 }
 
 /** Bindings for handle(). */
-const env = { ASSETS: { fetch: assetsFetch } };
+const env: Env = { ASSETS: { fetch: assetsFetch } };
 
 /**
  * Sends one request through the Worker.
  *
- * @param {string} path Request path.
- * @param {string} accept Accept header.
- * @param {string} [method] HTTP method.
- * @returns {Promise<Response>} The Worker's response.
+ * @param path - Request path.
+ * @param accept - Accept header.
+ * @param method - HTTP method.
+ * @returns The Worker's response.
  */
-function get(path, accept, method = "GET") {
+function get(path: string, accept: string, method = "GET"): Promise<Response> {
   return handle(new Request(`https://bookclerk.app${path}`, { method, headers: { Accept: accept } }), env, { shell, fetch: docsFetch });
 }
 
@@ -208,10 +217,10 @@ test("docsTarget reads versions and paths", () => {
 
 test("every page with a Markdown version runs the Worker and is mapped", () => {
   const toml = readFileSync(join(HERE, "wrangler.toml"), "utf8");
-  const routes = JSON.parse(toml.match(/^run_worker_first = (\[.*\])$/m)[1]);
+  const routes: string[] = JSON.parse(toml.match(/^run_worker_first = (\[.*\])$/m)?.[1] ?? "[]");
   assert.ok(routes.includes("/docs/*") && routes.includes("/docs"));
   for (const page of PAGES.filter((p) => p.markdown)) {
-    assert.ok(routes.includes(page.markdown), `${page.markdown} not in run_worker_first`);
+    assert.ok(routes.includes(page.markdown ?? ""), `${page.markdown} not in run_worker_first`);
     if (page.alternate === false) continue;
     assert.equal(PAGE_MARKDOWN.get(page.path), page.markdown, page.path);
     assert.ok(routes.includes(page.path), `${page.path} not in run_worker_first`);
@@ -220,7 +229,7 @@ test("every page with a Markdown version runs the Worker and is mapped", () => {
 });
 
 test("the Worker sends the same security headers as src/_headers", () => {
-  const block = readFileSync(join(HERE, "src", "_headers"), "utf8").split(/\n\s*\n/)[0];
+  const block = readFileSync(join(HERE, "src", "_headers"), "utf8").split(/\n\s*\n/)[0] ?? "";
   const fromFile = Object.fromEntries(
     block
       .split("\n")
@@ -233,8 +242,8 @@ test("the Worker sends the same security headers as src/_headers", () => {
 });
 
 test("the CSP lets only Cloudflare's analytics beacon run and report", () => {
-  const directives = Object.fromEntries(
-    SECURITY_HEADERS["Content-Security-Policy"].split(";").map((d) => {
+  const directives: Record<string, string[]> = Object.fromEntries(
+    (SECURITY_HEADERS["Content-Security-Policy"] ?? "").split(";").map((d) => {
       const [name, ...sources] = d.trim().split(/\s+/);
       return [name, sources];
     }),
@@ -256,11 +265,11 @@ test("a Markdown request for a page gets its Markdown version", async () => {
     ["/docs/", "# ", "/docs/"],
     ["/docs/getting-started", "# ", "/docs/getting-started"],
     ["/docs/v/main/plugins", "# ", "/docs/v/main/plugins"],
-  ]) {
+  ] as const) {
     const res = await get(path, "text/markdown");
     assert.equal(res.status, 200, path);
     assert.equal(res.headers.get("Content-Type"), "text/markdown; charset=utf-8", path);
-    assert.match(res.headers.get("Vary"), /Accept/, path);
+    assert.match(res.headers.get("Vary") ?? "", /Accept/, path);
     assert.equal(res.headers.get("Link"), `<https://bookclerk.app${canonical}>; rel="canonical"`, path);
     assert.equal(res.headers.get("Content-Security-Policy"), SECURITY_HEADERS["Content-Security-Policy"], path);
     const body = await res.text();
@@ -285,7 +294,7 @@ test("the other spelling of a doc path redirects to the doc", async () => {
     ["/docs/plugins.html", "/docs/plugins"],
     ["/docs/v/v0.2.0/plugins?x=1", "/docs/plugins?x=1"],
     ["/docs", "/docs/"],
-  ]) {
+  ] as const) {
     const res = await get(path, BROWSER);
     assert.equal(res.status, 301, path);
     assert.equal(res.headers.get("Location"), `https://bookclerk.app${location}`, path);
@@ -316,7 +325,7 @@ test("only listed versions and plain paths reach the docs repository", async () 
 test("a browser gets the doc in the site's page, with its version and sidebar", async () => {
   const res = await get("/docs/plugins", BROWSER);
   assert.equal(res.status, 200);
-  assert.match(res.headers.get("Content-Type"), /^text\/html/);
+  assert.match(res.headers.get("Content-Type") ?? "", /^text\/html/);
   assert.equal(res.headers.get("Vary"), "Accept, Accept-Encoding");
   assert.equal(res.headers.get("Cache-Control"), "public, max-age=300, s-maxage=86400");
   assert.equal(res.headers.get("X-Robots-Tag"), null);
@@ -326,16 +335,16 @@ test("a browser gets the doc in the site's page, with its version and sidebar", 
   assert.doesNotMatch(html, /%%|<!--doc-|\{\{/);
   assert.match(html, /<link rel="canonical" href="https:\/\/bookclerk.app\/docs\/plugins">/);
   assert.match(html, /<meta property="og:type" content="article">/);
-  const description = html.match(/<meta name="description" content="([^"]*)">/)[1];
+  const description = html.match(/<meta name="description" content="([^"]*)">/)?.[1] ?? "";
   assert.ok(description.length > 40 && description.length <= 160, description);
   assert.match(html, /<a href="\/docs\/plugins" aria-current="page">/);
   assert.match(html, /<strong>v0.2.0 \(latest\)<\/strong>/);
   assert.match(html, /href="\/docs\/v\/main\/plugins"/);
   assert.match(html, /href="https:\/\/github.com\/Bookclerk\/bookclerk\/blob\/v0.2.0\/docs\/plugins.md"/);
   assert.ok(!html.includes("doc-note"), "a release's docs carry no development note");
-  const ld = JSON.parse(html.match(/<script type="application\/ld\+json">(.*?)<\/script>/)[1]);
-  assert.equal(ld["@graph"][0]["@type"], "TechArticle");
-  assert.equal(ld["@graph"][0].url, "https://bookclerk.app/docs/plugins");
+  const ld: { "@graph": { "@type": string; url: string }[] } = JSON.parse(html.match(/<script type="application\/ld\+json">(.*?)<\/script>/)?.[1] ?? "{}");
+  assert.equal(ld["@graph"][0]?.["@type"], "TechArticle");
+  assert.equal(ld["@graph"][0]?.url, "https://bookclerk.app/docs/plugins");
 
   const home = await get("/", "*/*");
   assert.equal(home.headers.get("Link"), '<https://bookclerk.app/index.md>; rel="alternate"; type="text/markdown"');
@@ -388,12 +397,13 @@ test("a failing or oversized docs repository answer is a 503, not a page", async
         },
       }),
     );
-  const moved = async (url, init) => {
+  const moved: DocsFetch = async (_url, init) => {
     assertWorkersFetchInit(init);
     assert.equal(init.redirect, "manual");
     return new Response(null, { status: 302, headers: { Location: "https://example.com/" } });
   };
-  for (const fetcher of [down, big, endless, moved, async () => Promise.reject(new Error("network"))]) {
+  const fetchers: DocsFetch[] = [down, big, endless, moved, async () => Promise.reject(new Error("network"))];
+  for (const fetcher of fetchers) {
     const req = new Request("https://bookclerk.app/docs/plugins", { headers: { Accept: BROWSER } });
     const res = await handle(req, env, { shell, fetch: fetcher });
     assert.equal(res.status, 503);
@@ -425,7 +435,7 @@ test("the docs-unavailable page keeps the site's look and links to the doc on Gi
   assert.match(await md.text(), /<https:\/\/github\.com\/Bookclerk\/bookclerk-docs\/blob\/v0\.2\.0\/api\/README\.md>/);
 
   // When the first key is missing and the next one fails, GitHub gets the one that failed.
-  const missingThenDown = async (url) => (url.endsWith("/plugins.md") ? new Response("404: Not Found", { status: 404 }) : down());
+  const missingThenDown: DocsFetch = async (url) => (url.endsWith("/plugins.md") ? new Response("404: Not Found", { status: 404 }) : down());
   const later = await (await handle(new Request("https://bookclerk.app/docs/plugins", { headers: { Accept: BROWSER } }), env, { shell, fetch: missingThenDown })).text();
   assert.ok(later.includes('href="https://github.com/Bookclerk/bookclerk-docs/blob/v0.2.0/plugins/README.md"'), "links the key that failed");
   assert.ok(later.includes('href="/docs/plugins"'), "tries the page's own URL again");
@@ -436,13 +446,13 @@ test("the docs-unavailable page keeps the site's look and links to the doc on Gi
 });
 
 test("rendered pages are cached per deploy, version, path and format", async () => {
-  const store = new Map();
-  const cache = {
+  const store = new Map<string, Response>();
+  const cache: PageCache = {
     match: async (req) => store.get(req.url)?.clone(),
     put: async (req, res) => void store.set(req.url, res),
   };
-  const pending = [];
-  const deps = { shell, fetch: docsFetch, cache, waitUntil: (p) => pending.push(p) };
+  const pending: Promise<unknown>[] = [];
+  const deps = { shell, fetch: docsFetch, cache, waitUntil: (p: Promise<unknown>) => void pending.push(p) };
   fetched.length = 0;
   for (let i = 0; i < 2; i += 1) {
     const res = await handle(new Request("https://bookclerk.app/docs/plugins?utm=x", { headers: { Accept: BROWSER } }), env, deps);
@@ -466,10 +476,10 @@ test("Markdown files fetched by name point at their pages", async () => {
 });
 
 test("a Markdown request passes conditional headers to the assets", async () => {
-  const seen = [];
-  const spy = {
+  const seen: (string | null)[] = [];
+  const spy: Env = {
     ASSETS: {
-      fetch: async (input, init) => {
+      fetch: async (_input, init) => {
         seen.push(new Headers(init?.headers).get("If-None-Match"));
         return new Response(null, { status: 304, headers: { ETag: '"abc"' } });
       },
@@ -483,7 +493,7 @@ test("a Markdown request passes conditional headers to the assets", async () => 
 
 test("other methods are passed to the assets unchanged", async () => {
   const res = await get("/", "text/markdown", "POST");
-  assert.match(res.headers.get("Content-Type"), /^text\/html/);
+  assert.match(res.headers.get("Content-Type") ?? "", /^text\/html/);
 });
 
 test("pickEncoding prefers Brotli, honours quality values and refuses q=0", () => {
@@ -506,12 +516,12 @@ test("text answers are compressed for clients that accept it", async () => {
     ["/docs/plugins", BROWSER],
     ["/docs/plugins", "text/markdown"],
     ["/docs/no-such-doc", BROWSER],
-  ]) {
+  ] as const) {
     const req = new Request(`https://bookclerk.app${path}`, { headers: { Accept: accept, "Accept-Encoding": "gzip, deflate, br" } });
     const res = await handle(req, env, { shell, fetch: docsFetch });
     assert.equal(res.headers.get("Content-Encoding"), "br", `${path} as ${accept}`);
     assert.equal(res.headers.get("Content-Length"), null, path);
-    assert.ok(res.headers.get("Vary").split(", ").includes("Accept-Encoding"), path);
+    assert.ok((res.headers.get("Vary") ?? "").split(", ").includes("Accept-Encoding"), path);
   }
   const gzipOnly = await handle(new Request("https://bookclerk.app/", { headers: { "Accept-Encoding": "gzip" } }), env, { shell });
   assert.equal(gzipOnly.headers.get("Content-Encoding"), "gzip");
@@ -524,14 +534,15 @@ test("text answers are compressed for clients that accept it", async () => {
 test("compression leaves alone what must not or need not be compressed", async () => {
   const plain = await get("/", BROWSER);
   assert.equal(plain.headers.get("Content-Encoding"), null);
-  assert.ok(plain.headers.get("Vary").split(", ").includes("Accept-Encoding"));
-  const answer = (headers, status = 200) => ({ ASSETS: { fetch: async () => new Response(status === 304 ? null : "x", { status, headers }) } });
-  for (const [headers, status] of [
+  assert.ok((plain.headers.get("Vary") ?? "").split(", ").includes("Accept-Encoding"));
+  const answer = (headers: Record<string, string>, status = 200): Env => ({ ASSETS: { fetch: async () => new Response(status === 304 ? null : "x", { status, headers }) } });
+  const cases: [Record<string, string>, number][] = [
     [{ "Content-Type": "text/html", "Content-Encoding": "gzip" }, 200],
     [{ "Content-Type": "text/html", "Cache-Control": "public, no-transform" }, 200],
     [{ "Content-Type": "image/png" }, 200],
     [{ "Content-Type": "text/html", "Content-Range": "bytes 0-0/20" }, 206],
-  ]) {
+  ];
+  for (const [headers, status] of cases) {
     const req = new Request("https://bookclerk.app/download", { headers: { "Accept-Encoding": "br" } });
     const res = await handle(req, answer(headers, status), { shell });
     assert.equal(res.headers.get("Content-Encoding"), headers["Content-Encoding"] ?? null, JSON.stringify(headers));
@@ -545,7 +556,7 @@ test("compression leaves alone what must not or need not be compressed", async (
     assert.equal(res.status, 304);
     assert.equal(res.headers.get("Content-Encoding"), null);
     assert.equal(res.headers.get("ETag"), 'W/"abc"');
-    assert.ok(res.headers.get("Vary").split(", ").includes("Accept-Encoding"));
+    assert.ok((res.headers.get("Vary") ?? "").split(", ").includes("Accept-Encoding"));
   }
   const md304 = await handle(
     new Request("https://bookclerk.app/download", { headers: { Accept: "text/markdown", "Accept-Encoding": "gzip", "If-None-Match": 'W/"abc"' } }),

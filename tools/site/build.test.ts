@@ -1,4 +1,4 @@
-// Tests for build.mjs: release-state validation, the template engine and the
+// Tests for build.ts: release-state validation, the template engine and the
 // rendered pages in both release states. Run with `npm test`.
 
 import assert from "node:assert/strict";
@@ -7,33 +7,74 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { build, docsVersions, escapeHtml, inlineLogo, jsonLd, plainText, readState, render, templateContext } from "./build.mjs";
+import { build, docsVersions, escapeHtml, inlineLogo, jsonLd, plainText, readState, render, templateContext } from "./build.ts";
+import type { BuildEnv } from "./build.ts";
+import type { DocsShell } from "./render.ts";
+
+/** One node of the home page's JSON-LD `@graph`, as these tests read it. */
+interface LdNode {
+  /** The schema.org type. */
+  "@type": string;
+  /** SoftwareApplication: its version, when there is a release. */
+  softwareVersion?: string;
+  /** SoftwareApplication: one `name: text` entry per feature card. */
+  featureList?: string[];
+  /** Organization: the contact address. */
+  email?: string;
+  /** FAQPage: the questions and answers. */
+  mainEntity?: { name: string; acceptedAnswer: { text: string } }[];
+}
+
+/**
+ * Reads the JSON-LD graph of a rendered page.
+ *
+ * @param html - The page.
+ * @returns The graph's nodes.
+ */
+function ldGraph(html: string): LdNode[] {
+  const json = html.match(/<script type="application\/ld\+json">(.*?)<\/script>/)?.[1];
+  assert.ok(json !== undefined, "the page has no JSON-LD");
+  const parsed: { "@graph": LdNode[] } = JSON.parse(json);
+  return parsed["@graph"];
+}
+
+/**
+ * Finds the node of one type in a JSON-LD graph.
+ *
+ * @param graph - The graph's nodes.
+ * @param type - The schema.org type.
+ * @returns The node.
+ */
+function ldNode(graph: readonly LdNode[], type: string): LdNode {
+  const node = graph.find((n) => n["@type"] === type);
+  assert.ok(node !== undefined, `no ${type} node`);
+  return node;
+}
 
 /** Release state of a repository with no release yet. */
-const PRE = { SITE_COMMIT: "b6adae4d0123456789abcdef0123456789abcdef", SITE_BUILT_ON: "2026-10-23" };
+const PRE: BuildEnv = { SITE_COMMIT: "b6adae4d0123456789abcdef0123456789abcdef", SITE_BUILT_ON: "2026-10-23" };
 
 /** Release state after a first release. */
-const REL = { ...PRE, SITE_RELEASE_TAG: "v0.1.0", SITE_RELEASE_DATE: "2026-12-01", SITE_DOCS_VERSIONS: "v0.1.0" };
+const REL: BuildEnv = { ...PRE, SITE_RELEASE_TAG: "v0.1.0", SITE_RELEASE_DATE: "2026-12-01", SITE_DOCS_VERSIONS: "v0.1.0" };
 
 /** A deployment with a hosted demo. */
-const DEMO = { SITE_DEMO_URL: "https://demo.bookclerk.app" };
+const DEMO: BuildEnv = { SITE_DEMO_URL: "https://demo.bookclerk.app" };
 
 /**
  * Builds the site into a temporary directory.
  *
- * @param {Record<string, string>} env Release state.
- * @returns {{files: string[], page: (name: string) => string, shell: () => object, done: () => void}}
- *   The published files, a reader for one of them, the docs shell and a
+ * @param env - Release state.
+ * @returns The published files, a reader for one of them, the docs shell and a
  *   clean-up.
  */
-function built(env) {
+function built(env: BuildEnv): { files: string[]; page: (name: string) => string; shell: () => DocsShell; done: () => void } {
   const root = mkdtempSync(join(tmpdir(), "bookclerk-site-"));
   const dir = join(root, "dist");
   const shellFile = join(root, "docs-shell.json");
   const files = build(env, dir, shellFile);
   return {
     files,
-    page: (name) => readFileSync(join(dir, name), "utf8"),
+    page: (name: string) => readFileSync(join(dir, name), "utf8"),
     shell: () => JSON.parse(readFileSync(shellFile, "utf8")),
     done: () => rmSync(root, { recursive: true, force: true }),
   };
@@ -50,7 +91,7 @@ test("readState treats a missing tag as no release", () => {
 
 test("readState accepts a release tag with its date", () => {
   assert.deepEqual(readState(REL).release, { tag: "v0.1.0", date: "2026-12-01" });
-  assert.equal(readState({ ...REL, SITE_RELEASE_TAG: "v1.2.3-rc.1" }).release.tag, "v1.2.3-rc.1");
+  assert.equal(readState({ ...REL, SITE_RELEASE_TAG: "v1.2.3-rc.1" }).release?.tag, "v1.2.3-rc.1");
 });
 
 test("readState rejects malformed values", () => {
@@ -87,11 +128,11 @@ test("render fails on unknown names instead of leaving holes", () => {
 });
 
 test("repository links follow the docs' release tag", () => {
-  assert.match(templateContext(readState(PRE)).values.blobBase, /\/blob\/[0-9a-f]{7,40}\/$/);
-  assert.match(templateContext(readState(REL)).values.blobBase, /\/blob\/v0\.1\.0\/$/);
+  assert.match(templateContext(readState(PRE)).values["blobBase"] ?? "", /\/blob\/[0-9a-f]{7,40}\/$/);
+  assert.match(templateContext(readState(REL)).values["blobBase"] ?? "", /\/blob\/v0\.1\.0\/$/);
   const unpublished = templateContext(readState({ ...REL, SITE_DOCS_VERSIONS: "" }));
-  assert.match(unpublished.values.blobBase, /\/blob\/[0-9a-f]{7,40}\/$/);
-  assert.equal(unpublished.values.docsVersion, "Development (main)");
+  assert.match(unpublished.values["blobBase"] ?? "", /\/blob\/[0-9a-f]{7,40}\/$/);
+  assert.equal(unpublished.values["docsVersion"], "Development (main)");
 });
 
 test("inlineLogo keeps the wordmark recolorable and drops editor attributes", () => {
@@ -241,7 +282,7 @@ test("readState defaults the origin and accepts another", () => {
 
 test("jsonLd cannot close its script element", () => {
   const out = jsonLd({ name: "</script><script>alert(1)</script>" });
-  assert.equal(out.match(/<\/script>/g).length, 1);
+  assert.equal(out.match(/<\/script>/g)?.length, 1);
   assert.ok(out.includes("\\u003c/script>"));
   assert.equal(jsonLd(null), "");
 });
@@ -253,29 +294,29 @@ test("pages carry search and preview metadata", () => {
     assert.match(home, /<link rel="canonical" href="https:\/\/example.org\/">/);
     assert.match(home, /<meta property="og:image" content="https:\/\/example.org\/social-card.png">/);
     assert.match(home, /<meta name="twitter:card" content="summary_large_image">/);
-    const ld = JSON.parse(home.match(/<script type="application\/ld\+json">(.*?)<\/script>/)[1]);
-    const app = ld["@graph"].find((n) => n["@type"] === "SoftwareApplication");
-    assert.ok(app);
+    const ld = ldGraph(home);
+    const app = ldNode(ld, "SoftwareApplication");
     assert.ok(!("softwareVersion" in app));
-    assert.equal(ld["@graph"].find((n) => n["@type"] === "Organization").email, "contact@bookclerk.app");
+    assert.equal(ldNode(ld, "Organization").email, "contact@bookclerk.app");
     // Structured data repeats the page; it never says what visitors cannot see.
     // The page body only: the JSON-LD itself sits in <head>.
     const text = plainText(home.slice(home.indexOf("<main"), home.indexOf("</main>")));
-    const faq = ld["@graph"].find((n) => n["@type"] === "FAQPage");
-    assert.equal(faq.mainEntity.length, 6);
-    for (const q of faq.mainEntity) {
+    const questions = ldNode(ld, "FAQPage").mainEntity ?? [];
+    assert.equal(questions.length, 6);
+    for (const q of questions) {
       assert.ok(text.includes(q.name), q.name);
       assert.ok(text.includes(q.acceptedAnswer.text), q.acceptedAnswer.text);
     }
-    assert.equal(app.featureList.length, 6);
-    for (const f of app.featureList) assert.ok(text.includes(f.split(": ")[1]), f);
+    const features = app.featureList ?? [];
+    assert.equal(features.length, 6);
+    for (const f of features) assert.ok(text.includes(f.split(": ")[1] ?? f), f);
     assert.equal((home.match(/<title>/g) ?? []).length, 1);
 
     const missing = site.page("404.html");
     assert.match(missing, /<meta name="robots" content="noindex">/);
     assert.ok(!missing.includes('rel="canonical"'));
 
-    // Docs pages are filled in by the Worker (worker.test.mjs checks them).
+    // Docs pages are filled in by the Worker (worker.test.ts checks them).
     const shell = site.shell();
     assert.equal(shell.origin, "https://example.org");
     assert.match(shell.html, /<link rel="canonical" href="https:\/\/example.org%%pagePath%%">/);
@@ -290,8 +331,7 @@ test("pages carry search and preview metadata", () => {
 test("a release build states its version in structured data", () => {
   const site = built(REL);
   try {
-    const ld = JSON.parse(site.page("index.html").match(/<script type="application\/ld\+json">(.*?)<\/script>/)[1]);
-    assert.equal(ld["@graph"].find((n) => n["@type"] === "SoftwareApplication").softwareVersion, "0.1.0");
+    assert.equal(ldNode(ldGraph(site.page("index.html")), "SoftwareApplication").softwareVersion, "0.1.0");
     assert.ok(!site.page("index.html").includes("noarchive"));
   } finally {
     site.done();
@@ -334,7 +374,7 @@ test("home and download pages have Markdown versions that keep their sections", 
       for (const [html, md] of [
         ["index.html", "index.md"],
         ["download.html", "download.md"],
-      ]) {
+      ] as const) {
         const page = site.page(html);
         const markdown = site.page(md);
         assert.match(page, new RegExp(`<link rel="alternate" type="text/markdown" href="/${md}"`));
@@ -378,10 +418,10 @@ test("the docs shell has every hole and marker the Worker fills, once", () => {
       assert.equal(shell.html.split(`<!--${marker}-->`).length, 2, marker);
     }
     assert.ok(!shell.html.includes("{{"));
-    assert.equal(shell.versions[0].ref, "v0.1.0");
+    assert.equal(shell.versions[0]?.ref, "v0.1.0");
     const api = shell.nav.find((g) => g.title === "API reference");
     assert.deepEqual(
-      api.pages.map((p) => p.key),
+      api?.pages.map((p) => p.key),
       ["api/README", "api/typescript/README", "api/python/README", "api/rust/bookclerk_plugin_sdk/index", "api/rust/README"],
     );
   } finally {

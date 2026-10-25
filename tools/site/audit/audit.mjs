@@ -3,7 +3,7 @@
 // `site_audit`). See docs/ci.md#website-checks.
 //
 // It serves tools/site/dist through the real Worker under `wrangler dev`
-// (audit/entry.mjs, with docs read from this checkout's docs/ through a local
+// (audit/entry.ts, with docs read from this checkout's docs/ through a local
 // server instead of the docs repository, so nothing leaves the machine), then:
 //
 //   Lighthouse  every page, mobile and desktop; pages that answer 200 must
@@ -169,7 +169,7 @@ function writeWranglerConfig() {
   const base = readFileSync(join(SITE, "wrangler.toml"), "utf8");
   const replacements = [
     [/^name = .*$/m, 'name = "bookclerk-site-audit"'],
-    [/^main = .*$/m, 'main = "entry.mjs"'],
+    [/^main = .*$/m, 'main = "entry.ts"'],
     [/^directory = .*$/m, 'directory = "../dist"'],
   ];
   let config = base;

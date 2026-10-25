@@ -22,7 +22,7 @@ not_shipped = [
   { path = "examples/plugins-echo-native-python/requirements-dev.txt", why = "reference example, dev tooling" },
   { path = "scripts/tests/requirements.txt", why = "CI test tooling" },
   { path = "tools/site/audit/package-lock.json", why = "CI-only Lighthouse and axe-core audit of the website; never deployed or packaged" },
-  { path = "tools/site/package-lock.json", why = "website build and deploy tooling (markdown-it, wrangler); the site is static HTML with no client-side npm code" },
+  { path = "tools/site/package-lock.json", why = "website build, type-check and deploy tooling (markdown-it, TypeScript and its type packages, wrangler); the site is static HTML with no client-side npm code" },
 ]
 
 # Shipped artifacts. `ecosystem` and `package` go into the advisory's
