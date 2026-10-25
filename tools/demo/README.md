@@ -8,9 +8,11 @@ downloaded, and their store sign-ins are revoked when the session ends.
 
 The library is not empty when the visitor arrives. Before `bookclerkd`
 starts, the image runs `bookclerk-demo-seed` (`crates/bookclerk-demo-seed`),
-which adds a second library user, Sam, with ten public-domain titles from a
-Libro.fm account, four wishlist items, and a branch, `sams-nas`, that shared
-four more titles and has been offline for three days. It writes through the
+which adds a second library user, Sam, with accounts at Audible, Libro.fm,
+Chirp and GraphicAudio, ten well-known audiobooks bought from them, four
+wishlist items, and a branch, `sams-nas`, that shared four more titles and
+has been offline for three days. Titles, authors and narrators are real;
+product ids are made up (`demo-…`) and the accounts hold no tokens. It writes through the
 library code of the same commit, never raw SQL, and its test runs against a
 fresh database in CI, so a schema change that breaks it fails there.
 

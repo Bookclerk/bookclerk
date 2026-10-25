@@ -464,6 +464,9 @@ export function SettingsPage({
     pluginValues: Record<string, string>;
   } | null>(null);
   const [users, setUsers] = useState<ListedUser[]>([]);
+  // False until the first user list arrives, so the panel shows that it is
+  // loading rather than an empty list.
+  const [usersLoaded, setUsersLoaded] = useState(false);
   const [usersError, setUsersError] = useState<string | null>(null);
   const [usersBusy, setUsersBusy] = useState(false);
   const [sessions, setSessions] = useState<ListedSession[]>([]);
@@ -798,6 +801,15 @@ export function SettingsPage({
       setOperatorLoadError(
         err instanceof Error ? err.message : "Failed to load operator settings",
       );
+      if (showUserAdmin) {
+        // The user list is read after operator settings, so it was skipped;
+        // say so on the User Management tab, which hides the page error.
+        setUsersError(
+          err instanceof Error
+            ? `Users were not loaded: ${err.message}`
+            : "Users were not loaded",
+        );
+      }
       setError(
         err instanceof Error
           ? err.message
@@ -805,6 +817,9 @@ export function SettingsPage({
       );
     } finally {
       setLoading(false);
+      // Also when operator settings failed before the user list was read:
+      // the panel then shows an empty list beside the error, not a spinner.
+      setUsersLoaded(true);
     }
   }, [canManageOperator, onSessionExpired, prefetchConsentCoverage, showUserAdmin]);
 
@@ -1492,6 +1507,7 @@ export function SettingsPage({
           <UserManagementPanel
             users={users}
             setUsers={setUsers}
+            loading={!usersLoaded}
             busy={usersBusy}
             setBusy={setUsersBusy}
             error={usersError}

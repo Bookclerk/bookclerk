@@ -5,14 +5,26 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use bookclerk_demo_seed::{seed, SeedReport, Seeded, SAMPLE_BRANCH, SAMPLE_LOGIN};
+use std::collections::{BTreeMap, BTreeSet};
+
+use bookclerk_demo_seed::{seed, SeedReport, Seeded, SAMPLE_BRANCH, SAMPLE_LOGIN, STOREFRONTS};
 use bookclerk_library::control_plane::branch_title_counts;
 use bookclerk_library::entities::nodes;
 use bookclerk_library::{AcquireStatus, LibraryStore, UserRole};
 use sea_orm::EntityTrait;
 
-/// Plugin key the test pretends the Libro.fm plugin was enrolled under.
-const PLUGIN: &str = "path:file:///opt/bookclerk/storefronts/libro#libro";
+/// Plugin keys the test pretends the storefronts were enrolled under.
+fn plugin_keys() -> BTreeMap<&'static str, String> {
+    STOREFRONTS
+        .iter()
+        .map(|front| {
+            (
+                front.id,
+                format!("path:file:///opt/bookclerk/storefronts/{0}#{0}", front.id),
+            )
+        })
+        .collect()
+}
 
 /// A fresh library in `dir`, schema applied.
 async fn fresh(dir: &std::path::Path) -> LibraryStore {
@@ -29,8 +41,10 @@ async fn fresh(dir: &std::path::Path) -> LibraryStore {
 async fn seeds_a_member_with_books_wishlist_and_an_offline_branch() {
     let dir = tempfile::tempdir().unwrap();
     let store = fresh(dir.path()).await;
+    let keys = plugin_keys();
+    let now = chrono::Utc::now();
 
-    let Seeded::Wrote(report) = seed(&store, "cluster", PLUGIN).await.unwrap() else {
+    let Seeded::Wrote(report) = seed(&store, "cluster", &keys, now).await.unwrap() else {
         panic!("a fresh library should be seeded");
     };
     assert_eq!(
@@ -56,7 +70,12 @@ async fn seeds_a_member_with_books_wishlist_and_an_offline_branch() {
     assert_eq!(books.len(), 10);
     assert!(books
         .iter()
-        .all(|b| b.plugin_key == PLUGIN && b.acquire_status == AcquireStatus::Acquired));
+        .all(|b| b.acquire_status == AcquireStatus::Acquired
+            && keys.get(b.source.as_str()) == Some(&b.plugin_key)
+            && b.narrators.is_some()));
+    // Every storefront the demo ships has titles in the library.
+    let sources: BTreeSet<&str> = books.iter().map(|b| b.source.as_str()).collect();
+    assert_eq!(sources, keys.keys().copied().collect());
     assert!(books.iter().all(|b| b.product_id.starts_with("demo-")));
 
     let identity = store
@@ -87,7 +106,7 @@ async fn seeds_a_member_with_books_wishlist_and_an_offline_branch() {
     assert_eq!(store.count_owners().await.unwrap(), 0);
 
     assert_eq!(
-        seed(&store, "cluster", PLUGIN).await.unwrap(),
+        seed(&store, "cluster", &keys, now).await.unwrap(),
         Seeded::AlreadySeeded
     );
     assert_eq!(
@@ -98,4 +117,23 @@ async fn seeds_a_member_with_books_wishlist_and_an_offline_branch() {
             .len(),
         10
     );
+}
+
+#[tokio::test]
+async fn leaves_out_the_titles_of_a_storefront_that_is_not_enrolled() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = fresh(dir.path()).await;
+    let mut keys = plugin_keys();
+    // Audible has three library titles and two branch titles.
+    keys.remove("audible");
+
+    let Seeded::Wrote(report) = seed(&store, "cluster", &keys, chrono::Utc::now())
+        .await
+        .unwrap()
+    else {
+        panic!("a fresh library should be seeded");
+    };
+    assert_eq!((report.books, report.branch_titles), (7, 2));
+    let books = store.list_books(Some("sam@example.com")).await.unwrap();
+    assert!(books.iter().all(|b| b.source != "audible"));
 }
