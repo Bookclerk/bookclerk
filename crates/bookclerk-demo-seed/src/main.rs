@@ -5,9 +5,12 @@
 
 use std::process::ExitCode;
 
-use anyhow::Context;
+use std::collections::BTreeMap;
+
+use anyhow::{bail, Context};
 use bookclerk_config::Config;
-use bookclerk_demo_seed::{seed, Seeded, SAMPLE_STORE};
+use bookclerk_demo_seed::{seed, Seeded, STOREFRONTS};
+use chrono::Utc;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -32,20 +35,41 @@ async fn main() -> ExitCode {
 ///
 /// # Errors
 ///
-/// Returns an error when the library cannot be opened, the sample
-/// storefront is not enrolled, or a write fails.
+/// Returns an error when the library cannot be opened, no storefront is
+/// enrolled, or a write fails.
 async fn run() -> anyhow::Result<()> {
     let config = Config::load(None, None).context("load config")?;
     let host = bookclerk_plugin_host::open_host_control_plane(&config)
         .await
         .context("open the library")?;
-    let plugin_key = host
-        .enrolled
+    let plugin_keys: BTreeMap<&str, String> = STOREFRONTS
         .iter()
-        .find(|e| e.plugin.alias() == SAMPLE_STORE)
-        .map(|e| e.plugin.plugin_key().to_string())
-        .with_context(|| format!("the `{SAMPLE_STORE}` plugin is not enrolled"))?;
-    match seed(&host.store, &host.session.cluster_id, &plugin_key).await? {
+        .filter_map(|front| {
+            host.enrolled
+                .iter()
+                .find(|e| e.plugin.alias() == front.id)
+                .map(|e| (front.id, e.plugin.plugin_key().to_string()))
+        })
+        .collect();
+    if plugin_keys.is_empty() {
+        bail!("no storefront plugin is enrolled");
+    }
+    for front in STOREFRONTS {
+        if !plugin_keys.contains_key(front.id) {
+            eprintln!(
+                "bookclerk-demo-seed: the `{}` plugin is not enrolled; leaving its titles out",
+                front.id
+            );
+        }
+    }
+    match seed(
+        &host.store,
+        &host.session.cluster_id,
+        &plugin_keys,
+        Utc::now(),
+    )
+    .await?
+    {
         // No ids or counts: they come from the library and stay out of logs.
         Seeded::Wrote(_) => {
             eprintln!("bookclerk-demo-seed: added the sample member, books, branch and wishlist")

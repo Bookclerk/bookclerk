@@ -9,6 +9,7 @@ import {
 import { titleDetailFromBook } from "@/lib/titleDetail";
 import { BookRow } from "@/components/BookRow";
 import { JobsStrip } from "@/components/JobsStrip";
+import { WaveformThrobber } from "@/components/WaveformThrobber";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -65,6 +66,9 @@ export function LibraryPage({
   role?: AuthRole;
 }) {
   const [books, setBooks] = useState<BookRecord[]>([]);
+  // False until the first load answers, so the list shows that it is
+  // loading rather than "no books".
+  const [loaded, setLoaded] = useState(false);
   const [total, setTotal] = useState(0);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [jobs, setJobs] = useState<JobInfo[]>([]);
@@ -169,12 +173,14 @@ export function LibraryPage({
           loadedRef.current = fetched.length;
           setBooks(fetched);
         }
+        setLoaded(true);
         setTotal(booksRes.total);
         setError(null);
         succeeded = true;
       } catch (err) {
         if (generation !== generationRef.current) return;
         setError(err instanceof Error ? err.message : "Failed to load library");
+        setLoaded(true);
       } finally {
         loadingRef.current = false;
         setLoadingMore(false);
@@ -434,7 +440,12 @@ export function LibraryPage({
       <div className="min-h-0 flex-1 overflow-auto">
       <main className={cn("w-full", pageWidthClass)}>
         <div className="animate-[rowIn_500ms_ease-out] bg-card shadow-[inset_0_1px_0_rgba(11,53,83,0.06)]">
-          {visibleBooks.length === 0 ? (
+          {visibleBooks.length === 0 && !loaded ? (
+            <div className="flex justify-center px-4 py-16" role="status">
+              <WaveformThrobber size="sm" />
+              <span className="sr-only">Loading the library…</span>
+            </div>
+          ) : visibleBooks.length === 0 ? (
             <p className="px-4 py-16 text-center text-sm text-ink/60">
               No books match this view.
               {canAcquire ? " Run a scan or adjust filters." : " Link a store under Accounts."}

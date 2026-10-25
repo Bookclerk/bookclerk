@@ -464,6 +464,9 @@ export function SettingsPage({
     pluginValues: Record<string, string>;
   } | null>(null);
   const [users, setUsers] = useState<ListedUser[]>([]);
+  // False until the first user list arrives, so the panel shows that it is
+  // loading rather than an empty list.
+  const [usersLoaded, setUsersLoaded] = useState(false);
   const [usersError, setUsersError] = useState<string | null>(null);
   const [usersBusy, setUsersBusy] = useState(false);
   const [sessions, setSessions] = useState<ListedSession[]>([]);
@@ -782,6 +785,7 @@ export function SettingsPage({
       } else {
         setUsers([]);
       }
+      setUsersLoaded(true);
 
       try {
         setSessions(await listSessions());
@@ -1492,6 +1496,7 @@ export function SettingsPage({
           <UserManagementPanel
             users={users}
             setUsers={setUsers}
+            loading={!usersLoaded}
             busy={usersBusy}
             setBusy={setUsersBusy}
             error={usersError}

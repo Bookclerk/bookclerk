@@ -5,17 +5,22 @@
 //! before bookclerkd starts, the demo image runs this crate's binary once to
 //! add a second library user, Sam, who:
 //!
-//! - has a Libro.fm account linked, with public-domain titles already in the
-//!   library;
+//! - has an account at each storefront the image ships (Audible, Libro.fm,
+//!   Chirp and GraphicAudio), with well-known audiobooks from each already in
+//!   the library;
 //! - keeps a wishlist;
 //! - owns a branch, "sams-nas", that shared part of its catalog and then
 //!   went offline (its last heartbeat is days old).
 //!
+//! The titles, authors and narrators are real so the library looks like one
+//! a person would keep; product ids are made up (prefixed `demo-`) so none
+//! claims to be a particular storefront listing.
+//!
 //! Everything is written through the library store and the branch catalog
 //! code the daemon uses, never raw SQL, so the seed follows the schema of
 //! the commit it is built from. Nothing here signs in: Sam has no password
-//! and no claim ticket, and the branch's credential keys are placeholders
-//! that never verify a signature.
+//! and no claim ticket, the store accounts hold no tokens, and the branch's
+//! credential keys are placeholders that never verify a signature.
 
 use anyhow::{bail, Context};
 use bookclerk_library::control_plane::{
@@ -26,7 +31,9 @@ use bookclerk_library::{
     AcquireStatus, LibraryStore, NewBook, NewTitleRequest, RequestStatus, UserRole,
 };
 use bookclerk_node_proto::{CatalogFile, CatalogMetadata, CatalogTitle};
-use chrono::{Duration, Utc};
+use std::collections::BTreeMap;
+
+use chrono::{DateTime, Duration, Utc};
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter};
 
 /// Login name of the sample library user; its presence marks a seeded library.
@@ -35,11 +42,41 @@ pub const SAMPLE_LOGIN: &str = "sam";
 /// Display name of the sample library user.
 const SAMPLE_NAME: &str = "Sam Rivera";
 
-/// Plugin id (`plugin.toml` `id`) of the storefront Sam's books come from.
-pub const SAMPLE_STORE: &str = "libro";
+/// A storefront the demo image ships, by its plugin id (`plugin.toml` `id`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Storefront {
+    /// Plugin id the host enrolls the storefront under (its alias).
+    pub id: &'static str,
+    /// Name shown on Sam's account for it.
+    pub label: &'static str,
+}
 
-/// Account id of Sam's Libro.fm account. `example.com` is reserved, so it
-/// names no real person.
+/// Audible.
+const AUDIBLE: Storefront = Storefront {
+    id: "audible",
+    label: "Sam's Audible",
+};
+/// Libro.fm.
+const LIBRO: Storefront = Storefront {
+    id: "libro",
+    label: "Sam's Libro.fm",
+};
+/// Chirp.
+const CHIRP: Storefront = Storefront {
+    id: "chirp",
+    label: "Sam's Chirp",
+};
+/// GraphicAudio.
+const GRAPHIC_AUDIO: Storefront = Storefront {
+    id: "graphicaudio",
+    label: "Sam's GraphicAudio",
+};
+
+/// Every storefront Sam has an account at, in the order the accounts are added.
+pub const STOREFRONTS: [Storefront; 4] = [AUDIBLE, LIBRO, CHIRP, GRAPHIC_AUDIO];
+
+/// Account id of each of Sam's store accounts. `example.com` is reserved, so
+/// it names no real person.
 const SAMPLE_ACCOUNT: &str = "sam@example.com";
 
 /// Node id of Sam's offline branch.
@@ -48,92 +85,115 @@ pub const SAMPLE_BRANCH: &str = "sams-nas";
 /// How long ago Sam's branch last checked in, so every view shows it offline.
 const BRANCH_SILENT_FOR: Duration = Duration::days(3);
 
-/// One sample title: a public-domain work, so nothing here advertises or
-/// misattributes a real storefront product.
+/// One sample title: a real audiobook under a made-up product id.
 struct SampleTitle {
+    /// Storefront the title was bought from.
+    store: Storefront,
     /// Product id, prefixed `demo-` so it can never match a real storefront id.
     product_id: &'static str,
     /// Title of the work.
     title: &'static str,
     /// Author, as the storefront would list it.
     author: &'static str,
-    /// Series name, when the work is part of one.
+    /// Narrators, comma separated.
+    narrators: &'static str,
+    /// Series name and position, when the work is part of one.
     series: Option<(&'static str, &'static str)>,
-    /// Running time in minutes.
+    /// Running time in minutes, rounded.
     minutes: i64,
 }
 
-/// Titles already in the library from Sam's Libro.fm account.
+/// Titles already in the library from Sam's store accounts.
 const LIBRARY: &[SampleTitle] = &[
     SampleTitle {
-        product_id: "demo-pride-and-prejudice",
-        title: "Pride and Prejudice",
-        author: "Jane Austen",
+        store: AUDIBLE,
+        product_id: "demo-project-hail-mary",
+        title: "Project Hail Mary",
+        author: "Andy Weir",
+        narrators: "Ray Porter",
         series: None,
-        minutes: 709,
+        minutes: 970,
     },
     SampleTitle {
-        product_id: "demo-persuasion",
-        title: "Persuasion",
-        author: "Jane Austen",
+        store: AUDIBLE,
+        product_id: "demo-dune",
+        title: "Dune",
+        author: "Frank Herbert",
+        narrators: "Scott Brick, Orlagh Cassidy, Euan Morton, Simon Vance, Ilyana Kadushin",
+        series: Some(("Dune", "1")),
+        minutes: 1262,
+    },
+    SampleTitle {
+        store: AUDIBLE,
+        product_id: "demo-the-way-of-kings",
+        title: "The Way of Kings",
+        author: "Brandon Sanderson",
+        narrators: "Michael Kramer, Kate Reading",
+        series: Some(("The Stormlight Archive", "1")),
+        minutes: 2733,
+    },
+    SampleTitle {
+        store: LIBRO,
+        product_id: "demo-lessons-in-chemistry",
+        title: "Lessons in Chemistry",
+        author: "Bonnie Garmus",
+        narrators: "Miranda Raison",
         series: None,
-        minutes: 513,
+        minutes: 715,
     },
     SampleTitle {
-        product_id: "demo-frankenstein",
-        title: "Frankenstein",
-        author: "Mary Shelley",
+        store: LIBRO,
+        product_id: "demo-tomorrow-and-tomorrow",
+        title: "Tomorrow, and Tomorrow, and Tomorrow",
+        author: "Gabrielle Zevin",
+        narrators: "Jennifer Kim, Julian Cihi",
         series: None,
-        minutes: 520,
+        minutes: 824,
     },
     SampleTitle {
-        product_id: "demo-moby-dick",
-        title: "Moby-Dick",
-        author: "Herman Melville",
+        store: LIBRO,
+        product_id: "demo-the-midnight-library",
+        title: "The Midnight Library",
+        author: "Matt Haig",
+        narrators: "Carey Mulligan",
         series: None,
-        minutes: 1458,
+        minutes: 530,
     },
     SampleTitle {
-        product_id: "demo-study-in-scarlet",
-        title: "A Study in Scarlet",
-        author: "Arthur Conan Doyle",
-        series: Some(("Sherlock Holmes", "1")),
-        minutes: 293,
-    },
-    SampleTitle {
-        product_id: "demo-sign-of-the-four",
-        title: "The Sign of the Four",
-        author: "Arthur Conan Doyle",
-        series: Some(("Sherlock Holmes", "2")),
-        minutes: 270,
-    },
-    SampleTitle {
-        product_id: "demo-hound-of-the-baskervilles",
-        title: "The Hound of the Baskervilles",
-        author: "Arthur Conan Doyle",
-        series: Some(("Sherlock Holmes", "5")),
-        minutes: 382,
-    },
-    SampleTitle {
-        product_id: "demo-time-machine",
-        title: "The Time Machine",
-        author: "H. G. Wells",
+        store: CHIRP,
+        product_id: "demo-where-the-crawdads-sing",
+        title: "Where the Crawdads Sing",
+        author: "Delia Owens",
+        narrators: "Cassandra Campbell",
         series: None,
-        minutes: 211,
+        minutes: 732,
     },
     SampleTitle {
-        product_id: "demo-around-the-world",
-        title: "Around the World in Eighty Days",
-        author: "Jules Verne",
+        store: CHIRP,
+        product_id: "demo-the-silent-patient",
+        title: "The Silent Patient",
+        author: "Alex Michaelides",
+        narrators: "Jack Hawkins, Louise Brealey",
         series: None,
-        minutes: 431,
+        minutes: 523,
     },
     SampleTitle {
-        product_id: "demo-wizard-of-oz",
-        title: "The Wonderful Wizard of Oz",
-        author: "L. Frank Baum",
-        series: Some(("Oz", "1")),
-        minutes: 232,
+        store: GRAPHIC_AUDIO,
+        product_id: "demo-mistborn-1-part-1",
+        title: "Mistborn: The Final Empire (1 of 3)",
+        author: "Brandon Sanderson",
+        narrators: "A full cast",
+        series: Some(("Mistborn", "1")),
+        minutes: 390,
+    },
+    SampleTitle {
+        store: GRAPHIC_AUDIO,
+        product_id: "demo-mistborn-1-part-2",
+        title: "Mistborn: The Final Empire (2 of 3)",
+        author: "Brandon Sanderson",
+        narrators: "A full cast",
+        series: Some(("Mistborn", "1")),
+        minutes: 390,
     },
 ];
 
@@ -141,41 +201,49 @@ const LIBRARY: &[SampleTitle] = &[
 /// arrived, so they wait on the branch.
 const BRANCH: &[SampleTitle] = &[
     SampleTitle {
-        product_id: "demo-jane-eyre",
-        title: "Jane Eyre",
-        author: "Charlotte Brontë",
-        series: None,
-        minutes: 1131,
+        store: AUDIBLE,
+        product_id: "demo-fourth-wing",
+        title: "Fourth Wing",
+        author: "Rebecca Yarros",
+        narrators: "Rebecca Soler, Teddy Hamilton",
+        series: Some(("The Empyrean", "1")),
+        minutes: 1229,
     },
     SampleTitle {
-        product_id: "demo-dracula",
-        title: "Dracula",
-        author: "Bram Stoker",
+        store: AUDIBLE,
+        product_id: "demo-the-hobbit",
+        title: "The Hobbit",
+        author: "J. R. R. Tolkien",
+        narrators: "Andy Serkis",
         series: None,
-        minutes: 941,
+        minutes: 625,
     },
     SampleTitle {
-        product_id: "demo-treasure-island",
-        title: "Treasure Island",
-        author: "Robert Louis Stevenson",
+        store: LIBRO,
+        product_id: "demo-circe",
+        title: "Circe",
+        author: "Madeline Miller",
+        narrators: "Perdita Weeks",
         series: None,
-        minutes: 410,
+        minutes: 728,
     },
     SampleTitle {
-        product_id: "demo-little-women",
-        title: "Little Women",
-        author: "Louisa May Alcott",
+        store: CHIRP,
+        product_id: "demo-educated",
+        title: "Educated",
+        author: "Tara Westover",
+        narrators: "Julia Whelan",
         series: None,
-        minutes: 1093,
+        minutes: 730,
     },
 ];
 
 /// Works on Sam's wishlist: `(title, author)`.
 const WISHLIST: &[(&str, &str)] = &[
-    ("Middlemarch", "George Eliot"),
-    ("The Count of Monte Cristo", "Alexandre Dumas"),
-    ("Anne of Green Gables", "L. M. Montgomery"),
-    ("The Picture of Dorian Gray", "Oscar Wilde"),
+    ("Wind and Truth", "Brandon Sanderson"),
+    ("Iron Flame", "Rebecca Yarros"),
+    ("James", "Percival Everett"),
+    ("The Women", "Kristin Hannah"),
 ];
 
 /// What [`seed`] wrote, for the log and for tests.
@@ -183,7 +251,7 @@ const WISHLIST: &[(&str, &str)] = &[
 pub struct SeedReport {
     /// Library user id of Sam.
     pub user_id: i64,
-    /// Books added from Sam's Libro.fm account.
+    /// Books added from Sam's store accounts.
     pub books: usize,
     /// Titles Sam's branch shared.
     pub branch_titles: u64,
@@ -210,8 +278,11 @@ pub enum Seeded {
 ///
 /// * `store` - The open library.
 /// * `cluster_id` - The library's cluster id, recorded on the branch's node row.
-/// * `store_plugin_key` - PluginKey of the enrolled [`SAMPLE_STORE`] plugin,
-///   which owns Sam's account and books.
+/// * `plugin_keys` - PluginKey of each enrolled storefront, by plugin id
+///   ([`Storefront::id`]). A storefront missing from it gets no account and
+///   its titles are left out, so an image without one still gets the rest.
+/// * `when` - The time the library was seeded; purchase dates and the
+///   branch's last heartbeat count back from it.
 ///
 /// # Returns
 ///
@@ -224,7 +295,8 @@ pub enum Seeded {
 pub async fn seed(
     store: &LibraryStore,
     cluster_id: &str,
-    store_plugin_key: &str,
+    plugin_keys: &BTreeMap<&str, String>,
+    when: DateTime<Utc>,
 ) -> anyhow::Result<Seeded> {
     if store.get_user_by_login_name(SAMPLE_LOGIN).await?.is_some() {
         return Ok(Seeded::AlreadySeeded);
@@ -244,32 +316,42 @@ pub async fn seed(
         .await
         .context("create the sample user's identity")?;
 
-    store
-        .upsert_account(
-            store_plugin_key,
-            SAMPLE_ACCOUNT,
-            "us",
-            Some("Sam's Libro.fm"),
-            false,
-            SAMPLE_STORE,
-        )
-        .await
-        .context("add the sample account")?;
-    store
-        .link_account(identity.id, store_plugin_key, SAMPLE_ACCOUNT, SAMPLE_STORE)
-        .await
-        .context("link the sample account")?;
-    let bought = Utc::now() - Duration::days(40);
+    for front in STOREFRONTS {
+        let Some(key) = plugin_keys.get(front.id) else {
+            continue;
+        };
+        store
+            .upsert_account(
+                key,
+                SAMPLE_ACCOUNT,
+                "us",
+                Some(front.label),
+                false,
+                front.id,
+            )
+            .await
+            .with_context(|| format!("add the sample {} account", front.id))?;
+        store
+            .link_account(identity.id, key, SAMPLE_ACCOUNT, front.id)
+            .await
+            .with_context(|| format!("link the sample {} account", front.id))?;
+    }
+    let bought = when - Duration::days(40);
+    let mut books = 0;
     for (i, sample) in LIBRARY.iter().enumerate() {
+        let Some(key) = plugin_keys.get(sample.store.id) else {
+            continue;
+        };
         let mut book = NewBook::minimal(sample.product_id, SAMPLE_ACCOUNT, "us", sample.title);
         book.asin = None;
-        book.plugin_key = store_plugin_key.to_owned();
-        book.source = SAMPLE_STORE.to_owned();
+        book.plugin_key = key.clone();
+        book.source = sample.store.id.to_owned();
         book.authors = Some(sample.author.to_owned());
+        book.narrators = Some(sample.narrators.to_owned());
         book.series = sample.series.map(|(name, _)| name.to_owned());
         book.series_index = sample.series.map(|(_, index)| index.to_owned());
         book.length_minutes = Some(sample.minutes);
-        book.purchased_at = Some(bought + Duration::days(i64::try_from(i)?));
+        book.purchased_at = Some(bought + Duration::days(i64::try_from(i)? * 3));
         let record = store
             .upsert_book(&book)
             .await
@@ -284,6 +366,7 @@ pub async fn seed(
             )
             .await
             .with_context(|| format!("mark {} acquired", sample.title))?;
+        books += 1;
     }
 
     for (title, author) in WISHLIST {
@@ -307,10 +390,10 @@ pub async fn seed(
             .with_context(|| format!("wish for {title}"))?;
     }
 
-    let branch_titles = add_branch(store, cluster_id, user.id).await?;
+    let branch_titles = add_branch(store, cluster_id, user.id, when).await?;
     Ok(Seeded::Wrote(SeedReport {
         user_id: user.id,
-        books: LIBRARY.len(),
+        books,
         branch_titles,
         wishlist: WISHLIST.len(),
     }))
@@ -328,9 +411,14 @@ fn storage_key(sample: &SampleTitle) -> String {
 /// # Returns
 ///
 /// The number of titles the catalog recorded.
-async fn add_branch(store: &LibraryStore, cluster_id: &str, owner: i64) -> anyhow::Result<u64> {
-    let last_seen = (Utc::now() - BRANCH_SILENT_FOR).to_rfc3339();
-    let enrolled = (Utc::now() - Duration::days(30)).to_rfc3339();
+async fn add_branch(
+    store: &LibraryStore,
+    cluster_id: &str,
+    owner: i64,
+    when: DateTime<Utc>,
+) -> anyhow::Result<u64> {
+    let last_seen = (when - BRANCH_SILENT_FOR).to_rfc3339();
+    let enrolled = (when - Duration::days(30)).to_rfc3339();
     nodes::ActiveModel {
         node_id: Set(SAMPLE_BRANCH.into()),
         cluster_id: Set(cluster_id.into()),
@@ -404,11 +492,15 @@ async fn add_branch(store: &LibraryStore, cluster_id: &str, owner: i64) -> anyho
 fn catalog_title(sample: &SampleTitle) -> CatalogTitle {
     let key = storage_key(sample);
     CatalogTitle {
-        store: SAMPLE_STORE.into(),
+        store: sample.store.id.into(),
         product_id: sample.product_id.into(),
         metadata: CatalogMetadata {
             title: sample.title.into(),
             authors: Some(sample.author.into()),
+            narrators: Some(sample.narrators.into()),
+            series: sample.series.map(|(name, _)| name.into()),
+            series_index: sample.series.map(|(_, index)| index.into()),
+            length_minutes: Some(sample.minutes),
             ..CatalogMetadata::default()
         },
         primary_key: key.clone(),

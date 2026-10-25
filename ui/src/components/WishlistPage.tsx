@@ -55,6 +55,9 @@ export function WishlistPage({
   const [queueTitles, setQueueTitles] = useState<CatalogTitle[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // False until the first load answers, so the lists say they are loading
+  // instead of showing their empty messages.
+  const [loaded, setLoaded] = useState(false);
   const [selected, setSelected] = useState<CatalogTitle | null>(null);
 
   async function enrichTitles(titles: CatalogTitle[]): Promise<CatalogTitle[]> {
@@ -99,6 +102,7 @@ export function WishlistPage({
       );
       setMineTitles(baseMine);
       setQueueTitles(baseQueue);
+      setLoaded(true);
       const [enrichedMine, enrichedQueue] = await Promise.all([
         enrichTitles(baseMine),
         enrichTitles(baseQueue),
@@ -118,6 +122,7 @@ export function WishlistPage({
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load wishlist");
+      setLoaded(true);
     } finally {
       setBusy(false);
     }
@@ -219,7 +224,9 @@ export function WishlistPage({
 
             {mineTitles.length === 0 ? (
               <p className="text-sm text-ink/50">
-                Nothing yet — wishlist from Discover cards or catalog search.
+                {loaded
+                  ? "Nothing yet — wishlist from Discover cards or catalog search."
+                  : "Loading…"}
               </p>
             ) : (
               <ul className="divide-y divide-ink/10 border border-ink/10 bg-card">
@@ -306,7 +313,7 @@ export function WishlistPage({
               </p>
             </div>
             {queueTitles.length === 0 ? (
-              <p className="text-sm text-ink/50">Queue is empty.</p>
+              <p className="text-sm text-ink/50">{loaded ? "Queue is empty." : "Loading…"}</p>
             ) : (
               <ol className="space-y-3">
                 {queueTitles.map((title, i) => {

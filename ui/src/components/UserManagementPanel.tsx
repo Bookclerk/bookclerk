@@ -390,6 +390,7 @@ const MENU_ITEM_CLASS =
 export function UserManagementPanel({
   users,
   setUsers,
+  loading = false,
   busy,
   setBusy,
   error,
@@ -404,6 +405,8 @@ export function UserManagementPanel({
 }: {
   users: ListedUser[];
   setUsers: Dispatch<SetStateAction<ListedUser[]>>;
+  /** True until the first user list arrives; an empty list then means "not yet", not "none". */
+  loading?: boolean;
   busy: boolean;
   setBusy: (v: boolean) => void;
   error: string | null;
@@ -981,7 +984,7 @@ export function UserManagementPanel({
           <ul className="divide-y divide-ink/10">
             {filtered.length === 0 ? (
               <li className="px-3 py-8 text-center text-sm text-ink/50">
-                No users match this filter.
+                {loading ? "Loading users…" : "No users match this filter."}
               </li>
             ) : (
               filtered.map((u) => {
