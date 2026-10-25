@@ -6,7 +6,8 @@
 
 Free and open source. Runs on Linux, macOS and Windows. Works with Audible, Libro.fm, Chirp and GraphicAudio, and more through plugins.
 
-{{#prerelease}}- [Try the preview]({{origin}}/download)
+{{#demo}}- [Try the live demo]({{demoUrl}}): your own copy of Bookclerk in the browser for 30 minutes
+{{/demo}}{{#prerelease}}- [Try the preview]({{origin}}/download)
 {{/prerelease}}{{#released}}- [Download {{releaseTag}}]({{origin}}/download)
 {{/released}}- [Documentation]({{origin}}/docs/) ([as Markdown]({{origin}}/docs/README.md), [llms.txt]({{origin}}/llms.txt))
 - [Source code on GitHub]({{repo}})
@@ -16,7 +17,9 @@ Free and open source. Runs on Linux, macOS and Windows. Works with Audible, Libr
 1. **Connect your stores.** Sign in to each store once from the Accounts page. Your sign-ins are encrypted and stay on your machine.
 2. **Bookclerk catalogs it all.** Every title you own lands in one searchable library, whichever store you bought it from.
 3. **Your copies, where you want them.** Pick a book or let Bookclerk keep up. Files are named, tagged and split into chapters, then saved to a folder or to cloud storage.
-
+{{#demo}}
+Try steps 1 and 2 right now: the [live demo]({{demoUrl}}) gives you a private copy of Bookclerk for 30 minutes. Connect a store, scan your library and search it. Downloads are switched off, and your stores are signed out when the demo ends.
+{{/demo}}
 ## A clerk for the books you already paid for
 
 - **One library for every store.** Search, tag and rate across all your purchases instead of hopping between apps.
@@ -50,7 +53,11 @@ cargo plugin -- check ./my-plugin
 
 {{#prerelease}}You can try the development version, but there is no stable release yet. Settings and the library format may change between updates, and an update can mean starting your library over.{{/prerelease}}{{#released}}Yes. {{releaseTag}} is the current release. Download it from the [download page]({{origin}}/download).{{/released}}
 
-### Which stores are supported?
+{{#demo}}### Can I try Bookclerk without installing it?
+
+Yes. The [live demo]({{demoUrl}}) gives you your own copy of Bookclerk in the browser for 30 minutes. You can sign in to your stores, scan your library and search it. It cannot download books, and it signs your stores out and deletes everything when the demo ends.
+
+{{/demo}}### Which stores are supported?
 
 Audible, Libro.fm, Chirp and GraphicAudio. You can turn each one on or off, and plugins can add more.
 

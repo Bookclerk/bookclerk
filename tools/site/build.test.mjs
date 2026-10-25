@@ -7,13 +7,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { build, docsVersions, escapeHtml, inlineLogo, jsonLd, readState, render, templateContext } from "./build.mjs";
+import { build, docsVersions, escapeHtml, inlineLogo, jsonLd, plainText, readState, render, templateContext } from "./build.mjs";
 
 /** Release state of a repository with no release yet. */
 const PRE = { SITE_COMMIT: "b6adae4d0123456789abcdef0123456789abcdef", SITE_BUILT_ON: "2026-10-23" };
 
 /** Release state after a first release. */
 const REL = { ...PRE, SITE_RELEASE_TAG: "v0.1.0", SITE_RELEASE_DATE: "2026-12-01", SITE_DOCS_VERSIONS: "v0.1.0" };
+
+/** A deployment with a hosted demo. */
+const DEMO = { SITE_DEMO_URL: "https://demo.bookclerk.app" };
 
 /**
  * Builds the site into a temporary directory.
@@ -131,6 +134,72 @@ test("a release build drops the pre-release notices", () => {
   }
 });
 
+test("plainText drops every tag and leaves no angle bracket", () => {
+  assert.equal(plainText('<p class="x">Tom &amp; Jerry&#39;s <a href="/">home</a></p>'), "Tom & Jerry's home");
+  assert.equal(plainText("<scr<script>ipt>alert(1)"), "iptalert(1)");
+  assert.ok(!plainText("a <b <c>> &lt;d&gt;").includes("<"));
+});
+
+test("readState accepts a demo origin and rejects anything else", () => {
+  assert.equal(readState(PRE).demoUrl, null);
+  assert.equal(readState({ ...PRE, SITE_DEMO_URL: " " }).demoUrl, null);
+  assert.equal(readState({ ...PRE, ...DEMO }).demoUrl, "https://demo.bookclerk.app");
+  for (const url of ["http://demo.bookclerk.app", "https://demo.bookclerk.app/", "javascript:alert(1)", "https://demo.bookclerk.app\"><script>"]) {
+    assert.throws(() => readState({ ...PRE, SITE_DEMO_URL: url }), /SITE_DEMO_URL/, url);
+  }
+});
+
+test("a build without a demo links to none", () => {
+  for (const env of [PRE, REL]) {
+    const site = built(env);
+    try {
+      for (const name of ["index.html", "download.html", "404.html", "index.md", "download.md", "llms.txt"]) {
+        assert.doesNotMatch(site.page(name), /live demo|demo\.bookclerk/i, name);
+      }
+      assert.ok(site.page("index.html").includes('href="#how">See how it works'));
+    } finally {
+      site.done();
+    }
+  }
+});
+
+test("before a release the demo leads the home and download pages", () => {
+  const site = built({ ...PRE, ...DEMO });
+  try {
+    const home = site.page("index.html");
+    const hero = home.slice(home.indexOf('class="btn-row"'), home.indexOf("</div>", home.indexOf('class="btn-row"')));
+    assert.match(hero, /class="btn btn-primary btn-arrow" href="https:\/\/demo.bookclerk.app">Try the live demo/);
+    assert.match(hero, /class="btn btn-secondary" href="\/download">Get the preview/);
+    assert.ok(!home.includes("Try the preview"));
+    assert.ok(home.includes('<div class="demo-strip">'));
+    assert.ok(home.includes("Can I try Bookclerk without installing it?"));
+    for (const name of ["index.html", "download.html", "404.html"]) {
+      assert.ok(site.page(name).includes('<a href="https://demo.bookclerk.app">Demo</a>'), name);
+      assert.ok(site.page(name).includes('<a href="https://demo.bookclerk.app">Live demo</a>'), name);
+    }
+    const download = site.page("download.html");
+    assert.ok(download.indexOf('class="demo-card"') < download.indexOf('class="status-card"'));
+    assert.ok(download.includes("try Bookclerk in your browser"));
+    assert.ok(site.page("llms.txt").includes("Live demo: https://demo.bookclerk.app "));
+    assert.ok(site.page("index.md").includes("[Try the live demo](https://demo.bookclerk.app)"));
+  } finally {
+    site.done();
+  }
+});
+
+test("after a release the demo follows the download", () => {
+  const site = built({ ...REL, ...DEMO });
+  try {
+    const home = site.page("index.html");
+    assert.ok(home.indexOf("Download v0.1.0") < home.indexOf('class="btn btn-secondary" href="https://demo.bookclerk.app">Try the live demo'));
+    assert.ok(!home.includes("Get the preview"));
+    const download = site.page("download.html");
+    assert.ok(download.indexOf('class="status-card"') < download.indexOf('class="demo-card"'));
+  } finally {
+    site.done();
+  }
+});
+
 test("the build publishes pages, styles, headers and brand assets", () => {
   const site = built(PRE);
   try {
@@ -185,8 +254,21 @@ test("pages carry search and preview metadata", () => {
     assert.match(home, /<meta property="og:image" content="https:\/\/example.org\/social-card.png">/);
     assert.match(home, /<meta name="twitter:card" content="summary_large_image">/);
     const ld = JSON.parse(home.match(/<script type="application\/ld\+json">(.*?)<\/script>/)[1]);
-    assert.equal(ld["@graph"][1]["@type"], "SoftwareApplication");
-    assert.ok(!("softwareVersion" in ld["@graph"][1]));
+    const app = ld["@graph"].find((n) => n["@type"] === "SoftwareApplication");
+    assert.ok(app);
+    assert.ok(!("softwareVersion" in app));
+    assert.equal(ld["@graph"].find((n) => n["@type"] === "Organization").email, "contact@bookclerk.app");
+    // Structured data repeats the page; it never says what visitors cannot see.
+    // The page body only: the JSON-LD itself sits in <head>.
+    const text = plainText(home.slice(home.indexOf("<main"), home.indexOf("</main>")));
+    const faq = ld["@graph"].find((n) => n["@type"] === "FAQPage");
+    assert.equal(faq.mainEntity.length, 6);
+    for (const q of faq.mainEntity) {
+      assert.ok(text.includes(q.name), q.name);
+      assert.ok(text.includes(q.acceptedAnswer.text), q.acceptedAnswer.text);
+    }
+    assert.equal(app.featureList.length, 6);
+    for (const f of app.featureList) assert.ok(text.includes(f.split(": ")[1]), f);
     assert.equal((home.match(/<title>/g) ?? []).length, 1);
 
     const missing = site.page("404.html");
@@ -209,7 +291,7 @@ test("a release build states its version in structured data", () => {
   const site = built(REL);
   try {
     const ld = JSON.parse(site.page("index.html").match(/<script type="application\/ld\+json">(.*?)<\/script>/)[1]);
-    assert.equal(ld["@graph"][1].softwareVersion, "0.1.0");
+    assert.equal(ld["@graph"].find((n) => n["@type"] === "SoftwareApplication").softwareVersion, "0.1.0");
     assert.ok(!site.page("index.html").includes("noarchive"));
   } finally {
     site.done();
@@ -230,6 +312,10 @@ test("crawler and agent files list the site", () => {
     assert.match(llms, /^- \[[^\]]+\]\(https:\/\/bookclerk.app\/docs\/plugins.md\): \S/m);
     assert.match(llms, /^## Optional$/m);
     assert.ok(llms.includes("unstable development version"));
+    assert.ok(llms.includes("- **One library for every store.** Search, tag and rate"));
+    assert.ok(llms.includes("- **Which stores are supported?** Audible, Libro.fm"));
+    // No headings between the summary and the first link section.
+    assert.doesNotMatch(llms.slice(0, llms.indexOf("\n## ")), /\n#/);
     assert.match(llms, /^- \[Rust plugin SDK\]\(https:\/\/bookclerk.app\/docs\/api\/rust\/bookclerk_plugin_sdk\/index.md\)$/m);
     const full = site.page("llms-full.txt");
     assert.ok(full.includes("Source: https://bookclerk.app/docs/plugins.md"));
@@ -242,7 +328,7 @@ test("crawler and agent files list the site", () => {
 });
 
 test("home and download pages have Markdown versions that keep their sections", () => {
-  for (const env of [PRE, REL]) {
+  for (const env of [PRE, REL, { ...PRE, ...DEMO }, { ...REL, ...DEMO }]) {
     const site = built(env);
     try {
       for (const [html, md] of [
@@ -257,7 +343,7 @@ test("home and download pages have Markdown versions that keep their sections", 
         assert.ok(sections.length > 0, html);
         for (const title of sections) assert.ok(markdown.includes(`## ${title}`), `${md} lacks "## ${title}"`);
       }
-      assert.equal(site.page("index.md").includes("Pre-release"), env === PRE);
+      assert.equal(site.page("index.md").includes("Pre-release"), env.SITE_RELEASE_TAG === undefined);
       assert.match(site.page("404.md"), /^# We could not find that page/);
       assert.doesNotMatch(site.page("404.html"), /rel="alternate" type="text\/markdown"/);
     } finally {

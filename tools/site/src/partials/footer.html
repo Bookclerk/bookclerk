@@ -8,9 +8,9 @@
         {{#released}}<span class="muted">Version {{releaseTag}}, released {{releaseDate}}. Site built from <a href="{{commitUrl}}">{{commit}}</a>.</span>{{/released}}
       </div>
       <div class="footer-cols">
-        <div><strong class="faint">Product</strong><a href="/#features">Features</a><a href="/download">Download</a><a href="{{releasesUrl}}">Releases</a></div>
+        <div><strong class="faint">Product</strong><a href="/#features">Features</a>{{#demo}}<a href="{{demoUrl}}">Live demo</a>{{/demo}}<a href="/download">Download</a><a href="{{releasesUrl}}">Releases</a></div>
         <div><strong class="faint">Docs</strong><a href="{{gettingStartedUrl}}">Getting started</a><a href="{{pluginsUrl}}">Writing plugins</a><a href="{{architectureUrl}}">Architecture</a></div>
-        <div><strong class="faint">Project</strong><a href="{{repo}}">GitHub</a><a href="{{repo}}/security">Security</a><span>contact@bookclerk.app</span></div>
+        <div><strong class="faint">Project</strong><a href="{{repo}}">GitHub</a><a href="{{repo}}/security">Security</a><span>{{contactEmail}}</span></div>
       </div>
     </div>
     <p class="legal faint">Bookclerk is free software under the GNU GPL, version 3 or later. It is not affiliated with or endorsed by Audible, Libro.fm, Chirp or GraphicAudio; their names are trademarks of their owners. Bookclerk is meant for books you have bought, for your own listening.</p>

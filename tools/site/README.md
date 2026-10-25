@@ -31,6 +31,7 @@ instead of `main`'s.
 | `SITE_COMMIT` | commit the site is built from |
 | `SITE_BUILT_ON` | build date, `YYYY-MM-DD` (default: today) |
 | `SITE_ORIGIN` | `https://<host>` the site is served from, for canonical and preview URLs (default `https://bookclerk.app`) |
+| `SITE_DEMO_URL` | `https://<host>` of the hosted demo ([`tools/demo`](../demo/README.md)); empty means no demo, and the pages leave out every demo link. The workflow uses `https://demo.<DOMAIN>`, else the `DEMO_URL` variable, and none when `DEMO_URL` is `none` |
 
 ## Local preview
 
@@ -57,6 +58,10 @@ cd audit && npm ci && node audit.mjs      # --chrome <path> or CHROME_PATH picks
 - `src/*.html` – pages. `{{name}}` inserts an escaped value, `{{> name}}` a
   partial from `src/partials/`, and `{{#prerelease}}…{{/prerelease}}` /
   `{{#released}}…{{/released}}` keep content for one release state.
+  `{{#demo}}` keeps content when the deployment has a demo; sections do not
+  nest, so `{{#demolead}}` (demo, no release), `{{#demofollow}}` (demo and a
+  release) and `{{#previewlead}}` (no demo, no release) cover the
+  combinations, and `{{^flag}}` inverts any of them.
 - `src/site.css` – styles; colors and fonts follow `ui/src/index.css` and
   `assets/brand/README.md`, with a dark scheme from `prefers-color-scheme`.
 - `src/fonts/` – the web fonts, served from the site itself (no third-party
@@ -140,15 +145,20 @@ versions.
 - Every page gets a `<title>`, description, canonical link, Open Graph and
   `twitter:card` tags (from `PAGES` in `build.mjs`, or from each doc: its
   introduction, else its section names). The 404 page is `noindex`.
-- JSON-LD: the home page describes the site and the app
-  (`SoftwareApplication`); each doc is a `TechArticle` with a breadcrumb.
-- `sitemap.xml` lists every indexable page; `robots.txt` allows all crawlers
-  and points to it.
+- JSON-LD: the home page describes the site, its organization, the app
+  (`SoftwareApplication` with the feature cards as `featureList`), its source
+  code and the FAQ (`FAQPage`); each doc is a `TechArticle` with a
+  breadcrumb. The features and questions are read from the rendered home page
+  (`homeFacts` in `build.mjs`), so structured data never says anything a
+  visitor cannot see on the page. Search engines treat text shown only to
+  crawlers as cloaking, so keep it that way.
+- `sitemap.xml` lists every indexable page; `robots.txt` allows all crawlers and points to it.
 - For agents: each doc is also served as Markdown at `/docs/<path>.md` (and
   `/docs/v/<ref>/<path>.md`)
   (linked from the page with `rel="alternate"` and "View as Markdown"), with
   links between docs pointing at the other Markdown copies. `/llms.txt`
-  indexes them per [llmstxt.org](https://llmstxt.org) and `/llms-full.txt`
+  repeats the home page's features and questions, then indexes them per
+  [llmstxt.org](https://llmstxt.org), and `/llms-full.txt`
   holds every doc in one file.
 - Content negotiation: a request for `/`, `/download` or any `/docs/` page
   whose `Accept` header ranks `text/markdown` (or `text/x-markdown`) at least

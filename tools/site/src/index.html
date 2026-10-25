@@ -14,9 +14,12 @@
     <h1>Every purchase, properly placed.</h1>
     <p class="lede muted">Bookclerk gathers the audiobooks you have bought from Audible, Libro.fm, Chirp and GraphicAudio into one catalog on your own computer, keeps copies you control, and shelves them where your player already looks.</p>
     <div class="btn-row">
-      {{#prerelease}}<a class="btn btn-primary" href="/download">Try the preview</a>{{/prerelease}}
+      {{#demolead}}<a class="btn btn-primary btn-arrow" href="{{demoUrl}}">Try the live demo<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+      <a class="btn btn-secondary" href="/download">Get the preview</a>{{/demolead}}
+      {{#previewlead}}<a class="btn btn-primary" href="/download">Try the preview</a>{{/previewlead}}
       {{#released}}<a class="btn btn-primary" href="/download">Download {{releaseTag}}</a>{{/released}}
-      <a class="btn btn-secondary" href="#how">See how it works</a>
+      {{#demofollow}}<a class="btn btn-secondary" href="{{demoUrl}}">Try the live demo</a>{{/demofollow}}
+      {{^demo}}<a class="btn btn-secondary" href="#how">See how it works</a>{{/demo}}
     </div>
     <p class="faint">Free and open source. Runs on Linux, macOS and Windows.</p>
   </div>
@@ -69,7 +72,14 @@
       <p class="muted">Pick a book or let Bookclerk keep up. Files are named, tagged and split into chapters, then saved to a folder or to cloud storage.</p>
     </li>
   </ol>
-</section>
+  {{#demo}}<div class="demo-strip">
+    <div>
+      <h3>Try steps 1 and 2 right now</h3>
+      <p class="muted">The live demo gives you a private copy of Bookclerk for 30 minutes. Connect a store, scan your library and search it. Downloads are switched off, and your stores are signed out when the demo ends.</p>
+    </div>
+    <a class="btn btn-primary btn-arrow" href="{{demoUrl}}">Try the live demo<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+  </div>
+  {{/demo}}</section>
 
 <section id="features" class="tinted">
   <div class="wrap section">
@@ -135,7 +145,7 @@
         </div>
       </div>
     </div>
-    <figcaption class="faint">An illustration of the library screen. Screenshots of each release will replace it.</figcaption>
+    <figcaption class="faint">An illustration of the library screen. Screenshots of each release will replace it.{{#demo}} <a href="{{demoUrl}}">Try the live demo</a> to use the real one with your own books.{{/demo}}</figcaption>
   </figure>
 </section>
 
@@ -171,7 +181,11 @@ cargo plugin -- check ./my-plugin</code></pre>
       {{#prerelease}}<p class="muted">You can try the development version, but there is no stable release yet. Settings and the library format may change between updates, and an update can mean starting your library over.</p>{{/prerelease}}
       {{#released}}<p class="muted">Yes. {{releaseTag}} is the current release. Download it from the <a href="/download">download page</a>.</p>{{/released}}
     </details>
-    <details>
+    {{#demo}}<details>
+      <summary>Can I try Bookclerk without installing it?</summary>
+      <p class="muted">Yes. The <a href="{{demoUrl}}">live demo</a> gives you your own copy of Bookclerk in the browser for 30 minutes. You can sign in to your stores, scan your library and search it. It cannot download books, and it signs your stores out and deletes everything when the demo ends.</p>
+    </details>
+    {{/demo}}<details>
       <summary>Which stores are supported?</summary>
       <p class="muted">Audible, Libro.fm, Chirp and GraphicAudio. You can turn each one on or off, and plugins can add more.</p>
     </details>

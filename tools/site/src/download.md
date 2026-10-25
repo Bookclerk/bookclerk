@@ -1,13 +1,22 @@
 # Get Bookclerk
 
-{{#prerelease}}There is no stable release yet. When the first version ships, installers for each system will appear here. Until then you can try the development version if you are comfortable building it yourself.
-
+{{#demolead}}There is no stable release yet. When the first version ships, installers for each system will appear here. Until then you can try Bookclerk in your browser, or build the development version if you are comfortable doing that yourself.
+{{/demolead}}{{#previewlead}}There is no stable release yet. When the first version ships, installers for each system will appear here. Until then you can try the development version if you are comfortable building it yourself.
+{{/previewlead}}{{#prerelease}}
 - **Latest release:** none yet. Watch the [GitHub repository]({{repo}}) to hear when the first release is out.
 {{/prerelease}}{{#released}}The current release is {{releaseTag}}. Download it for your system from the release page on GitHub.
 
 - **Latest release:** [{{releaseTag}}]({{releaseUrl}}), released {{releaseDate}}.
 {{/released}}- **Development version:** [{{commit}}]({{commitUrl}}), built {{builtOn}}. Unstable.
-{{#prerelease}}
+{{#demo}}
+## Try it in your browser first
+
+The [live demo]({{demoUrl}}) starts a private copy of Bookclerk just for you. Sign in to your own stores and see your library come together.
+
+- Yours alone for 30 minutes, then deleted.
+- Connect a store you use, then scan and search your own books.
+- Nothing is downloaded, and your stores are signed out when it ends.
+{{/demo}}{{#prerelease}}
 ## Installers
 
 Available at the first release:

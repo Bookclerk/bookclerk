@@ -29,6 +29,9 @@
 //   SITE_BUILT_ON      build date, YYYY-MM-DD (defaults to today, UTC)
 //   SITE_ORIGIN        origin the site is served from, for canonical and
 //                      preview URLs (default https://bookclerk.app)
+//   SITE_DEMO_URL      origin of the hosted demo (tools/demo), e.g.
+//                      https://demo.bookclerk.app; empty or unset means the
+//                      deployment has no demo, and every demo link is left out
 //
 // Every value is validated before it reaches a template, and every template
 // value is HTML-escaped.
@@ -54,6 +57,9 @@ export const REPOSITORY_URL = "https://github.com/Bookclerk/bookclerk";
 
 /** Origin used when SITE_ORIGIN is unset. */
 const DEFAULT_ORIGIN = "https://bookclerk.app";
+
+/** Public contact address, as the footer shows it. */
+const CONTACT_EMAIL = "contact@bookclerk.app";
 
 /** One-sentence summary of Bookclerk, shared by the home page, JSON-LD and llms.txt. */
 const SUMMARY =
@@ -156,8 +162,9 @@ function displayDate(iso) {
  *
  * @param {Record<string, string | undefined>} env Usually `process.env`.
  * @returns {{release: {tag: string, date: string} | null, commit: string,
- *   builtOn: string, origin: string, docsTags: string[]}}
- *   `release` is null when no release exists yet. `docsTags` are the release
+ *   builtOn: string, origin: string, demoUrl: string | null, docsTags: string[]}}
+ *   `release` is null when no release exists yet, and `demoUrl` when the
+ *   deployment has no hosted demo. `docsTags` are the release
  *   tags with published docs, newest first, at most MAX_DOCS_VERSIONS of
  *   them; the newest release is not among them until its docs are.
  * @throws {Error} When a value is present but malformed, or a release tag
@@ -170,6 +177,7 @@ export function readState(env) {
   const builtOn = (env.SITE_BUILT_ON ?? "").trim() || new Date().toISOString().slice(0, 10);
   const origin = (env.SITE_ORIGIN ?? "").trim() || DEFAULT_ORIGIN;
   const listed = (env.SITE_DOCS_VERSIONS ?? "").split(/\s+/).filter((t) => t !== "");
+  const demoUrl = (env.SITE_DEMO_URL ?? "").trim() || null;
 
   if (!COMMIT_RE.test(commit)) {
     throw new Error(`SITE_COMMIT must be 7-40 lowercase hex digits, got ${JSON.stringify(commit)}`);
@@ -180,12 +188,15 @@ export function readState(env) {
   if (!ORIGIN_RE.test(origin)) {
     throw new Error(`SITE_ORIGIN must be https://<lowercase hostname>, got ${JSON.stringify(origin)}`);
   }
+  if (demoUrl !== null && !ORIGIN_RE.test(demoUrl)) {
+    throw new Error(`SITE_DEMO_URL must be https://<lowercase hostname>, got ${JSON.stringify(demoUrl)}`);
+  }
   for (const t of listed) {
     if (!TAG_RE.test(t)) throw new Error(`SITE_DOCS_VERSIONS must hold tags like v1.2.3, got ${JSON.stringify(t)}`);
   }
   if (tag === "") {
     if (listed.length > 0) throw new Error("SITE_DOCS_VERSIONS is set but SITE_RELEASE_TAG is not");
-    return { release: null, commit, builtOn, origin, docsTags: [] };
+    return { release: null, commit, builtOn, origin, demoUrl, docsTags: [] };
   }
   if (!TAG_RE.test(tag)) {
     throw new Error(`SITE_RELEASE_TAG must look like v1.2.3, got ${JSON.stringify(tag)}`);
@@ -195,7 +206,7 @@ export function readState(env) {
   }
   // The picker keeps the newest MAX_DOCS_VERSIONS tags; older ones drop off.
   const docsTags = [...new Set(listed)].slice(0, MAX_DOCS_VERSIONS);
-  return { release: { tag, date }, commit, builtOn, origin, docsTags };
+  return { release: { tag, date }, commit, builtOn, origin, demoUrl, docsTags };
 }
 
 /**
@@ -238,6 +249,7 @@ export function templateContext(state) {
       commit: short,
       commitUrl: `${REPOSITORY_URL}/commit/${state.commit}`,
       builtOn: displayDate(state.builtOn),
+      contactEmail: CONTACT_EMAIL,
       docsUrl: "/docs/",
       gettingStartedUrl: "/docs/getting-started",
       pluginsUrl: "/docs/plugins",
@@ -248,10 +260,19 @@ export function templateContext(state) {
       releaseTag: state.release?.tag ?? "",
       releaseDate: state.release ? displayDate(state.release.date) : "",
       releaseUrl: state.release ? `${REPOSITORY_URL}/releases/tag/${state.release.tag}` : "",
+      demoUrl: state.demoUrl ?? "",
     },
+    // Sections do not nest, so the demo's place on a page in each release
+    // state gets a flag of its own: before a release the demo is the main
+    // way to try Bookclerk (`demolead`), after one it follows the download
+    // (`demofollow`); `previewlead` is a pre-release build with no demo.
     flags: {
       prerelease: state.release === null,
       released: state.release !== null,
+      demo: state.demoUrl !== null,
+      demolead: state.demoUrl !== null && state.release === null,
+      demofollow: state.demoUrl !== null && state.release !== null,
+      previewlead: state.demoUrl === null && state.release === null,
     },
   };
 }
@@ -349,21 +370,113 @@ function pageContext(context, page, extra = {}) {
 }
 
 /**
+ * Turns a fragment of rendered HTML into plain text.
+ *
+ * A scan rather than a tag-stripping regular expression: everything from a
+ * `<` to the next `>` is dropped, so no `<` survives. `&lt;` and `&gt;` stay
+ * encoded for the same reason; the site's own copy uses neither.
+ *
+ * @param {string} html Markup from a rendered template, escaped by escapeHtml.
+ * @returns {string} Its text: tags dropped, quotes and ampersands decoded and
+ *   whitespace collapsed.
+ */
+export function plainText(html) {
+  let text = "";
+  let inTag = false;
+  for (const ch of html) {
+    if (ch === "<") inTag = true;
+    else if (ch === ">") inTag = false;
+    else if (!inTag) text += ch;
+  }
+  return text
+    .replace(/&(quot|#39|amp);/g, (_, e) => ({ quot: '"', "#39": "'", amp: "&" })[e])
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Reads the features and questions the rendered home page shows, so the
+ * structured data and llms.txt repeat what visitors see instead of a second
+ * copy that could drift from it.
+ *
+ * @param {string} html The rendered home page.
+ * @returns {{features: {name: string, text: string}[], faq: {question: string, answer: string}[]}}
+ *   Each feature card's heading and text, and each FAQ entry's question and
+ *   answer, in page order.
+ * @throws {Error} When the page has no feature cards or no FAQ entries, so a
+ *   markup change cannot silently empty them.
+ */
+export function homeFacts(html) {
+  // Each card is read up to its own closing tag, so a card that loses its
+  // heading fails the build instead of borrowing the next card's.
+  const features = [...html.matchAll(/<div class="feature">((?:(?!<\/div>)[\s\S])*)<\/div>/g)].map(([, card]) => {
+    const parts = card.match(/<h3>([\s\S]*?)<\/h3>\s*<p[^>]*>([\s\S]*?)<\/p>/);
+    if (parts === null) throw new Error(`a feature card has no heading and text: ${card.slice(0, 80)}`);
+    return { name: plainText(parts[1]), text: plainText(parts[2]) };
+  });
+  const faq = [...html.matchAll(/<details[^>]*>\s*<summary>([\s\S]*?)<\/summary>([\s\S]*?)<\/details>/g)].map(
+    ([, question, answer]) => ({ question: plainText(question), answer: plainText(answer) }),
+  );
+  if (features.length === 0 || faq.length === 0) throw new Error("the home page lost its feature cards or FAQ");
+  return { features, faq };
+}
+
+/**
  * The schema.org description of the site and of Bookclerk itself, for the
  * home page.
  *
+ * Everything in it is also on the page: the features and questions come from
+ * the rendered page (homeFacts), as search engines require of structured data.
+ *
  * @param {ReturnType<typeof templateContext>} context Site-wide values.
- * @returns {object} A JSON-LD `@graph` with the WebSite and the
- *   SoftwareApplication.
+ * @param {ReturnType<typeof homeFacts>} facts What the home page shows.
+ * @returns {object} A JSON-LD `@graph` with the WebSite, the organization
+ *   behind it, the SoftwareApplication, its source code and the FAQ.
  */
-function homeJsonLd(context) {
-  const { origin, releaseTag, socialImage } = context.values;
+function homeJsonLd(context, facts) {
+  const { origin, releaseTag, socialImage, contactEmail } = context.values;
+  const organization = `${origin}/#organization`;
   return {
     "@context": "https://schema.org",
     "@graph": [
-      { "@type": "WebSite", "@id": `${origin}/#website`, name: "Bookclerk", url: `${origin}/`, inLanguage: "en" },
+      {
+        "@type": "WebSite",
+        "@id": `${origin}/#website`,
+        name: "Bookclerk",
+        url: `${origin}/`,
+        inLanguage: "en",
+        publisher: { "@id": organization },
+      },
+      {
+        "@type": "Organization",
+        "@id": organization,
+        name: "Bookclerk",
+        url: `${origin}/`,
+        logo: `${origin}/android-chrome-512x512.png`,
+        email: contactEmail,
+        sameAs: [REPOSITORY_URL],
+      },
+      {
+        "@type": "SoftwareSourceCode",
+        "@id": `${origin}/#source`,
+        name: "Bookclerk",
+        codeRepository: REPOSITORY_URL,
+        programmingLanguage: ["Rust", "TypeScript"],
+        license: "https://www.gnu.org/licenses/gpl-3.0.html",
+        targetProduct: { "@id": `${origin}/#app` },
+      },
+      {
+        "@type": "FAQPage",
+        "@id": `${origin}/#faq`,
+        mainEntity: facts.faq.map(({ question, answer }) => ({
+          "@type": "Question",
+          name: question,
+          acceptedAnswer: { "@type": "Answer", text: answer },
+        })),
+      },
       {
         "@type": "SoftwareApplication",
+        "@id": `${origin}/#app`,
         name: "Bookclerk",
         description: SUMMARY,
         url: `${origin}/`,
@@ -374,6 +487,8 @@ function homeJsonLd(context) {
         isAccessibleForFree: true,
         offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
         downloadUrl: `${origin}/download`,
+        featureList: facts.features.map(({ name, text }) => `${name}: ${text}`),
+        publisher: { "@id": organization },
         ...(releaseTag ? { softwareVersion: releaseTag.slice(1) } : {}),
         sameAs: [REPOSITORY_URL],
       },
@@ -437,9 +552,11 @@ function markdownLinkText(text) {
  *
  * @param {ReturnType<typeof templateContext>} context Site-wide values.
  * @param {ReturnType<typeof renderDocs>} rendered The docs and sidebar.
+ * @param {ReturnType<typeof homeFacts>} facts What the home page shows, so
+ *   llms.txt states the same facts in the same words.
  * @param {string} outDir Output directory.
  */
-function writeLlmsTxt(context, rendered, outDir) {
+function writeLlmsTxt(context, rendered, facts, outDir) {
   const { origin, docsVersion, repo } = context.values;
   const byKey = new Map(rendered.docs.map((d) => [d.key, d]));
   const status = context.flags.prerelease
@@ -453,6 +570,16 @@ function writeLlmsTxt(context, rendered, outDir) {
     `${status} Each doc below is Markdown; the same page as HTML is at the URL without \`.md\`. Source code: ${repo}. Every doc in one file: ${origin}/llms-full.txt. Every page also answers a request with \`Accept: text/markdown\` in Markdown; the home and download pages are at ${origin}/index.md and ${origin}/download.md.`,
     "",
   ];
+  if (context.flags.demo) {
+    lines.push(
+      `Live demo: ${context.values.demoUrl} gives a visitor their own private copy of Bookclerk in the browser for 30 minutes, to sign in to their stores, scan their library and search it. It cannot download books, and it signs the stores out and deletes the copy when the demo ends.`,
+      "",
+    );
+  }
+  // llms.txt allows no headings before the first link section, so the home
+  // page's features and questions go in as lists.
+  lines.push("What Bookclerk does:", "", ...facts.features.map(({ name, text }) => `- **${name}.** ${text}`), "");
+  lines.push("Common questions:", "", ...facts.faq.map(({ question, answer }) => `- **${question}** ${answer}`), "");
   const groups = rendered.nav;
   const designAt = groups.findIndex((g) => g.title === NAV[NAV.length - 1].title);
   for (const [i, group] of groups.entries()) {
@@ -514,9 +641,11 @@ export function build(env, outDir, shellFile = DOCS_SHELL_FILE) {
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
   const indexable = [];
+  let facts = null;
   for (const page of PAGES) {
     const html = render(readFileSync(join(src, page.file), "utf8"), pageContext(context, page), partials);
-    writeFileSync(join(outDir, page.file), html.replace(JSONLD_MARKER, () => jsonLd(page.path === "/" ? homeJsonLd(context) : null)));
+    if (page.path === "/") facts = homeFacts(html);
+    writeFileSync(join(outDir, page.file), html.replace(JSONLD_MARKER, () => jsonLd(page.path === "/" ? homeJsonLd(context, facts) : null)));
     if (page.markdown) {
       // Template values are validated tags, dates, commit ids and URLs, so
       // HTML escaping leaves them unchanged in Markdown too.
@@ -530,7 +659,8 @@ export function build(env, outDir, shellFile = DOCS_SHELL_FILE) {
   mkdirSync(dirname(shellFile), { recursive: true });
   writeFileSync(shellFile, JSON.stringify(buildDocsShell(context, partials, rendered, docsVersions(state))));
   writeCrawlerFiles(context, indexable, outDir);
-  writeLlmsTxt(context, rendered, outDir);
+  if (facts === null) throw new Error("PAGES has no home page");
+  writeLlmsTxt(context, rendered, facts, outDir);
   for (const file of STATIC_FILES) cpSync(join(src, file), join(outDir, file));
   mkdirSync(join(outDir, "fonts"));
   for (const file of readdirSync(join(src, "fonts"))) {
