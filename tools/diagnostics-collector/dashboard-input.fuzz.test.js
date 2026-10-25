@@ -89,7 +89,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
  * Oracle for parseIssueReportIds: recomputes the expected IDs with a
- * different walk (last heading by lastIndexOf over normalized lines).
+ * different walk (the last hidden block by lastIndexOf over trimmed lines,
+ * else the last heading over normalized lines).
  *
  * @param {string} body Issue body.
  * @param {string} label Input name for failure messages.
@@ -109,19 +110,33 @@ function checkIds(body, label) {
   );
   assert.equal(got.regressionOf, regressionOf, label);
   if (regressionOf !== null) assert.ok(Number.isSafeInteger(got.regressionOf) && got.regressionOf > 0, label);
-  const headings = lines.map((l, i) => (/^###\s+Report IDs\s*$/.test(l) ? i : -1)).filter((i) => i >= 0);
+  const uuidOf = (raw) => {
+    const id = raw.toLowerCase();
+    const fromKey = id.match(/^diagnostics\/[a-z0-9._+-]{1,64}\/(.{36})\.json$/);
+    return UUID.test(id) ? id : fromKey && UUID.test(fromKey[1]) ? fromKey[1] : null;
+  };
   const expected = [];
-  if (headings.length) {
+  const add = (raw) => {
+    const uuid = uuidOf(raw);
+    if (uuid && !expected.includes(uuid) && expected.length < MAX_IDS_PER_ISSUE) expected.push(uuid);
+  };
+  // The hidden block wins over the legacy heading wherever either sits.
+  const trimmed = lines.map((l) => l.replace(/[ \t]+$/, ""));
+  const block = trimmed.lastIndexOf("<!-- bookclerk-diagnostics: report ids");
+  const headings = lines.map((l, i) => (/^###\s+Report IDs\s*$/.test(l) ? i : -1)).filter((i) => i >= 0);
+  if (block >= 0) {
+    const run = [];
+    let end = block + 1;
+    while (end < trimmed.length && /^[A-Za-z0-9._:/+-]{1,160}$/.test(trimmed[end])) run.push(trimmed[end++]);
+    // An unclosed block lists nothing: GitHub would hide the rest of the body.
+    if (trimmed[end] === "-->") run.forEach(add);
+  } else if (headings.length) {
     for (const line of lines.slice(headings[headings.length - 1] + 1)) {
       // An optional " · [dashboard](url)" suffix is allowed and ignored.
       const m = line.match(/^[-*] `([^`]*)`( · \[dashboard\]\(([^)]*)\))?\s*$/);
       if (!m || !/^[A-Za-z0-9._:/+-]{1,160}$/.test(m[1])) break;
       if (m[2] !== undefined && (m[3].length < 1 || m[3].length > 300 || /[\s(]/.test(m[3]))) break;
-      const id = m[1].toLowerCase();
-      const fromKey = id.match(/^diagnostics\/[a-z0-9._+-]{1,64}\/(.{36})\.json$/);
-      const uuid = UUID.test(id) ? id : fromKey && UUID.test(fromKey[1]) ? fromKey[1] : null;
-      if (uuid && !expected.includes(uuid)) expected.push(uuid);
-      if (expected.length >= MAX_IDS_PER_ISSUE) break;
+      add(m[1]);
     }
   }
   assert.deepEqual(got.ids, expected, label);
@@ -187,6 +202,8 @@ const ID_FRAGMENTS = [
   "diagnostics/", ".json", "../", "/", "-", "A", "f", " ", TRIAGE_MARKER, FALLBACK_MARKER, "é", "\0",
   "<!-- bookclerk-diagnostics: regression of #412 -->", "regression of #", "#0", "#9999999999", "1",
   " · [dashboard](https://d.test/reports/x)", " · ", "[dashboard]", "(", ")", "\t",
+  "<!-- bookclerk-diagnostics: report ids", "\n<!-- bookclerk-diagnostics: report ids\n", "-->", "\n-->", "--", ">",
+  "\n7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4", "\ndiagnostics/0.1.0/7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4.json",
 ];
 
 const JSON_FRAGMENTS = [
@@ -216,6 +233,18 @@ describe("parseIssueReportIds", () => {
     const body = `### Report IDs\n${ids.map((i) => `- \`${i}\``).join("\n")}`;
     assert.equal(parseIssueReportIds(body).ids.length, MAX_IDS_PER_ISSUE);
     checkIds(body, "cap");
+    const hidden = `<!-- bookclerk-diagnostics: report ids\n${ids.join("\n")}\n-->`;
+    assert.equal(parseIssueReportIds(hidden).ids.length, MAX_IDS_PER_ISSUE);
+    checkIds(hidden, "hidden cap");
+  });
+
+  it("reads the hidden block before the visible list", () => {
+    const a = "7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4";
+    const b = "5cee862c-0309-4786-8778-6b2b124087e6";
+    const body = `${TRIAGE_MARKER}\nText.\n\n### Report IDs\n- \`${a}\`\n\n<!-- bookclerk-diagnostics: report ids\n${b}\n-->\n`;
+    assert.deepEqual(parseIssueReportIds(body), { kind: "triage", ids: [b], regressionOf: null });
+    assert.deepEqual(parseIssueReportIds(body.replace("\n-->\n", "\n")).ids, [], "an unclosed block lists nothing");
+    assert.deepEqual(parseIssueReportIds(`<!-- bookclerk-diagnostics: report ids\n${b} · x\n-->`).ids, [], "a stray line ends the block unclosed");
   });
 });
 

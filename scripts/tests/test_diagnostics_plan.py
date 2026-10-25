@@ -22,8 +22,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CORPUS = Path(__file__).resolve().parent / "diagnostics_plan_corpus"
 KNOWN = {"11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"}
-#: Collector origin the dashboard links in the Report IDs section point at.
-DASHBOARD = "https://diagnostics.example.test"
+#: Opening line of the hidden report block the dashboard reads.
+BLOCK_OPEN = "<!-- bookclerk-diagnostics: report ids"
 
 
 def _load(name: str, path: Path):
@@ -53,18 +53,18 @@ REPORT_IDS_HEADING = re.compile(r"(?im)^\s*#+\s*report ids\b")
 FRAGMENTS = [
     "@", "#1", "GH-2", "](", "]:", "[", "]", "(", ")", "<a href=x>", "<img src=y>",
     "&#64;", "&amp;", "https://", "HTTPS://GitHub.com/", "www.", "//", "\n### Report IDs\n",
+    "\n" + BLOCK_OPEN + "\n", "-->", "\n-->\n", "<!--",
     "\u200b", "\\", '"', "{", "}", ",", ":", "report_ids", "issues", next(iter(KNOWN)),
 ]
 
 
-def assert_publishable(case: unittest.TestCase, issues: list, label: str, dashboard: str | None = None) -> None:
+def assert_publishable(case: unittest.TestCase, issues: list, label: str) -> None:
     """Checks every invariant a validated plan promises.
 
     Args:
         case: Test case to fail.
         issues: Validator output.
         label: Input name for failure messages.
-        dashboard: Collector origin the validator was given, or None.
     """
     case.assertLessEqual(len(issues), 5, label)
     for issue in issues:
@@ -74,15 +74,16 @@ def assert_publishable(case: unittest.TestCase, issues: list, label: str, dashbo
         case.assertIn(issue.labels, {"diagnostics", "diagnostics,bug"}, label)
         marker, newline, rest = issue.body.partition("\n")
         case.assertTrue(re.fullmatch(r"<!-- bookclerk-diagnostics: [a-z -]+ -->", marker), label)
-        head, sep, ids = rest.rpartition("\n### Report IDs\n")
+        # The body ends in exactly one hidden block: the opening line, one
+        # bare ID per line and the closing line, after a blank line.
+        head, sep, ids = rest.rpartition("\n\n" + BLOCK_OPEN + "\n")
         case.assertTrue(sep, label)
+        case.assertNotIn("<!--", head, f"{label}: forged comment or report block")
         case.assertIsNone(REPORT_IDS_HEADING.search(head), f"{label}: forged Report IDs section")
-        listed = re.findall(r"^- `([^`\n]*)`", ids, re.M)
+        case.assertTrue(ids.endswith("\n-->\n"), label)
+        listed = ids[: -len("-->\n")].splitlines()
         case.assertTrue(listed, label)
-        # Every KNOWN ID is a UUID, so each line links exactly when a
-        # dashboard was given, and only to that report's page on it.
-        suffix = (lambda i: f" \u00b7 [dashboard]({dashboard}/reports/{i})") if dashboard else (lambda i: "")
-        case.assertEqual(ids, "".join(f"- `{i}`{suffix(i)}\n" for i in listed), label)
+        case.assertEqual(len(listed), len(set(listed)), label)
         case.assertTrue(set(listed) <= KNOWN, label)
         case.assertEqual(issue.report_ids, tuple(listed), label)
         case.assertLessEqual(len(head), 40_000, label)
@@ -91,18 +92,18 @@ def assert_publishable(case: unittest.TestCase, issues: list, label: str, dashbo
                 case.assertIsNone(pattern.search(field), f"{label}: {what} in {field[:200]!r}")
 
 
-def run(text: str, dashboard: str | None = None) -> list | None:
+def run(text: str, known: set[str] = KNOWN) -> list | None:
     """Validates one input.
 
     Args:
         text: Model reply.
-        dashboard: Collector origin for report links, or None.
+        known: Report IDs in the batch.
 
     Returns:
         The issues, or None when the validator refused the reply.
     """
     try:
-        return vp.plan_issues(text, KNOWN, dashboard)
+        return vp.plan_issues(text, known)
     except vp.PlanError:
         return None
 
@@ -129,6 +130,7 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(len(fenced), 1)
         self.assertEqual(fenced[0].labels, "diagnostics,bug")
         self.assertEqual(fenced[0].body.lower().count("report ids"), 1)
+        self.assertNotIn("### Report IDs", fenced[0].body)
         self.assertEqual(len(run(load("oversized_plan.txt"))), 5)
         expanding = json.dumps({"issues": [{"title": "<a" * 200, "body": "b", "report_ids": sorted(KNOWN)}]})
         self.assertEqual(len(run(expanding)[0].title), 120)
@@ -158,10 +160,9 @@ class MutationFuzzTests(unittest.TestCase):
         rng = random.Random(20261023)
         for n in range(self.ITERATIONS):
             text = self.mutate(rng, rng.choice(seeds))
-            dashboard = DASHBOARD if n % 2 else None
-            issues = run(text, dashboard)
+            issues = run(text)
             if issues is not None:
-                assert_publishable(self, issues, f"iteration {n}: {text[:300]!r}", dashboard)
+                assert_publishable(self, issues, f"iteration {n}: {text[:300]!r}")
 
     def test_hostile_fields_are_publishable(self) -> None:
         rng = random.Random(7)
@@ -173,8 +174,8 @@ class MutationFuzzTests(unittest.TestCase):
             assert_publishable(self, issues, f"hostile {n}: {plan!r}"[:400])
 
 
-class CoverageAndLinkTests(unittest.TestCase):
-    """Reports a plan leaves out, and the dashboard origin links point at."""
+class CoverageAndBlockTests(unittest.TestCase):
+    """Reports a plan leaves out, the dashboard origin and the report block."""
 
     def test_partial_plan_leaves_the_rest_uncovered(self) -> None:
         first, second = sorted(KNOWN)
@@ -190,22 +191,25 @@ class CoverageAndLinkTests(unittest.TestCase):
         self.assertEqual(vp.dashboard_origin("https://x.workers.dev:8443"), "https://x.workers.dev:8443")
         for bad in (None, "", "http://d.test", "https://d.test/path", "https://u@d.test", "https://d.test?q", "https://d.test)", "javascript:x"):
             self.assertIsNone(vp.dashboard_origin(bad), bad)
-
-    def test_every_accepted_origin_fits_the_dashboard_parser(self) -> None:
-        # dashboard/report-ids.js reads a link of at most 300 characters.
-        uuid = next(iter(KNOWN))
         longest = "https://" + "a" * (vp.MAX_DASHBOARD_ORIGIN_CHARS - len("https://") - 6) + ":65535"
         self.assertEqual(vp.dashboard_origin(longest), longest)
-        line = vp.id_line(uuid, longest)
-        url = re.search(r"\]\(([^)]*)\)", line).group(1)
-        self.assertLessEqual(len(url), 300)
         self.assertIsNone(vp.dashboard_origin("https://" + "a" * 250 + ".test"))
 
-    def test_only_uuids_get_links(self) -> None:
-        self.assertEqual(vp.id_line("not-a-uuid", DASHBOARD), "- `not-a-uuid`\n")
-        uuid = next(iter(KNOWN))
-        self.assertEqual(vp.id_line(uuid, None), f"- `{uuid}`\n")
-        self.assertEqual(vp.id_line(uuid, DASHBOARD), f"- `{uuid}` \u00b7 [dashboard]({DASHBOARD}/reports/{uuid})\n")
+    def test_report_block_lists_bare_ids(self) -> None:
+        uuid = sorted(KNOWN)[0]
+        self.assertEqual(vp.report_block([uuid, "diagnostics/0.1.0/x.json"]), f"{BLOCK_OPEN}\n{uuid}\ndiagnostics/0.1.0/x.json\n-->\n")
+        for bad in ("a-->b", "a b", "", "x" * 161, "a\nb", "`a`"):
+            with self.assertRaises(ValueError, msg=bad):
+                vp.report_block([bad])
+
+    def test_ids_that_could_close_the_block_are_not_listed(self) -> None:
+        hostile = "11111111-->[x](https://evil.test)"
+        plan = json.dumps({"issues": [{"title": "t", "body": "b", "report_ids": [hostile, sorted(KNOWN)[0]]}]})
+        issues = run(plan, KNOWN | {hostile})
+        self.assertEqual(issues[0].report_ids, (sorted(KNOWN)[0],))
+        self.assertNotIn("evil", issues[0].body)
+        only = json.dumps({"issues": [{"title": "t", "body": "b", "report_ids": [hostile]}]})
+        self.assertIsNone(run(only, KNOWN | {hostile}), "an issue needs a listable ID")
 
 
 def load_corpus(name: str) -> str:
@@ -232,9 +236,8 @@ class CliTests(unittest.TestCase):
             self.assertEqual(vp.main([str(t / "plan"), str(t / "data.json"), str(t / "out")]), 0)
             self.assertEqual((t / "out" / "0" / "labels").read_text(), "diagnostics,bug")
             self.assertIsInstance(json.loads((t / "out" / "uncovered.json").read_text()), list)
-            (t / "linked").mkdir()
-            self.assertEqual(vp.main([str(t / "plan"), str(t / "data.json"), str(t / "linked"), DASHBOARD + "/"]), 0)
-            self.assertIn(f"]({DASHBOARD}/reports/", (t / "linked" / "0" / "body").read_text())
+            self.assertIn(f"\n{BLOCK_OPEN}\n", (t / "out" / "0" / "body").read_text())
+            self.assertEqual(vp.main([str(t / "plan"), str(t / "data.json"), str(t / "out"), "https://d.test"]), 2)
             (t / "plan").write_text((CORPUS / "unknown_ids_plan.txt").read_text())
             (t / "out2").mkdir()
             self.assertEqual(vp.main([str(t / "plan"), str(t / "data.json"), str(t / "out2")]), 1)

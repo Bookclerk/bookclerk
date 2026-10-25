@@ -41,7 +41,7 @@ trap 'rm -rf "$DATA_FILE" "$PLAN_FILE" "$RESPONSE_FILE" "$WORK_DIR"' EXIT
 # The planner reads report-steered input, so the collector key is kept out
 # of its environment like the other readers below.
 REGRESS_DIR="$WORK_DIR/regressions"
-env -u REPORT_API_KEY python3 -I "$SCRIPT_DIR/regression_issue.py" "$REPORTS_FILE" "$REGRESS_DIR" "${BASE%/}"
+env -u REPORT_API_KEY python3 -I "$SCRIPT_DIR/regression_issue.py" "$REPORTS_FILE" "$REGRESS_DIR"
 regressions=$(find "$REGRESS_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)
 if [[ $regressions -gt 0 ]]; then
   TRIAGE_FILE="$WORK_DIR/triage-reports.json"
@@ -103,16 +103,13 @@ for item in data:
 json.dump(kept, sys.stdout, separators=(",", ":"), ensure_ascii=False)
 ' > "$DATA_FILE"
 
-# Report IDs as a Markdown list, one per line. IDs are collector object names
-# or report UUIDs; anything else is listed as "unknown" so a report cannot
-# write Markdown into an issue through its ID. A report UUID also links to its
-# dashboard page on the collector (organization members only), in the same
-# form validate_plan.py writes and dashboard/report-ids.js reads.
+# Report IDs, one per line, as the hidden report block lists them
+# (validate_plan.py writes it, dashboard/report-ids.js reads it). IDs are
+# collector object names or report UUIDs; anything else is listed as
+# "unknown", so a report cannot write into an issue through its ID or close
+# the block's HTML comment early.
 id_list() {
-  jq -r --arg base "${BASE%/}" "$1"' | if type == "string" and test("^[A-Za-z0-9._:-]{1,128}$") then . else "unknown" end
-    | if test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-      then "- `\(.)` \u00b7 [dashboard](\($base)/reports/\(.))"
-      else "- `\(.)`" end' "$2"
+  jq -r "$1"' | if type == "string" and test("^[A-Za-z0-9._:-]{1,128}$") then . else "unknown" end' "$2"
 }
 ALL_IDS=$(id_list '.reports[] | (.report_id // .report.report_id // .file_name)' "$REPORTS_FILE")
 KEPT_IDS=$(id_list '.[] | .report_id' "$DATA_FILE")
@@ -124,9 +121,9 @@ HOLDING_TITLE="[diagnostics] untriaged reports"
 RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${REPO}/actions/runs/${GITHUB_RUN_ID:-unknown}"
 
 # Adds reports no plan covers, by ID only, to the open holding issue: its
-# Report IDs section grows (holding_issue.py edits only that list) and one
+# report block grows (holding_issue.py edits only that list) and one
 # comment per run says why. When there is no open holding issue, or it is
-# full, a new one is opened. Usage: file_fallback <report count> <reason> <ID list>.
+# full or was filed before the hidden block, a new one is opened. Usage: file_fallback <report count> <reason> <ID list>.
 file_fallback() {
   gh label create diagnostics --color "0E8A16" --description "Automated diagnostics reports" 2>/dev/null || true
   local number body url
@@ -156,12 +153,16 @@ file_fallback() {
     echo "<!-- bookclerk-diagnostics: triage fallback -->"
     echo "## Untriaged reports"
     echo
-    echo "### Report IDs"
-    printf '%s\n' "$3"
-    echo
     echo "Reports no triage plan covered, added by each ingest run that could not"
-    echo "place them (the run's comment says why). Review them on the dashboard"
-    echo "(organization members only); report contents are not posted here."
+    echo "place them (the run's comment says why). The summary comment below"
+    echo "counts them and links the newest; review them on the dashboard"
+    echo "(organization members only). Report contents are not posted here."
+    echo
+    # A blank line would end the block before its closing line, and the
+    # dashboard reads an unclosed block as listing nothing.
+    echo "<!-- bookclerk-diagnostics: report ids"
+    printf '%s\n' "$3" | sed '/^[[:space:]]*$/d'
+    echo "-->"
   } | gh issue create --repo "$REPO" --title "$HOLDING_TITLE" --label diagnostics --body-file -) || return 1
   echo "$url"
   gh issue comment "${url##*/}" --repo "$REPO" --body "$1 report(s) held: $2. Workflow run: $RUN_URL" >/dev/null || true
@@ -261,7 +262,7 @@ ISSUES_DIR="$WORK_DIR/issues"
 mkdir -p "$ISSUES_DIR"
 planned=0
 if [[ $status -eq 0 ]]; then
-  if python3 -I "$SCRIPT_DIR/validate_plan.py" "$PLAN_FILE" "$DATA_FILE" "$ISSUES_DIR" "${BASE%/}"
+  if python3 -I "$SCRIPT_DIR/validate_plan.py" "$PLAN_FILE" "$DATA_FILE" "$ISSUES_DIR"
   then
     planned=$(find "$ISSUES_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)
   else

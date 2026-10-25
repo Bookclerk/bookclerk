@@ -24,8 +24,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CORPUS = Path(__file__).resolve().parent / "regression_issue_corpus"
-#: Collector origin the dashboard links in the Report IDs section point at.
-DASHBOARD = "https://diagnostics.example.test"
+#: Opening line of the hidden report block the dashboard reads.
+BLOCK_OPEN = "<!-- bookclerk-diagnostics: report ids"
 UUID_A = "11111111-1111-4111-8111-111111111111"
 UUID_B = "22222222-2222-4222-8222-222222222222"
 
@@ -54,10 +54,9 @@ FORBIDDEN = {
 REPORT_IDS_HEADING = re.compile(r"(?im)^\s*#+\s*report ids\b")
 #: The marker the dashboard parser (dashboard/report-ids.js) reads.
 MARKER = re.compile(r"^<!-- bookclerk-diagnostics: regression of #([1-9]\d{0,8}) -->$")
-#: What the dashboard's parser reads as a list line under the heading.
-ORACLE_LINE = re.compile(r"^[-*] `([A-Za-z0-9._:/+-]{1,160})`(?: · \[dashboard\]\(([^\s()]{1,300})\))?$")
+#: What the dashboard's parser reads as an ID line inside the block.
+ORACLE_LINE = re.compile(r"[A-Za-z0-9._:/+-]{1,160}")
 ORACLE_ID = re.compile(r"[A-Za-z0-9._:-]{1,128}")
-ORACLE_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 ORACLE_VERSION = re.compile(r"v?(\d{1,6})\.(\d{1,6})(?:\.\d{1,6})?(?:[-+._~][0-9A-Za-z.+_~-]{1,40})?")
 
 
@@ -109,7 +108,7 @@ def oracle_groups(pull: object) -> dict[tuple[int, int, int], dict]:
     return groups
 
 
-def assert_planned(case: unittest.TestCase, pull: object, issues: list, label: str, dashboard: str | None = None) -> None:
+def assert_planned(case: unittest.TestCase, pull: object, issues: list, label: str) -> None:
     """Checks every invariant a planned set of issues promises.
 
     Args:
@@ -117,7 +116,6 @@ def assert_planned(case: unittest.TestCase, pull: object, issues: list, label: s
         pull: The decoded input.
         issues: Planner output.
         label: Input name for failure messages.
-        dashboard: Collector origin the planner was given, or None.
     """
     expected = oracle_groups(pull)
     keys = sorted(expected)[:10]
@@ -136,20 +134,15 @@ def assert_planned(case: unittest.TestCase, pull: object, issues: list, label: s
         case.assertEqual(issue.labels, "diagnostics,bug,regression", label)
         marker, _, rest = issue.body.partition("\n")
         case.assertEqual(MARKER.match(marker).group(1), str(number), label)
-        head, sep, ids = rest.rpartition("\n### Report IDs\n")
+        head, sep, ids = rest.rpartition("\n\n" + BLOCK_OPEN + "\n")
         case.assertTrue(sep, label)
+        case.assertNotIn("<!--", head, f"{label}: forged comment or report block")
         case.assertIsNone(REPORT_IDS_HEADING.search(head), f"{label}: forged Report IDs section")
         case.assertTrue(head.startswith(f"## Regression of #{number}\n"), label)
-        listed = []
-        for line in ids.splitlines():
-            m = ORACLE_LINE.match(line)
-            case.assertIsNotNone(m, f"{label}: {line!r}")
-            rid, url = m.group(1), m.group(2)
-            if dashboard and ORACLE_UUID.fullmatch(rid):
-                case.assertEqual(url, f"{dashboard}/reports/{rid}", label)
-            else:
-                case.assertIsNone(url, label)
-            listed.append(rid)
+        case.assertTrue(ids.endswith("\n-->\n"), label)
+        listed = ids[: -len("-->\n")].splitlines()
+        for line in listed:
+            case.assertIsNotNone(ORACLE_LINE.fullmatch(line), f"{label}: {line!r}")
         case.assertEqual(listed, group["ids"], label)
         case.assertEqual(issue.report_ids, tuple(listed), label)
         # The deliberate references are the closed issue and its fix pull
@@ -177,11 +170,10 @@ class CorpusTests(unittest.TestCase):
     def test_corpus_is_planned(self) -> None:
         for path in sorted(CORPUS.iterdir()):
             pull = load(path.name)
-            for dashboard in (None, DASHBOARD):
-                assert_planned(self, pull, ri.plan_regressions(pull, dashboard), path.name, dashboard)
+            assert_planned(self, pull, ri.plan_regressions(pull), path.name)
 
     def test_expected_outcomes(self) -> None:
-        issues = ri.plan_regressions(load("normal.json"), DASHBOARD)
+        issues = ri.plan_regressions(load("normal.json"))
         self.assertEqual(len(issues), 1)
         issue = issues[0]
         self.assertEqual(issue.title, "[diagnostics] Regression of #412 in 1.2: Scan fails on empty library")
@@ -203,7 +195,7 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(ri.plan_regressions(load("flat_report.json"))[0].version_line, "1.2")
 
     def test_hostile_fields_are_rewritten(self) -> None:
-        issues = ri.plan_regressions(load("hostile.json"), DASHBOARD)
+        issues = ri.plan_regressions(load("hostile.json"))
         self.assertEqual(len(issues), 1)
         body = issues[0].body
         self.assertIn("[link removed]", issues[0].title)
@@ -215,7 +207,8 @@ class CorpusTests(unittest.TestCase):
         # The pull request number came from the first report; out of range
         # means no fix reference at all.
         self.assertIn("by #415", body)
-        self.assertEqual(body.count("\u00b7 [dashboard]("), 2)
+        self.assertEqual(body.count(BLOCK_OPEN), 1)
+        self.assertNotIn("[dashboard](", body)
         # An object name is not a report ID (the collector sends the UUID).
         self.assertEqual(issues[0].report_ids, (UUID_A, UUID_B))
 
@@ -225,16 +218,10 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(len(issues[0].report_ids), 500)
         assert_planned(self, {"reports": reports}, issues, "cap")
 
-    def test_dashboard_origin_is_a_bare_https_origin(self) -> None:
-        self.assertEqual(ri.dashboard_origin("https://Diagnostics.Bookclerk.app/"), "https://diagnostics.bookclerk.app")
-        self.assertEqual(ri.dashboard_origin("https://x.workers.dev:8443"), "https://x.workers.dev:8443")
-        for bad in (None, "", "http://d.test", "https://d.test/path", "https://u@d.test", "https://d.test?q", "https://d.test)", "javascript:x"):
-            self.assertIsNone(ri.dashboard_origin(bad), bad)
-        longest = "https://" + "a" * (ri.MAX_DASHBOARD_ORIGIN_CHARS - len("https://") - 6) + ":65535"
-        self.assertEqual(ri.dashboard_origin(longest), longest)
-        url = re.search(r"\]\(([^)]*)\)", ri.id_line(UUID_A, longest)).group(1)
-        self.assertLessEqual(len(url), 300)
-        self.assertEqual(ri.id_line("not-a-uuid", DASHBOARD), "- `not-a-uuid`\n")
+    def test_ids_end_the_body_in_the_hidden_block(self) -> None:
+        body = ri.plan_regressions(load("normal.json"))[0].body
+        self.assertTrue(body.endswith(f"\n\n{BLOCK_OPEN}\n{UUID_A}\n{UUID_B}\n-->\n"), body)
+        self.assertNotIn("### Report IDs", body)
 
 
 class MutationTests(unittest.TestCase):
@@ -242,7 +229,7 @@ class MutationTests(unittest.TestCase):
 
     FRAGMENTS = [
         "@", "#1", "GH-2", "](", "]:", "[", "]", "(", ")", "<a href=x>", "<img src=y>", "&#64;", "&amp;",
-        "https://", "www.", "\n### Report IDs\n", "\u200b", "\\", '"', "{", "}", ",", ":", "regression_of",
+        "https://", "www.", "\n### Report IDs\n", "<!--", "-->", "\u200b", "\\", '"', "{", "}", ",", ":", "regression_of",
         "report_id", "fixed_in", "pr_number", "issue", "version", "payload", "os", "true", "null", "0",
         "-1", "1e3", "999999999999", "1.2.", "v", "+build", "-rc.1", UUID_A, "diagnostics/1.0.0/" + UUID_B + ".json",
     ]
@@ -291,16 +278,14 @@ class MutationTests(unittest.TestCase):
                 pull = json.loads(text)
             except (json.JSONDecodeError, RecursionError):
                 pull = None
-            dashboard = DASHBOARD if n % 2 else None
-            assert_planned(self, pull, ri.plan_regressions(pull, dashboard), f"text mutation {n}", dashboard)
+            assert_planned(self, pull, ri.plan_regressions(pull), f"text mutation {n}")
 
     def test_value_mutations_are_planned(self) -> None:
         seeds = [load(p.name) for p in sorted(CORPUS.iterdir()) if p.name not in {"deep_nesting.json", "not_json.json"}]
         rng = random.Random(7)
         for n in range(1500):
             pull = self.mutate_value(rng, rng.choice(seeds))
-            dashboard = DASHBOARD if n % 2 else None
-            assert_planned(self, pull, ri.plan_regressions(pull, dashboard), f"value mutation {n}", dashboard)
+            assert_planned(self, pull, ri.plan_regressions(pull), f"value mutation {n}")
 
 
 class CliTests(unittest.TestCase):
@@ -309,11 +294,11 @@ class CliTests(unittest.TestCase):
     def test_writes_issue_files_and_handled_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             t = Path(tmp)
-            self.assertEqual(ri.main([str(CORPUS / "two_lines.json"), str(t / "out"), DASHBOARD + "/"]), 0)
+            self.assertEqual(ri.main([str(CORPUS / "two_lines.json"), str(t / "out")]), 0)
             dirs = sorted(p.name for p in (t / "out").iterdir() if p.is_dir())
             self.assertEqual(dirs, ["0", "1", "2"])
             self.assertEqual((t / "out" / "1" / "labels").read_text(), "diagnostics,bug,regression")
-            self.assertIn(f"]({DASHBOARD}/reports/", (t / "out" / "1" / "body").read_text())
+            self.assertIn(f"\n{BLOCK_OPEN}\n", (t / "out" / "1" / "body").read_text())
             handled = json.loads((t / "out" / "handled.json").read_text())
             self.assertEqual(sorted(handled["handled"]), sorted([UUID_A, UUID_B, "33333333-3333-4333-8333-333333333333"]))
             self.assertEqual(handled["overflow"], [])
@@ -323,8 +308,7 @@ class CliTests(unittest.TestCase):
             many = json.loads((t / "many" / "handled.json").read_text())
             self.assertEqual(len(many["handled"]), 14)
             self.assertEqual(len(many["overflow"]), 4)
-            self.assertEqual(ri.main([str(CORPUS / "normal.json"), str(t / "bad"), "http://plain.test"]), 0)
-            self.assertNotIn("[dashboard]", (t / "bad" / "0" / "body").read_text())
+            self.assertEqual(ri.main([str(CORPUS / "normal.json"), str(t / "bad"), "https://d.test"]), 2)
             self.assertEqual(ri.main([str(CORPUS / "normal.json")]), 2)
 
 

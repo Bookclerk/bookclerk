@@ -21,10 +21,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CORPUS = Path(__file__).resolve().parent / "holding_issue_corpus"
-DASHBOARD = "https://diagnostics.example.test"
 NEW_IDS = ["33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"]
 #: Lines the triage script would ask to append.
-LINES = "".join(f"- `{i}` · [dashboard]({DASHBOARD}/reports/{i})\n" for i in NEW_IDS)
+LINES = "".join(f"{i}\n" for i in NEW_IDS)
+#: Opening line of the hidden report block.
+OPEN = "<!-- bookclerk-diagnostics: report ids"
 
 
 def _load(name: str, path: Path):
@@ -39,39 +40,41 @@ def _load(name: str, path: Path):
 
 hi = _load("holding_issue", ROOT / "tools" / "diagnostics-collector" / "scripts" / "holding_issue.py")
 
-#: What the dashboard's parser (dashboard/report-ids.js) reads: a list line
-#: directly under the last Report IDs heading.
-ORACLE_LINE = re.compile(r"^[-*] `([A-Za-z0-9._:/+-]{1,160})`(?: · \[dashboard\]\([^\s()]{1,300}\))?\s*$")
+#: What the dashboard's parser (dashboard/report-ids.js) reads: a bare ID
+#: line, padded with spaces or tabs at most, inside the last report block.
+ORACLE_LINE = re.compile(r"([A-Za-z0-9._:/+-]{1,160})[ \t]*")
 
 
-def oracle_ids(body: str) -> list[str]:
+def oracle_ids(body: str) -> list[str] | None:
     """Reads the listed IDs the way the dashboard does.
 
     Args:
         body: Issue body.
 
     Returns:
-        IDs under the last ``### Report IDs`` heading, in order, duplicates
-        kept, stopping at the first line that is not a list line.
+        IDs of the last report block, in order, duplicates kept, or None
+        when the body has no block or its ID lines do not end on ``-->``.
     """
-    lines = body.split("\n")
-    starts = [i for i, line in enumerate(lines) if re.match(r"^###\s+Report IDs\s*$", line)]
-    if not starts:
-        return []
+    lines = [line.rstrip(" \t") for line in body.split("\n")]
+    if OPEN not in lines:
+        return None
+    start = len(lines) - lines[::-1].index(OPEN)
     out = []
-    for line in lines[starts[-1] + 1 :]:
-        m = ORACLE_LINE.match(line)
+    for line in lines[start:]:
+        if line == "-->":
+            return out
+        m = ORACLE_LINE.fullmatch(line)
         if not m:
-            break
+            return None
         out.append(m.group(1))
-    return out
+    return None
 
 
 def wanted_ids(lines_text: str) -> list[str]:
     """IDs of the well-formed candidate lines, first occurrence each."""
     out: list[str] = []
     for line in lines_text.splitlines():
-        m = ORACLE_LINE.match(line.rstrip("\r"))
+        m = ORACLE_LINE.fullmatch(line.rstrip("\r"))
         if m and m.group(1) not in out:
             out.append(m.group(1))
     return out
@@ -89,6 +92,7 @@ def assert_appended(case: unittest.TestCase, body: str, lines_text: str, out: st
     """
     normalized = body.replace("\r\n", "\n")
     before = oracle_ids(normalized)
+    case.assertIsNotNone(before, f"{label}: appended to a body without a closed block")
     added = [i for i in wanted_ids(lines_text) if i not in before]
     case.assertEqual(oracle_ids(out), before + added, label)
     case.assertLessEqual(len(set(oracle_ids(out))), hi.MAX_IDS, label)
@@ -100,7 +104,7 @@ def assert_appended(case: unittest.TestCase, body: str, lines_text: str, out: st
     case.assertEqual(len(out_lines), len(in_lines) + len(added), label)
     cut = [line for line in out_lines]
     for rid in added:
-        idx = next(i for i, line in enumerate(cut) if ORACLE_LINE.match(line) and ORACLE_LINE.match(line).group(1) == rid)
+        idx = next(i for i, line in enumerate(cut) if line == rid)
         del cut[idx]
     case.assertEqual(cut, in_lines, label)
     case.assertEqual(hi.append_ids(out, lines_text), out, f"{label}: idempotent")
@@ -125,30 +129,30 @@ class CorpusTests(unittest.TestCase):
                 assert_appended(self, body, LINES, out, path.name)
 
     def test_expected_outcomes(self) -> None:
-        refused = {"no_heading.md", "full.md", "long.md"}
+        refused = {"no_block.md", "full.md", "long.md", "legacy_heading.md", "unclosed.md", "hostile_lines.md"}
         for path in sorted(CORPUS.iterdir()):
             out = run(path.read_text(encoding="utf-8"), LINES)
             self.assertEqual(out is None, path.name in refused, path.name)
         normal = (CORPUS / "normal.md").read_text(encoding="utf-8")
         out = hi.append_ids(normal, LINES)
-        self.assertIn(f"- `{NEW_IDS[1]}` · [dashboard]({DASHBOARD}/reports/{NEW_IDS[1]})\n\nReports no triage", out)
-        self.assertTrue(out.startswith(normal.split("\n\nReports no triage")[0]))
-        # Lines go under the last heading, after its last listed ID.
+        self.assertTrue(out.endswith(f"11111111-1111-4111-8111-111111111111\n{NEW_IDS[0]}\n{NEW_IDS[1]}\n-->\n"), out)
+        self.assertTrue(out.startswith(normal.split(OPEN)[0]))
+        # IDs go into the last block, after its last listed ID.
         two = hi.append_ids((CORPUS / "two_sections.md").read_text(encoding="utf-8"), LINES)
         self.assertEqual(oracle_ids(two)[-2:], NEW_IDS)
-        self.assertEqual(two.count("### Report IDs"), 2)
+        self.assertEqual(two.count(OPEN), 2)
 
     def test_already_listed_and_malformed_lines_are_skipped(self) -> None:
         normal = (CORPUS / "normal.md").read_text(encoding="utf-8")
         listed = "11111111-1111-4111-8111-111111111111"
-        lines = f"- `{listed}`\nnot a line\n- `<b>`\n{LINES}- `{NEW_IDS[0]}`\n"
+        lines = f"{listed}\nnot a line\n<b>\n-->\n{LINES}{NEW_IDS[0]}\n"
         out = hi.append_ids(normal, lines)
         self.assertEqual(oracle_ids(out), [listed] + NEW_IDS)
         self.assertEqual(hi.append_ids(normal, ""), normal)
 
     def test_cap_counts_distinct_listed_ids(self) -> None:
-        body = "### Report IDs\n" + "".join(f"- `{i:08x}-0000-4000-8000-000000000000`\n" for i in range(499))
-        self.assertIsNotNone(run(body, f"- `{NEW_IDS[0]}`\n"))
+        body = OPEN + "\n" + "".join(f"{i:08x}-0000-4000-8000-000000000000\n" for i in range(499)) + "-->\n"
+        self.assertIsNotNone(run(body, f"{NEW_IDS[0]}\n"))
         self.assertIsNone(run(body, LINES))
 
 
@@ -157,6 +161,7 @@ class MutationTests(unittest.TestCase):
 
     FRAGMENTS = [
         "\n### Report IDs\n", "### Report IDs", "\r\n", "\n", "- `", "`", "* `", " · [dashboard](", ")", "(",
+        OPEN, "\n" + OPEN + "\n", "-->", "\n-->", "--", ">", "<!--",
         "](", "<img src=x>", "@", "#1", "x" * 200, "11111111-1111-4111-8111-111111111111",
         NEW_IDS[0], "diagnostics/0.1.0/" + NEW_IDS[1] + ".json", " ", "\t", "​", "\x00",
     ]
@@ -186,7 +191,7 @@ class MutationTests(unittest.TestCase):
 
     def test_random_bodies_never_raise_anything_else(self) -> None:
         rng = random.Random(7)
-        alphabet = "#- `*\n\r·[]()abc0-19\t"
+        alphabet = "#- `*\n\r·[]()abc0-19\t>"
         for n in range(500):
             body = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 300)))
             out = run(body, LINES)
