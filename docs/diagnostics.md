@@ -265,9 +265,14 @@ whom), the ones detached from it, and suggestions: indexed reports that
 share a signature with the issue's reports and are linked to no issue.
 **Detach** writes `excluded` for the pair (a filed report stays detached
 when the sync next reads the body); **Attach** writes `manual`, replacing an
-earlier exclusion since the member now asks for it; **Move** detaches from
-one issue and attaches to another in one batch; **Merge into** attaches
-every report linked to the issue to the chosen open issue and detaches them
+earlier exclusion since the member now asks for it, and excludes the report
+from every other issue linking it, so the member's choice wins over the
+oldest-issue rule above (the other issues' bodies still list the report;
+their summary comments stop counting it, and **Attach again** there
+reverses it); **Move** is an attach to the other issue, which takes the
+report from every issue the same way, plus a detach from this one, in one
+batch; **Merge into** attaches every report linked to the issue to the
+chosen open issue, takes them all from every other issue, and detaches them
 all from the first (the member closes the emptied issue on GitHub as a
 duplicate; the Worker does not). **Dismiss** on a suggestion writes the
 exclusion so ingest does not link it by signature later. The report page

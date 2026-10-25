@@ -1943,6 +1943,65 @@ describe("issue page and ledger corrections", () => {
     assert.match(tracked, /href="\/issues\/400">#400 \[diagnostics\] issue 400<\/a>[^]*?>Detach</);
   });
 
+  it("lets an explicit attach, move or merge take a report from the issues that counted it", async () => {
+    gh = scriptGitHub([]);
+    const KEY = "r".repeat(32);
+    const env = makeEnv({ REPORT_API_KEY: KEY });
+    const d1 = env.DASHBOARD_DB;
+    for (const id of [ID1, ID2, ID3]) await seed(env, id, NOW - 3_600_000);
+    // #400 (older, closed) lists the report; triage later filed it on #403 too.
+    await openIssue(env, 400, [ID1, ID2]);
+    await run(d1, "UPDATE issues SET state = 'closed' WHERE number = 400");
+    await openIssue(env, 403, [ID1]);
+    await openIssue(env, 405, []);
+    /** Reports counted per issue, as the summaries route hands them out. */
+    const counted = async () => {
+      const handed = await (await worker.fetch(new Request(`${ORIGIN}/issues/summaries`, { headers: { authorization: `Bearer ${KEY}` } }), env, makeCtx())).json();
+      return Object.fromEntries(handed.issues.map((i) => [i.issue, i.reports]));
+    };
+    assert.deepEqual(await counted(), { 400: 2 }, "the oldest issue tracks a report both list");
+
+    // A member's attach on #403 takes it, although triage had filed it there already.
+    const cookie = await signedIn(env, "member");
+    assert.equal((await correct(env, cookie, { action: "attach", issue: "403", report: ID1 })).status, 303);
+    assert.deepEqual(await ledger(env, 400), [[ID1, "excluded", "octo"], [ID2, "filed", null]]);
+    assert.deepEqual(await ledger(env, 403), [[ID1, "filed", null]], "the filed record stays");
+    assert.deepEqual(await counted(), { 400: 1, 403: 1 });
+    assert.deepEqual([...(await linkBySignature(d1, [ID1], NOW))], [], "the taken report is not linked back by signature");
+    await openIssue(env, 400, [ID1, ID2]);
+    assert.deepEqual((await ledger(env, 400)).find(([id]) => id === ID1), [ID1, "excluded", "octo"], "a sync of #400's description does not relink it");
+
+    // A move takes the report from every other issue, not only the one it leaves.
+    await run(d1, "INSERT INTO report_issue (report_id, issue_number, source, linked_by, linked_at) VALUES (?, 405, 'manual', 'octo', ?)", ID2, NOW);
+    assert.equal((await correct(env, cookie, { action: "move", issue: "405", report: ID2, to: "403" })).status, 303);
+    assert.deepEqual(await ledger(env, 400), [[ID1, "excluded", "octo"], [ID2, "excluded", "octo"]]);
+    assert.deepEqual(await ledger(env, 405), [[ID2, "excluded", "octo"]]);
+    assert.deepEqual(await ledger(env, 403), [[ID1, "filed", null], [ID2, "manual", "octo"]]);
+
+    // A merge takes every report the merged issue linked from every other
+    // issue, including one the chosen issue already listed itself, and
+    // leaves the merged issue with nothing.
+    await seed(env, ID4, NOW - 3_600_000);
+    await run(d1, "INSERT INTO report_issue (report_id, issue_number, source, linked_by, linked_at) VALUES (?, 405, 'manual', 'octo', ?)", ID3, NOW);
+    await run(d1, "INSERT INTO report_issue (report_id, issue_number, source, linked_by, linked_at) VALUES (?, 400, 'manual', 'octo', ?)", ID3, NOW - 1);
+    await run(d1, "INSERT INTO report_issue (report_id, issue_number, source, linked_by, linked_at) VALUES (?, 405, 'signature', 'ingest', ?)", ID1, NOW);
+    await run(d1, "INSERT INTO report_issue (report_id, issue_number, source) VALUES (?, 400, 'filed')", ID4);
+    await run(d1, "INSERT INTO report_issue (report_id, issue_number, source) VALUES (?, 403, 'filed')", ID4);
+    await run(d1, "INSERT INTO report_issue (report_id, issue_number, source, linked_by, linked_at) VALUES (?, 405, 'signature', 'ingest', ?)", ID4, NOW);
+    assert.deepEqual(await counted(), { 400: 2, 403: 2 });
+    assert.equal((await correct(env, cookie, { action: "merge", issue: "405", to: "403" })).status, 303);
+    assert.deepEqual(await ledger(env, 405), [[ID1, "excluded", "octo"], [ID2, "excluded", "octo"], [ID3, "excluded", "octo"], [ID4, "excluded", "octo"]]);
+    assert.deepEqual((await ledger(env, 400)).filter(([id]) => id === ID3 || id === ID4), [[ID3, "excluded", "octo"], [ID4, "excluded", "octo"]], "#400 counted both, so the merge takes them");
+    assert.deepEqual((await ledger(env, 403)).map(([id, source]) => [id, source]), [[ID1, "filed"], [ID2, "manual"], [ID3, "manual"], [ID4, "filed"]]);
+    assert.deepEqual(await counted(), { 403: 4 }, "#400 tracks nothing now (its summary, never written here, is not handed out)");
+
+    // A move from an issue whose row the sync already dropped still records the exclusion there.
+    await run(d1, "DELETE FROM report_issue WHERE report_id = ? AND issue_number = 403", ID2);
+    assert.equal((await correct(env, cookie, { action: "move", issue: "403", report: ID2, to: "405" })).status, 303);
+    assert.deepEqual((await ledger(env, 403)).find(([id]) => id === ID2), [ID2, "excluded", "octo"]);
+    assert.deepEqual(await ledger(env, 405), [[ID1, "excluded", "octo"], [ID2, "manual", "octo"], [ID3, "excluded", "octo"], [ID4, "excluded", "octo"]]);
+  });
+
   it("clears the pending banner once ingest records the summary", async () => {
     gh = scriptGitHub([]);
     const KEY = "r".repeat(32);
