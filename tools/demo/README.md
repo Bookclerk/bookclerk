@@ -6,6 +6,14 @@ the storefront plugins for 30 minutes. They can sign in to their own store
 accounts, scan their library and search it. Nothing can be acquired or
 downloaded, and their store sign-ins are revoked when the session ends.
 
+The library is not empty when the visitor arrives. Before `bookclerkd`
+starts, the image runs `bookclerk-demo-seed` (`crates/bookclerk-demo-seed`),
+which adds a second library user, Sam, with ten public-domain titles from a
+Libro.fm account, four wishlist items, and a branch, `sams-nas`, that shared
+four more titles and has been offline for three days. It writes through the
+library code of the same commit, never raw SQL, and its test runs against a
+fresh database in CI, so a schema change that breaks it fails there.
+
 ## How a session works
 
 1. The launch page (`GET /`) asks for a Turnstile check. `POST /_demo/start`

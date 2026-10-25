@@ -1588,6 +1588,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-demo-seed"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bookclerk-config",
+ "bookclerk-library",
+ "bookclerk-node-proto",
+ "bookclerk-plugin-database-sqlite",
+ "bookclerk-plugin-host",
+ "chrono",
+ "sea-orm",
+ "tempfile",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "bookclerk-dev"
 version = "0.1.0"
 dependencies = [
