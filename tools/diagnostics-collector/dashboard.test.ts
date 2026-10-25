@@ -1938,7 +1938,7 @@ describe("issue summaries for the ingest Action", () => {
       created_at: new Date(NOW).toISOString(),
       updated_at: new Date(NOW).toISOString(),
     });
-    const { issues } = await (await call(env, "/issues/summaries")).json();
+    const { issues } = await (await call(env, "/issues/summaries")).json<Summaries>();
     assert.deepEqual(issues.map((i) => [i.issue, i.reports, i.sources.filed]), [[410, 1, 1]], "its body shows no IDs, so the comment is the list");
   });
 
