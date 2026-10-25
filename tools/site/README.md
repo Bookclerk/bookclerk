@@ -152,8 +152,7 @@ versions.
   (`homeFacts` in `build.mjs`), so structured data never says anything a
   visitor cannot see on the page. Search engines treat text shown only to
   crawlers as cloaking, so keep it that way.
-- `sitemap.xml` lists every indexable page with the build date as
-  `lastmod`; `robots.txt` allows all crawlers and points to it.
+- `sitemap.xml` lists every indexable page; `robots.txt` allows all crawlers and points to it.
 - For agents: each doc is also served as Markdown at `/docs/<path>.md` (and
   `/docs/v/<ref>/<path>.md`)
   (linked from the page with `rel="alternate"` and "View as Markdown"), with

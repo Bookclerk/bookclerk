@@ -257,7 +257,7 @@ test("pages carry search and preview metadata", () => {
     const app = ld["@graph"].find((n) => n["@type"] === "SoftwareApplication");
     assert.ok(app);
     assert.ok(!("softwareVersion" in app));
-    assert.equal(app.dateModified, "2026-10-23");
+    assert.equal(ld["@graph"].find((n) => n["@type"] === "Organization").email, "contact@bookclerk.app");
     // Structured data repeats the page; it never says what visitors cannot see.
     // The page body only: the JSON-LD itself sits in <head>.
     const text = plainText(home.slice(home.indexOf("<main"), home.indexOf("</main>")));
@@ -316,7 +316,6 @@ test("crawler and agent files list the site", () => {
     assert.ok(llms.includes("- **Which stores are supported?** Audible, Libro.fm"));
     // No headings between the summary and the first link section.
     assert.doesNotMatch(llms.slice(0, llms.indexOf("\n## ")), /\n#/);
-    assert.match(site.page("sitemap.xml"), /<loc>https:\/\/bookclerk.app\/<\/loc><lastmod>2026-10-23<\/lastmod>/);
     assert.match(llms, /^- \[Rust plugin SDK\]\(https:\/\/bookclerk.app\/docs\/api\/rust\/bookclerk_plugin_sdk\/index.md\)$/m);
     const full = site.page("llms-full.txt");
     assert.ok(full.includes("Source: https://bookclerk.app/docs/plugins.md"));

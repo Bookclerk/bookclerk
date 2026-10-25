@@ -3,7 +3,6 @@
 {{#demolead}}There is no stable release yet. When the first version ships, installers for each system will appear here. Until then you can try Bookclerk in your browser, or build the development version if you are comfortable doing that yourself.
 {{/demolead}}{{#previewlead}}There is no stable release yet. When the first version ships, installers for each system will appear here. Until then you can try the development version if you are comfortable building it yourself.
 {{/previewlead}}{{#prerelease}}
-
 - **Latest release:** none yet. Watch the [GitHub repository]({{repo}}) to hear when the first release is out.
 {{/prerelease}}{{#released}}The current release is {{releaseTag}}. Download it for your system from the release page on GitHub.
 

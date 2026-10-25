@@ -249,7 +249,7 @@ export function templateContext(state) {
       commit: short,
       commitUrl: `${REPOSITORY_URL}/commit/${state.commit}`,
       builtOn: displayDate(state.builtOn),
-      builtOnIso: state.builtOn,
+      contactEmail: CONTACT_EMAIL,
       docsUrl: "/docs/",
       gettingStartedUrl: "/docs/getting-started",
       pluginsUrl: "/docs/plugins",
@@ -407,9 +407,13 @@ export function plainText(html) {
  *   markup change cannot silently empty them.
  */
 export function homeFacts(html) {
-  const features = [...html.matchAll(/<div class="feature">[\s\S]*?<h3>([\s\S]*?)<\/h3>\s*<p[^>]*>([\s\S]*?)<\/p>/g)].map(
-    ([, name, text]) => ({ name: plainText(name), text: plainText(text) }),
-  );
+  // Each card is read up to its own closing tag, so a card that loses its
+  // heading fails the build instead of borrowing the next card's.
+  const features = [...html.matchAll(/<div class="feature">((?:(?!<\/div>)[\s\S])*)<\/div>/g)].map(([, card]) => {
+    const parts = card.match(/<h3>([\s\S]*?)<\/h3>\s*<p[^>]*>([\s\S]*?)<\/p>/);
+    if (parts === null) throw new Error(`a feature card has no heading and text: ${card.slice(0, 80)}`);
+    return { name: plainText(parts[1]), text: plainText(parts[2]) };
+  });
   const faq = [...html.matchAll(/<details[^>]*>\s*<summary>([\s\S]*?)<\/summary>([\s\S]*?)<\/details>/g)].map(
     ([, question, answer]) => ({ question: plainText(question), answer: plainText(answer) }),
   );
@@ -430,7 +434,7 @@ export function homeFacts(html) {
  *   behind it, the SoftwareApplication, its source code and the FAQ.
  */
 function homeJsonLd(context, facts) {
-  const { origin, releaseTag, socialImage, builtOnIso } = context.values;
+  const { origin, releaseTag, socialImage, contactEmail } = context.values;
   const organization = `${origin}/#organization`;
   return {
     "@context": "https://schema.org",
@@ -449,7 +453,7 @@ function homeJsonLd(context, facts) {
         name: "Bookclerk",
         url: `${origin}/`,
         logo: `${origin}/android-chrome-512x512.png`,
-        email: CONTACT_EMAIL,
+        email: contactEmail,
         sameAs: [REPOSITORY_URL],
       },
       {
@@ -484,9 +488,7 @@ function homeJsonLd(context, facts) {
         offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
         downloadUrl: `${origin}/download`,
         featureList: facts.features.map(({ name, text }) => `${name}: ${text}`),
-        softwareRequirements: "A web browser",
         publisher: { "@id": organization },
-        dateModified: builtOnIso,
         ...(releaseTag ? { softwareVersion: releaseTag.slice(1) } : {}),
         sameAs: [REPOSITORY_URL],
       },
@@ -609,8 +611,8 @@ function writeLlmsTxt(context, rendered, facts, outDir) {
  * @param {string} outDir Output directory.
  */
 function writeCrawlerFiles(context, paths, outDir) {
-  const { origin, builtOnIso } = context.values;
-  const urls = paths.map((p) => `  <url><loc>${escapeHtml(origin + p)}</loc><lastmod>${builtOnIso}</lastmod></url>`).join("\n");
+  const { origin } = context.values;
+  const urls = paths.map((p) => `  <url><loc>${escapeHtml(origin + p)}</loc></url>`).join("\n");
   writeFileSync(
     join(outDir, "sitemap.xml"),
     `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`,
