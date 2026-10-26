@@ -45,7 +45,10 @@ describe("launchPage", () => {
     assert.match(html, /Up to 30 minutes\./);
     assert.match(html, /after 30 minutes\./);
     assert.doesNotMatch(html, /\sstyle=/);
-    assert.doesNotMatch(html, /<script>/);
+    // Every script is a file the CSP allows; none is written inline.
+    const scripts = html.match(/<script\b[^>]*>/gi) ?? [];
+    assert.ok(scripts.length > 0);
+    for (const tag of scripts) assert.match(tag, /\ssrc="(\/_demo\/|https:\/\/challenges\.cloudflare\.com\/)/);
   });
 
   it("leaves the estimate out until one is known, and the form out when not set up", () => {
