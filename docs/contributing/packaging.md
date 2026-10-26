@@ -50,7 +50,7 @@ bumps:
    `scripts/test-workerd-echo.sh` against the Echo workerd example guests.
 3. Opens `deps/workerd-pin` with the automation App token and turns on
    auto-merge, so the merge queue lands it once its required checks pass
-   (see [CI: automation App](ci.md#automation-app)).
+   (see [Automation App](automation.md#automation-app)).
 
 Manual check (no write):
 

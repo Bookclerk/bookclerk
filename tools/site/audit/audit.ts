@@ -1,6 +1,6 @@
 // Lighthouse and axe-core audit of the built bookclerk.app website, run by CI
 // for pull requests that change the site (scripts/ci_plan, check
-// `site_audit`). See docs/contributing/ci.md#website-checks.
+// `site_audit`). See docs/contributing/automation.md#website-checks.
 //
 // It serves tools/site/dist through the real Worker under `wrangler dev`
 // (audit/entry.ts, with docs read from this checkout's docs/ through a local

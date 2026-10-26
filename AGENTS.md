@@ -69,7 +69,7 @@ Untrusted input ([ADR](docs/adr/untrusted-input-fuzzing.md)):
   non-Rust tooling (CI scripts, Workers) instead ships with a sans-IO
   parser, seed corpus, replay test and fuzzing in its own language, checked
   against an oracle (ADR decision 6). The boundary list lives in
-  [`docs/contributing/ci.md`](docs/contributing/ci.md#fuzzing); keep it current.
+  [`docs/contributing/fuzzing.md`](docs/contributing/fuzzing.md); keep it current.
 - Write boundary parsing sans-IO (a function over a byte slice or a state
   machine fed by one) so the fuzzer and the unit tests drive the same code
   the server does.

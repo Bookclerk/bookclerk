@@ -101,7 +101,7 @@ stops early when the live demo already runs that commit and an earlier run
 for it succeeded. It needs the repository
 secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; the token's
 permissions are listed in
-[`docs/contributing/ci.md`](../../docs/contributing/ci.md#cloudflare-worker-deploys). The workflow makes
+[`docs/contributing/automation.md`](../../docs/contributing/automation.md#cloudflare-worker-deploys). The workflow makes
 the Worker secrets itself:
 
 | Secret | Source |
@@ -137,7 +137,7 @@ website's fonts and the app's mark; a test fails when a copy drifts.
 
 `test/inputs.fuzz.test.ts` replays the seed corpora under `corpus/` and
 fuzzes every input boundary against independent oracles (see
-[`docs/contributing/ci.md`](../../docs/contributing/ci.md#fuzzing)). `test/routes.test.ts` checks the
+[`docs/contributing/fuzzing.md`](../../docs/contributing/fuzzing.md)). `test/routes.test.ts` checks the
 route table against the OpenAPI document. CI runs these as `demo_test`.
 
 `package.json` overrides `undici` (a development dependency through

@@ -3,9 +3,9 @@
 - **Status:** Accepted
 - **Date:** 2026-10-22
 - **Related:** [Untrusted-input fuzzing](untrusted-input-fuzzing.md),
-  [Continuous integration](../contributing/ci.md#osv-advisories),
-  [Fuzz-crash triage](../contributing/ci.md#fuzz-crash-triage),
-  [OSV remediation](../contributing/ci.md#osv-remediation)
+  [Repository automation → OSV advisories](../contributing/automation.md#osv-advisories),
+  [Fuzz-crash triage](../contributing/fuzzing.md#fuzz-crash-triage),
+  [OSV remediation](../contributing/automation.md#osv-remediation)
 
 ## Context
 
