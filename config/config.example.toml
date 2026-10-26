@@ -216,7 +216,7 @@ json_logs = true
 #   bookclerk plugins config set audiobookshelf base_url http://audiobookshelf:80
 #   bookclerk plugins config set audiobookshelf api_key --secret   # value on stdin
 
-# Recommendations / embeddings / request queue (see docs/guide/discovery.md).
+# Recommendations / embeddings / request queue (see docs/internals/discovery.md).
 # Storefront candidates (Libro related + Audible catalog) are the primary
 # discovery path; local embeddings score those unowned hits.
 [discovery]
@@ -230,7 +230,7 @@ storefront_max_remote_calls = 32
 # Drop GraphicAudio Magento series-set SKUs from candidates (default: keep them).
 # exclude_graphicaudio_series_sets = true
 # Shelf visibility + default view are per-user DB prefs (GET/PATCH /api/preferences),
-# not TOML — see docs/guide/gui.md and docs/guide/discovery.md.
+# not TOML — see docs/server/sign-in.md and docs/internals/discovery.md.
 # Open Library: low-volume gap-fill only (not bulk). Set a contact email so
 # requests are identified per https://openlibrary.org/developers/api
 openlibrary_enabled = true

@@ -26,7 +26,7 @@ portal for services like [Audiobookshelf](https://www.audiobookshelf.org/).
 | **GUI** | Shared React web UI served by `bookclerkd` (native/tray deferred) |
 
 The library GUI and `/api/*` control plane live in Rust (`bookclerkd`) with
-operator-token auth. See [docs/guide/gui.md](docs/guide/gui.md).
+operator-token auth. See [docs/server/sign-in.md](docs/server/sign-in.md).
 
 ## Architecture at a glance
 
@@ -69,22 +69,24 @@ bookclerk library acquire --asin B0EXAMPLE   # or --isbn / UUID / product id
 ```
 
 First-time setup, auth notes, and “existing files” workflows:
-[docs/guide/getting-started.md](docs/guide/getting-started.md).
+[docs/contributing/build-from-source.md](docs/contributing/build-from-source.md).
 
 ## Documentation
 
 | Doc | Topic |
 | --- | --- |
 | [docs/README.md](docs/README.md) | Documentation index |
-| [docs/guide/getting-started.md](docs/guide/getting-started.md) | Install, auth, first scan/acquire |
+| [docs/guide/getting-started.md](docs/guide/getting-started.md) | First start, connecting stores, first books |
+| [docs/contributing/build-from-source.md](docs/contributing/build-from-source.md) | Build the binaries and use the CLI |
 | [docs/internals/architecture.md](docs/internals/architecture.md) | Components and data flow |
-| [docs/guide/sources.md](docs/guide/sources.md) | Storefront plugins and login |
-| [docs/guide/destinations.md](docs/guide/destinations.md) | Local + S3 output, naming |
+| [docs/server/stores.md](docs/server/stores.md) | Storefront plugins and login |
+| [docs/server/output.md](docs/server/output.md) | Local + S3 output, naming |
 | [docs/server/integrations.md](docs/server/integrations.md) | Audiobookshelf, SPA Accounts |
 | [docs/plugins/README.md](docs/plugins/README.md) | Third-party plugin protocol and the guest jail |
 | [docs/server/operations.md](docs/server/operations.md) | Daemon, Docker, systemd |
 | [docs/server/configuration.md](docs/server/configuration.md) | `config.toml` and env overrides |
-| [docs/guide/migration.md](docs/guide/migration.md) | Move from classic Libation |
+| [docs/guide/from-libation.md](docs/guide/from-libation.md) | Move from classic Libation |
+| [docs/server/backups.md](docs/server/backups.md) | Backups, import and export |
 | [docs/server/diagnostics.md](docs/server/diagnostics.md) | Opt-in crash/error reports |
 | [docs/contributing/research/libation-parity.md](docs/contributing/research/libation-parity.md) | Headless Libation parity matrix |
 | [docs/contributing/research/source-candidates.md](docs/contributing/research/source-candidates.md) | Research notes for future stores |
@@ -125,7 +127,7 @@ bookclerk plugins deploy audiobookshelf
 
 The same operations are in **Settings → Plugins**. Store passwords are
 entered in Accounts and sealed in the database (see
-[docs/guide/sources.md](docs/guide/sources.md)).
+[docs/server/stores.md](docs/server/stores.md)).
 
 ## Binaries
 
@@ -150,7 +152,7 @@ Headless multi-source acquire, daemon, destinations, Audiobookshelf
 integration, the plugin host, an MVP web library GUI, and an optional
 in-process tray→browser companion are in active development. An embedded Tauri
 window is deferred until an OSV-clean GTK4 graph is available (see
-[docs/guide/gui.md](docs/guide/gui.md)). Libation Classic/Chardonnay CLI parity for the
+[docs/contributing/ui.md](docs/contributing/ui.md#desktop-shell-path)). Libation Classic/Chardonnay CLI parity for the
 Audible acquire surface is tracked in
 [docs/contributing/research/libation-parity.md](docs/contributing/research/libation-parity.md).
 

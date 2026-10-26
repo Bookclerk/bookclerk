@@ -213,7 +213,7 @@ Optional companion (workspace member, not a default-member):
 
 - `bookclerk-tray` — in-process tray library linked into `bookclerkd` (opens the
   web UI in the browser; Linux `ksni`; Windows/macOS `tray-icon` with GTK
-  features off). See `docs/guide/gui.md`.
+  features off). See `docs/contributing/ui.md`.
 
 Frontend sources live in `ui/` (Vite/React); `cargo dev` / `cargo build-app --platform`
 rebuild `ui/dist` when SPA sources are newer than the last Vite output. Manual:
