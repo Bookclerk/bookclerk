@@ -8,7 +8,7 @@ may be enabled at once** and Bookclerk writes to every destination deployed on
 the host running the job. Per-destination settings are the plugin's
 `[[settings]]`, stored in the instance document
 (`bookclerk plugins config …` or **Settings → Plugins**); see
-[plugins.md](../plugins/README.md#enabling-and-settings-database).
+[plugins.md](plugins.md#enabling-and-settings-database).
 
 | Id | Package | Credentials | Default load |
 | --- | --- | --- | --- |
@@ -62,6 +62,10 @@ endpoint; nothing is read from `BOOKCLERK_S3_*` or `BOOKCLERK_AWS_*`.
 Object user-metadata and local `.bookclerk-meta.json` support
 `--match-storage` without downloading bodies. S3 timestamp metadata follows
 `output.creation_time` / `output.last_write_time`.
+
+By default a match leaves files where they are. Set
+`library.fix_storage_layout = true` to have matching move matched audio (and
+its sidecar files) onto the configured naming layout instead.
 
 ## Multi-destination policy
 

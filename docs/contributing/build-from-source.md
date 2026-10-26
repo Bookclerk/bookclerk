@@ -25,7 +25,7 @@ export PATH="$PWD/target/release:$PATH"
 The helpers are not optional extras. `bookclerk-media-worker` runs every
 decode, encode, and packaging step in a confined child process
 ([media.md](../server/media.md)); `bookclerk-jail` starts each external plugin guest inside
-its own jail ([plugins.md](../plugins/README.md#the-guest-jail)). Install both beside the
+its own jail ([guest-jail.md](../internals/guest-jail.md)). Install both beside the
 host binaries — that is where they are looked for, and by default a host refuses
 media work or declines to load a plugin rather than run either unconfined.
 

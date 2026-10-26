@@ -167,7 +167,7 @@ the host library as guest SQL. Operator lifecycle:
 `bookclerk plugins db list` / `bookclerk plugins db drop <plugin> [binding]`
 (physical delete of the SQLite file / `DROP DATABASE` / D1 delete, then the
 registry row; unknown adapters fail closed).
-See [plugins.md — Isolated plugin database bindings](../plugins/README.md#isolated-plugin-database-bindings).
+See [abi.md — Isolated plugin database bindings](../plugins/abi.md#isolated-plugin-database-bindings).
 
 ### Switching backends (opt-in migration)
 
@@ -347,10 +347,6 @@ The SQLite proxy in the database plugin returns **typed** SQL `NULL`s so SeaORM
 `Option<T>` decoding works: it reads each column's declared type (rusqlite
 `decl_type`) and emits the matching `Value::*(None)`. D1 (JSON, no type
 metadata) falls back to a column-name heuristic.
-
-Owner / Administrator / Member is part of this greenfield schema. There is no
-Admin→Owner upgrade; testing and development hosts should recreate
-`library.db` after that role change (`cargo reset --yes`).
 
 ### Unreleased host schema (no production freeze)
 

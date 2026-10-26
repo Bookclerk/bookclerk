@@ -31,7 +31,7 @@ gateway ends) so a blocking stdin read cannot lock stdout.
 
 `BOOKCLERK_WORKERD_STATE_DIR` is the host-owned `session-<nonce>/` directory
 (also the gateway `TMPDIR`). The guest `TMPDIR` is its own scratch, so it
-cannot read gateway state. See [plugins.md](../plugins/README.md#the-guest-jail) and
+cannot read gateway state. See [guest-jail.md](guest-jail.md) and
 the [Workers RPC ADR](../adr/plugin-workers-rpc-workerd.md).
 
 The launcher is a `PluginWorker` toward the host. Every host call is turned

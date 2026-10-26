@@ -82,7 +82,7 @@ First-time setup, auth notes, and “existing files” workflows:
 | [docs/server/stores.md](docs/server/stores.md) | Storefront plugins and login |
 | [docs/server/output.md](docs/server/output.md) | Local + S3 output, naming |
 | [docs/server/integrations.md](docs/server/integrations.md) | Audiobookshelf, SPA Accounts |
-| [docs/plugins/README.md](docs/plugins/README.md) | Third-party plugin protocol and the guest jail |
+| [docs/plugins/README.md](docs/plugins/README.md) | Writing plugins: the model, `plugin.toml`, capabilities and the ABI |
 | [docs/server/operations.md](docs/server/operations.md) | Daemon, Docker, systemd |
 | [docs/server/configuration.md](docs/server/configuration.md) | `config.toml` and env overrides |
 | [docs/guide/from-libation.md](docs/guide/from-libation.md) | Move from classic Libation |
@@ -136,7 +136,7 @@ entered in Accounts and sealed in the database (see
 | `bookclerk` | One-shot CLI (`auth`, `library`, `integrations`, `plugins`, …) |
 | `bookclerkd` | Long-running daemon: scheduled scan/acquire + HTTP API / GUI (optional in-process tray) |
 | `bookclerk-media-worker` | Confined child process for one codec job ([docs/server/media.md](docs/server/media.md)) |
-| `bookclerk-jail` | Confines a plugin guest, then becomes it ([docs/plugins/README.md](docs/plugins/README.md#the-guest-jail)) |
+| `bookclerk-jail` | Confines a plugin guest, then becomes it ([docs/internals/guest-jail.md](docs/internals/guest-jail.md)) |
 
 The two helpers ship beside the hosts. Without them, a host refuses media work
 and declines to load external plugins rather than running either unconfined.

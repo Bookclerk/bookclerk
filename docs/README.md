@@ -24,19 +24,24 @@ others go deeper.
 
 - [Running Bookclerk](server/operations.md): the daemon, systemd, Docker and logs
 - [Configuration](server/configuration.md): `config.toml`, environment variables and plugin settings
+- [Security checklist](server/security.md): keys, TLS, sign-in and isolation before you expose a server
 - [Database](server/database.md): SQLite, PostgreSQL or Cloudflare D1, and encrypted secrets
 - [Stores reference](server/stores.md): store plugins, formats and settings
 - [Output and destinations reference](server/output.md): local and S3 destinations, naming and packaging
 - [Web app and sign-in reference](server/sign-in.md): roles, sign-in methods, routes and screens
 - [Integrations and sign-in](server/integrations.md): Audiobookshelf, invites and identity providers
-- [Libraries and branches](server/cluster-hosts.md): join a library, clerks, consent and the node API
+- [Managing plugins](server/plugins.md): install, approve, configure and place plugins; isolation modes
+- [Libraries and branches](server/cluster-hosts.md): join a library, clerks and consent
 - [Media worker](server/media.md): the confined process that handles audio files
-- [Backups, import and export](server/backups.md): native backups, schema backups, Libation and PostgreSQL export
+- [Backups, updates, import and export](server/backups.md): native backups, schema backups, updating, Libation and PostgreSQL export
 - [Diagnostics](server/diagnostics.md): opt-in error reports
 
 ## Build plugins
 
-- [Plugins](plugins/README.md): the plugin model, the guest jail, `plugin.toml`, consent and the ABI
+- [Plugins](plugins/README.md): the plugin model, SDKs, local development and examples
+- [plugin.toml](plugins/manifest.md): package layout, identity, entrypoints and settings
+- [Capabilities and consent](plugins/capabilities.md): what a plugin may ask for and how it is approved
+- [Entrypoints, events and the ABI](plugins/abi.md): the Workers RPC surface, events, KV and queues
 - [Plugin registry](plugins/registry.md): crate naming, archives and installing without Rust
 - [SQL contract v1](sql-contract/v1.md): the canonical SQL that database adapters implement
 - [API reference](api/README.md): the plugin SDKs, the web API and the Rust crates (generated)
@@ -47,7 +52,9 @@ others go deeper.
 - [Discovery design](internals/discovery.md): how suggestions are found and ranked
 - [Durable job queue](internals/jobs.md): admission, leases and crash recovery
 - [Bounded storage](internals/storage-bounds.md): size caps, streams, paged scans and checkpoints
+- [The guest jail](internals/guest-jail.md): why plugins run as jailed processes, and how each platform confines them
 - [workerd bridge](internals/workerd-bridge.md): the wire between the launcher and a plugin isolate
+- [Node API and the live socket](internals/node-api.md): how hosts of one library talk, and how the web app hears about changes
 - [Windows AppContainer](internals/windows-appcontainer.md): confinement notes for Windows
 
 ## Contribute

@@ -90,11 +90,13 @@ export const NAV: NavSpec[] = [
     pages: [
       "server/operations",
       "server/configuration",
+      "server/security",
       "server/database",
       "server/stores",
       "server/output",
       "server/sign-in",
       "server/integrations",
+      "server/plugins",
       "server/cluster-hosts",
       "server/media",
       "server/backups",
@@ -103,7 +105,7 @@ export const NAV: NavSpec[] = [
   },
   {
     title: "Build plugins",
-    pages: ["plugins/README", "plugins/registry", "sql-contract/v1"],
+    pages: ["plugins/README", "plugins/manifest", "plugins/capabilities", "plugins/abi", "plugins/registry", "sql-contract/v1"],
   },
   {
     title: "API reference",
@@ -111,7 +113,7 @@ export const NAV: NavSpec[] = [
   },
   {
     title: "How it works",
-    pages: ["internals/architecture", "internals/discovery", "internals/jobs", "internals/storage-bounds", "internals/workerd-bridge", "internals/windows-appcontainer"],
+    pages: ["internals/architecture", "internals/discovery", "internals/jobs", "internals/storage-bounds", "internals/guest-jail", "internals/workerd-bridge", "internals/node-api", "internals/windows-appcontainer"],
   },
   {
     title: "Contribute",

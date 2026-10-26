@@ -320,7 +320,7 @@ list must equal the manifest-derived list or the spawn fails
 runtime.
 
 Every plugin declares a semver `version` in `plugin.toml`; a manifest
-without one is not enrolled and `bookclerk plugin check` rejects it.
+without one is not enrolled and `bookclerk-plugin check` rejects it.
 Enrollment pins a copy of the schema in `plugin_schemas(plugin_key,
 schema_sha256, package_version, settings_json, recorded_at,
 recorded_by_host)` and the version orders the pin:

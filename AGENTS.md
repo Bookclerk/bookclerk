@@ -201,7 +201,7 @@ Four binaries (the workspace `default-members`):
   requested from the plugin. Also ships beside the hosts; with the default
   `plugins.isolation = "required"` a plugin that cannot be jailed is not loaded.
   Policy travels as JSON in `BOOKCLERK_JAIL_SPEC`. See
-  `docs/plugins/README.md#the-guest-jail`.
+  `docs/internals/guest-jail.md#the-guest-jail`.
 - `bookclerk-workerd` — the front door every plugin is spawned through: loads
   `runtime = "workerd"` isolates and fronts `runtime = "native"` guests as a
   sibling jail joined by inherited `fd:` / `handle:` links; ships beside
@@ -283,8 +283,8 @@ See `docs/plugins/README.md` and `crates/bookclerk-dev/README.md`.
 by default via the `[database]` plugin — see `docs/server/database.md`; Cloudflare D1
 optional), plus `cache/`, `logs/` (reserved; Bookclerk does not rotate log
 files), `search_index/`, and `plugins/` under it. Third-party plugins are discovered from `plugin.toml` under
-`plugins/` (and `BOOKCLERK_PLUGIN_DIRS`); enablement and knobs live in
-`config.toml` (see `docs/plugins/README.md`). A guest is confined to its install
+`plugins/` (and `BOOKCLERK_PLUGIN_DIRS`); enablement and settings live in
+the database (see `docs/server/plugins.md`). A guest is confined to its install
 directory (read-only), `plugin-state/<PluginKey fs-id>/data` (its `HOME`), `plugin-state/<PluginKey fs-id>/tmp` (its
 `TMPDIR`), and the download cache root. Network consent uses
 `[capabilities.network]` domains (approve before enable); redirect hops after an

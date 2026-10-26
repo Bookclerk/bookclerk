@@ -25,7 +25,7 @@ Classic Libation setting names are accepted as aliases where documented in
 | `[database]` / `[database.sqlite]` / `[database.d1]` | Library DB plugin (`sqlite` default, Cloudflare D1) |
 | `[auth]` | Optional `[auth].password` wrapping `master.key` (prefer `BOOKCLERK_AUTH_PASSWORD`); optional `[auth.oidc]` identity broker |
 | `[media]` | Codec worker pool: concurrency and confinement (see [media.md](media.md)) |
-| `[plugins]` | How external plugin guests are jailed (see [plugins.md](../plugins/README.md)) |
+| `[plugins]` | How external plugin guests are jailed (see [Isolation modes](plugins.md#isolation-modes)) |
 | `[output]` | First-run seed for the `core.output` database document (format, Widevine, naming, sidecars, multi-destination policy), plus the host-local `in_progress` scratch directory |
 | `[daemon]` | Listen address, JSON logs, trusted proxies, `[daemon.node_api]` transport |
 | `[integrations]` | Portal: `public_origin`, claim-ticket and portal session TTLs |
@@ -164,7 +164,7 @@ runs at daemon start and hourly, not on every dispatcher tick.
 `concurrency` is the number of local delivery workers **and** the cluster-wide
 max `running` deliveries per `(plugin_id, resource_class)` (claim still filters by
 loaded plugin ids; a portable `bookclerk_slots` row serializes that
-count). See [jobs.md](../internals/jobs.md) and [plugins.md](../plugins/README.md).
+count). See [jobs.md](../internals/jobs.md) and [plugins.md](plugins.md).
 
 Allowed writes: retention fields `1..=3650`, concurrency `1..=32`.
 
@@ -315,7 +315,7 @@ back. Several instances of one plugin may exist, and may run on one host; a
 bare plugin key routes to the default instance, and `library scan|acquire
 --instance` pins another. Store accounts are keyed by plugin key, not
 instance, so every instance serves the same connected accounts. Details:
-[plugins.md](../plugins/README.md#enabling-and-settings-database),
+[plugins.md](plugins.md#enabling-and-settings-database),
 [output.md](output.md), [stores.md](stores.md),
 [integrations.md](integrations.md).
 
@@ -354,7 +354,7 @@ their own install, data, scratch, and cache directories before becoming the
 plugin. `required` refuses to load a plugin it cannot jail, including when the
 launcher is not installed. This is about *how* guests run; which plugins run
 on this host and what they are configured with is the database (plugin
-instances and deployments). See [plugins.md](../plugins/README.md).
+instances and deployments). See [plugins.md](plugins.md).
 
 Both confinement tiers are visible in `bookclerk config show`
 (`media.isolation`, `media.worker_bin`, `plugins.isolation`, `plugins.jail_bin`);

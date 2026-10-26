@@ -1,4 +1,4 @@
-# Backups, import and export
+# Backups, updates, import and export
 
 For moving from Libation step by step, see [Coming from Libation](../guide/from-libation.md).
 
@@ -104,6 +104,32 @@ Land new host DDL as already-separated `MigrationOp`s in `unreleased_ops`
 immutable `HostMigrationStep` ops (`Schema` / `Data`); until then the frozen
 plan stays empty. Do not add a public plan version per PR. See
 [ADR: schema versioning](../adr/schema-versioning.md).
+
+## Updating Bookclerk
+
+Bookclerk has no release yet, so its database layout is still a
+development layout: there is no upgrade path between two builds whose
+layout differs ([ADR: schema versioning](../adr/schema-versioning.md)).
+A build opens a library whose layout matches it and refuses one that does
+not, with `unreleased schema checksum … does not match this binary …;
+recreate the database (cargo reset --yes)`, rather than reshape it.
+
+Before updating:
+
+1. Take a recovery point with the build you are running:
+   `bookclerk db backup create --path ./before-update.tar.gz`.
+2. Keep a copy of `master.key` (and know your `BOOKCLERK_AUTH_PASSWORD`, if
+   you set one). Without them, sealed store sign-ins cannot be read back.
+3. Optionally keep a book list any build can read:
+   `bookclerk export libation --path ./LibationFilesOut --force`.
+
+Then update the checkout (`git pull`) and start it again (`cargo dev
+--optional`, or rebuild the release binaries and restart the service). If
+the new build refuses the library, either go back to the previous build
+(where the recovery point still restores), or start fresh with `cargo reset
+--yes` and bring the book list back with `bookclerk import libation --from
+./LibationFilesOut`. Store
+sign-ins are never exported, so connect the stores again afterwards.
 
 ## Postgres (`copydb`)
 

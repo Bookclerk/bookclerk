@@ -2,7 +2,7 @@
 
 Third-party plugins are installed once for the cluster and materialized on
 each node under `$BOOKCLERK_FILES_DIR/plugins/.versions/<payload digest>/`
-(see [plugins.md#installing-plugins](README.md#installing-plugins) and the ADR
+(see [plugins.md#installing-plugins](../server/plugins.md#installing-plugins) and the ADR
 [plugin-workers-rpc-workerd.md](../adr/plugin-workers-rpc-workerd.md)):
 
 | Runtime | Archive contents |
@@ -223,7 +223,7 @@ plugin.toml
 modules/…                       # main_module and deps
 ```
 
-Two consequences of [the guest jail](README.md#the-guest-jail) for what an
+Two consequences of [the guest jail](../internals/guest-jail.md#the-guest-jail) for what an
 archive may assume. The install directory is **read-only** at runtime, so a
 plugin that wants to keep state must use the `plugin_data_dir` it is given (also
 its `HOME`) or `TMPDIR` — not a path beside its own binary. And a plugin that
@@ -313,7 +313,7 @@ is not required for install.
    deploys it with `plugins deploy`
 
 Each host materializes the active release for its own target when a present
-deployment needs it. See [plugins.md#installing-plugins](README.md#installing-plugins) for
+deployment needs it. See [plugins.md#installing-plugins](../server/plugins.md#installing-plugins) for
 update, rollback, approval, and the daemon routes.
 
 Alias uniqueness is cluster-wide for releases:
