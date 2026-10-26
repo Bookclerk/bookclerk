@@ -161,9 +161,9 @@ notification path: the former `HOST.notify` reverse channel and its
 
 ```ts
 const ok = await env.EVENTS.publish({
-  eventType: "book_acquired",           // must be a granted [[events.producers]] type
+  eventType: "wishlist_synced",         // must be a granted [[events.producers]] type
   schemaVersion: 1,                     // defaults to 1
-  deduplicationKey: `acquire:${asin}`,  // optional; see below
+  deduplicationKey: `wishlist:${asin}`, // optional; see below
   payload: { asin, title },             // JSON, ≤ 64 KiB UTF-8 (MAX_EVENT_PAYLOAD_BYTES)
 });
 // ok: { eventId: string, duplicate: boolean }
@@ -225,13 +225,13 @@ max_keys = 500                   # default 10000, at most 1000000
 ```
 
 ```ts
-await env.CURSORS.put(`audible:${accountId}`, page, {
+await env.CURSORS.put(`audible:${accountId}`, nextPageToken, {
   expirationTtl: 86_400,          // or `expiration` (seconds since epoch)
   metadata: { scannedAt: Date.now() },
 });
 const cursor = await env.CURSORS.get(`audible:${accountId}`); // string | null
 const { value, metadata } = await env.CURSORS.getWithMetadata(key, "json");
-const page = await env.KV.list({ prefix: "audible:", limit: 100 }); // { keys, list_complete, cursor? }
+const listing = await env.KV.list({ prefix: "audible:", limit: 100 }); // { keys, list_complete, cursor? }
 await env.KV.delete(key);
 ```
 

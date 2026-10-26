@@ -202,10 +202,14 @@ the host's own `core.events` queue.
 Unknown capability keys are parse errors rather than silent defaults — a typo in
 a security-relevant field must not read as "whatever we would have picked".
 
-Two plugins that claim the same `id` for the same `kind` are a **hard startup
-error** (CLI/daemon exit). The same id across different kinds (e.g. a source and
-an integration both named `echo`) is allowed. An external id that collides with
-a first-party plugin of the same kind is also rejected.
+For plugins discovered from host-local plugin directories, two plugins that
+claim the same `id` for the same `kind` are a **hard startup error** (CLI/daemon
+exit); the same id across different kinds (e.g. a source and an integration
+both named `echo`) is allowed there. An external id that collides with a
+first-party plugin of the same kind is also rejected. Installed releases are
+stricter: the id is the release's alias, and a version may not take an alias
+that another plugin's active version already answers to, whatever its kind
+(see [Installing plugins](../server/plugins.md#installing-plugins)).
 
 ### `[[settings]]`
 

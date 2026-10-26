@@ -26,7 +26,7 @@ bookclerk plugins uninstall example          # clear the active version; undeplo
 it: a registry artifact must match the archive digest its package manifest
 declares, and a local archive's digest is computed from the operator's own
 file. The node then extracts the archive to scratch, parses `plugin.toml`,
-checks the executable is present, and computes the payload-root digest. The
+checks that the file the package manifest names as `executable` is present, and computes the payload-root digest. The
 version row records the PluginKey, the version from `plugin.toml`, the
 manifest and settings schema, one artifact per target (URL, archive digest,
 payload-root digest), the coordinate it came from, and the consent grant.
@@ -503,8 +503,9 @@ the launcher is not installed beside the host binary. Install it, point
 `isolation = "best-effort"`.
 
 **`refusing to run plugin <id> unconfined: this host cannot confine a process`** —
-no backend: Windows, a kernel without Landlock, or a container runtime that
-blocks the Landlock syscalls. The message names the backend that came up short.
+no backend: a kernel without Landlock, a container runtime that blocks the
+Landlock syscalls, or a Windows host where an AppContainer profile cannot be
+created. The message names the backend that came up short.
 
 **`bookclerk-jail: these allowlist paths do not exist: …`** — a granted directory
 vanished between planning and launch. Both backends reject a rule naming a

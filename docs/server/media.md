@@ -145,9 +145,8 @@ Confining the plugin process is what covers the decrypt parser, and it covers
 everything else a storefront does at the same time. Because first-party sources
 ship as guest binaries as well as in-process adapters, a single jail reaches
 Audible, Libro.fm, Chirp, and GraphicAudio together; see [the guest
-jail](../internals/guest-jail.md#the-guest-jail). Default builds still register those adapters
-in-process, so decrypt runs inside `bookclerkd` today, and that jail becomes
-load-bearing when external guests are the packaged default.
+jail](../internals/guest-jail.md#the-guest-jail). Hosts load those storefronts as jailed external guests by default, so decrypt
+runs inside the guest's jail rather than inside `bookclerkd`.
 
 ## Configuration
 

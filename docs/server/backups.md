@@ -127,7 +127,8 @@ Then update the checkout (`git pull`) and start it again (`cargo dev
 --optional`, or rebuild the release binaries and restart the service). If
 the new build refuses the library, either go back to the previous build
 (where the recovery point still restores), or start fresh with `cargo reset
---yes` and bring the book list back with `bookclerk import libation`. Store
+--yes` and bring the book list back with `bookclerk import libation --from
+./LibationFilesOut`. Store
 sign-ins are never exported, so connect the stores again afterwards.
 
 ## Postgres (`copydb`)
