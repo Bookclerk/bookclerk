@@ -82,7 +82,7 @@ First-time setup, auth notes, and “existing files” workflows:
 | [docs/server/stores.md](docs/server/stores.md) | Storefront plugins and login |
 | [docs/server/output.md](docs/server/output.md) | Local + S3 output, naming |
 | [docs/server/integrations.md](docs/server/integrations.md) | Audiobookshelf, SPA Accounts |
-| [docs/plugins/README.md](docs/plugins/README.md) | Third-party plugin protocol and the guest jail |
+| [docs/plugins/README.md](docs/plugins/README.md) | Writing plugins: the model, `plugin.toml`, capabilities and the ABI |
 | [docs/server/operations.md](docs/server/operations.md) | Daemon, Docker, systemd |
 | [docs/server/configuration.md](docs/server/configuration.md) | `config.toml` and env overrides |
 | [docs/guide/from-libation.md](docs/guide/from-libation.md) | Move from classic Libation |

@@ -283,8 +283,8 @@ See `docs/plugins/README.md` and `crates/bookclerk-dev/README.md`.
 by default via the `[database]` plugin — see `docs/server/database.md`; Cloudflare D1
 optional), plus `cache/`, `logs/` (reserved; Bookclerk does not rotate log
 files), `search_index/`, and `plugins/` under it. Third-party plugins are discovered from `plugin.toml` under
-`plugins/` (and `BOOKCLERK_PLUGIN_DIRS`); enablement and knobs live in
-`config.toml` (see `docs/plugins/README.md`). A guest is confined to its install
+`plugins/` (and `BOOKCLERK_PLUGIN_DIRS`); enablement and settings live in
+the database (see `docs/server/plugins.md`). A guest is confined to its install
 directory (read-only), `plugin-state/<PluginKey fs-id>/data` (its `HOME`), `plugin-state/<PluginKey fs-id>/tmp` (its
 `TMPDIR`), and the download cache root. Network consent uses
 `[capabilities.network]` domains (approve before enable); redirect hops after an

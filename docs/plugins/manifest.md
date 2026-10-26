@@ -240,7 +240,8 @@ and a guest that returns its own non-empty list must return the same keys,
 labels, and values or the spawn is refused. The schema is pinned in the
 database at enrollment (`plugin_schemas`) together with the manifest's
 semver `version`, so writes validate on any host. `version` is required: a
-manifest without one is not enrolled, and `cargo plugin -- check` rejects
+manifest without one is not enrolled, and the author CLI's `check`
+([author tools](../contributing/packaging.md#plugin-author-tools-check--fmt--sync-embed--package--smoke)) rejects
 it. A newer version re-pins the schema (by compare-and-swap, so two hosts
 upgrading at once cannot leave the older version on top); every enrollment
 pass then reconciles the plugin's instance documents against the pinned

@@ -2,7 +2,7 @@
 
 The wire protocols between the hosts of one library, and between the web app
 and its daemon. Setting up branches and clerks is in
-[Libraries, branches and clerks](../server/cluster-hosts.md); the decision
+[Libraries and branches](../server/cluster-hosts.md); the decision
 record is the [control-plane ADR](../adr/control-plane.md).
 
 ## The node API
@@ -17,7 +17,7 @@ operator-auth layers, and every request first passes the transport policy.
 | `POST enroll/oauth` | Redeem an approved sign-in: `{code, code_verifier, redirect_uri, sign_pk, box_pk, branch_name, software_version, connection?}` → `{cluster_id, node_id}`; for `connection: "clerk"` also `{connection, bootstrap}` (sealed to `box_pk`) |
 | `GET connect` | The node socket (WebSocket, subprotocol `bookclerk-node.v1`) |
 | `GET artifacts/{sha256}` | An owner plugin archive, for a request signed `Authorization: Bookclerk-Node <node_id> <issued_at> <sig>` |
-| `PUT uploads/{id}/files/{n}`, `POST uploads/{id}/commit` | Uploads (above) |
+| `PUT uploads/{id}/files/{n}`, `POST uploads/{id}/commit` | Uploads (see [Uploads](../server/cluster-hosts.md#uploads)) |
 
 **Handshake.** `hello {node_id, incarnation, software_version, resume}` →
 `challenge {nonce, cluster_id}` → `auth {sig}` (Ed25519 over the cluster,

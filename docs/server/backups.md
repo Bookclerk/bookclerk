@@ -111,8 +111,8 @@ Bookclerk has no release yet, so its database layout is still a
 development layout: there is no upgrade path between two builds whose
 layout differs ([ADR: schema versioning](../adr/schema-versioning.md)).
 A build opens a library whose layout matches it and refuses one that does
-not, with `unreleased checksum … does not match this binary; restore a
-backup or reset the database`, rather than guess.
+not, with `unreleased schema checksum … does not match this binary …;
+recreate the database (cargo reset --yes)`, rather than reshape it.
 
 Before updating:
 
@@ -126,8 +126,8 @@ Before updating:
 Then update the checkout (`git pull`) and start it again (`cargo dev
 --optional`, or rebuild the release binaries and restart the service). If
 the new build refuses the library, either go back to the previous build
-and restore the recovery point, or start fresh with `cargo reset --yes`
-and bring the book list back with `bookclerk import libation`. Store
+(where the recovery point still restores), or start fresh with `cargo reset
+--yes` and bring the book list back with `bookclerk import libation`. Store
 sign-ins are never exported, so connect the stores again afterwards.
 
 ## Postgres (`copydb`)

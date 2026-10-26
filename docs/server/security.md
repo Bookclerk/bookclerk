@@ -32,7 +32,7 @@ computer it runs on, and where each piece is explained in detail.
 - List your proxy in `daemon.trusted_proxies`; otherwise forwarded headers
   are ignored and sign-in throttling uses the proxy's address.
 - Hosts of one library talk to each other over TLS except on loopback.
-  Details: [Libraries, branches and clerks](cluster-hosts.md).
+  Details: [Libraries and branches](cluster-hosts.md).
 
 ## Sign-in
 

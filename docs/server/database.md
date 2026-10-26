@@ -167,7 +167,7 @@ the host library as guest SQL. Operator lifecycle:
 `bookclerk plugins db list` / `bookclerk plugins db drop <plugin> [binding]`
 (physical delete of the SQLite file / `DROP DATABASE` / D1 delete, then the
 registry row; unknown adapters fail closed).
-See [plugins.md — Isolated plugin database bindings](../plugins/abi.md#isolated-plugin-database-bindings).
+See [abi.md — Isolated plugin database bindings](../plugins/abi.md#isolated-plugin-database-bindings).
 
 ### Switching backends (opt-in migration)
 

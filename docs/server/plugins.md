@@ -380,7 +380,8 @@ received them, node-local ones included.
 
 A host node (a separate install that joined the cluster, see
 [Libraries and branches](cluster-hosts.md)) runs an owner's plugin only
-after **its own** operator approves it, with the same narrowing as above:
+after **its own** operator approves it, with the same narrowing as on any host (see
+[Consent before enable](../plugins/capabilities.md#consent-before-enable-and-every-spawn)):
 `bookclerk clusters approve <plugin_key> --request <DIGEST> [--deny-domain
 …] [--deny-binding …] [--deny-network]` (the digest of the request being
 approved, from `bookclerk clusters consents`) or **Settings → Library** on

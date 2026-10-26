@@ -73,7 +73,7 @@ standalone author repos: [plugin-registry.md](registry.md).
   how the operator approves it.
 - [Entrypoints, events and the ABI](abi.md): the Workers RPC surface, events,
   KV, queues and every capability's methods.
-- [Publishing plugins](registry.md): crate naming, release assets and the
+- [Plugin registry](registry.md): crate naming, release assets and the
   planned registry.
 - [SQL contract v1](../sql-contract/v1.md): what a database adapter must
   accept.
