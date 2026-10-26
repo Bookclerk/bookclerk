@@ -5,6 +5,10 @@
 # /triage) has no tools and only returns a JSON plan; this script validates
 # the plan and files the issues itself with the workflow token.
 #
+# The collector also tells the model which issues are already open; the
+# plan's attachments to them go back to the collector's ledger (POST
+# /issues/attach), never into an issue body.
+#
 # Usage: triage-and-file.sh reports.json
 # Env: GITHUB_REPOSITORY, GH_TOKEN (issues: write), COLLECTOR_BASE_URL,
 #      REPORT_API_KEY (collector key; sent only to COLLECTOR_BASE_URL).
@@ -31,6 +35,8 @@ DATA_FILE=$(mktemp)
 PLAN_FILE=$(mktemp)
 RESPONSE_FILE=$(mktemp)
 WORK_DIR=$(mktemp -d)
+OPEN_ISSUES_FILE="$WORK_DIR/open-issues.json"
+echo '[]' >"$OPEN_ISSUES_FILE"
 trap 'rm -rf "$DATA_FILE" "$PLAN_FILE" "$RESPONSE_FILE" "$WORK_DIR"' EXIT
 
 # Reports the collector marked as regressions of a closed issue (they run the
@@ -202,6 +208,37 @@ fi
 notify_key=$REPORT_API_KEY
 unset REPORT_API_KEY
 
+# Hands the plan's attachments to the collector, which records each report
+# under its open issue (never over a member's exclusion). Reports whose
+# issue the collector would not attach to (closed or unknown by then), or
+# every attached report when the collector cannot be reached or records
+# nothing, go to the holding issue instead. Usage: send_attachments <attach.json>.
+send_attachments() {
+  local file=$1 answer="$WORK_DIR/attach-answer.json" ids unlinked n http detail
+  ids=$(id_list '.links[].report_ids[]' "$file")
+  [[ -n "$ids" ]] || return 0
+  n=$(wc -l <<<"$ids")
+  http=$(printf 'header = "Authorization: Bearer %s"\n' "$notify_key" \
+    | curl -sS --config - -o "$answer" -w "%{http_code}" --max-time 60 \
+        -H "Content-Type: application/json" \
+        --data-binary "@$file" \
+        "${BASE%/}/issues/attach") || http=000
+  if [[ "$http" == 200 ]] && jq -e '.ok == true' "$answer" >/dev/null 2>&1; then
+    unlinked=$(id_list '.unlinked[]' "$answer")
+    echo "Triage attached $(jq '.linked' "$answer") report(s) to open issues ($(jq '.existing' "$answer") already recorded)."
+    if [[ -n "$unlinked" ]]; then
+      echo "$(wc -l <<<"$unlinked") attached report(s) name an issue the collector would not attach to; adding them to the holding issue." >&2
+      file_fallback "$(wc -l <<<"$unlinked")" "their issue was closed or unknown when triage attached them" "$unlinked" || return 1
+    fi
+  else
+    # The collector's error text is its own (a shape or auth problem), short
+    # and worth the log; HTTP 204 means the dashboard is off.
+    detail=$(jq -r '.error // empty' "$answer" 2>/dev/null | head -c 200 || true)
+    echo "::warning::The collector did not record ${n} attached report(s) (HTTP ${http}${detail:+: $detail}); adding them to the holding issue" >&2
+    file_fallback "$n" "the collector could not record their attachment to open issues" "$ids" || return 1
+  fi
+}
+
 # Tells the collector's dashboard about an issue just filed, so it links the
 # issue's reports at once instead of at the next sync. Best effort: the
 # dashboard's 30-minute sync catches anything this misses.
@@ -225,6 +262,8 @@ if [[ $curl_status -eq 0 ]]; then
     200)
       if jq -er '.plan_text | strings' "$RESPONSE_FILE" >"$PLAN_FILE"; then
         status=0
+        # The issues the collector offered the model for "attach".
+        jq -c '.open_issues // []' "$RESPONSE_FILE" >"$OPEN_ISSUES_FILE" 2>/dev/null || echo '[]' >"$OPEN_ISSUES_FILE"
         [[ "$count" -eq 0 ]] || jq -r '"Triage used \(.neurons) neurons on \(.model) (\(.spent_today)/\(.cap) today)"' "$RESPONSE_FILE" || true
       else
         reason="the collector returned no plan"
@@ -264,13 +303,14 @@ if [[ $regressions -gt 0 ]]; then
   fi
 fi
 
-# Validate the plan and turn it into issue files (validate_plan.py has the
-# rules and fails when a non-empty plan holds no valid issue).
+# Validate the plan and turn it into issue files and the attach body
+# (validate_plan.py has the rules and fails when a plan that names issues
+# holds no valid issue and no valid attachment).
 ISSUES_DIR="$WORK_DIR/issues"
 mkdir -p "$ISSUES_DIR"
 planned=0
 if [[ $status -eq 0 ]]; then
-  if python3 -I "$SCRIPT_DIR/validate_plan.py" "$PLAN_FILE" "$DATA_FILE" "$ISSUES_DIR"
+  if python3 -I "$SCRIPT_DIR/validate_plan.py" "$PLAN_FILE" "$DATA_FILE" "$ISSUES_DIR" "$OPEN_ISSUES_FILE"
   then
     planned=$(find "$ISSUES_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)
   else
@@ -299,6 +339,12 @@ if [[ $status -eq 0 ]]; then
     fi
   done
   echo "Triage planned ${planned} issue(s) for ${count} report(s)."
+  # Reports the plan attached to issues already open: the collector's ledger
+  # records them, and the next summary pass puts them on those issues'
+  # comments. No issue body changes.
+  if [[ -s "$ISSUES_DIR/attach.json" ]]; then
+    send_attachments "$ISSUES_DIR/attach.json" || failed=1
+  fi
   if [[ -n "$OMITTED_IDS" ]]; then
     omitted=$(wc -l <<<"$OMITTED_IDS")
     echo "${omitted} report(s) did not fit in the triage batch; adding them to the holding issue." >&2

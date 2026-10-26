@@ -22,6 +22,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CORPUS = Path(__file__).resolve().parent / "diagnostics_plan_corpus"
 KNOWN = {"11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"}
+#: Issue numbers the collector offered the model for ``attach``.
+OPEN_ISSUES = frozenset({412, 408})
 #: Opening line of the hidden report block the dashboard reads.
 BLOCK_OPEN = "<!-- bookclerk-diagnostics: report ids"
 
@@ -48,6 +50,11 @@ FORBIDDEN = {
     "issue reference": re.compile(r"#\d|(?i:\bGH-\d)"),
 }
 REPORT_IDS_HEADING = re.compile(r"(?im)^\s*#+\s*report ids\b")
+#: An ID the collector's attach route reads a UUID from: a UUID or an object name, any case.
+ATTACHABLE = re.compile(
+    r"(?i)(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"|diagnostics/[a-z0-9._+-]{1,64}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json)"
+)
 
 #: Fragments mutations splice in: link, mention and reference syntax.
 FRAGMENTS = [
@@ -55,6 +62,7 @@ FRAGMENTS = [
     "&#64;", "&amp;", "https://", "HTTPS://GitHub.com/", "www.", "//", "\n### Report IDs\n",
     "\n" + BLOCK_OPEN + "\n", "-->", "\n-->\n", "<!--",
     "\u200b", "\\", '"', "{", "}", ",", ":", "report_ids", "issues", next(iter(KNOWN)),
+    '"attach"', '"issue"', "412", "408", "999", "true", "[", "]",
 ]
 
 
@@ -92,18 +100,64 @@ def assert_publishable(case: unittest.TestCase, issues: list, label: str) -> Non
                 case.assertIsNone(pattern.search(field), f"{label}: {what} in {field[:200]!r}")
 
 
-def run(text: str, known: set[str] = KNOWN) -> list | None:
-    """Validates one input.
+def assert_attachable(case: unittest.TestCase, plan, label: str) -> None:
+    """Checks every invariant a validated plan's attachments promise, and
+    that no report is both attached and filed.
+
+    Args:
+        case: Test case to fail.
+        plan: Validator output (``Plan``).
+        label: Input name for failure messages.
+    """
+    case.assertLessEqual(len(plan.attachments), 20, label)
+    case.assertLessEqual(sum(len(a.report_ids) for a in plan.attachments), 500, label)
+    issues = [a.issue for a in plan.attachments]
+    case.assertEqual(len(issues), len(set(issues)), f"{label}: an issue once")
+    attached: list[str] = []
+    for a in plan.attachments:
+        case.assertIs(type(a.issue), int, label)
+        case.assertIn(a.issue, OPEN_ISSUES, label)
+        case.assertTrue(a.report_ids, label)
+        for rid in a.report_ids:
+            case.assertIn(rid, KNOWN, label)
+            case.assertTrue(ATTACHABLE.fullmatch(rid), label)
+        attached.extend(a.report_ids)
+    case.assertEqual(len(attached), len(set(attached)), f"{label}: a report under one issue")
+    filed = {rid for issue in plan.issues for rid in issue.report_ids}
+    case.assertFalse(filed & set(attached), f"{label}: a report both filed and attached")
+
+
+def run(text: str, known: set[str] = KNOWN, open_issues: frozenset[int] = OPEN_ISSUES) -> list | None:
+    """Validates one input and checks its attachments.
 
     Args:
         text: Model reply.
         known: Report IDs in the batch.
+        open_issues: Issue numbers offered for ``attach``.
 
     Returns:
         The issues, or None when the validator refused the reply.
     """
     try:
-        return vp.plan_issues(text, known)
+        plan = vp.validate_plan(text, known, open_issues)
+    except vp.PlanError:
+        return None
+    assert_attachable(unittest.TestCase(), plan, text[:300])
+    return list(plan.issues)
+
+
+def run_plan(text: str, open_issues: frozenset[int] = OPEN_ISSUES) -> vp.Plan | None:
+    """Validates one input into a whole ``Plan``, or None when refused.
+
+    Args:
+        text: Model reply.
+        open_issues: Issue numbers offered for ``attach``.
+
+    Returns:
+        The plan, or None.
+    """
+    try:
+        return vp.validate_plan(text, KNOWN, open_issues)
     except vp.PlanError:
         return None
 
@@ -137,6 +191,50 @@ class CorpusTests(unittest.TestCase):
         injected = run(load("injection_plan.txt"))[0]
         self.assertIn("[link removed]", injected.body)
 
+    def test_attachments(self) -> None:
+        one, two = sorted(KNOWN)
+        plan = run_plan(load_corpus("attach_plan.txt"))
+        self.assertEqual([i.report_ids for i in plan.issues], [(one,)])
+        self.assertEqual(plan.attachments, (vp.Attachment(412, (two,)),))
+        self.assertEqual(vp.uncovered_ids(plan.issues, KNOWN, plan.attachments), [])
+        only = run_plan(load_corpus("attach_only.txt"))
+        self.assertEqual(only.issues, ())
+        self.assertEqual(only.attachments, (vp.Attachment(412, (one,)), vp.Attachment(408, (two,))), "a report stays under the first issue naming it")
+        unknown = run_plan(load_corpus("attach_unknown_issue.txt"))
+        self.assertEqual(unknown.attachments, (vp.Attachment(412, (two,)),), "only integer numbers of offered issues, only batch UUIDs")
+        self.assertEqual(unknown.issues[0].report_ids, (one,))
+        taken = run_plan(load_corpus("attach_takes_issue_report.txt"))
+        self.assertEqual(taken.issues, (), "an issue whose only report was attached is not filed")
+        self.assertEqual(taken.attachments, (vp.Attachment(412, (one,)),))
+        self.assertEqual(vp.uncovered_ids(taken.issues, KNOWN, taken.attachments), [two])
+        # With no offered issues (no dashboard), attach is dropped and the issue stays.
+        none = run_plan(load_corpus("attach_takes_issue_report.txt"), frozenset())
+        self.assertEqual(none.attachments, ())
+        self.assertEqual(none.issues[0].report_ids, (one,))
+        # Issues named and nothing valid at all is a bad reply; a valid attachment saves it.
+        bad = json.dumps({"issues": [{"title": "t", "body": "b", "report_ids": ["nope"]}], "attach": [{"issue": 999, "report_ids": [one]}]})
+        self.assertIsNone(run_plan(bad))
+        saved = json.dumps({"issues": [{"title": "t", "body": "b", "report_ids": ["nope"]}], "attach": [{"issue": 408, "report_ids": [one]}]})
+        self.assertEqual(run_plan(saved).attachments, (vp.Attachment(408, (one,)),))
+        # The issue cap counts distinct issues; later ones are dropped, not merged.
+        many = {"issues": [], "attach": [{"issue": n, "report_ids": [one]} for n in range(1, 30)]}
+        wide = run_plan(json.dumps(many), frozenset(range(1, 30)))
+        self.assertEqual([a.issue for a in wide.attachments], [1])
+        spread = {"issues": [], "attach": [{"issue": n, "report_ids": [f"{n:08x}-0000-4000-8000-000000000000"]} for n in range(1, 30)]}
+        known = {f"{n:08x}-0000-4000-8000-000000000000" for n in range(1, 30)}
+        self.assertEqual(len(vp.validate_plan(json.dumps(spread), known, frozenset(range(1, 30))).attachments), 20)
+        self.assertEqual(vp.open_issue_numbers([412, 0, -1, "408", True, 2.5, 408]), frozenset({412, 408}))
+        flood = [f"{n:08x}-0000-4000-8000-000000000000" for n in range(600)]
+        wide_plan = json.dumps({"issues": [], "attach": [{"issue": 412, "report_ids": flood}]})
+        self.assertEqual(len(vp.validate_plan(wide_plan, set(flood), OPEN_ISSUES).attachments[0].report_ids), 500)
+        # IDs the batch spells as collector object names, or uppercase, attach as spelled; others do not.
+        name = "diagnostics/0.9.2/33333333-3333-4333-8333-333333333333.json"
+        upper = "44444444-4444-4444-8444-444444444444".upper()
+        spelled = json.dumps({"issues": [], "attach": [{"issue": 412, "report_ids": [name, upper, "diagnostics/x/notauuid.json", "55555555-5555-4555-8555-55555555555g"]}]})
+        got = vp.validate_plan(spelled, KNOWN | {name, upper, "diagnostics/x/notauuid.json", "55555555-5555-4555-8555-55555555555g"}, OPEN_ISSUES)
+        self.assertEqual(got.attachments, (vp.Attachment(412, (name, upper)),))
+        self.assertEqual(vp.open_issue_numbers({"a": 1}), frozenset())
+
 
 class MutationFuzzTests(unittest.TestCase):
     """Seeded mutation fuzzing over the corpus, replayable from the seed."""
@@ -169,9 +267,13 @@ class MutationFuzzTests(unittest.TestCase):
         for n in range(self.ITERATIONS):
             junk = lambda: "".join(rng.choice(FRAGMENTS + list("ab x\n")) for _ in range(rng.randint(0, 40)))
             plan = {"issues": [{"title": junk(), "body": junk(), "report_ids": sorted(KNOWN), "bug": rng.random() < 0.5}]}
+            if rng.random() < 0.5:
+                plan["attach"] = [{"issue": rng.choice([412, 408, 999, "412", True, 1.5]), "report_ids": [rng.choice(sorted(KNOWN) + [junk()])]} for _ in range(rng.randint(0, 3))]
             issues = run(json.dumps(plan))
-            self.assertIsNotNone(issues)
-            assert_publishable(self, issues, f"hostile {n}: {plan!r}"[:400])
+            if "attach" not in plan:
+                self.assertIsNotNone(issues)
+            if issues is not None:
+                assert_publishable(self, issues, f"hostile {n}: {plan!r}"[:400])
 
 
 class CoverageAndBlockTests(unittest.TestCase):
@@ -237,11 +339,21 @@ class CliTests(unittest.TestCase):
             self.assertEqual((t / "out" / "0" / "labels").read_text(), "diagnostics,bug")
             self.assertIsInstance(json.loads((t / "out" / "uncovered.json").read_text()), list)
             self.assertIn(f"\n{BLOCK_OPEN}\n", (t / "out" / "0" / "body").read_text())
-            self.assertEqual(vp.main([str(t / "plan"), str(t / "data.json"), str(t / "out"), "https://d.test"]), 2)
+            self.assertEqual(json.loads((t / "out" / "attach.json").read_text()), {"links": []})
+            self.assertEqual(vp.main([str(t / "plan"), str(t / "data.json"), str(t / "out"), str(t / "open.json"), "x"]), 2)
             (t / "plan").write_text((CORPUS / "unknown_ids_plan.txt").read_text())
             (t / "out2").mkdir()
             self.assertEqual(vp.main([str(t / "plan"), str(t / "data.json"), str(t / "out2")]), 1)
             self.assertEqual(list((t / "out2").iterdir()), [])
+            # With the collector's open issues, attachments become the collector's attach body.
+            (t / "plan").write_text((CORPUS / "attach_only.txt").read_text())
+            (t / "open.json").write_text(json.dumps([412, 408]))
+            (t / "out3").mkdir()
+            self.assertEqual(vp.main([str(t / "plan"), str(t / "data.json"), str(t / "out3"), str(t / "open.json")]), 0)
+            one, two = sorted(KNOWN)
+            self.assertEqual(json.loads((t / "out3" / "attach.json").read_text()), {"links": [{"issue": 412, "report_ids": [one]}, {"issue": 408, "report_ids": [two]}]})
+            self.assertEqual(json.loads((t / "out3" / "uncovered.json").read_text()), [])
+            self.assertEqual(sorted(p.name for p in (t / "out3").iterdir()), ["attach.json", "uncovered.json"])
 
 
 if __name__ == "__main__":

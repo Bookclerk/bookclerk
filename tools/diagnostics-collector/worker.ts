@@ -27,8 +27,8 @@
  * Secrets (set by deploy workflow from GitHub secrets):
  *   B2_KEY_ID, B2_APPLICATION_KEY, B2_BUCKET_ID
  *   REPORT_API_KEY          — required for /report, /report/cursor, /triage,
- *                             /issues/notify, /issues/summaries and
- *                             /issues/summary
+ *                             /issues/notify, /issues/attach,
+ *                             /issues/summaries and /issues/summary
  *   CLIENT_IP_HASH_SALT     — optional; enables hashed client IP in enrichment
  *   GITHUB_TOKEN            — optional; higher GitHub API rate limits
  *   GITHUB_APP_CLIENT_ID, GITHUB_APP_CLIENT_SECRET, GITHUB_APP_PRIVATE_KEY
@@ -51,13 +51,14 @@
  * secrets; Bookclerk builds carry the collector URL, never this key.
  */
 
-import { parseIssueNotify, parseSummaryDone } from "./dashboard/github.ts";
+import { MAX_ATTACH_BODY_CHARS, parseAttachRequest, parseIssueNotify, parseSummaryDone } from "./dashboard/github.ts";
 import { reportIdOf } from "./dashboard/report-ids.ts";
 import {
   dashboardFetch,
   dashboardFiledReportIds,
   dashboardIndexSubmitted,
   dashboardIssueNotify,
+  dashboardTriageAttach,
   dashboardIssueSummaries,
   dashboardLinkBySignature,
   dashboardSummarySent,
@@ -309,6 +310,13 @@ export default {
         return await handleIssueNotify(request, env);
       }
 
+      if (request.method === "POST" && path === "/issues/attach") {
+        if (!requireReportAuth(request, env)) {
+          return json({ error: "unauthorized" }, 401);
+        }
+        return await handleTriageAttach(request, env);
+      }
+
       if (request.method === "GET" && path === "/issues/summaries") {
         if (!requireReportAuth(request, env)) {
           return json({ error: "unauthorized" }, 401);
@@ -402,6 +410,27 @@ async function handleIssueNotify(request: Request, env: Env): Promise<Response> 
   const result = await dashboardIssueNotify(env, number, Date.now());
   if (result === null) return new Response(null, { status: 204 });
   return json({ ok: true, issue: number, result }, 202);
+}
+
+/**
+ * `POST /issues/attach`: the ingest Action hands over the model's validated
+ * `attach` decisions, and the dashboard links each report to its open issue
+ * as a `triage` row (never over a member's exclusion or an existing link).
+ * Answers 200 with the counts and the report IDs it could not link because
+ * their issue is closed, the holding issue or unknown; 204 when the
+ * dashboard is off; or 400 for a malformed body.
+ *
+ * @param request - Authenticated request.
+ * @param env - Worker bindings.
+ * @returns The answer.
+ */
+async function handleTriageAttach(request: Request, env: Env): Promise<Response> {
+  const text = await readCapped(request, MAX_ATTACH_BODY_CHARS);
+  const links = text === null ? null : parseAttachRequest(text);
+  if (links === null) return json({ error: "expected {\"links\": [{\"issue\": <number>, \"report_ids\": [\"<uuid>\"]}]}" }, 400);
+  const result = await dashboardTriageAttach(env, links, Date.now());
+  if (result === null) return new Response(null, { status: 204 });
+  return json({ ok: true, ...result });
 }
 
 /**
