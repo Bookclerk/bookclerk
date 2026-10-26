@@ -10,12 +10,23 @@ Each body ends in the hidden report block (``report_block``) the dashboard
 reads; GitHub does not render it, so people read the run's summary comment,
 which links each report's dashboard page, instead.
 
-Usage: ``validate_plan.py PLAN_FILE DATA_FILE OUT_DIR``.
-Each issue becomes ``OUT_DIR/<n>/{title,labels,body}``, and
-``OUT_DIR/uncovered.json`` lists the batch's report IDs that a non-empty plan
-left out, so the caller can track them in its fallback issue.
-Exits non-zero when the reply holds no plan, or a non-empty plan holds no
-valid issue, so the caller files its fallback issue instead.
+A plan may also ``attach`` reports to issues already open, by number: only
+the issues the collector offered the model (``OPEN_ISSUES_FILE``), only
+batch report IDs the collector reads a UUID from (a UUID or a collector
+object name), each report under one issue, and at most
+``MAX_ATTACHMENTS`` issues. An attached report is taken out of any new
+issue, so it is tracked once. Attachments touch no issue body: the caller
+sends them to the collector, whose ledger records them.
+
+Usage: ``validate_plan.py PLAN_FILE DATA_FILE OUT_DIR [OPEN_ISSUES_FILE]``.
+Each issue becomes ``OUT_DIR/<n>/{title,labels,body}``,
+``OUT_DIR/attach.json`` is the collector's ``POST /issues/attach`` body
+(``{"links": [{"issue": n, "report_ids": [...]}]}``, empty links when
+nothing is attached), and ``OUT_DIR/uncovered.json`` lists the batch's
+report IDs that a non-empty plan left out, so the caller can track them in
+its fallback issue. Exits non-zero when the reply holds no plan, or a plan
+names issues or attachments and none of them is valid, so the caller files
+its fallback issue instead.
 """
 
 from __future__ import annotations
@@ -28,6 +39,13 @@ from dataclasses import dataclass
 
 #: Most issues one batch may file.
 MAX_ISSUES = 5
+#: Most open issues one batch may attach reports to (the collector's
+#: ``MAX_ATTACH_ISSUES``).
+MAX_ATTACHMENTS = 20
+#: Most reports one batch may attach in all (the collector's
+#: ``MAX_ATTACH_IDS``); later ones stay with the plan's new issues or go
+#: uncovered.
+MAX_ATTACHED_REPORTS = 500
 #: Longest issue title, in characters, after the prefix is added.
 MAX_TITLE_CHARS = 120
 #: Longest model-written body, in characters, before the report block.
@@ -38,6 +56,9 @@ TITLE_PREFIX = "[diagnostics] "
 MARKER = "<!-- bookclerk-diagnostics: workers-ai triage -->"
 #: A report UUID, the only ID form the summary comment links.
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+#: A collector object name, the other ID form the collector reads a report
+#: UUID from (``dashboard/report-ids.ts`` ``reportIdOf``), lowercased.
+OBJECT_NAME_RE = re.compile(r"diagnostics/[a-z0-9._+-]{1,64}/([0-9a-f-]{36})\.json")
 #: The collector origin a dashboard link may point at (no path, query or userinfo).
 DASHBOARD_RE = re.compile(r"https://[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::[0-9]{1,5})?")
 #: Longest dashboard origin, so ``<origin>/reports/<uuid>`` (45 more
@@ -54,7 +75,7 @@ BLOCK_ID_RE = re.compile(r"[A-Za-z0-9._:/+-]{1,160}")
 
 
 class PlanError(Exception):
-    """The reply cannot be filed: no plan, or a non-empty plan with no valid issue."""
+    """The reply cannot be filed: no plan, or a plan with issues and nothing valid."""
 
 
 @dataclass(frozen=True)
@@ -74,6 +95,34 @@ class Issue:
     labels: str
     body: str
     report_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Attachment:
+    """Reports the plan attaches to one issue already open.
+
+    Attributes:
+        issue: Number of an issue the collector offered the model.
+        report_ids: Distinct batch report UUIDs, in listed order, none of
+            them attached to an earlier issue or listed by a new issue.
+    """
+
+    issue: int
+    report_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Plan:
+    """A validated reply.
+
+    Attributes:
+        issues: New issues to file, at most ``MAX_ISSUES``.
+        attachments: Reports to attach to open issues, at most
+            ``MAX_ATTACHMENTS`` issues.
+    """
+
+    issues: tuple[Issue, ...]
+    attachments: tuple[Attachment, ...]
 
 
 def report_block(report_ids: list[str] | tuple[str, ...]) -> str:
@@ -144,17 +193,18 @@ def defang(text: str) -> str:
     return re.sub(r"#(?=\d)", "#\u200b", text, flags=re.ASCII)
 
 
-def find_plan(text: str) -> list[object]:
+def find_plan(text: str) -> dict[str, object]:
     """Finds the first JSON object with an ``issues`` list in a reply.
 
     Args:
         text: The model's whole reply.
 
     Returns:
-        The plan's ``issues`` list, unvalidated.
+        The plan object, unvalidated beyond ``issues`` being a list.
 
     Raises:
-        PlanError: No such object is in the reply.
+        PlanError: No such object is in the reply, or its ``issues`` is not
+            a list.
     """
     decoder = json.JSONDecoder()
     for i, ch in enumerate(text):
@@ -167,29 +217,111 @@ def find_plan(text: str) -> list[object]:
         except RecursionError:
             raise PlanError("reply nests too deeply") from None
         if isinstance(obj, dict) and "issues" in obj:
-            issues = obj["issues"]
-            if not isinstance(issues, list):
+            if not isinstance(obj["issues"], list):
                 raise PlanError("plan issues is not a list")
-            return issues
+            return obj
     raise PlanError("reply has no JSON plan")
 
 
-def plan_issues(text: str, known: set[str]) -> list[Issue]:
-    """Validates a reply into the issues to file.
+def _is_int(value: object) -> bool:
+    """Whether a decoded JSON value is an integer (``bool`` is not one).
+
+    Args:
+        value: Decoded value.
+
+    Returns:
+        True for an ``int`` that is not a ``bool``.
+    """
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def attachable_id(report_id: str) -> bool:
+    """Whether the collector's ``POST /issues/attach`` reads a report UUID from an ID.
+
+    Args:
+        report_id: A batch report ID.
+
+    Returns:
+        True for a report UUID or a collector object name
+        ``diagnostics/<version>/<uuid>.json``, in either case.
+    """
+    lower = report_id.lower()
+    if UUID_RE.fullmatch(lower):
+        return True
+    m = OBJECT_NAME_RE.fullmatch(lower)
+    return m is not None and UUID_RE.fullmatch(m.group(1)) is not None
+
+
+def plan_attachments(planned: object, known: set[str], open_issues: frozenset[int]) -> list[Attachment]:
+    """Validates a plan's ``attach`` field.
+
+    Args:
+        planned: The plan's ``attach`` value; anything but a list attaches
+            nothing.
+        known: Report IDs in the batch the model saw.
+        open_issues: Issue numbers the collector offered the model.
+
+    Returns:
+        One attachment per issue, at most ``MAX_ATTACHMENTS`` issues and
+        ``MAX_ATTACHED_REPORTS`` reports, in the order
+        the issues were first named: entries naming the same issue are
+        merged, entries naming other issues or holding no usable ID are
+        dropped, and a report stays under the first issue naming it. Only
+        batch IDs the collector reads a UUID from (``attachable_id``) are
+        attached, as the batch spells them.
+    """
+    if not isinstance(planned, list):
+        return []
+    by_issue: dict[int, list[str]] = {}
+    seen: set[str] = set()
+    for entry in planned:
+        if not isinstance(entry, dict):
+            continue
+        issue, ids = entry.get("issue"), entry.get("report_ids")
+        if not _is_int(issue) or issue not in open_issues or not isinstance(ids, list):
+            continue
+        if issue not in by_issue and len(by_issue) >= MAX_ATTACHMENTS:
+            continue
+        for report_id in ids:
+            if len(seen) >= MAX_ATTACHED_REPORTS:
+                break
+            if not isinstance(report_id, str) or report_id in seen or report_id not in known:
+                continue
+            if not attachable_id(report_id):
+                continue
+            seen.add(report_id)
+            by_issue.setdefault(issue, []).append(report_id)
+    return [Attachment(issue=issue, report_ids=tuple(ids)) for issue, ids in by_issue.items() if ids]
+
+
+def validate_plan(text: str, known: set[str], open_issues: frozenset[int] = frozenset()) -> Plan:
+    """Validates a reply into the issues to file and the reports to attach.
 
     Args:
         text: The model's whole reply.
         known: Report IDs in the batch the model saw; only those that fit
-            the report block (``BLOCK_ID_RE``) are listed.
+            the report block (``BLOCK_ID_RE``) are listed, and only those
+            the collector reads a UUID from (``attachable_id``) attached.
+        open_issues: Issue numbers the collector offered the model for
+            ``attach``; with none, every attachment is dropped.
 
     Returns:
-        Up to ``MAX_ISSUES`` issues; empty when the plan is ``{"issues": []}``.
+        Up to ``MAX_ISSUES`` issues and up to ``MAX_ATTACHMENTS``
+        attachments; both empty for ``{"issues": []}``. A report an
+        attachment claims is left out of every new issue, and a new issue
+        left with no report is dropped.
 
     Raises:
-        PlanError: The reply has no plan, or its plan lists issues and none
-            of the first ``MAX_ISSUES`` is valid.
+        PlanError: The reply has no plan, or its plan lists issues or
+            attachments and none of the first ``MAX_ISSUES`` issues is valid
+            while nothing is attached either.
     """
-    planned = find_plan(text)
+    plan = find_plan(text)
+    planned = plan["issues"]
+    if not isinstance(planned, list):
+        raise PlanError("plan issues is not a list")
+    attachments = plan_attachments(plan.get("attach"), known, open_issues)
+    attached = {i for a in attachments for i in a.report_ids}
     out: list[Issue] = []
     for issue in planned[:MAX_ISSUES]:
         if not isinstance(issue, dict):
@@ -197,7 +329,11 @@ def plan_issues(text: str, known: set[str]) -> list[Issue]:
         title, body, ids = issue.get("title"), issue.get("body"), issue.get("report_ids")
         if not isinstance(title, str) or not isinstance(body, str) or not isinstance(ids, list):
             continue
-        ids = list(dict.fromkeys(i for i in ids if isinstance(i, str) and i in known and BLOCK_ID_RE.fullmatch(i)))
+        ids = list(
+            dict.fromkeys(
+                i for i in ids if isinstance(i, str) and i in known and i not in attached and BLOCK_ID_RE.fullmatch(i)
+            )
+        )
         if not ids:
             continue
         title = " ".join(title.split())
@@ -218,11 +354,27 @@ def plan_issues(text: str, known: set[str]) -> list[Issue]:
                 report_ids=tuple(ids),
             )
         )
-    # An empty plan is a decision; a non-empty one with nothing valid is a bad
-    # reply, so let the fallback issue track the batch.
-    if planned and not out:
-        raise PlanError("plan has no valid issues")
-    return out
+    # An empty plan is a decision; a plan that names issues or attachments
+    # and yields nothing is a bad reply, so let the fallback issue track the
+    # batch rather than drop the reports it meant to place.
+    attach = plan.get("attach")
+    if (planned or (isinstance(attach, list) and attach)) and not out and not attachments:
+        raise PlanError("plan has no valid issues or attachments")
+    return Plan(issues=tuple(out), attachments=tuple(attachments))
+
+
+def open_issue_numbers(raw: object) -> frozenset[int]:
+    """Reads the issue numbers the collector offered the model.
+
+    Args:
+        raw: The decoded ``open_issues`` list from the collector's answer.
+
+    Returns:
+        Its positive integers; empty for anything else.
+    """
+    if not isinstance(raw, list):
+        return frozenset()
+    return frozenset(n for n in raw if _is_int(n) and n > 0)
 
 
 def known_ids(batch: object) -> set[str]:
@@ -243,23 +395,26 @@ def known_ids(batch: object) -> set[str]:
     }
 
 
-def uncovered_ids(issues: list[Issue], known: set[str]) -> list[str]:
+def uncovered_ids(issues: list[Issue] | tuple[Issue, ...], known: set[str], attachments: tuple[Attachment, ...] | list[Attachment] = ()) -> list[str]:
     """Lists the batch reports a non-empty plan left out.
 
     An empty plan is the model's decision that nothing needs an issue, so it
-    leaves nothing uncovered; a plan that files some issues must account for
-    every report, or the rest would never be linked to an issue.
+    leaves nothing uncovered; a plan that files or attaches anything must
+    account for every report, or the rest would never be linked to an issue.
 
     Args:
         issues: Validated issues.
         known: Report IDs in the batch the model saw.
+        attachments: Validated attachments.
 
     Returns:
-        The IDs no issue lists, sorted; empty when ``issues`` is empty.
+        The IDs no issue lists and no attachment claims, sorted; empty when
+        both are empty.
     """
-    if not issues:
+    if not issues and not attachments:
         return []
     covered = {i for issue in issues for i in issue.report_ids}
+    covered |= {i for a in attachments for i in a.report_ids}
     return sorted(known - covered)
 
 
@@ -267,28 +422,38 @@ def main(argv: list[str]) -> int:
     """Validates PLAN_FILE against DATA_FILE and writes issue files to OUT_DIR.
 
     Args:
-        argv: ``[PLAN_FILE, DATA_FILE, OUT_DIR]``.
+        argv: ``[PLAN_FILE, DATA_FILE, OUT_DIR]``, optionally followed by
+            ``OPEN_ISSUES_FILE`` (a JSON list of the issue numbers the
+            collector offered the model).
 
     Returns:
-        0 when the plan is valid (possibly with no issues), 1 otherwise.
+        0 when the plan is valid (possibly with no issues), 1 otherwise, 2
+        for a usage error.
     """
-    if len(argv) != 3:
-        print("usage: validate_plan.py PLAN_FILE DATA_FILE OUT_DIR", file=sys.stderr)
+    if len(argv) not in (3, 4):
+        print("usage: validate_plan.py PLAN_FILE DATA_FILE OUT_DIR [OPEN_ISSUES_FILE]", file=sys.stderr)
         return 2
-    plan_path, data_path, out_dir = (pathlib.Path(a) for a in argv)
+    plan_path, data_path, out_dir = (pathlib.Path(a) for a in argv[:3])
     text = plan_path.read_text(encoding="utf-8", errors="replace")
     known = known_ids(json.loads(data_path.read_text(encoding="utf-8")))
+    open_issues = frozenset()
+    if len(argv) == 4:
+        open_issues = open_issue_numbers(json.loads(pathlib.Path(argv[3]).read_text(encoding="utf-8")))
     try:
-        issues = plan_issues(text, known)
+        plan = validate_plan(text, known, open_issues)
     except PlanError as err:
         print(err, file=sys.stderr)
         return 1
-    for n, issue in enumerate(issues):
+    for n, issue in enumerate(plan.issues):
         d = out_dir / str(n)
         d.mkdir()
         for name, value in (("title", issue.title), ("labels", issue.labels), ("body", issue.body)):
             (d / name).write_text(value, encoding="utf-8", errors="replace")
-    (out_dir / "uncovered.json").write_text(json.dumps(uncovered_ids(issues, known)), encoding="utf-8")
+    links = [{"issue": a.issue, "report_ids": list(a.report_ids)} for a in plan.attachments]
+    (out_dir / "attach.json").write_text(json.dumps({"links": links}), encoding="utf-8")
+    (out_dir / "uncovered.json").write_text(
+        json.dumps(uncovered_ids(plan.issues, known, plan.attachments)), encoding="utf-8"
+    )
     return 0
 
 

@@ -60,6 +60,10 @@ import {
   fixedInLabel,
   parseIssueNotify,
   parseSummaryDone,
+  parseAttachRequest,
+  MAX_ATTACH_BODY_CHARS,
+  MAX_ATTACH_IDS,
+  MAX_ATTACH_ISSUES,
   oauthErrorCode,
   decodeInstallationId,
   decodeInstallationToken,
@@ -1119,6 +1123,60 @@ function checkSummaryDone(text: string, label: string) {
 }
 
 /**
+ * Oracle for parseAttachRequest: re-derives the accepted links with its own
+ * walk (own UUID and object-name checks, own dedup order, own caps) and
+ * expects null for any body that breaks a rule.
+ *
+ * @param text - Request body.
+ * @param label - Failure label.
+ */
+function checkAttachRequest(text: string, label: string) {
+  const got = parseAttachRequest(text);
+  let expected: { issue: number; reportIds: string[] }[] | null = null;
+  let v: unknown;
+  let ok = text.length <= MAX_ATTACH_BODY_CHARS;
+  if (ok) {
+    try {
+      v = JSON.parse(text);
+    } catch {
+      ok = false;
+    }
+  }
+  if (ok && isObj(v) && Array.isArray(v.links) && v.links.length <= MAX_ATTACH_ISSUES) {
+    const links: { issue: number; reportIds: string[] }[] = [];
+    const issues = new Set<number>();
+    const ids = new Set<string>();
+    let valid = true;
+    for (const entry of v.links) {
+      if (!isObj(entry) || typeof entry.issue !== "number" || !Number.isInteger(entry.issue) || entry.issue < 1 || entry.issue > 1_000_000_000 || issues.has(entry.issue)) { valid = false; break; }
+      if (!Array.isArray(entry.report_ids) || entry.report_ids.length === 0) { valid = false; break; }
+      issues.add(entry.issue);
+      const mine: string[] = [];
+      for (const raw of entry.report_ids) {
+        if (typeof raw !== "string" || raw.length > 160) { valid = false; break; }
+        const lower = raw.toLowerCase();
+        const m = /^diagnostics\/[a-z0-9._+-]{1,64}\/([0-9a-f-]{36})\.json$/.exec(lower);
+        const id = UUID.test(lower) ? lower : m !== null && UUID.test(m[1] ?? "") ? m[1] ?? "" : null;
+        if (id === null) { valid = false; break; }
+        if (ids.has(id)) continue;
+        ids.add(id);
+        mine.push(id);
+      }
+      if (!valid || ids.size > MAX_ATTACH_IDS) { valid = false; break; }
+      if (mine.length) links.push({ issue: entry.issue, reportIds: mine });
+    }
+    if (valid) expected = links;
+  }
+  assert.deepEqual(got, expected, label);
+  if (got !== null) {
+    const all = got.flatMap((l) => l.reportIds);
+    assert.equal(new Set(all).size, all.length, `${label}: a report once`);
+    assert.ok(all.length <= MAX_ATTACH_IDS && got.length <= MAX_ATTACH_ISSUES, label);
+    for (const id of all) assert.match(id, UUID, label);
+  }
+}
+
+/**
  * Oracle for decodeIssue: one well-numbered non-PR issue, labeled exactly
  * when a label (string or object name) is "diagnostics".
  *
@@ -1156,6 +1214,16 @@ describe("issue notice decoding", () => {
     for (const [name, raw] of done) checkSummaryDone(raw, name);
     assert.equal(parseSummaryDone(seedNamed(done, "normal.json"))?.issue, 400);
     assert.equal(parseSummaryDone(seedNamed(done, "uppercase.json")), null);
+    const attach = seeds("triage_attach");
+    assert.ok(attach.length > 0);
+    for (const [name, raw] of attach) checkAttachRequest(raw, name);
+    assert.deepEqual(parseAttachRequest(seedNamed(attach, "normal.json"))?.map((l) => [l.issue, l.reportIds.length]), [[412, 2], [408, 1]]);
+    assert.deepEqual(parseAttachRequest(seedNamed(attach, "object_name.json")), [{ issue: 412, reportIds: ["7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4"] }]);
+    assert.deepEqual(parseAttachRequest(seedNamed(attach, "duplicate_id.json"))?.map((l) => l.issue), [412], "the first issue naming a report keeps it");
+    for (const name of ["duplicate_issue.json", "no_ids.json", "bad_id.json", "zero.json", "string_number.json", "array.json", "not_json.txt"]) {
+      assert.equal(parseAttachRequest(seedNamed(attach, name)), null, name);
+    }
+    assert.equal(parseAttachRequest(seedNamed(attach, "exponent.json"))?.[0]?.issue, 1_000_000_000);
     const issues = seeds("issue");
     assert.ok(issues.length > 0);
     for (const [name, raw] of issues) checkIssue(JSON.parse(raw), name);
@@ -1166,12 +1234,16 @@ describe("issue notice decoding", () => {
     const notices = seeds("issue_notify").map(([, raw]) => raw);
     const issues = seeds("issue").map(([, raw]) => JSON.parse(raw));
     const done = seeds("summary_done").map(([, raw]) => raw);
+    const attach = seeds("triage_attach").map(([, raw]) => raw);
     const rand = rng(20261024);
-    for (let n = 0; n < 3000; n++) {
+    for (let n = 0; n < 4000; n++) {
       const pick = rand();
-      if (pick < 0.35) {
+      if (pick < 0.25) {
         const text = mutate(rand, choose(rand, notices), ['"issue"', "1e9", "-1", "null", "{}", "[]", "9007199254740993", '"', ":"]);
         checkIssueNotify(text, `notice ${n}: ${text.slice(0, 200)}`);
+      } else if (pick < 0.5) {
+        const text = mutate(rand, choose(rand, attach), ['"links"', '"issue"', '"report_ids"', "1e9", "-1", "0", "null", "{}", "[]", '"', ":", ",", "diagnostics/", ".json", "/", "A", "-", "7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4", "\u0000"]);
+        checkAttachRequest(text, `attach ${n}: ${text.slice(0, 200)}`);
       } else if (pick < 0.7) {
         const text = mutate(rand, choose(rand, done), ['"issue"', '"fingerprint"', "1e9", "-1", "null", "{}", "[]", '"', ":", "A", "g", "0", "\u0000"]);
         checkSummaryDone(text, `summary done ${n}: ${text.slice(0, 200)}`);

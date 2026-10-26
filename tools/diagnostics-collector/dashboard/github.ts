@@ -16,6 +16,7 @@
  */
 
 import { MARKER } from "./summary.ts";
+import { reportIdOf } from "./report-ids.ts";
 import type { Env } from "../env.ts";
 import { isObject, isRecordLike, isSafeInteger, prop } from "../json.ts";
 
@@ -588,6 +589,70 @@ export function parseSummaryDone(text: unknown): { issue: number; fingerprint: s
   if (!isSafeInteger(n) || n < 1 || n > 1e9) return null;
   if (typeof fp !== "string" || !FINGERPRINT.test(fp)) return null;
   return { issue: n, fingerprint: fp };
+}
+
+/** Longest `POST /issues/attach` body, in characters. */
+export const MAX_ATTACH_BODY_CHARS = 64 * 1024;
+
+/** Most issues one `POST /issues/attach` body may name. */
+export const MAX_ATTACH_ISSUES = 20;
+
+/** Most report IDs one `POST /issues/attach` body may carry, over all issues. */
+export const MAX_ATTACH_IDS = 500;
+
+/** One issue and the reports triage attaches to it. */
+export type AttachLink = {
+  /** Issue number. */
+  issue: number;
+  /** Distinct lowercase report UUIDs, in listed order. */
+  reportIds: string[];
+};
+
+/**
+ * Reads the ingest Action's `POST /issues/attach` body, the model's
+ * validated `attach` decisions:
+ * `{"links": [{"issue": <number>, "report_ids": ["<uuid>", ...]}, ...]}`.
+ * Strict, since a malformed body means the Action and the Worker disagree
+ * and the Action then tracks those reports in its holding issue instead.
+ *
+ * @param text - Request body, at most `MAX_ATTACH_BODY_CHARS` characters.
+ * @returns One link per issue, at most `MAX_ATTACH_ISSUES`, each issue
+ *   once, each report once (under the first issue naming it), at most
+ *   `MAX_ATTACH_IDS` reports in all; or null when the body is not that
+ *   shape, an issue is not a positive integer of at most 1e9, a report ID
+ *   is neither a UUID nor a collector object name (`reportIdOf`), or a
+ *   link lists no report.
+ */
+export function parseAttachRequest(text: unknown): AttachLink[] | null {
+  if (typeof text !== "string" || text.length > MAX_ATTACH_BODY_CHARS) return null;
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!isObject(data) || !Array.isArray(data.links) || data.links.length > MAX_ATTACH_ISSUES) return null;
+  const out: AttachLink[] = [];
+  const issues = new Set<number>();
+  const seen = new Set<string>();
+  for (const entry of data.links) {
+    if (!isObject(entry)) return null;
+    const n = entry.issue;
+    if (!isSafeInteger(n) || n < 1 || n > 1e9 || issues.has(n)) return null;
+    if (!Array.isArray(entry.report_ids) || entry.report_ids.length === 0) return null;
+    issues.add(n);
+    const reportIds: string[] = [];
+    for (const raw of entry.report_ids) {
+      const id = typeof raw === "string" && raw.length <= 160 ? reportIdOf(raw) : null;
+      if (id === null) return null;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      if (seen.size > MAX_ATTACH_IDS) return null;
+      reportIds.push(id);
+    }
+    if (reportIds.length > 0) out.push({ issue: n, reportIds });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

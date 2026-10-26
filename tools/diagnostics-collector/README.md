@@ -16,6 +16,7 @@ fallback).
 | `POST` | `/submit` | Bookclerk clients | none (validated + secret heuristics) |
 | `GET` | `/report?since=<ms>&after=<name>[&unfiled=1]` | GitHub Action | `Authorization: Bearer <REPORT_API_KEY>` |
 | `POST` | `/triage` | GitHub Action | `Authorization: Bearer <REPORT_API_KEY>` |
+| `POST` | `/issues/attach` | GitHub Action | `Authorization: Bearer <REPORT_API_KEY>` |
 | `GET` | `/health` | probes | none |
 | `GET` | `/`, `/dash`, `/reports`, `/reports/<id>`, `/issues` | organization members | GitHub sign-in (`/auth/github`), session cookie |
 
@@ -70,6 +71,12 @@ Takes the sanitized batch the ingest workflow builds and returns a Workers AI
 issue plan (`plan_text`) plus the neurons it used. Bindings: `AI` and the
 `TRIAGE_BUDGET` KV namespace (created on first deploy), which caps spend per UTC day
 at `TRIAGE_DAILY_NEURONS`; see [`docs/server/diagnostics.md`](../../docs/server/diagnostics.md#triage).
+With `DASHBOARD_DB` bound, the prompt also lists the newest open triaged
+issues and the answer names them (`open_issues`), so the plan may `attach`
+reports to them; the workflow sends the validated attachments to
+`POST /issues/attach` (`{"links": [{"issue": n, "report_ids": [...]}]}`),
+which records them in the report ledger and answers with the counts and the
+IDs it could not link.
 
 ### Member dashboard setup
 

@@ -1493,18 +1493,73 @@ export async function issueDetail(db: D1Database, number: number, since: number)
 }
 
 /**
- * Open triaged issues for the move, merge and attach pickers.
+ * Open triaged issues for the move, merge and attach pickers, and for the
+ * triage prompt.
  *
  * @param db - Database.
+ * @param limit - Most issues to return.
  * @returns Newest first.
  */
-export async function openIssueOptions(db: D1Database): Promise<IssueOption[]> {
+export async function openIssueOptions(db: D1Database, limit: number = PICKER_ISSUES): Promise<IssueOption[]> {
   const rows = await all(
     db,
     "SELECT number, title FROM issues WHERE state = 'open' AND kind <> 'fallback' ORDER BY number DESC LIMIT ?",
-    PICKER_ISSUES,
+    limit,
   );
   return rows.map((r) => ({ number: Number(r.number), title: String(r.title) }));
+}
+
+/**
+ * Records triage's decision that reports belong to issues already open
+ * (source `triage`, linked by `ingest`). A pair that has a row keeps it,
+ * whatever its source: a member's exclusion stands, and a link made another
+ * way is not re-attributed. Issues that are not open triaged issues (closed,
+ * the holding issue, or unknown to the sync) are left alone, and their
+ * reports are returned so the caller can track them elsewhere.
+ *
+ * @param db - Database.
+ * @param links - Issue numbers with the distinct report UUIDs to link.
+ * @param now - Unix time in milliseconds.
+ * @returns How many rows were written, how many pairs already had a row,
+ *   and the report IDs whose issue was not eligible.
+ */
+export async function attachByTriage(
+  db: D1Database,
+  links: readonly { issue: number; reportIds: readonly string[]; }[],
+  now: number,
+): Promise<{ linked: number; existing: number; unlinked: string[]; }> {
+  const result = { linked: 0, existing: 0, unlinked: [] as string[] };
+  if (links.length === 0) return result;
+  const numbers = links.map((l) => l.issue);
+  const rows = await all(
+    db,
+    `SELECT number FROM issues WHERE state = 'open' AND kind <> 'fallback' AND number IN (${numbers.map(() => "?").join(",")})`,
+    ...numbers,
+  );
+  const eligible = new Set(rows.map((r) => Number(r.number)));
+  const statements: D1PreparedStatement[] = [];
+  for (const link of links) {
+    if (!eligible.has(link.issue)) {
+      result.unlinked.push(...link.reportIds);
+      continue;
+    }
+    for (const reportId of link.reportIds) {
+      statements.push(
+        db
+          .prepare(
+            `INSERT INTO report_issue (report_id, issue_number, source, linked_by, linked_at)
+             VALUES (?, ?, 'triage', 'ingest', ?) ON CONFLICT (report_id, issue_number) DO NOTHING`,
+          )
+          .bind(reportId, link.issue, now),
+      );
+    }
+  }
+  if (statements.length === 0) return result;
+  for (const r of await db.batch(statements)) {
+    if (r.meta.changes > 0) result.linked += 1;
+    else result.existing += 1;
+  }
+  return result;
 }
 
 /**

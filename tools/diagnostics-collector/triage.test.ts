@@ -4,8 +4,12 @@ import {
   BudgetLedger,
   DEFAULT_DAILY_NEURONS,
   MAX_DAILY_NEURONS,
+  DEFAULT_MODEL,
+  MAX_OPEN_ISSUE_TITLE_CHARS,
   MAX_OUTPUT_TOKENS,
   MODELS,
+  SYSTEM_PROMPT,
+  TEMPLATE_OVERHEAD_TOKENS,
   handleTriage,
   inputTokenBound,
   neuronsFor,
@@ -14,6 +18,8 @@ import {
   type TriagePlan,
 } from "./triage.ts";
 import type { BudgetStore, ChatMessage, Env } from "./env.ts";
+import { run } from "./dashboard/db.ts";
+import { createD1 } from "./test-support/d1.ts";
 
 /** One put recorded by the fake KV: the text and its options. */
 type Stored = { value: string; opts: { expirationTtl: number } | undefined };
@@ -151,6 +157,77 @@ describe("handleTriage", () => {
     assert.equal(call.input.max_tokens, MAX_OUTPUT_TOKENS);
     assert.equal(call.input.messages[0]?.role, "system");
     assert.match(call.input.messages[1]?.content ?? "", /^UNTRUSTED_DATA_BEGIN\n/);
+    assert.deepEqual(body.open_issues, [], "no dashboard, no issues to attach to");
+  });
+
+  it("opens the user message with the dashboard's open issues and names them in the answer", async () => {
+    const seen: ModelCall[] = [];
+    const db = createD1();
+    const issue = (number: number, title: string, state = "open", kind = "triage") =>
+      run(db, "INSERT INTO issues (number, title, state, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", number, title, state, kind, NOW, NOW);
+    await issue(412, "[diagnostics] Scan fails\u0007 after\n\n   sign-\u200bin");
+    await issue(410, "[diagnostics] untriaged reports", "open", "fallback");
+    await issue(409, "[diagnostics] Old one", "closed");
+    await issue(408, "[diagnostics] " + "t".repeat(300));
+    const env: Env = {
+      TRIAGE_BUDGET: fakeBudget(),
+      DASHBOARD_DB: db,
+      AI: {
+        async run(model, input) {
+          seen.push({ model, input });
+          return { response: '{"issues":[],"attach":[]}' };
+        },
+      },
+    };
+    const res = await handleTriage(triageRequest(BATCH), env, { now: () => NOW });
+    assert.equal(res.status, 200);
+    assert.deepEqual((await plan(res)).open_issues, [412, 408], "open triaged issues only, newest first");
+    const content = seen[0]?.input.messages[1]?.content ?? "";
+    const data = `UNTRUSTED_DATA_BEGIN\n${JSON.stringify(BATCH)}\nUNTRUSTED_DATA_END`;
+    assert.equal(
+      content,
+      `OPEN_ISSUES_BEGIN\n#412 [diagnostics] Scan fails after sign-in\n#408 ${("[diagnostics] " + "t".repeat(300)).slice(0, MAX_OPEN_ISSUE_TITLE_CHARS)}\nOPEN_ISSUES_END\n${data}`,
+      "titles are cleaned and cut; the batch follows",
+    );
+    assert.match(SYSTEM_PROMPT, /OPEN_ISSUES_BEGIN/);
+  });
+
+  it("drops the open issues, not the batch, when only they make the prompt too long", async () => {
+    const seen: ModelCall[] = [];
+    const db = createD1();
+    for (let n = 1; n <= 40; n++) {
+      await run(db, "INSERT INTO issues (number, title, state, kind, created_at, updated_at) VALUES (?, ?, 'open', 'triage', ?, ?)", n, "[diagnostics] " + "中".repeat(100), NOW, NOW);
+    }
+    const env: Env = {
+      TRIAGE_BUDGET: fakeBudget(),
+      DASHBOARD_DB: db,
+      TRIAGE_DAILY_NEURONS: "9000",
+      AI: {
+        async run(model, input) {
+          seen.push({ model, input });
+          return { response: "{}" };
+        },
+      },
+    };
+    const rates = MODELS[DEFAULT_MODEL];
+    const room = rates.context - MAX_OUTPUT_TOKENS - TEMPLATE_OVERHEAD_TOKENS - Buffer.byteLength(SYSTEM_PROMPT) - 200;
+    const batch = [{ report_id: "11111111-1111-4111-8111-111111111111", s: "a".repeat(room) }];
+    const res = await handleTriage(triageRequest(batch), env, { now: () => NOW });
+    assert.equal(res.status, 200);
+    assert.deepEqual((await plan(res)).open_issues, []);
+    assert.match(seen[0]?.input.messages[1]?.content ?? "", /^UNTRUSTED_DATA_BEGIN\n/);
+    // A malformed batch is refused before the database is read.
+    const broken = { ...env, DASHBOARD_DB: Object.assign(createD1(), { prepare: () => { throw new Error("no reads expected"); } }) };
+    assert.equal((await handleTriage(triageRequest("["), broken, { now: () => NOW })).status, 400);
+  });
+
+  it("triages without the open issues when the dashboard cannot be read", async () => {
+    const db = createD1();
+    db.raw.exec("DROP TABLE issues");
+    const env: Env = { TRIAGE_BUDGET: fakeBudget(), DASHBOARD_DB: db, AI: { run: async () => ({ response: "{}" }) } };
+    const res = await handleTriage(triageRequest(BATCH), env, { now: () => NOW });
+    assert.equal(res.status, 200);
+    assert.deepEqual((await plan(res)).open_issues, []);
   });
 
   it("refuses before calling the model when the budget would be passed", async () => {
