@@ -1937,7 +1937,9 @@ fn deny_ambiguous_comments(index: usize, sql: &str) -> Result<()> {
                 let Some(close) = sql[i + 2..].find("*/") else {
                     return Err(v1_grammar_err(index, "unterminated block comment"));
                 };
-                if sql[i + 2..i + 2 + close].contains("/*") {
+                // Include the closer's `*`: in `/*/` a nested opener overlaps
+                // the `*/` these passes take as the end.
+                if sql[i + 2..i + 2 + close + 1].contains("/*") {
                     return Err(v1_grammar_err(index, "nested block comment"));
                 }
                 i += 2 + close + 2;
@@ -4077,12 +4079,14 @@ mod tests {
             "SELECT id FROM books -- c\rUNION SELECT id FROM secrets",
             "SELECT id FROM books /* /* */ -- */ UNION SELECT id FROM secrets\n",
             "SELECT id FROM books /*/* */ */",
+            "SELECT 1 /* x /*/ UNION SELECT id FROM secrets */",
         ] {
             assert!(validate_sql_v1_grammar(sql, false).is_err(), "{sql:?}");
         }
         for sql in [
             "SELECT id FROM books -- note\r\nWHERE id = 1",
             "SELECT id FROM books /* a */ /* b */",
+            "SELECT id FROM books /*/ a */",
             "SELECT '-- c\rx', '/* /* */' FROM books",
         ] {
             assert!(validate_sql_v1_grammar(sql, false).is_ok(), "{sql:?}");
