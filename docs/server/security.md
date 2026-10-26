@@ -1,5 +1,8 @@
 # Security checklist
 
+Found a vulnerability? See the [security policy](../../SECURITY.md) for how to
+report it privately.
+
 What to set up before a Bookclerk server is reachable from anywhere but the
 computer it runs on, and where each piece is explained in detail.
 
