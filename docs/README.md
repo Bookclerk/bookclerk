@@ -36,7 +36,7 @@ others go deeper.
 - [Media worker](server/media.md): the confined process that handles audio files
 - [Backups, updates, import and export](server/backups.md): native backups, schema backups, updating, Libation and PostgreSQL export
 - [Diagnostics](server/diagnostics.md): opt-in error reports
-- [CLI reference](server/cli-reference.md): every `bookclerk` command and option (generated)
+- [CLI reference](server/cli-reference.md): every built-in `bookclerk` command and option (generated)
 
 ## Build plugins
 

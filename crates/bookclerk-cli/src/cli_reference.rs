@@ -19,7 +19,7 @@ pub const REFERENCE_PATH: &str = "docs/server/cli-reference.md";
 const PREAMBLE: &str = "\
 # CLI reference
 
-Every command and option of the `bookclerk` command-line tool. During
+Every built-in command and option of the `bookclerk` command-line tool. During
 development, run it as `cargo dev-cli -- <command>` or
 `cargo run -p bookclerk-cli -- <command>`. `bookclerk <command> --help`
 prints the same text in a terminal.
@@ -48,11 +48,23 @@ the result.
 pub fn render(root: &Command) -> String {
     let mut out = String::from(PREAMBLE);
     out.push_str("\n## Global options\n\n");
-    out.push_str("These options work with every command.\n\n");
     let globals: Vec<&Arg> = root
         .get_arguments()
         .filter(|arg| is_documented_option(arg))
         .collect();
+    let mut shadowing = Vec::new();
+    collect_shadowing(root, &globals, &mut shadowing);
+    if shadowing.is_empty() {
+        out.push_str("These options work with every command.\n\n");
+    } else {
+        let _ = writeln!(
+            out,
+            "These options work with every command. Some commands have their own option \
+             of the same name: written after the command's name, it means the command's \
+             option, and written before it, the global one. These are {}.\n",
+            shadowing.join(", ")
+        );
+    }
     render_args(&mut out, &globals);
     out.push_str("## Commands\n\n");
     render_command_list(&mut out, root);
@@ -64,6 +76,31 @@ pub fn render(root: &Command) -> String {
         out.pop();
     }
     out
+}
+
+/// Finds subcommand options that reuse a global option's long name.
+///
+/// clap lets a command's own option shadow a global one, so for that command
+/// the global option does not apply (for example `export postgres --format`
+/// picks the destination schema, not the output format).
+///
+/// # Arguments
+///
+/// * `cmd` - the command whose subcommands are searched, recursively.
+/// * `globals` - the root's documented global options.
+/// * `found` - receives each shadowing option as `` `bookclerk … --name` ``.
+fn collect_shadowing(cmd: &Command, globals: &[&Arg], found: &mut Vec<String>) {
+    for sub in visible_subcommands(cmd) {
+        let name = sub.get_bin_name().unwrap_or_else(|| sub.get_name());
+        for arg in sub.get_arguments().filter(|arg| !arg.is_global_set()) {
+            if let Some(long) = arg.get_long() {
+                if globals.iter().any(|global| global.get_long() == Some(long)) {
+                    found.push(format!("`{name} --{long}`"));
+                }
+            }
+        }
+        collect_shadowing(sub, globals, found);
+    }
 }
 
 /// Appends one command's section, then the sections of its subcommands.
