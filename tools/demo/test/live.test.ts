@@ -240,6 +240,17 @@ describe("live.js", () => {
     assert.equal(FakeSocket.opened.length, 3);
   });
 
+  it("gives up on a stalled handshake and polls", async () => {
+    const page = loadPage({ state: "ready", remaining: 800, siteUrl: "" });
+    // The socket never opens or closes on its own.
+    await page.runTimers();
+    assert.equal(FakeSocket.opened[0]!.readyState, 3);
+    await page.runTimers();
+    assert.equal(page.polls, 1);
+    assert.deepEqual(page.statuses[0], { state: "ready", remaining: 800, siteUrl: "" });
+    assert.equal(FakeSocket.opened.length, 2);
+  });
+
   it("polls instead of reconnecting once newer tabs took its socket", async () => {
     const page = loadPage({ state: "ready", remaining: 900, siteUrl: "" });
     const socket = FakeSocket.opened[0]!;

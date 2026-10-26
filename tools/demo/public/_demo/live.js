@@ -16,6 +16,9 @@
   // The session closed this socket to make room for newer tabs (live.ts
   // CLOSE_TOO_MANY): poll instead of taking a socket back from them.
   const CLOSE_TOO_MANY = 4001;
+  // A proxy can stall the upgrade without closing it; give up on a socket
+  // that has not opened by then so the fallback polls start.
+  const HANDSHAKE_MS = 5000;
   const STATES = new Set(["starting", "ready", ...OVER]);
 
   // Keeps only the fields the pages use, with their expected types.
@@ -58,6 +61,7 @@
     const connect = () => {
       if (over) return;
       let opened = false;
+      let closed = false;
       try {
         const scheme = location.protocol === "https:" ? "wss:" : "ws:";
         socket = new WebSocket(`${scheme}//${location.host}/_demo/live`);
@@ -66,6 +70,10 @@
         retry();
         return;
       }
+      const current = socket;
+      setTimeout(() => {
+        if (!opened && !closed) current.close();
+      }, Math.min(HANDSHAKE_MS, maxRetryMs));
       socket.addEventListener("open", () => {
         opened = true;
       });
@@ -73,6 +81,7 @@
         if (typeof event.data === "string") deliver(parse(event.data));
       });
       socket.addEventListener("close", (event) => {
+        closed = true;
         socket = null;
         if (over) return;
         if (event.code === CLOSE_TOO_MANY) {
