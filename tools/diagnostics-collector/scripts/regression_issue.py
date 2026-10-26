@@ -8,7 +8,7 @@ reports by the closed issue and the report's ``major.minor`` version line
 and writes one issue per group, naming the closed issue, its fix pull
 request and the fixed-in version (plain ``#<n>`` references, so GitHub
 cross-links them) and listing the report IDs in the hidden report block
-every diagnostics issue ends with (``dashboard/report-ids.js`` reads the
+every diagnostics issue ends with (``dashboard/report-ids.ts`` reads the
 block; the first line is the marker that parser reads the closed issue's
 number from).
 

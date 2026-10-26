@@ -266,7 +266,7 @@ when a step matches no test. Name such tests `postgres_*`.
 | `postgres 16/17/18` | An owning package's unit tests are affected (library, db-guest, postgres guest, plugin-host RPC LIKE) | Only the owners' steps, on every supported major |
 | `windows cluster startup + identity` | A `[windows_cluster].paths` input changed, or the full suite | On `windows-latest` only: identity create, restart/binding, and different-cluster rejection, then the full `cluster_secret_startup` target with the sqlite guest, jail, `bookclerk-workerd`, and pinned `workerd` |
 | `small-VPS envelope` | A `[envelope].paths` input changed (harness, seed, search rebuild, library book page, books HTTP handler), or the full suite | On the `ubuntu-latest` VM, release-build the hosts and compile the seed. `docker run --memory=1g --memory-swap=1g --cpus=1` then runs the seed, daemon, and load in an Ubuntu container of the runner's own release (`ubuntu:<VERSION_ID>` from `/etc/os-release`, `ubuntu:24.04` on a non-Ubuntu host), because the hosts link the runner's glibc and libssl. The job uploads `bookclerkd-envelope.log` with the metrics when it fails. `small-vps.sh` reads `memory.max` and `cpu.max` and refuses to record numbers when they are `max` or looser than 1 GiB / one core. It drops build and object file cache and writes `envelope-metrics.json` even when a later step fails. Books routes must return 200, `q=Title` must hit the rebuilt index, and daemon anonymous memory (`RssAnon` when `/proc/<pid>/status` reports it, otherwise `memory.stat` `anon`, or `memory.current` when anon is absent) stays under 256 MiB after idle and during the API windows. `memory.peak` is recorded and not gated: the container cannot reset it, so the lifetime peak includes the seed. One `cpu.max` core means 1 media worker. Latency is recorded and not gated. `available_parallelism` (daemon `logical_cpus`) is recorded separately from the affinity mask |
-| `website + collector Workers` | `tools/site/**` or `assets/brand/**` (site tests and audit), `docs/**` (site tests only), `tools/diagnostics-collector/**` (collector tests), `tools/demo/**` (demo tests), or the full suite | `site_test`: `npm run typecheck` (strict `tsc --noEmit`) and `npm test` in `tools/site` (generator, Worker and the docs link check). `site_audit`: `tsc` on the audit, then Lighthouse and axe-core on the built site (see [Website checks](#website-checks)). `collector_test`: `npm test` in `tools/diagnostics-collector`. `demo_test`: `npm test` in `tools/demo`. No Rust toolchain |
+| `website + collector Workers` | `tools/site/**` or `assets/brand/**` (site tests and audit), `docs/**` (site tests only), `tools/diagnostics-collector/**` (collector tests), `tools/demo/**` (demo tests), or the full suite | `site_test`: `npm run typecheck` (strict `tsc --noEmit`) and `npm test` in `tools/site` (generator, Worker and the docs link check). `site_audit`: `tsc` on the audit, then Lighthouse and axe-core on the built site (see [Website checks](#website-checks)). `collector_test`: `npm run typecheck` (strict `tsc --noEmit`) and `npm test` in `tools/diagnostics-collector`. `demo_test`: `npm test` in `tools/demo`. No Rust toolchain |
 | `CI Gate` | Always | Stable required check (see contract above) |
 
 OSV scanning remains a separate workflow/gate. A green OSV job that applies
@@ -352,7 +352,7 @@ non-Rust tooling (decision 6):
   number; no links,
   mentions, raw HTML or references in the title and prose beyond the closed
   issue and its fix pull request, both validated integers). The dashboard's
-  Report IDs parser (`dashboard/report-ids.js`, below) reads that marker.
+  Report IDs parser (`dashboard/report-ids.ts`, below) reads that marker.
 - The diagnostics summary comment renderer
   (`tools/diagnostics-collector/scripts/summary_comment.py`), which turns
   the collector's `GET /issues/summaries` answer (counts, plus versions and
@@ -364,9 +364,9 @@ non-Rust tooling (decision 6):
   the marker first; only the answer's report IDs, each linked only to its own
   dashboard page; no links, mentions, raw HTML or references outside code
   spans; no Report IDs heading). The dashboard's port of that renderer
-  (`tools/diagnostics-collector/dashboard/summary.js`, behind the owner's
+  (`tools/diagnostics-collector/dashboard/summary.ts`, behind the owner's
   "Update GitHub now" button) is held to the Python module as its oracle:
-  `tools/diagnostics-collector/summary.fuzz.test.js` renders the same seed
+  `tools/diagnostics-collector/summary.fuzz.test.ts` renders the same seed
   corpus and seeded text and value mutations of it on both sides (the Python
   side through `scripts/tests/summary_comment_oracle.py`) and requires
   identical comments, fingerprints and origin checks.
@@ -380,18 +380,18 @@ non-Rust tooling (decision 6):
   an empty tag for a draft or prerelease, or exactly the body's own
   `tag_name` when it is 1–64 characters of `[A-Za-z0-9._-]`).
 - The collector's `/triage` admission (`admitBatch` in
-  `tools/diagnostics-collector/triage.js`), which parses the report-derived
+  `tools/diagnostics-collector/triage.ts`), which parses the report-derived
   batch and prices it against the daily neuron budget.
-  `tools/diagnostics-collector/triage-admit.fuzz.test.js` replays its seed
+  `tools/diagnostics-collector/triage-admit.fuzz.test.ts` replays its seed
   corpus (`tools/diagnostics-collector/corpus/triage_admit/`) and runs seeded
   mutation fuzzing on every PR, checking each result against an independent
   oracle (a refusal has a cause; an admitted prompt is the re-serialized
   batch, fits the size cap and context window, and its reservation covers the
   call's worst case).
 - The collector's ingest cursor body (`parseCursor` in
-  `tools/diagnostics-collector/ingest-cursor.js`), which `POST /report/cursor`
+  `tools/diagnostics-collector/ingest-cursor.ts`), which `POST /report/cursor`
   stores and which decides where the next ingest run starts.
-  `tools/diagnostics-collector/ingest-cursor.fuzz.test.js` replays its seed
+  `tools/diagnostics-collector/ingest-cursor.fuzz.test.ts` replays its seed
   corpus (`tools/diagnostics-collector/corpus/ingest_cursor/`) and runs seeded
   mutation fuzzing on every PR, checking each result against an independent
   oracle (a cursor exactly when the body is a JSON object whose `since` is a
@@ -399,18 +399,18 @@ non-Rust tooling (decision 6):
   is a string of at most 1,024 characters with no control characters).
 - The member dashboard's readers of untrusted text: the issue-body
   Report IDs parser (`parseIssueReportIds` in
-  `tools/diagnostics-collector/dashboard/report-ids.js`), which decides which
+  `tools/diagnostics-collector/dashboard/report-ids.ts`), which decides which
   reports an issue claims; the stored-report summary (`summarizeReport`
-  in `dashboard/signature.js`), which writes every report's index row; the
-  report page's event log (`eventLog` in `dashboard/pages.js`), which renders
+  in `dashboard/signature.ts`), which writes every report's index row; the
+  report page's event log (`eventLog` in `dashboard/pages.ts`), which renders
   stored events; the session check (`sessionToken` and `memberFromRow` in
-  `dashboard/session.js`), which decides whether a request is signed in and
+  `dashboard/session.ts`), which decides whether a request is signed in and
   as whom; the sign-in callback check (`parseCallback` in
-  `dashboard/auth.js`), which decides from the callback query and cookies
+  `dashboard/auth.ts`), which decides from the callback query and cookies
   whether a code is traded with GitHub and which page the member lands on;
   the return-page check (`safeNext`, same file), which turns a `next` query
   parameter or cookie part into a redirect target; the membership decision
-  (`membershipDecision` in `dashboard/github.js`), which decides from
+  (`membershipDecision` in `dashboard/github.ts`), which decides from
   GitHub's membership answer whether sign-in grants member or owner access;
   the pull request decoder (`decodePullRequests`, same file), which
   decides from GitHub's GraphQL answer whether the sync drops an issue or
@@ -428,11 +428,11 @@ non-Rust tooling (decision 6):
   that one is posted, and the locked-issue reader (`isLockedMessage`, same
   file), which decides whether GitHub's refusal of that write is final; the
   ledger correction form (`parseLinkAction` in
-  `dashboard/links.js`), which decides which report a member attaches to,
+  `dashboard/links.ts`), which decides which report a member attaches to,
   detaches from or moves between which issues, and which issue is merged
   into which; and the B2 listing decoder
-  (`decodeListPage` in `dashboard/storage.js`), which names the objects
-  report viewing downloads and where reindexing continues. `tools/diagnostics-collector/dashboard-input.fuzz.test.js` replays
+  (`decodeListPage` in `dashboard/storage.ts`), which names the objects
+  report viewing downloads and where reindexing continues. `tools/diagnostics-collector/dashboard-input.fuzz.test.ts` replays
   their seed corpora (`tools/diagnostics-collector/corpus/report_ids/`,
   `corpus/signature/`, `corpus/oauth_callback/`, `corpus/next_path/`, `corpus/session/`,
   `corpus/membership/`, `corpus/pull_requests/`, `corpus/b2_list/`,
@@ -474,9 +474,9 @@ non-Rust tooling (decision 6):
   action needs a report and a different issue number where it needs a
   target).
 - The collector's B2 error-code reader (`b2ErrorCode` in
-  `tools/diagnostics-collector/worker.js`), which picks the `code` out of a B2
+  `tools/diagnostics-collector/worker.ts`), which picks the `code` out of a B2
   error body for logs and authenticated responses.
-  `tools/diagnostics-collector/b2-error.fuzz.test.js` replays its seed corpus
+  `tools/diagnostics-collector/b2-error.fuzz.test.ts` replays its seed corpus
   (`tools/diagnostics-collector/corpus/b2_error/`) and runs seeded mutation
   fuzzing on every PR, checking each result against an independent oracle
   (nothing, or exactly the body's own `code` when it is a 1–40 character

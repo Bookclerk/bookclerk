@@ -40,7 +40,7 @@ def _load(name: str, path: Path):
 
 hi = _load("holding_issue", ROOT / "tools" / "diagnostics-collector" / "scripts" / "holding_issue.py")
 
-#: What the dashboard's parser (dashboard/report-ids.js) reads: a bare ID
+#: What the dashboard's parser (dashboard/report-ids.ts) reads: a bare ID
 #: line, padded with spaces or tabs at most, inside the last report block.
 ORACLE_LINE = re.compile(r"([A-Za-z0-9._:/+-]{1,160})[ \t]*")
 

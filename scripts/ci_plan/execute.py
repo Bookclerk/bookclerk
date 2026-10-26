@@ -563,6 +563,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         collector = str(ctx.workspace / "tools" / "diagnostics-collector")
         return [
             Command("npm ci (tools/diagnostics-collector)", ["npm", "ci"], cwd=collector),
+            Command("tsc (tools/diagnostics-collector)", ["npm", "run", "typecheck"], cwd=collector),
             Command("npm test (tools/diagnostics-collector)", ["npm", "test"], cwd=collector),
         ]
     if check == "demo_test":

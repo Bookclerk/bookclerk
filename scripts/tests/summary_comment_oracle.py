@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Oracle for the dashboard's JavaScript port of the summary comment renderer.
+"""Oracle for the dashboard's TypeScript port of the summary comment renderer.
 
-``tools/diagnostics-collector/summary.fuzz.test.js`` runs the JavaScript
-renderer (``dashboard/summary.js``) and this script on the same inputs and
+``tools/diagnostics-collector/summary.fuzz.test.ts`` runs the TypeScript
+renderer (``dashboard/summary.ts``) and this script on the same inputs and
 requires identical output, so the comment the owner's "Update GitHub now"
 button writes is the one the ingest run would write. Each line of stdin is
 one request; each line of stdout is its answer:
