@@ -17,13 +17,13 @@ again on **Accounts** (see [Stores](stores.md)).
 
 ## Import
 
-The import needs the Audible plugin, which `cargo dev --optional` installs
-(see [Getting started](getting-started.md)). Stop Bookclerk first. Then, from the Bookclerk checkout, point the import at
+The import needs the Audible plugin, so run it with `--optional` as below.
+Stop Bookclerk first. Then, from the Bookclerk checkout, point the import at
 your Libation files folder:
 
 ```sh
-cargo dev-cli -- import libation --from ~/LibationFiles --dry-run
-cargo dev-cli -- import libation --from ~/LibationFiles --force
+cargo dev-cli --optional -- import libation --from ~/LibationFiles --dry-run
+cargo dev-cli --optional -- import libation --from ~/LibationFiles --force
 ```
 
 The first command only reports what it would do. The second imports, and
