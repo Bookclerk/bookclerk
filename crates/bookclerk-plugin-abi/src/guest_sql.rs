@@ -717,7 +717,7 @@ pub fn validate_sql_v1_grammar(sql: &str, binding_owned: bool) -> Result<()> {
 ///
 /// Returns [`PluginError::invalid_params`] when `sql` is outside SQL v1.
 fn validate_sql_v1_grammar_at(index: usize, sql: &str, binding_owned: bool) -> Result<()> {
-    deny_unterminated_block_comment(index, sql)?;
+    deny_ambiguous_comments(index, sql)?;
     deny_non_v1_placeholders(index, sql)?;
     deny_non_v1_insert(index, sql)?;
     if binding_owned {
@@ -1892,17 +1892,27 @@ fn deny_non_v1_insert(index: usize, sql: &str) -> Result<()> {
     ))
 }
 
-/// Rejects a `/*` comment with no closing `*/`.
+/// Rejects comments whose extent the engines would read differently.
 ///
-/// The scanner would otherwise read it to the end of the text, so whatever
-/// the comment hides (a clause, an operand) goes unread by every pass while
-/// the engine reports an unterminated token.
+/// Every pass here ends a `--` comment at `\n` and a `/*` comment at the
+/// first `*/`, as SQLite does. Anything an engine would read as SQL inside
+/// what these passes skip as a comment would go unauthorized, so three forms
+/// are refused:
+///
+/// - a `/*` comment with no closing `*/`, which the scanner would read to
+///   the end of the text while the engine reports an unterminated token;
+/// - a `/*` inside a block comment: PostgreSQL nests block comments, so the
+///   first `*/` does not end the outer one there, and text after it is
+///   comment to PostgreSQL but SQL here, or the other way round;
+/// - a carriage return inside a `--` comment that is not part of `\r\n`:
+///   PostgreSQL ends a line comment at `\r`, so the rest of the line would
+///   run there while these passes skip it.
 ///
 /// # Errors
 ///
-/// Returns [`PluginError::invalid_params`] when a block comment is open at
-/// the end of `sql`.
-fn deny_unterminated_block_comment(index: usize, sql: &str) -> Result<()> {
+/// Returns [`PluginError::invalid_params`] when a comment takes one of the
+/// forms above.
+fn deny_ambiguous_comments(index: usize, sql: &str) -> Result<()> {
     let bytes = sql.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -1914,6 +1924,12 @@ fn deny_unterminated_block_comment(index: usize, sql: &str) -> Result<()> {
             }
             b'-' if bytes.get(i + 1) == Some(&b'-') => {
                 while i < bytes.len() && bytes[i] != b'\n' {
+                    if bytes[i] == b'\r' && bytes.get(i + 1) != Some(&b'\n') {
+                        return Err(v1_grammar_err(
+                            index,
+                            "carriage return inside a line comment",
+                        ));
+                    }
                     i += 1;
                 }
             }
@@ -1921,6 +1937,11 @@ fn deny_unterminated_block_comment(index: usize, sql: &str) -> Result<()> {
                 let Some(close) = sql[i + 2..].find("*/") else {
                     return Err(v1_grammar_err(index, "unterminated block comment"));
                 };
+                // Include the closer's `*`: in `/*/` a nested opener overlaps
+                // the `*/` these passes take as the end.
+                if sql[i + 2..i + 2 + close + 1].contains("/*") {
+                    return Err(v1_grammar_err(index, "nested block comment"));
+                }
                 i += 2 + close + 2;
             }
             _ => i += 1,
@@ -4049,6 +4070,28 @@ mod tests {
     use super::*;
     use crate::sql_types::apply_schema_sql_to_env;
     use crate::{DbValue, ExecuteRequest};
+
+    #[test]
+    fn comments_postgres_would_end_elsewhere_are_rejected() {
+        // PostgreSQL ends `--` at a bare `\r` and nests block comments, so the
+        // tail of each statement would run there unread by these passes.
+        for sql in [
+            "SELECT id FROM books -- c\rUNION SELECT id FROM secrets",
+            "SELECT id FROM books /* /* */ -- */ UNION SELECT id FROM secrets\n",
+            "SELECT id FROM books /*/* */ */",
+            "SELECT 1 /* x /*/ UNION SELECT id FROM secrets */",
+        ] {
+            assert!(validate_sql_v1_grammar(sql, false).is_err(), "{sql:?}");
+        }
+        for sql in [
+            "SELECT id FROM books -- note\r\nWHERE id = 1",
+            "SELECT id FROM books /* a */ /* b */",
+            "SELECT id FROM books /*/ a */",
+            "SELECT '-- c\rx', '/* /* */' FROM books",
+        ] {
+            assert!(validate_sql_v1_grammar(sql, false).is_ok(), "{sql:?}");
+        }
+    }
 
     #[test]
     fn an_unterminated_quoted_identifier_is_rejected_not_spun_on() {
