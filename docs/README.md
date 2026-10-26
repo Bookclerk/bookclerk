@@ -9,6 +9,7 @@ others go deeper.
 
 ## Use Bookclerk
 
+- [What is Bookclerk?](guide/what-is-bookclerk.md): what it does, whether it is ready, and how to try the demo
 - [Getting started](guide/getting-started.md): install Bookclerk, create your account, connect a store and bring in your books
 - [Stores](guide/stores.md): Audible, Libro.fm, Chirp and GraphicAudio
 - [Where your books go](guide/where-books-go.md): folders, cloud storage and file names
@@ -35,6 +36,7 @@ others go deeper.
 - [Media worker](server/media.md): the confined process that handles audio files
 - [Backups, updates, import and export](server/backups.md): native backups, schema backups, updating, Libation and PostgreSQL export
 - [Diagnostics](server/diagnostics.md): opt-in error reports
+- [CLI reference](server/cli-reference.md): every `bookclerk` command and option (generated)
 
 ## Build plugins
 

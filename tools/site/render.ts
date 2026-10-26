@@ -73,6 +73,7 @@ export const NAV: NavSpec[] = [
   {
     title: "Use Bookclerk",
     pages: [
+      "guide/what-is-bookclerk",
       "guide/getting-started",
       "guide/stores",
       "guide/where-books-go",
@@ -101,6 +102,7 @@ export const NAV: NavSpec[] = [
       "server/media",
       "server/backups",
       "server/diagnostics",
+      "server/cli-reference",
     ],
   },
   {
