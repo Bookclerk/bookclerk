@@ -178,7 +178,7 @@ class CorpusTests(unittest.TestCase):
             return (CORPUS / name).read_text(encoding="utf-8")
 
         self.assertEqual(run(load("empty_plan.txt")), [])
-        for refused in ("no_plan.txt", "issues_not_list.txt", "unknown_ids_plan.txt", "deep_nesting.txt"):
+        for refused in ("no_plan.txt", "issues_not_list.txt", "unknown_ids_plan.txt", "deep_nesting.txt", "attach_invalid_only.txt"):
             self.assertIsNone(run(load(refused)), refused)
         fenced = run(load("fenced_plan.txt"))
         self.assertEqual(len(fenced), 1)
@@ -211,6 +211,10 @@ class CorpusTests(unittest.TestCase):
         none = run_plan(load_corpus("attach_takes_issue_report.txt"), frozenset())
         self.assertEqual(none.attachments, ())
         self.assertEqual(none.issues[0].report_ids, (one,))
+        # Attachments meant and none valid is a bad reply too (the reports must not be dropped).
+        self.assertIsNone(run_plan(load_corpus("attach_invalid_only.txt")))
+        self.assertIsNone(run_plan(load_corpus("attach_only.txt"), frozenset()), "no offered issues: the attach plan yields nothing")
+        self.assertEqual(run_plan(json.dumps({"issues": [], "attach": []})).attachments, ())
         # Issues named and nothing valid at all is a bad reply; a valid attachment saves it.
         bad = json.dumps({"issues": [{"title": "t", "body": "b", "report_ids": ["nope"]}], "attach": [{"issue": 999, "report_ids": [one]}]})
         self.assertIsNone(run_plan(bad))

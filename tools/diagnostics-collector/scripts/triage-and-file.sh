@@ -304,7 +304,7 @@ if [[ $regressions -gt 0 ]]; then
 fi
 
 # Validate the plan and turn it into issue files and the attach body
-# (validate_plan.py has the rules and fails when a plan that names issues
+# (validate_plan.py has the rules and fails when a plan that names issues or attachments
 # holds no valid issue and no valid attachment).
 ISSUES_DIR="$WORK_DIR/issues"
 mkdir -p "$ISSUES_DIR"

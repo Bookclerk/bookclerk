@@ -25,8 +25,8 @@ Each issue becomes ``OUT_DIR/<n>/{title,labels,body}``,
 nothing is attached), and ``OUT_DIR/uncovered.json`` lists the batch's
 report IDs that a non-empty plan left out, so the caller can track them in
 its fallback issue. Exits non-zero when the reply holds no plan, or a plan
-names issues and none of them nor any attachment is valid, so the caller
-files its fallback issue instead.
+names issues or attachments and none of them is valid, so the caller files
+its fallback issue instead.
 """
 
 from __future__ import annotations
@@ -312,9 +312,9 @@ def validate_plan(text: str, known: set[str], open_issues: frozenset[int] = froz
         left with no report is dropped.
 
     Raises:
-        PlanError: The reply has no plan, or its plan lists issues and
-            none of the first ``MAX_ISSUES`` is valid while nothing is
-            attached either.
+        PlanError: The reply has no plan, or its plan lists issues or
+            attachments and none of the first ``MAX_ISSUES`` issues is valid
+            while nothing is attached either.
     """
     plan = find_plan(text)
     planned = plan["issues"]
@@ -354,10 +354,12 @@ def validate_plan(text: str, known: set[str], open_issues: frozenset[int] = froz
                 report_ids=tuple(ids),
             )
         )
-    # An empty plan is a decision; a plan that names issues and yields
-    # nothing is a bad reply, so let the fallback issue track the batch.
-    if planned and not out and not attachments:
-        raise PlanError("plan has no valid issues")
+    # An empty plan is a decision; a plan that names issues or attachments
+    # and yields nothing is a bad reply, so let the fallback issue track the
+    # batch rather than drop the reports it meant to place.
+    attach = plan.get("attach")
+    if (planned or (isinstance(attach, list) and attach)) and not out and not attachments:
+        raise PlanError("plan has no valid issues or attachments")
     return Plan(issues=tuple(out), attachments=tuple(attachments))
 
 
