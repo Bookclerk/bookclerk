@@ -36,6 +36,12 @@ updates:
     open-pull-requests-limit: 5
     cooldown:
       default-days: 7
+    groups:
+      # One PR per round across all four directories, so an image used in
+      # several Dockerfiles moves to the same digest everywhere at once.
+      base-images:
+        patterns:
+          - "*"
 
   - package-ecosystem: npm
     directory: "/tools/diagnostics-collector"
