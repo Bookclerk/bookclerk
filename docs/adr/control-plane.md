@@ -8,7 +8,7 @@
 - **Related:** [SQL database contract](sql-database-contract.md),
   [schema versioning](schema-versioning.md),
   [plugin capabilities v3](plugin-capabilities-v3.md),
-  [configuration](../configuration.md), [database](../database.md)
+  [configuration](../server/configuration.md), [database](../server/database.md)
 
 This spike does not make Bookclerk a multi-host production deployment. It
 records the control-plane boundary and proves one typed configuration domain,
@@ -869,7 +869,7 @@ Decided 2026-10-14 with the owner. A cluster has two kinds of node:
   database credentials or DEK. Enrollment, the transport policy, the
   node socket, the work frames, the host client, host consent, and
   results and uploads are built (sections below; operator guide in
-  [Libraries and branches](../cluster-hosts.md)). A redeemed
+  [Libraries and branches](../server/cluster-hosts.md)). A redeemed
   enrollment link records the node with `nodes.kind = host`.
 
 Who may administer a node is separate from its kind. `nodes.owner_user_id`
@@ -1674,7 +1674,7 @@ which topics changed; the SPA then re-reads its ordinary routes.
   after reconnect, the sign-out delay, and polling only while the socket
   is down.
 
-Step 11 is the operator guide, [Libraries and branches](../cluster-hosts.md).
+Step 11 is the operator guide, [Libraries and branches](../server/cluster-hosts.md).
 
 ### Join a library (sign-in) and branch invites
 
@@ -2072,7 +2072,7 @@ Not in this phase, and not claimed as production HA:
   settings change, or a day after the last one).
   Everything else in H-4 steps 1-11, Join a library, joining as a clerk
   and branches of branches is built (see the
-  sections above and [Libraries and branches](../cluster-hosts.md)).
+  sections above and [Libraries and branches](../server/cluster-hosts.md)).
 - Rolling upgrades and a cluster dashboard beyond the Status page and
   Settings → Nodes (Phase 5). Drain exists (`nodes set --drain`), but there
   is no drain-then-migrate flow: the migration lease serializes migrators,

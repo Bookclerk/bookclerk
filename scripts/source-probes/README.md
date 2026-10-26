@@ -57,7 +57,7 @@ Scheduled GitHub Actions (staggered weekly) keep reverse-engineered surfaces hon
   probe re-run against them, and if the probe passes **with auth** the change
   goes up as a pull request that closes the issue. `probe_all.py` reads its
   endpoints from `client.rs`, so the re-run exercises the new values.
-  Pull requests and issues use the automation App token (`docs/ci.md#automation-app`).
+  Pull requests and issues use the automation App token (`docs/contributing/ci.md#automation-app`).
 
 - **Public endpoints always run.** Missing credential secrets do **not** fail
   the job; auth checks are marked `skipped`.

@@ -5,7 +5,7 @@
 //! Host library / GUI code that builds and queries the on-disk search index.
 //! Guest plugins do not depend on this crate.
 //!
-//! Style: `docs/code-documentation.md`.
+//! Style: `docs/contributing/code-documentation.md`.
 
 mod engine;
 mod query;

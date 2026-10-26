@@ -263,8 +263,8 @@ test("a Markdown request for a page gets its Markdown version", async () => {
     ["/", "# Bookclerk: every purchase, properly placed", "/"],
     ["/download", "# Get Bookclerk", "/download"],
     ["/docs/", "# ", "/docs/"],
-    ["/docs/getting-started", "# ", "/docs/getting-started"],
-    ["/docs/v/main/plugins", "# ", "/docs/v/main/plugins"],
+    ["/docs/guide/getting-started", "# ", "/docs/guide/getting-started"],
+    ["/docs/v/main/plugins/", "# ", "/docs/v/main/plugins/"],
   ] as const) {
     const res = await get(path, "text/markdown");
     assert.equal(res.status, 200, path);
@@ -279,20 +279,20 @@ test("a Markdown request for a page gets its Markdown version", async () => {
 });
 
 test("the Markdown version links to the site's own Markdown copies", async () => {
-  const body = await (await get("/docs/plugins.md", "*/*")).text();
+  const body = await (await get("/docs/plugins/README.md", "*/*")).text();
   assert.ok(body.includes("](/docs/"));
   assert.doesNotMatch(body, /\]\(https:\/\/raw\.githubusercontent\.com\//, "no link points at the docs repository's raw files");
   assert.ok(!/\]\((?!https?:|\/|#|mailto:)[^)]*\.md/.test(body));
-  const main = await (await get("/docs/v/main/plugins.md", "*/*")).text();
+  const main = await (await get("/docs/v/main/plugins/README.md", "*/*")).text();
   assert.ok(main.includes("](/docs/v/main/"));
 });
 
 test("the other spelling of a doc path redirects to the doc", async () => {
   for (const [path, location] of [
-    ["/docs/getting-started/", "/docs/getting-started"],
+    ["/docs/guide/getting-started/", "/docs/guide/getting-started"],
     ["/docs/api", "/docs/api/"],
     ["/docs/plugins.html", "/docs/plugins"],
-    ["/docs/v/v0.2.0/plugins?x=1", "/docs/plugins?x=1"],
+    ["/docs/v/v0.2.0/plugins/?x=1", "/docs/plugins/?x=1"],
     ["/docs", "/docs/"],
   ] as const) {
     const res = await get(path, BROWSER);
@@ -301,63 +301,79 @@ test("the other spelling of a doc path redirects to the doc", async () => {
   }
 });
 
-test("a missing doc gets the 404 page in the format asked for", async () => {
-  const md = await get("/docs/no-such-doc", "text/markdown");
-  assert.equal(md.status, 404);
-  assert.equal(md.headers.get("Content-Type"), "text/markdown; charset=utf-8");
-  assert.equal(md.headers.get("X-Robots-Tag"), "noindex");
-  assert.match(await md.text(), /^# We could not find that page/);
-  const html = await get("/docs/v/v9.9.9/plugins", BROWSER);
-  assert.equal(html.status, 404);
-  assert.match(await html.text(), /^<!doctype html>/);
+test("a docs link that leads nowhere goes to the docs home page", async () => {
+  for (const [path, accept, location] of [
+    ["/docs/no-such-doc", BROWSER, "/docs/"],
+    ["/docs/getting-started?x=1", BROWSER, "/docs/"],
+    ["/docs/no-such-doc", "text/markdown", "/docs/"],
+    ["/docs/no-such-doc.md", "*/*", "/docs/README.md"],
+    ["/docs/v/main/no-such-doc", BROWSER, "/docs/v/main/"],
+    ["/docs/v/v9.9.9/plugins/", BROWSER, "/docs/"],
+    ["/docs/constructor", BROWSER, "/docs/"],
+  ] as const) {
+    const res = await get(path, accept);
+    assert.equal(res.status, 302, path);
+    assert.equal(res.headers.get("Location"), `https://bookclerk.app${location}`, path);
+    assert.equal(res.headers.get("Cache-Control"), "no-store", path);
+  }
+});
+
+test("a missing docs home page is a 404, not a redirect loop", async () => {
+  const empty: DocsFetch = async () => new Response("404: Not Found", { status: 404 });
+  for (const [path, accept] of [["/docs/", BROWSER], ["/docs/README.md", "*/*"]] as const) {
+    const res = await handle(new Request(`https://bookclerk.app${path}`, { headers: { Accept: accept } }), env, { shell, fetch: empty });
+    assert.equal(res.status, 404, path);
+    assert.equal(res.headers.get("X-Robots-Tag"), "noindex", path);
+  }
 });
 
 test("only listed versions and plain paths reach the docs repository", async () => {
   fetched.length = 0;
-  for (const path of ["/docs/v/v9.9.9/plugins", "/docs/v/feature/plugins", "/docs/%2e%2e/secret", "/docs/.env", "/docs/a%00b"]) {
-    assert.equal((await get(path, BROWSER)).status, 404, path);
+  for (const path of ["/docs/v/v9.9.9/plugins/", "/docs/v/feature/plugins/", "/docs/%2e%2e/secret", "/docs/.env", "/docs/a%00b"]) {
+    // Bad docs paths go to the docs home page; `%2e%2e` leaves /docs/ and is a plain 404.
+    assert.ok([302, 404].includes((await get(path, BROWSER)).status), path);
   }
   assert.deepEqual(fetched, []);
-  await get("/docs/v/v0.1.0/plugins", BROWSER);
-  assert.deepEqual(fetched, [`${DOCS_RAW_BASE}v0.1.0/plugins.md`]);
+  await get("/docs/v/v0.1.0/plugins/", BROWSER);
+  assert.deepEqual(fetched, [`${DOCS_RAW_BASE}v0.1.0/plugins/README.md`]);
 });
 
 test("a browser gets the doc in the site's page, with its version and sidebar", async () => {
-  const res = await get("/docs/plugins", BROWSER);
+  const res = await get("/docs/plugins/", BROWSER);
   assert.equal(res.status, 200);
   assert.match(res.headers.get("Content-Type") ?? "", /^text\/html/);
   assert.equal(res.headers.get("Vary"), "Accept, Accept-Encoding");
   assert.equal(res.headers.get("Cache-Control"), "public, max-age=300, s-maxage=86400");
   assert.equal(res.headers.get("X-Robots-Tag"), null);
-  assert.equal(res.headers.get("Link"), '<https://bookclerk.app/docs/plugins.md>; rel="alternate"; type="text/markdown"');
+  assert.equal(res.headers.get("Link"), '<https://bookclerk.app/docs/plugins/README.md>; rel="alternate"; type="text/markdown"');
   const html = await res.text();
   assert.match(html, /^<!doctype html>/);
   assert.doesNotMatch(html, /%%|<!--doc-|\{\{/);
-  assert.match(html, /<link rel="canonical" href="https:\/\/bookclerk.app\/docs\/plugins">/);
+  assert.match(html, /<link rel="canonical" href="https:\/\/bookclerk.app\/docs\/plugins\/">/);
   assert.match(html, /<meta property="og:type" content="article">/);
   const description = html.match(/<meta name="description" content="([^"]*)">/)?.[1] ?? "";
   assert.ok(description.length > 40 && description.length <= 160, description);
-  assert.match(html, /<a href="\/docs\/plugins" aria-current="page">/);
+  assert.match(html, /<a href="\/docs\/plugins\/" aria-current="page">/);
   assert.match(html, /<strong>v0.2.0 \(latest\)<\/strong>/);
-  assert.match(html, /href="\/docs\/v\/main\/plugins"/);
-  assert.match(html, /href="https:\/\/github.com\/Bookclerk\/bookclerk\/blob\/v0.2.0\/docs\/plugins.md"/);
+  assert.match(html, /href="\/docs\/v\/main\/plugins\/"/);
+  assert.match(html, /href="https:\/\/github.com\/Bookclerk\/bookclerk\/blob\/v0.2.0\/docs\/plugins\/README.md"/);
   assert.ok(!html.includes("doc-note"), "a release's docs carry no development note");
   const ld: { "@graph": { "@type": string; url: string }[] } = JSON.parse(html.match(/<script type="application\/ld\+json">(.*?)<\/script>/)?.[1] ?? "{}");
   assert.equal(ld["@graph"][0]?.["@type"], "TechArticle");
-  assert.equal(ld["@graph"][0]?.url, "https://bookclerk.app/docs/plugins");
+  assert.equal(ld["@graph"][0]?.url, "https://bookclerk.app/docs/plugins/");
 
   const home = await get("/", "*/*");
   assert.equal(home.headers.get("Link"), '<https://bookclerk.app/index.md>; rel="alternate"; type="text/markdown"');
 });
 
 test("main's docs say they are the development version and link within main", async () => {
-  const res = await get("/docs/v/main/plugins", BROWSER);
+  const res = await get("/docs/v/main/plugins/", BROWSER);
   assert.equal(res.headers.get("Cache-Control"), "public, max-age=300, s-maxage=300");
   assert.equal(res.headers.get("X-Robots-Tag"), "noindex", "only the default version is indexed");
   const html = await res.text();
   assert.match(html, /class="doc-note"/);
-  assert.match(html, /<a href="\/docs\/v\/main\/plugins" aria-current="page">/);
-  assert.match(html, /<link rel="canonical" href="https:\/\/bookclerk.app\/docs\/v\/main\/plugins">/);
+  assert.match(html, /<a href="\/docs\/v\/main\/plugins\/" aria-current="page">/);
+  assert.match(html, /<link rel="canonical" href="https:\/\/bookclerk.app\/docs\/v\/main\/plugins\/">/);
   assert.match(html, /unstable-badge/);
 });
 
@@ -378,8 +394,8 @@ test("a directory whose entry page is index serves it", async () => {
 });
 
 test("raw HTML in a doc is shown as text", async () => {
-  // docs/cluster-hosts.md says "Let **<branch>** join".
-  assert.match(await (await get("/docs/cluster-hosts", BROWSER)).text(), /&lt;branch&gt;/);
+  // docs/server/cluster-hosts.md says "Let **<branch>** join".
+  assert.match(await (await get("/docs/server/cluster-hosts", BROWSER)).text(), /&lt;branch&gt;/);
 });
 
 test("a failing or oversized docs repository answer is a 503, not a page", async () => {
@@ -404,7 +420,7 @@ test("a failing or oversized docs repository answer is a 503, not a page", async
   };
   const fetchers: DocsFetch[] = [down, big, endless, moved, async () => Promise.reject(new Error("network"))];
   for (const fetcher of fetchers) {
-    const req = new Request("https://bookclerk.app/docs/plugins", { headers: { Accept: BROWSER } });
+    const req = new Request("https://bookclerk.app/docs/plugins/", { headers: { Accept: BROWSER } });
     const res = await handle(req, env, { shell, fetch: fetcher });
     assert.equal(res.status, 503);
     assert.equal(res.headers.get("Cache-Control"), "no-store");
@@ -414,7 +430,7 @@ test("a failing or oversized docs repository answer is a 503, not a page", async
 
 test("the docs-unavailable page keeps the site's look and links to the doc on GitHub", async () => {
   const down = async () => new Response("oops", { status: 502 });
-  const page = await handle(new Request("https://bookclerk.app/docs/plugins", { headers: { Accept: BROWSER } }), env, { shell, fetch: down });
+  const page = await handle(new Request("https://bookclerk.app/docs/plugins/", { headers: { Accept: BROWSER } }), env, { shell, fetch: down });
   assert.equal(page.status, 503);
   assert.equal(page.headers.get("Content-Type"), "text/html; charset=utf-8");
   assert.equal(page.headers.get("Retry-After"), "60");
@@ -425,7 +441,7 @@ test("the docs-unavailable page keeps the site's look and links to the doc on Gi
   assert.match(html, /class="docs-nav"/);
   assert.doesNotMatch(html, /<h2>Using Bookclerk<\/h2>/, "no sidebar links that would fail too");
   assert.match(html, /<h1>The docs could not be loaded<\/h1>/);
-  assert.ok(html.includes('href="https://github.com/Bookclerk/bookclerk-docs/blob/v0.2.0/plugins.md"'), "links the doc on GitHub");
+  assert.ok(html.includes('href="https://github.com/Bookclerk/bookclerk-docs/blob/v0.2.0/plugins/README.md"'), "links the doc on GitHub");
   assert.ok(html.includes('href="https://github.com/Bookclerk/bookclerk-docs/tree/v0.2.0"'), "links every doc on GitHub");
 
   // A directory names its README; Markdown readers get the same links.
@@ -435,12 +451,12 @@ test("the docs-unavailable page keeps the site's look and links to the doc on Gi
   assert.match(await md.text(), /<https:\/\/github\.com\/Bookclerk\/bookclerk-docs\/blob\/v0\.2\.0\/api\/README\.md>/);
 
   // When the first key is missing and the next one fails, GitHub gets the one that failed.
-  const missingThenDown: DocsFetch = async (url) => (url.endsWith("/plugins.md") ? new Response("404: Not Found", { status: 404 }) : down());
-  const later = await (await handle(new Request("https://bookclerk.app/docs/plugins", { headers: { Accept: BROWSER } }), env, { shell, fetch: missingThenDown })).text();
-  assert.ok(later.includes('href="https://github.com/Bookclerk/bookclerk-docs/blob/v0.2.0/plugins/README.md"'), "links the key that failed");
-  assert.ok(later.includes('href="/docs/plugins"'), "tries the page's own URL again");
+  const missingThenDown: DocsFetch = async (url) => (url.endsWith("/plugins/README.md") ? new Response("404: Not Found", { status: 404 }) : down());
+  const later = await (await handle(new Request("https://bookclerk.app/docs/plugins/", { headers: { Accept: BROWSER } }), env, { shell, fetch: missingThenDown })).text();
+  assert.ok(later.includes('href="https://github.com/Bookclerk/bookclerk-docs/blob/v0.2.0/plugins/index.md"'), "links the key that failed");
+  assert.ok(later.includes('href="/docs/plugins/"'), "tries the page's own URL again");
 
-  const head = await handle(new Request("https://bookclerk.app/docs/plugins", { method: "HEAD" }), env, { shell, fetch: down });
+  const head = await handle(new Request("https://bookclerk.app/docs/plugins/", { method: "HEAD" }), env, { shell, fetch: down });
   assert.equal(head.status, 503);
   assert.equal(await head.text(), "");
 });
@@ -455,14 +471,14 @@ test("rendered pages are cached per deploy, version, path and format", async () 
   const deps = { shell, fetch: docsFetch, cache, waitUntil: (p: Promise<unknown>) => void pending.push(p) };
   fetched.length = 0;
   for (let i = 0; i < 2; i += 1) {
-    const res = await handle(new Request("https://bookclerk.app/docs/plugins?utm=x", { headers: { Accept: BROWSER } }), env, deps);
+    const res = await handle(new Request("https://bookclerk.app/docs/plugins/?utm=x", { headers: { Accept: BROWSER } }), env, deps);
     assert.equal(res.status, 200);
     await Promise.all(pending);
   }
   assert.equal(fetched.length, 1);
-  assert.deepEqual([...store.keys()], [`https://bookclerk.app/docs/plugins?format=html&ref=v0.2.0&shell=${shell.id}`]);
+  assert.deepEqual([...store.keys()], [`https://bookclerk.app/docs/plugins/?format=html&ref=v0.2.0&shell=${shell.id}`]);
   assert.match(shell.id, /^[0-9a-f]{16}$/);
-  const head = await handle(new Request("https://bookclerk.app/docs/plugins", { method: "HEAD", headers: { Accept: BROWSER } }), env, deps);
+  const head = await handle(new Request("https://bookclerk.app/docs/plugins/", { method: "HEAD", headers: { Accept: BROWSER } }), env, deps);
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");
 });
@@ -513,9 +529,9 @@ test("text answers are compressed for clients that accept it", async () => {
     ["/", BROWSER],
     ["/", "text/markdown"],
     ["/download.md", "*/*"],
-    ["/docs/plugins", BROWSER],
-    ["/docs/plugins", "text/markdown"],
-    ["/docs/no-such-doc", BROWSER],
+    ["/docs/plugins/", BROWSER],
+    ["/docs/plugins/", "text/markdown"],
+    ["/no-such-page", BROWSER],
   ] as const) {
     const req = new Request(`https://bookclerk.app${path}`, { headers: { Accept: accept, "Accept-Encoding": "gzip, deflate, br" } });
     const res = await handle(req, env, { shell, fetch: docsFetch });

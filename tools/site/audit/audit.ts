@@ -1,6 +1,6 @@
 // Lighthouse and axe-core audit of the built bookclerk.app website, run by CI
 // for pull requests that change the site (scripts/ci_plan, check
-// `site_audit`). See docs/ci.md#website-checks.
+// `site_audit`). See docs/contributing/ci.md#website-checks.
 //
 // It serves tools/site/dist through the real Worker under `wrangler dev`
 // (audit/entry.ts, with docs read from this checkout's docs/ through a local
@@ -96,8 +96,8 @@ export const ERROR_PAGE: Limits = { accessibility: 100 };
 export const PAGES: readonly AuditPage[] = [
   { name: "home", path: "/", status: 200, limits: PAGE },
   { name: "download", path: "/download", status: 200, limits: PAGE },
-  { name: "docs", path: "/docs/getting-started", status: 200, limits: PAGE },
-  { name: "docs-ci", path: "/docs/ci", status: 200, limits: PAGE },
+  { name: "docs", path: "/docs/guide/getting-started", status: 200, limits: PAGE },
+  { name: "docs-ci", path: "/docs/contributing/ci", status: 200, limits: PAGE },
   { name: "docs-unavailable", path: `/docs/${UNAVAILABLE_KEY}`, status: 503, limits: ERROR_PAGE },
   { name: "not-found", path: "/audit-no-such-page", status: 404, limits: ERROR_PAGE },
 ];

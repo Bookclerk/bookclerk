@@ -5,7 +5,7 @@ Authors define a module-level ``Default`` class extending
 :class:`bookclerk_plugin_sdk.workerd.BookclerkEntrypoint` (``event(batch)`` /
 ``job(job)`` triggers) plus one class per ``plugin.toml`` entrypoint
 (``class Cli(CliEntrypoint)``, ``class Storage(StorageEntrypoint)``, …).
-Native guests use the Rust SDK (`serve` / `PluginWorker`). See ``docs/plugins.md``.
+Native guests use the Rust SDK (`serve` / `PluginWorker`). See ``docs/plugins/README.md``.
 
 Typical import:
 

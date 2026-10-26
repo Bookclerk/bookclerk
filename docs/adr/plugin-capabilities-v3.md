@@ -134,13 +134,13 @@ payloads for several storefront / integration surfaces, and a reverse
   bridge mirror drift (`scripts/sync-workerd-pin.py --check`), store-free
   hosts (`scripts/check-store-free-hosts.sh`), and architecture lints
   (`scripts/check-plugin-architecture.sh`).
-- Docs: this ADR is the v3 decision record; [`plugins.md`](../plugins.md)
+- Docs: this ADR is the v3 decision record; [`plugins.md`](../plugins/README.md)
   is the author/operator handbook.
 - Every surface a guest can reach with bytes of its own is fuzzed per
   [Untrusted-input fuzzing](untrusted-input-fuzzing.md): the typed Cap'n
   Proto replies, the granted HTTP channel and the egress policy have targets
   today, while the socket proxy mux and guest-SQL authorization are listed
-  as still to add in [`docs/ci.md`](../ci.md#fuzzing); a new entrypoint
+  as still to add in [`docs/contributing/ci.md`](../contributing/ci.md#fuzzing); a new entrypoint
   family or channel adds its target in the same change.
 
 ## Non-goals

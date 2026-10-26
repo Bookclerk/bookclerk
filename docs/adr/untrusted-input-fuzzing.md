@@ -5,7 +5,7 @@
 - **Related:** [Plugin capabilities v3](plugin-capabilities-v3.md),
   [Workers RPC + workerd](plugin-workers-rpc-workerd.md),
   [SQL database contract](sql-database-contract.md),
-  [Continuous integration](../ci.md#fuzzing)
+  [Continuous integration](../contributing/ci.md#fuzzing)
 
 ## Context
 
@@ -36,7 +36,7 @@ inputs their author imagined; a fuzzer supplies the rest.
    guest sends the host, anything a store or CDN returns, any plugin
    package or archive, any request from another node, and any reply from a
    confined helper process (`bookclerk-media-worker`, database guests).
-2. **The boundary list is maintained in [`docs/ci.md`](../ci.md#fuzzing).**
+2. **The boundary list is maintained in [`docs/contributing/ci.md`](../contributing/ci.md#fuzzing).**
    A pull request that adds a boundary, or widens one, adds the target in
    the same pull request; a review that finds such a boundary without its
    target, corpus and replay test blocks on it. Only a pre-existing boundary
@@ -68,7 +68,7 @@ inputs their author imagined; a fuzzer supplies the rest.
    instead: the parsing as a sans-IO function, a checked-in seed corpus, a
    replay test in PR CI, and fuzzing (coverage-guided where the language
    has a practical engine, seeded mutation otherwise) checked against an
-   independent oracle. [`docs/ci.md`](../ci.md#fuzzing) lists these
+   independent oracle. [`docs/contributing/ci.md`](../contributing/ci.md#fuzzing) lists these
    boundaries beside the `cargo-fuzz` targets. Shipped Rust code is never
    moved out of `cargo-fuzz` this way.
 7. **Sanitizers follow the code under test.** Pure-Rust targets run with

@@ -5,7 +5,7 @@
 //! The `bookclerk-workerd` launcher binary and host packaging (`cargo ensure-workerd`).
 //! Guest authors do not link this crate; they run inside the isolate it configures.
 //!
-//! See `docs/plugins.md` for jail / workerd isolation requirements.
+//! See `docs/plugins/README.md` for jail / workerd isolation requirements.
 
 // Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
 #![allow(

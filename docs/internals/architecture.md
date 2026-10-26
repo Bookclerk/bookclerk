@@ -41,7 +41,7 @@ integrations.
    destination. Decode, encode, and packaging do not run in the host: they are
    dispatched to a bounded pool of `bookclerk-media-worker` processes, each
    confined to the paths its job declared, so the C codecs never share an
-   address space with the master key or `library.db`. See [media.md](media.md).
+   address space with the master key or `library.db`. See [media.md](../server/media.md).
 4. **Integrations** — durable `book_acquired` outbox deliveries to the live
    per-node subscriber catalog (`event_subscriber_nodes`); each VPS claims only locally loaded
    PluginKeys, with a cluster-wide per-plugin in-flight cap from
@@ -49,7 +49,7 @@ integrations.
    outbox keys are namespaced by `(account_id, source, event_type, dedup_key)`.
    Publish is commit + notify; claimed wake slices drain parked deliveries.
    One plugin failure
-   never blocks others. See [jobs.md](jobs.md) and [plugins.md](plugins.md).
+   never blocks others. See [jobs.md](jobs.md) and [plugins.md](../plugins/README.md).
 5. **Daemon** — admits scan / auto-acquire / listen-sync as durable `jobs`
    rows (API and scheduler use the same queue) and runs the event dispatcher /
    delivery worker beside the job workers. See [jobs.md](jobs.md).
@@ -74,13 +74,13 @@ keep `RpcTarget` stubs). Each guest is started by
 `$FILES_DIR/plugin-state/<PluginKey fs-id>/tmp` (fetch scratch lives under that
 `tmp`),
 and — for the sqlite guest — file-level grants for `library.db` and its journal
-sidecars (never the files-dir parent / `master.key`). See [plugins.md](plugins.md).
-Database backends are selected via `[database].plugin` (see [database.md](database.md));
+sidecars (never the files-dir parent / `master.key`). See [plugins.md](../plugins/README.md).
+Database backends are selected via `[database].plugin` (see [database.md](../server/database.md));
 external `databaseAdapter` guests are **required** (no in-process fallback).
 Guests speak BookclerkSQL only. The host owns schema, admission, typing,
 authorization, and proofs; adapters lower the proven request to SQLite,
 PostgreSQL 16+, or Cloudflare D1
-([ADR: SQL database contract](adr/sql-database-contract.md)).
+([ADR: SQL database contract](../adr/sql-database-contract.md)).
 
 ## Workspace crates (by concern)
 
@@ -151,8 +151,8 @@ Default listen: both loopbacks
 string or array / comma-separated). IPv6 uses bracketed form: `[::1]:8787`.
 
 Operator auth (`[daemon.auth]`, DB-sealed token / `BOOKCLERK_OPERATOR_TOKEN`) gates
-the API. Config reload swaps auth before listen rebind. See [gui.md](gui.md) and
-[operations.md](operations.md).
+the API. Config reload swaps auth before listen rebind. See [gui.md](../guide/gui.md) and
+[operations.md](../server/operations.md).
 
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |

@@ -6,7 +6,7 @@ vendors workerd embeds, and packs release archives. Workerd authors:
 - ``from bookclerk_plugin_sdk.workerd import BookclerkEntrypoint, js``
   (``bookclerk-workerd`` injects that module — no relative filepath embed)
 
-See ``docs/plugins.md`` for manifest fields and runtime requirements.
+See ``docs/plugins/README.md`` for manifest fields and runtime requirements.
 """
 
 from __future__ import annotations

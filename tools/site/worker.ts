@@ -420,6 +420,23 @@ function redirect(url: URL, location: string): Response {
 }
 
 /**
+ * Sends a reader whose docs link leads nowhere to the docs home page, so an
+ * old or mistyped link still lands somewhere useful. The redirect is
+ * temporary: the path may name a page again later.
+ *
+ * @param url - The request URL.
+ * @param base - URL prefix of the docs version the request named, or
+ *   `/docs/` when it named none the site serves.
+ * @param markdown - Whether the request asked for a Markdown copy by name, in
+ *   which case it goes to the home page's Markdown copy.
+ * @returns A 302 to the docs home page, without the query string.
+ */
+function toDocsHome(url: URL, base: string, markdown: boolean): Response {
+  const location = markdown ? docMarkdownUrl("README", base) : base;
+  return withHeaders(new Response(null, { status: 302 }), { Location: `${url.origin}${location}`, "Cache-Control": "no-store" });
+}
+
+/**
  * The not-found page, as HTML or Markdown.
  *
  * @param url - The request URL.
@@ -449,7 +466,7 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
   const target = docsTarget(url.pathname, deps.shell.versions);
   const wantsMarkdown = target.kind === "markdown" || prefersMarkdown(request.headers.get("Accept"));
   if (target.kind === "redirect") return redirect(url, target.location);
-  if (target.kind === "missing") return notFound(url, request.method, wantsMarkdown, deps.assets);
+  if (target.kind === "missing") return toDocsHome(url, "/docs/", url.pathname.endsWith(".md"));
 
   // Rendered pages are cached by deploy, version, path and format: the shell
   // id changes whenever the picker, sidebar or page template does, and the ref
@@ -490,7 +507,12 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
       503,
     );
   }
-  if (key === null || source === null) return notFound(url, request.method, wantsMarkdown, deps.assets);
+  if (key === null || source === null) {
+    // The home page itself missing would send the reader in a loop.
+    const home = target.kind === "markdown" ? docMarkdownUrl("README", version.base) : version.base;
+    if (url.pathname === home) return notFound(url, request.method, wantsMarkdown, deps.assets);
+    return toDocsHome(url, version.base, target.kind === "markdown");
+  }
 
   // A doc found under the other spelling of its path is sent to its own URL.
   const page = docUrl(key, version.base);

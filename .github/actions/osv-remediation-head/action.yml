@@ -8,7 +8,7 @@
 #
 # The bundle is encrypted because artifacts of a public repository are
 # downloadable by anyone; see scripts/osv-remediation-bundle.sh and
-# docs/ci.md#osv-remediation.
+# docs/contributing/ci.md#osv-remediation.
 
 name: OSV remediation head
 description: Decrypt this run's OSV remediation bundle and check out the commit it carries.

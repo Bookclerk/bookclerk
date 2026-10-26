@@ -22,8 +22,8 @@ export PATH="$PWD/target/release:$PATH"
 
 The helpers are not optional extras. `bookclerk-media-worker` runs every
 decode, encode, and packaging step in a confined child process
-([media.md](media.md)); `bookclerk-jail` starts each external plugin guest inside
-its own jail ([plugins.md](plugins.md#the-guest-jail)). Install both beside the
+([media.md](../server/media.md)); `bookclerk-jail` starts each external plugin guest inside
+its own jail ([plugins.md](../plugins/README.md#the-guest-jail)). Install both beside the
 host binaries — that is where they are looked for, and by default a host refuses
 media work or declines to load a plugin rather than run either unconfined.
 
@@ -94,7 +94,7 @@ bookclerk plugins config set local root /data/Audiobooks
 bookclerk plugins deploy s3 && bookclerk plugins config set s3 bucket my-audiobooks
 ```
 
-See [configuration.md](configuration.md#plugin-instances).
+See [configuration.md](../server/configuration.md#plugin-instances).
 
 ### Account hygiene
 
@@ -120,7 +120,7 @@ Title ids may be UUID, ASIN, ISBN, or source product id.
 
 `library scan` and `library acquire` queue jobs that a running `bookclerkd`
 executes (`cargo dev` in development), and wait for them; start the daemon
-first, or pass `--no-wait` to only queue. See [Jobs](jobs.md#planners-and-the-cli).
+first, or pass `--no-wait` to only queue. See [Jobs](../internals/jobs.md#planners-and-the-cli).
 
 ### Existing audiobooks already on disk/S3
 
@@ -143,11 +143,11 @@ bookclerkd
 ```
 
 Keep `library.auto_acquire = false` until you are comfortable with scheduled
-downloads. Packaging notes: [operations.md](operations.md).
+downloads. Packaging notes: [operations.md](../server/operations.md).
 
 ## Next steps
 
 - Tune naming and destinations — [destinations.md](destinations.md)
-- Wire Audiobookshelf — [integrations.md](integrations.md)
-- Install a third-party plugin — [plugins.md](plugins.md)
+- Wire Audiobookshelf — [integrations.md](../server/integrations.md)
+- Install a third-party plugin — [plugins.md](../plugins/README.md)
 - Coming from Libation — [migration.md](migration.md)

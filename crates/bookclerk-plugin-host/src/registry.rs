@@ -1,8 +1,8 @@
 //! Plugin registry taxonomy: crates.io naming + install metadata.
 //!
-//! Third-party plugins are still prebuilt executables (see `docs/plugins.md`).
+//! Third-party plugins are still prebuilt executables (see `docs/plugins/README.md`).
 //! crates.io is a **discovery index**; operators install release archives
-//! without a Rust toolchain (`docs/plugin-registry.md`).
+//! without a Rust toolchain (`docs/plugins/registry.md`).
 
 use std::fmt;
 

@@ -22,7 +22,7 @@ Two modes:
     without moving it) and that commit is tagged. An existing tag is never
     moved.
 
-The token is read from ``DOCS_TOKEN`` and never printed. See docs/ci.md#docs-publishing.
+The token is read from ``DOCS_TOKEN`` and never printed. See docs/contributing/ci.md#docs-publishing.
 """
 
 from __future__ import annotations

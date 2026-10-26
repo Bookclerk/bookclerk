@@ -6,7 +6,7 @@ download page, and the documentation with its generated API reference under
 Cloudflare Worker named **`bookclerk-site`** on the domain in the `DOMAIN`
 organization variable. `build.ts` writes the static pages; the Worker
 (`entry.ts` → `worker.ts`) renders each docs page at request time from the
-docs repository [`Bookclerk/bookclerk-docs`](../../docs/ci.md#docs-publishing),
+docs repository [`Bookclerk/bookclerk-docs`](../../docs/contributing/ci.md#docs-publishing),
 and picks between a page's HTML and its Markdown version.
 
 Deployed by GitHub Actions:
@@ -45,7 +45,7 @@ npx wrangler dev                                       # docs pages need network
 ## Audit
 
 CI runs Lighthouse and axe-core on every pull request that changes the site
-(`audit/`, see `docs/ci.md#website-checks`). It serves `dist/` through the
+(`audit/`, see `docs/contributing/ci.md#website-checks`). It serves `dist/` through the
 Worker with docs read from this checkout's `docs/`, so it needs no network:
 
 ```bash
@@ -82,7 +82,7 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   it are compressed by the edge. Its `Accept-Encoding` parser is an
   untrusted-input boundary: `fuzz.test.ts` replays the seeds in
   `fuzz/accept_encoding/` and fuzzes mutations of them against an
-  independent oracle (`docs/ci.md#fuzzing`).
+  independent oracle (`docs/contributing/ci.md#fuzzing`).
   `entry.ts` binds it to `generated/docs-shell.json`, which `npm run build`
   writes (gitignored), so build before `wrangler dev` or `deploy`.
   `generated/docs-shell.d.json.ts`, checked in, types that file so the
@@ -118,6 +118,10 @@ versions.
 - `<path>` is the file's path without `.md`; a directory's `README.md` is
   `<dir>/`. The other spelling and old `.html` URLs redirect, and `<dir>/`
   without a README goes to `<dir>/index` (rustdoc's crate pages).
+- A docs path that names no doc (an old or mistyped link, or a version the
+  site does not serve) is a temporary redirect, `no-store`, to that
+  version's docs home page, or `/docs/` (its Markdown copy for a `.md`
+  path). Only a missing home page itself is a 404.
 - Only refs in the version list and paths of plain segments (letters,
   digits, `.`, `_`, `-`, none starting with `.`) are fetched, from
   `raw.githubusercontent.com` with redirects refused (`redirect: "manual"`

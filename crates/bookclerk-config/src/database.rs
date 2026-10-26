@@ -294,7 +294,7 @@ pub fn resolve_d1_api_token() -> Result<String> {
     }
     Err(ConfigError::Invalid(
         "D1 API token not configured — set BOOKCLERK_D1_API_TOKEN or CLOUDFLARE_API_TOKEN \
-         (see docs/database.md)"
+         (see docs/server/database.md)"
             .into(),
     ))
 }
@@ -329,7 +329,7 @@ pub fn resolve_postgres_url(config: &crate::Config) -> Result<String> {
     Err(ConfigError::Invalid(
         "Postgres URL not configured — set [database.postgres].url, \
          [database.postgres].url_file, BOOKCLERK_DATABASE_POSTGRES_URL, \
-         or BOOKCLERK_DATABASE_POSTGRES_URL_FILE (see docs/database.md)"
+         or BOOKCLERK_DATABASE_POSTGRES_URL_FILE (see docs/server/database.md)"
             .into(),
     ))
 }

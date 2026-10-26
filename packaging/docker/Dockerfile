@@ -13,7 +13,7 @@
 # Isolation stays at the shipped default ("required" for plugins and media):
 # a host that cannot confine a guest refuses to run it. Docker's default
 # seccomp profile allows Landlock since Docker 20.10.14; see
-# docs/operations.md#docker.
+# docs/server/operations.md#docker.
 #
 # Volumes:
 #   /config  BOOKCLERK_FILES_DIR (config.toml, library.db, master.key, plugins/)

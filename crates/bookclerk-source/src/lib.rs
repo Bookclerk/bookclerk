@@ -7,7 +7,7 @@
 //! map these types onto the typed Cap'n Proto ABI through [`abi`]; workerd
 //! guests use the generated TypeScript / Python SDK types instead.
 //!
-//! Product narrative: `docs/plugins.md`. Style: `docs/code-documentation.md`.
+//! Product narrative: `docs/plugins/README.md`. Style: `docs/contributing/code-documentation.md`.
 
 pub mod abi;
 mod brand;

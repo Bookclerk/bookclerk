@@ -270,7 +270,7 @@ when a step matches no test. Name such tests `postgres_*`.
 | `CI Gate` | Always | Stable required check (see contract above) |
 
 OSV scanning remains a separate workflow/gate. A green OSV job that applies
-[`osv-scanner.toml`](../osv-scanner.toml) `IgnoredVulns` means **zero
+[`osv-scanner.toml`](../../osv-scanner.toml) `IgnoredVulns` means **zero
 unignored/actionable** findings, not that ignored advisories have left the
 dependency graph. Each ignore must record reachability evidence and an
 `ignoreUntil` review date.
@@ -299,7 +299,7 @@ ledger modules, the database loader, the workerd pin), weekly, and on demand. It
 Coverage-guided fuzzing runs on [ClusterFuzzLite](https://google.github.io/clusterfuzzlite/)
 over the `cargo-fuzz` targets in `fuzz/`. Every untrusted-input boundary
 ships a target, a seed corpus and a replay test
-([ADR](adr/untrusted-input-fuzzing.md)); this table is the boundary list, and
+([ADR](../adr/untrusted-input-fuzzing.md)); this table is the boundary list, and
 a pull request that adds or widens a boundary extends it.
 
 | Target | Boundary | Oracle beyond "no panic" |
@@ -921,11 +921,11 @@ the merge queue takes them. Auto-merge stays on while it waits.
 `osv-advisories.yml` runs after every full OSV scan of `main`, next to the
 remediation, and answers a different question: does an open dependency alert
 affect something Bookclerk ships? A draft repository security advisory is
-filed only when it does ([ADR](adr/security-advisory-automation.md)). Drafts
+filed only when it does ([ADR](../adr/security-advisory-automation.md)). Drafts
 are private to maintainers and are filed before the first release too, which
 proves the path; nothing becomes public until a maintainer publishes.
 
-[`shipped-artifacts.toml`](../shipped-artifacts.toml) declares the shipped
+[`shipped-artifacts.toml`](../../shipped-artifacts.toml) declares the shipped
 artifacts and which lockfile entries end up in each; every lockfile in the
 repository is either listed there or named as not shipped
 (`scripts/tests/test_osv_advisories.py` fails on an unclassified one). For
@@ -1107,7 +1107,7 @@ network. A docs key the local server fails renders the docs-unavailable page.
 
 | Pages | Lighthouse (mobile and desktop) |
 | --- | --- |
-| `/`, `/download`, `/docs/getting-started`, `/docs/ci` | performance ≥ 90, accessibility 100, best practices ≥ 95, SEO 100, CLS ≤ 0.05 |
+| `/`, `/download`, `/docs/guide/getting-started`, `/docs/contributing/ci` | performance ≥ 90, accessibility 100, best practices ≥ 95, SEO 100, CLS ≤ 0.05 |
 | 404 and docs-unavailable | accessibility 100 (their SEO and best-practice misses, such as the status code and `noindex`, are intended) |
 
 A run that misses only on performance is repeated once and the better run
@@ -1130,7 +1130,7 @@ secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`:
 | `diagnostics-collector-deploy.yml` | `bookclerk-diagnostics` | `diagnostics.<DOMAIN>` |
 | `demo-deploy.yml` | `bookclerk-demo` | `demo.<DOMAIN>` |
 
-`DOMAIN` is the organization variable (default `bookclerk.app` for the site). With `DOMAIN` unset the diagnostics collector and the demo are served on the account's workers.dev subdomain instead (see `docs/diagnostics.md` and `tools/demo/README.md`).
+`DOMAIN` is the organization variable (default `bookclerk.app` for the site). With `DOMAIN` unset the diagnostics collector and the demo are served on the account's workers.dev subdomain instead (see `docs/server/diagnostics.md` and `tools/demo/README.md`).
 
 The demo deploy builds the production builder and image from the deployed
 commit, then lets `wrangler deploy` build `packaging/demo/Dockerfile` on top

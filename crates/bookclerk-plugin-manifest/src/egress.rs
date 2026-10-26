@@ -1,7 +1,7 @@
 //! Shared host/egress allowlist policy (workerd JS bridge + native mediator).
 //!
 //! Semantics match `bookclerk-workerd` bridge `egress.js` and the product rules
-//! in `docs/plugins.md`:
+//! in `docs/plugins/README.md`:
 //!
 //! - **Initial** request hosts must match [`EgressPolicy::domains`] (`*.`
 //!   prefix wildcards). Hosts and patterns are IDNA ToASCII–normalized;

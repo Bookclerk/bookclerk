@@ -10,7 +10,7 @@
 #   the "Actions may approve PRs" setting.
 # - Hold back specific packages with `exclude`, or tighten `target`.
 #
-# Setup (App, Dependabot secrets, rulesets): docs/ci.md#dependabot-auto-merge
+# Setup (App, Dependabot secrets, rulesets): docs/contributing/ci.md#dependabot-auto-merge
 
 name: Dependabot auto-merge
 

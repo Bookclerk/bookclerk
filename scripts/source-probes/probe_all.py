@@ -11,7 +11,7 @@ Exit codes:
   1 — one or more probes failed
   2 — bad args / write failure
 
-Credential env vars (see README.md / docs/source-candidates.md):
+Credential env vars (see README.md / docs/contributing/research/source-candidates.md):
   GraphicAudio:     TEST_GA_EMAIL / TEST_GA_PASSWORD
   Chirp:            TEST_CHIRP_EMAIL / TEST_CHIRP_PASSWORD
   Storytel:         TEST_STORYTEL_EMAIL / TEST_STORYTEL_PASSWORD

@@ -36,7 +36,7 @@ cd bookclerk
 cargo dev
 ```
 
-[Read the full getting started guide]({{origin}}{{gettingStartedUrl}}) ([as Markdown]({{origin}}/docs/getting-started.md)).
+[Read the full getting started guide]({{origin}}{{gettingStartedUrl}}) ([as Markdown]({{origin}}/docs/guide/getting-started.md)).
 {{#prerelease}}
 ## What pre-release means
 

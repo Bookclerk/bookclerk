@@ -2,7 +2,7 @@
 
 Primary file: `$BOOKCLERK_FILES_DIR/config.toml` (or `--config` /
 `BOOKCLERK_CONFIG`). Annotated template:
-[`config/config.example.toml`](../config/config.example.toml).
+[`config/config.example.toml`](../../config/config.example.toml).
 
 Inspect resolved values:
 
@@ -13,7 +13,7 @@ bookclerk config paths
 ```
 
 Classic Libation setting names are accepted as aliases where documented in
-[libation-parity.md](libation-parity.md). There are no per-run overrides:
+[libation-parity.md](../contributing/research/libation-parity.md). There are no per-run overrides:
 `library acquire -o key=value` was removed, so change settings with
 `bookclerk config set` (or the plugin's settings) before acquiring.
 
@@ -25,7 +25,7 @@ Classic Libation setting names are accepted as aliases where documented in
 | `[database]` / `[database.sqlite]` / `[database.d1]` | Library DB plugin (`sqlite` default, Cloudflare D1) |
 | `[auth]` | Optional `[auth].password` wrapping `master.key` (prefer `BOOKCLERK_AUTH_PASSWORD`); optional `[auth.oidc]` identity broker |
 | `[media]` | Codec worker pool: concurrency and confinement (see [media.md](media.md)) |
-| `[plugins]` | How external plugin guests are jailed (see [plugins.md](plugins.md)) |
+| `[plugins]` | How external plugin guests are jailed (see [plugins.md](../plugins/README.md)) |
 | `[output]` | First-run seed for the `core.output` database document (format, Widevine, naming, sidecars, multi-destination policy), plus the host-local `in_progress` scratch directory |
 | `[daemon]` | Listen address, JSON logs, trusted proxies, `[daemon.node_api]` transport |
 | `[integrations]` | Portal: `public_origin`, claim-ticket and portal session TTLs |
@@ -106,7 +106,7 @@ network = 1          # workers here, and running network jobs cluster-wide
 plugin_instance = 1  # running jobs per required plugin instance, cluster-wide
 ```
 
-See [jobs.md](jobs.md) for the state machine, `409`/`429` admission, and crash
+See [jobs.md](../internals/jobs.md) for the state machine, `409`/`429` admission, and crash
 recovery.
 
 ## Events
@@ -119,7 +119,7 @@ concurrency = 1
 ```
 
 `[events]` is the first database-backed configuration domain (`core.events`).
-See [ADR: Control plane](adr/control-plane.md).
+See [ADR: Control plane](../adr/control-plane.md).
 
 On first enrollment the effective TOML and `BOOKCLERK_EVENTS_*` values are
 imported once. After that row exists the database is the authority: startup,
@@ -164,7 +164,7 @@ runs at daemon start and hourly, not on every dispatcher tick.
 `concurrency` is the number of local delivery workers **and** the cluster-wide
 max `running` deliveries per `(plugin_id, resource_class)` (claim still filters by
 loaded plugin ids; a portable `bookclerk_slots` row serializes that
-count). See [jobs.md](jobs.md) and [plugins.md](plugins.md).
+count). See [jobs.md](../internals/jobs.md) and [plugins.md](../plugins/README.md).
 
 Allowed writes: retention fields `1..=3650`, concurrency `1..=32`.
 
@@ -196,7 +196,7 @@ A host node is a separate Bookclerk install that enrolls into this cluster
 with a single-use link and runs its scans and acquires. This section is the
 owner's configuration; joining, consent, uploads and the protocol are in
 [Libraries and branches](cluster-hosts.md), and the design in
-[ADR: Control plane](adr/control-plane.md#host-node-enrollment-and-transport).
+[ADR: Control plane](../adr/control-plane.md#host-node-enrollment-and-transport).
 
 Enrollment is a cluster document, `core.host_enrollment`, on by default.
 Only the operator or an Owner turns it off: the operator with the CLI, an
@@ -315,8 +315,8 @@ back. Several instances of one plugin may exist, and may run on one host; a
 bare plugin key routes to the default instance, and `library scan|acquire
 --instance` pins another. Store accounts are keyed by plugin key, not
 instance, so every instance serves the same connected accounts. Details:
-[plugins.md](plugins.md#enabling-and-settings-database),
-[destinations.md](destinations.md), [sources.md](sources.md),
+[plugins.md](../plugins/README.md#enabling-and-settings-database),
+[destinations.md](../guide/destinations.md), [sources.md](../guide/sources.md),
 [integrations.md](integrations.md).
 
 ## Identity broker (`[auth.oidc]`)
@@ -354,7 +354,7 @@ their own install, data, scratch, and cache directories before becoming the
 plugin. `required` refuses to load a plugin it cannot jail, including when the
 launcher is not installed. This is about *how* guests run; which plugins run
 on this host and what they are configured with is the database (plugin
-instances and deployments). See [plugins.md](plugins.md).
+instances and deployments). See [plugins.md](../plugins/README.md).
 
 Both confinement tiers are visible in `bookclerk config show`
 (`media.isolation`, `media.worker_bin`, `plugins.isolation`, `plugins.jail_bin`);
@@ -433,6 +433,6 @@ is stored relative, so other hosts rebase it under their own.
 Per-destination roots, prefixes, naming overrides, and credentials are the
 `local` / `s3` plugin settings.
 
-Destination and naming detail: [destinations.md](destinations.md).
-Store-specific knobs: [sources.md](sources.md).
+Destination and naming detail: [destinations.md](../guide/destinations.md).
+Store-specific knobs: [sources.md](../guide/sources.md).
 Integrations: [integrations.md](integrations.md).

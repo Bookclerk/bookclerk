@@ -10,7 +10,7 @@
  * - Tools: `npx bookclerk-plugin check|fmt|types|package`
  * - Sparse workerd: `import { runSmoke } from "@bookclerk/plugin-sdk/sparse-workerd"`
  *
- * See `docs/plugins.md` and `docs/code-documentation.md`.
+ * See `docs/plugins/README.md` and `docs/contributing/code-documentation.md`.
  */
 
 import "./cloudflare-workers.d.ts";

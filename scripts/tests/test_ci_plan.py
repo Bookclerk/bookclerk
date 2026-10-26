@@ -165,7 +165,7 @@ class WorkspaceModelTests(unittest.TestCase):
 
 class ScenarioTests(unittest.TestCase):
     def test_docs_only_runs_only_the_site_link_check(self) -> None:
-        p = plan("docs/architecture.md", "docs/README.md")
+        p = plan("docs/internals/architecture.md", "docs/README.md")
         self.assertFalse(p.full_suite)
         self.assertEqual(sorted(p.checks), ["site_test"])
         self.assertEqual({j for j, on in p.jobs.items() if on}, {"site"})
@@ -752,7 +752,7 @@ class NativeGatewayTests(unittest.TestCase):
         for path in (
             "crates/bookclerk-cli/src/main.rs",
             "ui/src/App.tsx",
-            "docs/plugins.md",
+            "docs/plugins/README.md",
             "crates/bookclerk-plugins/optional/source-libro/src/client.rs",
             "crates/bookclerk-plugin-host/tests/guest_jail.rs",
             "crates/bookclerk-workerd/tests/connect_gateway.rs",
@@ -974,7 +974,7 @@ class WindowsClusterTests(unittest.TestCase):
         )
 
     def test_unrelated_docs_do_not_select_it(self) -> None:
-        p = plan("docs/plugins.md")
+        p = plan("docs/plugins/README.md")
         self.assertFalse(p.selected("windows_cluster"))
         self.assertFalse(p.jobs["windows-cluster"])
 
@@ -1447,7 +1447,7 @@ class EnvelopeTests(unittest.TestCase):
         self.assertFalse(p.selected("envelope"))
 
     def test_docs_do_not_select_it(self) -> None:
-        p = plan("docs/plugins.md")
+        p = plan("docs/plugins/README.md")
         self.assertFalse(p.selected("envelope"))
         self.assertFalse(p.jobs["envelope"])
 

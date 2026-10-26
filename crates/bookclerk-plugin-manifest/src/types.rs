@@ -3,7 +3,7 @@
 //! These structs are the serde projection of the install descriptor. Unknown
 //! keys are rejected (`deny_unknown_fields`) so typos fail at parse time.
 //! Semantic rules that cannot be expressed in serde alone live in
-//! [`PluginManifest::validate`]. Product narrative: `docs/plugins.md`.
+//! [`PluginManifest::validate`]. Product narrative: `docs/plugins/README.md`.
 
 use std::path::PathBuf;
 
@@ -117,7 +117,7 @@ pub enum PluginRuntimeKind {
 
 /// Network mode declared in `[capabilities.network]`.
 ///
-/// Defaults to [`NetworkMode::Deny`]. See `docs/plugins.md` for native vs
+/// Defaults to [`NetworkMode::Deny`]. See `docs/plugins/README.md` for native vs
 /// workerd semantics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]

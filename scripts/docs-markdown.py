@@ -21,7 +21,7 @@ relative link in the tree must resolve, or the build fails.
 The output directory is cleared before each build, so it must sit strictly
 inside the scratch root (``target/docs-markdown/`` by default) and, when it
 already exists, carry the marker file this script writes. Anything else is
-refused before a single file is touched. See docs/ci.md#docs-publishing.
+refused before a single file is touched. See docs/contributing/ci.md#docs-publishing.
 """
 
 from __future__ import annotations
@@ -589,7 +589,7 @@ def write_api_index(api_out: Path) -> None:
         "# API reference",
         "",
         "Generated from the source at the same version as these docs.",
-        "Writing a plugin? Start with the SDK for its language; [Plugins](../plugins.md) explains the model.",
+        "Writing a plugin? Start with the SDK for its language; [Plugins](../plugins/README.md) explains the model.",
         "",
     ]
     for section, pages in API_INDEX:

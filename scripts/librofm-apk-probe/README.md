@@ -152,7 +152,7 @@ exit `2` = hard failure / missing auth credentials.
    auth live-smoke (API JSON only — no CDN media artifact)
 3. On blocking constant drift (schedule/manual): file or update the
    `api-drift` issue, and when auth smoke passed, open the constants PR that
-   closes it (automation App token; see `docs/ci.md#automation-app`)
+   closes it (automation App token; see `docs/contributing/ci.md#automation-app`)
 
 Wiremock tests bind to the path constants, so constant bumps do not require
 hand-editing fixtures.

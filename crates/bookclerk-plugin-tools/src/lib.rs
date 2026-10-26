@@ -11,7 +11,7 @@
 //! | [`sync_embed`] | Optional workerd JS vendor |
 //! | [`run_tools_cli`] / [`smoke_plugin`] | CLI entry + live workerd smoke |
 //!
-//! See `docs/plugins.md` and the crate README.
+//! See `docs/plugins/README.md` and the crate README.
 
 mod check;
 mod cli;

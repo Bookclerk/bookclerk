@@ -4,8 +4,8 @@ Maintainer reference for the private wire between the `bookclerk-workerd`
 launcher and the isolate it hosts. Authors never see any of this: they write
 `BookclerkEntrypoint` / `*Entrypoint` classes against
 `@bookclerk/plugin-sdk/workerd` (or the Python mirror) and the trusted
-adapter isolate maps the wire onto them. See [`plugins.md`](plugins.md) for
-the author model and the [Workers RPC ADR](adr/plugin-workers-rpc-workerd.md)
+adapter isolate maps the wire onto them. See [`plugins.md`](../plugins/README.md) for
+the author model and the [Workers RPC ADR](../adr/plugin-workers-rpc-workerd.md)
 for the decision record.
 
 ```
@@ -31,8 +31,8 @@ gateway ends) so a blocking stdin read cannot lock stdout.
 
 `BOOKCLERK_WORKERD_STATE_DIR` is the host-owned `session-<nonce>/` directory
 (also the gateway `TMPDIR`). The guest `TMPDIR` is its own scratch, so it
-cannot read gateway state. See [plugins.md](plugins.md#the-guest-jail) and
-the [Workers RPC ADR](adr/plugin-workers-rpc-workerd.md).
+cannot read gateway state. See [plugins.md](../plugins/README.md#the-guest-jail) and
+the [Workers RPC ADR](../adr/plugin-workers-rpc-workerd.md).
 
 The launcher is a `PluginWorker` toward the host. Every host call is turned
 into exactly one HTTP request to the isolate; the isolate keeps no cross-request

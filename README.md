@@ -26,7 +26,7 @@ portal for services like [Audiobookshelf](https://www.audiobookshelf.org/).
 | **GUI** | Shared React web UI served by `bookclerkd` (native/tray deferred) |
 
 The library GUI and `/api/*` control plane live in Rust (`bookclerkd`) with
-operator-token auth. See [docs/gui.md](docs/gui.md).
+operator-token auth. See [docs/guide/gui.md](docs/guide/gui.md).
 
 ## Architecture at a glance
 
@@ -42,10 +42,10 @@ operator-token auth. See [docs/gui.md](docs/gui.md).
                            ├─► integrations (Audiobookshelf, SPA Accounts, …)
                            └─► bookclerkd jobs + HTTP control plane
 
-  * discovered at runtime — see docs/plugins.md
+  * discovered at runtime — see docs/plugins/README.md
 ```
 
-See [docs/architecture.md](docs/architecture.md) for crate layout and data flow.
+See [docs/internals/architecture.md](docs/internals/architecture.md) for crate layout and data flow.
 
 ## Quick start
 
@@ -69,25 +69,25 @@ bookclerk library acquire --asin B0EXAMPLE   # or --isbn / UUID / product id
 ```
 
 First-time setup, auth notes, and “existing files” workflows:
-[docs/getting-started.md](docs/getting-started.md).
+[docs/guide/getting-started.md](docs/guide/getting-started.md).
 
 ## Documentation
 
 | Doc | Topic |
 | --- | --- |
 | [docs/README.md](docs/README.md) | Documentation index |
-| [docs/getting-started.md](docs/getting-started.md) | Install, auth, first scan/acquire |
-| [docs/architecture.md](docs/architecture.md) | Components and data flow |
-| [docs/sources.md](docs/sources.md) | Storefront plugins and login |
-| [docs/destinations.md](docs/destinations.md) | Local + S3 output, naming |
-| [docs/integrations.md](docs/integrations.md) | Audiobookshelf, SPA Accounts |
-| [docs/plugins.md](docs/plugins.md) | Third-party plugin protocol and the guest jail |
-| [docs/operations.md](docs/operations.md) | Daemon, Docker, systemd |
-| [docs/configuration.md](docs/configuration.md) | `config.toml` and env overrides |
-| [docs/migration.md](docs/migration.md) | Move from classic Libation |
-| [docs/diagnostics.md](docs/diagnostics.md) | Opt-in crash/error reports |
-| [docs/libation-parity.md](docs/libation-parity.md) | Headless Libation parity matrix |
-| [docs/source-candidates.md](docs/source-candidates.md) | Research notes for future stores |
+| [docs/guide/getting-started.md](docs/guide/getting-started.md) | Install, auth, first scan/acquire |
+| [docs/internals/architecture.md](docs/internals/architecture.md) | Components and data flow |
+| [docs/guide/sources.md](docs/guide/sources.md) | Storefront plugins and login |
+| [docs/guide/destinations.md](docs/guide/destinations.md) | Local + S3 output, naming |
+| [docs/server/integrations.md](docs/server/integrations.md) | Audiobookshelf, SPA Accounts |
+| [docs/plugins/README.md](docs/plugins/README.md) | Third-party plugin protocol and the guest jail |
+| [docs/server/operations.md](docs/server/operations.md) | Daemon, Docker, systemd |
+| [docs/server/configuration.md](docs/server/configuration.md) | `config.toml` and env overrides |
+| [docs/guide/migration.md](docs/guide/migration.md) | Move from classic Libation |
+| [docs/server/diagnostics.md](docs/server/diagnostics.md) | Opt-in crash/error reports |
+| [docs/contributing/research/libation-parity.md](docs/contributing/research/libation-parity.md) | Headless Libation parity matrix |
+| [docs/contributing/research/source-candidates.md](docs/contributing/research/source-candidates.md) | Research notes for future stores |
 
 ## Example configuration
 
@@ -125,7 +125,7 @@ bookclerk plugins deploy audiobookshelf
 
 The same operations are in **Settings → Plugins**. Store passwords are
 entered in Accounts and sealed in the database (see
-[docs/sources.md](docs/sources.md)).
+[docs/guide/sources.md](docs/guide/sources.md)).
 
 ## Binaries
 
@@ -133,8 +133,8 @@ entered in Accounts and sealed in the database (see
 | --- | --- |
 | `bookclerk` | One-shot CLI (`auth`, `library`, `integrations`, `plugins`, …) |
 | `bookclerkd` | Long-running daemon: scheduled scan/acquire + HTTP API / GUI (optional in-process tray) |
-| `bookclerk-media-worker` | Confined child process for one codec job ([docs/media.md](docs/media.md)) |
-| `bookclerk-jail` | Confines a plugin guest, then becomes it ([docs/plugins.md](docs/plugins.md#the-guest-jail)) |
+| `bookclerk-media-worker` | Confined child process for one codec job ([docs/server/media.md](docs/server/media.md)) |
+| `bookclerk-jail` | Confines a plugin guest, then becomes it ([docs/plugins/README.md](docs/plugins/README.md#the-guest-jail)) |
 
 The two helpers ship beside the hosts. Without them, a host refuses media work
 and declines to load external plugins rather than running either unconfined.
@@ -150,9 +150,9 @@ Headless multi-source acquire, daemon, destinations, Audiobookshelf
 integration, the plugin host, an MVP web library GUI, and an optional
 in-process tray→browser companion are in active development. An embedded Tauri
 window is deferred until an OSV-clean GTK4 graph is available (see
-[docs/gui.md](docs/gui.md)). Libation Classic/Chardonnay CLI parity for the
+[docs/guide/gui.md](docs/guide/gui.md)). Libation Classic/Chardonnay CLI parity for the
 Audible acquire surface is tracked in
-[docs/libation-parity.md](docs/libation-parity.md).
+[docs/contributing/research/libation-parity.md](docs/contributing/research/libation-parity.md).
 
 ## License
 

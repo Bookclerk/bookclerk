@@ -4,7 +4,7 @@
  * `env.PLUGIN` is the trusted adapter isolate; this worker only turns
  * loopback HTTP from `bookclerk-workerd` into one adapter call per request
  * and retains nothing across requests. Three route families
- * (see `docs/workerd-bridge.md`):
+ * (see `docs/internals/workerd-bridge.md`):
  *
  * - Control plane, JSON: `GET /health`, `POST /describe` (optional
  *   `{ native }` body merged against `PLUGIN_DESCRIBE`), `POST /open`

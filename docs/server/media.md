@@ -124,7 +124,7 @@ untouched. The Audible plugin passes a decryptor that holds the content key and
 the CENC metadata, and the remuxer never sees either. No cipher, key, or license
 code links into the shared crate, so omitting the plugin from a build still omits
 every part of decrypt — see [shipping without a
-store](plugins.md#shipping-without-a-store), which is now a build both hosts
+store](../plugins/README.md#shipping-without-a-store), which is now a build both hosts
 support and CI checks.
 
 Two muxers also cost more than maintenance. Both used to clone the whole sample
@@ -145,7 +145,7 @@ Confining the plugin process is what covers the decrypt parser, and it covers
 everything else a storefront does at the same time. Because first-party sources
 ship as guest binaries as well as in-process adapters, a single jail reaches
 Audible, Libro.fm, Chirp, and GraphicAudio together; see [the guest
-jail](plugins.md#the-guest-jail). Default builds still register those adapters
+jail](../plugins/README.md#the-guest-jail). Default builds still register those adapters
 in-process, so decrypt runs inside `bookclerkd` today, and that jail becomes
 load-bearing when external guests are the packaged default.
 
@@ -251,12 +251,12 @@ from inside a decoder.
 Note that acquire **batches** are still serialized by the durable job queue
 `network` class (default concurrency 1) plus the daemon `work_lock`; the pool
 bounds codec concurrency within an acquire, not across them. See
-[jobs.md](jobs.md).
+[jobs.md](../internals/jobs.md).
 
 ## Related
 
-- [Architecture](architecture.md) — where the pool sits in the acquire pipeline
-- [The guest jail](plugins.md#the-guest-jail) — the other confined tier, for
+- [Architecture](../internals/architecture.md) — where the pool sits in the acquire pipeline
+- [The guest jail](../plugins/README.md#the-guest-jail) — the other confined tier, for
   plugin processes: longer-lived, wider grant, applied by a launcher
 - [Configuration](configuration.md) — the full `config.toml` surface
 - [Operations](operations.md) — running `bookclerkd`

@@ -97,7 +97,7 @@ List reverse-proxy
 peers in `daemon.trusted_proxies` (IP or CIDR) before login throttling will
 honor `X-Forwarded-For` — empty means always use the direct TCP peer. Do not
 expose publicly without TLS (reverse proxy) and a protected token.
-Details: [gui.md](gui.md).
+Details: [gui.md](../guide/gui.md).
 
 ### Reverse proxy + TLS
 
@@ -207,7 +207,7 @@ disconnects it for good.
 
 ## systemd
 
-Sample unit: [`packaging/systemd/bookclerkd.service`](../packaging/systemd/bookclerkd.service).
+Sample unit: [`packaging/systemd/bookclerkd.service`](../../packaging/systemd/bookclerkd.service).
 
 ```bash
 # after installing bookclerkd, bookclerk-media-worker, and bookclerk-jail to
@@ -233,7 +233,7 @@ to `ReadWritePaths`.
 
 ## Docker
 
-Dockerfile: [`packaging/docker/Dockerfile`](../packaging/docker/Dockerfile)
+Dockerfile: [`packaging/docker/Dockerfile`](../../packaging/docker/Dockerfile)
 (build from the repo root: `docker build -f packaging/docker/Dockerfile .`).
 The image ships the same bundle as a platform release (`cargo
 package-platform`) under `/opt/bookclerk`: `bookclerk`, `bookclerkd`,
@@ -252,7 +252,7 @@ is left alone with a warning. The same applies to an unpacked platform archive
 run from its own directory.
 
 For day-to-day compile/test with a controlled OpenSSL/Node toolchain (and host-
-runnable `target/` binaries), use the [Dev Container](devcontainer.md) instead
+runnable `target/` binaries), use the [Dev Container](../contributing/devcontainer.md) instead
 of fighting missing `libssl-dev` on the host.
 
 ```bash

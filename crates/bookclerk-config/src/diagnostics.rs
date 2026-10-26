@@ -3,7 +3,7 @@
 //! # Audience
 //!
 //! Host binaries that call [`crate::logging::init_tracing_with`]. Guests never
-//! depend on this module. See `docs/diagnostics.md`.
+//! depend on this module. See `docs/server/diagnostics.md`.
 
 use std::collections::VecDeque;
 use std::panic::{self, PanicHookInfo};

@@ -2,8 +2,8 @@
 
 Third-party plugins are installed once for the cluster and materialized on
 each node under `$BOOKCLERK_FILES_DIR/plugins/.versions/<payload digest>/`
-(see [plugins.md#installing-plugins](plugins.md#installing-plugins) and the ADR
-[plugin-workers-rpc-workerd.md](adr/plugin-workers-rpc-workerd.md)):
+(see [plugins.md#installing-plugins](README.md#installing-plugins) and the ADR
+[plugin-workers-rpc-workerd.md](../adr/plugin-workers-rpc-workerd.md)):
 
 | Runtime | Archive contents |
 | --- | --- |
@@ -11,11 +11,11 @@ each node under `$BOOKCLERK_FILES_DIR/plugins/.versions/<payload digest>/`
 | **`native`** | `plugin.toml` + per-OS/arch executable (`command`) |
 
 Authors extend **`BookclerkEntrypoint`** and export named `*Entrypoint` classes (product `api_version = 3`) via language SDKs
-([`@bookclerk/plugin-sdk`](../packages/plugin-sdk/),
-[`packages/plugin-sdk-python`](../packages/plugin-sdk-python/),
-[`bookclerk-plugin-sdk`](../crates/bookclerk-plugin-sdk/)). Each SDK ships the
+([`@bookclerk/plugin-sdk`](../../packages/plugin-sdk/),
+[`packages/plugin-sdk-python`](../../packages/plugin-sdk-python/),
+[`bookclerk-plugin-sdk`](../../crates/bookclerk-plugin-sdk/)). Each SDK ships the
 same `check` / `fmt` / `package` helpers for local and CI packaging. Workerd Echo:
-[`examples/plugins-echo-workerd-ts/`](../examples/plugins-echo-workerd-ts/).
+[`examples/plugins-echo-workerd-ts/`](../../examples/plugins-echo-workerd-ts/).
 
 This document defines how publishers advertise plugins on
 [crates.io](https://crates.io) so Bookclerk can **discover** and **install**
@@ -23,31 +23,31 @@ them from a packaged binary — without the operator having a Rust toolchain.
 
 > Status: crate naming taxonomy is **draft-stable for discovery**. Install
 > metadata, digest requirements, and federated registry identity live in
-> [`bookclerk-plugin-catalog`](../crates/bookclerk-plugin-catalog/) and continue
+> [`bookclerk-plugin-catalog`](../../crates/bookclerk-plugin-catalog/) and continue
 > to evolve with CLI install. Catalog search works today; one-click install /
 > dashboard browser remain phased (below).
 
 ### Catalog crate (`bookclerk-plugin-catalog`)
 
 Registry-neutral types and adapters live in
-[`crates/bookclerk-plugin-catalog`](../crates/bookclerk-plugin-catalog/):
+[`crates/bookclerk-plugin-catalog`](../../crates/bookclerk-plugin-catalog/):
 
 | Concept | Notes |
 | --- | --- |
 | **Source-qualified coordinates** | `cargo:name@version`, `npm:name@version`, `pypi:name==version`, `registry:<index_url>#name@version`, `local:/path/to/archive` — search hits never merge by bare plugin id |
 | **Digest-required artifacts** | Install-grade manifests use an explicit `artifacts[]` array; each entry needs `url` + `archive_sha256` (64 hex). URL templates alone are discovery-only |
-| **Static registry** | HTTPS/local JSON index (`schema_version`, `packages[].name` → `versions` → manifest). Fixture: [`fixtures/static-index.example.json`](../crates/bookclerk-plugin-catalog/fixtures/static-index.example.json) |
+| **Static registry** | HTTPS/local JSON index (`schema_version`, `packages[].name` → `versions` → manifest). Fixture: [`fixtures/static-index.example.json`](../../crates/bookclerk-plugin-catalog/fixtures/static-index.example.json) |
 | **PyPI** | **Exact-only** — no general search API; use `pypi:project==version` or a static registry for discovery |
 
 Publisher / packaging examples (reference only — never in `package-plugins`):
 
-- [`examples/plugins-echo-workerd-ts/`](../examples/plugins-echo-workerd-ts/) — workerd / `@bookclerk/plugin-sdk`
-- [`examples/plugins-echo-workerd-python/`](../examples/plugins-echo-workerd-python/) — workerd Python Workers
-- [`examples/plugins-echo-workerd-rust/`](../examples/plugins-echo-workerd-rust/) — workerd Rust/Wasm
-- [`examples/plugins-echo-native-rust/`](../examples/plugins-echo-native-rust/) — native Rust `PluginWorker` (`api_version = 3`)
-- [`examples/plugins-echo-native-node/`](../examples/plugins-echo-native-node/) — workerd JS (id `echo_native_node`)
-- [`examples/plugins-echo-native-python/`](../examples/plugins-echo-native-python/) — workerd Python (id `echo_native_python`)
-- [`examples/plugin-publisher/`](../examples/plugin-publisher/) — reusable GHA workflow docs
+- [`examples/plugins-echo-workerd-ts/`](../../examples/plugins-echo-workerd-ts/) — workerd / `@bookclerk/plugin-sdk`
+- [`examples/plugins-echo-workerd-python/`](../../examples/plugins-echo-workerd-python/) — workerd Python Workers
+- [`examples/plugins-echo-workerd-rust/`](../../examples/plugins-echo-workerd-rust/) — workerd Rust/Wasm
+- [`examples/plugins-echo-native-rust/`](../../examples/plugins-echo-native-rust/) — native Rust `PluginWorker` (`api_version = 3`)
+- [`examples/plugins-echo-native-node/`](../../examples/plugins-echo-native-node/) — workerd JS (id `echo_native_node`)
+- [`examples/plugins-echo-native-python/`](../../examples/plugins-echo-native-python/) — workerd Python (id `echo_native_python`)
+- [`examples/plugin-publisher/`](../../examples/plugin-publisher/) — reusable GHA workflow docs
 
 ### Trust (staged)
 
@@ -70,7 +70,7 @@ These landed on the follow-up ecosystem track instead of expanding #74:
 
 - Full `bookclerk plugins install` / `update` / `remove` / `doctor` / `registry`
 - Windows AppContainer spawn-time confinement (`run_appcontainer` + path ACLs)
-  (shipped on the confinement track; see [plugins.md](plugins.md))
+  (shipped on the confinement track; see [plugins.md](README.md))
 - Publisher code signing / notarization as a hard requirement
 - Python guest SDK (still experimental; TypeScript `@bookclerk/plugin-sdk` is first-class)
 
@@ -95,7 +95,7 @@ the host installer. Optional storefronts are installed with
 `bookclerk plugins install`, `POST /api/config/plugins`, or an
 operator package under `plugin-packages/`.
 
-See [packaging.md](packaging.md) for `cargo package-*` aliases and GitHub Actions
+See [packaging.md](../contributing/packaging.md) for `cargo package-*` aliases and GitHub Actions
 signing notes.
 
 ```text
@@ -204,7 +204,7 @@ Prefer **Option A** when your files follow the recommended names below. Use
 
 The crate’s `readme` / crate description should summarize trust/scope (what
 accounts it talks to). Enabling still means running that guest jailed (after
-`bookclerk plugins approve`) — see the trust model in [plugins.md](plugins.md).
+`bookclerk plugins approve`) — see the trust model in [plugins.md](README.md).
 
 ## Artifact naming (install without Rust)
 
@@ -223,7 +223,7 @@ plugin.toml
 modules/…                       # main_module and deps
 ```
 
-Two consequences of [the guest jail](plugins.md#the-guest-jail) for what an
+Two consequences of [the guest jail](README.md#the-guest-jail) for what an
 archive may assume. The install directory is **read-only** at runtime, so a
 plugin that wants to keep state must use the `plugin_data_dir` it is given (also
 its `HOME`) or `TMPDIR` — not a path beside its own binary. And a plugin that
@@ -313,7 +313,7 @@ is not required for install.
    deploys it with `plugins deploy`
 
 Each host materializes the active release for its own target when a present
-deployment needs it. See [plugins.md#installing-plugins](plugins.md#installing-plugins) for
+deployment needs it. See [plugins.md#installing-plugins](README.md#installing-plugins) for
 update, rollback, approval, and the daemon routes.
 
 Alias uniqueness is cluster-wide for releases:
@@ -364,8 +364,8 @@ Third-party authors keep **their own repo**. They do **not** fork or vendor the
 Bookclerk monorepo. The contract is the Workers RPC ABI (`api_version = 3`
 object-capability classes and streams, `BookclerkEntrypoint` + named
 entrypoint classes) + install layout; the host discovers whatever lands under
-`plugins/`. See [plugins.md](plugins.md) and
-[adr/plugin-workers-rpc-workerd.md](adr/plugin-workers-rpc-workerd.md).
+`plugins/`. See [plugins.md](README.md) and
+[adr/plugin-workers-rpc-workerd.md](../adr/plugin-workers-rpc-workerd.md).
 
 ### TypeScript / workerd (`@bookclerk/plugin-sdk`)
 
@@ -373,7 +373,7 @@ Preferred portable path: extend `BookclerkEntrypoint` for event and job
 triggers and export one `*Entrypoint` subclass per named entrypoint
 (`Storefront`, `Storage`, `RemoteLibrary`, `DatabaseAdapter`, `Cli`, `Oidc`).
 Ship `plugin.toml` + `modules/`. Start from
-[`examples/plugins-echo-workerd-ts/`](../examples/plugins-echo-workerd-ts/);
+[`examples/plugins-echo-workerd-ts/`](../../examples/plugins-echo-workerd-ts/);
 `npx bookclerk-plugin types .` generates the `Env` binding type from
 `plugin.toml`.
 
@@ -475,14 +475,14 @@ that only carries `[package.metadata.bookclerk]` and documentation.
 
 ## Related
 
-- Runtime discovery & ABI: [plugins.md](plugins.md)
-- ADR: [plugin-workers-rpc-workerd.md](adr/plugin-workers-rpc-workerd.md)
-- ABI schema: [`crates/bookclerk-plugin-abi/schema/plugin.capnp`](../crates/bookclerk-plugin-abi/schema/plugin.capnp)
-- Catalog crate: [`bookclerk-plugin-catalog`](../crates/bookclerk-plugin-catalog/)
-- Workerd Echo: [`examples/plugins-echo-workerd-ts/`](../examples/plugins-echo-workerd-ts/),
-  [`plugins-echo-workerd-python/`](../examples/plugins-echo-workerd-python/),
-  [`plugins-echo-workerd-rust/`](../examples/plugins-echo-workerd-rust/)
-- Publisher reusable workflow: [`examples/plugin-publisher/`](../examples/plugin-publisher/)
-- Experimental workerd Echo (legacy ids): [`examples/plugins-echo-native-node/`](../examples/plugins-echo-native-node/), [`examples/plugins-echo-native-python/`](../examples/plugins-echo-native-python/)
-- Architecture overview: [architecture.md](architecture.md)
-- Operator GUI surfaces: [gui.md](gui.md) (plugin browser = future)
+- Runtime discovery & ABI: [plugins.md](README.md)
+- ADR: [plugin-workers-rpc-workerd.md](../adr/plugin-workers-rpc-workerd.md)
+- ABI schema: [`crates/bookclerk-plugin-abi/schema/plugin.capnp`](../../crates/bookclerk-plugin-abi/schema/plugin.capnp)
+- Catalog crate: [`bookclerk-plugin-catalog`](../../crates/bookclerk-plugin-catalog/)
+- Workerd Echo: [`examples/plugins-echo-workerd-ts/`](../../examples/plugins-echo-workerd-ts/),
+  [`plugins-echo-workerd-python/`](../../examples/plugins-echo-workerd-python/),
+  [`plugins-echo-workerd-rust/`](../../examples/plugins-echo-workerd-rust/)
+- Publisher reusable workflow: [`examples/plugin-publisher/`](../../examples/plugin-publisher/)
+- Experimental workerd Echo (legacy ids): [`examples/plugins-echo-native-node/`](../../examples/plugins-echo-native-node/), [`examples/plugins-echo-native-python/`](../../examples/plugins-echo-native-python/)
+- Architecture overview: [architecture.md](../internals/architecture.md)
+- Operator GUI surfaces: [gui.md](../guide/gui.md) (plugin browser = future)

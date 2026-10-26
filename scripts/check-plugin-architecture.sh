@@ -119,7 +119,7 @@ else
 fi
 
 if grep -n 'coarse jail' crates/bookclerk-plugins/optional/database-postgres/plugin.toml \
-    docs/plugin-registry.md >/dev/null 2>&1; then
+    docs/plugins/registry.md >/dev/null 2>&1; then
   fail "postgres/native docs still describe coarse jail outbound"
 else
   ok "native postgres networking is SDK sockets, not coarse jail"

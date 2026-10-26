@@ -3,7 +3,7 @@
 Sources implement the shared `ContentSource` / storefront entrypoint: login,
 list accounts, scan library, fetch title. There is no plugin `kind = "source"`
 — storefront guests export `storefront` under `entrypoints` (see
-[plugins.md](plugins.md)). A store is enabled on a host by deploying its plugin
+[plugins.md](../plugins/README.md)). A store is enabled on a host by deploying its plugin
 instance there (`bookclerk plugins deploy <id>` or **Settings → Plugins**);
 its knobs are the plugin's `[[settings]]`, stored in the instance document.
 Nothing about a store lives in `config.toml` or the environment.
@@ -78,7 +78,7 @@ Credentials are stored in `encrypted_secrets` (DB-backed). Classic Libation impo
 IdentityTokens are not converted. Re-connect Audible from the Accounts UI, or see
 [migration.md](migration.md) for classic import paths.
 
-Low-level auth/download notes: [`crates/bookclerk-plugins/optional/source-audible/README.md`](../crates/bookclerk-plugins/optional/source-audible/README.md).
+Low-level auth/download notes: [`crates/bookclerk-plugins/optional/source-audible/README.md`](../../crates/bookclerk-plugins/optional/source-audible/README.md).
 
 ### Settings
 
@@ -92,7 +92,7 @@ bookclerk plugins config set audible bitrate normal
 
 Widevine, xHE-AAC, and the packaging format are shared `core.output`
 settings (seeded once from `[output]`; see
-[configuration.md](configuration.md#output-shared)):
+[configuration.md](../server/configuration.md#output-shared)):
 
 ```bash
 bookclerk config set output.widevine true
@@ -130,7 +130,7 @@ bookclerk library scan --source chirp
 
 Headless login uses GraphQL password `signIn` (not browser cookie sessions).
 Some egress paths see Cloudflare challenges — use a normal browser User-Agent
-context if probes fail. Research background: [source-candidates.md](source-candidates.md).
+context if probes fail. Research background: [source-candidates.md](../contributing/research/source-candidates.md).
 
 ## GraphicAudio
 
@@ -156,7 +156,7 @@ connected.
 
 ZIP SKUs unlock App + Browser as well; App Access–only does **not** include a
 computer ZIP. Prefer purchasing an M4B/MP3/FLAC ZIP SKU when validating all
-paths. Full Magento/device notes: [source-candidates.md](source-candidates.md).
+paths. Full Magento/device notes: [source-candidates.md](../contributing/research/source-candidates.md).
 
 ## Disabling a store
 
@@ -171,6 +171,6 @@ guest, and the store's accounts and books stay in the library.
 ## Future stores
 
 Candidate research (Kobo, Storytel, Downpour, …) lives in
-[source-candidates.md](source-candidates.md). New first-party adapters implement
+[source-candidates.md](../contributing/research/source-candidates.md). New first-party adapters implement
 `ContentSource`; third parties can ship external source plugins when the v1
 protocol fits (plain fetch today; encrypted fetch remains first-party-only).
