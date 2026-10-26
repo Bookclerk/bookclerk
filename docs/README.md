@@ -62,7 +62,9 @@ others go deeper.
 - [Build from source and use the CLI](contributing/build-from-source.md): build the binaries and drive Bookclerk from the command line
 - [Dev Container](contributing/devcontainer.md): a ready-made build environment
 - [Web UI development](contributing/ui.md): the React app, the tray and brand assets
-- [Continuous integration](contributing/ci.md): the planner, `CI Gate`, fuzzing and deploys
+- [Continuous integration](contributing/ci.md): the planner, the jobs and `CI Gate`
+- [Fuzzing](contributing/fuzzing.md): fuzz targets in CI and crash triage
+- [Repository automation](contributing/automation.md): dependency updates, advisories, docs publishing and Worker deploys
 - [Release packaging](contributing/packaging.md): platform bundles and release CI
 - [Code documentation](contributing/code-documentation.md): how to document Rust, TypeScript, Python and shell
 - Research notes: [store candidates](contributing/research/source-candidates.md) and [Libation parity](contributing/research/libation-parity.md)
@@ -81,3 +83,4 @@ Build and agent conventions for this repository live in
 - [Control plane](adr/control-plane.md): the bootstrap boundary, host identity and cluster coordination
 - [Untrusted-input fuzzing](adr/untrusted-input-fuzzing.md): every untrusted boundary ships a fuzz target
 - [Security advisory automation](adr/security-advisory-automation.md): draft advisories for shipped code
+- [Logging and tracing](adr/observability.md): trace everything, keep TRACE for diagnostics, show each output its own level

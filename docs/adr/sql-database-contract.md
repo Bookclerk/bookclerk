@@ -245,4 +245,4 @@ limits is not loaded.
   [Untrusted-input fuzzing](untrusted-input-fuzzing.md) (`sql_parse`,
   `sql_lower`). Guest-SQL authorization against a real SQLite authorizer
   oracle, whose observed accesses must stay inside the `GuestSqlPolicy`, is
-  still to add and tracked in [`docs/contributing/ci.md`](../contributing/ci.md#fuzzing).
+  fuzzed by `guest_sql_authz` (see [`docs/contributing/fuzzing.md`](../contributing/fuzzing.md)).

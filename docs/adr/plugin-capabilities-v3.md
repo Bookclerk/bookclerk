@@ -138,10 +138,10 @@ payloads for several storefront / integration surfaces, and a reverse
   is the author/operator handbook.
 - Every surface a guest can reach with bytes of its own is fuzzed per
   [Untrusted-input fuzzing](untrusted-input-fuzzing.md): the typed Cap'n
-  Proto replies, the granted HTTP channel and the egress policy have targets
-  today, while the socket proxy mux and guest-SQL authorization are listed
-  as still to add in [`docs/contributing/ci.md`](../contributing/ci.md#fuzzing); a new entrypoint
-  family or channel adds its target in the same change.
+  Proto replies, the granted HTTP channel, the egress policy, the socket
+  proxy mux (`mux_peer`) and guest-SQL authorization (`guest_sql_authz`)
+  have targets, listed in [`docs/contributing/fuzzing.md`](../contributing/fuzzing.md); a new
+  entrypoint family or channel adds its target in the same change.
 
 ## Non-goals
 

@@ -6,7 +6,7 @@ download page, and the documentation with its generated API reference under
 Cloudflare Worker named **`bookclerk-site`** on the domain in the `DOMAIN`
 organization variable. `build.ts` writes the static pages; the Worker
 (`entry.ts` → `worker.ts`) renders each docs page at request time from the
-docs repository [`Bookclerk/bookclerk-docs`](../../docs/contributing/ci.md#docs-publishing),
+docs repository [`Bookclerk/bookclerk-docs`](../../docs/contributing/automation.md#docs-publishing),
 and picks between a page's HTML and its Markdown version.
 
 Deployed by GitHub Actions:
@@ -45,7 +45,7 @@ npx wrangler dev                                       # docs pages need network
 ## Audit
 
 CI runs Lighthouse and axe-core on every pull request that changes the site
-(`audit/`, see `docs/contributing/ci.md#website-checks`). It serves `dist/` through the
+(`audit/`, see `docs/contributing/automation.md#website-checks`). It serves `dist/` through the
 Worker with docs read from this checkout's `docs/`, so it needs no network:
 
 ```bash
@@ -82,7 +82,7 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   it are compressed by the edge. Its `Accept-Encoding` parser is an
   untrusted-input boundary: `fuzz.test.ts` replays the seeds in
   `fuzz/accept_encoding/` and fuzzes mutations of them against an
-  independent oracle (`docs/contributing/ci.md#fuzzing`).
+  independent oracle (`docs/contributing/fuzzing.md`).
   `entry.ts` binds it to `generated/docs-shell.json`, which `npm run build`
   writes (gitignored), so build before `wrangler dev` or `deploy`.
   `generated/docs-shell.d.json.ts`, checked in, types that file so the

@@ -25,7 +25,7 @@
 # - `file` builds nothing. It mints an advisory-write token and files the
 #   drafts, which are private to maintainers. The verdict report is sealed with FUZZ_CRASH_BUNDLE_KEY, the key
 #   maintainers keep, as the `osv-advisories-report` artifact.
-# Logs print counts only. See docs/contributing/ci.md#osv-advisories.
+# Logs print counts only. See docs/contributing/automation.md#osv-advisories.
 
 name: OSV advisories
 

@@ -40,6 +40,9 @@ When sharing is on, these keys decide when a report is sent:
 
 ### Local verbosity vs ring buffer
 
+The design behind this split is in
+[ADR: Logging and tracing](../adr/observability.md).
+
 - **stderr / OS facility** (journald, macOS `os_log`, Windows Event Log) honor
   `BOOKCLERK_LOG` → `RUST_LOG` → daemon default `bookclerk=info,warn`. The CLI
   default is quiet (`off`); use `-v` / `-vv` / `-vvv` or `BOOKCLERK_LOG`.
@@ -198,7 +201,7 @@ a manual one) can each read an old total and undercount. Each such lost update
 is one call's cost, far inside the gap between the cap and the free
 allocation. Wrangler creates the namespace on the first deploy (the binding
 has no id), so that deploy's Cloudflare API token needs Workers KV Storage
-edit; see [Cloudflare Worker deploys](../contributing/ci.md#cloudflare-worker-deploys).
+edit; see [Cloudflare Worker deploys](../contributing/automation.md#cloudflare-worker-deploys).
 
 `REPORT_API_KEY` exists only as a Worker secret and the
 `DIAGNOSTICS_REPORT_API_KEY` Actions secret. Bookclerk builds carry only the

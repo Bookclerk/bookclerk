@@ -124,8 +124,9 @@ contract must be **identical** across runtimes.
 - CI must fail on ABI schema drift vs generated SDK outputs.
 - Every byte a guest can send the host crosses a fuzzed boundary per
   [Untrusted-input fuzzing](untrusted-input-fuzzing.md): Cap'n Proto replies
-  and the granted HTTP channel have targets today; CONNECT handshakes and
-  mux frames are still to add ([`docs/contributing/ci.md`](../contributing/ci.md#fuzzing)).
+  the granted HTTP channel and the mux frames (`mux_peer`) have targets
+  today; CONNECT handshakes are still to add
+  ([`docs/contributing/fuzzing.md`](../contributing/fuzzing.md)).
 - CI requires the pinned `workerd` binary for the workerd contract suite; the job
   fails if the workerd adapter cannot start (`BOOKCLERK_SKIP_WORKERD=1` is
   local native-only).

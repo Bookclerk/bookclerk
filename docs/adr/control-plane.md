@@ -10,10 +10,17 @@
   [plugin capabilities v3](plugin-capabilities-v3.md),
   [configuration](../server/configuration.md), [database](../server/database.md)
 
-This spike does not make Bookclerk a multi-host production deployment. It
-records the control-plane boundary and proves one typed configuration domain,
+Phase 0 did not make Bookclerk a multi-host production deployment. It
+recorded the control-plane boundary and proved one typed configuration domain,
 stable host identity, and secret-root joining on the existing SQL stack.
 `SCHEMA_VERSION` stays `0`. The production schema is still unreleased.
+
+The sections before [Phase 2](#phase-2-plugin-instances-declared-schemas-pluginkey-keyed-accounts)
+describe that first step, and their "Phase 0 did not" notes are its limits
+at the time. Later phases lifted several of them: installs and deployments
+are reconciled cluster-wide ([Installs and materialization](#installs-and-materialization)),
+and work is scheduled across hosts
+([Resource-aware scheduling and routing](#resource-aware-scheduling-and-routing)).
 
 ## Context
 
@@ -47,16 +54,18 @@ database and unlock its secret root:
 token, and the Postgres URL stay bootstrap. Moving them into the database
 would be circular: the database plugin cannot read its own connection settings
 from a database it has not opened. Phase 4 may store additional targets after
-this one connection exists. This spike does not.
+this one connection exists. Phase 0 did not.
 
 Everything else in `config.toml` is transitional application configuration.
 The first domain moved into the database is `[events]` (`core.events`). After
 import, that domain has one authority: the database row. Startup, reload, the
-CLI, and `BOOKCLERK_EVENTS_*` must not overwrite it. Unmigrated sections
-(library, jobs, sources, output, daemon listen, media, plugins, diagnostics,
-discovery, auth.oidc) still load from TOML and environment variables.
+CLI, and `BOOKCLERK_EVENTS_*` must not overwrite it. In Phase 0 the
+unmigrated sections (library, jobs, sources, output, daemon listen, media,
+plugins, diagnostics, discovery, auth.oidc) still loaded from TOML and
+environment variables; [What left `config.toml`](#what-left-configtoml) lists
+what Phase 2 moved out.
 
-`daemon.listen` stays in TOML for this spike because the process binds before
+`daemon.listen` stays in TOML because the process binds before
 it serves HTTP. It is transitional, not a second copy of `core.events`.
 
 ### Startup order
@@ -106,7 +115,8 @@ deleted.
 
 SQLite remains one host's database. Two hosts must not share a SQLite file
 over a network filesystem. PostgreSQL (and, later, D1) is the shared database.
-This spike does not schedule jobs across hosts.
+Phase 0 did not schedule jobs across hosts; see
+[Resource-aware scheduling and routing](#resource-aware-scheduling-and-routing).
 
 ### Configuration documents
 
@@ -128,7 +138,7 @@ The public API is typed: `EventsSettingsV1`, `OutputSettingsV1`, and
 `NodeRuntimeSettingsV1`. Callers do not get a general settings key/value
 service.
 
-Namespaces in this spike:
+Namespaces added in Phase 0:
 
 - `core.events` — cluster scope. The migrated `[events]` domain.
 - `core.output` — cluster scope. The migrated shared `[output]` table (see
@@ -185,7 +195,7 @@ grants, media confinement, or listen addresses.
 Local delivery **task** count is taken from the authoritative document when
 the event runtime starts and is not resized until the process restarts.
 Retention and the in-flight cap follow the in-memory document after reconcile.
-That split is deliberate for this spike.
+That split was deliberate in Phase 0.
 
 ### `core.output`
 
@@ -244,9 +254,10 @@ capacity columns (`logical_cpus`, `cpu_max_quota_us`, `cpu_max_period_us`,
 `memory_max_bytes`, `memory_current_bytes`, `memory_anon_bytes`,
 `files_dir_free_bytes`, `scratch_bytes`) are observations from the last
 heartbeat. They are not a `node.runtime` document and they are not a second
-copy of `media.workers`. Physical plugin install files and the host install
-ledger stay on the host. This spike does not reconcile desired plugin
-deployments.
+copy of `media.workers`. In Phase 0, physical plugin install files and the
+host install ledger stayed on the host, and desired plugin deployments were
+not reconciled; Phase 3 records installs cluster-wide
+([Installs and materialization](#installs-and-materialization)).
 
 ### Secret root
 
@@ -282,7 +293,7 @@ not understand is not applied and is not rewritten.
 
 ### Authorization
 
-Cluster and host configuration writes in this spike require an operator
+Cluster and host configuration writes require an operator
 principal (the local CLI or the daemon operator token on
 `PUT /api/config/domains/core.events`, `PUT /api/config/domains/core.output`,
 and `PATCH /api/settings` for `events.*` / `output.*`). Administrators and

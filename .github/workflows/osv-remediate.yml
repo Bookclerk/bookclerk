@@ -23,7 +23,7 @@
 # While a remediation pull request is open, runs stop at `pending`:
 # rebuilding the branch on every push to main would restart its checks and
 # drop it from the merge queue. This workflow's own log prints counts only.
-# See docs/contributing/ci.md#osv-remediation.
+# See docs/contributing/automation.md#osv-remediation.
 
 name: OSV remediation
 

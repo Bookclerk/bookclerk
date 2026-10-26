@@ -110,7 +110,7 @@ jobs:
           exit 1
 
       # Run by the OSV remediation workflow: test its unpublished lockfile
-      # bump (see docs/contributing/ci.md#osv-remediation).
+      # bump (see docs/contributing/automation.md#osv-remediation).
       - name: Check out the OSV remediation head
         if: inputs.private-head
         uses: ./.github/actions/osv-remediation-head
@@ -224,7 +224,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Run by the OSV remediation workflow: test its unpublished lockfile
-      # bump (see docs/contributing/ci.md#osv-remediation).
+      # bump (see docs/contributing/automation.md#osv-remediation).
       - name: Check out the OSV remediation head
         if: inputs.private-head
         uses: ./.github/actions/osv-remediation-head
@@ -356,7 +356,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Run by the OSV remediation workflow: test its unpublished lockfile
-      # bump (see docs/contributing/ci.md#osv-remediation).
+      # bump (see docs/contributing/automation.md#osv-remediation).
       - name: Check out the OSV remediation head
         if: inputs.private-head
         uses: ./.github/actions/osv-remediation-head
@@ -428,7 +428,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Run by the OSV remediation workflow: test its unpublished lockfile
-      # bump (see docs/contributing/ci.md#osv-remediation).
+      # bump (see docs/contributing/automation.md#osv-remediation).
       - name: Check out the OSV remediation head
         if: inputs.private-head
         uses: ./.github/actions/osv-remediation-head
@@ -474,7 +474,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Run by the OSV remediation workflow: test its unpublished lockfile
-      # bump (see docs/contributing/ci.md#osv-remediation).
+      # bump (see docs/contributing/automation.md#osv-remediation).
       - name: Check out the OSV remediation head
         if: inputs.private-head
         uses: ./.github/actions/osv-remediation-head
@@ -559,7 +559,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Run by the OSV remediation workflow: test its unpublished lockfile
-      # bump (see docs/contributing/ci.md#osv-remediation).
+      # bump (see docs/contributing/automation.md#osv-remediation).
       - name: Check out the OSV remediation head
         if: inputs.private-head
         uses: ./.github/actions/osv-remediation-head
@@ -610,7 +610,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Run by the OSV remediation workflow: test its unpublished lockfile
-      # bump (see docs/contributing/ci.md#osv-remediation).
+      # bump (see docs/contributing/automation.md#osv-remediation).
       - name: Check out the OSV remediation head
         if: inputs.private-head
         uses: ./.github/actions/osv-remediation-head
@@ -715,7 +715,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Run by the OSV remediation workflow: test its unpublished lockfile
-      # bump (see docs/contributing/ci.md#osv-remediation).
+      # bump (see docs/contributing/automation.md#osv-remediation).
       - name: Check out the OSV remediation head
         if: inputs.private-head
         uses: ./.github/actions/osv-remediation-head
@@ -782,7 +782,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Run by the OSV remediation workflow: test its unpublished lockfile
-      # bump (see docs/contributing/ci.md#osv-remediation).
+      # bump (see docs/contributing/automation.md#osv-remediation).
       - name: Check out the OSV remediation head
         if: inputs.private-head
         uses: ./.github/actions/osv-remediation-head
@@ -829,7 +829,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Run by the OSV remediation workflow: test its unpublished lockfile
-      # bump (see docs/contributing/ci.md#osv-remediation).
+      # bump (see docs/contributing/automation.md#osv-remediation).
       - name: Check out the OSV remediation head
         if: inputs.private-head
         uses: ./.github/actions/osv-remediation-head
@@ -896,7 +896,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Run by the OSV remediation workflow: test its unpublished lockfile
-      # bump (see docs/contributing/ci.md#osv-remediation).
+      # bump (see docs/contributing/automation.md#osv-remediation).
       - name: Check out the OSV remediation head
         if: inputs.private-head
         uses: ./.github/actions/osv-remediation-head
@@ -964,7 +964,7 @@ jobs:
           persist-credentials: false
 
       # Run by the OSV remediation workflow: test its unpublished lockfile
-      # bump (see docs/contributing/ci.md#osv-remediation).
+      # bump (see docs/contributing/automation.md#osv-remediation).
       - name: Check out the OSV remediation head
         if: inputs.private-head
         uses: ./.github/actions/osv-remediation-head
@@ -997,7 +997,7 @@ jobs:
         run: python3 scripts/ci-exec.py run site_test
 
       # Lighthouse and axe-core against the built site under `wrangler dev`,
-      # with the runner's Chrome (docs/contributing/ci.md#website-checks).
+      # with the runner's Chrome (docs/contributing/automation.md#website-checks).
       - name: Website audit
         if: needs.plan.outputs.check_site_audit == 'true'
         run: python3 scripts/ci-exec.py run site_audit
@@ -1074,7 +1074,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Run by the OSV remediation workflow: test its unpublished lockfile
-      # bump (see docs/contributing/ci.md#osv-remediation).
+      # bump (see docs/contributing/automation.md#osv-remediation).
       - name: Check out the OSV remediation head
         if: inputs.private-head
         uses: ./.github/actions/osv-remediation-head
