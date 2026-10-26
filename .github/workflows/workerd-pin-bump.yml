@@ -8,7 +8,7 @@
 #
 # The App token is required: the organization does not let GITHUB_TOKEN open
 # pull requests, and pushes made with GITHUB_TOKEN would not start CI on the
-# PR. See docs/contributing/ci.md#automation-app.
+# PR. See docs/contributing/automation.md#automation-app.
 
 name: workerd pin bump
 

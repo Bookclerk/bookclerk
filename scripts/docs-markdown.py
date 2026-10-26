@@ -21,7 +21,7 @@ relative link in the tree must resolve, or the build fails.
 The output directory is cleared before each build, so it must sit strictly
 inside the scratch root (``target/docs-markdown/`` by default) and, when it
 already exists, carry the marker file this script writes. Anything else is
-refused before a single file is touched. See docs/contributing/ci.md#docs-publishing.
+refused before a single file is touched. See docs/contributing/automation.md#docs-publishing.
 """
 
 from __future__ import annotations

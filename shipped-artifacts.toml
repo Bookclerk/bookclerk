@@ -6,7 +6,7 @@
 # advisory. Anything not shipped (examples, fuzzing,
 # scripts, GitHub Actions, dev dependencies) never produces an advisory: its
 # alert plus the remediation bump is the whole record. See
-# docs/adr/security-advisory-automation.md and docs/contributing/ci.md#osv-advisories.
+# docs/adr/security-advisory-automation.md and docs/contributing/automation.md#osv-advisories.
 #
 # Every lockfile in the repository must appear exactly once, either under a
 # `[[shipped]]` entry or in `not_shipped`

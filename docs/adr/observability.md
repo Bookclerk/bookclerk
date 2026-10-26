@@ -30,8 +30,8 @@ These two audiences pull in opposite directions on how much to record.
    `RUST_LOG`. The daemon defaults to `bookclerk=info,warn`; the CLI is quiet
    unless asked (`-v`, `-vv`, `-vvv`). Changing them never changes what the
    ring keeps.
-4. **Readable by default, structured on request.** The CLI writes plain
-   syslog-style lines by default and can write JSON. The daemon writes JSON
+4. **Readable by default, structured on request.** The CLI writes plain,
+   syslog-style lines and offers a JSON switch. The daemon writes JSON
    by default (`daemon.json_logs = true`), because it usually runs under a
    service manager or a log aggregator.
 5. **Build on `tracing`.** The `tracing` crate stays the instrumentation API.
@@ -47,7 +47,8 @@ In place:
 
 - The ring buffer keeps every level through TRACE, while stderr and the OS
   facility follow `BOOKCLERK_LOG` / `RUST_LOG`.
-- The daemon writes JSON by default, and the CLI writes text.
+- The daemon writes JSON by default. The CLI writes `tracing`'s text format
+  and is silent unless asked (`-v`).
 - Redaction covers every sink, and uploads are abandoned if a registered
   secret remains.
 - Domain events carry correlation and causation ids from the invocation that
@@ -58,7 +59,7 @@ Not yet done:
 - Spans and trace or span ids on log events. Today the ring records events
   only (time, level, target, message, fields), and the code has almost no
   spans.
-- A JSON log format switch for the CLI.
+- Syslog-style lines and a JSON log format switch for the CLI.
 - Changing the level of a running process.
 - An OTLP exporter.
 - Reports from the media worker and plugin guests. Today only `bookclerkd` and
@@ -66,10 +67,12 @@ Not yet done:
 
 ## Consequences
 
-- Instrumenting generously is cheap for operators, because their outputs
-  stay at the level they chose. The ring is bounded
-  (`ring_buffer_capacity`, default 200 events), so TRACE detail costs memory
-  only up to that bound.
+- Operators' outputs stay at the level they chose, however much the code
+  records. The ring is bounded (`ring_buffer_capacity`, default 200 events),
+  so its memory is bounded too.
+- TRACE is not free: the ring enables every callsite, so each event is
+  built and redacted whatever level the outputs show. Keep TRACE fields
+  small, and out of per-sample or per-chunk loops.
 - Every new event field is a potential leak. New secret paths must register
   with redaction, as the project invariants already require.
 - Reports become more useful as spans land, because triage can follow one

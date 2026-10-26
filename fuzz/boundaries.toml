@@ -2,7 +2,7 @@
 #
 # `scripts/fuzz-crash-triage.py file` reads this to give a crash from the
 # scheduled fuzzing run its default severity and the shipped artifacts a
-# draft advisory names. It extends the boundary table in docs/contributing/ci.md#fuzzing
+# draft advisory names. It extends the boundary table in docs/contributing/fuzzing.md
 # with what triage needs; every `[[bin]]` in fuzz/Cargo.toml and every target
 # in that table needs an entry here too (scripts/tests/test_fuzz_crash_triage.py).
 # A target missing here is triaged as high severity against the host binaries.

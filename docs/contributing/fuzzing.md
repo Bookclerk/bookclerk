@@ -2,7 +2,7 @@
 
 How the untrusted-input fuzz targets run in CI, and what to do when one finds
 a crash. The rule that every boundary ships with a target is in
-[ADR: untrusted input and fuzzing](../adr/untrusted-input-fuzzing.md); the
+[ADR: Untrusted-input fuzzing](../adr/untrusted-input-fuzzing.md); the
 rest of CI is in [Continuous integration](ci.md).
 
 Coverage-guided fuzzing runs on [ClusterFuzzLite](https://google.github.io/clusterfuzzlite/)

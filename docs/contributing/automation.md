@@ -1,9 +1,9 @@
 # Repository automation
 
-The workflows and the automation App that keep the repository current outside
-the pull-request checks: dependency updates, security advisories, docs
-publishing, website checks and Cloudflare Worker deploys. The pull-request
-checks themselves are in [Continuous integration](ci.md).
+The automation App and the workflows around the main CI run: dependency
+updates, security advisories, docs publishing, the website checks (which also
+run on pull requests that change the site) and Cloudflare Worker deploys. The
+planner, its jobs and `CI Gate` are in [Continuous integration](ci.md).
 
 ## Dependabot auto-merge
 

@@ -14,7 +14,7 @@
 #                          Turnstile edit and Workers Routes edit on the DOMAIN
 #                          zone; the first deploy creates the Worker, its D1
 #                          database and its container application, see
-#                          docs/contributing/ci.md#cloudflare-worker-deploys
+#                          docs/contributing/automation.md#cloudflare-worker-deploys
 #   CLOUDFLARE_ACCOUNT_ID
 # Worker secrets are made here, never stored in GitHub: the Turnstile widget
 # "bookclerk-demo" and its keys (scripts/worker-secrets.ts), and SESSION_KEY,

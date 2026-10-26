@@ -59,9 +59,11 @@ this one connection exists. Phase 0 did not.
 Everything else in `config.toml` is transitional application configuration.
 The first domain moved into the database is `[events]` (`core.events`). After
 import, that domain has one authority: the database row. Startup, reload, the
-CLI, and `BOOKCLERK_EVENTS_*` must not overwrite it. Unmigrated sections
-(library, jobs, sources, output, daemon listen, media, plugins, diagnostics,
-discovery, auth.oidc) still load from TOML and environment variables.
+CLI, and `BOOKCLERK_EVENTS_*` must not overwrite it. In Phase 0 the
+unmigrated sections (library, jobs, sources, output, daemon listen, media,
+plugins, diagnostics, discovery, auth.oidc) still loaded from TOML and
+environment variables; [What left `config.toml`](#what-left-configtoml) lists
+what Phase 2 moved out.
 
 `daemon.listen` stays in TOML because the process binds before
 it serves HTTP. It is transitional, not a second copy of `core.events`.
@@ -291,7 +293,7 @@ not understand is not applied and is not rewritten.
 
 ### Authorization
 
-In Phase 0, cluster and host configuration writes required an operator
+Cluster and host configuration writes require an operator
 principal (the local CLI or the daemon operator token on
 `PUT /api/config/domains/core.events`, `PUT /api/config/domains/core.output`,
 and `PATCH /api/settings` for `events.*` / `output.*`). Administrators and

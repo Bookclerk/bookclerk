@@ -228,8 +228,8 @@ class BoundariesTest(unittest.TestCase):
         self.assertFalse(missing, f"fuzz/boundaries.toml lacks {sorted(missing)}")
 
     def test_every_documented_target_is_mapped(self) -> None:
-        docs = (ROOT / "docs" / "contributing" / "ci.md").read_text(encoding="utf-8")
-        section = docs.split("### Fuzzing", 1)[1].split("Still to add", 1)[0]
+        docs = (ROOT / "docs" / "contributing" / "fuzzing.md").read_text(encoding="utf-8")
+        section = docs.split("Still to add", 1)[0]
         documented = set(re.findall(r"^\| `([a-z0-9_]+)` \|", section, re.MULTILINE))
         self.assertTrue(documented)
         missing = documented - set(_boundaries())

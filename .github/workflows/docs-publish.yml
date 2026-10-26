@@ -5,7 +5,7 @@
 # commit becomes one docs commit with a `Source-Commit:` trailer naming it
 # (bursts of merges collapse to the newest). A published release tags the
 # docs commit built from the release's commit with the same tag name. See
-# docs/contributing/ci.md#docs-publishing.
+# docs/contributing/automation.md#docs-publishing.
 #
 # Two jobs, so the build never holds a credential:
 #   build    no secrets, read-only token: scripts/docs-markdown.py writes
