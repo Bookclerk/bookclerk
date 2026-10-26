@@ -8,6 +8,8 @@
 )]
 
 mod cli_plugin;
+#[cfg(test)]
+mod cli_reference;
 /// Subcommand implementations (`library`, `discover`, `daemon`, …).
 mod commands;
 mod format_out;

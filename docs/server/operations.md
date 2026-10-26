@@ -177,6 +177,8 @@ bookclerk daemon scan [--account <id>]
 bookclerk daemon acquire [--asin <id>] [--account <id>]
 ```
 
+Every `bookclerk` command and option is listed in the [CLI reference](cli-reference.md).
+
 ### Host nodes
 
 A Bookclerk install can join another cluster as a host node and run its

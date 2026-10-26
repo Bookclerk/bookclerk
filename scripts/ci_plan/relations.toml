@@ -33,6 +33,12 @@ paths = ["assets/brand/svg/bookclerk-logo.svg"]
 package = "bookclerkd"
 paths = ["crates/bookclerk-integrations/src/portal/**"]
 
+# `cli_reference_is_current` compares the generated CLI reference with the
+# clap definitions.
+[[test_input]]
+package = "bookclerk-cli"
+paths = ["docs/server/cli-reference.md"]
+
 [[test_input]]
 package = "bookclerk-plugin-manifest"
 paths = ["examples/plugins-echo-native-rust/plugin.toml"]

@@ -102,6 +102,7 @@ export const NAV: NavSpec[] = [
       "server/media",
       "server/backups",
       "server/diagnostics",
+      "server/cli-reference",
     ],
   },
   {
