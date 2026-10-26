@@ -104,7 +104,7 @@ json.dump(kept, sys.stdout, separators=(",", ":"), ensure_ascii=False)
 ' > "$DATA_FILE"
 
 # Report IDs, one per line, as the hidden report block lists them
-# (validate_plan.py writes it, dashboard/report-ids.js reads it). IDs are
+# (validate_plan.py writes it, dashboard/report-ids.ts reads it). IDs are
 # collector object names or report UUIDs; anything else becomes "unknown"
 # (counted, never listed), so a report cannot write into an issue through
 # its ID or close the block's HTML comment early.
@@ -177,7 +177,7 @@ file_fallback() {
   notify_issue "$url"
 }
 
-# The prompt lives in the collector (triage.js), next to the model and its
+# The prompt lives in the collector (triage.ts), next to the model and its
 # neuron budget; this only sends the batch. The key goes in a header read
 # from stdin, never on argv. A batch the regression issues emptied is not
 # sent: the empty plan below files nothing.

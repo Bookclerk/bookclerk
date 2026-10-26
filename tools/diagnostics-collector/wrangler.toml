@@ -1,7 +1,7 @@
 # Cloudflare Worker — deployed by GitHub Actions (wrangler-action).
 # See .github/workflows/diagnostics-collector-deploy.yml
 name = "bookclerk-diagnostics"
-main = "worker.js"
+main = "worker.ts"
 compatibility_date = "2026-01-01"
 # Off here: with the DOMAIN variable set, the deploy workflow adds the custom
 # domain `diagnostics.<DOMAIN>` and serves only there. With DOMAIN unset (a
@@ -36,7 +36,7 @@ required = [
   "REPORT_API_KEY",
 ]
 
-# Dashboard (dashboard/routes.js): report index, sessions and audit log. No
+# Dashboard (dashboard/routes.ts): report index, sessions and audit log. No
 # id: wrangler creates the database on the first deploy, like TRIAGE_BUDGET,
 # and the deploy workflow then applies migrations/. The dashboard stays off
 # until the GitHub App secrets are set too.
@@ -54,7 +54,7 @@ binding = "ASSETS"
 [triggers]
 crons = ["*/30 * * * *"]
 
-# Live dashboard updates (dashboard/live.js): one SQLite-backed Durable
+# Live dashboard updates (dashboard/live.ts): one SQLite-backed Durable
 # Object holds open pages' WebSockets with the hibernation API and tells them
 # when the numbers change. SQLite-backed classes are the kind Workers Free
 # offers; idle hibernated sockets use no duration.

@@ -181,9 +181,17 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(sorted(p.checks), ["site_audit", "site_test"])
 
     def test_collector_only_runs_its_tests(self) -> None:
-        p = plan("tools/diagnostics-collector/worker.js")
+        p = plan("tools/diagnostics-collector/worker.ts")
         self.assertFalse(p.full_suite, p.reasons)
         self.assertEqual(sorted(p.checks), ["collector_test"])
+
+    def test_collector_test_type_checks_before_testing(self) -> None:
+        art = artifact(plan("tools/diagnostics-collector/worker.ts"))
+        labels = [c.label for _, c in planned_commands(art, "collector_test", CTX)]
+        self.assertEqual(
+            labels,
+            ["npm ci (tools/diagnostics-collector)", "tsc (tools/diagnostics-collector)", "npm test (tools/diagnostics-collector)"],
+        )
 
     def test_demo_only_runs_its_tests(self) -> None:
         p = plan("tools/demo/src/app.js", "tools/demo/corpus/route/acquire")

@@ -52,7 +52,7 @@ FORBIDDEN = {
     "issue reference": re.compile(r"#\d|(?i:\bGH-\d)"),
 }
 REPORT_IDS_HEADING = re.compile(r"(?im)^\s*#+\s*report ids\b")
-#: The marker the dashboard parser (dashboard/report-ids.js) reads.
+#: The marker the dashboard parser (dashboard/report-ids.ts) reads.
 MARKER = re.compile(r"^<!-- bookclerk-diagnostics: regression of #([1-9]\d{0,8}) -->$")
 #: What the dashboard's parser reads as an ID line inside the block.
 ORACLE_LINE = re.compile(r"[A-Za-z0-9._:/+-]{1,160}")

@@ -85,8 +85,14 @@ at `TRIAGE_DAILY_NEURONS`; see [`docs/server/diagnostics.md`](../../docs/server/
 4. Sign in as an organization owner and press **Index older reports** until
    it reports the reindex finished.
 
-Run the tests with `npm test` (Node 22.13 or newer: the dashboard tests use
-`node:sqlite` as a stand-in for D1).
+The Worker, dashboard and tests are strict TypeScript. Wrangler bundles the
+`.ts` sources and Node 22.18 or newer runs the tests by stripping types, so
+nothing is compiled. Check types with `npm run typecheck` (`tsconfig.json`
+checks everything with the Workers and Node types; `tsconfig.worker.json`
+checks the Worker's sources again with the Workers types only) and run the
+tests with `npm test` (the dashboard tests use `node:sqlite` as a stand-in
+for D1). `public/static/dashboard.js` is the browser script the dashboard
+serves, not Worker code, and stays JavaScript.
 
 ## Bookclerk client
 

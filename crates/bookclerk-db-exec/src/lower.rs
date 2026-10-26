@@ -202,8 +202,8 @@ fn wrap_insert_select_head(head: &str) -> String {
     let Some(src_off) = insert_row_source_offset(head) else {
         return head.to_string();
     };
-    let source = head[src_off..].trim();
-    if ident_eq_ci(source, 0, "SELECT") || ident_eq_ci(source, 0, "WITH") {
+    let source = trim_sql(&head[src_off..]);
+    if ident_eq_ci(&source, 0, "SELECT") || ident_eq_ci(&source, 0, "WITH") {
         let prefix = &head[..src_off];
         format!("{prefix}SELECT * FROM ({source}) AS {INSERT_SELECT_WRAP_ALIAS} WHERE true ")
     } else {
@@ -892,15 +892,15 @@ fn split_call_args(s: &str) -> Option<(Vec<String>, &str)> {
         match s[i..].chars().next()? {
             '(' => depth += 1,
             ')' if depth == 0 => {
-                let last = s[start..i].trim();
+                let last = trim_sql(&s[start..i]);
                 if !last.is_empty() || !args.is_empty() {
-                    args.push(last.to_string());
+                    args.push(last.into_owned());
                 }
                 return Some((args, &s[i + 1..]));
             }
             ')' => depth -= 1,
             ',' if depth == 0 => {
-                args.push(s[start..i].trim().to_string());
+                args.push(trim_sql(&s[start..i]).into_owned());
                 start = i + 1;
             }
             _ => {}
@@ -925,7 +925,7 @@ fn rewrite_json_extract(sql: &str) -> String {
             let after = after.trim_start();
             let after = after.strip_prefix('(').unwrap_or(after);
             if let Some((expr, json_path, rest2)) = parse_json_extract_args(after) {
-                let expr = rewrite_json_extract(expr);
+                let expr = rewrite_json_extract(&trim_sql(expr));
                 let pg_path = json_path.replace('.', ",");
                 out.push_str(&format!(
                     "(CASE WHEN ({expr}) IS JSON THEN (({expr})::jsonb #>> '{{{pg_path}}}') END)"
@@ -944,10 +944,11 @@ fn rewrite_json_extract(sql: &str) -> String {
 /// Parses `expr, '$.path')` from `json_extract(` arguments (string-aware).
 ///
 /// The path may already be wrapped as `('$.path' COLLATE "C")` when TEXT
-/// collation ran before this rewrite.
+/// collation ran before this rewrite. `expr` keeps its surrounding
+/// whitespace; the caller trims it with [`trim_sql`].
 fn parse_json_extract_args(after: &str) -> Option<(&str, &str, &str)> {
     let comma = find_top_level_comma(after)?;
-    let expr = after[..comma].trim();
+    let expr = &after[..comma];
     let after_comma = after[comma + 1..].trim_start();
     let (json_path, remainder) = take_json_extract_path_arg(after_comma)?;
     let rest2 = remainder.trim_start().strip_prefix(')')?;
@@ -1535,7 +1536,8 @@ fn collate_key_list(
         if n > 0 {
             out.push_str(", ");
         }
-        let trimmed = part.trim();
+        let trimmed = trim_sql(part);
+        let trimmed = trimmed.as_ref();
         if is_fold_key(trimmed) {
             seen_fold = true;
             out.push_str(trimmed);
@@ -2015,9 +2017,9 @@ fn add_index_nulls_first(sql: &str) -> String {
         if n > 0 {
             inner.push_str(", ");
         }
-        let trimmed = part.trim();
-        inner.push_str(trimmed);
-        if !contains_nulls_keyword(trimmed) {
+        let trimmed = trim_sql(part);
+        inner.push_str(&trimmed);
+        if !contains_nulls_keyword(&trimmed) {
             inner.push_str(" NULLS FIRST");
         }
     }
@@ -2269,6 +2271,49 @@ fn literal_or_comment_len(s: &str) -> Option<usize> {
     comment_len(s).or_else(|| quoted_len(s))
 }
 
+/// Trims a SQL fragment that the lowerer re-emits before more SQL.
+///
+/// Plain [`str::trim`] would also drop the newline that ends a trailing `--`
+/// comment, so the comment would swallow whatever the rewrite appends (a `)`,
+/// `IS NULL`, `NULLS FIRST`, the next argument). A fragment ending in a line
+/// comment keeps one newline after it.
+///
+/// # Arguments
+///
+/// * `s` - The fragment, such as one call argument or one `ORDER BY` key.
+///
+/// # Returns
+///
+/// `s` without surrounding whitespace, borrowed, or with a single `\n` added
+/// when the trimmed text ends inside a `--` comment.
+fn trim_sql(s: &str) -> std::borrow::Cow<'_, str> {
+    let trimmed = s.trim();
+    if ends_in_line_comment(trimmed) {
+        std::borrow::Cow::Owned(format!("{trimmed}\n"))
+    } else {
+        std::borrow::Cow::Borrowed(trimmed)
+    }
+}
+
+/// True when the last token of `s` is a `--` comment with no newline after it.
+///
+/// Quoted strings, identifiers, dollar quotes and block comments are skipped
+/// as whole tokens, so a `--` inside them does not count.
+fn ends_in_line_comment(s: &str) -> bool {
+    let mut i = 0;
+    while i < s.len() {
+        if let Some(len) = literal_or_comment_len(&s[i..]) {
+            if i + len == s.len() && s[i..].starts_with("--") {
+                return true;
+            }
+            i += len;
+            continue;
+        }
+        i += s[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    false
+}
+
 /// Length of a `--` line comment or `/* */` block at `s`.
 fn comment_len(s: &str) -> Option<usize> {
     if s.starts_with("--") {
@@ -2334,6 +2379,46 @@ mod tests {
         typecheck_execute_request_proofs, DbPlanStatementKind, DbResultSelection, DbValue,
         ExecuteRequest, SqlType, SqlTypeEnv, TypedDbStatement,
     };
+
+    #[test]
+    fn a_line_comment_ending_an_argument_keeps_its_newline() {
+        // Trimming the argument used to drop the newline that ends the
+        // comment, so the comment swallowed the rewrite's `) IS NULL OR …`.
+        let sql = lower_canonical_to_postgres("SELECT min(a -- low\n, b) FROM t");
+        assert_eq!(
+            sql,
+            "SELECT CASE WHEN (a -- low\n) IS NULL OR (b) IS NULL THEN NULL ELSE LEAST(a -- low\n, b) END FROM t"
+        );
+        let sql =
+            lower_canonical_to_postgres("SELECT json_extract(payload -- doc\n, '$.a') FROM t");
+        assert!(sql.contains("(payload -- doc\n) IS JSON"), "{sql}");
+        assert!(
+            sql.contains("((payload -- doc\n)::jsonb #>> '{a}')"),
+            "{sql}"
+        );
+        assert_eq!(
+            add_index_nulls_first("CREATE INDEX i ON t (a -- first\n, b)"),
+            "CREATE INDEX i ON t (a -- first\n NULLS FIRST, b NULLS FIRST)"
+        );
+    }
+
+    #[test]
+    fn a_line_comment_ending_an_insert_select_source_keeps_its_newline() {
+        let sql = lower_canonical_sql(
+            DatabaseBackend::Sqlite,
+            "INSERT OR IGNORE INTO t (a) SELECT a FROM s -- copy\n",
+        );
+        assert!(sql.contains("FROM s -- copy\n) AS "), "{sql}");
+    }
+
+    #[test]
+    fn trim_sql_only_keeps_a_newline_after_a_real_line_comment() {
+        assert_eq!(trim_sql("  a -- c \n "), "a -- c\n");
+        assert_eq!(trim_sql(" 'x -- y' "), "'x -- y'");
+        assert_eq!(trim_sql(" a /* -- */ "), "a /* -- */");
+        assert_eq!(trim_sql(" \"--\" "), "\"--\"");
+        assert!(matches!(trim_sql(" a "), std::borrow::Cow::Borrowed("a")));
+    }
 
     #[test]
     fn a_comment_opened_by_slash_star_slash_does_not_close_itself() {
