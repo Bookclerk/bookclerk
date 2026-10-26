@@ -7,9 +7,9 @@ settings and your naming templates, so you do not start from scratch.
 
 - Your book list and what Libation knew about each book.
 - Your settings: file format, cover and chapter options, and folder and file
-  naming templates. If this Bookclerk has already been started, it keeps
-  its own file and naming settings and the import says so; set them to
-  match Libation in **Settings → Output** afterwards.
+  naming templates. If this Bookclerk has already been started, its
+  existing output settings stay as they are; when they differ from
+  Libation's, the import warns, so check **Settings → Output** afterward.
 - The list of your accounts.
 
 Store sign-ins do **not** come over. After the import, connect each store
@@ -27,7 +27,7 @@ cargo dev-cli -- import libation --from ~/LibationFiles --force
 ```
 
 The first command only reports what it would do. The second imports, and
-replaces Bookclerk's settings file with the one built from Libation's.
+overwrites Bookclerk's `config.toml` with settings built from Libation's.
 
 ## After the import
 

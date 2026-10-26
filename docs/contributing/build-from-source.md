@@ -80,7 +80,9 @@ Alternatives for operators migrating credentials:
 Wrap `master.key` at rest (strongly recommended for production):
 
 ```bash
-export BOOKCLERK_AUTH_PASSWORD='your-strong-passphrase'
+read -rsp 'Bookclerk auth password: ' BOOKCLERK_AUTH_PASSWORD
+printf '\n'
+export BOOKCLERK_AUTH_PASSWORD
 ```
 
 ### Password stores (Libro.fm, Chirp, GraphicAudio)
@@ -93,7 +95,7 @@ argv or read from the environment). Details per store: [stores.md](../server/sto
 ```bash
 bookclerk plugins list
 bookclerk plugins config set local root /data/Audiobooks
-bookclerk plugins deploy s3 && bookclerk plugins config set s3 bucket my-audiobooks
+bookclerk plugins config set s3 bucket my-audiobooks && bookclerk plugins deploy s3
 ```
 
 See [configuration.md](../server/configuration.md#plugin-instances).
