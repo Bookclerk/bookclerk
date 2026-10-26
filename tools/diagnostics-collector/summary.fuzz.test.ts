@@ -15,7 +15,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, URL } from "node:url";
 import { describe, it } from "node:test";
 import { MARKER, MAX_SUMMARIES, dashboardOrigin, defang, renderSummaries } from "./dashboard/summary.ts";
 import { mutate, rng } from "./test-support/fuzz.ts";

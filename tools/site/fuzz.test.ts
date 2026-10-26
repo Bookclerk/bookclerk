@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, URL } from "node:url";
 
 import { pickEncoding } from "./worker.ts";
 import type { Encoding } from "./worker.ts";

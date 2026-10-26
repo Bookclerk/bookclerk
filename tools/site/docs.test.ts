@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, URL } from "node:url";
 
 import { docUrl, GENERATED_TITLES, markdownFiles, renderDocs, rewriteLink, siteMarkdown, slugify } from "./docs.ts";
 import { docMarkdownUrl, fillShell, normalizePath, renderDoc } from "./render.ts";

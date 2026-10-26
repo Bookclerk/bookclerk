@@ -22,9 +22,15 @@ updates:
           - minor
           - patch
 
-  # Base images of the production image, pinned by digest.
+  # Base images, pinned by digest: the production image, the Dev Container
+  # (same rust and node images, so the toolchains stay aligned), the
+  # ClusterFuzzLite builder and the Audiobookshelf integration test image.
   - package-ecosystem: docker
-    directory: "/packaging/docker"
+    directories:
+      - "/packaging/docker"
+      - "/.devcontainer"
+      - "/.clusterfuzzlite"
+      - "/tests/abs-integration"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

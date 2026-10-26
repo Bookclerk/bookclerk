@@ -8,6 +8,7 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import { URL } from "node:url";
 import { classify, OPERATIONS } from "../src/routes.ts";
 import {
   cookiesForContainer,

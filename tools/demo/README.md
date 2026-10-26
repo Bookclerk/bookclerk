@@ -126,7 +126,7 @@ npm test
 ```
 
 The Worker, its deploy script and the tests are strict TypeScript. Wrangler
-bundles the `.ts` sources and Node 22.18 or newer runs the tests and
+bundles the `.ts` sources and Node (26 in CI, 22.18 or newer) runs the tests and
 `scripts/worker-secrets.ts` by stripping types, so nothing is compiled.
 `npm run typecheck` checks everything with the Workers and Node types
 (`tsconfig.json`) and the Worker's sources again with the Workers types only

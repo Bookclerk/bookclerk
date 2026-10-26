@@ -4,6 +4,7 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { URL } from "node:url";
 
 /**
  * A bound value as node:sqlite takes it; undefined binds as NULL, as D1

@@ -251,7 +251,7 @@ jobs:
         if: needs.plan.outputs.check_needs_node == 'true'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22"
+          node-version: "26"
           # No npm cache for an unpublished OSV remediation bump.
           cache: ${{ !inputs.private-head && 'npm' || '' }}
           cache-dependency-path: |
@@ -499,7 +499,7 @@ jobs:
         if: needs.plan.outputs.release_mode == 'full'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22"
+          node-version: "26"
           # No npm cache for an unpublished OSV remediation bump.
           cache: ${{ !inputs.private-head && 'npm' || '' }}
           cache-dependency-path: ui/package-lock.json
@@ -983,7 +983,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22"
+          node-version: "26"
           # No npm cache for an unpublished OSV remediation bump.
           cache: ${{ !inputs.private-head && 'npm' || '' }}
           cache-dependency-path: |

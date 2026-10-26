@@ -88,9 +88,9 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   `generated/docs-shell.d.json.ts`, checked in, types that file so the
   Worker type-checks before a build.
 - TypeScript – every module here is strict TypeScript (`tsconfig.json`).
-  Wrangler bundles the Worker from the `.ts` sources and Node (22.18 or
-  later) runs the build and the tests by stripping the types, so nothing is
-  compiled; `npm run typecheck` runs `tsc`, and CI runs it before the tests.
+  Wrangler bundles the Worker from the `.ts` sources and Node (26 in CI,
+  22.18 or newer) runs the build and the tests by stripping the types, so
+  nothing is compiled; `npm run typecheck` runs `tsc`, and CI runs it before the tests.
 - `src/_headers` – security headers, and Markdown and `llms.txt` content
   types. The CSP allows no script except Cloudflare Web Analytics, which the
   edge injects into each page: `script-src https://static.cloudflareinsights.com`

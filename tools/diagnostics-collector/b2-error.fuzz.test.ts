@@ -9,6 +9,7 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import { URL } from "node:url";
 import { mutate, rng } from "./test-support/fuzz.ts";
 import { UpstreamError, b2ErrorCode } from "./worker.ts";
 

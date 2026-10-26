@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import { URL } from "node:url";
 import { MAX_AFTER_CHARS, MAX_CURSOR_CHARS, parseCursor } from "./ingest-cursor.ts";
 import { mutate, rng } from "./test-support/fuzz.ts";
 

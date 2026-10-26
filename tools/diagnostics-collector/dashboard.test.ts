@@ -639,10 +639,10 @@ describe("sign-in", () => {
       const ctx = makeCtx();
       const res = await callback(makeEnv(), ctx, next);
       await Promise.all(ctx.pending);
-      assert.equal(res.status, 200, next);
+      assert.equal(res.status, 200, `next=${next}`);
       const text = await res.text();
-      assert.ok(text.includes(`content="0;url=${expected}"`), next);
-      assert.ok(text.includes(`href="${expected}"`), next);
+      assert.ok(text.includes(`content="0;url=${expected}"`), `next=${next}`);
+      assert.ok(text.includes(`href="${expected}"`), `next=${next}`);
       gh.restore();
     }
     gh = null;
