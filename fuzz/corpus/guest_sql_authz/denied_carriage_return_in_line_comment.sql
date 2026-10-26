@@ -1,0 +1,1 @@
+0SELECT id FROM books -- cUNION SELECT id FROM encrypted_secrets
