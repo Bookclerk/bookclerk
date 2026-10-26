@@ -8,10 +8,13 @@ track of books you want but do not own yet, across every store at once.
 Discover shows rows of suggestions, each with its reason, for example:
 
 - **Finish these series**: the next book in a series you started.
-- **More from** an author, or **Narrated by** a narrator you like.
+- **Pick up where you left off**: books you have started.
+- **More from** an author, **If you like** an author, or **Narrated by** a
+  narrator you like.
 - **Because you like** a genre you finish books in.
-- **From** a store you use, and current Chirp deals.
-- **On the wishlist**: what people in your household want.
+- **Similar to books you finish** and **Top picks for you**.
+- **From stores you use**, and **Chirp deals**.
+- **Wishlist**: what people in your household want.
 
 Suggestions come from the stores' catalogs, so they include books nobody in
 your library owns yet. The more you rate and finish, the better they get. If

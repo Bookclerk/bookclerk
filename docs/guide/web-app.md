@@ -14,6 +14,8 @@ gives you.
 - **Wishlist**: your wishlist and the Global queue everyone shares.
 - **Accounts**: connect and disconnect your store accounts. See
   [Stores](stores.md).
+- **Status**: for Hosts, Administrators, Owners and the operator, the
+  health of the server and of every branch.
 - **Settings**: your profile, password, passkeys and sessions; and, for
   the people who run the library, users, sign-in options, plugins and
   server settings.

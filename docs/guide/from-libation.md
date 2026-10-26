@@ -7,7 +7,9 @@ settings and your naming templates, so you do not start from scratch.
 
 - Your book list and what Libation knew about each book.
 - Your settings: file format, cover and chapter options, and folder and file
-  naming templates.
+  naming templates. If this Bookclerk has already been started, it keeps
+  its own file and naming settings and the import says so; set them to
+  match Libation in **Settings → Output** afterwards.
 - The list of your accounts.
 
 Store sign-ins do **not** come over. After the import, connect each store
@@ -15,7 +17,8 @@ again on **Accounts** (see [Stores](stores.md)).
 
 ## Import
 
-Stop Bookclerk first. Then, from the Bookclerk checkout, point the import at
+The import needs the Audible plugin, which `cargo dev --optional` installs
+(see [Getting started](getting-started.md)). Stop Bookclerk first. Then, from the Bookclerk checkout, point the import at
 your Libation files folder:
 
 ```sh

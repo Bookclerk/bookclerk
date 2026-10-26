@@ -75,7 +75,7 @@ accounts with **2FA/MFA must complete OTP in the browser**.
 Alternatives for operators migrating credentials:
 
 - Import an existing audible-rs auth file via the Audible plugin / migrate path
-  (see [migration.md](../server/backups.md) and [sources.md](../server/stores.md))
+  (see [backups.md](../server/backups.md) and [stores.md](../server/stores.md))
 
 Wrap `master.key` at rest (strongly recommended for production):
 
@@ -86,7 +86,7 @@ export BOOKCLERK_AUTH_PASSWORD='your-strong-passphrase'
 ### Password stores (Libro.fm, Chirp, GraphicAudio)
 
 Connect from Accounts with email + password (passwords are never placed on CLI
-argv or read from the environment). Details per store: [sources.md](../server/stores.md).
+argv or read from the environment). Details per store: [stores.md](../server/stores.md).
 
 ### Destinations and plugin settings
 
@@ -149,7 +149,7 @@ downloads. Packaging notes: [operations.md](../server/operations.md).
 
 ## Next steps
 
-- Tune naming and destinations — [destinations.md](../server/output.md)
+- Tune naming and destinations — [output.md](../server/output.md)
 - Wire Audiobookshelf — [integrations.md](../server/integrations.md)
 - Install a third-party plugin — [plugins.md](../plugins/README.md)
-- Coming from Libation — [migration.md](../server/backups.md)
+- Coming from Libation — [backups.md](../server/backups.md)

@@ -135,4 +135,4 @@ committed revision on its next configuration wakeup.
 Artifact (sidecar) failures are logged and do not fail the audio acquire.
 
 Audible-specific knobs (Widevine, xHE-AAC, brand trim) are documented under
-[sources.md](stores.md#audible).
+[stores.md](stores.md#audible).

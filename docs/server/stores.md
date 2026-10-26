@@ -78,7 +78,7 @@ Optional brand-audio trim: `output.strip_audible_brand_audio = true`.
 Credentials are stored in `encrypted_secrets` (DB-backed). Classic Libation import
 (`import libation`) converts `AccountsSettings.json` account metadata only;
 IdentityTokens are not converted. Re-connect Audible from the Accounts UI, or see
-[migration.md](backups.md) for classic import paths.
+[backups.md](backups.md) for classic import paths.
 
 Low-level auth/download notes: [`crates/bookclerk-plugins/optional/source-audible/README.md`](../../crates/bookclerk-plugins/optional/source-audible/README.md).
 

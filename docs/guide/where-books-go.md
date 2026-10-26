@@ -15,7 +15,8 @@ operator changes the **local** plugin's `root` setting in
 ## Cloud storage
 
 Bookclerk can also save to Amazon S3, or to a storage server that speaks the
-same language, such as MinIO. The operator enables the **s3** plugin in
+same language, such as MinIO. The **s3** plugin comes with the other optional
+plugins (`cargo dev --optional`); the operator enables it in
 **Settings → Plugins** and fills in the bucket name and keys.
 
 You can use a folder and cloud storage at the same time. Each new book goes

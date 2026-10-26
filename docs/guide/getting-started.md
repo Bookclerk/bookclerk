@@ -57,8 +57,11 @@ also open the library or copy a sign-in link for the operator.
 ## 4. Turn on your stores
 
 Each store is a plugin, and plugins run only once the operator allows them.
-Signed in with the operator token, open **Settings → Plugins** and enable
-each store you buy from. Bookclerk first shows what that plugin asks for,
+Once an Owner exists, the operator token no longer signs in to the web app.
+Instead, as the Owner, open **Settings → Account** and use **Operator
+elevation** (your password or passkey) to unlock the operator settings for
+this session. Then open **Settings → Plugins** and enable each store you buy
+from. Bookclerk first shows what that plugin asks for,
 such as the store's web addresses it needs to reach; approve it to turn the
 store on.
 

@@ -33,7 +33,7 @@ Imports typically include:
 
 IdentityTokens and other store credentials are **not** converted by migrate
 (file-based auth leftovers are discarded). After import, re-connect Audible
-from the Accounts UI (see [sources.md](stores.md)).
+from the Accounts UI (see [stores.md](stores.md)).
 
 Example AccountsSettings shape:
 [`examples/AccountsSettings.example.json`](../../examples/AccountsSettings.example.json).
