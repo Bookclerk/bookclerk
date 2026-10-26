@@ -338,7 +338,9 @@ non-Rust tooling (decision 6):
   on every PR, checking each accepted plan against an independent oracle (no
   links, mentions, cross-references, raw HTML, comments or forged Report IDs
   or report blocks; only batch report IDs, listed bare in the one report
-  block that ends the body; at most five issues).
+  block that ends the body; at most five issues; attachments only to the
+  issues the collector offered, only batch report UUIDs, each report under
+  one issue and in no new issue, at most twenty issues).
 - The diagnostics regression issue planner
   (`tools/diagnostics-collector/scripts/regression_issue.py`), which turns
   the `regression_of` entries of an ingest pull (versions and platforms from
@@ -386,8 +388,9 @@ non-Rust tooling (decision 6):
   corpus (`tools/diagnostics-collector/corpus/triage_admit/`) and runs seeded
   mutation fuzzing on every PR, checking each result against an independent
   oracle (a refusal has a cause; an admitted prompt is the re-serialized
-  batch, fits the size cap and context window, and its reservation covers the
-  call's worst case).
+  batch after the Worker's own open-issue list when there is one, the batch
+  fits the size cap and the prompt the context window, and the reservation
+  covers the call's worst case).
 - The collector's ingest cursor body (`parseCursor` in
   `tools/diagnostics-collector/ingest-cursor.ts`), which `POST /report/cursor`
   stores and which decides where the next ingest run starts.
@@ -422,7 +425,9 @@ non-Rust tooling (decision 6):
   (`parseIssueNotify`, same file) and the single-issue decoder (`decodeIssue`,
   same file), which decide which issue is re-read and whether it stays linked;
   the ingest Action's summary receipt (`parseSummaryDone`, same file), which
-  decides which issue stops being handed out for a summary comment;
+  decides which issue stops being handed out for a summary comment; the
+  ingest Action's attach body (`parseAttachRequest`, same file), which
+  decides which reports the ledger links to which open issues as triage's;
   the issue comments decoder (`decodeComments`, same file), which names the
   comment the owner's "Update GitHub now" button edits in place or decides
   that one is posted, and the locked-issue reader (`isLockedMessage`, same
@@ -437,7 +442,7 @@ non-Rust tooling (decision 6):
   `corpus/signature/`, `corpus/oauth_callback/`, `corpus/next_path/`, `corpus/session/`,
   `corpus/membership/`, `corpus/pull_requests/`, `corpus/b2_list/`,
   `corpus/issue_page/`, `corpus/github_auth/`, `corpus/issue_notify/`,
-  `corpus/summary_done/`, `corpus/issue/`, `corpus/issue_comments/`, `corpus/locked_message/`,
+  `corpus/summary_done/`, `corpus/triage_attach/`, `corpus/issue/`, `corpus/issue_comments/`, `corpus/locked_message/`,
   `corpus/link_action/`) and runs seeded mutation
   fuzzing on every PR, checking results against independent oracles (IDs
   re-derived by a separate walk, all UUIDs present in the body, capped; level
@@ -460,7 +465,11 @@ non-Rust tooling (decision 6):
   fields, full by raw count, and the newest parseable update; tokens, ids
   and users accepted only when well-formed; an OAuth error code kept only
   when it is a short lowercase identifier; a notice accepted only as an
-  object whose `issue` is an integer from 1 to 10^9; a single issue decoded
+  object whose `issue` is an integer from 1 to 10^9; an attach body accepted
+  only as a `links` list of at most twenty objects, each a distinct issue
+  number in that range with a non-empty list of report UUIDs or collector
+  object names, lowercased, a report kept under the first issue naming it
+  and at most five hundred in all, re-derived by a separate walk; a single issue decoded
   only when it is a numbered non-PR issue, labeled exactly when a label is
   `diagnostics`; a merge commit kept only for a merged pull request with a
   40-character lowercase hex oid; a `fixed-in:<version>` label read only as

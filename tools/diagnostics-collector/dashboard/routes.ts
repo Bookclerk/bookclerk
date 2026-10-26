@@ -14,6 +14,7 @@ import { DEFAULT_NEXT, finishSignIn, safeNext, sameSiteHop, signOut, startSignIn
 import { metered } from "./budget.ts";
 import {
   applyLinkAction,
+  attachByTriage,
   fixStatus,
   isRegressionVersion,
   issueDetail,
@@ -55,7 +56,7 @@ import {
   type ReportBriefRow,
   type ReportFilter,
 } from "./db.ts";
-import { githubConfig, writeSummaryComment, type GitHubConfig, type SummaryWrite } from "./github.ts";
+import { githubConfig, writeSummaryComment, type AttachLink, type GitHubConfig, type SummaryWrite } from "./github.ts";
 import { MAX_FORM_CHARS, issueNumber, parseLinkAction } from "./links.ts";
 import { dashboardOrigin, renderSummary } from "./summary.ts";
 import { announceChange, closeAllLive, connectLive } from "./live.ts";
@@ -701,6 +702,23 @@ export async function dashboardIssueNotify(bindings: Env, number: number, now: n
   if (!cfg || !bindings.DASHBOARD_DB) return null;
   const env: DashboardEnv = { ...bindings, DASHBOARD_DB: metered(bindings.DASHBOARD_DB) };
   return announceIfLinksChanged(env, () => syncIssueNow(env, cfg, number, now));
+}
+
+/**
+ * `POST /issues/attach` (ingest Action, `REPORT_API_KEY`): records the
+ * model's decision that reports belong to issues already open, as `triage`
+ * ledger rows, with a live update when it linked anything.
+ *
+ * @param bindings - Worker bindings.
+ * @param links - From `parseAttachRequest`.
+ * @param now - Unix time in milliseconds.
+ * @returns What `attachByTriage` did, or null when the dashboard database
+ *   is not bound.
+ */
+export async function dashboardTriageAttach(bindings: Env, links: readonly AttachLink[], now: number): Promise<{ linked: number; existing: number; unlinked: string[]; } | null> {
+  if (!bindings.DASHBOARD_DB) return null;
+  const env: DashboardEnv = { ...bindings, DASHBOARD_DB: metered(bindings.DASHBOARD_DB) };
+  return announceIfLinksChanged(env, () => attachByTriage(env.DASHBOARD_DB, links, now));
 }
 
 /**

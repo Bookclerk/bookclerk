@@ -100,6 +100,22 @@ issue per run; its summary comment, kept like every other issue's, is the
 list people read. (An empty plan is the model deciding nothing needs an issue,
 and files nothing.)
 
+**Attaching to open issues.** When the dashboard database is bound, the
+collector puts the newest open triaged issues (at most forty, number and
+title) in front of the batch, and the model may answer with an `attach`
+list instead of a new issue for a report that is the same failure as one
+of them. The workflow validates that too: only issue numbers the collector
+offered (its answer's `open_issues`), only report UUIDs from the batch,
+each report under one issue, at most twenty issues, and a report the model
+both attaches and files stays attached. Nothing is written to the issue:
+the workflow sends the validated attachments to the collector's
+`POST /issues/attach`, whose ledger records each report under its issue as
+`triage` (an existing link or a member's exclusion for that pair stands),
+and the next summary pass counts them on the issue's comment. Reports whose
+issue was closed or unknown by then, and every attached report when the
+collector cannot record them, go to the holding issue. Without the
+dashboard the model sees no open issues and plans new issues only.
+
 Ingest asks `/report` with `unfiled=1`. When the dashboard database is bound
 the collector then does two things with its report ledger (see
 [Member dashboard](#member-dashboard)): it passes over (and moves the cursor
@@ -263,9 +279,9 @@ batches that also save the cursor, and work left over continues in the next
 run or press.
 **Report ledger.** `report_issue` records which issue each report is linked
 to and how (`source`): `filed` (listed in the issue body; the sync replaces
-these rows from GitHub), `signature` (linked at ingest, above), `triage` and
-`manual` (a member attached it on the dashboard; reserved for the model
-too), and `excluded` (a member detached it from that issue; the sync,
+these rows from GitHub), `signature` (linked at ingest, above), `triage`
+(the model attached it to an open issue, see [Triage](#triage)), `manual`
+(a member attached it on the dashboard), and `excluded` (a member detached it from that issue; the sync,
 signature matching and triage leave the pair alone from then on). Every count on the
 pages reads this ledger: a report counts once, under the issue that tracks
 it. A report two issues list is a conflict: the older issue keeps it, the

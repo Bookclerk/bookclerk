@@ -1927,6 +1927,69 @@ describe("issue summaries for the ingest Action", () => {
     assert.deepEqual((await (await call(env, "/issues/summaries")).json<Summaries>()).issues, []);
   });
 
+  it("records triage's attachments to open issues as triage rows and never over an existing row", async () => {
+    const env = await setup();
+    await storeIssue(env.DASHBOARD_DB, {
+      number: 402,
+      title: "[diagnostics] closed",
+      state: "closed",
+      body: "<!-- bookclerk-diagnostics: workers-ai triage -->\nx\n",
+      created_at: new Date(NOW).toISOString(),
+      updated_at: new Date(NOW).toISOString(),
+    });
+    await storeIssue(env.DASHBOARD_DB, {
+      number: 410,
+      title: "[diagnostics] untriaged reports",
+      state: "open",
+      body: "<!-- bookclerk-diagnostics: triage fallback -->\n## Untriaged reports\n",
+      created_at: new Date(NOW).toISOString(),
+      updated_at: new Date(NOW).toISOString(),
+    });
+    await run(env.DASHBOARD_DB, "INSERT INTO report_issue (report_id, issue_number, source, linked_by, linked_at) VALUES (?, 401, 'excluded', 'octocat', ?)", ID4, NOW);
+    const ID5 = "d2b80f13-0000-4000-8000-000000000005";
+    await seed(env, ID5, NOW - 30_000, { version: "0.9.2" });
+    const links = [
+      // #400 already lists ID1 (filed) and ID2 (signature): those rows stay. ID5 is new.
+      { issue: 400, report_ids: [ID1, ID2, ID5] },
+      // A member excluded ID4 from #401: triage does not undo that. ID3 is new.
+      { issue: 401, report_ids: [ID4, ID3] },
+      // Closed, holding and unknown issues are not attached to.
+      { issue: 402, report_ids: ["d2b80f13-0000-4000-8000-000000000006"] },
+      { issue: 410, report_ids: ["d2b80f13-0000-4000-8000-000000000007"] },
+      { issue: 999, report_ids: ["d2b80f13-0000-4000-8000-000000000008"] },
+    ];
+    const res = await call(env, "/issues/attach", JSON.stringify({ links }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), {
+      ok: true,
+      linked: 2,
+      existing: 3,
+      unlinked: ["d2b80f13-0000-4000-8000-000000000006", "d2b80f13-0000-4000-8000-000000000007", "d2b80f13-0000-4000-8000-000000000008"],
+    });
+    const rows = await all(env.DASHBOARD_DB, "SELECT report_id, issue_number, source, linked_by FROM report_issue ORDER BY issue_number, report_id");
+    assert.deepEqual(rows, [
+      { report_id: ID1, issue_number: 400, source: "filed", linked_by: null },
+      { report_id: ID2, issue_number: 400, source: "signature", linked_by: "ingest" },
+      { report_id: ID3, issue_number: 400, source: "manual", linked_by: "octocat" },
+      { report_id: ID5, issue_number: 400, source: "triage", linked_by: "ingest" },
+      { report_id: ID3, issue_number: 401, source: "triage", linked_by: "ingest" },
+      { report_id: ID4, issue_number: 401, source: "excluded", linked_by: "octocat" },
+    ]);
+    const { issues } = await (await call(env, "/issues/summaries")).json<Summaries>();
+    // ID5 counts under #400 as attached by triage; ID3, linked to both, counts under #400, the oldest issue linking it.
+    assert.deepEqual(issues.map((i) => [i.issue, i.reports, i.sources.triage]), [[400, 4, 1]], "the summaries count what triage attached");
+  });
+
+  it("answers the attach route with 400 for a malformed body, 204 without the dashboard database and 401 without the key", async () => {
+    const env = makeEnv({ REPORT_API_KEY: KEY });
+    assert.equal((await call(env, "/issues/attach", JSON.stringify({ links: [{ issue: 400, report_ids: ["nope"] }] }))).status, 400);
+    assert.equal((await call(env, "/issues/attach", "{")).status, 400);
+    assert.equal((await call(env, "/issues/attach", JSON.stringify({ links: [] }))).status, 200);
+    assert.equal((await call(env, "/issues/attach", JSON.stringify({ links: [{ issue: 400, report_ids: [ID1] }] }), "wrong")).status, 401);
+    const off = { ...env, DASHBOARD_DB: undefined } as unknown as Env;
+    assert.equal((await call(off, "/issues/attach", JSON.stringify({ links: [{ issue: 400, report_ids: [ID1] }] }))).status, 204);
+  });
+
   it("summarizes the holding issue for untriaged reports like any other issue", async () => {
     const env = makeEnv({ REPORT_API_KEY: KEY });
     await seed(env, ID3, NOW - 60_000, { version: "0.9.2" });
