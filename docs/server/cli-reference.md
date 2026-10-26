@@ -17,7 +17,7 @@ the result.
 
 ## Global options
 
-These options work with every command, except where a command has its own option of the same name, which takes its place: `bookclerk export postgres --format`.
+These options work with every command. Some commands have their own option of the same name: written after the command's name, it means the command's option, and written before it, the global one. These are `bookclerk export postgres --format`.
 
 - `--bookclerk-files, --bookclerkFiles <BOOKCLERK_FILES>`: Bookclerk files directory (`BOOKCLERK_FILES_DIR`) (environment variable `BOOKCLERK_FILES_DIR`)
 - `--config <CONFIG>`: Path to config.toml (default: `{bookclerk-files}/config.toml`) (environment variable `BOOKCLERK_CONFIG`)

@@ -59,8 +59,9 @@ pub fn render(root: &Command) -> String {
     } else {
         let _ = writeln!(
             out,
-            "These options work with every command, except where a command has its own \
-             option of the same name, which takes its place: {}.\n",
+            "These options work with every command. Some commands have their own option \
+             of the same name: written after the command's name, it means the command's \
+             option, and written before it, the global one. These are {}.\n",
             shadowing.join(", ")
         );
     }
