@@ -1,10 +1,5 @@
 # CLI reference
 
-<!-- Generated from the bookclerk CLI's own definitions by
-crates/bookclerk-cli/src/cli_reference.rs. Do not edit by hand: run
-`UPDATE_CLI_REFERENCE=1 cargo test -p bookclerk-cli cli_reference` to
-regenerate. -->
-
 Every command and option of the `bookclerk` command-line tool. During
 development, run it as `cargo dev-cli -- <command>` or
 `cargo run -p bookclerk-cli -- <command>`. `bookclerk <command> --help`
@@ -15,6 +10,11 @@ Installed plugins can add their own commands under
 so they are not listed here; `bookclerk plugins <plugin-id> --help` shows
 them.
 
+This page is generated from the CLI's own definitions, so do not edit it by
+hand. After changing a command, run
+`UPDATE_CLI_REFERENCE=1 cargo test -p bookclerk-cli cli_reference` and commit
+the result.
+
 ## Global options
 
 These options work with every command.
@@ -23,6 +23,25 @@ These options work with every command.
 - `--config <CONFIG>`: Path to config.toml (default: `{bookclerk-files}/config.toml`) (environment variable `BOOKCLERK_CONFIG`)
 - `-v, --verbose`: Increase tracing verbosity (`-v` warnings, `-vv` debug, `-vvv` trace). Default is quiet: command output only (override with `BOOKCLERK_LOG`)
 - `--format <FORMAT>`: Machine-readable output for list/status style commands (one of `text`, `json`; default `text`)
+
+## Commands
+
+- [`bookclerk library`](#bookclerk-library): Library scan, acquire, search, accounts, and status
+- [`bookclerk discover`](#bookclerk-discover): Recommendations, embeddings, listening sync, and title requests
+- [`bookclerk integrations`](#bookclerk-integrations): Outbound integrations (Audiobookshelf) and claim tickets
+- [`bookclerk plugins`](#bookclerk-plugins): Dynamically discovered third-party plugins
+- [`bookclerk config`](#bookclerk-config): Read or write configuration values
+- [`bookclerk export`](#bookclerk-export): Export library data, backups, or Libation-compatible files
+- [`bookclerk import`](#bookclerk-import): Import native backups or classic Libation Files
+- [`bookclerk db`](#bookclerk-db): Host schema version, backups, and explicit migrate
+- [`bookclerk daemon`](#bookclerk-daemon): Talk to a running bookclerkd control plane
+- [`bookclerk events`](#bookclerk-events): Durable domain-event outbox and deliveries
+- [`bookclerk clusters`](#bookclerk-clusters): Owner clusters this install hosts for, and consent to their plugins
+- [`bookclerk nodes`](#bookclerk-nodes): Cluster nodes: liveness, capacity, budgets, and placement labels
+- [`bookclerk queues`](#bookclerk-queues): Plugin-owned queues on the outbox: counters, consumers, messages
+- [`bookclerk login`](#bookclerk-login): Print a loopback operator sign-in URL (requires a running daemon)
+- [`bookclerk diagnostics`](#bookclerk-diagnostics): Diagnostics ring buffer and opt-in upload
+- [`bookclerk version`](#bookclerk-version): Print version information
 
 ## `bookclerk library`
 
@@ -76,7 +95,7 @@ Arguments:
 Options:
 
 - `--source <SOURCE>`: Content source, when the same account id exists on several plugins
-- `--scan <SCAN>`: Include this account when scanning (default: true) (one of `true`, `false`; default `true`)
+- `--scan <SCAN>`: Include this account when scanning (default: true) (one of `true`, `false`)
 
 ### `bookclerk library status`
 
@@ -116,7 +135,7 @@ bookclerk library scan [OPTIONS] [ACCOUNT]...
 
 Arguments:
 
-- `<ACCOUNT>`: Account nickname(s) or id(s) to scan
+- `[ACCOUNT]...`: Account nickname(s) or id(s) to scan
 
 Options:
 
@@ -137,7 +156,7 @@ bookclerk library acquire [OPTIONS] [ID]...
 
 Arguments:
 
-- `<ID>`: Positional title id(s): UUID, ASIN, ISBN, or product id
+- `[ID]...`: Positional title id(s): UUID, ASIN, ISBN, or product id
 
 Options:
 
@@ -162,7 +181,7 @@ bookclerk library set-status [OPTIONS] [ASIN]...
 
 Arguments:
 
-- `<ASIN>`: Title ids to update (UUID, ASIN, ISBN, or product id); empty means all matching the account filter
+- `[ASIN]...`: Title ids to update (UUID, ASIN, ISBN, or product id); empty means all matching the account filter
 
 Options:
 
@@ -220,11 +239,11 @@ bookclerk library export [OPTIONS] --path <PATH> [ASINS]...
 
 Arguments:
 
-- `<ASINS>`: Limit to specific ASINs
+- `[ASINS]...`: Limit to specific ASINs
 
 Options:
 
-- `-p, --path <PATH>`: Output file path
+- `-p, --path <PATH>`: Output file path (required)
 - `--csv`: Write CSV (default when no format flag is set and the path ends in `.csv`)
 - `--json`: Write JSON
 - `--xlsx`: Write XLSX
@@ -253,7 +272,7 @@ bookclerk library convert [OPTIONS] [ASIN]...
 
 Arguments:
 
-- `<ASIN>`: Title ids to convert; empty means all acquired titles matching the account filter
+- `[ASIN]...`: Title ids to convert; empty means all acquired titles matching the account filter
 
 Options:
 
@@ -274,7 +293,7 @@ Commands:
 - [`bookclerk library filters save`](#bookclerk-library-filters-save): Save or update a named filter
 - [`bookclerk library filters delete`](#bookclerk-library-filters-delete): Delete a saved filter
 
-### `bookclerk library filters list`
+#### `bookclerk library filters list`
 
 List saved filters
 
@@ -282,7 +301,7 @@ List saved filters
 bookclerk library filters list [OPTIONS]
 ```
 
-### `bookclerk library filters save`
+#### `bookclerk library filters save`
 
 Save or update a named filter
 
@@ -295,7 +314,7 @@ Arguments:
 - `<NAME>`: Saved filter name to create or overwrite
 - `<QUERY>`: Lucene-style query string
 
-### `bookclerk library filters delete`
+#### `bookclerk library filters delete`
 
 Delete a saved filter
 
@@ -390,7 +409,7 @@ Commands:
 - [`bookclerk discover wishlist list`](#bookclerk-discover-wishlist-list): List open wishlist items (operator-owned when no portal identity)
 - [`bookclerk discover wishlist remove`](#bookclerk-discover-wishlist-remove): Un-wishlist by uuid (sets status to cancelled)
 
-### `bookclerk discover wishlist add`
+#### `bookclerk discover wishlist add`
 
 Add an open wishlist item
 
@@ -409,7 +428,7 @@ Options:
 - `--isbn <ISBN>`: Optional ISBN-13 used for identity matching
 - `--notes <NOTES>`: Optional operator notes stored on the request
 
-### `bookclerk discover wishlist list`
+#### `bookclerk discover wishlist list`
 
 List open wishlist items (operator-owned when no portal identity)
 
@@ -417,7 +436,7 @@ List open wishlist items (operator-owned when no portal identity)
 bookclerk discover wishlist list [OPTIONS]
 ```
 
-### `bookclerk discover wishlist remove`
+#### `bookclerk discover wishlist remove`
 
 Un-wishlist by uuid (sets status to cancelled)
 
@@ -477,7 +496,7 @@ Commands:
 - [`bookclerk integrations tickets create`](#bookclerk-integrations-tickets-create): Mint a claim ticket for an external identity
 - [`bookclerk integrations tickets list`](#bookclerk-integrations-tickets-list): List open (unredeemed, unexpired) claim tickets
 
-### `bookclerk integrations tickets create`
+#### `bookclerk integrations tickets create`
 
 Mint a claim ticket for an external identity
 
@@ -488,10 +507,10 @@ bookclerk integrations tickets create [OPTIONS] --external-user-id <EXTERNAL_USE
 Options:
 
 - `--provider <PROVIDER>`: Integration provider id (`audiobookshelf`) (default `audiobookshelf`)
-- `--external-user-id <EXTERNAL_USER_ID>`: External user id from the provider
+- `--external-user-id <EXTERNAL_USER_ID>`: External user id from the provider (required)
 - `--label <LABEL>`: Optional display label
 
-### `bookclerk integrations tickets list`
+#### `bookclerk integrations tickets list`
 
 List open (unredeemed, unexpired) claim tickets
 
@@ -509,7 +528,7 @@ bookclerk integrations scan [OPTIONS] --integration <INTEGRATION>
 
 Options:
 
-- `--integration <INTEGRATION>`: Integration id (`audiobookshelf`, …)
+- `--integration <INTEGRATION>`: Integration id (`audiobookshelf`, …) (required)
 - `--force`: Force full rescan when the integration supports it
 
 ## `bookclerk plugins`
@@ -558,7 +577,7 @@ bookclerk plugins search [OPTIONS] [QUERY]
 
 Arguments:
 
-- `<QUERY>`: Free-text query
+- `[QUERY]`: Free-text query
 
 Options:
 
@@ -597,7 +616,7 @@ bookclerk plugins update [OPTIONS] [ID]
 
 Arguments:
 
-- `<ID>`: Plugin runtime id (default: all with receipts)
+- `[ID]`: Plugin runtime id (default: all with receipts)
 
 Options:
 
@@ -629,7 +648,7 @@ bookclerk plugins versions [OPTIONS] [ID]
 
 Arguments:
 
-- `<ID>`: Only this plugin (alias or PluginKey)
+- `[ID]`: Only this plugin (alias or PluginKey)
 
 ### `bookclerk plugins uninstall`
 
@@ -670,7 +689,7 @@ bookclerk plugins diagnose [OPTIONS] [ID]
 
 Arguments:
 
-- `<ID>`: Plugin id (default: all discovered that are enabled)
+- `[ID]`: Plugin id (default: all discovered that are enabled)
 
 ### `bookclerk plugins doctor`
 
@@ -682,7 +701,7 @@ bookclerk plugins doctor [OPTIONS] [ID]
 
 Arguments:
 
-- `<ID>`: Plugin id (default: all discovered)
+- `[ID]`: Plugin id (default: all discovered)
 
 ### `bookclerk plugins deploy`
 
@@ -735,7 +754,7 @@ Commands:
 - [`bookclerk plugins instances create`](#bookclerk-plugins-instances-create): Create another instance of a plugin that has a pinned schema
 - [`bookclerk plugins instances delete`](#bookclerk-plugins-instances-delete): Delete an instance that has no deployment on any node
 
-### `bookclerk plugins instances list`
+#### `bookclerk plugins instances list`
 
 List instances with their deployments on every node
 
@@ -747,7 +766,7 @@ Options:
 
 - `--plugin <PLUGIN>`: Only instances of this plugin (alias or PluginKey)
 
-### `bookclerk plugins instances create`
+#### `bookclerk plugins instances create`
 
 Create another instance of a plugin that has a pinned schema
 
@@ -764,7 +783,7 @@ Options:
 - `--name <NAME>`: Operator-facing name
 - `--node <NODE_ID>`: Make the instance local to this node (a node's own `local` output, for example): it deploys only there and is never placed by the scheduler
 
-### `bookclerk plugins instances delete`
+#### `bookclerk plugins instances delete`
 
 Delete an instance that has no deployment on any node
 
@@ -790,7 +809,7 @@ Commands:
 - [`bookclerk plugins config set`](#bookclerk-plugins-config-set): Set one setting. A `secret` setting takes `--secret` and reads the value from stdin so it never appears on a command line
 - [`bookclerk plugins config unset`](#bookclerk-plugins-config-unset): Unset one setting so the schema default applies, or drop a secret
 
-### `bookclerk plugins config get`
+#### `bookclerk plugins config get`
 
 Show an instance's effective settings: schema defaults under the operator's document. Secrets show as set or unset, never their value
 
@@ -802,7 +821,7 @@ Arguments:
 
 - `<INSTANCE>`: Plugin alias, PluginKey, or plugin instance id
 
-### `bookclerk plugins config set`
+#### `bookclerk plugins config set`
 
 Set one setting. A `secret` setting takes `--secret` and reads the value from stdin so it never appears on a command line
 
@@ -814,13 +833,13 @@ Arguments:
 
 - `<INSTANCE>`: Plugin alias, PluginKey, or plugin instance id
 - `<KEY>`: Setting key from the plugin's `[[settings]]`
-- `<VALUE>`: Value text (`true`/`false`, a number, or a string)
+- `[VALUE]`: Value text (`true`/`false`, a number, or a string)
 
 Options:
 
 - `--secret`: Seal a secret read from stdin
 
-### `bookclerk plugins config unset`
+#### `bookclerk plugins config unset`
 
 Unset one setting so the schema default applies, or drop a secret
 
@@ -865,7 +884,7 @@ Commands:
 - [`bookclerk plugins registry add`](#bookclerk-plugins-registry-add): Add a registry source to `config.toml`
 - [`bookclerk plugins registry remove`](#bookclerk-plugins-registry-remove): Remove a registry by index (from `registry list`) or URL
 
-### `bookclerk plugins registry list`
+#### `bookclerk plugins registry list`
 
 List configured registries
 
@@ -873,7 +892,7 @@ List configured registries
 bookclerk plugins registry list [OPTIONS]
 ```
 
-### `bookclerk plugins registry add`
+#### `bookclerk plugins registry add`
 
 Add a registry source to `config.toml`
 
@@ -890,7 +909,7 @@ Options:
 - `--url <URL>`: Index / registry URL (required for `static`)
 - `--name <NAME>`: Optional display name
 
-### `bookclerk plugins registry remove`
+#### `bookclerk plugins registry remove`
 
 Remove a registry by index (from `registry list`) or URL
 
@@ -916,7 +935,7 @@ Commands:
 - [`bookclerk plugins db list`](#bookclerk-plugins-db-list): List provisioned plugin database bindings
 - [`bookclerk plugins db drop`](#bookclerk-plugins-db-drop): Drop provisioned binding units and their registry rows
 
-### `bookclerk plugins db list`
+#### `bookclerk plugins db list`
 
 List provisioned plugin database bindings
 
@@ -926,9 +945,9 @@ bookclerk plugins db list [OPTIONS] [PLUGIN]
 
 Arguments:
 
-- `<PLUGIN>`: Limit to one plugin id
+- `[PLUGIN]`: Limit to one plugin id
 
-### `bookclerk plugins db drop`
+#### `bookclerk plugins db drop`
 
 Drop provisioned binding units and their registry rows.
 
@@ -941,7 +960,7 @@ bookclerk plugins db drop [OPTIONS] <PLUGIN> [BINDING]
 Arguments:
 
 - `<PLUGIN>`: Plugin id
-- `<BINDING>`: Binding name (default: every binding of the plugin)
+- `[BINDING]`: Binding name (default: every binding of the plugin)
 
 Options:
 
@@ -975,7 +994,7 @@ bookclerk config get [OPTIONS] [KEY]
 
 Arguments:
 
-- `<KEY>`: Dotted key (`output.widevine`) or classic name (`UseWidevine`). Plugin settings are read with `bookclerk plugins config get`
+- `[KEY]`: Dotted key (`output.widevine`) or classic name (`UseWidevine`). Plugin settings are read with `bookclerk plugins config get`
 
 Options:
 
@@ -1023,7 +1042,7 @@ Commands:
 - [`bookclerk config master-key status`](#bookclerk-config-master-key-status): Show whether `master.key` exists and if it is raw (BCK1) or wrapped (BCK2)
 - [`bookclerk config master-key wrap`](#bookclerk-config-master-key-wrap): Wrap a BCK1 `master.key` with a passphrase (no-op unlock if already BCK2)
 
-### `bookclerk config master-key status`
+#### `bookclerk config master-key status`
 
 Show whether `master.key` exists and if it is raw (BCK1) or wrapped (BCK2)
 
@@ -1031,7 +1050,7 @@ Show whether `master.key` exists and if it is raw (BCK1) or wrapped (BCK2)
 bookclerk config master-key status [OPTIONS]
 ```
 
-### `bookclerk config master-key wrap`
+#### `bookclerk config master-key wrap`
 
 Wrap a BCK1 `master.key` with a passphrase (no-op unlock if already BCK2).
 
@@ -1055,7 +1074,7 @@ Commands:
 - [`bookclerk config template profiles`](#bookclerk-config-template-profiles): List built-in naming profiles and their templates
 - [`bookclerk config template preview`](#bookclerk-config-template-preview): Preview folder/file templates for a library title
 
-### `bookclerk config template tags`
+#### `bookclerk config template tags`
 
 List supported naming template property tags
 
@@ -1063,7 +1082,7 @@ List supported naming template property tags
 bookclerk config template tags [OPTIONS]
 ```
 
-### `bookclerk config template profiles`
+#### `bookclerk config template profiles`
 
 List built-in naming profiles and their templates
 
@@ -1071,7 +1090,7 @@ List built-in naming profiles and their templates
 bookclerk config template profiles [OPTIONS]
 ```
 
-### `bookclerk config template preview`
+#### `bookclerk config template preview`
 
 Preview folder/file templates for a library title
 
@@ -1089,7 +1108,7 @@ Options:
 - `--profile <PROFILE>`: Override `output.naming_profile` for this preview
 - `--folder <FOLDER>`: Override `output.folder_template` for this preview
 - `--file <FILE>`: Override `output.file_template` for this preview
-- `--ext <EXT>`: File extension (default: m4b) (default `m4b`)
+- `--ext <EXT>`: File extension (default: m4b)
 
 ### `bookclerk config database`
 
@@ -1103,7 +1122,7 @@ Commands:
 
 - [`bookclerk config database migrate`](#bookclerk-config-database-migrate): Copy library data from one `[database].plugin` backend to another
 
-### `bookclerk config database migrate`
+#### `bookclerk config database migrate`
 
 Copy library data from one `[database].plugin` backend to another.
 
@@ -1116,7 +1135,7 @@ bookclerk config database migrate [OPTIONS] --to <TO>
 Options:
 
 - `--from <FROM>`: Source plugin id (`sqlite`, `d1`, `postgres`). Default: current `[database].plugin`
-- `--to <TO>`: Destination plugin id
+- `--to <TO>`: Destination plugin id (required)
 - `--dry-run`: Report row counts only; do not write to the destination
 - `--force`: Allow copying into a destination that already has library rows
 - `--apply`: After a successful migrate, set `[database].plugin` to `--to` and write config.toml
@@ -1146,7 +1165,7 @@ bookclerk export native [OPTIONS] --path <PATH>
 
 Options:
 
-- `-p, --path <PATH>`: Destination archive path
+- `-p, --path <PATH>`: Destination archive path (required)
 - `--include-plugin-manifests`: Include `plugins/**/plugin.toml` (not binaries)
 - `--include-cache`: Include `cache/` (large)
 - `--include-logs`: Include `logs/`
@@ -1162,7 +1181,7 @@ bookclerk export libation [OPTIONS] --path <PATH>
 
 Options:
 
-- `-p, --path <PATH>`: Destination classic Libation Files directory
+- `-p, --path <PATH>`: Destination classic Libation Files directory (required)
 - `--force`: Overwrite an existing destination directory
 - `--dry-run`: Report only; do not write
 
@@ -1176,11 +1195,11 @@ bookclerk export library [OPTIONS] --path <PATH> [ASINS]...
 
 Arguments:
 
-- `<ASINS>`: Limit to specific ASINs / title ids
+- `[ASINS]...`: Limit to specific ASINs / title ids
 
 Options:
 
-- `-p, --path <PATH>`: Output file path
+- `-p, --path <PATH>`: Output file path (required)
 - `--csv`: Force CSV even when the destination extension is not `.csv`
 - `--json`: Force JSON even when the destination extension is not `.json`
 - `--xlsx`: Force XLSX even when the destination extension is not `.xlsx`
@@ -1196,7 +1215,7 @@ bookclerk export postgres [OPTIONS] --connection <CONNECTION>
 
 Options:
 
-- `-c, --connection <CONNECTION>`: PostgreSQL connection string
+- `-c, --connection <CONNECTION>`: PostgreSQL connection string (required)
 - `--source <SOURCE>`: Source SQLite path (default: `{files_dir}/library.db`)
 - `--format <FORMAT>`: Output schema format (one of `classic`, `flat`; default `classic`)
 
@@ -1223,7 +1242,7 @@ bookclerk import native [OPTIONS] --from <ARCHIVE>
 
 Options:
 
-- `--from <ARCHIVE>`: Archive path
+- `--from <ARCHIVE>`: Archive path (required)
 - `--force`: Overwrite existing files
 - `--dry-run`: Report only; do not write
 
@@ -1237,7 +1256,7 @@ bookclerk import libation [OPTIONS] --from <FROM>
 
 Options:
 
-- `--from <FROM>`: Classic Libation Files directory (or `BOOKCLERK_CLASSIC_FILES`) (environment variable `BOOKCLERK_CLASSIC_FILES`)
+- `--from <FROM>`: Classic Libation Files directory (or `BOOKCLERK_CLASSIC_FILES`) (required; environment variable `BOOKCLERK_CLASSIC_FILES`)
 - `--force`: Overwrite existing `config.toml`
 - `--skip-auth`: No-op retained for compatibility (credentials are never imported by migrate)
 - `--dry-run`: Print what would be imported without writing
@@ -1280,7 +1299,7 @@ Commands:
 - [`bookclerk db backup verify`](#bookclerk-db-backup-verify): Verify a recovery point (objects, schema, typed rows) without restoring
 - [`bookclerk db backup prune`](#bookclerk-db-backup-prune): Prune automatic pre-migrate recovery points and unreferenced objects
 
-### `bookclerk db backup create`
+#### `bookclerk db backup create`
 
 Write a manual recovery point under `files_dir/backups/`
 
@@ -1293,7 +1312,7 @@ Options:
 - `--path <PATH>`: Optional `.tar.gz` destination for this recovery point
 - `--include-plugin-databases`: Capture plugin-owned database bindings in portable Bookclerk SQL. Plugin schema migration remains plugin-owned. Each database unit is replaced completely; a multi-database bundle is not one transaction.
 
-### `bookclerk db backup list`
+#### `bookclerk db backup list`
 
 List recovery points oldest-first
 
@@ -1301,7 +1320,7 @@ List recovery points oldest-first
 bookclerk db backup list [OPTIONS]
 ```
 
-### `bookclerk db backup verify`
+#### `bookclerk db backup verify`
 
 Verify a recovery point (objects, schema, typed rows) without restoring
 
@@ -1311,9 +1330,9 @@ bookclerk db backup verify [OPTIONS] --from <FROM>
 
 Options:
 
-- `--from <FROM>`: Recovery-point id, archive, or `created_at` prefix
+- `--from <FROM>`: Recovery-point id, archive, or `created_at` prefix (required)
 
-### `bookclerk db backup prune`
+#### `bookclerk db backup prune`
 
 Prune automatic pre-migrate recovery points and unreferenced objects.
 
@@ -1333,7 +1352,7 @@ bookclerk db restore [OPTIONS] --from <FROM>
 
 Options:
 
-- `--from <FROM>`: Recovery-point id, `.tar.gz` archive, or `created_at` prefix. Restores onto the currently configured database adapter (not necessarily the adapter that captured the backup).
+- `--from <FROM>`: Recovery-point id, `.tar.gz` archive, or `created_at` prefix. Restores onto the currently configured database adapter (not necessarily the adapter that captured the backup). (required)
 
 ### `bookclerk db migrate`
 
@@ -1345,7 +1364,7 @@ bookclerk db migrate [OPTIONS]
 
 Options:
 
-- `--to <TO>`: Target frozen schema version (defaults to this binary's [`SCHEMA_VERSION`])
+- `--to <TO>`: Target frozen schema version (defaults to this binary's `SCHEMA_VERSION`)
 - `--include-plugin-databases`: Include plugin-owned database bindings in the pre-migrate backup
 
 ## `bookclerk daemon`
@@ -1427,7 +1446,7 @@ Commands:
 - [`bookclerk daemon token show`](#bookclerk-daemon-token-show): Print the current effective operator token (default)
 - [`bookclerk daemon token rotate`](#bookclerk-daemon-token-rotate): Mint a new token, store it in encrypted_secrets, and reload the daemon when reachable
 
-### `bookclerk daemon token show`
+#### `bookclerk daemon token show`
 
 Print the current effective operator token (default)
 
@@ -1435,7 +1454,7 @@ Print the current effective operator token (default)
 bookclerk daemon token show [OPTIONS]
 ```
 
-### `bookclerk daemon token rotate`
+#### `bookclerk daemon token rotate`
 
 Mint a new token, store it in encrypted_secrets, and reload the daemon when reachable
 
@@ -1565,7 +1584,7 @@ Options:
 - `--url <URL>`: The owner library's address (`https://library.example`)
 - `--name <NAME>`: The name the owner sees for this branch (default: host name)
 - `--fingerprint <FINGERPRINT>`: The library's certificate fingerprint as Settings → Branches shows it (a `sha256:` prefix is accepted), confirming a self-signed library without a prompt
-- `--as <JOIN_AS>`: How to join: `branch` (default; keeps this install's own database) or `clerk` (shares the library's database and key; only an empty install, and only when an Owner of the library chooses it after a fresh second factor) (one of `branch`, `clerk`; default `branch`)
+- `--as <JOIN_AS>`: How to join: `branch` (default; keeps this install's own database) or `clerk` (shares the library's database and key; only an empty install, and only when an Owner of the library chooses it after a fresh second factor) (one of `branch`, `clerk`)
 
 ### `bookclerk clusters leave`
 
@@ -1606,7 +1625,7 @@ Arguments:
 Options:
 
 - `--cluster <CLUSTER>`: Owner cluster id (default: the only enrolled cluster)
-- `--request <DIGEST>`: The `request_digest` of the request you reviewed, from `clusters consents` (refused when the cluster now asks for anything else)
+- `--request <DIGEST>`: The `request_digest` of the request you reviewed, from `clusters consents` (refused when the cluster now asks for anything else) (required)
 - `--deny-domain <DOMAIN>`: Take a domain out of the request. Repeatable
 - `--deny-binding <BINDING>`: Take a binding out of the request (`secrets`, `kv`, ...). Repeatable
 - `--deny-network`: Deny all network access
@@ -1680,7 +1699,7 @@ bookclerk nodes set [OPTIONS] [NODE]
 
 Arguments:
 
-- `<NODE>`: Node id (default: this node)
+- `[NODE]`: Node id (default: this node)
 
 Options:
 
@@ -1700,7 +1719,7 @@ bookclerk nodes label [OPTIONS] [NODE]
 
 Arguments:
 
-- `<NODE>`: Node id (default: this node)
+- `[NODE]`: Node id (default: this node)
 
 Options:
 
@@ -1718,7 +1737,7 @@ bookclerk nodes owner [OPTIONS] [NODE]
 
 Arguments:
 
-- `<NODE>`: Node id (default: this node)
+- `[NODE]`: Node id (default: this node)
 
 Options:
 
@@ -1735,7 +1754,7 @@ bookclerk nodes invite [OPTIONS] --user <USER>
 
 Options:
 
-- `--user <USER>`: Login name or user id of the user who will own the host node
+- `--user <USER>`: Login name or user id of the user who will own the host node (required)
 - `--ttl <TTL>`: How long the link stays valid (`30m`, `24h`, `7d`; 5m to 7d) (default `24h`)
 - `--label <LABEL>`: Label shown in `nodes invites list` (default ``)
 
@@ -1752,7 +1771,7 @@ Commands:
 - [`bookclerk nodes invites list`](#bookclerk-nodes-invites-list): Every enrollment link and its state. Secrets are never shown again
 - [`bookclerk nodes invites revoke`](#bookclerk-nodes-invites-revoke): Revoke a link that was not redeemed yet
 
-### `bookclerk nodes invites list`
+#### `bookclerk nodes invites list`
 
 Every enrollment link and its state. Secrets are never shown again
 
@@ -1760,7 +1779,7 @@ Every enrollment link and its state. Secrets are never shown again
 bookclerk nodes invites list [OPTIONS]
 ```
 
-### `bookclerk nodes invites revoke`
+#### `bookclerk nodes invites revoke`
 
 Revoke a link that was not redeemed yet
 

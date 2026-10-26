@@ -19,11 +19,6 @@ pub const REFERENCE_PATH: &str = "docs/server/cli-reference.md";
 const PREAMBLE: &str = "\
 # CLI reference
 
-<!-- Generated from the bookclerk CLI's own definitions by
-crates/bookclerk-cli/src/cli_reference.rs. Do not edit by hand: run
-`UPDATE_CLI_REFERENCE=1 cargo test -p bookclerk-cli cli_reference` to
-regenerate. -->
-
 Every command and option of the `bookclerk` command-line tool. During
 development, run it as `cargo dev-cli -- <command>` or
 `cargo run -p bookclerk-cli -- <command>`. `bookclerk <command> --help`
@@ -33,6 +28,11 @@ Installed plugins can add their own commands under
 `bookclerk plugins <plugin-id>`. Those depend on which plugins are installed,
 so they are not listed here; `bookclerk plugins <plugin-id> --help` shows
 them.
+
+This page is generated from the CLI's own definitions, so do not edit it by
+hand. After changing a command, run
+`UPDATE_CLI_REFERENCE=1 cargo test -p bookclerk-cli cli_reference` and commit
+the result.
 ";
 
 /// Renders the whole reference for a fully built root command.
@@ -54,6 +54,8 @@ pub fn render(root: &Command) -> String {
         .filter(|arg| is_documented_option(arg))
         .collect();
     render_args(&mut out, &globals);
+    out.push_str("## Commands\n\n");
+    render_command_list(&mut out, root);
     for sub in visible_subcommands(root) {
         render_command(&mut out, sub, 2);
     }
@@ -70,12 +72,13 @@ pub fn render(root: &Command) -> String {
 ///
 /// * `out` - the Markdown being built.
 /// * `cmd` - the command to describe.
-/// * `level` - Markdown heading level: 2 for top-level commands, 3 below.
+/// * `level` - Markdown heading level: 2 for top-level commands, one more
+///   for each level of nesting, at most 6.
 fn render_command(out: &mut String, cmd: &Command, level: usize) {
     let name = cmd.get_bin_name().unwrap_or_else(|| cmd.get_name());
     let _ = writeln!(out, "{} `{name}`\n", "#".repeat(level));
     if let Some(about) = cmd.get_long_about().or_else(|| cmd.get_about()) {
-        let _ = writeln!(out, "{}\n", about.to_string().trim());
+        let _ = writeln!(out, "{}\n", prose(about.to_string().trim()));
     }
     let aliases: Vec<&str> = cmd.get_visible_aliases().collect();
     if !aliases.is_empty() {
@@ -101,19 +104,33 @@ fn render_command(out: &mut String, cmd: &Command, level: usize) {
         out.push_str("Options:\n\n");
         render_args(out, &options);
     }
-    let subs: Vec<&Command> = visible_subcommands(cmd).collect();
-    if !subs.is_empty() {
+    if visible_subcommands(cmd).next().is_some() {
         out.push_str("Commands:\n\n");
-        for sub in &subs {
-            let sub_name = sub.get_bin_name().unwrap_or_else(|| sub.get_name());
-            let about = sub.get_about().map(|a| a.to_string()).unwrap_or_default();
-            let _ = writeln!(out, "- [`{sub_name}`](#{}): {about}", anchor(sub_name));
-        }
-        out.push('\n');
+        render_command_list(out, cmd);
     }
-    for sub in subs {
-        render_command(out, sub, 3);
+    for sub in visible_subcommands(cmd) {
+        render_command(out, sub, (level + 1).min(6));
     }
+}
+
+/// Appends a bullet list linking to each visible subcommand's section.
+///
+/// # Arguments
+///
+/// * `out` - the Markdown being built.
+/// * `cmd` - the parent command whose subcommands are listed.
+fn render_command_list(out: &mut String, cmd: &Command) {
+    for sub in visible_subcommands(cmd) {
+        let sub_name = sub.get_bin_name().unwrap_or_else(|| sub.get_name());
+        let about = sub.get_about().map(|a| a.to_string()).unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "- [`{sub_name}`](#{}): {}",
+            anchor(sub_name),
+            prose(&about)
+        );
+    }
+    out.push('\n');
 }
 
 /// Appends a bullet list describing each argument.
@@ -130,19 +147,27 @@ fn render_args(out: &mut String, args: &[&Arg]) {
             .map(|h| h.to_string())
             .unwrap_or_default();
         // Join wrapped help lines so each option stays one list item.
-        let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        let help = prose(&help.split_whitespace().collect::<Vec<_>>().join(" "));
         let _ = write!(out, "- `{}`", arg_signature(arg));
         if !help.is_empty() {
             let _ = write!(out, ": {help}");
         }
+        // Notes the help text already states are left out.
+        let lower_help = help.to_lowercase();
         let mut notes = Vec::new();
+        if arg.is_required_set() && !arg.is_positional() && !lower_help.contains("(required") {
+            notes.push("required".to_owned());
+        }
+        if is_repeatable(arg) && !arg.is_positional() && !lower_help.contains("repeatable") {
+            notes.push("can be repeated".to_owned());
+        }
         let values: Vec<String> = arg
             .get_possible_values()
             .iter()
             .filter(|v| !v.is_hide_set())
             .map(|v| format!("`{}`", v.get_name()))
             .collect();
-        if !values.is_empty() {
+        if !values.is_empty() && !arg.is_hide_possible_values_set() {
             notes.push(format!("one of {}", values.join(", ")));
         }
         // Switches and counters always default to off; only values are worth noting.
@@ -151,10 +176,15 @@ fn render_args(out: &mut String, args: &[&Arg]) {
             .iter()
             .map(|v| format!("`{}`", v.to_string_lossy()))
             .collect();
-        if !defaults.is_empty() && (arg.is_positional() || takes_value(arg)) {
+        let help_states_default = lower_help.contains("default");
+        if !defaults.is_empty()
+            && (arg.is_positional() || takes_value(arg))
+            && !arg.is_hide_default_value_set()
+            && !help_states_default
+        {
             notes.push(format!("default {}", defaults.join(", ")));
         }
-        if let Some(env) = arg.get_env() {
+        if let Some(env) = arg.get_env().filter(|_| !arg.is_hide_env_set()) {
             notes.push(format!("environment variable `{}`", env.to_string_lossy()));
         }
         if !notes.is_empty() {
@@ -173,8 +203,9 @@ fn render_args(out: &mut String, args: &[&Arg]) {
 ///
 /// # Returns
 ///
-/// For example `-v, --verbose`, `--asin <ASIN>`, or `<PLUGIN>` for a
-/// positional argument.
+/// For example `-v, --verbose`, `--asin <ASIN>`, or, for positional
+/// arguments, `<PLUGIN>` when required and `[ACCOUNT]...` when optional and
+/// repeatable, as in the usage line.
 fn arg_signature(arg: &Arg) -> String {
     let value = arg
         .get_value_names()
@@ -187,7 +218,16 @@ fn arg_signature(arg: &Arg) -> String {
         })
         .unwrap_or_else(|| format!("<{}>", arg.get_id().as_str().to_uppercase()));
     if arg.is_positional() {
-        return value;
+        let value = if arg.is_required_set() {
+            value
+        } else {
+            format!("[{}]", value.trim_start_matches('<').trim_end_matches('>'))
+        };
+        return if is_repeatable(arg) {
+            format!("{value}...")
+        } else {
+            value
+        };
     }
     let mut names = Vec::new();
     if let Some(short) = arg.get_short() {
@@ -219,6 +259,54 @@ fn arg_signature(arg: &Arg) -> String {
 /// counters such as `--scan` or `-v`.
 fn takes_value(arg: &Arg) -> bool {
     arg.get_action().takes_values()
+}
+
+/// Says whether an argument may be given more than once.
+///
+/// # Arguments
+///
+/// * `arg` - an argument of a built command.
+///
+/// # Returns
+///
+/// `true` when the argument collects several values, either from one
+/// occurrence (`[ACCOUNT]...`) or from repeating the option.
+fn is_repeatable(arg: &Arg) -> bool {
+    matches!(arg.get_action(), clap::ArgAction::Append)
+        || arg
+            .get_num_args()
+            .is_some_and(|range| range.max_values() > 1)
+}
+
+/// Turns clap help text into Markdown prose.
+///
+/// Help strings come from doc comments, so they can hold rustdoc links such
+/// as ``[`SCHEMA_VERSION`]`` and placeholders such as `<dir>`. Outside code
+/// spans, this unwraps those links to plain code and escapes `<`, so neither
+/// GitHub nor the docs site swallows or links them.
+///
+/// # Arguments
+///
+/// * `text` - help text as clap stores it.
+///
+/// # Returns
+///
+/// The text, safe to place in a Markdown paragraph or list item.
+fn prose(text: &str) -> String {
+    let unlinked = text.replace("[`", "`").replace("`]", "`");
+    let mut out = String::with_capacity(unlinked.len());
+    let mut in_code = false;
+    for c in unlinked.chars() {
+        match c {
+            '`' => {
+                in_code = !in_code;
+                out.push(c);
+            }
+            '<' if !in_code => out.push_str("&lt;"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Says whether a named option belongs in the reference.
@@ -295,7 +383,7 @@ mod tests {
         }
         // Windows checkouts may convert the file to CRLF line endings.
         let current = std::fs::read_to_string(&path)
-            .unwrap_or_default()
+            .unwrap_or_else(|err| panic!("read {}: {err}", path.display()))
             .replace("\r\n", "\n");
         assert!(
             current == rendered,

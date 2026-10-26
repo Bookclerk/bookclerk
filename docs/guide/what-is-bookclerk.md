@@ -42,8 +42,9 @@ the browser for 30 minutes, with a sample library from a made-up member
 called Sam. You can sign in to your stores, scan your library and search
 it. Not every store can sign in from the demo yet.
 
-The demo cannot download books. When the time is up, it signs your stores
-out and deletes everything.
+The demo cannot download books. It ends when the 30 minutes are up, or
+after 10 minutes without activity. Then it signs your stores out and deletes
+everything.
 
 ## Where to go next
 
