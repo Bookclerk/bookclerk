@@ -34,7 +34,9 @@ fresh database in CI, so a schema change that breaks it fails there.
    `/health`, approves and deploys the four storefronts as the operator
    (as an operator would in Settings; visitors cannot), makes the visitor
    the host's Owner and redeems the Owner's claim ticket. The
-   Durable Object then forgets the operator token. The visitor waits on `/_demo/wait`.
+   Durable Object then forgets the operator token. The visitor waits on
+   `/_demo/wait`, which says how long a start usually takes: the median of
+   the last week's recorded startup times (`sessions.startup_seconds`).
 3. `/_demo/enter` hands the browser the portal session cookie. From then on
    every request goes through the Worker (`src/app.ts`), which:
    - refuses any operation not allowed for the demo (`src/routes.ts`) before
@@ -50,6 +52,16 @@ fresh database in CI, so a schema change that breaks it fails there.
      scans only the visitor's store accounts;
    - rewrites `Set-Cookie` so the container cannot set the Worker's cookies,
      and adds a banner with the time left and a **Start over** button.
+
+   The waiting page and the banner follow the session over a WebSocket
+   (`/_demo/live`, `src/live.ts`, `public/_demo/live.js`): the Durable Object
+   pushes the session's state and the seconds left by its own clock on every
+   change, so the waiting page moves on as soon as the copy is ready and every
+   open tab learns at once that the session ended. Messages on the sockets do
+   not count as activity for the idle timer. When a socket cannot open, or a
+   visitor has more than eight tabs open, the pages poll `/_demo/session`
+   instead. The countdown is display only;
+   the Durable Object's own timer ends the session.
 4. The session ends when its time is up, after 10 idle minutes, or on
    **Start over**. The Durable Object revokes every linked store account,
    destroys the container and refunds unused time to the day's budget. A
@@ -119,7 +131,9 @@ bundles the `.ts` sources and Node 22.18 or newer runs the tests and
 `npm run typecheck` checks everything with the Workers and Node types
 (`tsconfig.json`) and the Worker's sources again with the Workers types only
 (`tsconfig.worker.json`). The scripts under `public/_demo/` are browser
-scripts the Worker serves, not Worker code, and stay JavaScript.
+scripts the Worker serves, not Worker code, and stay JavaScript. The fonts
+under `public/_demo/fonts/` and `public/_demo/mark.svg` are copies of the
+website's fonts and the app's mark; a test fails when a copy drifts.
 
 `test/inputs.fuzz.test.ts` replays the seed corpora under `corpus/` and
 fuzzes every input boundary against independent oracles (see

@@ -4,10 +4,11 @@
 // by a fake that records what the Worker asks of it.
 
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { type Deps, handle, sweep, withBanner } from "../src/app.ts";
+import { beforeEach, describe, it } from "node:test";
+import { type Deps, handle, resetEstimateCache, sweep, withBanner } from "../src/app.ts";
 import type { Env, SessionApi } from "../src/env.ts";
-import { finish } from "../src/limits.ts";
+import { finish, recordStartup } from "../src/limits.ts";
+import type { LiveStatus } from "../src/live.ts";
 import { createD1 } from "../test-support/d1.ts";
 
 const ORIGIN = "https://demo.example.test";
@@ -15,13 +16,15 @@ const ORIGIN = "https://demo.example.test";
 /** A fake session object: state machine plus a scripted container. */
 class FakeStub implements SessionApi {
   /** Where the session is. */
-  state = "none";
+  state: LiveStatus["state"] = "none";
   /** Arguments of open(). */
   opened: Parameters<SessionApi["open"]>[0] | null = null;
   /** Requests forwarded to the container. */
   forwarded: Request[] = [];
   /** Reasons end() was called with. */
   ended: string[] = [];
+  /** Live status sockets the Worker asked to open. */
+  live: Request[] = [];
   /** The container's next answer. */
   reply: (request: Request) => Response = () => new Response("ok", { headers: { "Content-Type": "text/plain" } });
 
@@ -31,9 +34,9 @@ class FakeStub implements SessionApi {
     this.state = "starting";
   }
 
-  /** @returns State, hard stop and version. */
-  async status(): Promise<{ state: string; endsAt: number; version: string }> {
-    return { state: this.state, endsAt: this.opened?.endsAt ?? 0, version: this.opened?.version ?? "" };
+  /** @returns State, hard stop, seconds left (a fixed 600) and version. */
+  async status(): Promise<LiveStatus> {
+    return { state: this.state, endsAt: this.opened?.endsAt ?? 0, remaining: 600, version: this.opened?.version ?? "" };
   }
 
   /** @returns A portal session once ready. */
@@ -56,6 +59,11 @@ class FakeStub implements SessionApi {
    * @returns The scripted answer, or 503 when not ready.
    */
   async fetch(request: Request): Promise<Response> {
+    if (new URL(request.url).pathname === "/_demo/live") {
+      // Node has no WebSocketPair: stand in for the upgrade.
+      this.live.push(request);
+      return new Response("live", { status: 200, headers: { "X-Fake-Live": "1" } });
+    }
     if (this.state !== "ready") {
       return Response.json({}, { status: 503, headers: { "X-Demo-State": this.state } });
     }
@@ -172,6 +180,8 @@ function onlyStub(env: TestEnv): FakeStub {
   assert.equal(stubs.length, 1);
   return stubs[0]!;
 }
+
+beforeEach(() => resetEstimateCache());
 
 describe("launch and admission", () => {
   it("shows the launch page with the Turnstile widget and a strict CSP", async () => {
@@ -369,7 +379,7 @@ describe("a running session", () => {
       });
     const res = await handle(new Request(`${ORIGIN}/library`, { headers: { Cookie: cookie, Accept: "text/html" } }), env, deps);
     const html = await res.text();
-    assert.match(html, /<script src="\/_demo\/banner\.js" defer><\/script><\/head>/);
+    assert.match(html, /<script src="\/_demo\/live\.js" defer><\/script><script src="\/_demo\/banner\.js" defer><\/script><\/head>/);
   });
 
   it("limits store sign-in attempts per session", async () => {
@@ -527,7 +537,101 @@ describe("sweep", () => {
 
 describe("withBanner", () => {
   it("inserts before </head>, or at the start without one", () => {
-    assert.match(withBanner("<HEAD></HEAD >x"), /^<HEAD><link[^>]+><script[^>]+><\/script><\/HEAD >x$/);
-    assert.match(withBanner("plain"), /^<link[^>]+><script[^>]+><\/script>plain$/);
+    assert.match(withBanner("<HEAD></HEAD >x"), /^<HEAD><link[^>]+>(<script[^>]+><\/script>){2}<\/HEAD >x$/);
+    assert.match(withBanner("plain"), /^<link[^>]+>(<script[^>]+><\/script>){2}plain$/);
+  });
+});
+
+describe("live status", () => {
+  /**
+   * The upgrade request a page on this origin sends.
+   *
+   * @param headers - Headers to add or replace.
+   * @returns The request.
+   */
+  const upgrade = (headers: Record<string, string>): Request =>
+    new Request(`${ORIGIN}/_demo/live`, { headers: { Upgrade: "websocket", Origin: ORIGIN, ...headers } });
+
+  it("hands a page's socket to its session object, without the browser's headers", async () => {
+    const env = makeEnv();
+    const deps = makeDeps();
+    const { cookie } = await startSession(env, deps);
+    const res = await handle(upgrade({ Cookie: cookie, "X-Extra": "1" }), env, deps);
+    assert.equal(res.headers.get("X-Fake-Live"), "1");
+    const sent = onlyStub(env).live[0]!;
+    assert.equal(new URL(sent.url).pathname, "/_demo/live");
+    assert.equal(sent.headers.get("Upgrade"), "websocket");
+    assert.equal(sent.headers.get("Cookie"), null);
+    assert.equal(sent.headers.get("X-Extra"), null);
+  });
+
+  it("refuses plain requests, other sites and browsers without a session", async () => {
+    const env = makeEnv();
+    const deps = makeDeps();
+    const { cookie } = await startSession(env, deps);
+    const plain = await handle(new Request(`${ORIGIN}/_demo/live`, { headers: { Cookie: cookie } }), env, deps);
+    assert.equal(plain.status, 426);
+    const foreign = await handle(upgrade({ Cookie: cookie, Origin: "https://evil.example.test" }), env, deps);
+    assert.equal(foreign.status, 403);
+    const noOrigin = new Request(`${ORIGIN}/_demo/live`, { headers: { Upgrade: "websocket", Cookie: cookie } });
+    assert.equal((await handle(noOrigin, env, deps)).status, 403);
+    assert.equal((await handle(upgrade({}), env, deps)).status, 401);
+    assert.equal(onlyStub(env).live.length, 0);
+  });
+
+  it("reports the seconds left by the server's count", async () => {
+    const env = makeEnv();
+    const deps = makeDeps();
+    const { cookie } = await startSession(env, deps);
+    const res = await handle(new Request(`${ORIGIN}/_demo/session`, { headers: { Cookie: cookie } }), env, deps);
+    const body = (await res.json()) as Record<string, unknown>;
+    assert.equal(body.state, "starting");
+    assert.equal(body.remaining, 600);
+    assert.equal(body.siteUrl, "https://bookclerk.example.test");
+    const none = await handle(new Request(`${ORIGIN}/_demo/session`), env, deps);
+    assert.deepEqual(await none.json(), { state: "none", endsAt: 0, remaining: 0, version: "", siteUrl: "https://bookclerk.example.test" });
+  });
+});
+
+describe("startup estimate", () => {
+  /**
+   * Records `n` finished starts of `seconds` each.
+   *
+   * @param env - Test env.
+   * @param deps - Test deps.
+   * @param seconds - Each start's length.
+   */
+  async function starts(env: TestEnv, deps: TestDeps, seconds: number[]): Promise<void> {
+    for (const [i, s] of seconds.entries()) {
+      const { cookie } = await startSession(env, deps, `198.51.100.${i + 1}`);
+      assert.ok(cookie);
+      const id = [...env.stubs.keys()].at(-1)!;
+      await recordStartup(env.DB, { id, seconds: s });
+    }
+  }
+
+  it("shows how long a start usually takes once a few are recorded", async () => {
+    const env = makeEnv();
+    const deps = makeDeps();
+    const page = async (): Promise<string> =>
+      (await handle(new Request(`${ORIGIN}/`, { headers: { Accept: "text/html" } }), env, deps)).text();
+    await starts(env, deps, [12, 40]);
+    assert.doesNotMatch(await page(), /Usually ready/);
+    await starts(env, deps, [14]);
+    // Still the cached answer for a minute.
+    assert.doesNotMatch(await page(), /Usually ready/);
+    deps.advance(61_000);
+    // Median of 12, 14 and 40, rounded up to five seconds.
+    assert.match(await page(), /Usually ready in about 15 seconds/);
+  });
+
+  it("tells the waiting page too", async () => {
+    const env = makeEnv();
+    const deps = makeDeps();
+    await starts(env, deps, [100, 130, 125]);
+    const { cookie } = await startSession(env, deps, "198.51.100.99");
+    const html = await (await handle(new Request(`${ORIGIN}/_demo/wait`, { headers: { Cookie: cookie } }), env, deps)).text();
+    assert.match(html, /This usually takes about 2 minutes\./);
+    assert.match(html, /<script src="\/_demo\/live\.js" defer><\/script><script src="\/_demo\/wait\.js" defer><\/script>/);
   });
 });

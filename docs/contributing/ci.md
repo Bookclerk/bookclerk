@@ -163,7 +163,7 @@ Each changed path (renames contribute old and new paths) is classified:
 | `docs/**` | The website tests (`site_test`), whose link check covers the docs the site publishes |
 | `tools/site/**`, `assets/brand/**` | The website tests and audit (`site_test`, `site_audit`) |
 | `tools/diagnostics-collector/**` | The collector's tests (`collector_test`) |
-| `tools/demo/**`, `crates/bookclerkd/openapi.json` | The hosted demo Worker's tests (`demo_test`; the route table must cover every operation) |
+| `tools/demo/**`, `crates/bookclerkd/openapi.json`, the website's footer and fonts the demo copies, `ui/public/bookclerk-mark.svg` | The hosted demo Worker's tests (`demo_test`; the route table must cover every operation, and the copies must match) |
 | Root `Cargo.toml` / `Cargo.lock`, toolchain, `.cargo/`, workflows, the planner, `fuzz/Cargo.*`, unknown or unclassified paths, planner errors | **Full suite** |
 | `fuzz/corpus/<target>/**`, `fuzz/oracles/<target>.rs` | Owning crate's tests (declared `test_input`; an undeclared corpus or oracle is unclassified) |
 | `fuzz/fuzz_targets/**`, `fuzz/dictionaries/**` | Nothing here; the ClusterFuzzLite workflows select themselves by path |
@@ -503,12 +503,14 @@ non-Rust tooling (decision 6):
   (`readSessionToken`, `cookiesForContainer`); the container's `Set-Cookie`
   lines (`rewriteSetCookie`, `portalSessionFrom`) and JSON answers
   (`decodeConnections`, `decodeClaimTicket`, `decodeInstances`); the launch
-  form (`decodeLaunchForm`); Turnstile's verdict (`siteverifyPassed`); and,
+  form (`decodeLaunchForm`); Turnstile's verdict (`siteverifyPassed`); the
+  live status socket's handshake and messages (`src/live.ts`: `liveRequest`,
+  `liveCommand`); and,
   at deploy time, the Cloudflare API answers `scripts/worker-secrets.ts`
   reads (`decodeApiResponse`, `findWidget`, `widgetKeys`). `tools/demo/test/inputs.fuzz.test.ts` replays their
   seed corpora (`tools/demo/corpus/route/`, `cookie/`, `set_cookie/`,
   `connections/`, `siteverify/`, `claim_ticket/`, `launch_form/`, `plugin_instances/`,
-  `cf_api/`) and runs seeded mutation
+  `cf_api/`, `live_request/`, `live_message/`) and runs seeded mutation
   fuzzing in `npm test`, checking results against independent oracles (a
   forwarded path decodes to clean segments and matches no refused
   operation, a write matches a listed one and a sign-in start is always
@@ -526,7 +528,9 @@ non-Rust tooling (decision 6):
   answer's `result` only on a 2xx with `success: true`, otherwise only its
   integer error codes, the demo widget only with a printable site key and
   printable, deduplicated, bounded hostnames, and keys only when both are
-  printable).
+  printable; a live status socket only for a GET whose `Upgrade` is
+  `websocket` in ASCII letters of either case, from this origin, with a
+  session; and a command only for exactly the text `sync`).
 
 Still to add (tracked in the fuzzing ADR's follow-ups): a full RPC session
 against a scripted guest, the workerd `egress.js` gate checked against

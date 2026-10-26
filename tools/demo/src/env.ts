@@ -1,6 +1,8 @@
 // The demo Worker's bindings, as wrangler.toml and the deploy workflow
 // declare them.
 
+import type { LiveStatus } from "./live.ts";
+
 /** What the Worker asks of a visitor's `DemoSession` object over RPC. */
 export interface SessionApi {
   /**
@@ -13,9 +15,9 @@ export interface SessionApi {
   /**
    * Where the session is.
    *
-   * @returns State, hard stop (Unix seconds) and image version.
+   * @returns State, hard stop (Unix seconds), seconds left and image version.
    */
-  status(): Promise<{ state: string; endsAt: number; version: string }>;
+  status(): Promise<LiveStatus>;
   /**
    * The visitor's bookclerkd portal session, once signed in.
    *
@@ -30,10 +32,11 @@ export interface SessionApi {
    */
   end(reason: string): Promise<{ revoked: number; failed: number }>;
   /**
-   * Forwards one request to the visitor's container.
+   * Forwards one request to the visitor's container, or, for
+   * `/_demo/live` (live.ts), opens the live status WebSocket.
    *
    * @param request - Request to forward.
-   * @returns bookclerkd's answer.
+   * @returns bookclerkd's answer, or the WebSocket upgrade.
    */
   fetch(request: Request): Promise<Response>;
 }
