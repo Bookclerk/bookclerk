@@ -201,7 +201,7 @@ Four binaries (the workspace `default-members`):
   requested from the plugin. Also ships beside the hosts; with the default
   `plugins.isolation = "required"` a plugin that cannot be jailed is not loaded.
   Policy travels as JSON in `BOOKCLERK_JAIL_SPEC`. See
-  `docs/plugins/README.md#the-guest-jail`.
+  `docs/internals/guest-jail.md#the-guest-jail`.
 - `bookclerk-workerd` — the front door every plugin is spawned through: loads
   `runtime = "workerd"` isolates and fronts `runtime = "native"` guests as a
   sibling jail joined by inherited `fd:` / `handle:` links; ships beside

@@ -4,7 +4,7 @@
 //!
 //! Host binaries that confine media workers and plugin guests (`bookclerk-jail`,
 //! `bookclerk-media-worker`). Guest plugins never link this crate; the host
-//! imposes the jail. See `docs/plugins/README.md#the-guest-jail` and `docs/server/media.md`.
+//! imposes the jail. See `docs/internals/guest-jail.md#the-guest-jail` and `docs/server/media.md`.
 //!
 //! Bookclerk confines code by what it may touch, not by which uid it runs as.
 //! Every backend here works without root, without setuid helpers, and without

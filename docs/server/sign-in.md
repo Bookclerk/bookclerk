@@ -160,7 +160,7 @@ exact `Origin` match and a signed-in session, and is scoped to the caller's
 role. While it is down, panels poll on their old timers and the client
 reconnects with backoff (1 s to 30 s). The Vite dev server proxies it
 (`/api/live` with `ws: true`). Details:
-[Libraries and branches](cluster-hosts.md#the-live-socket-apilive).
+[Node API and the live socket](../internals/node-api.md#the-live-socket-apilive).
 
 A future **plugin browser** (install/configure third-party plugins from a
 catalog) is sketched in [plugin-registry.md](../plugins/registry.md); enablement and

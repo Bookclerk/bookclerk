@@ -16,7 +16,7 @@ from crates.io on the operator machine. `bookclerk plugins search` works today;
 `bookclerk plugins install` resolves a **prebuilt HTTPS archive** from the
 package's artifact URLs, verifies it once, and records it as a cluster
 release that every host materializes by digest; see
-[plugins.md#installing-plugins](../plugins/README.md#installing-plugins).
+[plugins.md#installing-plugins](../server/plugins.md#installing-plugins).
 
 Platform releases ship hosts + `bookclerk-jail` + `bookclerk-workerd` +
 the pinned Cloudflare `workerd` binary +

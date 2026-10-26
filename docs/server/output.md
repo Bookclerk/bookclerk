@@ -8,7 +8,7 @@ may be enabled at once** and Bookclerk writes to every destination deployed on
 the host running the job. Per-destination settings are the plugin's
 `[[settings]]`, stored in the instance document
 (`bookclerk plugins config …` or **Settings → Plugins**); see
-[plugins.md](../plugins/README.md#enabling-and-settings-database).
+[plugins.md](plugins.md#enabling-and-settings-database).
 
 | Id | Package | Credentials | Default load |
 | --- | --- | --- | --- |

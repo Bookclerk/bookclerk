@@ -52,7 +52,7 @@ sits next to `bookclerkd` (`cargo dev` does this for you). See
 
 **A store plugin will not start.** Plugins run in their own locked-down
 process through `bookclerk-jail` and `bookclerk-workerd`, which must also
-sit next to `bookclerkd`. See [Plugins](../plugins/README.md#the-guest-jail).
+sit next to `bookclerkd`. See [Plugins](../internals/guest-jail.md#the-guest-jail).
 
 ## Branches
 

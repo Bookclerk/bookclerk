@@ -136,7 +136,7 @@ entered in Accounts and sealed in the database (see
 | `bookclerk` | One-shot CLI (`auth`, `library`, `integrations`, `plugins`, …) |
 | `bookclerkd` | Long-running daemon: scheduled scan/acquire + HTTP API / GUI (optional in-process tray) |
 | `bookclerk-media-worker` | Confined child process for one codec job ([docs/server/media.md](docs/server/media.md)) |
-| `bookclerk-jail` | Confines a plugin guest, then becomes it ([docs/plugins/README.md](docs/plugins/README.md#the-guest-jail)) |
+| `bookclerk-jail` | Confines a plugin guest, then becomes it ([docs/internals/guest-jail.md](docs/internals/guest-jail.md)) |
 
 The two helpers ship beside the hosts. Without them, a host refuses media work
 and declines to load external plugins rather than running either unconfined.

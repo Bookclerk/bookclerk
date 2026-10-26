@@ -31,7 +31,7 @@ Per matrix runner (`ubuntu-latest` → `linux-x64-gnu`, `macos-latest` →
 
 Node / Python publishers can call the same commands via
 `npx bookclerk-plugin` or `python -m bookclerk_plugin_sdk` in their own
-workflows (see [packaging.md](../../docs/contributing/packaging.md#plugin-author-tools-check--fmt--package)).
+workflows (see [packaging.md](../../docs/contributing/packaging.md#plugin-author-tools-check--fmt--sync-embed--package--smoke)).
 
 ## Caller permissions (attestations)
 

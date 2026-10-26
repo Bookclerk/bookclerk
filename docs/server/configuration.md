@@ -315,7 +315,7 @@ back. Several instances of one plugin may exist, and may run on one host; a
 bare plugin key routes to the default instance, and `library scan|acquire
 --instance` pins another. Store accounts are keyed by plugin key, not
 instance, so every instance serves the same connected accounts. Details:
-[plugins.md](../plugins/README.md#enabling-and-settings-database),
+[plugins.md](plugins.md#enabling-and-settings-database),
 [output.md](output.md), [stores.md](stores.md),
 [integrations.md](integrations.md).
 
