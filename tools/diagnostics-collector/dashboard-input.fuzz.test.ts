@@ -48,6 +48,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { URL } from "node:url";
 import { DEFAULT_NEXT, MAX_CODE_CHARS, MAX_NEXT_CHARS, OAUTH_COOKIE, parseCallback, safeNext } from "./dashboard/auth.ts";
 import {
   DIAGNOSTICS_LABEL,

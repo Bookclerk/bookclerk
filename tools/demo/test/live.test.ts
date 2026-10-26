@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { runInNewContext } from "node:vm";
+import { URL } from "node:url";
 import { recordStartup, startupEstimate } from "../src/limits.ts";
 import { CLOSE_TOO_MANY, isOver, liveStatus, MAX_LIVE_SOCKETS, replyCloseCode, socketsToEvict } from "../src/live.ts";
 import { createD1 } from "../test-support/d1.ts";

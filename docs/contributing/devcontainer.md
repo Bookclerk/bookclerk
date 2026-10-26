@@ -82,12 +82,12 @@ absolute workspace path via `remoteEnv`.
 
 | Piece | Notes |
 | --- | --- |
-| `rust:1.85-bookworm` | `rust-toolchain.toml` selects `stable` + rustfmt/clippy |
+| `rust:1-bookworm` (digest-pinned, Dependabot bumps it) | `rust-toolchain.toml` selects `stable` + rustfmt/clippy |
 | `pkg-config` + `libssl-dev` | Fixes the local OpenSSL / `openssl-sys` failure mode |
 | `capnproto` | Compiles `schema/plugin.capnp` (plugin ABI native RPC) |
 | `libdbus-1-dev` + `xdg-utils` | Linux tray (`ksni` / zbus) and `xdg-open` for “Open Bookclerk” |
 | `openssh-client` | SSH commit signing in the Dev Container |
-| Node.js 22 | `ui/` Vite build |
+| Node.js 26 (from the `node` image, digest-pinned) | `ui/` Vite build and the Workers under `tools/` |
 | Cargo registry/git | Workspace `.cargo-home/` (`CARGO_HOME` on the bind mount) |
 | Linux desktop + tray | Optional [`devcontainer.linux-desktop.json`](../../.devcontainer/devcontainer.linux-desktop.json) |
 | `PATH` | `target/debug` then `target/release` (via `remoteEnv`) |

@@ -49,7 +49,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "26"
 
       - name: Prepare SEA blob (node --experimental-sea-config)
         shell: bash

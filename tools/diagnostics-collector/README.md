@@ -93,7 +93,7 @@ IDs it could not link.
    it reports the reindex finished.
 
 The Worker, dashboard and tests are strict TypeScript. Wrangler bundles the
-`.ts` sources and Node 22.18 or newer runs the tests by stripping types, so
+`.ts` sources and Node (26 in CI, 22.18 or newer) runs the tests by stripping types, so
 nothing is compiled. Check types with `npm run typecheck` (`tsconfig.json`
 checks everything with the Workers and Node types; `tsconfig.worker.json`
 checks the Worker's sources again with the Workers types only) and run the

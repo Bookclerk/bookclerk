@@ -3,6 +3,7 @@
 // that splices in fragments chosen by each test, plus seed corpus loading.
 
 import { readdirSync, readFileSync } from "node:fs";
+import { URL } from "node:url";
 
 /**
  * Deterministic PRNG (mulberry32).

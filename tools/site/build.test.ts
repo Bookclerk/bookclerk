@@ -6,6 +6,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { URL } from "node:url";
 
 import { build, docsVersions, escapeHtml, inlineLogo, jsonLd, plainText, readState, render, templateContext } from "./build.ts";
 import type { BuildEnv } from "./build.ts";
@@ -257,13 +258,13 @@ test("pages load fonts from the site itself, and every font they name is publish
   const site = built(PRE);
   try {
     const css = site.page("site.css");
-    const named = [...css.matchAll(/url\("\/fonts\/([^"]+)"\)/g)].map((m) => m[1]);
+    const named = [...css.matchAll(/url\("\/fonts\/([^"]+)"\)/g)].flatMap((m) => m[1] ?? []);
     assert.ok(named.length > 0);
     for (const name of ["index.html", "download.html", "404.html"]) {
       const html = site.page(name);
       // No third-party origin may block rendering or learn who visits.
       assert.ok(!/fonts\.(googleapis|gstatic)\.com/.test(html), name);
-      for (const [, font] of html.matchAll(/<link rel="preload" href="\/fonts\/([^"]+)"/g)) assert.ok(named.includes(font), `${name}: ${font}`);
+      for (const [, font] of html.matchAll(/<link rel="preload" href="\/fonts\/([^"]+)"/g)) assert.ok(font !== undefined && named.includes(font), `${name}: ${font}`);
     }
     for (const font of named) assert.ok(site.page(`fonts/${font}`).length > 0, font);
     for (const license of ["OFL-sourcesans3.txt", "OFL-literata.txt", "OFL-ibmplexmono.txt"]) {

@@ -141,7 +141,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "26"
       - run: cd ui && npm ci && npm run build
       - run: cargo package-platform --out dist
       - run: cargo package-plugins --out dist/plugins

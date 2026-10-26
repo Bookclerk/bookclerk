@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { runInNewContext } from "node:vm";
+import { URL } from "node:url";
 import { aboutHowLong, endedPage, LEGAL, launchPage, PAGE_CSP, TURNSTILE_SCRIPT, waitPage } from "../src/pages.ts";
 
 /**
