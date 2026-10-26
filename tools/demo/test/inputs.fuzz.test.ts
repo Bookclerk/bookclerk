@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
-import { classify, OPERATIONS } from "../src/routes.js";
+import { classify, OPERATIONS } from "../src/routes.ts";
 import {
   cookiesForContainer,
   decodeClaimTicket,
@@ -22,20 +22,44 @@ import {
   readSessionToken,
   rewriteSetCookie,
   siteverifyPassed,
-} from "../src/inputs.js";
-import { decodeApiResponse, findWidget, MAX_DOMAINS, widgetKeys, WIDGET_NAME } from "../scripts/worker-secrets.mjs";
-import { mutate, rng } from "../test-support/fuzz.js";
+} from "../src/inputs.ts";
+import { decodeApiResponse, findWidget, MAX_DOMAINS, widgetKeys, WIDGET_NAME } from "../scripts/worker-secrets.ts";
+import { mutate, rng } from "../test-support/fuzz.ts";
 
 /** Mutated inputs per seed. */
 const ROUNDS = 300;
 
 /**
+ * Parses JSON the way the oracles want it: anything unparsable is undefined.
+ *
+ * @param input - JSON text.
+ * @returns The value, or undefined.
+ */
+function parseOrUndefined(input: string): unknown {
+  try {
+    return JSON.parse(input);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether a parsed value is a JSON object (not null, not an array).
+ *
+ * @param v - Parsed value.
+ * @returns True for an object.
+ */
+function plainObject(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+/**
  * Seed inputs of one corpus, keyed by file name.
  *
- * @param {string} name Corpus directory under corpus/.
- * @returns {Array<[string, string]>} File names and contents.
+ * @param name - Corpus directory under corpus/.
+ * @returns File names and contents.
  */
-function seeds(name) {
+function seeds(name: string): Array<[string, string]> {
   const url = new URL(`../corpus/${name}/`, import.meta.url);
   return readdirSync(url)
     .sort()
@@ -46,11 +70,11 @@ function seeds(name) {
  * Replays a corpus, then fuzzes each seed with a fixed PRNG so a failure
  * replays from its label.
  *
- * @param {string} name Corpus name (also the PRNG seed's source).
- * @param {string[]} fragments Fragments the mutator splices in.
- * @param {(input: string, label: string) => void} check Oracle check.
+ * @param name - Corpus name (also the PRNG seed's source).
+ * @param fragments - Fragments the mutator splices in.
+ * @param check - Oracle check.
  */
-function fuzz(name, fragments, check) {
+function fuzz(name: string, fragments: string[], check: (input: string, label: string) => void) {
   const all = seeds(name);
   assert.ok(all.length > 0, `corpus/${name} is empty`);
   for (const [file, text] of all) check(text, `${name}/${file}`);
@@ -65,10 +89,10 @@ function fuzz(name, fragments, check) {
 /**
  * Oracle's own percent-decoder for one segment: %XX runs as UTF-8.
  *
- * @param {string} seg Raw segment.
- * @returns {string | null} Decoded text, or null when an escape is broken.
+ * @param seg - Raw segment.
+ * @returns Decoded text, or null when an escape is broken.
  */
-function oracleDecode(seg) {
+function oracleDecode(seg: string): string | null {
   const bytes = [];
   for (let i = 0; i < seg.length; ) {
     if (seg[i] === "%") {
@@ -82,7 +106,7 @@ function oracleDecode(seg) {
     }
   }
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(bytes));
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(new Uint8Array(bytes));
   } catch {
     return null;
   }
@@ -93,23 +117,24 @@ function oracleDecode(seg) {
  * the bytes on `&` and the first `=`, with `+` as a space and `%XX` escapes
  * decoded (a broken escape stays as written) before UTF-8 decoding.
  *
- * @param {Uint8Array} bytes Form body.
- * @param {string} name Field name.
- * @returns {string | null} The value, or null when the field is absent.
+ * @param bytes - Form body.
+ * @param name - Field name.
+ * @returns The value, or null when the field is absent.
  */
-function oracleFormField(bytes, name) {
-  const hex = (b) => (b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x46) || (b >= 0x61 && b <= 0x66);
-  const decode = (part) => {
-    const out = [];
+function oracleFormField(bytes: Uint8Array, name: string): string | null {
+  const hex = (b: number | undefined): boolean =>
+    b !== undefined && ((b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x46) || (b >= 0x61 && b <= 0x66));
+  const decode = (part: Uint8Array): string => {
+    const out: number[] = [];
     for (let i = 0; i < part.length; i++) {
-      const b = part[i];
+      const b = part[i]!;
       if (b === 0x2b) out.push(0x20);
       else if (b === 0x25 && i + 2 < part.length && hex(part[i + 1]) && hex(part[i + 2])) {
-        out.push(parseInt(String.fromCharCode(part[i + 1], part[i + 2]), 16));
+        out.push(parseInt(String.fromCharCode(part[i + 1]!, part[i + 2]!), 16));
         i += 2;
       } else out.push(b);
     }
-    return new TextDecoder("utf-8", { ignoreBOM: true }).decode(new Uint8Array(out));
+    return new TextDecoder("utf-8", { fatal: false, ignoreBOM: true }).decode(new Uint8Array(out));
   };
   let start = 0;
   for (let i = 0; i <= bytes.length; i++) {
@@ -170,7 +195,7 @@ describe("demo input boundaries", () => {
 
   it("session cookie reader takes only a well-formed __Host-demo value", () => {
     fuzz("cookie", [";", "=", " ", "__Host-demo=", "__host-demo=", "A", "-", "_", "+", "/", "\t", "é"], (input, label) => {
-      let expected = null;
+      let expected: string | null = null;
       if (input.length <= 8192) {
         for (const part of input.split(";")) {
           const i = part.indexOf("=");
@@ -198,9 +223,9 @@ describe("demo input boundaries", () => {
       const out = rewriteSetCookie(input);
       if (out === null) return;
       const parts = out.split("; ");
-      const [name] = parts[0].split("=", 1);
-      assert.ok(input.trimStart().startsWith(parts[0]) || input.split(";")[0].trim() === parts[0], label);
-      assert.ok(!/^__(host|secure)-/i.test(name), label);
+      const [name] = parts[0]!.split("=", 1);
+      assert.ok(input.trimStart().startsWith(parts[0]!) || input.split(";")[0]!.trim() === parts[0], label);
+      assert.ok(!/^__(host|secure)-/i.test(name!), label);
       assert.equal(parts.at(-1), "Secure", label);
       // Attributes only: the cookie itself may be named "domain" or "secure".
       const attrs = parts.slice(1);
@@ -215,10 +240,10 @@ describe("demo input boundaries", () => {
       const lines = input.split("\n");
       const values = lines
         .filter((l) => l.length <= 8192)
-        .map((l) => l.split(";")[0].trim())
+        .map((l) => l.split(";")[0]!.trim())
         .filter((f) => f.startsWith("bookclerk_portal_session="))
         .map((f) => f.slice("bookclerk_portal_session=".length));
-      const expected = values.length === 1 && /^[A-Za-z0-9._~-]{16,512}$/.test(values[0]) ? values[0] : null;
+      const expected = values.length === 1 && /^[A-Za-z0-9._~-]{16,512}$/.test(values[0]!) ? values[0] : null;
       assert.equal(portalSessionFrom(lines), expected, label);
     });
   });
@@ -226,23 +251,19 @@ describe("demo input boundaries", () => {
   it("connections decoder yields only bounded, distinct, well-formed ids", () => {
     fuzz("connections", ["{", "}", "[", "]", ",", ":", '"', '"source"', '"account_id"', '"x"', "null", "1", "\\u0000", "é"], (input, label) => {
       const got = decodeConnections(input);
-      let v;
-      try {
-        v = JSON.parse(input);
-      } catch {
-        v = undefined;
-      }
-      const shaped = v !== null && typeof v === "object" && !Array.isArray(v) && Array.isArray(v.connections);
+      const v = parseOrUndefined(input);
+      const shaped = plainObject(v) && Array.isArray(v.connections);
       if (!shaped) {
         assert.equal(got, null, label);
         return;
       }
-      const ok = (s) => typeof s === "string" && s.length >= 1 && s.length <= MAX_ID_CHARS && !/[\u0000-\u001f\u007f]/.test(s);
-      const expected = [];
-      const keys = new Set();
-      for (const c of v.connections) {
+      const ok = (s: unknown): s is string => typeof s === "string" && s.length >= 1 && s.length <= MAX_ID_CHARS && !/[\u0000-\u001f\u007f]/.test(s);
+      const expected: Array<{ source: string; accountId: string }> = [];
+      const keys = new Set<string>();
+      const connections: unknown[] = plainObject(v) && Array.isArray(v.connections) ? v.connections : [];
+      for (const c of connections) {
         if (expected.length === MAX_CONNECTIONS) break;
-        if (c === null || typeof c !== "object" || Array.isArray(c) || !ok(c.source) || !ok(c.account_id)) continue;
+        if (!plainObject(c) || !ok(c.source) || !ok(c.account_id)) continue;
         const k = `${c.source}\u0000${c.account_id}`;
         if (keys.has(k)) continue;
         keys.add(k);
@@ -255,35 +276,30 @@ describe("demo input boundaries", () => {
   it("plugin instance reader yields only wanted default instances with well-formed ids", () => {
     const wanted = ["audible", "libro", "chirp", "graphicaudio", "__proto__"];
     fuzz("plugin_instances", ["{", "}", "[", "]", ",", ":", '"', "true", "false", "null", '"audible"', '"is_default"', '"node_id"', "\\u0001"], (input, label) => {
-      let v;
-      try {
-        v = JSON.parse(input);
-      } catch {
-        v = undefined;
-      }
-      const ok = (s) => typeof s === "string" && s.length >= 1 && s.length <= MAX_ID_CHARS && !/[\u0000-\u001f\u007f]/.test(s);
+      const v = parseOrUndefined(input);
+      const ok = (s: unknown): s is string => typeof s === "string" && s.length >= 1 && s.length <= MAX_ID_CHARS && !/[\u0000-\u001f\u007f]/.test(s);
       const got = decodeInstances(input, wanted);
-      if (!(v !== null && typeof v === "object" && !Array.isArray(v) && ok(v.node_id) && Array.isArray(v.instances))) {
+      if (!(plainObject(v) && ok(v.node_id) && Array.isArray(v.instances))) {
         assert.equal(got, null, label);
         return;
       }
-      const expected = new Map();
-      for (const i of v.instances) {
-        if (i === null || typeof i !== "object" || Array.isArray(i)) continue;
-        if (i.is_default !== true || !ok(i.plugin_instance_id) || !wanted.includes(i.alias) || expected.has(i.alias)) continue;
+      const expected = new Map<string, string>();
+      for (const i of v.instances as unknown[]) {
+        if (!plainObject(i)) continue;
+        if (i.is_default !== true || !ok(i.plugin_instance_id) || typeof i.alias !== "string" || !wanted.includes(i.alias) || expected.has(i.alias)) continue;
         expected.set(i.alias, i.plugin_instance_id);
       }
-      assert.equal(got.nodeId, v.node_id, label);
-      assert.deepEqual(got.instances, expected, label);
+      assert.equal(got!.nodeId, v.node_id, label);
+      assert.deepEqual(got!.instances, expected, label);
     });
   });
 
   it("launch form yields the first Turnstile field, bounded", () => {
-    const check = (bytes, label) => {
+    const check = (bytes: Uint8Array, label: string): void => {
       const value = bytes.length > MAX_FORM_BYTES ? null : oracleFormField(bytes, "cf-turnstile-response");
       let ascii = value !== null && value.length >= 1 && value.length <= MAX_TURNSTILE_TOKEN_CHARS;
-      for (let i = 0; ascii && i < value.length; i++) {
-        const c = value.charCodeAt(i);
+      for (let i = 0; ascii && i < value!.length; i++) {
+        const c = value!.charCodeAt(i);
         ascii = c > 0x20 && c < 0x7f;
       }
       const expected = ascii ? value : null;
@@ -294,7 +310,7 @@ describe("demo input boundaries", () => {
     });
     // Size bounds: a token just at and just over its limit, and a body just
     // over the form limit.
-    const enc = (t) => new TextEncoder().encode(t);
+    const enc = (t: string): Uint8Array => new TextEncoder().encode(t);
     check(enc(`cf-turnstile-response=${"a".repeat(MAX_TURNSTILE_TOKEN_CHARS)}`), "token at limit");
     check(enc(`cf-turnstile-response=${"a".repeat(MAX_TURNSTILE_TOKEN_CHARS + 1)}`), "token over limit");
     const big = enc(`cf-turnstile-response=t&pad=${"a".repeat(MAX_FORM_BYTES)}`);
@@ -303,7 +319,7 @@ describe("demo input boundaries", () => {
   });
 
   it("deploy helper reads Cloudflare answers into well-formed widget data", () => {
-    const printable = (v, max) => {
+    const printable = (v: unknown, max: number): v is string => {
       if (typeof v !== "string" || v.length < 1 || v.length > max) return false;
       for (let i = 0; i < v.length; i++) {
         const c = v.charCodeAt(i);
@@ -311,38 +327,32 @@ describe("demo input boundaries", () => {
       }
       return true;
     };
-    const plain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
     fuzz("cf_api", ["{", "}", "[", "]", ",", ":", '"', "true", "false", "null", "1.5", "-1", '"bookclerk-demo"', '"sitekey"', '"secret"', '"domains"', '"mode"', '"invisible"', '"success"', '"errors"', '"code"', " ", "\\u0000"], (input, label) => {
-      let v;
-      try {
-        v = JSON.parse(input);
-      } catch {
-        v = undefined;
-      }
+      const v = parseOrUndefined(input);
       for (const status of [200, 500]) {
         const got = decodeApiResponse(status, input);
-        if (status === 200 && plain(v) && v.success === true) {
+        if (status === 200 && plainObject(v) && v.success === true) {
           assert.deepEqual(got, { ok: true, result: v.result }, label);
           continue;
         }
         assert.equal(got.ok, false, label);
-        const codes = [];
-        if (plain(v) && Array.isArray(v.errors)) {
-          for (const e of v.errors) if (plain(e) && Number.isInteger(e.code) && Math.abs(e.code) <= Number.MAX_SAFE_INTEGER) codes.push(e.code);
+        const codes: number[] = [];
+        if (plainObject(v) && Array.isArray(v.errors)) {
+          for (const e of v.errors as unknown[]) if (plainObject(e) && typeof e.code === "number" && Number.isInteger(e.code) && Math.abs(e.code) <= Number.MAX_SAFE_INTEGER) codes.push(e.code);
         }
         assert.equal(got.codes, codes.slice(0, 10).join(","), label);
       }
-      const result = plain(v) ? v.result : v;
+      const result = plainObject(v) ? v.result : v;
       // Widget lookup: the first well-named widget with a usable site key.
-      let expected = null;
+      let expected: { sitekey: string; domains: string[]; mode: string } | null = null;
       if (Array.isArray(result)) {
-        for (const w of result) {
-          if (!plain(w) || w.name !== WIDGET_NAME || !printable(w.sitekey, 512)) continue;
-          const seen = new Set();
-          for (const d of Array.isArray(w.domains) ? w.domains : []) {
+        for (const w of result as unknown[]) {
+          if (!plainObject(w) || w.name !== WIDGET_NAME || !printable(w.sitekey, 512)) continue;
+          const seen = new Set<string>();
+          for (const d of Array.isArray(w.domains) ? (w.domains as unknown[]) : []) {
             if (seen.size < MAX_DOMAINS && printable(d, 253)) seen.add(d);
           }
-          const mode = ["managed", "non-interactive", "invisible"].includes(w.mode) ? w.mode : "managed";
+          const mode = ["managed", "non-interactive", "invisible"].includes(String(w.mode)) && typeof w.mode === "string" ? w.mode : "managed";
           expected = { sitekey: w.sitekey, domains: [...seen], mode };
           break;
         }
@@ -350,7 +360,7 @@ describe("demo input boundaries", () => {
       assert.deepEqual(findWidget(result), expected, label);
       // Keys: both present and printable, or nothing.
       const keys =
-        plain(result) && printable(result.sitekey, 512) && printable(result.secret, 512)
+        plainObject(result) && printable(result.sitekey, 512) && printable(result.secret, 512)
           ? { siteKey: result.sitekey, secret: result.secret }
           : null;
       assert.deepEqual(widgetKeys(result), keys, label);
@@ -360,16 +370,9 @@ describe("demo input boundaries", () => {
   it("Siteverify passes only success for this host and action", () => {
     const expect = { hostname: "demo.example.test", action: "demo_start" };
     fuzz("siteverify", ["true", "false", '"true"', "1", "null", '"demo.example.test"', '"demo_start"', ",", "}", "{"], (input, label) => {
-      let v;
-      try {
-        v = JSON.parse(input);
-      } catch {
-        v = undefined;
-      }
+      const v = parseOrUndefined(input);
       const expected =
-        v !== null &&
-        typeof v === "object" &&
-        !Array.isArray(v) &&
+        plainObject(v) &&
         v.success === true &&
         v.hostname === expect.hostname &&
         v.action === expect.action;
@@ -379,13 +382,8 @@ describe("demo input boundaries", () => {
 
   it("claim ticket reader takes only a well-formed claim ticket", () => {
     fuzz("claim_ticket", ["true", "false", '"', "-", "a", "{", "}", ",", ":", '"claim_ticket"', '"ok"'], (input, label) => {
-      let v;
-      try {
-        v = JSON.parse(input);
-      } catch {
-        v = undefined;
-      }
-      const t = v !== null && typeof v === "object" && !Array.isArray(v) && v.ok === true ? v.claim_ticket : undefined;
+      const v = parseOrUndefined(input);
+      const t = plainObject(v) && v.ok === true ? v.claim_ticket : undefined;
       const expected = typeof t === "string" && t.length >= 16 && t.length <= 512 && [...t].every((c) => /[A-Za-z0-9._~-]/.test(c)) ? t : null;
       assert.equal(decodeClaimTicket(input), expected, label);
     });

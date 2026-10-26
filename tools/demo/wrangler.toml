@@ -2,7 +2,7 @@
 # image (packaging/demo/Dockerfile) built from the same main commit as
 # production. Deployed by .github/workflows/demo-deploy.yml; see README.md.
 name = "bookclerk-demo"
-main = "src/worker.js"
+main = "src/worker.ts"
 compatibility_date = "2026-06-01"
 # Off here: with the DOMAIN variable set, the deploy workflow adds the custom
 # domain `demo.<DOMAIN>` and serves only there. With DOMAIN unset (a fork
@@ -15,7 +15,7 @@ workers_dev = false
 enabled = false
 
 [vars]
-# Admission limits (src/limits.js). MAX_LIVE_SESSIONS matches the container
+# Admission limits (src/limits.ts). MAX_LIVE_SESSIONS matches the container
 # class's max_instances below, which is the hard cap behind it.
 MAX_LIVE_SESSIONS = "20"
 # Visitor-hours per UTC day: about 15 US dollars a month at worst.

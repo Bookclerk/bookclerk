@@ -11,7 +11,7 @@
 // Accounts page uses, so Audible deregisters the device it added, before
 // the container (and with it every token) is destroyed.
 
-import { decodeClaimTicket, decodeConnections, decodeInstances, portalSessionFrom, PORTAL_COOKIE } from "./inputs.js";
+import { decodeClaimTicket, decodeConnections, decodeInstances, portalSessionFrom, PORTAL_COOKIE } from "./inputs.ts";
 
 /**
  * The storefront plugins the demo image ships (their manifest ids). The host
@@ -23,19 +23,19 @@ export const STOREFRONTS = ["audible", "libro", "chirp", "graphicaudio"];
 /**
  * Sends one request to bookclerkd in the container.
  *
- * @callback ContainerCall
- * @param {string} path Path and query, starting with `/`.
- * @param {RequestInit} [init] Method, headers and body.
- * @returns {Promise<Response>} bookclerkd's answer.
+ * @param path - Path and query, starting with `/`.
+ * @param init - Method, headers and body.
+ * @returns bookclerkd's answer.
  */
+export type ContainerCall = (path: string, init?: RequestInit) => Promise<Response>;
 
 /**
  * Lowercase hex of `n` random bytes.
  *
- * @param {number} n Byte count.
- * @returns {string} Hex string of length 2n.
+ * @param n - Byte count.
+ * @returns Hex string of length 2n.
  */
-export function randomHex(n) {
+export function randomHex(n: number): string {
   const b = new Uint8Array(n);
   crypto.getRandomValues(b);
   return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
@@ -44,13 +44,13 @@ export function randomHex(n) {
 /**
  * Polls `GET /health` until bookclerkd answers 200.
  *
- * @param {ContainerCall} call Container request function.
- * @param {{timeoutMs: number, intervalMs: number}} opts How long to wait in
+ * @param call - Container request function.
+ * @param opts - How long to wait in
  *   all, and between attempts.
- * @returns {Promise<void>}
+ * @returns 
  * @throws {Error} When bookclerkd has not answered 200 in time.
  */
-export async function waitForHealth(call, opts) {
+export async function waitForHealth(call: ContainerCall, opts: { timeoutMs: number; intervalMs: number; }): Promise<void> {
   const deadline = Date.now() + opts.timeoutMs;
   let last = "no answer";
   while (Date.now() < deadline) {
@@ -73,16 +73,16 @@ export async function waitForHealth(call, opts) {
  *
  * The visitor gets the account a person who installs Bookclerk has, so the
  * demo shows everything the Owner sees. The Worker still refuses the routes
- * the demo does not allow (src/routes.js) whatever the role. The Owner gets a
+ * the demo does not allow (src/routes.ts) whatever the role. The Owner gets a
  * random password nobody sees, so the claim ticket redeems without one and
  * nobody can sign in as the visitor some other way.
  *
- * @param {ContainerCall} call Container request function.
- * @param {string} operatorToken The session's operator token.
- * @returns {Promise<string>} The `bookclerk_portal_session` value.
+ * @param call - Container request function.
+ * @param operatorToken - The session's operator token.
+ * @returns The `bookclerk_portal_session` value.
  * @throws {Error} When bootstrap or redeem fails or answers unexpectedly.
  */
-export async function signInVisitor(call, operatorToken) {
+export async function signInVisitor(call: ContainerCall, operatorToken: string): Promise<string> {
   const boot = await call("/api/auth/bootstrap", {
     method: "POST",
     headers: { Authorization: `Bearer ${operatorToken}`, "Content-Type": "application/json" },
@@ -106,14 +106,14 @@ export async function signInVisitor(call, operatorToken) {
  * default instance on this node, as an operator would in Settings. Visitors
  * cannot do either: the Worker refuses those routes.
  *
- * @param {ContainerCall} call Container request function.
- * @param {string} operatorToken The session's operator token.
- * @param {string[]} [ids] Plugin ids to enable.
- * @returns {Promise<void>}
+ * @param call - Container request function.
+ * @param operatorToken - The session's operator token.
+ * @param ids - Plugin ids to enable.
+ * @returns 
  * @throws {Error} When a grant or deployment is refused, or a storefront has
  *   no default instance (the image is missing it).
  */
-export async function enableStorefronts(call, operatorToken, ids = STOREFRONTS) {
+export async function enableStorefronts(call: ContainerCall, operatorToken: string, ids: string[] = STOREFRONTS): Promise<void> {
   const json = { Authorization: `Bearer ${operatorToken}`, "Content-Type": "application/json" };
   for (const id of ids) {
     const res = await call(`/api/plugins/${encodeURIComponent(id)}/consent`, {
@@ -145,16 +145,16 @@ export async function enableStorefronts(call, operatorToken, ids = STOREFRONTS) 
  * store cannot hold the container (or the visitor's Start over) open.
  * Failures are counted, not thrown.
  *
- * @param {ContainerCall} call Container request function.
- * @param {string} portalSession The visitor's portal session.
- * @param {number} timeoutMs Longest wait for each request.
- * @param {string} origin The demo's origin, which bookclerkd's cross-site
+ * @param call - Container request function.
+ * @param portalSession - The visitor's portal session.
+ * @param timeoutMs - Longest wait for each request.
+ * @param origin - The demo's origin, which bookclerkd's cross-site
  *   check expects on cookie-authenticated writes (its `public_origin`).
- * @returns {Promise<{revoked: number, failed: number}>} Accounts signed out,
+ * @returns Accounts signed out,
  *   and accounts whose sign-out failed (including when the list could not
  *   be read: then `failed` is 1).
  */
-export async function signOutStores(call, portalSession, timeoutMs, origin) {
+export async function signOutStores(call: ContainerCall, portalSession: string, timeoutMs: number, origin: string): Promise<{ revoked: number; failed: number; }> {
   const cookie = { Cookie: `${PORTAL_COOKIE}=${portalSession}` };
   let accounts;
   try {

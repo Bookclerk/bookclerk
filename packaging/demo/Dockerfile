@@ -17,7 +17,7 @@
 #   - No bookclerk-media-worker and no `local` output plugin: with
 #     media.isolation = "required" and no destination deployed, the host
 #     refuses acquire work by its own fail-closed rules. The demo Worker
-#     refuses the acquire routes before that (tools/demo/src/routes.js).
+#     refuses the acquire routes before that (tools/demo/src/routes.ts).
 #   - plugins.isolation = "best-effort": Cloudflare's container kernel has no
 #     Landlock, so the host could not jail any guest otherwise. Decided for
 #     the demo only: it runs first-party plugins and visitors cannot add

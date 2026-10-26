@@ -5,42 +5,57 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { handle, sweep, withBanner } from "../src/app.js";
-import { finish } from "../src/limits.js";
-import { createD1 } from "../test-support/d1.js";
+import { type Deps, handle, sweep, withBanner } from "../src/app.ts";
+import type { Env, SessionApi } from "../src/env.ts";
+import { finish } from "../src/limits.ts";
+import { createD1 } from "../test-support/d1.ts";
 
 const ORIGIN = "https://demo.example.test";
 
 /** A fake session object: state machine plus a scripted container. */
-class FakeStub {
-  constructor() {
-    /** Where the session is. */
-    this.state = "none";
-    /** Arguments of open(). */
-    this.opened = null;
-    /** Requests forwarded to the container. */
-    this.forwarded = [];
-    /** Reasons end() was called with. */
-    this.ended = [];
-    /** The container's next answer. */
-    this.reply = () => new Response("ok", { headers: { "Content-Type": "text/plain" } });
-  }
-  async open(p) {
+class FakeStub implements SessionApi {
+  /** Where the session is. */
+  state = "none";
+  /** Arguments of open(). */
+  opened: Parameters<SessionApi["open"]>[0] | null = null;
+  /** Requests forwarded to the container. */
+  forwarded: Request[] = [];
+  /** Reasons end() was called with. */
+  ended: string[] = [];
+  /** The container's next answer. */
+  reply: (request: Request) => Response = () => new Response("ok", { headers: { "Content-Type": "text/plain" } });
+
+  /** @param p - Session id, hard stop, version and origin. */
+  async open(p: Parameters<SessionApi["open"]>[0]): Promise<void> {
     this.opened = p;
     this.state = "starting";
   }
-  async status() {
+
+  /** @returns State, hard stop and version. */
+  async status(): Promise<{ state: string; endsAt: number; version: string }> {
     return { state: this.state, endsAt: this.opened?.endsAt ?? 0, version: this.opened?.version ?? "" };
   }
-  async portalSession() {
+
+  /** @returns A portal session once ready. */
+  async portalSession(): Promise<string | null> {
     return this.state === "ready" ? "p".repeat(64) : null;
   }
-  async end(reason) {
+
+  /**
+   * @param reason - Why the session ends.
+   * @returns Zero sign-outs.
+   */
+  async end(reason: string): Promise<{ revoked: number; failed: number }> {
     this.ended.push(reason);
     this.state = "ended";
     return { revoked: 0, failed: 0 };
   }
-  async fetch(request) {
+
+  /**
+   * @param request - Forwarded request.
+   * @returns The scripted answer, or 503 when not ready.
+   */
+  async fetch(request: Request): Promise<Response> {
     if (this.state !== "ready") {
       return Response.json({}, { status: 503, headers: { "X-Demo-State": this.state } });
     }
@@ -50,19 +65,38 @@ class FakeStub {
 }
 
 /**
+ * A Durable Object id that carries its name, as `idFromName` gives one.
+ *
+ * @param name - Object name.
+ * @returns The id.
+ */
+function fakeId(name: string): DurableObjectId {
+  return { name, toString: () => name, equals: (other) => other.name === name };
+}
+
+/** The test env: the Worker's bindings plus the fake stubs by session id. */
+type TestEnv = Env & { stubs: Map<string, FakeStub> };
+
+/**
  * A Worker env with a D1 stand-in, fake sessions and Turnstile keys.
  *
- * @param {Record<string, string>} [vars] Extra vars.
+ * @param vars - Extra vars.
+ * @returns The env.
  */
-function makeEnv(vars = {}) {
-  const stubs = new Map();
+function makeEnv(vars: Partial<Env> = {}): TestEnv {
+  const stubs = new Map<string, FakeStub>();
   return {
     DB: createD1(),
     SESSIONS: {
-      idFromName: (name) => name,
-      get: (name) => {
-        if (!stubs.has(name)) stubs.set(name, new FakeStub());
-        return stubs.get(name);
+      idFromName: fakeId,
+      get: (id) => {
+        const name = id.toString();
+        let stub = stubs.get(name);
+        if (!stub) {
+          stub = new FakeStub();
+          stubs.set(name, stub);
+        }
+        return stub;
       },
     },
     SESSION_KEY: "k".repeat(64),
@@ -75,20 +109,29 @@ function makeEnv(vars = {}) {
   };
 }
 
+/** Test deps: the Worker's, plus the Siteverify calls made and a clock to move. */
+type TestDeps = Deps & {
+  /** Siteverify calls, with their JSON bodies. */
+  calls: Array<{ url: string; body: Record<string, unknown> }>;
+  /** Moves the clock forward. */
+  advance: (ms: number) => number;
+};
+
 /**
  * Deps whose Siteverify answers `success` for this host and action.
  *
- * @param {object} [overrides] Fields to change in the Siteverify answer.
+ * @param overrides - Fields to change in the Siteverify answer.
+ * @returns The deps.
  */
-function makeDeps(overrides = {}) {
-  const calls = [];
+function makeDeps(overrides: object = {}): TestDeps {
+  const calls: TestDeps["calls"] = [];
   let now = Date.UTC(2026, 9, 24, 12, 0, 0);
   return {
     calls,
     advance: (ms) => (now += ms),
     now: () => now,
     fetch: async (url, init) => {
-      calls.push({ url, body: JSON.parse(init.body) });
+      calls.push({ url, body: JSON.parse(String(init.body)) as Record<string, unknown> });
       return Response.json({ success: true, hostname: "demo.example.test", action: "demo_start", ...overrides });
     },
   };
@@ -97,10 +140,10 @@ function makeDeps(overrides = {}) {
 /**
  * Starts a session through the launch form.
  *
- * @returns {Promise<{res: Response, cookie: string}>} The response and the
+ * @returns The response and the
  *   `Cookie` header the browser would send next.
  */
-async function startSession(env, deps, ip = "203.0.113.7") {
+async function startSession(env: TestEnv, deps: TestDeps, ip = "203.0.113.7"): Promise<{ res: Response; cookie: string; }> {
   const res = await handle(
     new Request(`${ORIGIN}/_demo/start`, {
       method: "POST",
@@ -115,13 +158,19 @@ async function startSession(env, deps, ip = "203.0.113.7") {
     deps,
   );
   const set = res.headers.getSetCookie()[0] ?? "";
-  return { res, cookie: set.split(";")[0] };
+  return { res, cookie: set.split(";")[0] ?? "" };
 }
 
-/** The only fake stub, after one session started. */
-function onlyStub(env) {
-  assert.equal(env.stubs.size, 1);
-  return [...env.stubs.values()][0];
+/**
+ * The only fake stub, after one session started.
+ *
+ * @param env - Test env.
+ * @returns The stub.
+ */
+function onlyStub(env: TestEnv): FakeStub {
+  const stubs = [...env.stubs.values()];
+  assert.equal(stubs.length, 1);
+  return stubs[0]!;
 }
 
 describe("launch and admission", () => {
@@ -131,7 +180,7 @@ describe("launch and admission", () => {
     const html = await res.text();
     assert.match(html, /data-sitekey="0x4AAAAAAA-site"/);
     assert.match(html, /data-action="demo_start"/);
-    assert.match(res.headers.get("Content-Security-Policy"), /script-src 'self' https:\/\/challenges\.cloudflare\.com/);
+    assert.match(res.headers.get("Content-Security-Policy") ?? "", /script-src 'self' https:\/\/challenges\.cloudflare\.com/);
   });
 
   it("refuses to start when the Worker is not set up", async () => {
@@ -147,14 +196,14 @@ describe("launch and admission", () => {
     const { res, cookie } = await startSession(env, deps);
     assert.equal(res.status, 303);
     assert.equal(res.headers.get("Location"), "/_demo/wait");
-    const set = res.headers.getSetCookie()[0];
+    const set = res.headers.getSetCookie()[0] ?? "";
     assert.match(set, /^__Host-demo=[A-Za-z0-9_-]{22}; Path=\/; HttpOnly; Secure; SameSite=Lax; Max-Age=1800$/);
-    assert.equal(deps.calls[0].body.response, "token123");
-    assert.equal(deps.calls[0].body.remoteip, "203.0.113.7");
+    assert.equal(deps.calls[0]!.body.response, "token123");
+    assert.equal(deps.calls[0]!.body.remoteip, "203.0.113.7");
     const stub = onlyStub(env);
-    assert.equal(stub.opened.version, "abc1234");
+    assert.equal(stub.opened!.version, "abc1234");
     const row = await env.DB.prepare("SELECT ends_at - started_at AS len FROM sessions").first();
-    assert.equal(row.len, 1800);
+    assert.equal(row!.len, 1800);
     assert.ok(cookie.startsWith("__Host-demo="));
   });
 
@@ -216,11 +265,11 @@ describe("launch and admission", () => {
       deps,
     );
     assert.equal(end.status, 303);
-    const id = [...env.stubs.keys()][0];
+    const id = [...env.stubs.keys()][0]!;
     assert.equal(await finish(env.DB, { id, now: Math.floor(deps.now() / 1000), reason: "visitor", revoked: 0, failed: 0 }), true);
     assert.equal((await startSession(env, deps, "198.51.100.4")).res.status, 429);
     // The second leaves at once: its whole half hour comes back.
-    const second = [...env.stubs.keys()][1];
+    const second = [...env.stubs.keys()][1]!;
     assert.equal(await finish(env.DB, { id: second, now: Math.floor(deps.now() / 1000) - 600, reason: "visitor", revoked: 0, failed: 0 }), true);
     assert.equal((await startSession(env, deps, "198.51.100.5")).res.status, 303);
   });
@@ -242,7 +291,7 @@ describe("a running session", () => {
     const res = await handle(new Request(`${ORIGIN}/_demo/enter`, { headers: { Cookie: cookie } }), env, deps);
     assert.equal(res.status, 303);
     assert.equal(res.headers.get("Location"), "/");
-    assert.match(res.headers.getSetCookie()[0], /^bookclerk_portal_session=p{64}; Path=\/; HttpOnly; Secure; SameSite=Lax$/);
+    assert.match(res.headers.getSetCookie()[0] ?? "", /^bookclerk_portal_session=p{64}; Path=\/; HttpOnly; Secure; SameSite=Lax$/);
   });
 
   it("refuses acquire without contacting the container", async () => {
@@ -280,12 +329,12 @@ describe("a running session", () => {
     );
     assert.equal(res.status, 200);
     const sent = stub.forwarded[0];
-    assert.equal(sent.headers.get("Cookie"), `bookclerk_portal_session=${"p".repeat(64)}`);
-    assert.equal(sent.headers.get("Authorization"), null);
-    assert.equal(sent.headers.get("Origin"), ORIGIN);
-    assert.equal(onlyStub(env).opened.origin, ORIGIN);
-    assert.equal(sent.headers.get("Forwarded"), null);
-    assert.equal(sent.headers.get("X-Real-IP"), null);
+    assert.equal(sent!.headers.get("Cookie"), `bookclerk_portal_session=${"p".repeat(64)}`);
+    assert.equal(sent!.headers.get("Authorization"), null);
+    assert.equal(sent!.headers.get("Origin"), ORIGIN);
+    assert.equal(onlyStub(env).opened!.origin, ORIGIN);
+    assert.equal(sent!.headers.get("Forwarded"), null);
+    assert.equal(sent!.headers.get("X-Real-IP"), null);
     assert.equal(res.headers.get("X-Frame-Options"), "DENY");
   });
 
@@ -404,16 +453,15 @@ describe("a running session", () => {
         if (pulled > 1000) controller.close();
       },
     });
-    const res = await handle(
-      new Request(`${ORIGIN}/_demo/start`, {
-        method: "POST",
-        headers: { Origin: ORIGIN, "Content-Type": "application/x-www-form-urlencoded" },
-        body,
-        duplex: "half",
-      }),
-      env,
-      deps,
-    );
+    // Node needs `duplex` for a streamed body; the Workers RequestInit type
+    // does not list it, so the options are not a checked literal.
+    const init = {
+      method: "POST",
+      headers: { Origin: ORIGIN, "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+      duplex: "half",
+    };
+    const res = await handle(new Request(`${ORIGIN}/_demo/start`, init), env, deps);
     assert.equal(res.status, 403);
     assert.ok(pulled < 10, `read ${pulled} chunks`);
     assert.equal(deps.calls.length, 0);
@@ -449,7 +497,7 @@ describe("sweep", () => {
     assert.equal(await sweep(env, deps), 1);
     assert.deepEqual(onlyStub(env).ended, ["sweep"]);
     const row = await env.DB.prepare("SELECT end_reason FROM sessions").first();
-    assert.equal(row.end_reason, "sweep");
+    assert.equal(row!.end_reason, "sweep");
     assert.equal(await sweep(env, deps), 0);
   });
 
@@ -464,15 +512,15 @@ describe("sweep", () => {
     const live = () => env.DB.prepare("SELECT ended_at, revoke_failed FROM sessions").first();
     deps.advance(1800_000 + 121_000);
     assert.equal(await sweep(env, deps), 1);
-    assert.equal((await live()).ended_at, null);
+    assert.equal((await live())!.ended_at, null);
     deps.advance(1800_000);
     assert.equal(await sweep(env, deps), 1);
-    assert.equal((await live()).ended_at, null);
+    assert.equal((await live())!.ended_at, null);
     deps.advance(1800_000);
     assert.equal(await sweep(env, deps), 1);
     const row = await live();
-    assert.notEqual(row.ended_at, null);
-    assert.equal(row.revoke_failed, 1);
+    assert.notEqual(row!.ended_at, null);
+    assert.equal(row!.revoke_failed, 1);
     assert.equal(await sweep(env, deps), 0);
   });
 });

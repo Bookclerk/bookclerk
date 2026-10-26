@@ -5,10 +5,10 @@
 /**
  * Deterministic PRNG (mulberry32).
  *
- * @param {number} seed 32-bit seed.
- * @returns {() => number} Uniform values in [0, 1).
+ * @param seed - 32-bit seed.
+ * @returns Uniform values in [0, 1).
  */
-export function rng(seed) {
+export function rng(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
     a = (a + 0x6d2b79f5) >>> 0;
@@ -23,13 +23,13 @@ export function rng(seed) {
  * Applies one to six random edits: insert a fragment, delete a short run,
  * or insert a random BMP character.
  *
- * @param {() => number} rand PRNG.
- * @param {string} text Input.
- * @param {string[]} fragments Fragments to splice in.
- * @returns {string} Mutated text.
+ * @param rand - PRNG.
+ * @param text - Input.
+ * @param fragments - Fragments to splice in.
+ * @returns Mutated text.
  */
-export function mutate(rand, text, fragments) {
-  const pick = (n) => Math.floor(rand() * n);
+export function mutate(rand: () => number, text: string, fragments: string[]): string {
+  const pick = (n: number): number => Math.floor(rand() * n);
   for (let k = 1 + pick(6); k > 0; k--) {
     const pos = pick(text.length + 1);
     const op = rand();

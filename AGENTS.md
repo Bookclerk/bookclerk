@@ -48,9 +48,13 @@ Types:
   function.
 - Cloudflare Worker code (`tools/site`, `tools/demo`,
   `tools/diagnostics-collector`), its build scripts and its tests are strict
-  TypeScript too. A Worker with a `tsconfig.json` takes only `.ts` modules
-  (never new `.js` / `.mjs`) and its CI check runs `tsc` before the tests;
-  Workers still in JavaScript are being converted.
+  TypeScript too: only `.ts` modules (never new `.js` / `.mjs`), no build
+  step (Wrangler bundles the sources and Node runs the tests by stripping
+  types). Each Worker's `npm run typecheck` runs `tsc` on `tsconfig.json`
+  (everything, Workers and Node types) and `tsconfig.worker.json` (the
+  Worker's own sources, Workers types only); its CI check and its deploy
+  workflow both run it first. Browser scripts a Worker serves are not Worker
+  code and may stay JavaScript.
 - Run `cargo fmt` before committing rather than formatting by hand.
 
 Untrusted input ([ADR](docs/adr/untrusted-input-fuzzing.md)):

@@ -1,0 +1,7 @@
+{
+  // The Worker's own sources again, with the Workers runtime types only, so
+  // a Node-only API cannot reach code that runs on Cloudflare.
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "types": ["@cloudflare/workers-types"] },
+  "include": ["src/*.ts"]
+}
