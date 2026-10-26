@@ -1,6 +1,6 @@
 # CLI reference
 
-Every command and option of the `bookclerk` command-line tool. During
+Every built-in command and option of the `bookclerk` command-line tool. During
 development, run it as `cargo dev-cli -- <command>` or
 `cargo run -p bookclerk-cli -- <command>`. `bookclerk <command> --help`
 prints the same text in a terminal.
@@ -17,7 +17,7 @@ the result.
 
 ## Global options
 
-These options work with every command.
+These options work with every command, except where a command has its own option of the same name, which takes its place: `bookclerk export postgres --format`.
 
 - `--bookclerk-files, --bookclerkFiles <BOOKCLERK_FILES>`: Bookclerk files directory (`BOOKCLERK_FILES_DIR`) (environment variable `BOOKCLERK_FILES_DIR`)
 - `--config <CONFIG>`: Path to config.toml (default: `{bookclerk-files}/config.toml`) (environment variable `BOOKCLERK_CONFIG`)
