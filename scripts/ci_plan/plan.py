@@ -92,8 +92,22 @@ BRAND_PREFIX = "assets/brand/"
 COLLECTOR_PREFIX = "tools/diagnostics-collector/"
 DEMO_PREFIX = "tools/demo/"
 # Files outside tools/demo/ that its tests read: the route table must give
-# every operation in the daemon's OpenAPI document a verdict.
-DEMO_TEST_INPUTS = frozenset({"crates/bookclerkd/openapi.json"})
+# every operation in the daemon's OpenAPI document a verdict, and the demo's
+# pages must carry the website's footer note, fonts and the app's mark
+# unchanged.
+DEMO_TEST_INPUTS = frozenset(
+    {
+        "crates/bookclerkd/openapi.json",
+        "tools/site/src/partials/footer.html",
+        "tools/site/src/fonts/literata-v40-latin.woff2",
+        "tools/site/src/fonts/literata-v40-latin-ext.woff2",
+        "tools/site/src/fonts/source-sans-3-v20-latin.woff2",
+        "tools/site/src/fonts/source-sans-3-v20-latin-ext.woff2",
+        "tools/site/src/fonts/OFL-literata.txt",
+        "tools/site/src/fonts/OFL-sourcesans3.txt",
+        "ui/public/bookclerk-mark.svg",
+    }
+)
 # Files outside tools/diagnostics-collector/ that its tests read: the summary
 # comment renderer's seed corpus and the Python oracle its TypeScript port is
 # fuzzed against (both also run in the plan job's Python tests).
@@ -771,7 +785,8 @@ def build_plan(
             surf.demo.append(path)
             classified = True
         if path in DEMO_TEST_INPUTS:
-            # Also a bookclerkd file, classified with its package above.
+            # Also a bookclerkd, website or UI file, classified with its
+            # owner above.
             surf.demo.append(path)
         if path.startswith(COLLECTOR_TEST_INPUT_PREFIXES):
             # Also plan-job test files, classified below.
