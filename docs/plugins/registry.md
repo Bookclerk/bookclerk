@@ -485,4 +485,4 @@ that only carries `[package.metadata.bookclerk]` and documentation.
 - Publisher reusable workflow: [`examples/plugin-publisher/`](../../examples/plugin-publisher/)
 - Experimental workerd Echo (legacy ids): [`examples/plugins-echo-native-node/`](../../examples/plugins-echo-native-node/), [`examples/plugins-echo-native-python/`](../../examples/plugins-echo-native-python/)
 - Architecture overview: [architecture.md](../internals/architecture.md)
-- Operator GUI surfaces: [gui.md](../guide/gui.md) (plugin browser = future)
+- Operator GUI surfaces: [sign-in.md](../server/sign-in.md) (plugin browser = future)

@@ -1,4 +1,6 @@
-# Content sources (storefronts)
+# Stores reference
+
+For connecting a store in plain language, see [Stores](../guide/stores.md).
 
 Sources implement the shared `ContentSource` / storefront entrypoint: login,
 list accounts, scan library, fetch title. There is no plugin `kind = "source"`
@@ -76,7 +78,7 @@ Optional brand-audio trim: `output.strip_audible_brand_audio = true`.
 Credentials are stored in `encrypted_secrets` (DB-backed). Classic Libation import
 (`import libation`) converts `AccountsSettings.json` account metadata only;
 IdentityTokens are not converted. Re-connect Audible from the Accounts UI, or see
-[migration.md](migration.md) for classic import paths.
+[backups.md](backups.md) for classic import paths.
 
 Low-level auth/download notes: [`crates/bookclerk-plugins/optional/source-audible/README.md`](../../crates/bookclerk-plugins/optional/source-audible/README.md).
 
@@ -92,7 +94,7 @@ bookclerk plugins config set audible bitrate normal
 
 Widevine, xHE-AAC, and the packaging format are shared `core.output`
 settings (seeded once from `[output]`; see
-[configuration.md](../server/configuration.md#output-shared)):
+[configuration.md](configuration.md#output-shared)):
 
 ```bash
 bookclerk config set output.widevine true

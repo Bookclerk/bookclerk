@@ -1,4 +1,6 @@
-# Discovery, recommendations, and wishlist
+# Discovery design
+
+How Discover finds and ranks books. For using Discover and the wishlist, see [Discover and wishlist](../guide/discover.md).
 
 Bookclerk’s discovery stack turns **local taste** (owned library + listening)
 into **unowned storefront candidates**, then ranks those with embeddings and

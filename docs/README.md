@@ -9,21 +9,29 @@ others go deeper.
 
 ## Use Bookclerk
 
-- [Getting started](guide/getting-started.md): set up Bookclerk, connect a store, and bring in your library
-- [Stores](guide/sources.md): Audible, Libro.fm, Chirp and GraphicAudio
-- [Where your books go](guide/destinations.md): a folder on disk, S3 or MinIO, and how files are named
-- [Discover and wishlist](guide/discovery.md): recommendations, catalog search and the wishlist
-- [The web interface](guide/gui.md): screens, sign-in and the tray icon
-- [Coming from Libation](guide/migration.md): import your Libation files
+- [Getting started](guide/getting-started.md): install Bookclerk, create your account, connect a store and bring in your books
+- [Stores](guide/stores.md): Audible, Libro.fm, Chirp and GraphicAudio
+- [Where your books go](guide/where-books-go.md): folders, cloud storage and file names
+- [Discover and wishlist](guide/discover.md): suggestions, catalog search and the wishlist
+- [The web app](guide/web-app.md): the screens, roles and ways to sign in
+- [Sharing with your household](guide/sharing.md): invites, what is shared, and Audiobookshelf
+- [Join a library as a branch](guide/branches.md): let a second computer help
+- [Coming from Libation](guide/from-libation.md): bring over an existing library
+- [Troubleshooting](guide/troubleshooting.md): common problems and fixes
+- [Glossary](guide/glossary.md): the words Bookclerk uses
 
 ## Run a server
 
 - [Running Bookclerk](server/operations.md): the daemon, systemd, Docker and logs
 - [Configuration](server/configuration.md): `config.toml`, environment variables and plugin settings
 - [Database](server/database.md): SQLite, PostgreSQL or Cloudflare D1, and encrypted secrets
+- [Stores reference](server/stores.md): store plugins, formats and settings
+- [Output and destinations reference](server/output.md): local and S3 destinations, naming and packaging
+- [Web app and sign-in reference](server/sign-in.md): roles, sign-in methods, routes and screens
 - [Integrations and sign-in](server/integrations.md): Audiobookshelf, invites and identity providers
 - [Libraries and branches](server/cluster-hosts.md): join a library, clerks, consent and the node API
 - [Media worker](server/media.md): the confined process that handles audio files
+- [Backups, import and export](server/backups.md): native backups, schema backups, Libation and PostgreSQL export
 - [Diagnostics](server/diagnostics.md): opt-in error reports
 
 ## Build plugins
@@ -36,6 +44,7 @@ others go deeper.
 ## How it works
 
 - [Architecture](internals/architecture.md): how the pieces fit
+- [Discovery design](internals/discovery.md): how suggestions are found and ranked
 - [Durable job queue](internals/jobs.md): admission, leases and crash recovery
 - [Bounded storage](internals/storage-bounds.md): size caps, streams, paged scans and checkpoints
 - [workerd bridge](internals/workerd-bridge.md): the wire between the launcher and a plugin isolate
@@ -43,7 +52,9 @@ others go deeper.
 
 ## Contribute
 
+- [Build from source and use the CLI](contributing/build-from-source.md): build the binaries and drive Bookclerk from the command line
 - [Dev Container](contributing/devcontainer.md): a ready-made build environment
+- [Web UI development](contributing/ui.md): the React app, the tray and brand assets
 - [Continuous integration](contributing/ci.md): the planner, `CI Gate`, fuzzing and deploys
 - [Release packaging](contributing/packaging.md): platform bundles and release CI
 - [Code documentation](contributing/code-documentation.md): how to document Rust, TypeScript, Python and shell

@@ -72,11 +72,34 @@ export type UrlFor = (key: string) => string;
 export const NAV: NavSpec[] = [
   {
     title: "Use Bookclerk",
-    pages: ["guide/getting-started", "guide/sources", "guide/destinations", "guide/discovery", "guide/gui", "guide/migration"],
+    pages: [
+      "guide/getting-started",
+      "guide/stores",
+      "guide/where-books-go",
+      "guide/discover",
+      "guide/web-app",
+      "guide/sharing",
+      "guide/branches",
+      "guide/from-libation",
+      "guide/troubleshooting",
+      "guide/glossary",
+    ],
   },
   {
     title: "Run a server",
-    pages: ["server/operations", "server/configuration", "server/database", "server/integrations", "server/cluster-hosts", "server/media", "server/diagnostics"],
+    pages: [
+      "server/operations",
+      "server/configuration",
+      "server/database",
+      "server/stores",
+      "server/output",
+      "server/sign-in",
+      "server/integrations",
+      "server/cluster-hosts",
+      "server/media",
+      "server/backups",
+      "server/diagnostics",
+    ],
   },
   {
     title: "Build plugins",
@@ -88,12 +111,14 @@ export const NAV: NavSpec[] = [
   },
   {
     title: "How it works",
-    pages: ["internals/architecture", "internals/jobs", "internals/storage-bounds", "internals/workerd-bridge", "internals/windows-appcontainer"],
+    pages: ["internals/architecture", "internals/discovery", "internals/jobs", "internals/storage-bounds", "internals/workerd-bridge", "internals/windows-appcontainer"],
   },
   {
     title: "Contribute",
     pages: [
+      "contributing/build-from-source",
       "contributing/devcontainer",
+      "contributing/ui",
       "contributing/ci",
       "contributing/packaging",
       "contributing/code-documentation",

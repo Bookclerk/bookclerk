@@ -66,7 +66,7 @@ const TOKEN_REFRESH_MARGIN_SECS: f64 = 60.0;
 /// <https://help.audible.ca/s/article/merge-audible-and-amazon-accounts>
 //
 // `account import` prints a merge hint for such accounts. TODO(M4): do
-// the same in `account login` (and cover it in docs/guide/migration.md, M8).
+// the same in `account login` (and cover it in docs/guide/from-libation.md, M8).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccountOrigin {
     /// Regular Amazon identity.

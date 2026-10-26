@@ -316,7 +316,7 @@ bare plugin key routes to the default instance, and `library scan|acquire
 --instance` pins another. Store accounts are keyed by plugin key, not
 instance, so every instance serves the same connected accounts. Details:
 [plugins.md](../plugins/README.md#enabling-and-settings-database),
-[destinations.md](../guide/destinations.md), [sources.md](../guide/sources.md),
+[output.md](output.md), [stores.md](stores.md),
 [integrations.md](integrations.md).
 
 ## Identity broker (`[auth.oidc]`)
@@ -433,6 +433,6 @@ is stored relative, so other hosts rebase it under their own.
 Per-destination roots, prefixes, naming overrides, and credentials are the
 `local` / `s3` plugin settings.
 
-Destination and naming detail: [destinations.md](../guide/destinations.md).
-Store-specific knobs: [sources.md](../guide/sources.md).
+Destination and naming detail: [output.md](output.md).
+Store-specific knobs: [stores.md](stores.md).
 Integrations: [integrations.md](integrations.md).

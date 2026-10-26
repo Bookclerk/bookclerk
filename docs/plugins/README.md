@@ -61,7 +61,7 @@ Runtimes in `plugin.toml`:
 | `workerd` | Author `modules/` loaded by first-party [`bookclerk-workerd`](../../crates/bookclerk-workerd/) — **one jail + one isolate per plugin** (local embed, not Cloudflare cloud execution) |
 
 For the product overview see the [documentation index](../README.md). Built-in
-storefronts: [sources.md](../guide/sources.md). Audiobookshelf / Connect:
+storefronts: [stores.md](../server/stores.md). Audiobookshelf / Connect:
 [integrations.md](../server/integrations.md). Publishing / crates.io taxonomy and
 standalone author repos: [plugin-registry.md](registry.md).
 

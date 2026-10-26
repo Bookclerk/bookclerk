@@ -1,4 +1,6 @@
-# Migrating from classic Libation
+# Backups, import and export
+
+For moving from Libation step by step, see [Coming from Libation](../guide/from-libation.md).
 
 Bookclerk can import and export classic **Libation Files** (Settings, accounts,
 SQLite). Prefer the first-class import/export verbs; `migrate import` remains as
@@ -31,7 +33,7 @@ Imports typically include:
 
 IdentityTokens and other store credentials are **not** converted by migrate
 (file-based auth leftovers are discarded). After import, re-connect Audible
-from the Accounts UI (see [sources.md](sources.md)).
+from the Accounts UI (see [stores.md](stores.md)).
 
 Example AccountsSettings shape:
 [`examples/AccountsSettings.example.json`](../../examples/AccountsSettings.example.json).

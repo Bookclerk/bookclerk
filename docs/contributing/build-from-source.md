@@ -1,0 +1,157 @@
+# Build from source and use the CLI
+
+For a first start in the web app, see [Getting started](../guide/getting-started.md). This page builds the binaries yourself and drives Bookclerk from the command line.
+
+## Prerequisites
+
+- Rust stable (see `rust-toolchain.toml`; edition 2021, MSRV in workspace)
+- Network access to the stores you intend to use
+- Optional: Docker if you prefer the packaged daemon image
+
+No `ffmpeg` or `aaxclean-cli` binaries are required. Decrypt, remux, MP3 encode,
+metadata fix-up, and chapter split are native Rust.
+
+## Build
+
+```bash
+cargo build --release -p bookclerk-cli -p bookclerkd \
+  -p bookclerk-media-worker -p bookclerk-jail -p bookclerk-workerd
+export PATH="$PWD/target/release:$PATH"
+# binaries: target/release/bookclerk  target/release/bookclerkd
+#           target/release/bookclerk-media-worker  target/release/bookclerk-jail
+#           target/release/bookclerk-workerd
+```
+
+The helpers are not optional extras. `bookclerk-media-worker` runs every
+decode, encode, and packaging step in a confined child process
+([media.md](../server/media.md)); `bookclerk-jail` starts each external plugin guest inside
+its own jail ([plugins.md](../plugins/README.md#the-guest-jail)). Install both beside the
+host binaries — that is where they are looked for, and by default a host refuses
+media work or declines to load a plugin rather than run either unconfined.
+
+Or run from the workspace without installing:
+
+```bash
+export BOOKCLERK_FILES_DIR=./BookclerkFiles
+cargo run -p bookclerk-cli -- version
+```
+
+## Initialize config
+
+```bash
+export BOOKCLERK_FILES_DIR=./BookclerkFiles
+mkdir -p "$BOOKCLERK_FILES_DIR"
+cp config/config.example.toml "$BOOKCLERK_FILES_DIR/config.toml"
+# [database] and daemon settings only; plugins are configured in the database (below)
+```
+
+On first use Bookclerk also creates `library.db`, `cache/`, `search_index/`,
+and `plugins/` under the files directory. Auth credentials are stored in the
+`encrypted_secrets` table inside `library.db` — there is no `Accounts/` directory.
+
+The first-party role model (Owner / Administrator / Member) is greenfield: there
+is no migration that upgrades a pre-Owner Administrator. After pulling this
+schema, recreate a testing/dev database rather than reusing an old
+`library.db`:
+
+```bash
+cargo reset --yes   # wipes BookclerkFiles/ (not target/ or .cargo-home/)
+```
+
+Then bootstrap the first Owner from Settings (operator session) or
+`POST /api/auth/bootstrap`.
+
+## Authenticate a store
+
+Store connect lives in the **User SPA Accounts** UI (claim ticket or integration
+login → Accounts → Connect). There is no `bookclerk auth` CLI group; the operator
+token cannot link bookstore sources.
+
+### Audible (OAuth)
+
+In Accounts, choose Audible and complete Amazon OAuth in the browser. Amazon
+accounts with **2FA/MFA must complete OTP in the browser**.
+
+Alternatives for operators migrating credentials:
+
+- Import an existing audible-rs auth file via the Audible plugin / migrate path
+  (see [backups.md](../server/backups.md) and [stores.md](../server/stores.md))
+
+Wrap `master.key` at rest (strongly recommended for production):
+
+```bash
+read -rsp 'Bookclerk auth password: ' BOOKCLERK_AUTH_PASSWORD
+printf '\n'
+export BOOKCLERK_AUTH_PASSWORD
+```
+
+### Password stores (Libro.fm, Chirp, GraphicAudio)
+
+Connect from Accounts with email + password (passwords are never placed on CLI
+argv or read from the environment). Details per store: [stores.md](../server/stores.md).
+
+### Destinations and plugin settings
+
+```bash
+bookclerk plugins list
+bookclerk plugins config set local root /data/Audiobooks
+bookclerk plugins config set s3 bucket my-audiobooks && bookclerk plugins deploy s3
+```
+
+See [configuration.md](../server/configuration.md#plugin-instances).
+
+### Account hygiene
+
+```bash
+bookclerk library accounts
+bookclerk library set-scan <account> --scan false   # exclude from bare/daemon scans
+```
+
+Bare `library scan` and daemon schedules honor `scan_enabled`. Explicit
+`library scan --account <id>` bypasses that flag for one-shot syncs.
+
+## Scan and acquire
+
+```bash
+bookclerk library scan                         # all enabled sources
+bookclerk library scan --source audible        # one store
+bookclerk library acquire --asin B0EXAMPLE     # Audible
+bookclerk library acquire --isbn 978…          # Libro / ISBN attribute
+bookclerk library search 'title:Dune'
+```
+
+Title ids may be UUID, ASIN, ISBN, or source product id.
+
+`library scan` and `library acquire` queue jobs that a running `bookclerkd`
+executes (`cargo dev` in development), and wait for them; start the daemon
+first, or pass `--no-wait` to only queue. See [Jobs](../internals/jobs.md#planners-and-the-cli).
+
+### Existing audiobooks already on disk/S3
+
+```bash
+bookclerk library scan --match-storage
+# optional: relocate matched files onto the naming-profile layout
+bookclerk library scan --match-storage --fix-layout
+bookclerk library acquire          # skips matched titles
+bookclerk library acquire --force  # re-download anyway
+```
+
+Matching lists audio extensions, probes object metadata (no body download), then
+falls back to ASIN/ISBN tokens in the path.
+
+## Run the daemon
+
+```bash
+bookclerkd
+# or: cargo run -p bookclerkd
+```
+
+Keep `library.auto_acquire = false` until you are comfortable with scheduled
+downloads. Packaging notes: [operations.md](../server/operations.md).
+
+## Next steps
+
+- Tune naming and destinations — [output.md](../server/output.md)
+- Wire Audiobookshelf — [integrations.md](../server/integrations.md)
+- Install a third-party plugin — [plugins.md](../plugins/README.md)
+- Coming from Libation — [backups.md](../server/backups.md)

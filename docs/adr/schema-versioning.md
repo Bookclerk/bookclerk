@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-09-03
 - **Related:** [SQL database contract](sql-database-contract.md),
-  [database.md](../server/database.md), [migration.md](../guide/migration.md)
+  [database.md](../server/database.md), [backups.md](../server/backups.md)
 
 ## Context
 

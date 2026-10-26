@@ -232,7 +232,7 @@ session is not terminated.
 | `POST /api/auth/totp/enroll/*` / `GET`/`DELETE /api/auth/totp` / `POST /api/auth/totp/login` | Authenticator-app TOTP |
 
 See [ADR: first-party identity](../adr/first-party-identity.md) and
-[gui.md](../guide/gui.md).
+[sign-in.md](sign-in.md).
 
 ## Enabling third-party integrations
 

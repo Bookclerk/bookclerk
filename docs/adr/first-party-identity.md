@@ -94,11 +94,11 @@ Optional multi-IdP broker + WebAuthn (Phase 6) landed in
 
 - Portal cookies and `/api/portal/*` resolve to a first-party `users` row.
 - Operator prefs subject remains `operator`; user prefs use `user:{id}`.
-- Docs: [gui.md](../guide/gui.md), [operations.md](../server/operations.md),
+- Docs: [sign-in.md](../server/sign-in.md), [ui.md](../contributing/ui.md) (tray), [operations.md](../server/operations.md),
   [integrations.md](../server/integrations.md), [database.md](../server/database.md),
   [plugin-provided OIDC clients](plugin-oidc-clients.md).
 - Operator tray login never puts the durable token in a GET URL. Open Bookclerk
-  mints a 60-second hashed one-time loopback code (`POST /api/auth/tray-handoff/prepare`
+  mints a short-lived (default 180 s) hashed one-time loopback code (`POST /api/auth/tray-handoff/prepare`
   + `GET /api/auth/tray-handoff?code=`). A same-host reverse proxy cannot complete
   that handoff; the operator session cookie is set on localhost only.
 - The Owner / Administrator / Member role split is **greenfield**. There is no

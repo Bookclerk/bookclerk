@@ -1,153 +1,102 @@
 # Getting started
 
-## Prerequisites
+Bookclerk runs on your own computer or server and gathers the audiobooks you
+bought from Audible, Libro.fm, Chirp and GraphicAudio into one library. You
+use it in a web browser. This page takes you from a fresh install to your
+first books.
 
-- Rust stable (see `rust-toolchain.toml`; edition 2021, MSRV in workspace)
-- Network access to the stores you intend to use
-- Optional: Docker if you prefer the packaged daemon image
+Bookclerk has no stable release yet. Until it does, you build the
+development version yourself, and things may change between updates.
 
-No `ffmpeg` or `aaxclean-cli` binaries are required. Decrypt, remux, MP3 encode,
-metadata fix-up, and chapter split are native Rust.
+## 1. Install and start Bookclerk
 
-## Build
+You need [Rust](https://rustup.rs/), [Node.js](https://nodejs.org/) and git.
+Then, in a terminal:
 
-```bash
-cargo build --release -p bookclerk-cli -p bookclerkd \
-  -p bookclerk-media-worker -p bookclerk-jail -p bookclerk-workerd
-export PATH="$PWD/target/release:$PATH"
-# binaries: target/release/bookclerk  target/release/bookclerkd
-#           target/release/bookclerk-media-worker  target/release/bookclerk-jail
-#           target/release/bookclerk-workerd
+```sh
+git clone https://github.com/Bookclerk/bookclerk
+cd bookclerk
+cargo dev --optional
 ```
 
-The helpers are not optional extras. `bookclerk-media-worker` runs every
-decode, encode, and packaging step in a confined child process
-([media.md](../server/media.md)); `bookclerk-jail` starts each external plugin guest inside
-its own jail ([plugins.md](../plugins/README.md#the-guest-jail)). Install both beside the
-host binaries — that is where they are looked for, and by default a host refuses
-media work or declines to load a plugin rather than run either unconfined.
+`cargo dev` builds Bookclerk and starts it. `--optional` adds the store
+plugins (Audible, Libro.fm, Chirp, GraphicAudio). The first build takes a
+while. When it is done, Bookclerk keeps running in that terminal and your
+library is at <http://localhost:8787>.
 
-Or run from the workspace without installing:
+Your library, settings and downloads live in a folder called
+`BookclerkFiles` inside the checkout. To run Bookclerk as a service, with
+Docker, or on another machine, see [Running Bookclerk](../server/operations.md).
 
-```bash
-export BOOKCLERK_FILES_DIR=./BookclerkFiles
-cargo run -p bookclerk-cli -- version
+## 2. First start
+
+The first time you open Bookclerk, it asks for the **operator token**: the
+key that proves you are the person who runs this install. Print it in a
+second terminal:
+
+```sh
+cargo dev-cli -- daemon token
 ```
 
-## Initialize config
+Paste it in, and Bookclerk asks how this server should start:
 
-```bash
-export BOOKCLERK_FILES_DIR=./BookclerkFiles
-mkdir -p "$BOOKCLERK_FILES_DIR"
-cp config/config.example.toml "$BOOKCLERK_FILES_DIR/config.toml"
-# [database] and daemon settings only; plugins are configured in the database (below)
-```
+- **Start a new library** is what you want the first time.
+- **Join a library** connects this install to a library someone already
+  runs. See [Join a library as a branch](branches.md).
 
-On first use Bookclerk also creates `library.db`, `cache/`, `search_index/`,
-and `plugins/` under the files directory. Auth credentials are stored in the
-`encrypted_secrets` table inside `library.db` — there is no `Accounts/` directory.
+## 3. Create your own account
 
-The first-party role model (Owner / Administrator / Member) is greenfield: there
-is no migration that upgrades a pre-Owner Administrator. After pulling this
-schema, recreate a testing/dev database rather than reusing an old
-`library.db`:
+The operator runs the server, but cannot connect stores or own books. In
+**Settings → User Management**, create the first **Owner**: that is you.
+Bookclerk gives you an invite link. Open it, choose a password or a
+passkey, and sign in as yourself from then on.
 
-```bash
-cargo reset --yes   # wipes BookclerkFiles/ (not target/ or .cargo-home/)
-```
+On a computer with a desktop, the Bookclerk icon in the system tray can
+also open the library or copy a sign-in link for the operator.
 
-Then bootstrap the first Owner from Settings (operator session) or
-`POST /api/auth/bootstrap`.
+## 4. Turn on your stores
 
-## Authenticate a store
+Each store is a plugin, and plugins run only once the operator allows them.
+Once an Owner exists, the operator token no longer signs in to the web app.
+Instead, as the Owner, open **Settings → Account** and use **Operator
+elevation** (your password or passkey) to unlock the operator settings for
+this session. Then open **Settings → Plugins** and enable each store you buy
+from. Bookclerk first shows what that plugin asks for,
+such as the store's web addresses it needs to reach; approve it to turn the
+store on.
 
-Store connect lives in the **User SPA Accounts** UI (claim ticket or integration
-login → Accounts → Connect). There is no `bookclerk auth` CLI group; the operator
-token cannot link bookstore sources.
+## 5. Connect a store
 
-### Audible (OAuth)
+Sign in as yourself, open **Accounts** and choose **Connect** next to a
+store:
 
-In Accounts, choose Audible and complete Amazon OAuth in the browser. Amazon
-accounts with **2FA/MFA must complete OTP in the browser**.
+- **Audible** sends you to Amazon to sign in. If your Amazon account uses
+  two-step verification, enter the code there as usual.
+- **Libro.fm, Chirp and GraphicAudio** ask for your email and password for
+  that store. Bookclerk stores the password encrypted and never shows it
+  again.
 
-Alternatives for operators migrating credentials:
+More about each store: [Stores](stores.md).
 
-- Import an existing audible-rs auth file via the Audible plugin / migrate path
-  (see [migration.md](migration.md) and [sources.md](sources.md))
+## 6. Bring in your library
 
-Wrap `master.key` at rest (strongly recommended for production):
+On the **Library** page, choose **Scan**. Bookclerk reads the list of books
+each connected account owns. Nothing is downloaded yet.
 
-```bash
-export BOOKCLERK_AUTH_PASSWORD='your-strong-passphrase'
-```
+When you are ready, choose **Acquire pending** to download your books.
+Bookclerk saves each one as an audiobook file in the `Audiobooks` folder
+inside `BookclerkFiles`. To save them somewhere else, see
+[Where your books go](where-books-go.md).
 
-### Password stores (Libro.fm, Chirp, GraphicAudio)
-
-Connect from Accounts with email + password (passwords are never placed on CLI
-argv or read from the environment). Details per store: [sources.md](sources.md).
-
-### Destinations and plugin settings
-
-```bash
-bookclerk plugins list
-bookclerk plugins config set local root /data/Audiobooks
-bookclerk plugins deploy s3 && bookclerk plugins config set s3 bucket my-audiobooks
-```
-
-See [configuration.md](../server/configuration.md#plugin-instances).
-
-### Account hygiene
-
-```bash
-bookclerk library accounts
-bookclerk library set-scan <account> --scan false   # exclude from bare/daemon scans
-```
-
-Bare `library scan` and daemon schedules honor `scan_enabled`. Explicit
-`library scan --account <id>` bypasses that flag for one-shot syncs.
-
-## Scan and acquire
-
-```bash
-bookclerk library scan                         # all enabled sources
-bookclerk library scan --source audible        # one store
-bookclerk library acquire --asin B0EXAMPLE     # Audible
-bookclerk library acquire --isbn 978…          # Libro / ISBN attribute
-bookclerk library search 'title:Dune'
-```
-
-Title ids may be UUID, ASIN, ISBN, or source product id.
-
-`library scan` and `library acquire` queue jobs that a running `bookclerkd`
-executes (`cargo dev` in development), and wait for them; start the daemon
-first, or pass `--no-wait` to only queue. See [Jobs](../internals/jobs.md#planners-and-the-cli).
-
-### Existing audiobooks already on disk/S3
-
-```bash
-bookclerk library scan --match-storage
-# optional: relocate matched files onto the naming-profile layout
-bookclerk library scan --match-storage --fix-layout
-bookclerk library acquire          # skips matched titles
-bookclerk library acquire --force  # re-download anyway
-```
-
-Matching lists audio extensions, probes object metadata (no body download), then
-falls back to ASIN/ISBN tokens in the path.
-
-## Run the daemon
-
-```bash
-bookclerkd
-# or: cargo run -p bookclerkd
-```
-
-Keep `library.auto_acquire = false` until you are comfortable with scheduled
-downloads. Packaging notes: [operations.md](../server/operations.md).
+Bookclerk does not download anything on its own until you turn on
+**Auto acquire** in **Settings → Server Settings**. Leave it off until you
+are happy with where files land.
 
 ## Next steps
 
-- Tune naming and destinations — [destinations.md](destinations.md)
-- Wire Audiobookshelf — [integrations.md](../server/integrations.md)
-- Install a third-party plugin — [plugins.md](../plugins/README.md)
-- Coming from Libation — [migration.md](migration.md)
+- [Discover and wishlist](discover.md): find what to listen to next.
+- [Sharing with your household](sharing.md): invite family members.
+- [The web app](web-app.md): a tour of the screens.
+- [Coming from Libation](from-libation.md): bring over an existing library.
+- Prefer the command line? See
+  [Build from source and use the CLI](../contributing/build-from-source.md).

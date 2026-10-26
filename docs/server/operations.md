@@ -97,7 +97,7 @@ List reverse-proxy
 peers in `daemon.trusted_proxies` (IP or CIDR) before login throttling will
 honor `X-Forwarded-For` — empty means always use the direct TCP peer. Do not
 expose publicly without TLS (reverse proxy) and a protected token.
-Details: [gui.md](../guide/gui.md).
+Details: [sign-in.md](sign-in.md).
 
 ### Reverse proxy + TLS
 

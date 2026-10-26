@@ -151,7 +151,7 @@ Default listen: both loopbacks
 string or array / comma-separated). IPv6 uses bracketed form: `[::1]:8787`.
 
 Operator auth (`[daemon.auth]`, DB-sealed token / `BOOKCLERK_OPERATOR_TOKEN`) gates
-the API. Config reload swaps auth before listen rebind. See [gui.md](../guide/gui.md) and
+the API. Config reload swaps auth before listen rebind. See [sign-in.md](../server/sign-in.md) and
 [operations.md](../server/operations.md).
 
 | Method | Path | Auth | Notes |

@@ -1,4 +1,6 @@
-# Destinations (output)
+# Output and destinations reference
+
+For choosing where your books go in plain language, see [Where your books go](../guide/where-books-go.md).
 
 Acquire writes finished audio (and sidecars) through **destination plugins**.
 Each destination is a plugin instance with a deployment per host; **several
@@ -127,10 +129,10 @@ The shared `[output]` settings above are the `core.output` cluster document
 in the library database. The TOML table only seeds it on first enrollment;
 afterwards change them with `bookclerk config set output.<key> <value>`,
 **Settings → Output**, or `PATCH /api/settings` (see
-[configuration.md](../server/configuration.md#output-shared)). Every host applies a
+[configuration.md](configuration.md#output-shared)). Every host applies a
 committed revision on its next configuration wakeup.
 
 Artifact (sidecar) failures are logged and do not fail the audio acquire.
 
 Audible-specific knobs (Widevine, xHE-AAC, brand trim) are documented under
-[sources.md](sources.md#audible).
+[stores.md](stores.md#audible).
