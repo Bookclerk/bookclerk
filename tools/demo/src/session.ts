@@ -8,7 +8,7 @@
 // master.key and every token with it.
 
 import { Container } from "@cloudflare/containers";
-import type { Env } from "./env.ts";
+import type { Env, SessionApi } from "./env.ts";
 import { finish } from "./limits.ts";
 import { type ContainerCall, enableStorefronts, randomHex, signInVisitor, signOutStores, waitForHealth } from "./lifecycle.ts";
 
@@ -54,7 +54,7 @@ type SessionSecrets = {
 };
 
 /** A visitor's container and the object that owns it. */
-export class DemoSession extends Container<Env> {
+export class DemoSession extends Container<Env> implements SessionApi {
   /** bookclerkd's port. */
   override defaultPort = PORT;
   /** Idle time before onActivityExpired ends the session. */
