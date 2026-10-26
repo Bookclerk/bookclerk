@@ -27,22 +27,22 @@ export const SECURITY_HEADERS = Object.freeze({
 /**
  * Escapes text for HTML element content and quoted attributes.
  *
- * @param {string} s Text.
- * @returns {string} Escaped text.
+ * @param s - Text.
+ * @returns Escaped text.
  */
-export function esc(s) {
+export function esc(s: string): string {
   return String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
 /**
  * Wraps page content in the shared document.
  *
- * @param {string} title Page title.
- * @param {string} body Body HTML (already escaped).
- * @param {{scripts?: string[]}} [opts] Script URLs to load, deferred.
- * @returns {string} The document.
+ * @param title - Page title.
+ * @param body - Body HTML (already escaped).
+ * @param opts - Script URLs to load, deferred.
+ * @returns The document.
  */
-function documentHtml(title, body, opts = {}) {
+function documentHtml(title: string, body: string, opts: { scripts?: string[]; } = {}): string {
   const scripts = (opts.scripts ?? []).map((src) => `<script src="${esc(src)}" defer></script>`).join("");
   return `<!doctype html>
 <html lang="en">
@@ -65,12 +65,12 @@ ${body}
 /**
  * An HTML response with the page CSP and security headers.
  *
- * @param {string} html Document.
- * @param {number} [status] HTTP status.
- * @param {Record<string, string>} [extra] More headers.
- * @returns {Response} The response.
+ * @param html - Document.
+ * @param status - HTTP status.
+ * @param extra - More headers.
+ * @returns The response.
  */
-export function htmlResponse(html, status = 200, extra = {}) {
+export function htmlResponse(html: string, status: number = 200, extra: Record<string, string> = {}): Response {
   return new Response(html, {
     status,
     headers: {
@@ -95,12 +95,11 @@ const NOTICE = `
 /**
  * The launch page.
  *
- * @param {{siteKey: string | null, message?: string, siteUrl: string}} p
- *   Turnstile site key (null when the demo is not set up), an optional
+ * @param p - Turnstile site key (null when the demo is not set up), an optional
  *   message to show above the button, and the website to link back to.
- * @returns {string} The document.
+ * @returns The document.
  */
-export function launchPage(p) {
+export function launchPage(p: { siteKey: string | null; message?: string; siteUrl: string; }): string {
   const message = p.message ? `<p class="demo-message" role="alert">${esc(p.message)}</p>` : "";
   const form = p.siteKey
     ? `<form method="post" action="/_demo/start" class="demo-start">
@@ -136,9 +135,9 @@ const WAVEFORM_THROBBER = `<svg id="demo-wait-throbber" class="demo-throbber" vi
  * The page shown while the visitor's copy starts. /_demo/wait.js polls the
  * session and moves on when it is ready.
  *
- * @returns {string} The document.
+ * @returns The document.
  */
-export function waitPage() {
+export function waitPage(): string {
   return documentHtml(
     "Starting your demo",
     `${WAVEFORM_THROBBER}
@@ -152,10 +151,10 @@ export function waitPage() {
 /**
  * The page for a session that has ended (or never existed here).
  *
- * @param {{siteUrl: string}} p The website to link back to.
- * @returns {string} The document.
+ * @param p - The website to link back to.
+ * @returns The document.
  */
-export function endedPage(p) {
+export function endedPage(p: { siteUrl: string; }): string {
   const back = p.siteUrl ? ` or <a href="${esc(p.siteUrl)}">go back to Bookclerk</a>` : "";
   return documentHtml(
     "Demo ended",

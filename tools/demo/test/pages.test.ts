@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
-import { waitPage } from "../src/pages.js";
+import { waitPage } from "../src/pages.ts";
 
 describe("waitPage", () => {
   it("shows the waveform throbber without inline styles", () => {

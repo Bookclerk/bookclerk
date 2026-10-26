@@ -6,12 +6,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
-import { classify, OPERATIONS } from "../src/routes.js";
+import { classify, OPERATIONS } from "../src/routes.ts";
 
 /** Every (method, path) in the API description. */
 function apiOperations() {
-  const spec = JSON.parse(readFileSync(new URL("../../../crates/bookclerkd/openapi.json", import.meta.url), "utf8"));
-  const out = [];
+  const spec = JSON.parse(readFileSync(new URL("../../../crates/bookclerkd/openapi.json", import.meta.url), "utf8")) as {
+    paths: Record<string, Record<string, unknown>>;
+  };
+  const out: string[] = [];
   for (const [path, item] of Object.entries(spec.paths)) {
     for (const method of ["get", "put", "post", "delete", "patch", "head", "options", "trace"]) {
       if (item[method]) out.push(`${method.toUpperCase()} ${path}`);
@@ -26,7 +28,7 @@ describe("route list", () => {
     const api = apiOperations();
     const missing = api.filter((op) => !listed.includes(op));
     const extra = listed.filter((op) => !api.includes(op));
-    assert.deepEqual(missing, [], `classify these new operations in src/routes.js: ${missing.join(", ")}`);
+    assert.deepEqual(missing, [], `classify these new operations in src/routes.ts: ${missing.join(", ")}`);
     assert.deepEqual(extra, [], `these operations are no longer in the API: ${extra.join(", ")}`);
     assert.equal(new Set(listed).size, listed.length, "an operation is listed twice");
   });
@@ -40,7 +42,7 @@ describe("route list", () => {
   });
 
   it("keeps acquire, downloads, nodes, installs and sign-in changes refused", () => {
-    const refused = [
+    const refused: Array<[string, string]> = [
       ["POST", "/api/library/acquire"],
       ["POST", "/acquire"],
       ["POST", "/scan"],

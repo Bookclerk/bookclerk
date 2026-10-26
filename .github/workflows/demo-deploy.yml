@@ -17,7 +17,7 @@
 #                          docs/contributing/ci.md#cloudflare-worker-deploys
 #   CLOUDFLARE_ACCOUNT_ID
 # Worker secrets are made here, never stored in GitHub: the Turnstile widget
-# "bookclerk-demo" and its keys (scripts/worker-secrets.mjs), and SESSION_KEY,
+# "bookclerk-demo" and its keys (scripts/worker-secrets.ts), and SESSION_KEY,
 # generated once and kept.
 #
 # Where the Worker is served:
@@ -123,6 +123,22 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.gate.outputs.deploy == 'true'
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tools/demo/package-lock.json
+
+      - name: Install dependencies
+        if: steps.gate.outputs.deploy == 'true'
+        run: npm ci
+      # Wrangler bundles the Worker without checking its types, so a deploy
+      # of a commit CI did not test still has to pass tsc.
+      - name: Type-check the Worker
+        if: steps.gate.outputs.deploy == 'true'
+        run: npm run typecheck
+
       # The release build and two images need more than the runner's free
       # space; these preinstalled toolchains are never used here.
       - name: Free disk space
@@ -143,17 +159,6 @@ jobs:
           docker build -f packaging/docker/Dockerfile --target builder -t bookclerk-builder:demo .
           docker build -f packaging/docker/Dockerfile -t bookclerk:demo .
           git rev-parse HEAD > packaging/demo/version.txt
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        if: steps.gate.outputs.deploy == 'true'
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: tools/demo/package-lock.json
-
-      - name: Install dependencies
-        if: steps.gate.outputs.deploy == 'true'
-        run: npm ci
 
       - name: Route the Worker
         id: route
@@ -249,7 +254,7 @@ jobs:
             NEED_SESSION_KEY=true
           fi
           export NEED_SESSION_KEY
-          node scripts/worker-secrets.mjs | npx wrangler secret bulk
+          node scripts/worker-secrets.ts | npx wrangler secret bulk
 
       # No visitor session here: Turnstile cannot be passed from CI. Checks the
       # Worker is configured, serves the launch page, and refuses the API

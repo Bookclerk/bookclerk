@@ -2,7 +2,7 @@
 // calls classify() before anything reaches the visitor's container.
 //
 // The list is default-deny and covers every operation in
-// crates/bookclerkd/openapi.json; test/routes.test.js fails when the API
+// crates/bookclerkd/openapi.json; test/routes.test.ts fails when the API
 // gains an operation this table does not name, so a new route cannot reach
 // the demo unreviewed. Acquire, downloads, node and cluster links, plugin
 // installs, sign-in methods, users and settings writes are refused here
@@ -17,16 +17,13 @@
  *   (password stores sign in through the container, so the demo must not
  *   become a free way to test stolen passwords).
  * - `deny`: answer 403 without contacting the container.
- *
- * @typedef {"allow" | "signin" | "deny"} Verdict
  */
+export type Verdict = "allow" | "signin" | "deny";
 
 /**
  * The classified operations: method, OpenAPI path template, verdict.
- *
- * @type {ReadonlyArray<readonly [string, string, Verdict]>}
  */
-export const OPERATIONS = Object.freeze([
+export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Object.freeze([
   // Health and the API description.
   ["GET", "/health", "allow"],
   ["GET", "/api/openapi.json", "allow"],
@@ -242,10 +239,10 @@ export const MAX_PATH_CHARS = 2048;
 /**
  * Splits a path template into segments, with `null` for a `{param}` segment.
  *
- * @param {string} template OpenAPI path template.
- * @returns {Array<string | null>} Literal segments, or null for parameters.
+ * @param template - OpenAPI path template.
+ * @returns Literal segments, or null for parameters.
  */
-function templateSegments(template) {
+function templateSegments(template: string): Array<string | null> {
   return template
     .split("/")
     .slice(1)
@@ -265,10 +262,10 @@ const COMPILED = OPERATIONS.map(([method, template, verdict]) => ({
  * a different path: undecodable escapes, decoded separators, control
  * characters, and `.` / `..`.
  *
- * @param {string} raw Segment as it appears in the URL.
- * @returns {string | null} The decoded segment, or null when it is refused.
+ * @param raw - Segment as it appears in the URL.
+ * @returns The decoded segment, or null when it is refused.
  */
-export function decodeSegment(raw) {
+export function decodeSegment(raw: string): string | null {
   let s;
   try {
     s = decodeURIComponent(raw);
@@ -277,7 +274,8 @@ export function decodeSegment(raw) {
   }
   if (s === "." || s === "..") return null;
   for (const ch of s) {
-    const c = ch.codePointAt(0);
+    // A character from a string iterator always has a code point.
+    const c = ch.codePointAt(0) ?? 0;
     if (ch === "/" || ch === "\\" || c < 0x20 || c === 0x7f) return null;
   }
   return s;
@@ -291,24 +289,24 @@ export function decodeSegment(raw) {
  * `HEAD` is treated as `GET`. Paths outside the API roots are the web app's
  * own files and pages: `GET` and `HEAD` only.
  *
- * @param {string} method HTTP method, any case.
- * @param {string} pathname URL path, starting with `/`, still percent-encoded.
- * @returns {{verdict: Verdict, template: string | null}} The verdict, and the
+ * @param method - HTTP method, any case.
+ * @param pathname - URL path, starting with `/`, still percent-encoded.
+ * @returns The verdict, and the
  *   matched operation's template (null for app files and refused unknowns).
  */
-export function classify(method, pathname) {
-  const deny = { verdict: /** @type {Verdict} */ ("deny"), template: null };
+export function classify(method: string, pathname: string): { verdict: Verdict; template: string | null; } {
+  const deny: { verdict: Verdict; template: string | null } = { verdict: "deny", template: null };
   if (typeof method !== "string" || typeof pathname !== "string") return deny;
   if (!pathname.startsWith("/") || pathname.length > MAX_PATH_CHARS) return deny;
   let m = method.toUpperCase();
   if (m === "HEAD") m = "GET";
   const raw = pathname.split("/").slice(1);
-  const segments = [];
-  for (let i = 0; i < raw.length; i++) {
+  const segments: string[] = [];
+  for (const [i, part] of raw.entries()) {
     // An empty segment is only allowed as the very last one (a trailing slash
     // or the root path itself); `//` inside a path is refused.
-    if (raw[i] === "" && i !== raw.length - 1) return deny;
-    const s = decodeSegment(raw[i]);
+    if (part === "" && i !== raw.length - 1) return deny;
+    const s = decodeSegment(part);
     if (s === null) return deny;
     segments.push(s);
   }

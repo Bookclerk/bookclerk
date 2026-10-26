@@ -4,18 +4,19 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { enableStorefronts, signInVisitor, signOutStores, waitForHealth } from "../src/lifecycle.js";
+import { enableStorefronts, signInVisitor, signOutStores, waitForHealth } from "../src/lifecycle.ts";
+import { type Sent, sent } from "../test-support/requests.ts";
 
 /**
  * A scripted bookclerkd: routes map `METHOD path` to a handler.
  *
- * @param {Record<string, (init: RequestInit) => Response>} routes Handlers.
+ * @param routes - Handlers.
  */
-function scripted(routes) {
-  const seen = [];
-  const call = async (path, init = {}) => {
+function scripted(routes: Record<string, (init: RequestInit) => Response>) {
+  const seen: Sent[] = [];
+  const call = async (path: string, init: RequestInit = {}): Promise<Response> => {
     const key = `${init.method ?? "GET"} ${path}`;
-    seen.push({ key, init });
+    seen.push(sent(key, init));
     const h = routes[key];
     if (!h) return new Response("not found", { status: 404 });
     return h(init);
@@ -38,15 +39,15 @@ describe("signInVisitor", () => {
     });
     assert.equal(await signInVisitor(call, "op-token"), "a".repeat(64));
     assert.equal(seen.length, 2);
-    assert.equal(seen[0].init.headers.Authorization, "Bearer op-token");
-    const boot = JSON.parse(seen[0].init.body);
+    assert.equal(seen[0]!.init.headers.Authorization, "Bearer op-token");
+    const boot = JSON.parse(seen[0]!.init.body);
     assert.equal(boot.login_name, "demo");
     assert.equal(boot.display_name, "Demo visitor");
     assert.match(boot.password, /^[0-9a-f]{48}$/);
-    const redeem = JSON.parse(seen[1].init.body);
+    const redeem = JSON.parse(seen[1]!.init.body);
     assert.equal(redeem.ticket, ticket);
     assert.match(redeem.nonce, /^[0-9a-f]{64}$/);
-    assert.equal(seen[1].init.headers.Authorization, undefined);
+    assert.equal(seen[1]!.init.headers.Authorization, undefined);
   });
 
   it("fails when bootstrap or redeem goes wrong", async () => {
@@ -141,8 +142,8 @@ describe("enableStorefronts", () => {
       ],
     );
     for (const s of seen) assert.equal(s.init.headers.Authorization, "Bearer op");
-    assert.deepEqual(JSON.parse(seen[0].init.body), { approve: true });
-    assert.deepEqual(JSON.parse(seen[3].init.body), { desired: "present" });
+    assert.deepEqual(JSON.parse(seen[0]!.init.body), { approve: true });
+    assert.deepEqual(JSON.parse(seen[3]!.init.body), { desired: "present" });
   });
 
   it("fails when a storefront is missing or refused", async () => {
