@@ -18,6 +18,10 @@ export const PAGE_CSP = [
   "base-uri 'none'",
 ].join("; ");
 
+/** Turnstile's script, rendering on the callback public/_demo/launch.js defines. */
+export const TURNSTILE_SCRIPT =
+  "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=bookclerkDemoTurnstile";
+
 /** Headers every Worker page and proxied response carries. */
 export const SECURITY_HEADERS = Object.freeze({
   "X-Content-Type-Options": "nosniff",
@@ -220,7 +224,12 @@ ${form}
 <h2 id="demo-before-title">Before you start</h2>
 ${notes(p.sessionMinutes)}
 </aside>`,
-    { scripts: p.siteKey ? ["https://challenges.cloudflare.com/turnstile/v0/api.js"] : [], siteUrl: p.siteUrl },
+    {
+      // launch.js first: it defines the callback api.js calls to render the
+      // check at a size that fits the screen.
+      scripts: p.siteKey ? ["/_demo/launch.js", TURNSTILE_SCRIPT] : [],
+      siteUrl: p.siteUrl,
+    },
   );
 }
 

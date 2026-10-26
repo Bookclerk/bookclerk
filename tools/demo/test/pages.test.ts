@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
-import { aboutHowLong, endedPage, LEGAL, launchPage, PAGE_CSP, waitPage } from "../src/pages.ts";
+import { runInNewContext } from "node:vm";
+import { aboutHowLong, endedPage, LEGAL, launchPage, PAGE_CSP, TURNSTILE_SCRIPT, waitPage } from "../src/pages.ts";
 
 /**
  * Reads a file relative to this test.
@@ -49,6 +50,25 @@ describe("launchPage", () => {
     const scripts = html.match(/<script\b[^>]*>/gi) ?? [];
     assert.ok(scripts.length > 0);
     for (const tag of scripts) assert.match(tag, /\ssrc="(\/_demo\/|https:\/\/challenges\.cloudflare\.com\/)/);
+  });
+
+  it("renders Turnstile from launch.js, compact on the narrowest screens", () => {
+    const srcs = [...launchPage(LAUNCH).matchAll(/<script src="([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(srcs, ["/_demo/launch.js", TURNSTILE_SCRIPT.replaceAll("&", "&#38;")]);
+    const js = file("../public/_demo/launch.js").toString("utf8");
+    for (const narrow of [true, false]) {
+      const rendered: Array<Record<string, unknown>> = [];
+      const el = { dataset: { sitekey: "key", action: "demo_start" } };
+      const window: Record<string, unknown> = {
+        matchMedia: (query: string) => ({ matches: narrow && query === "(max-width: 365px)" }),
+        turnstile: { render: (_el: unknown, opts: Record<string, unknown>) => rendered.push({ ...opts }) },
+      };
+      runInNewContext(js, { window, document: { querySelectorAll: () => [el] } });
+      (window.bookclerkDemoTurnstile as () => void)();
+      assert.deepEqual(JSON.parse(JSON.stringify(rendered)), [
+        { sitekey: "key", action: "demo_start", size: narrow ? "compact" : "normal" },
+      ]);
+    }
   });
 
   it("leaves the estimate out until one is known, and the form out when not set up", () => {

@@ -106,7 +106,8 @@ p { margin: 0; }
   border: 1px solid var(--hairline);
   box-shadow: 0 1px 2px 0 #0000000d;
 }
-.demo-start .cf-turnstile { min-height: 65px; max-width: 100%; }
+.demo-start .cf-turnstile { min-height: 65px; }
+@media (max-width: 365px) { .demo-start .cf-turnstile { min-height: 140px; } }
 .demo-start-row { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; }
 .demo-start button {
   font: inherit;
