@@ -15,10 +15,10 @@ use crate::types::ModuleSpec;
 /// Kept equal to `BUNDLED_WORKERD_COMPAT_DATE` / `workerd-pin.json`
 /// `bundled_compat_date`. Older calendar dates are passed through. A newer
 /// date warns and falls back to this value when the isolate is configured.
-pub const WORKERD_PIN_COMPAT_DATE: &str = "2026-10-18";
+pub const WORKERD_PIN_COMPAT_DATE: &str = "2026-10-19";
 
 /// [`WORKERD_PIN_COMPAT_DATE`] as a calendar tuple for ordering.
-const PIN_COMPAT_YMD: (i32, u32, u32) = (2026, 10, 18);
+const PIN_COMPAT_YMD: (i32, u32, u32) = (2026, 10, 19);
 
 /// Author `compatibility_flags` this pin accepts.
 ///
