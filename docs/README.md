@@ -9,6 +9,7 @@ others go deeper.
 
 ## Use Bookclerk
 
+- [What is Bookclerk?](guide/what-is-bookclerk.md): what it does, whether it is ready, and how to try the demo
 - [Getting started](guide/getting-started.md): install Bookclerk, create your account, connect a store and bring in your books
 - [Stores](guide/stores.md): Audible, Libro.fm, Chirp and GraphicAudio
 - [Where your books go](guide/where-books-go.md): folders, cloud storage and file names
