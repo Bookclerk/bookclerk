@@ -25,6 +25,19 @@ share_reports = true
 
 Override with `collector_url` or runtime `BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL`.
 
+When sharing is on, these keys decide when a report is sent:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `upload_on_crash` | `true` | Send the ring buffer from the panic hook |
+| `upload_on_error_burst` | `true` | Send when ERROR events cross `error_burst_threshold` |
+| `error_burst_threshold` | `10` | ERROR events inside the window that trigger a report |
+| `error_burst_window_secs` | `60` | Sliding window for the error burst, in seconds |
+| `upload_on_warn_burst` | `true` | Send when WARN events cross `warn_burst_threshold` |
+| `warn_burst_threshold` | `20` | WARN events inside the window that trigger a report |
+| `warn_burst_window_secs` | `60` | Sliding window for the warn burst, in seconds |
+| `ring_buffer_capacity` | `200` | Most recent redacted events kept for a report (every level through TRACE) |
+
 ### Local verbosity vs ring buffer
 
 - **stderr / OS facility** (journald, macOS `os_log`, Windows Event Log) honor

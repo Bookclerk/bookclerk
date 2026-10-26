@@ -63,6 +63,10 @@ Object user-metadata and local `.bookclerk-meta.json` support
 `--match-storage` without downloading bodies. S3 timestamp metadata follows
 `output.creation_time` / `output.last_write_time`.
 
+By default a match leaves files where they are. Set
+`library.fix_storage_layout = true` to have matching move matched audio (and
+its sidecar files) onto the configured naming layout instead.
+
 ## Multi-destination policy
 
 When some destinations already have a title and others do not:
