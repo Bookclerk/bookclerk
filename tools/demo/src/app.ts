@@ -6,7 +6,7 @@
 // check (routes.ts) before the request reaches the visitor's own container.
 
 import { classify } from "./routes.ts";
-import { admit, countSignin, finish, limitsFrom, overdue, prune, utcDay } from "./limits.ts";
+import { admit, countSignin, finish, limitsFrom, overdue, prune, startupEstimate, utcDay } from "./limits.ts";
 import {
   cookiesForContainer,
   decodeLaunchForm,
@@ -19,6 +19,7 @@ import {
 } from "./inputs.ts";
 import type { Env, SessionApi } from "./env.ts";
 import { endedPage, htmlResponse, launchPage, REFUSALS, SECURITY_HEADERS, waitPage } from "./pages.ts";
+import { LIVE_PATH, liveRequest, NO_SESSION, siteUrl } from "./live.ts";
 
 /** Turnstile's server-side check. */
 const SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
@@ -136,14 +137,57 @@ function configured(env: Env): env is ConfiguredEnv {
   return Boolean(env.SESSION_KEY && env.TURNSTILE_SITE_KEY && env.TURNSTILE_SECRET);
 }
 
+/** How long one isolate reuses the startup estimate before asking D1 again. */
+const ESTIMATE_TTL_MS = 60_000;
+
 /**
- * The website to link back to.
+ * The startup estimate, cached per isolate so the launch page costs no D1
+ * read per view. The pending lookup is cached too, so requests arriving
+ * together share one query.
+ */
+let estimateCache: { at: number; seconds: Promise<number | null> } | null = null;
+
+/**
+ * How long a start usually takes (limits.ts `startupEstimate`), cached for
+ * a minute.
  *
  * @param env - Worker env.
- * @returns `SITE_URL` when it is an https URL; otherwise empty.
+ * @param deps - Outside dependencies (the clock).
+ * @returns Seconds, or null while too few starts are recorded or D1 fails.
  */
-function siteUrl(env: Pick<Env, "SITE_URL">): string {
-  return typeof env.SITE_URL === "string" && /^https:\/\/[^\s"<>]+$/.test(env.SITE_URL) ? env.SITE_URL : "";
+async function estimate(env: Env, deps: Deps): Promise<number | null> {
+  const now = deps.now();
+  if (estimateCache !== null && now - estimateCache.at < ESTIMATE_TTL_MS) return estimateCache.seconds;
+  const seconds = startupEstimate(env.DB, Math.floor(now / 1000)).catch((err: unknown) => {
+    // The pages read fine without an estimate.
+    console.error(`startup estimate failed: ${String(err)}`);
+    return null;
+  });
+  estimateCache = { at: now, seconds };
+  return seconds;
+}
+
+/** Forgets the cached startup estimate (tests). */
+export function resetEstimateCache(): void {
+  estimateCache = null;
+}
+
+/**
+ * The launch page, with this demo's session length and startup estimate.
+ *
+ * @param env - Worker env.
+ * @param deps - Outside dependencies.
+ * @param message - Why the last start was refused, if it was.
+ * @returns The document.
+ */
+async function launch(env: Env, deps: Deps, message?: string): Promise<string> {
+  return launchPage({
+    siteKey: configured(env) ? env.TURNSTILE_SITE_KEY : null,
+    siteUrl: siteUrl(env),
+    sessionMinutes: Math.round(limitsFrom(env).sessionSeconds / 60),
+    estimateSeconds: await estimate(env, deps),
+    ...(message === undefined ? {} : { message }),
+  });
 }
 
 /**
@@ -279,8 +323,8 @@ async function turnstileToken(request: Request): Promise<string | null> {
  *   page with the reason the session was refused.
  */
 async function start(request: Request, url: URL, env: Env, deps: Deps): Promise<Response> {
-  const page = (message: string | undefined, status: number): Response =>
-    htmlResponse(launchPage({ siteKey: configured(env) ? env.TURNSTILE_SITE_KEY : null, siteUrl: siteUrl(env), ...(message === undefined ? {} : { message }) }), status);
+  const page = async (message: string | undefined, status: number): Promise<Response> =>
+    htmlResponse(await launch(env, deps, message), status);
   if (!configured(env)) return page(undefined, 503);
   if (!sameOrigin(request, url)) return page(REFUSALS.origin, 403);
   const token = await turnstileToken(request);
@@ -317,7 +361,8 @@ async function start(request: Request, url: URL, env: Env, deps: Deps): Promise<
  * @returns The document with the banner's stylesheet and script.
  */
 export function withBanner(html: string): string {
-  const tags = '<link rel="stylesheet" href="/_demo/banner.css"><script src="/_demo/banner.js" defer></script>';
+  const tags =
+    '<link rel="stylesheet" href="/_demo/banner.css"><script src="/_demo/live.js" defer></script><script src="/_demo/banner.js" defer></script>';
   const at = html.search(/<\/head\s*>/i);
   return at === -1 ? tags + html : html.slice(0, at) + tags + html.slice(at);
 }
@@ -439,6 +484,43 @@ function notRunning(request: Request, state: string, env: Pick<Env, "SITE_URL"> 
 }
 
 /**
+ * `GET /_demo/live`: hands a page's WebSocket to its session object, which
+ * pushes the session's status over it (live.ts). Only pages on this origin
+ * may open one: a socket carries the visitor's cookie, and browsers send
+ * `Origin` on every WebSocket handshake.
+ *
+ * @param request - The upgrade request.
+ * @param url - Its URL.
+ * @param env - Worker env.
+ * @param id - Session id, if the visitor has a session.
+ * @returns The session object's upgrade, or a refusal.
+ */
+async function live(request: Request, url: URL, env: Env, id: string | null): Promise<Response> {
+  const verdict = liveRequest({
+    method: request.method,
+    upgrade: request.headers.get("Upgrade"),
+    origin: request.headers.get("Origin"),
+    ownOrigin: url.origin,
+    hasSession: id !== null,
+  });
+  switch (verdict) {
+    case "not_websocket":
+      return json({ error: "Open this as a WebSocket." }, 426, { Upgrade: "websocket" });
+    case "cross_origin":
+      return json({ error: "Cross-origin request refused." }, 403);
+    case "no_session":
+      return json({ error: "Start the demo first." }, 401);
+    case "open":
+      break;
+  }
+  // "open" implies a session; this only tells tsc so.
+  if (id === null) return json({ error: "Start the demo first." }, 401);
+  // A fresh request: nothing the browser sent (cookies, headers) reaches
+  // the object, which needs only the path and the upgrade.
+  return sessionStub(env, id).fetch(new Request(`https://session${LIVE_PATH}`, { headers: { Upgrade: "websocket" } }));
+}
+
+/**
  * Handles one request to the demo Worker.
  *
  * @param request - The request.
@@ -461,11 +543,14 @@ export async function handle(request: Request, env: Env, deps: Deps = DEFAULT_DE
   const id = token && configured(env) ? await sessionId(env, token) : null;
 
   if (path === "/_demo/wait") {
-    return id ? htmlResponse(waitPage()) : redirect("/");
+    return id ? htmlResponse(waitPage({ estimateSeconds: await estimate(env, deps), siteUrl: siteUrl(env) })) : redirect("/");
   }
   if (path === "/_demo/session") {
-    const status = id ? await sessionStub(env, id).status() : { state: "none", endsAt: 0, version: "" };
+    const status = id ? await sessionStub(env, id).status() : NO_SESSION;
     return json({ ...status, siteUrl: siteUrl(env) }, 200);
+  }
+  if (path === LIVE_PATH) {
+    return live(request, url, env, id);
   }
   if (path === "/_demo/enter") {
     const portal = id ? await sessionStub(env, id).portalSession() : null;
@@ -485,10 +570,7 @@ export async function handle(request: Request, env: Env, deps: Deps = DEFAULT_DE
   // An id implies a configured env; the second test only tells tsc so.
   if (!id || !configured(env)) {
     if (path === "/" && request.method === "GET") {
-      return htmlResponse(
-        launchPage({ siteKey: configured(env) ? env.TURNSTILE_SITE_KEY : null, siteUrl: siteUrl(env) }),
-        200,
-      );
+      return htmlResponse(await launch(env, deps), 200);
     }
     return isNavigation(request) ? redirect("/") : json({ error: "Start the demo first." }, 401);
   }

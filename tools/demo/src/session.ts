@@ -5,12 +5,28 @@
 // and on every way a session ends (Start over, 10 minutes idle, the hard
 // stop, the sweep) signs their store accounts out before destroying the VM.
 // The VM's disk is ephemeral, so destroying it deletes the library,
-// master.key and every token with it.
+// master.key and every token with it. The object also pushes the session's
+// status to the visitor's open pages over WebSockets (live.ts).
 
 import { Container } from "@cloudflare/containers";
 import type { Env, SessionApi } from "./env.ts";
-import { finish } from "./limits.ts";
+import { finish, recordStartup } from "./limits.ts";
 import { type ContainerCall, enableStorefronts, randomHex, signInVisitor, signOutStores, waitForHealth } from "./lifecycle.ts";
+import {
+  CLOSE_TOO_MANY,
+  isOver,
+  LIVE_PATH,
+  liveCommand,
+  liveStatus,
+  type LiveStatus,
+  NO_SESSION,
+  replyCloseCode,
+  type SessionState,
+  siteUrl,
+  socketsToEvict,
+} from "./live.ts";
+
+export type { SessionState } from "./live.ts";
 
 /** bookclerkd's port inside the container (BOOKCLERK_DAEMON_LISTEN in the image). */
 const PORT = 8787;
@@ -27,8 +43,8 @@ const DESTROY_RETRY_SECONDS = 60;
 /** Attempts to destroy a VM before giving up (about an hour). */
 const DESTROY_ATTEMPTS = 60;
 
-/** Where a session is. */
-export type SessionState = "starting" | "ready" | "ending" | "ended" | "failed";
+/** `WebSocket.readyState` of an open socket. */
+const WS_OPEN = 1;
 
 /**
  * What the object keeps in its storage. `secrets` is deleted when the
@@ -45,6 +61,11 @@ export type SessionMeta = {
   version: string;
   /** The demo's origin (`https://host`), which bookclerkd serves as its `public_origin`. */
   origin: string;
+  /**
+   * When the visitor pressed Start, in milliseconds. Absent on sessions
+   * opened before startup times were recorded.
+   */
+  openedAt?: number;
 };
 
 /** What the object keeps in storage while the session runs. */
@@ -78,7 +99,93 @@ export class DemoSession extends Container<Env> implements SessionApi {
    */
   async setState(state: SessionState): Promise<void> {
     const meta = await this.meta();
-    if (meta) await this.ctx.storage.put("meta", { ...meta, state });
+    if (!meta) return;
+    const next = { ...meta, state };
+    await this.ctx.storage.put("meta", next);
+    this.broadcast(liveStatus(next, Date.now()));
+  }
+
+  /**
+   * Sends the status to every open page; once the session is over, also
+   * closes their sockets.
+   *
+   * @param status - The status to send.
+   */
+  broadcast(status: LiveStatus): void {
+    const message = this.liveMessage(status);
+    for (const ws of this.ctx.getWebSockets()) {
+      try {
+        ws.send(message);
+        if (isOver(status.state)) ws.close(1000, "Session over");
+      } catch {
+        // A socket that is already closing needs nothing more.
+      }
+    }
+  }
+
+  /**
+   * The JSON message a page receives.
+   *
+   * @param status - The session's status.
+   * @returns The status plus the website to link back to.
+   */
+  liveMessage(status: LiveStatus): string {
+    return JSON.stringify({ ...status, siteUrl: siteUrl(this.env) });
+  }
+
+  /**
+   * Opens a page's live status socket and sends it the status at once.
+   * Accepted through the hibernation API, so its messages do not renew
+   * the container's idle timer: an open tab does not stop the 10-minute
+   * idle end. (The object stays awake anyway while the container runs.)
+   *
+   * @returns The WebSocket upgrade.
+   */
+  async openLive(): Promise<Response> {
+    const open = this.ctx.getWebSockets().filter((ws) => ws.readyState === WS_OPEN);
+    // A visitor with many tabs open gives up the oldest sockets; those tabs
+    // fall back to polling rather than reconnecting.
+    for (const ws of open.slice(0, socketsToEvict(open.length))) {
+      try {
+        ws.close(CLOSE_TOO_MANY, "Too many open pages");
+      } catch {
+        // Already closing.
+      }
+    }
+    const pair = new WebSocketPair();
+    const [client, server] = [pair[0], pair[1]];
+    this.ctx.acceptWebSocket(server);
+    const status = await this.status();
+    server.send(this.liveMessage(status));
+    if (isOver(status.state)) server.close(1000, "Session over");
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /**
+   * A page's message: "sync" gets the status again; anything else is ignored.
+   *
+   * @param ws - The page's socket.
+   * @param message - What it sent.
+   */
+  override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    if (liveCommand(message) === null) return;
+    const status = await this.status();
+    ws.send(this.liveMessage(status));
+    if (isOver(status.state)) ws.close(1000, "Session over");
+  }
+
+  /**
+   * A page closed its socket: close our end too.
+   *
+   * @param ws - The page's socket.
+   * @param code - Close code the page sent.
+   */
+  override async webSocketClose(ws: WebSocket, code: number): Promise<void> {
+    try {
+      ws.close(replyCloseCode(code), "Closed");
+    } catch {
+      // Already closed.
+    }
   }
 
   /**
@@ -89,7 +196,7 @@ export class DemoSession extends Container<Env> implements SessionApi {
    */
   async open(params: { id: string; endsAt: number; version: string; origin: string; }): Promise<void> {
     if (await this.meta()) return;
-    await this.ctx.storage.put("meta", { ...params, state: "starting" });
+    await this.ctx.storage.put("meta", { ...params, state: "starting", openedAt: Date.now() });
     await this.schedule(1, "boot");
     await this.schedule(new Date(params.endsAt * 1000), "expire");
   }
@@ -144,6 +251,13 @@ export class DemoSession extends Container<Env> implements SessionApi {
       // the visitor's own session.
       await this.ctx.storage.put("secrets", { portalSession });
       await this.setState("ready");
+      if (meta.openedAt !== undefined) {
+        // Only feeds the pages' estimate: a failure here must not reach the
+        // catch below, which tears a session down.
+        await recordStartup(this.env.DB, { id: meta.id, seconds: (Date.now() - meta.openedAt) / 1000 }).catch((err: unknown) => {
+          console.error(`demo session ${meta.id} could not record its startup time: ${String(err)}`);
+        });
+      }
     } catch (err) {
       if (!(await this.stillStarting())) {
         await this.retryDestroy(0);
@@ -159,10 +273,9 @@ export class DemoSession extends Container<Env> implements SessionApi {
    * Where the session is, for the waiting page and the banner.
    *
    */
-  async status(): Promise<{ state: SessionState | "none"; endsAt: number; version: string; }> {
+  async status(): Promise<LiveStatus> {
     const meta = await this.meta();
-    if (!meta) return { state: "none", endsAt: 0, version: "" };
-    return { state: meta.state, endsAt: meta.endsAt, version: meta.version };
+    return meta ? liveStatus(meta, Date.now()) : NO_SESSION;
   }
 
   /**
@@ -189,6 +302,11 @@ export class DemoSession extends Container<Env> implements SessionApi {
    *   is not running.
    */
   override async fetch(request: Request): Promise<Response> {
+    // The Worker answers every /_demo/ path itself and forwards none, so
+    // this path only ever comes from its own live status route.
+    if (new URL(request.url).pathname === LIVE_PATH && request.headers.get("Upgrade")?.toLowerCase() === "websocket") {
+      return this.openLive();
+    }
     const meta = await this.meta();
     const secrets = meta?.state === "ready" ? await this.ctx.storage.get<SessionSecrets>("secrets") : undefined;
     if (!secrets) {

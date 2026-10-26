@@ -1,0 +1,4 @@
+GET
+websocket
+https://evil.example.test
+1

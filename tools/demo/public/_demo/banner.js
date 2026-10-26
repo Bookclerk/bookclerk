@@ -28,6 +28,12 @@
   over.type = "submit";
   over.textContent = "Start over";
   form.append(over);
+  // Start over ends the session itself; its answer clears the cookies, so
+  // the "ended" news it causes must not navigate away from that answer.
+  let startingOver = false;
+  form.addEventListener("submit", () => {
+    startingOver = true;
+  });
 
   const get = document.createElement("a");
   get.textContent = "Get Bookclerk";
@@ -39,26 +45,39 @@
   if (document.body) mount();
   else document.addEventListener("DOMContentLoaded", mount);
 
-  let endsAt = 0;
+  // The countdown runs from the seconds left as the server counts them,
+  // against this page's monotonic clock, so the computer's own clock does not
+  // matter. It is display only: the session's own timer ends the session.
+  let deadline = 0;
+  let timer = 0;
+  let leaving = 0;
   const tick = () => {
-    if (!endsAt) return;
-    const s = Math.max(0, endsAt - Math.floor(Date.now() / 1000));
+    if (!deadline) return;
+    const s = Math.max(0, Math.ceil((deadline - performance.now()) / 1000));
     const m = Math.floor(s / 60);
     left.textContent = s > 0 ? `${m}:${String(s % 60).padStart(2, "0")} left` : "Time is up";
-    if (s === 0) window.location.assign("/");
+    // The session tells the page when it has ended; leave anyway if that
+    // news does not arrive soon after the time is up.
+    if (s === 0 && !leaving && !startingOver) leaving = setTimeout(() => window.location.assign("/"), 10000);
   };
-  fetch("/_demo/session", { headers: { Accept: "application/json" } })
-    .then((r) => r.json())
-    .then((s) => {
-      endsAt = Number(s.endsAt) || 0;
-      if (typeof s.siteUrl === "string" && s.siteUrl.startsWith("https://")) {
-        get.href = s.siteUrl;
-        get.hidden = false;
-      }
-      tick();
-      setInterval(tick, 1000);
-    })
-    .catch(() => {
-      left.textContent = "";
-    });
+  window.bookclerkDemoLive.follow((s) => {
+    if (s.siteUrl) {
+      get.href = s.siteUrl;
+      get.hidden = false;
+    }
+    if (startingOver) return;
+    if (s.state !== "starting" && s.state !== "ready") {
+      // Ended here or in another tab (Start over, the time limit, idle).
+      left.textContent = "Demo ended";
+      window.location.assign("/");
+      return;
+    }
+    deadline = performance.now() + s.remaining * 1000;
+    tick();
+    if (!timer) timer = setInterval(tick, 1000);
+  });
+  // Background tabs tick late; catch up as soon as the tab is shown again.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") tick();
+  });
 })();

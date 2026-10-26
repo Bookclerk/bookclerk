@@ -45,6 +45,7 @@ from ci_plan.github_paths import (  # noqa: E402
 )
 from ci_plan.plan import (  # noqa: E402
     ALL_CHECKS,
+    DEMO_TEST_INPUTS,
     E2E_PACKAGE,
     JOB_CHECKS,
     STEP_GATED_JOBS,
@@ -207,6 +208,13 @@ class ScenarioTests(unittest.TestCase):
     def test_openapi_change_runs_the_demo_tests(self) -> None:
         p = plan("crates/bookclerkd/openapi.json")
         self.assertIn("demo_test", p.checks)
+
+    def test_files_the_demo_copies_run_the_demo_tests(self) -> None:
+        for path in sorted(DEMO_TEST_INPUTS):
+            p = plan(path)
+            self.assertIn("demo_test", p.checks, path)
+        for font in ("literata-v40-latin.woff2", "source-sans-3-v20-latin-ext.woff2", "OFL-literata.txt"):
+            self.assertIn(f"tools/site/src/fonts/{font}", DEMO_TEST_INPUTS)
 
     def test_summary_corpus_change_runs_the_collector_tests(self) -> None:
         p = plan("scripts/tests/summary_comment_corpus/normal.json", "scripts/tests/summary_comment_oracle.py")

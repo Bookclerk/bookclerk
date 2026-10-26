@@ -1,6 +1,7 @@
 // The demo Worker's untrusted-input boundaries (fuzzing ADR decision 6):
 // the route check, the launch form, the visitor's cookies, the container's Set-Cookie lines
-// and JSON answers, and Turnstile's verdict. Each replays its seed corpus
+// and JSON answers, Turnstile's verdict, and the live status socket's
+// handshake and messages. Each replays its seed corpus
 // under corpus/<name>/ and runs seeded mutation fuzzing, checking every
 // result against an oracle written without the module's helpers.
 
@@ -23,6 +24,7 @@ import {
   rewriteSetCookie,
   siteverifyPassed,
 } from "../src/inputs.ts";
+import { liveCommand, liveRequest } from "../src/live.ts";
 import { decodeApiResponse, findWidget, MAX_DOMAINS, widgetKeys, WIDGET_NAME } from "../scripts/worker-secrets.ts";
 import { mutate, rng } from "../test-support/fuzz.ts";
 
@@ -386,6 +388,42 @@ describe("demo input boundaries", () => {
       const t = plainObject(v) && v.ok === true ? v.claim_ticket : undefined;
       const expected = typeof t === "string" && t.length >= 16 && t.length <= 512 && [...t].every((c) => /[A-Za-z0-9._~-]/.test(c)) ? t : null;
       assert.equal(decodeClaimTicket(input), expected, label);
+    });
+  });
+  it("live status socket opens only for a same-origin WebSocket with a session", () => {
+    const own = "https://demo.example.test";
+    fuzz(
+      "live_request",
+      ["\n", "GET", "POST", "websocket", "WEBSOCKET", "\u212A", "\u017F", " ", own, "https://evil.example.test", "null", "0", "1"],
+      (input, label) => {
+        // Lines: method, Upgrade, Origin, session flag; a missing line is an absent header.
+        const [method = "", upgrade, origin, session] = input.split("\n");
+        const r = { method, upgrade: upgrade ?? null, origin: origin ?? null, ownOrigin: own, hasSession: session === "1" };
+        // Oracle: ASCII case-insensitive "websocket", letter by letter.
+        const word = "websocket";
+        const isWebSocket =
+          r.upgrade !== null &&
+          r.upgrade.length === word.length &&
+          [...word].every((c, i) => {
+            const got = r.upgrade!.charCodeAt(i);
+            return got === c.charCodeAt(0) || got === c.charCodeAt(0) - 32;
+          });
+        const expected =
+          method !== "GET" || !isWebSocket ? "not_websocket" : r.origin !== own ? "cross_origin" : r.hasSession ? "open" : "no_session";
+        assert.equal(liveRequest(r), expected, label);
+      },
+    );
+  });
+
+  it("live status socket acts only on the exact word sync", () => {
+    fuzz("live_message", ["s", "y", "n", "c", "sync", "\n", " ", "\u0000", "{", "}"], (input, label) => {
+      const expected = input.length === 4 && [115, 121, 110, 99].every((code, i) => input.charCodeAt(i) === code) ? "sync" : null;
+      assert.equal(liveCommand(input), expected, label);
+      // Binary frames are never a command.
+      const bytes = new TextEncoder().encode(input);
+      const frame = new ArrayBuffer(bytes.byteLength);
+      new Uint8Array(frame).set(bytes);
+      assert.equal(liveCommand(frame), null, label);
     });
   });
 });

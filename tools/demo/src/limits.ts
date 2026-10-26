@@ -185,6 +185,57 @@ export async function finish(db: D1Database, e: { id: string; now: number; reaso
   return true;
 }
 
+/** Most recent starts the estimate looks at. */
+const STARTUP_SAMPLE = 25;
+
+/** Fewest recorded starts before the pages show an estimate. */
+const STARTUP_MIN_SAMPLES = 3;
+
+/** How far back the estimate looks: older starts ran an older image. */
+const STARTUP_WINDOW_SECONDS = 7 * 86400;
+
+/** Longest start worth recording; anything longer timed out in practice. */
+const STARTUP_MAX_SECONDS = 600;
+
+/**
+ * Records how long a session took to start.
+ *
+ * @param db - Database.
+ * @param s - Session id and the seconds from Start to ready.
+ */
+export async function recordStartup(db: D1Database, s: { id: string; seconds: number; }): Promise<void> {
+  if (!Number.isFinite(s.seconds) || s.seconds < 0 || s.seconds > STARTUP_MAX_SECONDS) return;
+  await db
+    .prepare("UPDATE sessions SET startup_seconds = ? WHERE id = ? AND startup_seconds IS NULL")
+    .bind(Math.round(s.seconds), s.id)
+    .run();
+}
+
+/**
+ * How long a start usually takes: the median of the last
+ * {@link STARTUP_SAMPLE} recorded starts within a week, rounded up to five
+ * seconds. The median keeps the slow first start after a deploy (Cloudflare
+ * pulling the new image) from moving the estimate.
+ *
+ * @param db - Database.
+ * @param now - Current Unix seconds.
+ * @returns Seconds, or null with fewer than {@link STARTUP_MIN_SAMPLES} starts.
+ */
+export async function startupEstimate(db: D1Database, now: number): Promise<number | null> {
+  const { results } = await db
+    .prepare(
+      `SELECT startup_seconds FROM sessions WHERE startup_seconds IS NOT NULL AND started_at > ?
+       ORDER BY started_at DESC LIMIT ?`,
+    )
+    .bind(now - STARTUP_WINDOW_SECONDS, STARTUP_SAMPLE)
+    .all();
+  const seconds = results.map((r) => Number(r.startup_seconds)).filter(Number.isFinite).sort((a, b) => a - b);
+  if (seconds.length < STARTUP_MIN_SAMPLES) return null;
+  const mid = Math.floor(seconds.length / 2);
+  const median = seconds.length % 2 === 1 ? (seconds[mid] ?? 0) : ((seconds[mid - 1] ?? 0) + (seconds[mid] ?? 0)) / 2;
+  return Math.max(5, Math.ceil(median / 5) * 5);
+}
+
 /**
  * Sessions still marked live well after their hard stop, for the sweep.
  *

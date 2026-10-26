@@ -1,73 +1,164 @@
-/* The demo Worker's own pages (launch, waiting, ended). Colors follow the
-   website's palette; system fonts only, so nothing loads from elsewhere. */
+/* The demo Worker's own pages (launch, waiting, ended), in the app's look:
+   navy ink on warm paper, Literata headings over Source Sans 3, one teal
+   accent. The fonts are the website's own files (fonts/), so nothing loads
+   from elsewhere. */
+@font-face { font-family: "Source Sans 3"; font-style: normal; font-weight: 200 900; font-display: swap; src: url("/_demo/fonts/source-sans-3-v20-latin-ext.woff2") format("woff2"); unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: "Source Sans 3"; font-style: normal; font-weight: 200 900; font-display: swap; src: url("/_demo/fonts/source-sans-3-v20-latin.woff2") format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "Literata"; font-style: normal; font-weight: 400 900; font-display: swap; src: url("/_demo/fonts/literata-v40-latin-ext.woff2") format("woff2"); unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: "Literata"; font-style: normal; font-weight: 400 900; font-display: swap; src: url("/_demo/fonts/literata-v40-latin.woff2") format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+
 :root {
   --paper: #fbf7ee;
-  --card: #fffdf7;
-  --fold: #e7d3ac;
+  --parchment: #f3e5c6;
+  --wash: #dcebe7;
   --ink: #0b3553;
-  --ink-soft: #1a4a6b;
-  --accent: #3d7f7a;
-  --accent-ink: #ffffff;
+  --ink-soft: #0b3553b3;
+  --hairline: #0b35531a;
+  --chip-border: #0b355326;
+  --chip: #ffffff80;
+  --card: #fffffecc;
+  --teal: #3d7f7a;
+  --button: #0b3553;
+  --button-ink: #fbf7ee;
+  --button-hover: #1a4a6b;
   --alert: #a33b28;
   --brick: #c84a34;
+  --display: "Literata", "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+  --sans: "Source Sans 3", "Segoe UI", Candara, system-ui, sans-serif;
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --paper: #121c26;
-    --card: #1e2d3a;
-    --fold: #243240;
+    --parchment: #1a2834;
+    --wash: #16302f;
     --ink: #f3e5c6;
-    --ink-soft: #d4c4a0;
-    --accent: #5aa8a2;
-    --accent-ink: #0b1520;
+    --ink-soft: #f3e5c6b3;
+    --hairline: #f3e5c61f;
+    --chip-border: #f3e5c633;
+    --chip: #f3e5c614;
+    --card: #1e2d3a;
+    --teal: #5aa8a2;
+    --button: #f3e5c6;
+    --button-ink: #121c26;
+    --button-hover: #d4c4a0;
     --alert: #f08c77;
     --brick: #e06a52;
   }
 }
+
 * { box-sizing: border-box; }
 body {
   margin: 0;
   min-height: 100vh;
-  display: grid;
-  place-items: center;
-  padding: 24px 16px;
-  background: var(--paper);
+  background-color: var(--paper);
+  background-image:
+    radial-gradient(ellipse 60% 50% at 0% 0%, var(--parchment) 0%, transparent 70%),
+    radial-gradient(ellipse 50% 45% at 100% 0%, var(--wash) 0%, transparent 70%);
+  background-repeat: no-repeat;
   color: var(--ink);
-  font: 17px/1.55 "Segoe UI", Candara, system-ui, sans-serif;
+  font: 16px/1.5 var(--sans);
 }
-.demo-card {
-  width: 100%;
-  max-width: 40rem;
-  background: var(--card);
-  border: 1px solid var(--fold);
+a { color: var(--ink); }
+a:hover { color: var(--teal); }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+h1, h2 { font-family: var(--display); margin: 0; }
+p { margin: 0; }
+
+.demo-page {
+  max-width: 1120px;
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 24px 16px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
+}
+
+/* Header: the mark and wordmark, and the way back to the website. */
+.demo-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.demo-brand { display: flex; align-items: center; gap: 10px; text-decoration: none; min-height: 44px; }
+.demo-brand img { display: block; }
+.demo-brand span { font: 700 22px/1 var(--display); }
+.demo-back { font-size: 14px; font-weight: 600; min-height: 44px; display: inline-flex; align-items: center; }
+
+/* Launch page: the pitch and start form beside "Before you start"; they
+   stack on narrow screens. */
+.demo-launch { flex: 1 0 auto; display: flex; flex-wrap: wrap; gap: 40px; align-items: flex-start; }
+.demo-intro { flex: 1 1 440px; min-width: 0; display: flex; flex-direction: column; gap: 24px; }
+.demo-before { flex: 1 1 380px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+.demo-eyebrow { font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--teal); margin-bottom: -12px; }
+.demo-intro h1 { font-size: 40px; line-height: 48px; font-weight: 700; }
+.demo-lede { font-size: 18px; line-height: 28px; color: var(--ink-soft); }
+.demo-before h2 { font-size: 20px; line-height: 28px; font-weight: 600; }
+
+.demo-stores { margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 8px; }
+.demo-stores li { padding: 4px 12px; border-radius: 9999px; background: var(--chip); border: 1px solid var(--chip-border); font-size: 14px; font-weight: 600; }
+
+.demo-start {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 24px;
   border-radius: 12px;
-  padding: 28px 24px;
+  background: var(--card);
+  border: 1px solid var(--hairline);
+  box-shadow: 0 1px 2px 0 #0000000d;
 }
-h1 {
-  margin: 0 0 12px;
-  font: 600 1.7rem/1.2 "Iowan Old Style", "Palatino Linotype", Palatino, serif;
-}
-p, li { color: var(--ink-soft); }
-a { color: var(--accent); }
-.demo-notes { padding-left: 1.2em; }
-.demo-notes li { margin: 0 0 8px; }
-.demo-message { color: var(--alert); font-weight: 600; }
-.demo-start { display: grid; gap: 16px; justify-items: start; margin-top: 20px; }
+.demo-start .cf-turnstile { min-height: 65px; max-width: 100%; }
+.demo-start-row { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; }
 .demo-start button {
   font: inherit;
   font-weight: 600;
-  padding: 10px 22px;
+  min-height: 48px;
+  padding: 12px 24px;
   border: 0;
-  border-radius: 8px;
-  background: var(--accent);
-  color: var(--accent-ink);
+  border-radius: 6px;
+  background: var(--button);
+  color: var(--button-ink);
   cursor: pointer;
+  transition: background-color 150ms;
 }
-.demo-start button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
-.demo-small { font-size: 0.9rem; margin-top: 20px; }
+.demo-start button:hover { background: var(--button-hover); }
+.demo-estimate, .demo-small { font-size: 14px; line-height: 20px; color: var(--ink-soft); }
+.demo-message { color: var(--alert); font-weight: 600; }
+
+.demo-notes { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--hairline); }
+.demo-notes li { display: flex; gap: 14px; padding: 16px 0; border-bottom: 1px solid var(--hairline); }
+.demo-notes p { font-size: 14px; line-height: 20px; color: var(--ink-soft); }
+.demo-notes .demo-note-title { font-size: 16px; line-height: 24px; font-weight: 600; color: var(--ink); }
+.demo-icon { flex: none; margin-top: 2px; color: var(--teal); }
+
+/* Waiting and ended pages: one centred card. */
+.demo-card {
+  flex: none;
+  align-self: center;
+  width: 100%;
+  max-width: 40rem;
+  margin: auto 0;
+  padding: 28px 24px;
+  border-radius: 12px;
+  background: var(--card);
+  border: 1px solid var(--hairline);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.demo-card h1 { font-size: 28px; line-height: 36px; font-weight: 700; }
+.demo-card p { color: var(--ink-soft); }
+.demo-card a { color: var(--teal); }
+
+.demo-footer { border-top: 1px solid var(--hairline); padding-top: 20px; font-size: 12px; line-height: 18px; color: var(--ink-soft); }
+
+@media (max-width: 560px) {
+  .demo-page { gap: 28px; }
+  .demo-intro h1 { font-size: 32px; line-height: 40px; }
+  .demo-start { padding: 20px 16px; }
+}
+
 /* Waiting page: the app's waveform throbber (ui/src/index.css). */
-.demo-throbber { display: block; width: 56px; height: 44px; margin: 0 0 16px; color: var(--brick); }
+.demo-throbber { display: block; width: 56px; height: 44px; margin: 0 0 4px; color: var(--brick); }
 .demo-throbber[hidden] { display: none; }
 .waveform-bar {
   fill: currentColor;
@@ -83,4 +174,5 @@ a { color: var(--accent); }
 }
 @media (prefers-reduced-motion: reduce) {
   .waveform-bar { animation: none; opacity: 0.9; transform: none; }
+  .demo-start button { transition: none; }
 }
