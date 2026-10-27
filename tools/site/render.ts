@@ -690,12 +690,19 @@ export function jsonLd(data: object | null): string {
  * @param base - URL prefix of the docs version, ending in `/`.
  * @param doc - The doc, with the date it last changed when known
  *   (`dateModified`).
+ * @param parent - The sidebar page the doc sits under (see navParent).
  * @returns A JSON-LD `@graph` with the TechArticle and its
- *   breadcrumb trail (Docs › title).
+ *   breadcrumb trail (Docs › parent, when there is one › title).
  */
-export function docJsonLd(origin: string, base: string, doc: { key: string; title: string; description: string; updated?: IsoDate | null }): object {
+export function docJsonLd(
+  origin: string,
+  base: string,
+  doc: { key: string; title: string; description: string; updated?: IsoDate | null },
+  parent: NavParent | null = null,
+): object {
   const url = origin + docUrl(doc.key, base);
   const crumbs = [{ name: "Docs", item: origin + base }];
+  if (parent !== null) crumbs.push({ name: parent.title, item: origin + docUrl(parent.key, base) });
   if (doc.key !== "README") crumbs.push({ name: doc.title, item: url });
   return {
     "@context": "https://schema.org",
@@ -821,18 +828,45 @@ export function navPlace(nav: readonly NavGroup[], key: string): NavPlace {
   return { group: flat[at]?.group ?? null, previous: pick(at - 1), next: pick(at + 1) };
 }
 
+/** A sidebar page that a doc the sidebar does not list sits under. */
+export interface NavParent {
+  /** The sidebar page's key. */
+  key: string;
+  /** Its sidebar title. */
+  title: string;
+}
+
+/**
+ * Finds the sidebar page a Web API page sits under, which its breadcrumb
+ * names: the sidebar lists only the Web API index, and the route group and
+ * schema pages beneath it.
+ *
+ * @param nav - The sidebar.
+ * @param key - The doc's key.
+ * @returns The Web API index for any other page under `api/web/`, when the
+ *   sidebar lists the index, else null.
+ */
+export function navParent(nav: readonly NavGroup[], key: string): NavParent | null {
+  if (!key.startsWith("api/web/") || key === "api/web/README") return null;
+  const page = nav.flatMap((g) => g.pages).find((p) => p.key === "api/web/README");
+  return page === undefined ? null : { key: page.key, title: page.title };
+}
+
 /**
  * Renders a doc's breadcrumb trail.
  *
- * @param place - Where the doc sits in the sidebar (see navPlace).
+ * @param place - Where the doc sits in the sidebar (see navPlace); for a
+ *   page under a parent, where the parent sits.
  * @param title - The doc's title.
  * @param base - URL prefix of the docs version.
- * @returns A `nav` with Docs, the sidebar group (when there is one) and the
- *   page itself.
+ * @param parent - The sidebar page the doc sits under (see navParent).
+ * @returns A `nav` with Docs, the sidebar group (when there is one), the
+ *   parent (when there is one) and the page itself.
  */
-export function crumbsHtml(place: NavPlace, title: string, base: string): string {
+export function crumbsHtml(place: NavPlace, title: string, base: string, parent: NavParent | null = null): string {
   const items = [`<li><a href="${escapeHtml(base)}">Docs</a></li>`];
   if (place.group !== null) items.push(`<li>${escapeHtml(place.group)}</li>`);
+  if (parent !== null) items.push(`<li><a href="${escapeHtml(docUrl(parent.key, base))}">${escapeHtml(parent.title)}</a></li>`);
   items.push(`<li aria-current="page">${escapeHtml(title)}</li>`);
   return `<nav class="crumbs" aria-label="Breadcrumb"><ol>${items.join("")}</ol></nav>`;
 }
@@ -1051,6 +1085,7 @@ export function renderDocPage(
   const updated = at.updated ? `<span class="doc-updated">Last updated <time datetime="${at.updated}">${formatDate(at.updated)}</time></span>` : "";
   const meta = `<p class="doc-meta">${note}${updated}<a href="${escapeHtml(markdownUrl)}" type="text/markdown">View as Markdown</a></p>`;
   const place = navPlace(shell.nav, key);
+  const parent = navParent(shell.nav, key);
   const versions = versionsHtml(shell.versions, at.ref, key);
   const nav = homeLink(at.base, key === "README") + navHtml(shell.nav, key, at.base, apiNavNested(key, doc.title, doc.headings, at.base));
   const html = fillShell(
@@ -1063,11 +1098,11 @@ export function renderDocPage(
       docsBase: at.base,
     },
     {
-      jsonld: jsonLd(docJsonLd(shell.origin, at.base, { key, title: doc.title, description: doc.description, updated: at.updated ?? null })),
+      jsonld: jsonLd(docJsonLd(shell.origin, at.base, { key, title: doc.title, description: doc.description, updated: at.updated ?? null }, parent)),
       "doc-menus": mobileMenusHtml(versions + nav, doc.headings),
       "doc-versions": versions,
       "doc-nav": nav,
-      "doc-crumbs": crumbsHtml(place, doc.title, at.base),
+      "doc-crumbs": crumbsHtml(parent === null ? place : navPlace(shell.nav, parent.key), doc.title, at.base, parent),
       "doc-body": afterTitle(doc.html, meta),
       "doc-pager": pagerHtml(place, at.base),
       "doc-footer": `<p class="doc-source faint">${sourceLink} · <a href="${escapeHtml(markdownUrl)}" type="text/markdown">View as Markdown</a></p>`,

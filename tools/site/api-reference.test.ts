@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { isApiOperationsPage, statusClass } from "./api-reference.ts";
-import { apiNavNested, navHtml, renderDoc, tocListHtml } from "./render.ts";
+import { apiNavNested, crumbsHtml, docJsonLd, navHtml, navParent, navPlace, renderDoc, tocListHtml } from "./render.ts";
 
 /** GitHub prefix for repository links. */
 const BLOB = "https://github.com/Bookclerk/bookclerk/blob/main/";
@@ -109,6 +109,22 @@ test("the sidebar lists the page and its operations under Web API", () => {
   assert.ok(nav.includes('<a href="/docs/api/web/">Web API</a><ul class="nav-sub"><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a>'));
   assert.ok(nav.includes('<a class="nav-op" href="#get-apijobs"><span class="api-method api-method-get">GET</span> <code>/<wbr>api/<wbr>jobs</code></a>'));
   assert.equal(apiNavNested("server/operations", "Running", [], "/docs/"), null);
+});
+
+test("the breadcrumb of an operations page runs through Web API", () => {
+  const nav = [{ title: "API reference", pages: [{ key: "api/README", title: "Generated API reference" }, { key: "api/web/README", title: "Web API" }] }];
+  const parent = navParent(nav, "api/web/jobs");
+  assert.deepEqual(parent, { key: "api/web/README", title: "Web API" });
+  assert.equal(
+    crumbsHtml(navPlace(nav, "api/web/README"), "Jobs", "/docs/", parent),
+    '<nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/docs/">Docs</a></li><li>API reference</li>' +
+      '<li><a href="/docs/api/web/">Web API</a></li><li aria-current="page">Jobs</li></ol></nav>',
+  );
+  const graph = JSON.stringify(docJsonLd("https://x", "/docs/", { key: "api/web/jobs", title: "Jobs", description: "" }, parent));
+  assert.ok(graph.includes('{"@type":"ListItem","position":2,"name":"Web API","item":"https://x/docs/api/web/"}'));
+  assert.equal(navParent(nav, "api/web/README"), null);
+  assert.deepEqual(navParent(nav, "api/web/schemas"), parent);
+  assert.equal(navParent(nav, "guide/getting-started"), null);
 });
 
 test("odd operation pages still render balanced", () => {
