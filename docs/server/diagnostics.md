@@ -18,8 +18,8 @@ A build sends reports to the collector address baked in when it was
 built. Release builds in CI pick it up on their own. To build with it
 yourself:
 
-```console
-$ BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL="https://diagnostics.bookclerk.app" cargo build --release -p bookclerk-cli
+```sh
+BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL="https://diagnostics.bookclerk.app" cargo build --release -p bookclerk-cli
 ```
 
 To send reports somewhere else, set `collector_url` in `[diagnostics]`, or
@@ -162,8 +162,8 @@ To set it in the Backblaze web console:
 
 Or with the B2 command-line tool:
 
-```console
-$ b2 bucket update --lifecycle-rule \
+```sh
+b2 bucket update --lifecycle-rule \
   '{"fileNamePrefix": "diagnostics/", "daysFromUploadingToHiding": 180, "daysFromHidingToDeleting": 1}' \
   <bucket-name>
 ```

@@ -18,16 +18,16 @@ and run byte-for-byte the same on every node.
 Installing doesn't touch this node's `plugins/`. **Deploying** decides
 which nodes run it (see [Placement](#placement)).
 
-```console
-$ bookclerk plugins install cargo:bookclerk-plugin-source-example@1.2.0 --approve-capabilities
-$ bookclerk plugins install example --archive ./example.tar.gz \
+```sh
+bookclerk plugins install cargo:bookclerk-plugin-source-example@1.2.0 --approve-capabilities
+bookclerk plugins install example --archive ./example.tar.gz \
     --manifest ./bookclerk-package.json --allow-unverified-publisher
-$ bookclerk plugins versions [example]         # every installed version; * marks the active one
-$ bookclerk plugins update example [--to 1.3]  # install a newer registry version and activate it
-$ bookclerk plugins rollback example 1.2.0     # activate an earlier installed version
-$ bookclerk plugins approve example --yes      # record consent on the active version
-$ bookclerk plugins deploy example             # run the default instance on this node
-$ bookclerk plugins uninstall example          # clear the active version; undeploy everywhere
+bookclerk plugins versions [example]         # every installed version; * marks the active one
+bookclerk plugins update example [--to 1.3]  # install a newer registry version and activate it
+bookclerk plugins rollback example 1.2.0     # activate an earlier installed version
+bookclerk plugins approve example --yes      # record consent on the active version
+bookclerk plugins deploy example             # run the default instance on this node
+bookclerk plugins uninstall example          # clear the active version; undeploy everywhere
 ```
 
 ### What installing checks
@@ -181,19 +181,19 @@ running, and records observations (`materialized`, `running`, `healthy`,
 - Platform guests (`local`, `sqlite`) grant themselves (the reconciler
   persists that grant before the first spawn) and come up enabled.
 
-```console
-$ bookclerk plugins list                                  # instances + deployments
-$ bookclerk plugins approve echo --yes                    # consent (third-party)
-$ bookclerk plugins deploy echo                           # desired = present on this host
-$ bookclerk plugins deploy echo --node <node-id>          # … on another cluster host
-$ bookclerk plugins undeploy echo
-$ bookclerk plugins instances list --plugin s3
-$ bookclerk plugins instances create s3 --name "Backup bucket"
-$ bookclerk plugins instances create local --name "NAS disk" --node <node-id>   # node-local
-$ bookclerk plugins config get s3                         # defaults under the document
-$ bookclerk plugins config set s3 bucket my-audiobooks
-$ bookclerk plugins config set s3 secret_access_key --secret   # value read from stdin
-$ bookclerk plugins config unset s3 prefix                # back to the schema default
+```sh
+bookclerk plugins list                                  # instances + deployments
+bookclerk plugins approve echo --yes                    # consent (third-party)
+bookclerk plugins deploy echo                           # desired = present on this host
+bookclerk plugins deploy echo --node <node-id>          # … on another cluster host
+bookclerk plugins undeploy echo
+bookclerk plugins instances list --plugin s3
+bookclerk plugins instances create s3 --name "Backup bucket"
+bookclerk plugins instances create local --name "NAS disk" --node <node-id>   # node-local
+bookclerk plugins config get s3                         # defaults under the document
+bookclerk plugins config set s3 bucket my-audiobooks
+bookclerk plugins config set s3 secret_access_key --secret   # value read from stdin
+bookclerk plugins config unset s3 prefix                # back to the schema default
 ```
 
 The daemon offers the same operations to an operator session:
@@ -297,16 +297,16 @@ scheduler:
 Nodes never connect to each other. Everything below travels through the
 shared library database.
 
-```console
-$ bookclerk nodes list                              # liveness, capacity, budget, use, labels
-$ bookclerk nodes set --memory-budget 50            # this node (or pass a node id)
-$ bookclerk nodes set <node-id> --drain             # move scheduled replicas away
-$ bookclerk nodes label --add nas --add zone=eu
-$ bookclerk nodes owner <node-id> --user alice      # alice may now set its budgets and drain it
-$ bookclerk plugins deploy example --replicas 2 --on nas --on '!slow'
-$ bookclerk plugins deploy example --replicas all   # every node with room
-$ bookclerk plugins deploy example --replicas 0     # keep the placement, stop every replica
-$ bookclerk plugins deploy example --manual         # back to deploy/undeploy by hand
+```sh
+bookclerk nodes list                              # liveness, capacity, budget, use, labels
+bookclerk nodes set --memory-budget 50            # this node (or pass a node id)
+bookclerk nodes set <node-id> --drain             # move scheduled replicas away
+bookclerk nodes label --add nas --add zone=eu
+bookclerk nodes owner <node-id> --user alice      # alice may now set its budgets and drain it
+bookclerk plugins deploy example --replicas 2 --on nas --on '!slow'
+bookclerk plugins deploy example --replicas all   # every node with room
+bookclerk plugins deploy example --replicas 0     # keep the placement, stop every replica
+bookclerk plugins deploy example --manual         # back to deploy/undeploy by hand
 ```
 
 ### Heartbeats and budgets
@@ -504,8 +504,8 @@ any host (see
 
 To approve, use **Settings → Library** on the host, or:
 
-```console
-$ bookclerk clusters approve <plugin_key> --request <DIGEST> [--deny-domain …] [--deny-binding …] [--deny-network]
+```sh
+bookclerk clusters approve <plugin_key> --request <DIGEST> [--deny-domain …] [--deny-binding …] [--deny-network]
 ```
 
 `<DIGEST>` is the digest of the request being approved, from
@@ -634,8 +634,8 @@ instead of quietly running an unconfined guest.
 Build it and ship it with the hosts, with `bookclerk-workerd` when
 shipping workerd guests:
 
-```console
-$ cargo build --release -p bookclerk-cli -p bookclerkd \
+```sh
+cargo build --release -p bookclerk-cli -p bookclerkd \
     -p bookclerk-media-worker -p bookclerk-jail -p bookclerk-workerd
 ```
 

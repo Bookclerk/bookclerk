@@ -192,14 +192,14 @@ After editing the config (or running `bookclerk plugins deploy <id>`):
 
 1. Preview the row counts:
 
-   ```console
-   $ bookclerk config database migrate --from sqlite --to postgres --dry-run
+   ```sh
+   bookclerk config database migrate --from sqlite --to postgres --dry-run
    ```
 
 2. Copy the library rows and update `config.toml`:
 
-   ```console
-   $ bookclerk config database migrate --from sqlite --to postgres --apply
+   ```sh
+   bookclerk config database migrate --from sqlite --to postgres --apply
    ```
 
 Daemon operators can instead `POST /api/database/migrate` with JSON
@@ -225,9 +225,9 @@ binding.
 
 To list or remove them:
 
-```console
-$ bookclerk plugins db list
-$ bookclerk plugins db drop <plugin> [binding]
+```sh
+bookclerk plugins db list
+bookclerk plugins db drop <plugin> [binding]
 ```
 
 `drop` deletes the database itself (the SQLite file, `DROP DATABASE`, or

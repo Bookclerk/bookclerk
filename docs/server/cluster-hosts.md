@@ -69,8 +69,8 @@ same wizard.
 
 To stop new branches joining from the command line:
 
-```console
-$ bookclerk config set host_enrollment.enabled false
+```sh
+bookclerk config set host_enrollment.enabled false
 ```
 
 Turning it off stops new sign-ins and invites. Branches already joined
@@ -110,8 +110,8 @@ and **Revoke**. Listings never carry a secret.
 
 On the command line, this prints one invite once:
 
-```console
-$ bookclerk nodes invite --user riley --ttl 24h
+```sh
+bookclerk nodes invite --user riley --ttl 24h
 ```
 
 An invite looks like
@@ -208,11 +208,11 @@ The exchange runs in five steps:
 
 ### On the command line
 
-```console
-$ bookclerk clusters join --url https://library.example [--name "Den PC"] [--fingerprint <fingerprint>]
-$ bookclerk clusters join             # prompts for a branch invite
-$ bookclerk clusters join < invite.txt
-$ bookclerk clusters list             # library id, origin, node id, state
+```sh
+bookclerk clusters join --url https://library.example [--name "Den PC"] [--fingerprint <fingerprint>]
+bookclerk clusters join             # prompts for a branch invite
+bookclerk clusters join < invite.txt
+bookclerk clusters list             # library id, origin, node id, state
 ```
 
 `--url` is the same sign-in, for an operator with a browser on the same
@@ -323,8 +323,8 @@ start finishes undoing it, or refuses with instructions naming each file.
 
 ### On the command line
 
-```console
-$ bookclerk clusters join --url https://library.example --as clerk
+```sh
+bookclerk clusters join --url https://library.example --as clerk
 ```
 
 `--as` is `branch` by default. With `--as clerk` the CLI writes the same
@@ -363,11 +363,11 @@ deployed plugin shows up as a **request**, with:
 - the archive URL and digest this host would fetch;
 - a `request_digest` covering all of it.
 
-```console
-$ bookclerk clusters consents [--cluster <id>]
-$ bookclerk clusters approve <plugin_key> --request <request_digest> \
+```sh
+bookclerk clusters consents [--cluster <id>]
+bookclerk clusters approve <plugin_key> --request <request_digest> \
     [--deny-domain cdn.store.example]... [--deny-binding secrets]... [--deny-network]
-$ bookclerk clusters revoke <plugin_key>
+bookclerk clusters revoke <plugin_key>
 ```
 
 The same is in the web UI under **Settings → Library** (operator only; an
@@ -447,8 +447,8 @@ destinations.
 
 ## Asking the owner for a scan
 
-```console
-$ bookclerk clusters scan [--cluster <id>] [--account <id>] [--instance <id>] [--no-wait]
+```sh
+bookclerk clusters scan [--cluster <id>] [--account <id>] [--instance <id>] [--no-wait]
 ```
 
 The host's operator asks the owner cluster to queue a scan, through this
@@ -513,9 +513,9 @@ the scheduler never places it. The usual case is a node's own `local`
 output (its own disk), which adds to the cluster's outputs on that node
 rather than replacing them.
 
-```console
-$ bookclerk plugins instances create local --name "nas disk" --node <node_id>
-$ bookclerk plugins deploy <instance_id> --node <node_id>
+```sh
+bookclerk plugins instances create local --name "nas disk" --node <node_id>
+bookclerk plugins deploy <instance_id> --node <node_id>
 ```
 
 `POST /api/config/plugin-instances` takes the same as
