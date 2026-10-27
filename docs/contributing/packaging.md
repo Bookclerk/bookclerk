@@ -206,9 +206,30 @@ index without rebuilding it.
 Only the push jobs hold `packages: write`. Only the attest job holds
 `id-token: write` and `attestations: write`.
 
+### Making the packages public
+
+The first publish creates each package as **private**, so `docker pull`
+without signing in is refused. An organization owner makes each package
+public once. A package appears only after its first publish: pushes to
+`main` publish only `bookclerk-dev`, so `bookclerk` and `bookclerk-demo`
+first appear after the nightly run or a manual run (see
+[When it runs](#when-it-runs)).
+
+1. Open `https://github.com/orgs/<owner>/packages/container/<image>/settings`
+   (for example `https://github.com/orgs/bookclerk/packages/container/bookclerk/settings`).
+2. Under **Danger Zone**, choose **Change visibility**, then **Public**.
+3. Type the package name to confirm.
+4. Repeat for `bookclerk-dev` and `bookclerk-demo`.
+
 > [!NOTE]
-> A package created by the first publish is private. Make each one public
-> once in the organization's package settings.
+> The organization setting that lets members create public packages
+> (**Settings** > **Packages** > **Package creation**) only decides which
+> visibilities new packages may get. It does not change packages that
+> already exist.
+
+> [!WARNING]
+> GitHub does not let a public package go back to private. Later publishes
+> keep the package's visibility, so this step is needed only once.
 
 ## GitHub Actions (signing sketch — not a contract)
 
