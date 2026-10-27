@@ -236,9 +236,12 @@ export function highlight(code: string, lang: string): string | null {
       continue;
     }
     if (c === "\n") {
-      // A shell line ending in `\` (outside a comment) continues the command,
-      // so the next line carries on where this one stopped.
-      const continues = g.mode === "shell" && code[i - 1] === "\\" && !commentEnded;
+      // A shell line ending in an unescaped `\` (an odd run of them, outside
+      // a comment) continues the command, so the next line carries on where
+      // this one stopped. `\\` is a literal backslash and ends the line.
+      let run = 0;
+      while (g.mode === "shell" && code[i - 1 - run] === "\\") run++;
+      const continues = g.mode === "shell" && run % 2 === 1 && !commentEnded;
       promptLine = promptLine && continues;
       commentEnded = false;
       plain += c;

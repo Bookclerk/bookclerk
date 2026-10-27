@@ -25,8 +25,9 @@
       if (line.startsWith("$ ")) commands.push(line.slice(2));
       else if (continued) commands.push(line);
       else continue;
-      // A `\` inside a `#` comment does not continue the line.
-      continued = line.endsWith("\\") && !/(^|\s)#/.test(line);
+      // Only an unescaped `\` (an odd run of them) continues the line, and
+      // not inside a `#` comment: `\\` is a literal backslash.
+      continued = /(^|[^\\])(\\\\)*\\$/.test(line) && !/(^|\s)#/.test(line);
     }
     return commands.join("\n");
   }

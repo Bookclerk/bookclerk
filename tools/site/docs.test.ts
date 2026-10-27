@@ -123,6 +123,8 @@ test("highlight colors each language's own names and leaves the rest plain", () 
     highlight("$ cargo build \\\n  --release | tee log\n   Compiling foo v1\nok | done", "console"),
     '$ <span class="hl-f">cargo</span> build \\\n  <span class="hl-v">--release</span> | <span class="hl-f">tee</span> log\n   Compiling foo v1\nok | done',
   );
+  // `\\` at the end of a line is a literal backslash, so the next line is output.
+  assert.equal(highlight("$ printf '%s\\n' \\\\\n\\", "console"), '$ <span class="hl-f">printf</span> <span class="hl-s">&#39;%s\\n&#39;</span> \\\\\n\\');
   assert.equal(highlight("Compiling foo\ncargo dev", "bash"), '<span class="hl-f">Compiling</span> foo\n<span class="hl-f">cargo</span> dev');
   assert.equal(highlight("- name: x\n  key: y", "yaml"), '- <span class="hl-v">name</span>: x\n  <span class="hl-v">key</span>: y');
   assert.equal(highlight('{"a": "b", "n": 1}', "json"), '{<span class="hl-v">&quot;a&quot;</span>: <span class="hl-s">&quot;b&quot;</span>, <span class="hl-v">&quot;n&quot;</span>: <span class="hl-n">1</span>}');
