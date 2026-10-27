@@ -494,7 +494,10 @@ file one day later, as the "Keep only the last version" preset does. To keep
 that preset for the rest of the bucket, add a second rule with an empty
 prefix, no hide days and `1` day from hiding to deleting. B2 allows
 overlapping prefixes and applies, for each setting, the smallest value any
-matching rule sets, so `diagnostics/` files still hide at 180 days.
+matching rule sets, so `diagnostics/` files still hide at 180 days (see
+Backblaze's [lifecycle rules](https://www.backblaze.com/docs/cloud-storage-lifecycle-rules)).
+Leave the catch-all's hide days empty: a number there would expire reports
+sooner too.
 
 In the Backblaze web console: **Buckets** → the bucket → **Lifecycle
 Settings** → **Use custom lifecycle rules**, add the rule above and save.
