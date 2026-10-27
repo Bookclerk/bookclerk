@@ -81,6 +81,10 @@ a:hover { color: var(--ink); }
 :focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 code, pre { font-family: var(--font-mono); }
 img, svg { max-width: 100%; }
+/* The Bookclerk mark where it only decorates text that already names
+   Bookclerk: a background rather than an image, so search engines that count
+   empty alt text as missing have no image to flag. */
+.brand-mark { display: block; flex: none; background: url("/bookclerk-mark.svg") center / contain no-repeat; }
 
 .wrap {
   max-width: 1160px;
@@ -245,7 +249,7 @@ img, svg { max-width: 100%; }
 .window-bar .url { margin-left: 12px; font: 400 13px var(--font-mono); }
 .window-body { display: flex; min-height: 360px; }
 .window-nav { flex: 0 0 190px; padding: 20px; border-right: 1px solid color-mix(in srgb, var(--ink) 10%, transparent); display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
-.window-nav img { width: 32px; height: 32px; margin-bottom: 12px; }
+.window-nav .brand-mark { width: 32px; height: 32px; margin-bottom: 12px; padding: 0; }
 .window-nav span { padding: 6px 10px; border-radius: 6px; }
 .window-nav .active { font-weight: 600; background: color-mix(in srgb, var(--teal) 15%, transparent); }
 .window-main { flex: 1; min-width: 0; padding: 20px 24px; }
@@ -328,7 +332,7 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
 .site-footer .wrap { padding-block: 48px 32px; display: flex; flex-direction: column; gap: 32px; }
 .footer-top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 32px; }
 .footer-brand { display: flex; flex-direction: column; gap: 12px; max-width: 340px; font-size: 14px; }
-.footer-brand img { width: 40px; height: 40px; }
+.footer-brand .brand-mark { width: 40px; height: 40px; }
 .footer-cols { display: flex; flex-wrap: wrap; gap: 32px 56px; font-size: 15px; line-height: 30px; }
 .footer-cols div { display: flex; flex-direction: column; }
 .footer-cols strong { font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; }

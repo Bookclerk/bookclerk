@@ -219,12 +219,24 @@ secret and mounted into the container. The setup script also points
 > A bundle holding only the proxy's CA breaks hosts the proxy doesn't
 > intercept.
 
-A hosted environment's setup script can call it directly. For example, from the folder that holds the checkout:
+A hosted environment's setup script can run it before the session starts.
+Such a script usually runs before the repository is cloned and must exit 0,
+so it takes its own shallow clone:
 
-```sh
-cd bookclerk
-BOOKCLERK_DEV_REGISTRY_MIRROR=https://mirror.gcr.io scripts/dev-env/session-setup.sh
+```bash
+#!/bin/bash
+d=$(mktemp -d)
+if git clone -q --depth 1 https://github.com/Bookclerk/bookclerk "$d"; then
+  BOOKCLERK_DEV_REGISTRY_MIRROR=https://mirror.gcr.io "$d/scripts/dev-env/session-setup.sh" || true
+fi
+rm -rf "$d"
+exit 0
 ```
+
+The setup script appends everything it prints to
+`/var/log/bookclerk-session-setup.log`, so a session that starts without a
+tool can show why. It installs into root's toolchain whatever `HOME` the
+hook passes.
 
 ## SSH commit signing (Dev Container)
 

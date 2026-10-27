@@ -226,6 +226,16 @@ versions.
 - Every page gets a `<title>`, description, canonical link, Open Graph and
   `twitter:card` tags (from `PAGES` in `build.ts`, or from each doc: its
   introduction, else its section names). The 404 page is `noindex`.
+- Titles stay within 70 characters, the length search results show and Bing
+  checks for. A docs page's title is the doc's title followed by
+  "· Bookclerk docs", or the doc's title alone when that would be too long,
+  shortened if it still is (`docPageTitle` in `render.ts`). The page's
+  heading keeps the whole title.
+- Every image has alt text. A logo that only decorates text naming
+  Bookclerk is a CSS background (`.brand-mark`), not an `<img>` with empty
+  alt text, which Bing reports as missing.
+- A Worker test requests every page and every doc and fails when one lacks a
+  description, has a longer title, or has an image without alt text.
 - JSON-LD: the home page describes the site, its organization, the app
   (`SoftwareApplication` with the feature cards as `featureList`), its source
   code and the FAQ (`FAQPage`); each doc is a `TechArticle` with a

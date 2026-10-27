@@ -492,13 +492,47 @@ function inlineText(inline: Token | undefined): string {
  * Cuts text at a word boundary.
  *
  * @param text - Plain text.
- * @returns The text, or at most DESCRIPTION_MAX characters of it
- *   ending in an ellipsis.
+ * @param max - Longest result, in characters, ellipsis included.
+ * @returns The text, or at most `max` UTF-16 code units of it ending in
+ *   an ellipsis; cut mid-word only when the first word alone is too long,
+ *   and never inside a surrogate pair.
  */
-function shorten(text: string): string {
-  if (text.length <= DESCRIPTION_MAX) return text;
-  const cut = text.slice(0, DESCRIPTION_MAX - 1);
-  return `${cut.slice(0, cut.lastIndexOf(" ")).replace(/[\s,;:.]+$/, "")}…`;
+function shorten(text: string, max: number = DESCRIPTION_MAX): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max - 1).replace(/[\uD800-\uDBFF]$/, "");
+  const space = cut.lastIndexOf(" ");
+  return `${(space > 0 ? cut.slice(0, space) : cut).replace(/[\s,;:.]+$/, "")}…`;
+}
+
+/** Longest page `<title>`, in characters: search engines cut longer titles in their results, and Bing reports them. */
+export const TITLE_MAX = 70;
+
+/** What a docs page's `<title>` adds after the doc's own title. */
+const DOC_TITLE_SUFFIX = " · Bookclerk docs";
+
+/**
+ * The `<title>` of a docs page.
+ *
+ * The doc's title followed by the site's name, or, when that is longer than
+ * TITLE_MAX, the doc's title alone, shortened if it is still too long. A
+ * title with no spaces (an API path such as `crate::module::item`) keeps
+ * its end, which names the item, and drops leading path segments; prose
+ * keeps its start (see shorten). The page's heading always shows the
+ * whole title.
+ *
+ * @param title - The doc's title, plain text.
+ * @returns At most TITLE_MAX characters.
+ */
+export function docPageTitle(title: string): string {
+  const full = `${title}${DOC_TITLE_SUFFIX}`;
+  if (full.length <= TITLE_MAX) return full;
+  if (title.length <= TITLE_MAX) return title;
+  if (/\s/.test(title)) return shorten(title, TITLE_MAX);
+  const tail = title.slice(title.length - (TITLE_MAX - 1)).replace(/^[\uDC00-\uDFFF]/, "");
+  const boundary = tail.search(/(?<=::|[./])[^:./]/);
+  // Starting at a segment is tidier, but not when it would leave only a
+  // short last segment that no longer identifies the page.
+  return `…${boundary > 0 && tail.length - boundary >= TITLE_MAX / 2 ? tail.slice(boundary) : tail}`;
 }
 
 /**
@@ -953,7 +987,7 @@ export function renderDocPage(
   const html = fillShell(
     shell.html,
     {
-      pageTitle: `${doc.title} · Bookclerk docs`,
+      pageTitle: docPageTitle(doc.title),
       pageDescription: doc.description || `${doc.title}: Bookclerk documentation.`,
       pagePath: docUrl(key, at.base),
       markdownUrl,
@@ -1010,7 +1044,7 @@ export function renderUnavailablePage(shell: DocsShell, key: string, at: { ref: 
   const html = fillShell(
     shell.html,
     {
-      pageTitle: "Docs unavailable · Bookclerk docs",
+      pageTitle: `Docs unavailable${DOC_TITLE_SUFFIX}`,
       pageDescription: "The Bookclerk documentation could not be loaded right now.",
       pagePath: docUrl(key, at.base),
       markdownUrl: docMarkdownUrl(key, at.base),

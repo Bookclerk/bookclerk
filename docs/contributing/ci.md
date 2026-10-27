@@ -456,6 +456,8 @@ These run outside `CI Gate`:
   smoke-tests the release image (see below).
 - **Dev Container image** (`.github/workflows/devcontainer-image.yml`)
   builds and checks the contributor image (see below).
+- **ABS Integration** (`.github/workflows/abs-integration.yml`) tests the
+  `audiobookshelf` plugin against a real Audiobookshelf server (see below).
 
 The Docker image job builds `packaging/docker/Dockerfile` and runs
 `packaging/docker/smoke.sh`, which boots the image twice on one fresh
@@ -472,6 +474,32 @@ requests that touch the image or its startup install path:
 `packaging/docker/**`, `.dockerignore`, the workflow, `bookclerk-dev`, the
 platform plugin sources, the bundled-install, trust and ledger modules, the
 database loader and the workerd pin.
+
+The ABS Integration job (`.github/workflows/abs-integration.yml`) runs a
+real Audiobookshelf server beside the production image with the
+`audiobookshelf` plugin added
+([`tests/abs-integration/`](../../tests/abs-integration/)). The plugin is
+built from the checkout, so it does not get the host-implied grant to its
+`base_url` that the crates.io package gets. The test sets it up the way an
+operator would:
+
+1. It approves the plugin through the consent API with a TCP grant to the
+   server.
+2. It sets `base_url`, `library_id` and the sealed `api_key` with
+   `bookclerk plugins config set`, and deploys the plugin.
+3. It checks `integrations test` and `integrations status`.
+4. It redeems a claim ticket on the portal and signs in to the portal with
+   Audiobookshelf credentials.
+5. It starts a remote library scan.
+
+Both containers share one network namespace, because the plugin accepts
+plain `http` only for a loopback host. The job runs by hand, on a published
+release, and on pull requests that change the test or the plugin. To run it
+locally, build the images as its workflow does, then run:
+
+```sh
+bash tests/abs-integration/smoke.sh
+```
 
 The Dev Container image job builds `.devcontainer/Dockerfile` and runs the
 contributor toolchain inside it as the dev user (cargo, rustfmt, Clippy,
