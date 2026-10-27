@@ -95,8 +95,8 @@ test("the page's headings are its operations, with their methods", () => {
   ]);
   assert.equal(
     tocListHtml(out.headings),
-    '<ul><li><a href="#get-apijobs"><span class="api-method api-method-get">GET</span> <code>/api/jobs</code></a></li>' +
-      '<li><a href="#post-apijobsidcancel"><span class="api-method api-method-post">POST</span> <code>/api/jobs/{id}/cancel</code></a></li></ul>',
+    '<ul><li><a href="#get-apijobs"><span class="api-method api-method-get">GET</span> <code>/<wbr>api/<wbr>jobs</code></a></li>' +
+      '<li><a href="#post-apijobsidcancel"><span class="api-method api-method-post">POST</span> <code>/<wbr>api/<wbr>jobs/<wbr>{id}/<wbr>cancel</code></a></li></ul>',
   );
 });
 
@@ -107,7 +107,7 @@ test("the sidebar lists the page and its operations under Web API", () => {
   const nav = navHtml([{ title: "API reference", pages: [{ key: "api/web/README", title: "Web API" }] }], "api/web/jobs", "/docs/", nested);
   assert.ok(nav.startsWith('<details class="nav-group" open>'), "the group opens");
   assert.ok(nav.includes('<a href="/docs/api/web/">Web API</a><ul class="nav-sub"><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a>'));
-  assert.ok(nav.includes('<a class="nav-op" href="#get-apijobs"><span class="api-method api-method-get">GET</span> <code>/api/jobs</code></a>'));
+  assert.ok(nav.includes('<a class="nav-op" href="#get-apijobs"><span class="api-method api-method-get">GET</span> <code>/<wbr>api/<wbr>jobs</code></a>'));
   assert.equal(apiNavNested("server/operations", "Running", [], "/docs/"), null);
 });
 

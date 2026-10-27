@@ -16,7 +16,7 @@ export type HttpMethod = (typeof HTTP_METHODS)[number];
 
 /** What an operation heading names, kept on its `heading_open` token's `meta`. */
 export interface ApiOperation {
-  /** The method. */
+  /** The HTTP method the heading starts with, in upper case. */
   method: HttpMethod;
   /** The path template, such as `/api/jobs/{id}/cancel`. */
   path: string;
@@ -87,7 +87,7 @@ function isHttpMethod(value: string): value is HttpMethod {
 /**
  * The CSS class of a method badge.
  *
- * @param method - The method.
+ * @param method - The operation's HTTP method, which picks the badge color.
  * @returns `api-method api-method-<method in lower case>`.
  */
 export function methodClass(method: HttpMethod): string {

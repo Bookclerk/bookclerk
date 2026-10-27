@@ -28,6 +28,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlencode
 
 from rustdoc_markdown import Anchors
 
@@ -94,8 +95,10 @@ def nested(text: str, level: int) -> str:
 
     Descriptions come from doc comments, whose sections (``# Errors``) are
     top-level headings; left as they are they would outrank the operation
-    they describe. Every ATX heading outside a code fence moves down by
-    ``level`` (capped at six) so the description nests under its section.
+    they describe. Every heading outside a code fence moves down by
+    ``level`` (capped at six) so the description nests under its section;
+    a setext heading (text underlined with ``===`` or ``---``) is written
+    as an ATX one on the way.
 
     Args:
         text: Markdown text from the document.
@@ -107,17 +110,28 @@ def nested(text: str, level: int) -> str:
     lines: list[str] = []
     fence = ""
     for line in prose(text).splitlines():
-        stripped = line.lstrip()
-        marker = stripped[:3]
-        if marker in ("```", "~~~"):
-            if not fence:
-                fence = marker
-            elif marker == fence:
+        indent = len(line) - len(line.lstrip(" "))
+        stripped = line.lstrip(" ")
+        opener = re.match(r"(`{3,}|~{3,})", stripped) if indent < 4 else None
+        if fence:
+            # A fence closes on a run of its own character at least as long.
+            if opener and opener.group(1)[0] == fence[0] and len(opener.group(1)) >= len(fence) and not stripped[len(opener.group(1)):].strip():
                 fence = ""
-        elif not fence and len(line) - len(stripped) < 4:
-            hashes = len(stripped) - len(stripped.lstrip("#"))
-            if 1 <= hashes <= 6 and stripped[hashes:hashes + 1] in ("", " ", "\t"):
-                line = "#" * min(6, hashes + level) + stripped[hashes:]
+            lines.append(line)
+            continue
+        if opener:
+            fence = opener.group(1)
+            lines.append(line)
+            continue
+        setext = re.fullmatch(r"(=+|-+)[ \t]*", stripped) if indent < 4 else None
+        previous = lines[-1] if lines else ""
+        if setext and previous.strip() and not re.match(r" {0,3}([#>*+-]|\d+[.)]|`{3,}|~{3,})", previous):
+            depth = 1 if setext.group(1)[0] == "=" else 2
+            lines[-1] = "#" * min(6, depth + level) + " " + previous.strip()
+            continue
+        hashes = len(stripped) - len(stripped.lstrip("#"))
+        if indent < 4 and 1 <= hashes <= 6 and stripped[hashes : hashes + 1] in ("", " ", "\t"):
+            line = "#" * min(6, hashes + level) + stripped[hashes:]
         lines.append(line)
     return "\n".join(lines)
 
@@ -456,7 +470,7 @@ class Document:
         target, name = self.resolve(schema)
         if name is not None:
             if name in seen:
-                return {}
+                return [] if target.get("type") == "array" or "items" in target else {}
             return self.example(target, depth, (*seen, name))
         for key in ("example", "default"):
             if key in schema:
@@ -516,8 +530,18 @@ class Document:
             return True
         return NO_EXAMPLE
 
-    def _credential_flags(self, requirements: Any) -> list[str]:
-        """``curl`` flags that send the first credential an operation accepts."""
+    def _credential_flags(self, requirements: Any, write: bool) -> list[str]:
+        """``curl`` flags that send the first credential an operation accepts.
+
+        Args:
+            requirements: The operation's ``security`` list.
+            write: Whether the method changes state; a cookie credential
+                then also sends the ``Origin`` the daemon checks.
+
+        Returns:
+            The flags; none for an open route or when no requirement uses
+            a scheme ``curl`` can send (each alternative is tried in turn).
+        """
         if not isinstance(requirements, Sequence) or isinstance(requirements, str):
             return []
         for requirement in requirements:
@@ -526,15 +550,21 @@ class Document:
             name = str(next(iter(requirement)))
             scheme = self.security_schemes.get(name)
             if not isinstance(scheme, Mapping):
-                return []
+                continue
             kind = scheme.get("type")
             if kind == "http" and str(scheme.get("scheme", "")).lower() == "bearer":
                 return ["-H " + shell_quote(f"Authorization: Bearer <{name}>")]
             if kind == "apiKey" and scheme.get("in") == "header":
-                return ["-H " + shell_quote(f"{scheme.get('name', '')}: <{name}>")]
+                header = str(scheme.get("name", ""))
+                # A scheme whose description spells out the header's form,
+                # such as `Authorization: Bookclerk-Upload <token>`, keeps it.
+                shown = re.search(r"`(" + re.escape(header) + r": [^`]+)`", str(scheme.get("description", "")))
+                return ["-H " + shell_quote(shown.group(1) if shown else f"{header}: <{name}>")]
             if kind == "apiKey" and scheme.get("in") == "cookie":
-                return ["-b " + shell_quote(f"{scheme.get('name', '')}=<{name}>")]
-            return []
+                flags = ["-b " + shell_quote(f"{scheme.get('name', '')}=<{name}>")]
+                if write:
+                    flags.append("-H " + shell_quote(f"Origin: {EXAMPLE_ORIGIN}"))
+                return flags
         return []
 
     def example_request(self, op: Operation) -> list[str]:
@@ -550,15 +580,13 @@ class Document:
         """
         spec = op.spec
         path = re.sub(r"\{([^}/]+)\}", r"<\1>", op.path)
-        query = []
+        query: list[tuple[str, Any]] = []
         for param in spec_list(spec.get("parameters", []), "parameters"):
             if isinstance(param, Mapping) and param.get("in") == "query" and param.get("required"):
-                value = self.example(param.get("schema", {}))
-                text = "" if value is NO_EXAMPLE else value if isinstance(value, str) else json.dumps(value)
-                query.append(f"{param.get('name', '')}={text}")
-        url = EXAMPLE_ORIGIN + path + ("?" + "&".join(query) if query else "")
+                query.append((str(param.get("name", "")), self.example(param.get("schema", {}))))
+        url = EXAMPLE_ORIGIN + path + ("?" + form_encode(query) if query else "")
         flags = [] if op.method == "GET" else [f"-X {op.method}"]
-        flags += self._credential_flags(spec.get("security"))
+        flags += self._credential_flags(spec.get("security"), op.method not in ("GET", "HEAD", "OPTIONS"))
         body = spec.get("requestBody")
         content = body.get("content", {}) if isinstance(body, Mapping) else {}
         if isinstance(content, Mapping) and content:
@@ -572,8 +600,12 @@ class Document:
                     data = json.dumps(value, indent=2, ensure_ascii=False)
                 flags.append("-d " + shell_quote(data))
             elif media == "application/x-www-form-urlencoded" and isinstance(value, dict):
-                form = "&".join(f"{k}={v if isinstance(v, str) else json.dumps(v)}" for k, v in value.items())
-                flags.append("-d " + shell_quote(form))
+                # Only the required fields: a form's optional fields are
+                # often alternatives (one grant's code or another's token).
+                target, _ = self.resolve(schema)
+                required = {prop for prop, _schema, needed in self.fields(target) if needed}
+                pairs = [(k, v) for k, v in value.items() if k in required] if required else list(value.items())
+                flags.append("-d " + shell_quote(form_encode(pairs)))
             else:
                 flags.append("-H " + shell_quote(f"Content-Type: {media}"))
                 flags.append("--data-binary @file")
@@ -841,6 +873,30 @@ class _NoExample:
 
 #: The one :class:`_NoExample` value.
 NO_EXAMPLE = _NoExample()
+
+
+def form_encode(pairs: Sequence[tuple[str, Any]]) -> str:
+    """Encode example values as a query string or form body.
+
+    Args:
+        pairs: Names and example values; an array repeats its name once per
+            item, an object is sent as JSON, a value with no example as
+            empty.
+
+    Returns:
+        ``name=value`` pairs joined by ``&``, percent-encoded.
+    """
+    flat: list[tuple[str, str]] = []
+    for name, value in pairs:
+        for item in value if isinstance(value, list) else [value]:
+            if item is NO_EXAMPLE:
+                text = ""
+            elif isinstance(item, str):
+                text = item
+            else:
+                text = json.dumps(item, ensure_ascii=False)
+            flat.append((name, text))
+    return urlencode(flat, quote_via=quote)
 
 
 def shell_quote(text: str) -> str:

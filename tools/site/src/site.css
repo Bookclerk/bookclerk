@@ -612,11 +612,14 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
 }
 
 /* Web API reference (api-reference.ts): operations laid out as OpenAPI
-   viewers such as Scalar do. The page drops the "On this page" rail (the
-   sidebar lists the operations) and shows each operation's examples in a
-   second, sticky column on wide screens. */
+   viewers such as Scalar do. The "On this page" rail gives way to the
+   page (the sidebar lists the operations) and keeps only its links, in a
+   row under the page; each operation's examples sit in a second, sticky
+   column on wide screens. */
 .docs-layout:has(.api-ref) { grid-template-columns: 17rem minmax(0, 1fr); }
-.docs-layout:has(.api-ref) .toc { display: none; }
+.docs-layout:has(.api-ref) .toc { grid-column: 2; position: static; max-height: none; overflow: visible; padding: 0 0 40px; }
+.docs-layout:has(.api-ref) .toc > :not(.toc-actions) { display: none; }
+.docs-layout:has(.api-ref) .toc-actions { flex-direction: row; gap: 24px; margin-top: 0; }
 .doc:has(.api-ref) { max-width: 80rem; font-size: 16px; line-height: 1.6; }
 .api-method {
   --method: var(--teal);

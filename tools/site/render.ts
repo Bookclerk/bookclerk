@@ -873,7 +873,9 @@ export function tocListHtml(headings: readonly DocHeading[]): string {
  */
 function headingLabel(heading: DocHeading): string {
   if (heading.method === undefined) return escapeHtml(heading.text);
-  return `<span class="${methodClass(heading.method)}">${heading.method}</span> <code>${escapeHtml(heading.text)}</code>`;
+  // Long paths wrap after a slash rather than inside a segment.
+  const path = escapeHtml(heading.text).replaceAll("/", "/<wbr>");
+  return `<span class="${methodClass(heading.method)}">${heading.method}</span> <code>${path}</code>`;
 }
 
 /**

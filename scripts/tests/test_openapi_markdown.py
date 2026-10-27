@@ -192,7 +192,61 @@ class RenderTest(unittest.TestCase):
         )
         self.assertEqual(doc.example({"$ref": "#/components/schemas/Node"}), {"next": {}, "at": "2026-01-01T12:00:00Z"})
         self.assertIs(doc.example({}), om.NO_EXAMPLE)
+        trees = om.Document({**DOCUMENT, "components": {"schemas": {"Tree": {"type": "array", "items": {"$ref": "#/components/schemas/Tree"}}}}})
+        self.assertEqual(trees.example({"$ref": "#/components/schemas/Tree"}), [[]])
         self.assertEqual(doc.example({"type": "string", "example": "x", "enum": ["y"]}), "x")
+
+    def test_credentials_and_query_strings(self) -> None:
+        doc = om.Document(
+            {
+                **DOCUMENT,
+                "paths": {
+                    "/up": {
+                        "put": {
+                            "security": [{"oauth": []}, {"upload": []}],
+                            "parameters": [
+                                {"name": "ids", "in": "query", "required": True, "schema": {"type": "array", "items": {"type": "string", "example": "a b&c"}}},
+                                {"name": "all", "in": "query", "required": True, "schema": {"type": "boolean"}},
+                            ],
+                            "responses": {"204": {"description": "Done."}},
+                        },
+                        "post": {"security": [{"cookie": []}], "responses": {"204": {"description": "Done."}}},
+                    },
+                    "/token": {
+                        "post": {
+                            "requestBody": {
+                                "content": {
+                                    "application/x-www-form-urlencoded": {
+                                        "schema": {
+                                            "type": "object",
+                                            "required": ["grant_type"],
+                                            "properties": {"grant_type": {"type": "string", "example": "a/b c"}, "code": {"type": "string"}},
+                                        }
+                                    }
+                                }
+                            },
+                            "responses": {"200": {"description": "Token."}},
+                        }
+                    },
+                },
+                "components": {
+                    "securitySchemes": {
+                        **DOCUMENT["components"]["securitySchemes"],
+                        "oauth": {"type": "oauth2", "flows": {}},
+                        "upload": {"type": "apiKey", "in": "header", "name": "Authorization", "description": "As `Authorization: Upload <token>`."},
+                    }
+                },
+            }
+        )
+        page = doc.render_all()["other.md"]
+        put = page.split("## `PUT /up`")[1].split("\n## ")[0]
+        # Each alternative is tried in turn; the description gives the header's form.
+        self.assertIn("-H 'Authorization: Upload <token>'", put)
+        self.assertIn("/up?ids=a%20b%26c&all=true'", put)
+        post = page.split("## `POST /up`")[1].split("\n## ")[0]
+        self.assertIn("-b 'sid=<cookie>' \\\n    -H 'Origin: http://127.0.0.1:8787'", post)
+        token = page.split("## `POST /token`")[1]
+        self.assertIn("-d 'grant_type=a%2Fb%20c'", token)
 
     def test_shell_quote(self) -> None:
         self.assertEqual(om.shell_quote("it's"), "'it'\\''s'")
@@ -235,6 +289,10 @@ class HelpersTest(unittest.TestCase):
         self.assertEqual(
             om.nested(text, 2),
             "Intro.\n\n### Errors\n\n```\n# comment\n```\n\n###### Deep\n#hashtag",
+        )
+        self.assertEqual(
+            om.nested("Errors\n------\n\nTitle\n=====\n\n````\n```\n# kept\n````\n# After\n\n- item\n---", 2),
+            "#### Errors\n\n### Title\n\n````\n```\n# kept\n````\n### After\n\n- item\n---",
         )
 
     def test_description_joins_constraints(self) -> None:
