@@ -1,5 +1,8 @@
 //! Port of Libation's [NamingTemplate] tag template naming engine.
 //!
+//! Because it derives from Libation, this crate is licensed under
+//! GPL-3.0-only rather than the workspace's AGPL-3.0-or-later.
+//!
 //! # Audience
 //!
 //! Host acquire / settings code that expands folder and file templates. Guest

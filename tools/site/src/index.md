@@ -75,4 +75,4 @@ Keep them as personal copies of books you bought and listen on your own devices.
 
 ### What does Bookclerk cost?
 
-Nothing. Bookclerk is free software under the GPL. You still buy your books from the stores.
+Nothing. Bookclerk is free software under the AGPL. You still buy your books from the stores.

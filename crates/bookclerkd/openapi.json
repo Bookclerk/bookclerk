@@ -4,7 +4,7 @@
     "title": "Bookclerk daemon API",
     "description": "The HTTP API of `bookclerkd`, the Bookclerk daemon: the web interface, the CLI and other nodes use it. Request bodies are JSON (`Content-Type: application/json`; send `{}` for defaults) unless a route says otherwise. Error responses are JSON objects with an `error` slug (`ApiError`); bare statuses get `{\"error\", \"message\", \"status\"}` (`ErrorJson`).",
     "license": {
-      "name": "GPL-3.0-or-later"
+      "name": "AGPL-3.0-or-later"
     },
     "version": "0.1.0"
   },

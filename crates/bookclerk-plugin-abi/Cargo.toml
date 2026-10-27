@@ -4,7 +4,9 @@ description = "Authoritative Bookclerk plugin Workers RPC ABI (schema + shared t
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+# Plugin authors build on this crate, so it is MIT like the TS and Python
+# SDKs; see docs/contributing/licensing.md.
+license = "MIT"
 repository.workspace = true
 authors.workspace = true
 publish = false

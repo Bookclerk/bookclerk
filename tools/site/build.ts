@@ -758,7 +758,7 @@ function writeLlmsTxt(context: SiteContext, rendered: RenderedDocs, facts: HomeF
   const lines = [
     "# Bookclerk",
     "",
-    `> ${SUMMARY} It is free, self-hosted software (GNU GPL v3 or later) with a command-line tool, a daemon with a web interface, and a plugin system for stores and destinations.`,
+    `> ${SUMMARY} It is free, self-hosted software (GNU AGPL v3 or later) with a command-line tool, a daemon with a web interface, and a plugin system for stores and destinations.`,
     "",
     `${status} Each doc below is Markdown; the same page as HTML is at the URL without \`.md\`. Source code: ${repo}. Every doc in one file: ${origin}/llms-full.txt. Every page also answers a request with \`Accept: text/markdown\` in Markdown; the home, download, privacy and security pages are at ${origin}/index.md, ${origin}/download.md, ${origin}/privacy.md and ${origin}/security.md.`,
     "",

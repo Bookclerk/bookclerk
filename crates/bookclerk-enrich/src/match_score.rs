@@ -3,6 +3,9 @@
 //! Port of `BookFinder.calculateMatchConfidence` from audiobookshelf
 //! (`server/finders/BookFinder.js`), including title/author cleaning and
 //! Levenshtein similarity, plus Libro-aware ISBN / narrator signals.
+//!
+//! Because it derives from audiobookshelf, this module is licensed under
+//! GPL-3.0-only rather than the workspace's AGPL-3.0-or-later.
 
 use unicode_normalization::UnicodeNormalization;
 
