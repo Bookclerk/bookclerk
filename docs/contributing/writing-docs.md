@@ -93,6 +93,30 @@ The kinds are `NOTE`, `TIP`, `IMPORTANT`, `WARNING` and `CAUTION`. Use
 expose a secret, and `NOTE` or `TIP` for a helpful aside. Use at most
 two callouts in a section; if everything stands out, nothing does.
 
+## Diagrams
+
+Draw diagrams in Mermaid, in a `mermaid` code block. GitHub draws them,
+and so does the site, in its own colors:
+
+````markdown
+```mermaid
+flowchart TB
+  Scan["scan"] --> DB[("library.db")]
+  DB --> Acquire["acquire"]
+```
+````
+
+- Use a flowchart (`flowchart`), state diagram (`stateDiagram-v2`),
+  sequence, class or ER diagram. The site shows any other type as code.
+- Leave out `style`, `classDef` and `click` lines: the site colors the
+  diagram itself, and a diagram that sets its own colors is shown as code.
+- Lay out anything wider than four or five boxes top to bottom
+  (`flowchart TB`) so it fits the page on a phone.
+- Keep each diagram under 4,000 characters. Write `&lt;` and `&gt;` for
+  angle brackets in labels.
+- Don't draw diagrams in text or as images: they can't be read on a phone
+  or by a screen reader, and they go stale.
+
 ## Words
 
 - Define a term in bold the first time a page uses it, and use it the

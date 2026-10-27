@@ -1,0 +1,10 @@
+flowchart TD
+  A{decision} -->|yes| B[(db)]
+  A -.->|no| C((circle))
+  C ==> D>flag]
+  D --- E[/para/]
+  E --> F{{hex}}
+  subgraph S [Group]
+    direction LR
+    G --> H
+  end

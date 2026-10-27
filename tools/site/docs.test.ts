@@ -1,4 +1,4 @@
-// Tests for docs.ts, render.ts, last-updated.ts and the Copy button in
+// Tests for docs.ts, render.ts, diagram.ts, last-updated.ts and the Copy button in
 // src/docs.js: URLs, link rewriting, copied commands and every doc in docs/
 // rendered the way the Worker renders it. Run with `npm test`.
 
@@ -7,6 +7,8 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath, URL } from "node:url";
 import { runInNewContext } from "node:vm";
+
+import MarkdownIt from "markdown-it";
 
 import { docUrl, GENERATED_TITLES, markdownFiles, renderDocs, rewriteLink, siteMarkdown, slugify } from "./docs.ts";
 import { highlight } from "./highlight.ts";
@@ -113,6 +115,57 @@ test("code blocks get syntax colors and a language label when highlight.ts knows
   assert.match(out.html, /<div class="code" data-lang="toml"><pre tabindex="0"><code class="language-toml"><span class="hl-k">\[library\]<\/span>/);
   assert.match(out.html, /<span class="hl-v">auto_acquire<\/span> = <span class="hl-n">false<\/span> <span class="hl-c"># off<\/span>/);
   assert.match(out.html, /<div class="code"><pre tabindex="0"><code class="language-text">&lt;plain&gt;/);
+});
+
+test("every Mermaid fence in docs/ is drawn as a diagram", () => {
+  const { docs } = renderDocs(DOCS, BLOB, GENERATED_TITLES);
+  let fences = 0;
+  for (const doc of docs) {
+    const source = readFileSync(`${DOCS}${doc.key}.md`, "utf8");
+    const count = new MarkdownIt().parse(source, {}).filter((t) => t.type === "fence" && (t.info.trim().split(/\s+/)[0] ?? "").toLowerCase() === "mermaid").length;
+    fences += count;
+    assert.equal((doc.html.match(/<figure class="diagram"[^>]*><svg /g) ?? []).length, count, doc.key);
+    assert.ok(!doc.html.includes("language-mermaid"), `${doc.key} has a Mermaid fence the site could not draw`);
+  }
+  assert.ok(fences >= 7);
+});
+
+test("diagrams keep their ids apart and leave the source's styling out", () => {
+  const source = "```mermaid\nflowchart LR\n  A --> B\n```\n\n```mermaid\nstateDiagram-v2\n  [*] --> A\n```\n";
+  const out = renderDoc(source, "cluster-hosts", { blobBase: BLOB });
+  const ids = [...out.html.matchAll(/ id="(Diagram[^"]+)"/g)].map((m) => m[1]);
+  assert.ok(ids.length >= 2);
+  assert.equal(new Set(ids).size, ids.length);
+  for (const [, ref = ""] of out.html.matchAll(/url\(#([^)]+)\)/g)) assert.ok(ids.includes(ref), ref);
+  assert.match(out.html, /<figure class="diagram" tabindex="0" role="group" aria-label="Flowchart" style="--w: [0-9]+px"><svg /);
+  assert.match(out.html, /aria-label="State diagram"/);
+  const svgs = out.html.slice(out.html.indexOf("<svg")).replace(/<\/?figure[^>]*>/g, "");
+  assert.ok(!/<style|@import|googleapis| style="| class="(?!mono")| data-/.test(svgs));
+});
+
+test("a page draws at most twelve diagrams, and fences it cannot draw spend none of its budget", () => {
+  const small = (n: number): string => `\`\`\`mermaid\nflowchart LR\n  A${n} --> B\n\`\`\`\n\n`;
+  const many = renderDoc(Array.from({ length: 14 }, (_, n) => small(n)).join(""), "cluster-hosts", { blobBase: BLOB });
+  assert.equal((many.html.match(/<figure class="diagram"/g) ?? []).length, 12);
+  const long = `\`\`\`mermaid\nflowchart LR\n${"  A --> B\n".repeat(500)}\`\`\`\n\n`;
+  const after = renderDoc(long.repeat(5) + small(1), "cluster-hosts", { blobBase: BLOB });
+  assert.equal((after.html.match(/<figure class="diagram"/g) ?? []).length, 1);
+});
+
+test("a page draws diagrams only up to its budget, then shows code", () => {
+  const fence = `\`\`\`mermaid\nflowchart LR\n${"  A --> B\n".repeat(300)}\`\`\`\n\n`;
+  const out = renderDoc(fence.repeat(6), "cluster-hosts", { blobBase: BLOB });
+  assert.equal((out.html.match(/<figure class="diagram"/g) ?? []).length, 5);
+  assert.equal((out.html.match(/<code class="language-mermaid">/g) ?? []).length, 1);
+});
+
+test("a Mermaid fence the site cannot draw stays a code block", () => {
+  const colored = ["style A fill:#f00", "classDef hot fill:#f00\n  class A hot", "linkStyle 0 stroke:#f00"].map((line) => `flowchart LR\n  A --> B\n  ${line}`);
+  for (const body of ["pie title Formats\n  \"m4b\" : 70", "flowchart LR\n  A --> B\n  style A fill:url(https://example.com/x)", `flowchart LR\n${"  A --> B\n".repeat(500)}`, ...colored]) {
+    const out = renderDoc(`\`\`\`mermaid\n${body}\n\`\`\`\n`, "cluster-hosts", { blobBase: BLOB });
+    assert.ok(!out.html.includes("<svg"), body.slice(0, 40));
+    assert.match(out.html, /<code class="language-mermaid">/);
+  }
 });
 
 test("highlight colors each language's own names and leaves the rest plain", () => {

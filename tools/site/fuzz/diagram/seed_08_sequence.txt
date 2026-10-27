@@ -1,0 +1,14 @@
+sequenceDiagram
+  participant H as Host
+  participant G as Guest
+  H->>G: describe()
+  G-->>H: manifest
+  Note over H,G: capnp over stdio
+  loop every 15 s
+    H->>H: heartbeat
+  end
+  alt healthy
+    G->>H: ok
+  else failed
+    G-xH: error
+  end

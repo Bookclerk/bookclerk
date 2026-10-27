@@ -1,0 +1,3 @@
+flowchart LR
+  A["a &lt;b&gt; & \" c <script>alert(1)</script>"] -- "l<i>&" --> B("<img src=x onerror=1>")
+  style A fill:red;stroke:url(http://example.com/x)

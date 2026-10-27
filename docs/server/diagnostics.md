@@ -103,15 +103,16 @@ See [Retention](#retention) for how that is enforced.
 The rest of this page is for the maintainers who run the collector
 service.
 
-```text
-bookclerk / bookclerkd  →  POST /submit  →  Worker (assigns report_id UUID)
-                              ↓
-                    B2: diagnostics/<version>/<report_id>.json
-                              ↓
-GitHub ingest → POST /triage (Workers AI, no tools) → validated plan → Issues
-
-Organization members → GitHub sign-in → member dashboard (D1 index of the
-B2 reports, issues and pull requests synced from GitHub every 30 minutes)
+```mermaid
+flowchart TB
+  Hosts["bookclerk / bookclerkd"] -- "POST /submit" --> Worker["Collector Worker<br/>(assigns report_id UUID)"]
+  Worker --> B2[("B2: diagnostics/&lt;version&gt;/&lt;report_id&gt;.json")]
+  B2 --> Ingest["GitHub ingest"]
+  Ingest -- "POST /triage" --> AI["Workers AI (no tools)"]
+  AI --> Plan["validated plan"]
+  Plan --> Issues["GitHub Issues"]
+  Members["Organization members"] -- "GitHub sign-in" --> Dash["Member dashboard"]
+  Dash --> Index[("D1 index of the B2 reports, issues and pull requests,<br/>synced from GitHub every 30 minutes")]
 ```
 
 ### GitHub Actions

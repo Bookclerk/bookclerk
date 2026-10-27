@@ -1,0 +1,11 @@
+stateDiagram-v2
+  direction LR
+  [*] --> pending
+  pending --> running
+  running --> succeeded
+  running --> failed
+  running --> cancelled
+  failed --> pending: retry with backoff
+  succeeded --> [*]
+  failed --> [*]: terminal
+  cancelled --> [*]
