@@ -364,15 +364,16 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
   --docs-line: color-mix(in srgb, var(--ink) 12%, transparent);
   --docs-soft: color-mix(in srgb, var(--ink) 72%, transparent);
   --code-card: var(--index-card);
+  /* Syntax colors: distinct hues, each at least 4.5:1 on the code card. */
   --hl-c: color-mix(in srgb, var(--ink) 72%, transparent);
-  --hl-s: #a33b28;
-  --hl-n: #8a4b0f;
-  --hl-k: #2e615d;
-  --hl-v: #1a4a6b;
-  --hl-f: #2e615d;
+  --hl-s: #15803d;
+  --hl-n: #b45309;
+  --hl-k: #7c3aed;
+  --hl-v: #0369a1;
+  --hl-f: #0f766e;
 }
 @media (prefers-color-scheme: dark) {
-  .docs-page { --code-card: #0f1821; --hl-s: #f08c77; --hl-n: #e7b77a; --hl-k: #7cc2bc; --hl-v: #a9c6de; --hl-f: #7cc2bc; }
+  .docs-page { --code-card: #0f1821; --hl-s: #86efac; --hl-n: #fcd34d; --hl-k: #c4b5fd; --hl-v: #7dd3fc; --hl-f: #5eead4; }
 }
 .docs-page .ribbon .wrap { max-width: none; padding-block: 6px; }
 .docs-page .ribbon { font-size: 14px; line-height: 20px; }
@@ -487,7 +488,9 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
 
 .doc .table-scroll { overflow-x: auto; border: 1px solid var(--docs-line); border-radius: 10px; margin-block: 1.5em; }
 .doc table { border-collapse: collapse; width: 100%; font-size: 15px; line-height: 22px; }
-.doc th, .doc td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--docs-line); }
+/* A column never narrows below about two words a line; a table too wide
+   for the column scrolls inside its frame instead. */
+.doc th, .doc td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--docs-line); min-width: 9rem; }
 .doc th { font-size: 13px; font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; background: color-mix(in srgb, var(--parchment) 45%, transparent); }
 .doc tbody tr:last-child td { border-bottom: 0; }
 .doc tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--ink) 2.5%, transparent); }
