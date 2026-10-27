@@ -14,8 +14,10 @@ import { fileURLToPath, URL } from "node:url";
 import { renderMermaidSVG } from "beautiful-mermaid";
 
 import { cleanSvg, diagram } from "./diagram.ts";
+import { HTTP_METHODS } from "./api-reference.ts";
 import { highlight } from "./highlight.ts";
 import { datedPages, formatDate, MAX_DOC_KEY_LENGTH, pageDate } from "./last-updated.ts";
+import { renderDoc } from "./render.ts";
 import { pickEncoding } from "./worker.ts";
 import type { Encoding } from "./worker.ts";
 
@@ -541,5 +543,77 @@ test("cleanSvg passes only clean markup on mutated renderer output", () => {
     const input = mutate(svgs[Math.floor(rand() * svgs.length)] ?? "", svgs, rand, SVG_FRAGMENTS);
     const out = cleanSvg(input, "c");
     if (out !== null) checkSvg(out, "c", `FUZZ_SEED=${SEED} iteration ${i}: ${JSON.stringify(input.slice(0, 2000))}`);
+  }
+});
+
+/** Fragments Web API page mutations splice in: headings, code spans, methods, quotes, lists, tables and HTML. */
+const API_FRAGMENTS = ["\n", "\n\n", "## ", "### ", "#", "`", "``", "> ", "- ", "1. ", "    ", "|", " | ", "| --- |", "| Status |", "GET ", "POST ", "get ", "/api/", "{id}", " ", "Example request", "Example response", "Responses", "200", "4XX", "default", "```", "```json\n", "---", "===", "<", ">", "&", '"', "<section>", "</div>", "é", "\u0000"];
+
+/** Elements that never take a closing tag. */
+const VOID_ELEMENTS = /^(br|hr|img|input|wbr|col|meta|link|source)$/;
+
+/**
+ * Checks a rendered Web API page against an oracle that does not use
+ * api-reference.ts: the HTML nests properly, every operation section is
+ * labelled by a heading on the page that carries one badge for an HTTP
+ * method, and the visible text is the same as the page rendered without
+ * the layout, apart from the badges.
+ *
+ * @param source - The Markdown.
+ * @param context - What to print when a check fails.
+ */
+function checkApiPage(source: string, context: string): void {
+  const laid = renderDoc(source, "api/web/fuzz", { blobBase: "https://example.invalid/" }).html;
+  const plain = renderDoc(source, "guide/fuzz", { blobBase: "https://example.invalid/" }).html;
+  assert.ok(!/<script/i.test(laid), `script element: ${context}`);
+
+  const stack: string[] = [];
+  for (const [tag, close, name] of laid.matchAll(/<(\/?)([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/g)) {
+    const element = (name ?? "").toLowerCase();
+    if (VOID_ELEMENTS.test(element) || tag.endsWith("/>")) continue;
+    if (close === "") stack.push(element);
+    else assert.equal(stack.pop(), element, `misnested </${element}>: ${context}`);
+  }
+  assert.deepEqual(stack, [], `unclosed elements: ${context}`);
+
+  const ids = new Set([...laid.matchAll(/ id="([^"]*)"/g)].map((m) => m[1]));
+  const sections = [...laid.matchAll(/<section class="api-op" aria-labelledby="([^"]*)">\n<h2 id="([^"]*)" class="api-op-title"><span class="api-method api-method-([a-z]+)">([A-Z]+)<\/span> <code>/g)];
+  assert.equal(sections.length, (laid.match(/<section/g) ?? []).length, `section without its heading: ${context}`);
+  for (const [, labelled, id, lower, method] of sections) {
+    assert.equal(labelled, id, context);
+    assert.ok(ids.has(id), context);
+    assert.ok((HTTP_METHODS as readonly string[]).includes(method ?? ""), context);
+    assert.equal(lower, method?.toLowerCase(), context);
+  }
+  const badges = (laid.match(/<span class="api-method /g) ?? []).length;
+  assert.equal(badges, sections.length, `badge outside an operation heading: ${context}`);
+
+  // Same characters as the page without the layout: the badge's method
+  // was part of the heading's code span there. Splitting on tags keeps
+  // the text runs (even indices) and the tags before them (odd ones).
+  const chars = (html: string): string => {
+    const parts = html.split(/(<[^>]*>)/);
+    const text = parts.filter((_part, i) => i % 2 === 0 && !(parts[i - 1] ?? "").startsWith('<span class="api-method '));
+    return [...text.join("").replace(/\s/g, "")].sort().join("");
+  };
+  const methods = sections.map((m) => m[4] ?? "").join("");
+  assert.equal(chars(laid + methods), chars(plain), `text changed: ${context}`);
+}
+
+/** Mutated Web API pages checked per run; each renders twice, highlighting included. */
+const API_ITERATIONS = Math.max(1, Math.floor(ITERATIONS / 40));
+
+test("the Web API layout keeps its seed corpus well formed and complete", () => {
+  const seeds = corpus("api_reference");
+  assert.ok(seeds.length >= 10);
+  for (const seed of seeds) checkApiPage(seed, JSON.stringify(seed.slice(0, 60)));
+});
+
+test("the Web API layout keeps mutated pages well formed and complete", () => {
+  const seeds = corpus("api_reference");
+  const rand = prng(SEED);
+  for (let i = 0; i < API_ITERATIONS; i++) {
+    const source = mutate(seeds[Math.floor(rand() * seeds.length)] ?? "", seeds, rand, API_FRAGMENTS);
+    checkApiPage(source, `FUZZ_SEED=${SEED} iteration ${i}: ${JSON.stringify(source)}`);
   }
 });

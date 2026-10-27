@@ -76,7 +76,9 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   header, a sticky sidebar whose groups fold (only the current page's group
   opens), a reading column of about 80 characters, and an "On this page"
   rail the Worker builds from the doc's `##` and `###` headings, with a
-  breadcrumb and previous and next links taken from `NAV`. Below 1200px the
+  breadcrumb and previous and next links taken from `NAV`. Every crumb is a
+  link: a sidebar group links to its first page, and a Web API route page
+  runs through the Web API entry it sits under. Below 1200px the
   rail goes; below 900px the sidebar and the rail become two menus over the
   page (`<details>`, so they work without a script).
 - `highlight.ts` – syntax colors for fenced code blocks in the languages the

@@ -1,0 +1,19 @@
+# Mixed
+
+## `GET /api/one`
+
+### Example response
+
+```json
+{}
+```
+
+## Not an operation
+
+### Responses
+
+| Status | Description | Body |
+| --- | --- | --- |
+| 200 | OK | none |
+
+## `PATCH /api/two`

@@ -503,8 +503,16 @@ Rust crates and the web UI library.
 - **Web API**: `scripts/openapi_markdown.py` renders `bookclerkd`'s
   committed OpenAPI document (`crates/bookclerkd/openapi.json`). It writes
   an index of routes and credentials, one page per route group (with each
-  route's access rule, parameters, body and responses), and a page of
-  schemas.
+  route's access rule, parameters, body, responses, an example `curl`
+  request and an example response built from the schemas; the request
+  sends only required fields, since optional ones can be alternatives
+  that must not be sent together), and a page of
+  schemas. A request body that names a schema lists that schema's fields
+  in place, so a route reads without a trip to the schemas page. The website lays the route group pages out like an OpenAPI
+  viewer (`tools/site/api-reference.ts`): a method badge beside each path,
+  the examples in a second column on wide screens, and the page's routes in
+  the sidebar under **Web API**. The Markdown itself stays plain, so the
+  pages read the same on GitHub.
 
 Every relative link to a file in the tree must resolve, and links in `api/`
 must stay inside the tree, or the build fails.

@@ -15,6 +15,8 @@
 import MarkdownIt from "markdown-it";
 import type { MarkdownIt as Markdown, RendererRule, Token } from "markdown-it";
 
+import { isApiOperationsPage, layoutOperations, methodClass, operationMeta } from "./api-reference.ts";
+import type { HttpMethod } from "./api-reference.ts";
 import { diagram, drawable, PAGE_DIAGRAM_COUNT_MAX, PAGE_DIAGRAM_MAX } from "./diagram.ts";
 import { highlight } from "./highlight.ts";
 import { formatDate } from "./last-updated.ts";
@@ -54,6 +56,8 @@ export interface DocHeading {
   id: string;
   /** Its plain text. */
   text: string;
+  /** For a Web API operation heading: its method (the text is its path). */
+  method?: HttpMethod;
 }
 
 /** A rendered doc: what the build and the Worker take from one Markdown file. */
@@ -128,7 +132,7 @@ export const NAV: NavSpec[] = [
   },
   {
     title: "API reference",
-    pages: ["api/README", "api/typescript/README", "api/python/README", "api/rust/bookclerk_plugin_sdk/index", "api/rust/README"],
+    pages: ["api/README", "api/typescript/README", "api/python/README", "api/rust/bookclerk_plugin_sdk/index", "api/web/README", "api/rust/README"],
   },
   {
     title: "How it works",
@@ -174,6 +178,7 @@ export const GENERATED_TITLES: Readonly<Record<string, string>> = {
   "api/typescript/README": "TypeScript plugin SDK",
   "api/python/README": "Python plugin SDK",
   "api/rust/bookclerk_plugin_sdk/index": "Rust plugin SDK",
+  "api/web/README": "Web API",
   "api/rust/README": "Rust crates",
 };
 
@@ -324,6 +329,11 @@ function renderer(docKey: string, keys: ReadonlySet<string> | null, blobBase: st
     });
   });
   md.core.ruler.after("block", "callouts", (state) => markCallouts(state.tokens));
+  if (isApiOperationsPage(docKey)) {
+    md.core.ruler.after("heading_ids", "api_operations", (state) => {
+      state.tokens = layoutOperations(state.tokens, (type, tag, nesting) => new state.Token(type, tag, nesting));
+    });
+  }
   for (const rule of ["blockquote_open", "blockquote_close"] as const) {
     const base: RendererRule = md.renderer.rules[rule] ?? ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
     md.renderer.rules[rule] = (tokens, idx, options, env, self) => {
@@ -628,9 +638,17 @@ export function renderDoc(
 ): RenderedDoc {
   const md = renderer(key, keys, blobBase, (k) => docUrl(k, base));
   const tokens = md.parse(source, {});
+  // A Web API page lists its operations, not their subsections
+  // (Parameters, Responses, …), which repeat on every one.
+  let inOperation = false;
   const headings = tokens.flatMap((t, i): DocHeading[] => {
     if (t.type !== "heading_open" || (t.tag !== "h2" && t.tag !== "h3")) return [];
-    return [{ level: t.tag === "h2" ? 2 : 3, id: String(t.attrGet("id") ?? ""), text: inlineText(tokens[i + 1]) }];
+    const id = String(t.attrGet("id") ?? "");
+    const op = operationMeta(t);
+    if (t.tag === "h2") inOperation = op !== null;
+    if (op !== null) return [{ level: 2, id, text: op.path, method: op.method }];
+    if (inOperation) return [];
+    return [{ level: t.tag === "h2" ? 2 : 3, id, text: inlineText(tokens[i + 1]) }];
   });
   return {
     title: docTitle(source, key),
@@ -675,13 +693,22 @@ export function jsonLd(data: object | null): string {
  * @param base - URL prefix of the docs version, ending in `/`.
  * @param doc - The doc, with the date it last changed when known
  *   (`dateModified`).
+ * @param trail - The page's breadcrumb trail (see crumbTrail); Docs alone
+ *   when not given.
  * @returns A JSON-LD `@graph` with the TechArticle and its
- *   breadcrumb trail (Docs › title).
+ *   breadcrumb trail, the same as the page shows (the docs home has Docs only).
  */
-export function docJsonLd(origin: string, base: string, doc: { key: string; title: string; description: string; updated?: IsoDate | null }): object {
+export function docJsonLd(
+  origin: string,
+  base: string,
+  doc: { key: string; title: string; description: string; updated?: IsoDate | null },
+  trail: readonly Crumb[] = [{ title: "Docs", key: null }, { title: doc.title, key: doc.key }],
+): object {
   const url = origin + docUrl(doc.key, base);
-  const crumbs = [{ name: "Docs", item: origin + base }];
-  if (doc.key !== "README") crumbs.push({ name: doc.title, item: url });
+  const crumbs = (doc.key === "README" ? trail.slice(0, 1) : trail).map((c) => ({
+    name: c.title,
+    item: origin + (c.key === null ? base : docUrl(c.key, base)),
+  }));
   return {
     "@context": "https://schema.org",
     "@graph": [
@@ -730,25 +757,60 @@ export function buildNav(titles: ReadonlyMap<string, string>): NavGroup[] {
  * @param base - URL prefix of the docs version, ending in `/`.
  * @returns One heading and list per group.
  */
-export function navHtml(nav: readonly NavGroup[], current: string, base: string): string {
+export function navHtml(nav: readonly NavGroup[], current: string, base: string, nested: NavNested | null = null): string {
   return nav
     .map((group) => {
       const links = group.pages
         .map((p) => {
           const mark = p.key === current ? ' aria-current="page"' : "";
-          return `<li><a href="${escapeHtml(docUrl(p.key, base))}"${mark}>${escapeHtml(p.title)}</a></li>`;
+          const inner = nested !== null && nested.under === p.key ? nested.html : "";
+          return `<li><a href="${escapeHtml(docUrl(p.key, base))}"${mark}>${escapeHtml(p.title)}</a>${inner}</li>`;
         })
         .join("");
-      const open = group.pages.some((p) => p.key === current) ? " open" : "";
+      const open = group.pages.some((p) => p.key === current || p.key === nested?.under) ? " open" : "";
       return `<details class="nav-group"${open}><summary>${escapeHtml(group.title)}</summary><ul>${links}</ul></details>`;
     })
     .join("\n");
+}
+
+/** A list the sidebar shows under one of its pages. */
+export interface NavNested {
+  /** Key of the sidebar page the list goes under. */
+  under: string;
+  /** The list's HTML. */
+  html: string;
+}
+
+/**
+ * The sidebar list for a Web API page other than its index: the page
+ * itself, marked current, with its operations (if any) under it, shown
+ * beneath the Web API entry.
+ *
+ * @param key - The page's key.
+ * @param title - Its title.
+ * @param headings - Its headings (see renderDoc).
+ * @param base - URL prefix of the docs version.
+ * @returns The list, or null for a page outside `api/web/` and for its index.
+ */
+export function apiNavNested(key: string, title: string, headings: readonly DocHeading[], base: string): NavNested | null {
+  if (!key.startsWith("api/web/") || key === "api/web/README") return null;
+  const ops = headings
+    .filter((h) => h.method !== undefined)
+    .map((h) => `<li><a class="nav-op" href="#${escapeHtml(h.id)}">${headingLabel(h)}</a></li>`)
+    .join("");
+  const list = ops === "" ? "" : `<ul class="nav-ops">${ops}</ul>`;
+  return {
+    under: "api/web/README",
+    html: `<ul class="nav-sub"><li><a href="${escapeHtml(docUrl(key, base))}" aria-current="page">${escapeHtml(title)}</a>${list}</li></ul>`,
+  };
 }
 
 /** Where a doc sits in the sidebar. */
 export interface NavPlace {
   /** Title of the sidebar group that lists it, or null when none does. */
   group: string | null;
+  /** Key of that group's first page, which its breadcrumb crumb links to; null with `group`. */
+  groupFirst: string | null;
   /** The doc before it in sidebar order, if any. */
   previous: { key: string; title: string } | null;
   /** The doc after it in sidebar order, if any. */
@@ -766,27 +828,80 @@ export interface NavPlace {
 export function navPlace(nav: readonly NavGroup[], key: string): NavPlace {
   const flat = nav.flatMap((g) => g.pages.map((p) => ({ ...p, group: g.title })));
   const at = flat.findIndex((p) => p.key === key);
-  if (at === -1) return { group: null, previous: null, next: null };
+  if (at === -1) return { group: null, groupFirst: null, previous: null, next: null };
   const pick = (i: number): { key: string; title: string } | null => {
     const page = flat[i];
     return page === undefined ? null : { key: page.key, title: page.title };
   };
-  return { group: flat[at]?.group ?? null, previous: pick(at - 1), next: pick(at + 1) };
+  const group = flat[at]?.group ?? null;
+  const groupFirst = flat.find((p) => p.group === group)?.key ?? null;
+  return { group, groupFirst, previous: pick(at - 1), next: pick(at + 1) };
+}
+
+/** A sidebar page that a doc the sidebar does not list sits under. */
+export interface NavParent {
+  /** The sidebar page's key. */
+  key: string;
+  /** Its sidebar title. */
+  title: string;
+}
+
+/**
+ * Finds the sidebar page a Web API page sits under, which its breadcrumb
+ * names: the sidebar lists only the Web API index, and the route group and
+ * schema pages beneath it.
+ *
+ * @param nav - The sidebar.
+ * @param key - The doc's key.
+ * @returns The Web API index for any other page under `api/web/`, when the
+ *   sidebar lists the index, else null.
+ */
+export function navParent(nav: readonly NavGroup[], key: string): NavParent | null {
+  if (!key.startsWith("api/web/") || key === "api/web/README") return null;
+  const page = nav.flatMap((g) => g.pages).find((p) => p.key === "api/web/README");
+  return page === undefined ? null : { key: page.key, title: page.title };
+}
+
+/** One step of a breadcrumb trail. */
+export interface Crumb {
+  /** The text shown. */
+  title: string;
+  /** Key of the doc it links to, or null for the docs home. */
+  key: string | null;
+}
+
+/**
+ * Works out a doc's breadcrumb trail, which the page shows and its JSON-LD
+ * repeats: Docs, the sidebar group (linking to the group's first page), the
+ * sidebar page it sits under (see navParent), then the doc itself.
+ *
+ * @param nav - The sidebar.
+ * @param key - The doc's key.
+ * @param title - The doc's title.
+ * @returns The crumbs, Docs first and the doc last.
+ */
+export function crumbTrail(nav: readonly NavGroup[], key: string, title: string): Crumb[] {
+  const parent = navParent(nav, key);
+  const place = navPlace(nav, parent?.key ?? key);
+  const trail: Crumb[] = [{ title: "Docs", key: null }];
+  if (place.group !== null && place.groupFirst !== null) trail.push({ title: place.group, key: place.groupFirst });
+  if (parent !== null) trail.push(parent);
+  trail.push({ title, key });
+  return trail;
 }
 
 /**
  * Renders a doc's breadcrumb trail.
  *
- * @param place - Where the doc sits in the sidebar (see navPlace).
- * @param title - The doc's title.
+ * @param trail - The crumbs (see crumbTrail); the last is the doc itself.
  * @param base - URL prefix of the docs version.
- * @returns A `nav` with Docs, the sidebar group (when there is one) and the
- *   page itself.
+ * @returns A `nav` with each crumb a link, the last marked as the current page.
  */
-export function crumbsHtml(place: NavPlace, title: string, base: string): string {
-  const items = [`<li><a href="${escapeHtml(base)}">Docs</a></li>`];
-  if (place.group !== null) items.push(`<li>${escapeHtml(place.group)}</li>`);
-  items.push(`<li aria-current="page">${escapeHtml(title)}</li>`);
+export function crumbsHtml(trail: readonly Crumb[], base: string): string {
+  const items = trail.map((c, i) => {
+    const current = i === trail.length - 1 ? ' aria-current="page"' : "";
+    return `<li><a href="${escapeHtml(c.key === null ? base : docUrl(c.key, base))}"${current}>${escapeHtml(c.title)}</a></li>`;
+  });
   return `<nav class="crumbs" aria-label="Breadcrumb"><ol>${items.join("")}</ol></nav>`;
 }
 
@@ -813,8 +928,22 @@ export function pagerHtml(place: NavPlace, base: string): string {
  */
 export function tocListHtml(headings: readonly DocHeading[]): string {
   if (headings.length === 0) return "";
-  const items = headings.map((h) => `<li${h.level === 3 ? ' class="sub"' : ""}><a href="#${escapeHtml(h.id)}">${escapeHtml(h.text)}</a></li>`);
+  const items = headings.map((h) => `<li${h.level === 3 ? ' class="sub"' : ""}><a href="#${escapeHtml(h.id)}">${headingLabel(h)}</a></li>`);
   return `<ul>${items.join("")}</ul>`;
+}
+
+/**
+ * A heading's link text: a Web API operation as a method badge and its
+ * path, anything else as its text.
+ *
+ * @param heading - The heading.
+ * @returns HTML.
+ */
+function headingLabel(heading: DocHeading): string {
+  if (heading.method === undefined) return escapeHtml(heading.text);
+  // Long paths wrap after a slash rather than inside a segment.
+  const path = escapeHtml(heading.text).replaceAll("/", "/<wbr>");
+  return `<span class="${methodClass(heading.method)}">${heading.method}</span> <code>${path}</code>`;
 }
 
 /**
@@ -990,8 +1119,9 @@ export function renderDocPage(
   const updated = at.updated ? `<span class="doc-updated">Last updated <time datetime="${at.updated}">${formatDate(at.updated)}</time></span>` : "";
   const meta = `<p class="doc-meta">${note}${updated}<a href="${escapeHtml(markdownUrl)}" type="text/markdown">View as Markdown</a></p>`;
   const place = navPlace(shell.nav, key);
+  const trail = crumbTrail(shell.nav, key, doc.title);
   const versions = versionsHtml(shell.versions, at.ref, key);
-  const nav = homeLink(at.base, key === "README") + navHtml(shell.nav, key, at.base);
+  const nav = homeLink(at.base, key === "README") + navHtml(shell.nav, key, at.base, apiNavNested(key, doc.title, doc.headings, at.base));
   const html = fillShell(
     shell.html,
     {
@@ -1002,11 +1132,11 @@ export function renderDocPage(
       docsBase: at.base,
     },
     {
-      jsonld: jsonLd(docJsonLd(shell.origin, at.base, { key, title: doc.title, description: doc.description, updated: at.updated ?? null })),
+      jsonld: jsonLd(docJsonLd(shell.origin, at.base, { key, title: doc.title, description: doc.description, updated: at.updated ?? null }, trail)),
       "doc-menus": mobileMenusHtml(versions + nav, doc.headings),
       "doc-versions": versions,
       "doc-nav": nav,
-      "doc-crumbs": crumbsHtml(place, doc.title, at.base),
+      "doc-crumbs": crumbsHtml(trail, at.base),
       "doc-body": afterTitle(doc.html, meta),
       "doc-pager": pagerHtml(place, at.base),
       "doc-footer": `<p class="doc-source faint">${sourceLink} · <a href="${escapeHtml(markdownUrl)}" type="text/markdown">View as Markdown</a></p>`,

@@ -354,6 +354,13 @@ fuzzing in `npm test`.
   an independent reader confirms the output is one `<svg>` of allowed
   elements, with no script or style attributes, no class but `mono`, no
   reference outside the diagram, and ids carrying the page's prefix.
+- **Web API layout** (`layoutOperations` in
+  `tools/site/api-reference.ts`, through `renderDoc`) rearranges the
+  generated `api/web/` pages from the docs repository into operation
+  sections. Corpus `tools/site/fuzz/api_reference/`. Oracle: the HTML nests
+  properly, every section is labelled by its own heading with one badge
+  for a known method, and the page keeps the same text as it has without
+  the layout.
 - **Last-updated reader** (`pageDate` and `datedPages` in
   `tools/site/last-updated.ts`) dates each docs page from the docs
   repository's `last-updated.json`, and lists every page for

@@ -610,3 +610,59 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
   .pager { grid-template-columns: minmax(0, 1fr); }
   .pager .pager-next { grid-column: 1; }
 }
+
+/* Web API reference (api-reference.ts): operations laid out as OpenAPI
+   viewers such as Scalar do. The "On this page" rail gives way to the
+   page (the sidebar lists the operations) and keeps only its links, in a
+   row under the page; each operation's examples sit in a second, sticky
+   column on wide screens. */
+.docs-layout:has(.api-ref) { grid-template-columns: 17rem minmax(0, 1fr); }
+.docs-layout:has(.api-ref) .toc { grid-column: 2; position: static; max-height: none; overflow: visible; padding: 0 0 40px; }
+.docs-layout:has(.api-ref) .toc > :not(.toc-actions) { display: none; }
+.docs-layout:has(.api-ref) .toc-actions { flex-direction: row; gap: 24px; margin-top: 0; }
+.doc:has(.api-ref) { max-width: 80rem; font-size: 16px; line-height: 1.6; }
+.api-method {
+  --method: var(--teal);
+  display: inline-block; min-width: 3.6em; padding: 1px 6px; border-radius: 4px; text-align: center; vertical-align: 0.1em;
+  font: 600 12px/18px var(--font-mono); letter-spacing: 0.04em;
+  color: color-mix(in srgb, var(--method) 72%, var(--ink)); background: color-mix(in srgb, var(--method) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--method) 32%, transparent);
+}
+.api-method-get { --method: #2f855a; }
+.api-method-post { --method: #2b6cb0; }
+.api-method-put { --method: #975a16; }
+.api-method-patch { --method: #805ad5; }
+.api-method-delete { --method: var(--brick); }
+@media (prefers-color-scheme: dark) {
+  .api-method-get { --method: #68d391; }
+  .api-method-post { --method: #90cdf4; }
+  .api-method-put { --method: #f6ad55; }
+  .api-method-patch { --method: #b794f4; }
+}
+.doc .api-op { border-top: 1px solid var(--docs-line); margin-top: 3em; padding-top: 0.4em; }
+.doc .api-op > * + * { margin-top: 1.15em; }
+.doc .api-op-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 0.8em; font: 600 20px/28px var(--font-sans); }
+.doc .api-op-title .api-method { font-size: 14px; line-height: 22px; padding: 2px 8px; }
+.doc .api-op-title code { font-size: 18px; background: none; border: 0; padding: 0; overflow-wrap: anywhere; }
+.api-op-main > * + *, .api-op-examples > * + * { margin-top: 1.15em; }
+.doc .api-op-examples h3 { font: 600 12px/16px var(--font-sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--docs-soft); margin-top: 1.6em; }
+.doc .api-op-examples h3:first-child { margin-top: 0; }
+.doc .api-op-examples .code { margin-block: 0.6em 0; }
+.doc .api-op-examples p { font-size: 15px; }
+.api-status { font: 600 14px/1 var(--font-mono); white-space: nowrap; }
+.api-status::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: var(--docs-soft); vertical-align: 0.05em; }
+.api-status-2xx::before { background: #2f855a; }
+.api-status-3xx::before { background: var(--teal); }
+.api-status-4xx::before { background: #b7791f; }
+.api-status-5xx::before { background: var(--brick); }
+.docs-nav .nav-sub, .docs-menus .nav-sub { margin: 2px 0 4px 12px; border-left: 1px solid var(--docs-line); }
+.docs-nav .nav-ops, .docs-menus .nav-ops { margin: 2px 0 6px 8px; }
+.docs-nav .nav-op, .docs-menus .nav-op { display: flex; gap: 8px; align-items: baseline; padding: 4px 8px; font-size: 13px; line-height: 18px; }
+.nav-op .api-method { min-width: 3.4em; font-size: 10px; line-height: 15px; padding: 0 4px; flex: none; }
+.nav-op code { font: 13px/18px var(--font-mono); overflow-wrap: anywhere; background: none; border: 0; padding: 0; }
+.toc .api-method, .menu-toc .api-method { font-size: 10px; line-height: 15px; padding: 0 4px; margin-right: 4px; }
+
+@media (min-width: 1201px) {
+  .doc .api-op-body { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 0 40px; align-items: start; }
+  .doc .api-op-examples { position: sticky; top: calc(var(--docs-header) + 20px); max-height: calc(100vh - var(--docs-header) - 40px); overflow-y: auto; margin-top: 1.4em; }
+}

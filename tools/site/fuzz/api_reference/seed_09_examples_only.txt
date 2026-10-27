@@ -1,0 +1,15 @@
+# Examples
+
+### Example request
+
+```console
+$ curl 'http://127.0.0.1:8787/api/x'
+```
+
+## `HEAD /api/h`
+
+### Example request
+
+### Example response
+
+### Example request

@@ -10,7 +10,8 @@ The pages are:
 - ``README.md``: the API's description, how to authenticate, and an index of
   the route groups (OpenAPI tags) with every route;
 - one page per tag (``<tag slug>.md``) with each operation: who may call it
-  (``x-bookclerk-access``), its parameters, request body and responses;
+  (``x-bookclerk-access``), its parameters, request body and responses, and
+  an example request (``curl``) and response built from the schemas;
 - ``schemas.md``: every component schema, with a table of its fields.
 
 Schema references become links to ``schemas.md``. Anything the renderer does
@@ -27,6 +28,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlencode
 
 from rustdoc_markdown import Anchors
 
@@ -38,6 +40,23 @@ REF_PREFIX = "#/components/schemas/"
 MAX_FIELD_DEPTH = 3
 # Parameter locations, in the order the tables list them.
 PARAM_ORDER = {"path": 0, "query": 1, "header": 2, "cookie": 3}
+# The daemon's default listen address, used in example requests.
+EXAMPLE_ORIGIN = "http://127.0.0.1:8787"
+# Example values nest objects and arrays this deep; deeper ones are empty.
+MAX_EXAMPLE_DEPTH = 4
+# Example strings by `format`.
+FORMAT_EXAMPLES = {
+    "date-time": "2026-01-01T12:00:00Z",
+    "date": "2026-01-01",
+    "time": "12:00:00Z",
+    "uuid": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "uri": "https://example.com/",
+    "url": "https://example.com/",
+    "email": "reader@example.com",
+    "hostname": "bookclerk.example.com",
+    "ipv4": "192.0.2.1",
+    "ipv6": "2001:db8::1",
+}
 
 JsonObject = Mapping[str, Any]
 
@@ -69,6 +88,77 @@ def prose(text: str) -> str:
         The text with trailing spaces and surrounding blank lines removed.
     """
     return "\n".join(line.rstrip() for line in text.strip().splitlines())
+
+
+def nested(text: str, level: int) -> str:
+    """Normalize a description that sits under a heading of ``level``.
+
+    Descriptions come from doc comments, whose sections (``# Errors``) are
+    top-level headings; left as they are they would outrank the operation
+    they describe. Every heading outside a code fence moves down by
+    ``level`` (capped at six) so the description nests under its section;
+    a setext heading (text underlined with ``===`` or ``---``) is written
+    as an ATX one on the way.
+
+    Args:
+        text: Markdown text from the document.
+        level: The level of the heading the text sits under.
+
+    Returns:
+        The text, normalized as by :func:`prose`, with headings demoted.
+    """
+    lines: list[str] = []
+    fence = ""
+    for line in prose(text).splitlines():
+        indent = len(line) - len(line.lstrip(" "))
+        stripped = line.lstrip(" ")
+        opener = re.match(r"(`{3,}|~{3,})", stripped) if indent < 4 else None
+        if fence:
+            # A fence closes on a run of its own character at least as long.
+            if opener and opener.group(1)[0] == fence[0] and len(opener.group(1)) >= len(fence) and not stripped[len(opener.group(1)):].strip():
+                fence = ""
+            lines.append(line)
+            continue
+        if opener:
+            fence = opener.group(1)
+            lines.append(line)
+            continue
+        setext = re.fullmatch(r"(=+|-+)[ \t]*", stripped) if indent < 4 else None
+        paragraph = _open_paragraph(lines) if setext else 0
+        if setext and paragraph:
+            # The underline makes the whole paragraph above it the heading.
+            depth = 1 if setext.group(1)[0] == "=" else 2
+            text = " ".join(line.strip() for line in lines[-paragraph:])
+            del lines[-paragraph:]
+            lines.append("#" * min(6, depth + level) + " " + text)
+            continue
+        hashes = len(stripped) - len(stripped.lstrip("#"))
+        if indent < 4 and 1 <= hashes <= 6 and stripped[hashes : hashes + 1] in ("", " ", "\t"):
+            line = "#" * min(6, hashes + level) + stripped[hashes:]
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _open_paragraph(lines: Sequence[str]) -> int:
+    """Count the trailing lines that form a paragraph a setext underline could close.
+
+    Args:
+        lines: The lines so far, outside any code fence.
+
+    Returns:
+        How many of the last lines make up that paragraph; 0 when the last
+        line is blank or belongs to something else (an indented code block,
+        a list, a quote, a heading or a fence).
+    """
+    count = 0
+    for line in reversed(lines):
+        if not line.strip() or re.match(r" {0,3}(#|`{3,}|~{3,})", line):
+            break
+        count += 1
+    first = lines[-count] if count else ""
+    if not count or first.startswith("    ") or re.match(r" {0,3}([>*+-]|\d+[.)])", first):
+        return 0
+    return count
 
 
 def code(text: str) -> str:
@@ -354,6 +444,237 @@ class Document:
             for name, prop in props.items():
                 yield str(name), prop, name in required
 
+    # Examples ------------------------------------------------------------
+
+    def resolve(self, schema: Any) -> tuple[Any, str | None]:
+        """Follow a schema's reference, or a nullable one, to its component.
+
+        Args:
+            schema: A schema object.
+
+        Returns:
+            The component schema and its name, or the schema itself and
+            ``None`` when it is not a (nullable) reference.
+        """
+        if isinstance(schema, Mapping):
+            ref = schema.get("$ref")
+            if not isinstance(ref, str):
+                branches = [p for p in schema.get("oneOf", schema.get("anyOf", [])) if isinstance(p, Mapping)]
+                refs = [p for p in branches if isinstance(p.get("$ref"), str)]
+                others = [p for p in branches if "$ref" not in p and p.get("type") != "null"]
+                if len(refs) == 1 and not others:
+                    ref = refs[0]["$ref"]
+                allof = schema.get("allOf")
+                if ref is None and isinstance(allof, list) and len(allof) == 1 and isinstance(allof[0], Mapping):
+                    ref = allof[0].get("$ref")
+            if isinstance(ref, str) and ref.startswith(REF_PREFIX):
+                name = ref.removeprefix(REF_PREFIX)
+                if name in self.schemas:
+                    return self.schemas[name], name
+        return schema, None
+
+    def example(self, schema: Any, depth: int = 0, seen: tuple[str, ...] = (), minimal: bool = False) -> Any:
+        """Build an example value for a schema.
+
+        Uses the schema's own ``example`` / ``examples`` / ``default`` when it
+        has one, the first ``enum`` value, a format's typical value, and
+        otherwise a placeholder of the right type. Arrays get one item and
+        nullable values their non-null form. Below
+        :data:`MAX_EXAMPLE_DEPTH` levels an object keeps only its required
+        fields, so a deep example stays short but still deserializes.
+
+        Args:
+            schema: A schema object.
+            depth: How many objects and arrays enclose this value.
+            seen: Component names being expanded, to stop at a cycle.
+            minimal: Keep only required fields at every level. Request
+                examples use this: optional fields are often alternatives
+                (a callback's ``code`` or its ``error``) that a request
+                must not send together.
+
+        Returns:
+            A JSON-compatible value, or :data:`NO_EXAMPLE` when the schema
+            says nothing about its shape (``{}``) or is binary.
+        """
+        if not isinstance(schema, Mapping):
+            return NO_EXAMPLE
+        target, name = self.resolve(schema)
+        if name is not None:
+            if name in seen:
+                return [] if target.get("type") == "array" or "items" in target else {}
+            return self.example(target, depth, (*seen, name), minimal)
+        for key in ("example", "default"):
+            if key in schema:
+                return schema[key]
+        if isinstance(schema.get("examples"), list) and schema["examples"]:
+            return schema["examples"][0]
+        if "const" in schema:
+            return schema["const"]
+        values = [v for v in schema.get("enum", []) if v is not None] if isinstance(schema.get("enum"), list) else []
+        if values:
+            return values[0]
+        for key in ("oneOf", "anyOf"):
+            branches = schema.get(key)
+            if isinstance(branches, list):
+                for branch in branches:
+                    if isinstance(branch, Mapping) and branch.get("type") != "null":
+                        return self.example(branch, depth, seen, minimal)
+        types = schema.get("type")
+        names = [t for t in types if t != "null"] if isinstance(types, list) else [types] if isinstance(types, str) else []
+        kind = names[0] if names else None
+        if kind is None and ("properties" in schema or "allOf" in schema or "additionalProperties" in schema):
+            kind = "object"
+        if kind is None and "items" in schema:
+            kind = "array"
+        if kind == "object":
+            # Past the depth limit an object keeps only its required fields,
+            # so the example still deserializes; a cycle stops at ``seen``.
+            if depth >= 2 * MAX_EXAMPLE_DEPTH:
+                return {}
+            required_only = minimal or depth >= MAX_EXAMPLE_DEPTH
+            out: dict[str, Any] = {}
+            for part in schema.get("allOf", []) if isinstance(schema.get("allOf"), list) else []:
+                value = self.example(part, depth, seen, minimal)
+                if isinstance(value, dict):
+                    out.update(value)
+            for prop_name, prop, required in self.fields(schema):
+                if required_only and not required:
+                    continue
+                value = self.example(prop, depth + 1, seen, minimal)
+                if value is not NO_EXAMPLE:
+                    out[prop_name] = value
+            extra = schema.get("additionalProperties")
+            if not out and not required_only and isinstance(extra, Mapping):
+                value = self.example(extra, depth + 1, seen, minimal)
+                out["key"] = {} if value is NO_EXAMPLE else value
+            return out
+        if kind == "array":
+            if depth >= MAX_EXAMPLE_DEPTH:
+                return []
+            item = self.example(schema.get("items"), depth + 1, seen, minimal)
+            return [] if item is NO_EXAMPLE else [item]
+        if kind == "string":
+            fmt = schema.get("format")
+            if fmt in ("binary", "byte"):
+                return NO_EXAMPLE
+            return FORMAT_EXAMPLES.get(str(fmt), "string")
+        if kind == "integer":
+            return schema.get("minimum", 0)
+        if kind == "number":
+            return schema.get("minimum", 0)
+        if kind == "boolean":
+            return True
+        return NO_EXAMPLE
+
+    def _credential_flags(self, requirements: Any, write: bool) -> list[str]:
+        """``curl`` flags that send the first credential an operation accepts.
+
+        Args:
+            requirements: The operation's ``security`` list.
+            write: Whether the method changes state; a cookie credential
+                then also sends the ``Origin`` the daemon checks.
+
+        Returns:
+            The flags; none for an open route or when no requirement uses
+            a scheme ``curl`` can send (each alternative is tried in turn).
+        """
+        if not isinstance(requirements, Sequence) or isinstance(requirements, str):
+            return []
+        for requirement in requirements:
+            if not isinstance(requirement, Mapping) or not requirement:
+                return []
+            name = str(next(iter(requirement)))
+            scheme = self.security_schemes.get(name)
+            if not isinstance(scheme, Mapping):
+                continue
+            kind = scheme.get("type")
+            if kind == "http" and str(scheme.get("scheme", "")).lower() == "bearer":
+                return ["-H " + shell_quote(f"Authorization: Bearer <{name}>")]
+            if kind == "apiKey" and scheme.get("in") == "header":
+                header = str(scheme.get("name", ""))
+                # A scheme whose description spells out the header's form,
+                # such as `Authorization: Bookclerk-Upload <token>`, keeps it.
+                shown = re.search(r"`(" + re.escape(header) + r": [^`]+)`", str(scheme.get("description", "")))
+                return ["-H " + shell_quote(shown.group(1) if shown else f"{header}: <{name}>")]
+            if kind == "apiKey" and scheme.get("in") == "cookie":
+                flags = ["-b " + shell_quote(f"{scheme.get('name', '')}=<{name}>")]
+                if write:
+                    flags.append("-H " + shell_quote(f"Origin: {EXAMPLE_ORIGIN}"))
+                return flags
+        return []
+
+    def example_request(self, op: Operation) -> list[str]:
+        """Render an operation's example ``curl`` command.
+
+        Args:
+            op: The operation.
+
+        Returns:
+            Markdown lines: an ``Example request`` heading and a ``console``
+            block. Path parameters stay as ``<name>`` placeholders; required
+            query parameters get example values.
+        """
+        spec = op.spec
+        path = re.sub(r"\{([^}/]+)\}", r"<\1>", op.path)
+        query: list[tuple[str, Any]] = []
+        for param in spec_list(spec.get("parameters", []), "parameters"):
+            if isinstance(param, Mapping) and param.get("in") == "query" and param.get("required"):
+                query.append((str(param.get("name", "")), self.example(param.get("schema", {}), minimal=True)))
+        url = EXAMPLE_ORIGIN + path + ("?" + form_encode(query) if query else "")
+        flags = [] if op.method == "GET" else [f"-X {op.method}"]
+        flags += self._credential_flags(spec.get("security"), op.method not in ("GET", "HEAD", "OPTIONS"))
+        body = spec.get("requestBody")
+        content = body.get("content", {}) if isinstance(body, Mapping) else {}
+        if isinstance(content, Mapping) and content:
+            media, entry = next(iter(content.items()))
+            schema = entry.get("schema", {}) if isinstance(entry, Mapping) else {}
+            value = self.example(schema, minimal=True)
+            if str(media).startswith("application/json"):
+                flags.append("-H " + shell_quote("Content-Type: application/json"))
+                # One line: the site's Copy button joins continuation lines
+                # only after a trailing backslash, not inside quotes.
+                data = json.dumps({} if value is NO_EXAMPLE else value, ensure_ascii=False)
+                flags.append("-d " + shell_quote(data))
+            elif media == "application/x-www-form-urlencoded" and isinstance(value, dict):
+                # The value holds only required fields (see ``minimal``).
+                if value:
+                    flags.append("-d " + shell_quote(form_encode(list(value.items()))))
+            else:
+                flags.append("-H " + shell_quote(f"Content-Type: {media}"))
+                flags.append("--data-binary @file")
+        command = "$ curl " + shell_quote(url)
+        if flags:
+            command += " \\\n" + " \\\n".join(f"    {flag}" for flag in flags)
+        return ["### Example request", "", "```console", command, "```", ""]
+
+    def example_response(self, op: Operation) -> list[str]:
+        """Render an example of an operation's first successful JSON response.
+
+        Args:
+            op: The operation.
+
+        Returns:
+            Markdown lines: an ``Example response`` heading, the status and a
+            ``json`` block; nothing when no 2xx response has a JSON body the
+            schemas describe.
+        """
+        responses = op.spec.get("responses", {})
+        if not isinstance(responses, Mapping):
+            return []
+        for status, response in responses.items():
+            if not str(status).startswith("2") or not isinstance(response, Mapping):
+                continue
+            content = response.get("content", {})
+            entry = content.get("application/json") if isinstance(content, Mapping) else None
+            if not isinstance(entry, Mapping):
+                continue
+            value = self.example(entry.get("schema", {}))
+            if value is NO_EXAMPLE:
+                continue
+            text = json.dumps(value, indent=2, ensure_ascii=False)
+            return ["### Example response", "", f"Status {code(str(status))}:", "", "```json", text, "```", ""]
+        return []
+
     # Pages ---------------------------------------------------------------
 
     def render_all(self) -> dict[str, str]:
@@ -456,7 +777,7 @@ class Document:
         if spec.get("summary"):
             lines += [prose(str(spec["summary"])), ""]
         if spec.get("description"):
-            lines += [prose(str(spec["description"])), ""]
+            lines += [nested(str(spec["description"]), 2), ""]
         access = spec.get("x-bookclerk-access")
         if access:
             lines += [f"**Access:** {' '.join(str(access).split())}", ""]
@@ -494,6 +815,8 @@ class Document:
                 response = response if isinstance(response, Mapping) else {}
                 lines.append(f"| {status} | {cell(str(response.get('description', '')))} | {cell(self._body_summary(response, here))} |")
             lines.append("")
+        lines += self.example_request(op)
+        lines += self.example_response(op)
         return lines
 
     def _security(self, requirements: Any) -> str:
@@ -520,7 +843,8 @@ class Document:
         for media, entry in content.items():
             schema = entry.get("schema", {}) if isinstance(entry, Mapping) else {}
             lines += [f"{code(str(media))}: {self.type_of(schema, here)}", ""]
-            rows = self.field_rows(schema, here) if _inline_object(schema) else []
+            target, _name = self.resolve(schema)
+            rows = self.field_rows(target, here) if _inline_object(target) else []
             if rows:
                 lines += ["| Field | Type | Required | Description |", "| --- | --- | --- | --- |", *rows, ""]
         return lines
@@ -579,6 +903,50 @@ def spec_list(value: Any, where: str) -> list[Any]:
     if not isinstance(value, list):
         raise OpenApiError(f"{where}: expected an array")
     return value
+
+
+class _NoExample:
+    """Marks a schema an example cannot be built for (untyped or binary)."""
+
+
+#: The one :class:`_NoExample` value.
+NO_EXAMPLE = _NoExample()
+
+
+def form_encode(pairs: Sequence[tuple[str, Any]]) -> str:
+    """Encode example values as a query string or form body.
+
+    Args:
+        pairs: Names and example values; an array repeats its name once per
+            item, an object is sent as JSON, a value with no example as
+            empty.
+
+    Returns:
+        ``name=value`` pairs joined by ``&``, percent-encoded.
+    """
+    flat: list[tuple[str, str]] = []
+    for name, value in pairs:
+        for item in value if isinstance(value, list) else [value]:
+            if item is NO_EXAMPLE:
+                text = ""
+            elif isinstance(item, str):
+                text = item
+            else:
+                text = json.dumps(item, ensure_ascii=False)
+            flat.append((name, text))
+    return urlencode(flat, quote_via=quote)
+
+
+def shell_quote(text: str) -> str:
+    """Quote text for a POSIX shell in single quotes.
+
+    Args:
+        text: Any text.
+
+    Returns:
+        The text in single quotes, with each ``'`` written as ``'\\''``.
+    """
+    return "'" + text.replace("'", "'\\''") + "'"
 
 
 def _with_path_parameters(op: JsonObject, item: JsonObject, where: str) -> JsonObject:

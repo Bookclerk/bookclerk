@@ -1,0 +1,19 @@
+# Statuses
+
+## `PUT /api/s`
+
+### Responses
+
+| Status | Description | Body |
+| --- | --- | --- |
+| 200 | ok | none |
+| 4XX | client | none |
+| default | other | none |
+| 99999999999 | long | none |
+| **201** | bold | none |
+| `302` | code | none |
+| <b>500</b> | html | none |
+
+| Code | Status |
+| --- | --- |
+| 404 | not first column |

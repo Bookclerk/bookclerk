@@ -500,7 +500,7 @@ test("the docs shell has every hole and marker the Worker fills, once", () => {
     const api = shell.nav.find((g) => g.title === "API reference");
     assert.deepEqual(
       api?.pages.map((p) => p.key),
-      ["api/README", "api/typescript/README", "api/python/README", "api/rust/bookclerk_plugin_sdk/index", "api/rust/README"],
+      ["api/README", "api/typescript/README", "api/python/README", "api/rust/bookclerk_plugin_sdk/index", "api/web/README", "api/rust/README"],
     );
   } finally {
     site.done();

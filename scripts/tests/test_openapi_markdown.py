@@ -8,6 +8,7 @@ heading that exists.
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 import sys
@@ -157,6 +158,124 @@ class RenderTest(unittest.TestCase):
         self.assertIn("| 201 | Added. | binary (`image/png`) |", page)
         self.assertNotIn("Optional.", page.split("## `POST /books`")[1])
 
+    def test_example_request(self) -> None:
+        get = self.pages["books.md"].split("## `GET /books/{id}`")[1].split("\n## ")[0]
+        self.assertIn(
+            "### Example request\n\n```console\n$ curl 'http://127.0.0.1:8787/books/<id>' \\\n    -H 'Authorization: Bearer <token>'\n```",
+            get,
+        )
+        post = self.pages["books.md"].split("## `POST /books`")[1]
+        # A request example sends only required fields (optional ones may be
+        # alternatives), with the JSON on one line so the Copy button keeps it.
+        self.assertIn("    -X POST \\\n    -H 'Content-Type: application/json' \\\n    -d '{\"title\": \"string\"}'", post)
+        # An open route sends no credential.
+        shelf = self.pages["books.md"].split("## `GET /shelves/{shelf}`")[1]
+        self.assertIn("$ curl 'http://127.0.0.1:8787/shelves/<shelf>'\n```", shelf)
+
+    def test_example_response(self) -> None:
+        get = self.pages["books.md"].split("## `GET /books/{id}`")[1].split("## `DELETE")[0]
+        self.assertIn("### Example response\n\nStatus `200`:\n\n```json\n", get)
+        body = json.loads(get.split("```json\n")[1].split("\n```")[0])
+        self.assertEqual(body, {"id": 0, "status": "new", "tags": ["string"], "extra": {"key": "new"}, "count": 0})
+        # Untyped and binary bodies get no example.
+        self.assertNotIn("Example response", self.pages["other.md"])
+        self.assertNotIn("Example response", self.pages["books.md"].split("## `POST /books`")[1])
+
+    def test_examples_follow_references_and_stop_at_cycles(self) -> None:
+        doc = om.Document(
+            {
+                **DOCUMENT,
+                "components": {
+                    "schemas": {
+                        "Node": {"type": "object", "properties": {"next": {"oneOf": [{"$ref": "#/components/schemas/Node"}, {"type": "null"}]}, "at": {"type": "string", "format": "date-time"}}}
+                    }
+                },
+            }
+        )
+        self.assertEqual(doc.example({"$ref": "#/components/schemas/Node"}), {"next": {}, "at": "2026-01-01T12:00:00Z"})
+        self.assertIs(doc.example({}), om.NO_EXAMPLE)
+        # Deep objects keep their required fields, not an empty placeholder.
+        deep: dict = {"type": "object", "required": ["id"], "properties": {"id": {"type": "string"}, "note": {"type": "string"}}}
+        for _ in range(om.MAX_EXAMPLE_DEPTH):
+            deep = {"type": "object", "properties": {"inner": deep}}
+        leaf = doc.example(deep)
+        for _ in range(om.MAX_EXAMPLE_DEPTH):
+            leaf = leaf["inner"]
+        self.assertEqual(leaf, {"id": "string"})
+        trees = om.Document({**DOCUMENT, "components": {"schemas": {"Tree": {"type": "array", "items": {"$ref": "#/components/schemas/Tree"}}}}})
+        self.assertEqual(trees.example({"$ref": "#/components/schemas/Tree"}), [[]])
+        self.assertEqual(doc.example({"type": "string", "example": "x", "enum": ["y"]}), "x")
+
+    def test_credentials_and_query_strings(self) -> None:
+        doc = om.Document(
+            {
+                **DOCUMENT,
+                "paths": {
+                    "/up": {
+                        "put": {
+                            "security": [{"oauth": []}, {"upload": []}],
+                            "parameters": [
+                                {"name": "ids", "in": "query", "required": True, "schema": {"type": "array", "items": {"type": "string", "example": "a b&c"}}},
+                                {"name": "all", "in": "query", "required": True, "schema": {"type": "boolean"}},
+                            ],
+                            "responses": {"204": {"description": "Done."}},
+                        },
+                        "post": {"security": [{"cookie": []}], "responses": {"204": {"description": "Done."}}},
+                    },
+                    "/token": {
+                        "post": {
+                            "requestBody": {
+                                "content": {
+                                    "application/x-www-form-urlencoded": {
+                                        "schema": {
+                                            "type": "object",
+                                            "required": ["grant_type"],
+                                            "properties": {"grant_type": {"type": "string", "example": "a/b c"}, "code": {"type": "string"}},
+                                        }
+                                    }
+                                }
+                            },
+                            "responses": {"200": {"description": "Token."}},
+                        }
+                    },
+                    "/callback": {
+                        "post": {
+                            "requestBody": {
+                                "content": {
+                                    "application/x-www-form-urlencoded": {
+                                        "schema": {"type": "object", "properties": {"code": {"type": "string"}, "error": {"type": "string"}}}
+                                    }
+                                }
+                            },
+                            "responses": {"303": {"description": "Redirect."}},
+                        }
+                    },
+                },
+                "components": {
+                    "securitySchemes": {
+                        **DOCUMENT["components"]["securitySchemes"],
+                        "oauth": {"type": "oauth2", "flows": {}},
+                        "upload": {"type": "apiKey", "in": "header", "name": "Authorization", "description": "As `Authorization: Upload <token>`."},
+                    }
+                },
+            }
+        )
+        page = doc.render_all()["other.md"]
+        put = page.split("## `PUT /up`")[1].split("\n## ")[0]
+        # Each alternative is tried in turn; the description gives the header's form.
+        self.assertIn("-H 'Authorization: Upload <token>'", put)
+        self.assertIn("/up?ids=a%20b%26c&all=true'", put)
+        post = page.split("## `POST /up`")[1].split("\n## ")[0]
+        self.assertIn("-b 'sid=<cookie>' \\\n    -H 'Origin: http://127.0.0.1:8787'", post)
+        token = page.split("## `POST /token`")[1]
+        self.assertIn("-d 'grant_type=a%2Fb%20c'", token.split("\n## ")[0])
+        # A form with no required field guesses none of its alternatives.
+        callback = page.split("## `POST /callback`")[1].split("\n## ")[0]
+        self.assertNotIn("-d ", callback)
+
+    def test_shell_quote(self) -> None:
+        self.assertEqual(om.shell_quote("it's"), "'it'\\''s'")
+
     def test_unknown_schemas_are_any_json(self) -> None:
         self.assertIn("any JSON (`application/json`)", self.pages["other.md"])
 
@@ -189,6 +308,20 @@ class HelpersTest(unittest.TestCase):
 
     def test_cell_folds_lines_and_escapes_pipes(self) -> None:
         self.assertEqual(om.cell("a |\n\n b"), "a \\| b")
+
+    def test_nested_demotes_headings_outside_fences(self) -> None:
+        text = "Intro.\n\n# Errors\n\n```\n# comment\n```\n\n##### Deep\n#hashtag"
+        self.assertEqual(
+            om.nested(text, 2),
+            "Intro.\n\n### Errors\n\n```\n# comment\n```\n\n###### Deep\n#hashtag",
+        )
+        self.assertEqual(
+            om.nested("Errors\n------\n\nTitle\n=====\n\n````\n```\n# kept\n````\n# After\n\n- item\n---", 2),
+            "#### Errors\n\n### Title\n\n````\n```\n# kept\n````\n### After\n\n- item\n---",
+        )
+        # A setext underline takes the whole paragraph, and never an indented code line.
+        self.assertEqual(om.nested("Para one\npara two\n===", 2), "### Para one para two")
+        self.assertEqual(om.nested("Intro\n\n    indented code\n---", 2), "Intro\n\n    indented code\n---")
 
     def test_description_joins_constraints(self) -> None:
         document = om.Document(DOCUMENT)
@@ -235,6 +368,16 @@ class DaemonDocumentTest(unittest.TestCase):
         routes = sum(1 for item in spec["paths"].values() for method in om.METHODS if method in item)
         self.assertEqual(operations, routes)
         self.assertEqual(slug("`GET /api/openapi.json`"), "get-apiopenapijson")
+
+    def test_route_pages_keep_heading_order(self) -> None:
+        spec = json.loads((ROOT / "crates" / "bookclerkd" / "openapi.json").read_text(encoding="utf-8"))
+        for name, text in om.Document(spec).render_all().items():
+            levels = [len(m) for m in re.findall(r"^(#{1,6}) ", re.sub(r"```.*?```", "", text, flags=re.DOTALL), re.MULTILINE)]
+            with self.subTest(page=name):
+                self.assertEqual(levels[:1], [1])
+                self.assertNotIn(1, levels[1:])
+                for before, after in itertools.pairwise(levels):
+                    self.assertLessEqual(after, before + 1)
 
 
 if __name__ == "__main__":
