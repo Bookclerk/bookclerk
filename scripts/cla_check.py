@@ -119,6 +119,10 @@ MAX_SIGNATURE_BYTES = 1024 * 1024
 #: Times a signature write is retried after another run changed the file.
 SIGNATURE_WRITE_ATTEMPTS = 3
 
+#: Times a check decides and posts again because the signature file changed
+#: while it ran.
+STATUS_ATTEMPTS = 3
+
 #: The version of ``CLA.md`` a signature accepts, recorded with each entry.
 #: Bump it together with the version line in ``CLA.md``.
 CLA_VERSION = "1.0"
@@ -1085,15 +1089,26 @@ def check_pull(event: Event, api: GitHub, number: int, cla_url: str, run_url: st
         comments.append(event.comment)
     for comment in signing_comments(comments, verdict):
         book = api.record(comment, event.repo_id, pull.number)
-    verdict = evaluate(pull, commits, book)
-    blocked_by = blocking_pull(api, pull, book) if verdict.passed else None
-    passed = verdict.passed and blocked_by is None
-    api.upsert_comment(pull.number, comments, render_comment(verdict, cla_url, blocked_by), create=not passed)
-    if blocked_by is not None:
-        description = f"CLA: #{blocked_by}, which shares this commit, still needs signatures."
-    else:
-        description = status_description(verdict)
-    api.set_status(pull.head_sha, "success" if passed else "failure", description, run_url)
+    for _ in range(STATUS_ATTEMPTS):
+        verdict = evaluate(pull, commits, book)
+        blocked_by = blocking_pull(api, pull, book) if verdict.passed else None
+        passed = verdict.passed and blocked_by is None
+        api.upsert_comment(pull.number, comments, render_comment(verdict, cla_url, blocked_by), create=not passed)
+        if blocked_by is not None:
+            description = f"CLA: #{blocked_by}, which shares this commit, still needs signatures."
+        else:
+            description = status_description(verdict)
+        api.set_status(pull.head_sha, "success" if passed else "failure", description, run_url)
+        # A run for a signature comment (another concurrency group) may have
+        # recorded a signature after this run read the file, and posted its
+        # status before this one. Reading the file again after posting means
+        # that, of two such runs, the one that posts last has seen every
+        # signature recorded before it posted.
+        latest, _ = api.signatures()
+        if latest.signed_ids == book.signed_ids:
+            return
+        book = latest
+        comments = api.comments(pull.number)
 
 
 def blocking_pull(api: GitHub, pull: PullRequest, book: SignatureBook) -> int | None:

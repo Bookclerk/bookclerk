@@ -582,6 +582,9 @@ class FakeGitHub:
         self.statuses: list[tuple[str, dict]] = []
         self.conflicts = 0
         self.requests: list[tuple[str, str]] = []
+        #: Runs once, just before the next status is recorded, to stand in
+        #: for a concurrent run.
+        self.before_status = None
 
     def pull(self) -> dict:
         head = {"sha": self.head, "label": "alice:feature", "repo": {"id": 700}}
@@ -695,6 +698,9 @@ class FakeGitHub:
                     c["body"] = body["body"]
             return 200, b"{}"
         if method == "POST" and route.startswith("statuses/"):
+            if self.before_status is not None:
+                hook, self.before_status = self.before_status, None
+                hook()
             self.statuses.append((route.rsplit("/", 1)[1], body))
             return 201, b"{}"
         return 404, b"{}"
@@ -787,6 +793,21 @@ class EndToEndTests(unittest.TestCase):
         fake.others[8]["state"] = "closed"
         drive(fake, pr_event_for(fake, 8))
         self.assertEqual(fake.last_status(), "success")
+
+    def test_a_signature_recorded_by_a_concurrent_run_is_not_overwritten(self) -> None:
+        # A trigger run reads the file before alice's comment run records her
+        # signature and posts success; the trigger run's stale failure lands
+        # after it, and its re-read must put success back.
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+
+        def comment_run() -> None:
+            drive(fake, comment_event(ALICE, cla.SIGN_PHRASE))
+
+        fake.before_status = comment_run
+        drive(fake, run_event(fake))
+        self.assertEqual([b["state"] for _, b in fake.statuses], ["success", "failure", "success"])
+        self.assertEqual(len(fake.comments), 1)
+        self.assertNotIn("@alice", fake.comments[0]["body"])
 
     def test_a_stale_run_re_decides_its_old_head(self) -> None:
         # #7 was pushed to a new head before its run started; the old head,

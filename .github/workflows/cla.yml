@@ -61,8 +61,11 @@ jobs:
     runs-on: ubuntu-latest
     # Job-level, so a run whose `if` skips it (an ordinary comment) never
     # replaces a pending run in the queue. Runs for one pull request's
-    # comments, or for one head branch, wait for each other; signature
-    # writes are also safe across groups (they retry on a conflict).
+    # comments, or for one head branch, wait for each other. Across the two
+    # groups, signature writes retry on a conflict, and each run reads the
+    # signatures again after posting its status (and re-decides if they
+    # changed), so a run that read them before a concurrent signature cannot
+    # leave its stale status last.
     concurrency:
       group: cla-${{ github.event_name }}-${{ github.event.issue.number || github.event.workflow_run.head_repository.id || github.ref }}-${{ github.event.workflow_run.head_branch }}
       cancel-in-progress: false
