@@ -1,0 +1,18 @@
+{
+ "action": "completed",
+ "repository": {
+  "id": 555
+ },
+ "workflow_run": {
+  "event": "pull_request",
+  "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_branch": "ünïcode/br anch#1",
+  "head_repository": {
+   "id": 700,
+   "owner": {
+    "login": "alice"
+   }
+  },
+  "conclusion": "success"
+ }
+}
