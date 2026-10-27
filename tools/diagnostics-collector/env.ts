@@ -16,8 +16,6 @@ export interface Env {
   B2_ENDPOINT?: string;
   /** Key the ingest Action sends on every report and triage route (secret). */
   REPORT_API_KEY?: string;
-  /** Salt for the hashed client IP; without it no hash is kept (secret). */
-  CLIENT_IP_HASH_SALT?: string;
   /** Token for higher GitHub API rate limits (secret). */
   GITHUB_TOKEN?: string;
   /** The automation App's OAuth client ID (secret). */

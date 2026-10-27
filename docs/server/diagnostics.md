@@ -474,8 +474,35 @@ and `AUTOMATION_APP_PRIVATE_KEY` (GitHub's PKCS#1 key file as downloaded).
 
 ## Redaction & privacy
 
-Exact-value redaction, upload abort, Worker heuristics, optional `CLIENT_IP_HASH_SALT`.
+Exact-value redaction, upload abort, Worker heuristics. The collector keeps
+no client IP address or hash of one; each report stores the uploader's
+`User-Agent` (at most 200 characters).
 Uploads include `os`, `arch`, Linux/macOS distro string, and rustc channel/release.
+
+**Retention.** Reports are kept for 180 days (the website's privacy page says
+6 months). B2 enforces it with a lifecycle rule on the bucket, set once by an
+operator, because the Worker's B2 key cannot change bucket settings:
+
+| Field | Value |
+| --- | --- |
+| File name prefix | `diagnostics/` |
+| Days from uploading to hiding | `180` |
+| Days from hiding to deleting | `1` |
+
+In the Backblaze web console: **Buckets** → the bucket → **Lifecycle
+Settings** → **Use custom lifecycle rules**, add the rule above and save.
+With the B2 command-line tool:
+
+```bash
+b2 bucket update --lifecycle-rule \
+  '{"fileNamePrefix": "diagnostics/", "daysFromUploadingToHiding": 180, "daysFromHidingToDeleting": 1}' \
+  <bucket-name>
+```
+
+The dashboard's index row for a report (version, platform, trigger, level
+counts and the error signature, no log text) stays after the report is
+deleted, so counts and issue links keep working; opening a deleted report
+shows that it could not be loaded.
 
 Emails in remote uploads are **partially** masked (not fully `[REDACTED]`):
 

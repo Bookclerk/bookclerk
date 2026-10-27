@@ -32,6 +32,8 @@ Consent banners are for cookies that track or profile you. Cookies that a servic
 | `__Host-bc_session` | Diagnostics dashboard | Keeps a project member signed in. | 8 hours, or until sign-out |
 
 None of them is used for analytics or advertising, and none is readable by other sites. This website itself sets none. Because every cookie is strictly needed for the service you chose to use, we do not show a consent banner.
+
+Cloudflare may also set its own cookies on any of these sites when it needs to protect them from attacks or automated traffic, for example to remember that your browser passed a security check. Those are used only for that protection.
 {{#demo}}
 ## The live demo
 
@@ -50,14 +52,14 @@ The Bookclerk app runs on your computer and talks only to the stores and service
 With reports turned on, when Bookclerk crashes, a command or job fails, or many errors or warnings happen in a short time, it sends a report to our collector. A report holds:
 
 - the Bookclerk version, your operating system, its processor type and Linux distribution, and the compiler version;
-- the last few hundred lines of Bookclerk's own log, which can mention things like book titles, store names or folder paths;
+- the last few hundred lines of Bookclerk's own log, such as which store or job was running and what went wrong;
 - the time it was made, and the name and version of the program that sent it.
 
-Before a report leaves your computer, Bookclerk removes passwords, sign-in tokens and keys it knows about, and anything that looks like one. The collector refuses reports that still look like they contain a secret, and it does not store the IP address a report came from.
+Before a report leaves your computer, Bookclerk removes passwords, sign-in tokens and keys it knows about, and anything that looks like one. It also hides book titles, folder paths and account IDs, and partly masks email addresses. The collector refuses reports that still look like they contain a secret, and it does not store the IP address a report came from.
 
 Reports are stored with [Backblaze B2](https://www.backblaze.com/company/policy/privacy), a storage service, and read by project members to find and fix bugs. Once a day a job on GitHub Actions collects new reports and asks an AI model on Cloudflare (Workers AI) to group them by problem. For each problem we open an issue on our public GitHub tracker. The issue describes the problem and may quote short parts of the log, with links and anything that looks like a secret removed, and it lists the reports' IDs. The full reports are never published.
 
-We keep reports while they help us fix the problems they show. They are not yet deleted automatically after a set time; we delete them when they are no longer useful, or sooner when you ask.
+Reports are deleted automatically 6 months after they arrive, or sooner when you ask. A one-line summary of each (the version, system and type of error, without the log) stays in the dashboard's counts.
 
 You can turn reports off at any time. To have a report you sent deleted, email us the time it was sent and your Bookclerk version, or its report ID if you have it.
 
