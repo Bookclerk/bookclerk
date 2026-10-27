@@ -631,9 +631,9 @@ class Document:
             value = self.example(schema, minimal=True)
             if str(media).startswith("application/json"):
                 flags.append("-H " + shell_quote("Content-Type: application/json"))
+                # One line: the site's Copy button joins continuation lines
+                # only after a trailing backslash, not inside quotes.
                 data = json.dumps({} if value is NO_EXAMPLE else value, ensure_ascii=False)
-                if len(data) > 40:
-                    data = json.dumps(value, indent=2, ensure_ascii=False)
                 flags.append("-d " + shell_quote(data))
             elif media == "application/x-www-form-urlencoded" and isinstance(value, dict):
                 # The value holds only required fields (see ``minimal``).

@@ -165,7 +165,8 @@ class RenderTest(unittest.TestCase):
             get,
         )
         post = self.pages["books.md"].split("## `POST /books`")[1]
-        # A request example sends only required fields; optional ones may be alternatives.
+        # A request example sends only required fields (optional ones may be
+        # alternatives), with the JSON on one line so the Copy button keeps it.
         self.assertIn("    -X POST \\\n    -H 'Content-Type: application/json' \\\n    -d '{\"title\": \"string\"}'", post)
         # An open route sends no credential.
         shelf = self.pages["books.md"].split("## `GET /shelves/{shelf}`")[1]
