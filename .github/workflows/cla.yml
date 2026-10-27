@@ -6,7 +6,9 @@
 # - A contributor accepts by commenting the exact sentence in
 #   `custom-pr-sign-comment` on their pull request. The action records the
 #   signature in `signatures/cla.json` on the `cla-signatures` branch (a
-#   GitHub-signed API commit), so main is never written.
+#   GitHub-signed API commit), so main is never written. The branch starts
+#   from main's empty `signatures/cla.json`: the pinned action cannot create
+#   a missing file (it compares Octokit's numeric 404 with the string "404").
 # - `recheck` re-runs the check after a signature or allowlist change.
 # - Runs on `pull_request_target` so fork pull requests get a token that can
 #   comment and record signatures. It never checks out or runs pull request

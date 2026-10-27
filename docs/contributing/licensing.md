@@ -72,14 +72,15 @@ The `CLA` workflow (`.github/workflows/cla.yml`) runs the CLA Assistant Lite
 action on every pull request and on signature comments. It reads pull
 request metadata only and never checks out pull request code.
 
-Signatures live in `signatures/cla.json` on the `cla-signatures` branch, not
-on `main`, so recording one needs no pull request and no bypass of the main
-branch rules. The maintainers and the project's bots are on the allowlist.
+Signatures are recorded in `signatures/cla.json` on the `cla-signatures`
+branch, so recording one needs no pull request and no bypass of the main
+branch rules. The copy on `main` stays empty and only seeds the branch. The maintainers and the project's bots are on the allowlist.
 
 Setup, once, by a repository administrator:
 
-1. Create the `cla-signatures` branch from `main`. The action creates the
-   signature file on the first signature.
+1. Create the `cla-signatures` branch from `main`. It starts with `main`'s
+   empty `signatures/cla.json`, which the action needs: the pinned version
+   cannot create a missing file and fails the check instead.
 2. Make sure no ruleset blocks the `github-actions[bot]` from pushing to
    `cla-signatures`.
 3. After the check has run on a pull request, add **CLA** to the required

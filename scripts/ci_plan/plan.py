@@ -143,6 +143,7 @@ DOC_FILES = frozenset(
         "README.md",
         "TRADEMARK.md",
         "config/config.example.toml",
+        "signatures/cla.json",
     }
 )
 # Tests and fixtures the plan job runs on every event, before any check.
@@ -166,6 +167,7 @@ KNOWN_TOP_LEVEL = frozenset(
         "packages",
         "packaging",
         "scripts",
+        "signatures",
         "third_party",
         "tools",
         "ui",
