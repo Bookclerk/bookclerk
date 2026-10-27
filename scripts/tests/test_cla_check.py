@@ -428,17 +428,44 @@ class MutationFuzzTests(unittest.TestCase):
         pages = [raw for kind, _, raw in corpus() if kind == "commits"]
         pull = cla.parse_pull_request(cla._load_json(load("pull__basic")))
         book = cla.parse_signatures(load("signatures__two"))
+        # Co-authors come from GraphQL, so the commit page parser never sets
+        # them; draw them (and the assistant flag) at random instead.
+        pool = [
+            cla.parse_account(a)
+            for a in (ALICE, BOB, DEPENDABOT, account("carol", 103), account("evil[bot]", 104, "Bot"))
+        ]
+        assistant = cla.parse_account(account("assistant", 105))
+        allowed_bots = {"dependabot[bot]", "bookclerk[bot]", "github-actions[bot]"}
         rng = random.Random(491)
         checked = 0
         for _ in range(self.ITERATIONS):
             try:
-                commits = cla.parse_commit_page(mutate(rng, rng.choice(pages)))
+                parsed = cla.parse_commit_page(mutate(rng, rng.choice(pages)))
             except cla.ClaInputError:
                 continue
+            commits = []
+            for c in parsed:
+                # An assistant-authored commit credits the (unsigned) assistant
+                # account, so a wrongly required assistant shows up as unsigned.
+                by_assistant = c.author is not None and rng.random() < 0.2
+                commits.append(
+                    cla.Commit(
+                        sha=c.sha,
+                        author=assistant if by_assistant else c.author,
+                        coauthors=tuple(rng.sample(pool, rng.randint(0, 3))),
+                        assistant_author=by_assistant,
+                    )
+                )
             checked += 1
             verdict = cla.evaluate(pull, commits, book)
-            linked = [pull.author] + [a for c in commits for a in (c.author, *c.coauthors) if a is not None]
-            required = {a.id for a in linked if not cla.is_exempt(a)}
+            linked = [pull.author] + [
+                a
+                for c in commits
+                for a in ((None if c.assistant_author else c.author), *c.coauthors)
+                if a is not None
+            ]
+            # Independent of cla.is_exempt: only allowlisted Bot accounts skip.
+            required = {a.id for a in linked if not (a.type.value == "Bot" and a.login in allowed_bots)}
             self.assertEqual({a.id for a in verdict.unsigned}, required - book.signed_ids)
             self.assertEqual(set(verdict.unlinked), {c.sha for c in commits if c.author is None})
             self.assertEqual(verdict.passed, not verdict.unsigned and not verdict.unlinked)

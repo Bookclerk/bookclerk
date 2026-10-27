@@ -93,8 +93,11 @@ Who must sign:
   because nobody can sign for it. Add the email to your account, or amend
   the commit with an email it already has.
 - A co-author whose email belongs to no account does not fail the check.
-  The pull request author's signature covers what they submit, and section
-  4 of the CLA asks them to name work that is not their own.
+  The pull request author's signature covers only rights the author can
+  grant. Section 4 of the CLA asks them to name work that is not their own,
+  but naming it is not permission. Before merging such work, a maintainer
+  checks that the co-author's rights were granted, or keeps the
+  third-party license the work came under.
 - A signature comment counts only from someone the pull request needs a
   signature from. Every run reads the whole comment history, so a
   signature posted while another run was busy still counts.
