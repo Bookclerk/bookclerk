@@ -636,15 +636,16 @@ export function renderDoc(
 ): RenderedDoc {
   const md = renderer(key, keys, blobBase, (k) => docUrl(k, base));
   const tokens = md.parse(source, {});
-  // A Web API page lists its operations only; their subsections
-  // (Parameters, Responses, …) repeat on every one.
-  const operationsOnly = isApiOperationsPage(key);
+  // A Web API page lists its operations, not their subsections
+  // (Parameters, Responses, …), which repeat on every one.
+  let inOperation = false;
   const headings = tokens.flatMap((t, i): DocHeading[] => {
     if (t.type !== "heading_open" || (t.tag !== "h2" && t.tag !== "h3")) return [];
     const id = String(t.attrGet("id") ?? "");
     const op = operationMeta(t);
+    if (t.tag === "h2") inOperation = op !== null;
     if (op !== null) return [{ level: 2, id, text: op.path, method: op.method }];
-    if (operationsOnly && t.tag === "h3") return [];
+    if (inOperation) return [];
     return [{ level: t.tag === "h2" ? 2 : 3, id, text: inlineText(tokens[i + 1]) }];
   });
   return {
@@ -690,20 +691,22 @@ export function jsonLd(data: object | null): string {
  * @param base - URL prefix of the docs version, ending in `/`.
  * @param doc - The doc, with the date it last changed when known
  *   (`dateModified`).
- * @param parent - The sidebar page the doc sits under (see navParent).
+ * @param trail - The page's breadcrumb trail (see crumbTrail); Docs alone
+ *   when not given.
  * @returns A JSON-LD `@graph` with the TechArticle and its
- *   breadcrumb trail (Docs › parent, when there is one › title).
+ *   breadcrumb trail, the same as the page shows (the docs home has Docs only).
  */
 export function docJsonLd(
   origin: string,
   base: string,
   doc: { key: string; title: string; description: string; updated?: IsoDate | null },
-  parent: NavParent | null = null,
+  trail: readonly Crumb[] = [{ title: "Docs", key: null }, { title: doc.title, key: doc.key }],
 ): object {
   const url = origin + docUrl(doc.key, base);
-  const crumbs = [{ name: "Docs", item: origin + base }];
-  if (parent !== null) crumbs.push({ name: parent.title, item: origin + docUrl(parent.key, base) });
-  if (doc.key !== "README") crumbs.push({ name: doc.title, item: url });
+  const crumbs = (doc.key === "README" ? trail.slice(0, 1) : trail).map((c) => ({
+    name: c.title,
+    item: origin + (c.key === null ? base : docUrl(c.key, base)),
+  }));
   return {
     "@context": "https://schema.org",
     "@graph": [
@@ -777,17 +780,18 @@ export interface NavNested {
 }
 
 /**
- * The sidebar list for a Web API page: the page itself, marked current,
- * with its operations under it, shown beneath the Web API entry.
+ * The sidebar list for a Web API page other than its index: the page
+ * itself, marked current, with its operations (if any) under it, shown
+ * beneath the Web API entry.
  *
  * @param key - The page's key.
  * @param title - Its title.
  * @param headings - Its headings (see renderDoc).
  * @param base - URL prefix of the docs version.
- * @returns The list, or null for a page that is not a Web API operations page.
+ * @returns The list, or null for a page outside `api/web/` and for its index.
  */
 export function apiNavNested(key: string, title: string, headings: readonly DocHeading[], base: string): NavNested | null {
-  if (!isApiOperationsPage(key)) return null;
+  if (!key.startsWith("api/web/") || key === "api/web/README") return null;
   const ops = headings
     .filter((h) => h.method !== undefined)
     .map((h) => `<li><a class="nav-op" href="#${escapeHtml(h.id)}">${headingLabel(h)}</a></li>`)
@@ -856,26 +860,46 @@ export function navParent(nav: readonly NavGroup[], key: string): NavParent | nu
   return page === undefined ? null : { key: page.key, title: page.title };
 }
 
+/** One step of a breadcrumb trail. */
+export interface Crumb {
+  /** The text shown. */
+  title: string;
+  /** Key of the doc it links to, or null for the docs home. */
+  key: string | null;
+}
+
+/**
+ * Works out a doc's breadcrumb trail, which the page shows and its JSON-LD
+ * repeats: Docs, the sidebar group (linking to the group's first page), the
+ * sidebar page it sits under (see navParent), then the doc itself.
+ *
+ * @param nav - The sidebar.
+ * @param key - The doc's key.
+ * @param title - The doc's title.
+ * @returns The crumbs, Docs first and the doc last.
+ */
+export function crumbTrail(nav: readonly NavGroup[], key: string, title: string): Crumb[] {
+  const parent = navParent(nav, key);
+  const place = navPlace(nav, parent?.key ?? key);
+  const trail: Crumb[] = [{ title: "Docs", key: null }];
+  if (place.group !== null && place.groupFirst !== null) trail.push({ title: place.group, key: place.groupFirst });
+  if (parent !== null) trail.push(parent);
+  trail.push({ title, key });
+  return trail;
+}
+
 /**
  * Renders a doc's breadcrumb trail.
  *
- * @param place - Where the doc sits in the sidebar (see navPlace); for a
- *   page under a parent, where the parent sits.
- * @param title - The doc's title.
+ * @param trail - The crumbs (see crumbTrail); the last is the doc itself.
  * @param base - URL prefix of the docs version.
- * @param parent - The sidebar page the doc sits under (see navParent).
- * @param key - The doc's key, for the last crumb's link.
- * @returns A `nav` with Docs, the sidebar group (when there is one; it links
- *   to the group's first page), the parent (when there is one) and the page
- *   itself, each a link.
+ * @returns A `nav` with each crumb a link, the last marked as the current page.
  */
-export function crumbsHtml(place: NavPlace, title: string, base: string, parent: NavParent | null, key: string): string {
-  const link = (href: string, text: string, current = false): string =>
-    `<li><a href="${escapeHtml(href)}"${current ? ' aria-current="page"' : ""}>${escapeHtml(text)}</a></li>`;
-  const items = [link(base, "Docs")];
-  if (place.group !== null && place.groupFirst !== null) items.push(link(docUrl(place.groupFirst, base), place.group));
-  if (parent !== null) items.push(link(docUrl(parent.key, base), parent.title));
-  items.push(link(docUrl(key, base), title, true));
+export function crumbsHtml(trail: readonly Crumb[], base: string): string {
+  const items = trail.map((c, i) => {
+    const current = i === trail.length - 1 ? ' aria-current="page"' : "";
+    return `<li><a href="${escapeHtml(c.key === null ? base : docUrl(c.key, base))}"${current}>${escapeHtml(c.title)}</a></li>`;
+  });
   return `<nav class="crumbs" aria-label="Breadcrumb"><ol>${items.join("")}</ol></nav>`;
 }
 
@@ -1093,7 +1117,7 @@ export function renderDocPage(
   const updated = at.updated ? `<span class="doc-updated">Last updated <time datetime="${at.updated}">${formatDate(at.updated)}</time></span>` : "";
   const meta = `<p class="doc-meta">${note}${updated}<a href="${escapeHtml(markdownUrl)}" type="text/markdown">View as Markdown</a></p>`;
   const place = navPlace(shell.nav, key);
-  const parent = navParent(shell.nav, key);
+  const trail = crumbTrail(shell.nav, key, doc.title);
   const versions = versionsHtml(shell.versions, at.ref, key);
   const nav = homeLink(at.base, key === "README") + navHtml(shell.nav, key, at.base, apiNavNested(key, doc.title, doc.headings, at.base));
   const html = fillShell(
@@ -1106,11 +1130,11 @@ export function renderDocPage(
       docsBase: at.base,
     },
     {
-      jsonld: jsonLd(docJsonLd(shell.origin, at.base, { key, title: doc.title, description: doc.description, updated: at.updated ?? null }, parent)),
+      jsonld: jsonLd(docJsonLd(shell.origin, at.base, { key, title: doc.title, description: doc.description, updated: at.updated ?? null }, trail)),
       "doc-menus": mobileMenusHtml(versions + nav, doc.headings),
       "doc-versions": versions,
       "doc-nav": nav,
-      "doc-crumbs": crumbsHtml(parent === null ? place : navPlace(shell.nav, parent.key), doc.title, at.base, parent, key),
+      "doc-crumbs": crumbsHtml(trail, at.base),
       "doc-body": afterTitle(doc.html, meta),
       "doc-pager": pagerHtml(place, at.base),
       "doc-footer": `<p class="doc-source faint">${sourceLink} · <a href="${escapeHtml(markdownUrl)}" type="text/markdown">View as Markdown</a></p>`,

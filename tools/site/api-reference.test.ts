@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { isApiOperationsPage, statusClass } from "./api-reference.ts";
-import { apiNavNested, crumbsHtml, docJsonLd, navHtml, navParent, navPlace, renderDoc, tocListHtml } from "./render.ts";
+import { apiNavNested, crumbsHtml, crumbTrail, docJsonLd, navHtml, navParent, renderDoc, tocListHtml } from "./render.ts";
 
 /** GitHub prefix for repository links. */
 const BLOB = "https://github.com/Bookclerk/bookclerk/blob/main/";
@@ -63,7 +63,7 @@ test("only operation pages of the Web API get the layout", () => {
 
 test("each operation is a section with a method badge and an examples column", () => {
   const out = renderDoc(PAGE, "api/web/jobs", { blobBase: BLOB });
-  assert.match(out.html, /^<div class="api-ref">/);
+  assert.match(out.html, /^<h1 id="jobs">Jobs<\/h1>\n<div class="api-ref">/);
   assert.equal(out.html.split('<section class="api-op"').length, 3);
   assert.equal(out.html.split("</section>").length, 3);
   assert.match(
@@ -116,15 +116,33 @@ test("the breadcrumb of an operations page runs through Web API", () => {
   const parent = navParent(nav, "api/web/jobs");
   assert.deepEqual(parent, { key: "api/web/README", title: "Web API" });
   assert.equal(
-    crumbsHtml(navPlace(nav, "api/web/README"), "Jobs", "/docs/", parent, "api/web/jobs"),
+    crumbsHtml(crumbTrail(nav, "api/web/jobs", "Jobs"), "/docs/"),
     '<nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/docs/">Docs</a></li><li><a href="/docs/api/">API reference</a></li>' +
       '<li><a href="/docs/api/web/">Web API</a></li><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a></li></ol></nav>',
   );
-  const graph = JSON.stringify(docJsonLd("https://x", "/docs/", { key: "api/web/jobs", title: "Jobs", description: "" }, parent));
-  assert.ok(graph.includes('{"@type":"ListItem","position":2,"name":"Web API","item":"https://x/docs/api/web/"}'));
+  // The structured data lists the same four crumbs.
+  const graph = JSON.stringify(docJsonLd("https://x", "/docs/", { key: "api/web/jobs", title: "Jobs", description: "" }, crumbTrail(nav, "api/web/jobs", "Jobs")));
+  assert.ok(graph.includes('{"@type":"ListItem","position":2,"name":"API reference","item":"https://x/docs/api/"}'));
+  assert.ok(graph.includes('{"@type":"ListItem","position":3,"name":"Web API","item":"https://x/docs/api/web/"}'));
+  assert.ok(graph.includes('{"@type":"ListItem","position":4,"name":"Jobs","item":"https://x/docs/api/web/jobs"}'));
   assert.equal(navParent(nav, "api/web/README"), null);
   assert.deepEqual(navParent(nav, "api/web/schemas"), parent);
   assert.equal(navParent(nav, "guide/getting-started"), null);
+});
+
+test("the title and its meta line stay ahead of the layout", () => {
+  const out = renderDoc(PAGE, "api/web/jobs", { blobBase: BLOB });
+  assert.ok(out.html.startsWith('<h1 id="jobs">Jobs</h1>\n<div class="api-ref">'), out.html.slice(0, 80));
+});
+
+test("the schemas page sits under Web API in the sidebar too", () => {
+  const nested = apiNavNested("api/web/schemas", "Schemas", [], "/docs/");
+  assert.equal(nested?.html, '<ul class="nav-sub"><li><a href="/docs/api/web/schemas" aria-current="page">Schemas</a></li></ul>');
+});
+
+test("only operation subsections leave the page's headings", () => {
+  const out = renderDoc("# Jobs\n\n## Paging\n\n### Cursors\n\n## `GET /api/jobs`\n\n### Responses\n", "api/web/jobs", { blobBase: BLOB });
+  assert.deepEqual(out.headings.map((h) => h.id), ["paging", "cursors", "get-apijobs"]);
 });
 
 test("odd operation pages still render balanced", () => {

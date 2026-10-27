@@ -138,8 +138,11 @@ export function layoutOperations(tokens: readonly Token[], make: MakeToken): Tok
   });
   if (sections.length === 0) return [...tokens];
 
-  const out: Token[] = [html('<div class="api-ref">\n')];
-  let at = 0;
+  // The title stays ahead of the wrapper, where the page's meta line
+  // (Last updated, View as Markdown) is placed after it.
+  const titled = tokens[0]?.type === "heading_open" && tokens[0].tag === "h1" ? 3 : 0;
+  const out: Token[] = [...tokens.slice(0, titled), html('<div class="api-ref">\n')];
+  let at = titled;
   for (const { start, end, op } of sections) {
     out.push(...tokens.slice(at, start));
     const open = tokens[start];

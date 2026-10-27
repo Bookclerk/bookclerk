@@ -294,6 +294,9 @@ class HelpersTest(unittest.TestCase):
             om.nested("Errors\n------\n\nTitle\n=====\n\n````\n```\n# kept\n````\n# After\n\n- item\n---", 2),
             "#### Errors\n\n### Title\n\n````\n```\n# kept\n````\n### After\n\n- item\n---",
         )
+        # A setext underline takes the whole paragraph, and never an indented code line.
+        self.assertEqual(om.nested("Para one\npara two\n===", 2), "### Para one para two")
+        self.assertEqual(om.nested("Intro\n\n    indented code\n---", 2), "Intro\n\n    indented code\n---")
 
     def test_description_joins_constraints(self) -> None:
         document = om.Document(DOCUMENT)

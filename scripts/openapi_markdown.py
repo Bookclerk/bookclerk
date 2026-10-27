@@ -124,16 +124,41 @@ def nested(text: str, level: int) -> str:
             lines.append(line)
             continue
         setext = re.fullmatch(r"(=+|-+)[ \t]*", stripped) if indent < 4 else None
-        previous = lines[-1] if lines else ""
-        if setext and previous.strip() and not re.match(r" {0,3}([#>*+-]|\d+[.)]|`{3,}|~{3,})", previous):
+        paragraph = _open_paragraph(lines) if setext else 0
+        if setext and paragraph:
+            # The underline makes the whole paragraph above it the heading.
             depth = 1 if setext.group(1)[0] == "=" else 2
-            lines[-1] = "#" * min(6, depth + level) + " " + previous.strip()
+            text = " ".join(line.strip() for line in lines[-paragraph:])
+            del lines[-paragraph:]
+            lines.append("#" * min(6, depth + level) + " " + text)
             continue
         hashes = len(stripped) - len(stripped.lstrip("#"))
         if indent < 4 and 1 <= hashes <= 6 and stripped[hashes : hashes + 1] in ("", " ", "\t"):
             line = "#" * min(6, hashes + level) + stripped[hashes:]
         lines.append(line)
     return "\n".join(lines)
+
+
+def _open_paragraph(lines: Sequence[str]) -> int:
+    """Count the trailing lines that form a paragraph a setext underline could close.
+
+    Args:
+        lines: The lines so far, outside any code fence.
+
+    Returns:
+        How many of the last lines make up that paragraph; 0 when the last
+        line is blank or belongs to something else (an indented code block,
+        a list, a quote, a heading or a fence).
+    """
+    count = 0
+    for line in reversed(lines):
+        if not line.strip() or re.match(r" {0,3}(#|`{3,}|~{3,})", line):
+            break
+        count += 1
+    first = lines[-count] if count else ""
+    if not count or first.startswith("    ") or re.match(r" {0,3}([>*+-]|\d+[.)])", first):
+        return 0
+    return count
 
 
 def code(text: str) -> str:

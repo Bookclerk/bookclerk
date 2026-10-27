@@ -14,7 +14,7 @@ import { docUrl, GENERATED_TITLES, markdownFiles, renderDocs, rewriteLink, siteM
 import { highlight } from "./highlight.ts";
 import { formatDate, pageDate, parseIsoDate } from "./last-updated.ts";
 import type { IsoDate } from "./last-updated.ts";
-import { crumbsHtml, docMarkdownUrl, fillShell, navHtml, navPlace, normalizePath, pagerHtml, renderDoc, SHELL_MARKERS, tocListHtml } from "./render.ts";
+import { crumbsHtml, crumbTrail, docMarkdownUrl, fillShell, navHtml, navPlace, normalizePath, pagerHtml, renderDoc, SHELL_MARKERS, tocListHtml } from "./render.ts";
 
 /** The repository's docs/. */
 const DOCS = fileURLToPath(new URL("../../docs/", import.meta.url));
@@ -218,7 +218,7 @@ test("the sidebar opens only the current group and places a doc for its breadcru
   assert.equal(pagerHtml(navPlace(nav, "README"), "/docs/"), "");
   assert.match(pagerHtml(navPlace(nav, "server/c"), "/docs/"), /<a class="pager-prev" rel="prev" href="\/docs\/guide\/b"><span>Previous<\/span>B &lt;b&gt;<\/a>/);
   assert.equal(
-    crumbsHtml(navPlace(nav, "guide/b"), "B & C", "/docs/", null, "guide/b"),
+    crumbsHtml(crumbTrail(nav, "guide/b", "B & C"), "/docs/"),
     '<nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/docs/">Docs</a></li><li><a href="/docs/guide/a">Use</a></li>' +
       '<li><a href="/docs/guide/b" aria-current="page">B &amp; C</a></li></ol></nav>',
   );
