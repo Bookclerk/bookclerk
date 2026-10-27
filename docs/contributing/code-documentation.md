@@ -137,6 +137,7 @@ review responsibility (see GitHub issue #157).
 | Python Google docstrings | Ruff `D` rules with `lint.pydocstyle.convention = "google"` (section shape; prose quality is review-only) |
 | UI smoke | `npm run lint` + `npm run test:safe-html` when the UI is affected |
 | CLI reference | `cli_reference_is_current` in `bookclerk-cli` fails when [the CLI reference](../server/cli-reference.md) no longer matches the clap definitions; regenerate with `UPDATE_CLI_REFERENCE=1 cargo test -p bookclerk-cli cli_reference` |
+| Web API reference | `the_committed_document_is_current` in `bookclerkd` fails when `crates/bookclerkd/openapi.json` no longer matches the routes; regenerate with `cargo run -p bookclerkd -- --print-openapi > crates/bookclerkd/openapi.json` |
 | Private-docs regression | `python3 scripts/tests/test_private_docs_lint.py` (every workspace package has `[lints] workspace = true`) |
 
 Pull requests use a dependency-aware planner ([`scripts/ci-plan.py`](../../scripts/ci-plan.py))
