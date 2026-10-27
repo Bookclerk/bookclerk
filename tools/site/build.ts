@@ -217,6 +217,14 @@ export const PAGES: readonly Page[] = [
     markdown: "/download.md",
   },
   {
+    file: "privacy.html",
+    path: "/privacy",
+    title: "Privacy · Bookclerk",
+    description: "What the Bookclerk website and services collect, which cookies they set and why, who else handles it, and how long it is kept.",
+    indexable: true,
+    markdown: "/privacy.md",
+  },
+  {
     file: "404.html",
     path: "/404",
     title: "Page not found · Bookclerk",
@@ -702,7 +710,7 @@ function writeLlmsTxt(context: SiteContext, rendered: RenderedDocs, facts: HomeF
     "",
     `> ${SUMMARY} It is free, self-hosted software (GNU GPL v3 or later) with a command-line tool, a daemon with a web interface, and a plugin system for stores and destinations.`,
     "",
-    `${status} Each doc below is Markdown; the same page as HTML is at the URL without \`.md\`. Source code: ${repo}. Every doc in one file: ${origin}/llms-full.txt. Every page also answers a request with \`Accept: text/markdown\` in Markdown; the home and download pages are at ${origin}/index.md and ${origin}/download.md.`,
+    `${status} Each doc below is Markdown; the same page as HTML is at the URL without \`.md\`. Source code: ${repo}. Every doc in one file: ${origin}/llms-full.txt. Every page also answers a request with \`Accept: text/markdown\` in Markdown; the home, download and privacy pages are at ${origin}/index.md, ${origin}/download.md and ${origin}/privacy.md.`,
     "",
   ];
   if (context.flags.demo) {

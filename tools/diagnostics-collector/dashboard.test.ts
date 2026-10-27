@@ -408,6 +408,20 @@ describe("routing", () => {
     assert.equal(await route(noDb, new Request(`${ORIGIN}/`)), null);
   });
 
+  it("links the sign-in page to the website's privacy page only when the site is known", async () => {
+    const privacy = /<a href="https:\/\/bookclerk\.app\/privacy">Privacy<\/a>/;
+    const linked = await call({ ...makeEnv(), SITE_URL: "https://bookclerk.app" }, new Request(`${ORIGIN}/`));
+    assert.match(await linked.text(), privacy);
+    const unset = await call(makeEnv(), new Request(`${ORIGIN}/`));
+    assert.doesNotMatch(await unset.text(), /Privacy<\/a>/);
+    const slash = await call({ ...makeEnv(), SITE_URL: "https://Bookclerk.app/" }, new Request(`${ORIGIN}/`));
+    assert.match(await slash.text(), privacy);
+    for (const site of ["", "http://bookclerk.app", "https://bookclerk.app/docs", "https://user@bookclerk.app", "https://bookclerk.app/x\"><script>", "javascript:alert(1)"]) {
+      const res = await call({ ...makeEnv(), SITE_URL: site }, new Request(`${ORIGIN}/`));
+      assert.doesNotMatch(await res.text(), /Privacy<\/a>/, String(site));
+    }
+  });
+
   it("leaves collector paths to worker.ts", async () => {
     const env = makeEnv();
     for (const p of ["/submit", "/report", "/triage", "/health"]) {

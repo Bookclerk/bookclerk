@@ -60,7 +60,8 @@ function hostOf(site: string): string {
 
 /**
  * Wraps page content in the shared document: the header with the mark and a
- * link back to the website, the content, and the footer note.
+ * link back to the website, the content, and the footer note with a link to
+ * the website's privacy page.
  *
  * @param title - Page title.
  * @param body - Body HTML (already escaped).
@@ -75,6 +76,7 @@ function documentHtml(title: string, body: string, opts: { scripts?: string[]; s
   const site = opts.siteUrl ?? "";
   const home = site ? esc(site) : "/";
   const back = site ? `<a class="demo-back" href="${esc(site)}">Back to ${esc(hostOf(site))}</a>` : "";
+  const privacy = site ? `<p><a href="${esc(site.replace(/\/+$/, ""))}/privacy">Privacy</a></p>` : "";
   const main = opts.card ? `<main class="demo-card">\n${body}\n</main>` : `<main class="demo-launch">\n${body}\n</main>`;
   return `<!doctype html>
 <html lang="en">
@@ -95,7 +97,7 @@ ${scripts}
 ${back}
 </header>
 ${main}
-<footer class="demo-footer"><p>${esc(LEGAL)}</p></footer>
+<footer class="demo-footer"><p>${esc(LEGAL)}</p>${privacy}</footer>
 </div>
 </body>
 </html>`;

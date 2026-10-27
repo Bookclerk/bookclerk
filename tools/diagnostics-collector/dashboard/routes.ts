@@ -67,6 +67,7 @@ import {
   issuesPage,
   messagePage,
   overviewPage,
+  privacyUrl,
   reportPage,
   reportsPage,
   signInPage,
@@ -333,7 +334,7 @@ export async function dashboardFetch(request: Request, bindings: Env, ctx: Backg
     // session cookie if there is one; without one it lands back here as a
     // same-origin request and gets the sign-in page.
     if (crossSiteNavigation(request)) return sameSiteReload(homeWith(next));
-    return htmlResponse(signInPage(cfg, next));
+    return htmlResponse(signInPage(cfg, next, privacyUrl(env)));
   }
   if (!member) {
     if (method === "GET") {

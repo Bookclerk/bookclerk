@@ -29,7 +29,6 @@
  *   REPORT_API_KEY          — required for /report, /report/cursor, /triage,
  *                             /issues/notify, /issues/attach,
  *                             /issues/summaries and /issues/summary
- *   CLIENT_IP_HASH_SALT     — optional; enables hashed client IP in enrichment
  *   GITHUB_TOKEN            — optional; higher GitHub API rate limits
  *   GITHUB_APP_CLIENT_ID, GITHUB_APP_CLIENT_SECRET, GITHUB_APP_PRIVATE_KEY
  *                           — optional; the automation App, for dashboard
@@ -499,7 +498,6 @@ async function handleSubmit(request: Request, env: Env, ctx: Background): Promis
     report_id: reportId,
     received_at_unix_ms: receivedAt,
     worker: "bookclerk-diagnostics",
-    client_ip_hash: await maybeHashIp(request, env),
     user_agent: truncate(request.headers.get("user-agent") || "", 200),
     payload,
   };
@@ -920,27 +918,6 @@ function looksLikeSecretLeak(text: string): boolean {
     /\bAKIA[0-9A-Z]{16}\b/.test(text) ||
     /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(text)
   );
-}
-
-/**
- * Salted hash of the client's IP address, so reports from one install can
- * be counted without keeping the address.
- *
- * @param request - The client's request.
- * @param env - Worker bindings.
- * @returns 32 hex characters, or null without a salt or an address.
- */
-async function maybeHashIp(request: Request, env: Env): Promise<string | null> {
-  const salt = env.CLIENT_IP_HASH_SALT;
-  if (!salt) return null;
-  const ip = request.headers.get("cf-connecting-ip") || "";
-  if (!ip) return null;
-  const data = new TextEncoder().encode(`${salt}:${ip}`);
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  return [...new Uint8Array(digest)]
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("")
-    .slice(0, 32);
 }
 
 /**

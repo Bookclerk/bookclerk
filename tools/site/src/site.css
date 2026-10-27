@@ -318,6 +318,11 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
 .caveats li { display: flex; gap: 14px; padding-block: 14px; border-bottom: 1px solid color-mix(in srgb, var(--ink) 12%, transparent); }
 .caveats svg { flex: 0 0 20px; width: 20px; height: 20px; margin-top: 3px; stroke: var(--brick); fill: none; stroke-width: 2; stroke-linecap: round; }
 
+/* Privacy page: a docs-style reading column outside the docs layout (its
+   line and soft-text tokens are shared with .docs-page below). */
+.privacy { --docs-header: 0px; }
+.privacy .doc { padding-block: 40px 88px; }
+
 /* Footer */
 .site-footer { border-top: 1px solid color-mix(in srgb, var(--ink) 12%, transparent); background: color-mix(in srgb, var(--parchment) 40%, var(--paper)); }
 .site-footer .wrap { padding-block: 48px 32px; display: flex; flex-direction: column; gap: 32px; }
@@ -359,10 +364,12 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
    developers.cloudflare.com: a column of about 80 characters, line height
    1.7 and generous space above sections. Below 1200px the rail goes; below
    900px the sidebar and the rail become the two menus in .docs-menus. */
-.docs-page {
-  --docs-header: 57px;
+.docs-page, .privacy {
   --docs-line: color-mix(in srgb, var(--ink) 12%, transparent);
   --docs-soft: color-mix(in srgb, var(--ink) 72%, transparent);
+}
+.docs-page {
+  --docs-header: 57px;
   --code-card: var(--index-card);
   /* Syntax colors: distinct hues, each at least 4.5:1 on the code card. */
   --hl-c: color-mix(in srgb, var(--ink) 72%, transparent);
