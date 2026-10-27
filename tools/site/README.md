@@ -104,10 +104,14 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   (`/` focuses it). It makes no requests, and everything it enhances works
   without it; Chromium also marks the current section through CSS
   (`scroll-target-group`).
-- `src/index.md`, `src/download.md`, `src/404.md` – Markdown versions of
+- `src/index.md`, `src/download.md`, `src/privacy.md`, `src/404.md` – Markdown versions of
   those pages, rendered with the same template syntax. Keep them in step with
   the HTML: a test checks that every `<h2>` of the page is a `##` section of
   its Markdown version.
+- `src/privacy.html` – the privacy page. It lists every cookie the demo and
+  the diagnostics dashboard set; `build.test.ts` reads the cookie names from
+  those Workers' sources, so renaming one without updating the page fails.
+  Keep it in step when a Worker starts collecting or storing anything new.
 - `worker.ts` – the docs route and content negotiation (see below).
   `wrangler.toml` runs it only for page paths (`run_worker_first`). It
   compresses what it answers with (Brotli, else gzip) itself, because

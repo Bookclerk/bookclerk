@@ -103,6 +103,19 @@ describe("footer", () => {
   });
 });
 
+describe("privacy link", () => {
+  it("links every page to the website's privacy page when there is a website", () => {
+    const site = "https://bookclerk.app";
+    for (const html of [launchPage({ ...LAUNCH, siteUrl: site }), waitPage({ estimateSeconds: null, siteUrl: site }), endedPage({ siteUrl: site })]) {
+      assert.match(html, /<footer class="demo-footer"><p>[^<]+<\/p><p><a href="https:\/\/bookclerk\.app\/privacy">Privacy<\/a><\/p><\/footer>/);
+    }
+    assert.ok(endedPage({ siteUrl: `${site}/` }).includes(`href="${site}/privacy"`));
+    for (const html of [waitPage({ estimateSeconds: null, siteUrl: "" }), endedPage({ siteUrl: "" })]) {
+      assert.doesNotMatch(html, /\/privacy/);
+    }
+  });
+});
+
 describe("waitPage", () => {
   it("shows the waveform throbber without inline styles", () => {
     const html = waitPage({ estimateSeconds: null, siteUrl: "" });

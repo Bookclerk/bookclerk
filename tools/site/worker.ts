@@ -20,7 +20,7 @@
 // has no date.
 //
 // Content negotiation: when the Accept header ranks `text/markdown` (or
-// `text/x-markdown`) at least as high as HTML, `/`, `/download` and
+// `text/x-markdown`) at least as high as HTML, `/`, `/download`, `/privacy` and
 // `/docs/<path>` return their Markdown version instead, with
 // `Content-Type: text/markdown` and a `Link: rel="canonical"` to the HTML page.
 // HTML responses carry `Link: rel="alternate"` to their Markdown version.
@@ -114,6 +114,8 @@ export const PAGE_MARKDOWN: ReadonlyMap<string, string> = new Map([
   ["/index.html", "/index.md"],
   ["/download", "/download.md"],
   ["/download.html", "/download.md"],
+  ["/privacy", "/privacy.md"],
+  ["/privacy.html", "/privacy.md"],
 ]);
 
 /**

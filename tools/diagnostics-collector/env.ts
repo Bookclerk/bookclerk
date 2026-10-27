@@ -28,6 +28,12 @@ export interface Env {
   GITHUB_APP_PRIVATE_KEY?: string;
   /** `owner/name` of the repository issues and releases live in. */
   GITHUB_REPOSITORY?: string;
+  /**
+   * The project website's https origin (`https://<DOMAIN>`), which the
+   * sign-in page links to for its privacy page; unset (a fork without a
+   * domain) means no link.
+   */
+  SITE_URL?: string;
   /** Workers AI model `/triage` runs. */
   TRIAGE_MODEL?: string;
   /** `/triage` neuron cap per UTC day, as decimal text. */

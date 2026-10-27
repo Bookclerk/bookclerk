@@ -149,7 +149,7 @@ test("inlineLogo keeps the wordmark recolorable and drops editor attributes", ()
 test("a pre-release build says so on every page", () => {
   const site = built(PRE);
   try {
-    for (const name of ["index.html", "download.html", "404.html"]) {
+    for (const name of ["index.html", "download.html", "privacy.html", "404.html"]) {
       const html = site.page(name);
       assert.ok(html.includes('<span class="badge">Pre-release</span>'), name);
       // A landmark, so screen-reader users can find and skip the notice.
@@ -167,7 +167,7 @@ test("a pre-release build says so on every page", () => {
 test("a release build drops the pre-release notices", () => {
   const site = built(REL);
   try {
-    for (const name of ["index.html", "download.html", "404.html"]) {
+    for (const name of ["index.html", "download.html", "privacy.html", "404.html"]) {
       assert.ok(!site.page(name).includes("Pre-release"), name);
     }
     assert.ok(site.page("download.html").includes("/releases/tag/v0.1.0"));
@@ -196,7 +196,7 @@ test("a build without a demo links to none", () => {
   for (const env of [PRE, REL]) {
     const site = built(env);
     try {
-      for (const name of ["index.html", "download.html", "404.html", "index.md", "download.md", "llms.txt"]) {
+      for (const name of ["index.html", "download.html", "privacy.html", "404.html", "index.md", "download.md", "privacy.md", "llms.txt"]) {
         assert.doesNotMatch(site.page(name), /live demo|demo\.bookclerk/i, name);
       }
       assert.ok(site.page("index.html").includes('href="#how">See how it works'));
@@ -246,7 +246,7 @@ test("after a release the demo follows the download", () => {
 test("the build publishes pages, styles, headers and brand assets", () => {
   const site = built(PRE);
   try {
-    for (const name of ["index.html", "download.html", "404.html", "site.css", "_headers", "robots.txt", "sitemap.xml", "llms.txt", "llms-full.txt", "social-card.png", "favicon.ico", "bookclerk-mark.svg", "site.webmanifest"]) {
+    for (const name of ["index.html", "download.html", "privacy.html", "privacy.md", "404.html", "site.css", "_headers", "robots.txt", "sitemap.xml", "llms.txt", "llms-full.txt", "social-card.png", "favicon.ico", "bookclerk-mark.svg", "site.webmanifest"]) {
       assert.ok(site.files.includes(name), name);
     }
     assert.match(site.page("_headers"), /Content-Security-Policy: default-src 'none'/);
@@ -369,13 +369,14 @@ test("crawler and agent files list the site", () => {
   }
 });
 
-test("home and download pages have Markdown versions that keep their sections", () => {
+test("home, download and privacy pages have Markdown versions that keep their sections", () => {
   for (const env of [PRE, REL, { ...PRE, ...DEMO }, { ...REL, ...DEMO }]) {
     const site = built(env);
     try {
       for (const [html, md] of [
         ["index.html", "index.md"],
         ["download.html", "download.md"],
+        ["privacy.html", "privacy.md"],
       ] as const) {
         const page = site.page(html);
         const markdown = site.page(md);
@@ -388,6 +389,43 @@ test("home and download pages have Markdown versions that keep their sections", 
       assert.equal(site.page("index.md").includes("Pre-release"), env.SITE_RELEASE_TAG === undefined);
       assert.match(site.page("404.md"), /^# We could not find that page/);
       assert.doesNotMatch(site.page("404.html"), /rel="alternate" type="text\/markdown"/);
+    } finally {
+      site.done();
+    }
+  }
+});
+
+/**
+ * Reads the value of `export const <name> = "<value>";` from another
+ * Worker's source, so the privacy page is checked against the cookies that
+ * Worker really sets.
+ *
+ * @param file - Path relative to tools/site/.
+ * @param name - The constant's name.
+ * @returns Its string value.
+ */
+function sourceConstant(file: string, name: string): string {
+  const source = readFileSync(new URL(file, import.meta.url), "utf8");
+  const value = source.match(new RegExp(`^export const ${name} = "([^"]+)";$`, "m"))?.[1];
+  assert.ok(value !== undefined, `${file} has no ${name}`);
+  return value;
+}
+
+test("the privacy page names every cookie the demo and the dashboard set", () => {
+  const demo = [sourceConstant("../demo/src/inputs.ts", "SESSION_COOKIE"), sourceConstant("../demo/src/inputs.ts", "PORTAL_COOKIE")];
+  const dashboard = [
+    sourceConstant("../diagnostics-collector/dashboard/session.ts", "SESSION_COOKIE"),
+    sourceConstant("../diagnostics-collector/dashboard/auth.ts", "OAUTH_COOKIE"),
+  ];
+  for (const env of [PRE, REL, { ...PRE, ...DEMO }]) {
+    const site = built(env);
+    try {
+      for (const name of ["privacy.html", "privacy.md"]) {
+        const page = site.page(name);
+        for (const cookie of dashboard) assert.ok(page.includes(cookie), `${name} lacks ${cookie}`);
+        for (const cookie of demo) assert.equal(page.includes(cookie), env.SITE_DEMO_URL !== undefined, `${name}: ${cookie}`);
+      }
+      assert.match(site.page("index.html"), /<a href="\/privacy">Privacy<\/a>/);
     } finally {
       site.done();
     }

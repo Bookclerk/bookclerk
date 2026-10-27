@@ -96,6 +96,7 @@ export const ERROR_PAGE: Limits = { accessibility: 100 };
 export const PAGES: readonly AuditPage[] = [
   { name: "home", path: "/", status: 200, limits: PAGE },
   { name: "download", path: "/download", status: 200, limits: PAGE },
+  { name: "privacy", path: "/privacy", status: 200, limits: PAGE },
   { name: "docs", path: "/docs/guide/getting-started", status: 200, limits: PAGE },
   { name: "docs-ci", path: "/docs/contributing/ci", status: 200, limits: PAGE },
   { name: "docs-unavailable", path: `/docs/${UNAVAILABLE_KEY}`, status: 503, limits: ERROR_PAGE },
