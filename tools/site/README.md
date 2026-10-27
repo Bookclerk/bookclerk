@@ -2,7 +2,8 @@
 
 The public website: a landing page for people who want to use Bookclerk, a
 download page, and the documentation with its generated API reference under
-`/docs/`. It is plain HTML and CSS with no client-side scripts of its own, served by a
+`/docs/`. It is plain HTML and CSS, plus one small script on docs pages
+(`src/docs.js`) that the pages work without, served by a
 Cloudflare Worker named **`bookclerk-site`** on the domain in the `DOMAIN`
 organization variable. `build.ts` writes the static pages; the Worker
 (`entry.ts` → `worker.ts`) renders each docs page at request time from the
@@ -71,6 +72,27 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   `render.ts` renders them (shared by the build and the Worker), and
   `docs.ts` reads the local `docs/` for the build. `NAV` in `render.ts`
   orders the sidebar; a doc in `docs/` missing from it is listed under "More".
+  The layout follows developers.cloudflare.com's measurements: a slim sticky
+  header, a sticky sidebar whose groups fold (only the current page's group
+  opens), a reading column of about 80 characters, and an "On this page"
+  rail the Worker builds from the doc's `##` and `###` headings, with a
+  breadcrumb and previous and next links taken from `NAV`. Below 1200px the
+  rail goes; below 900px the sidebar and the rail become two menus over the
+  page (`<details>`, so they work without a script).
+- `highlight.ts` – syntax colors for fenced code blocks in the languages the
+  docs use (shell, TOML, YAML, JSON, TypeScript, Rust, Python, SQL), as
+  `<span class="hl-…">` around escaped text; other fences stay plain. The
+  Worker runs it while rendering, so pages need no client-side highlighter.
+  It reads doc text, so `fuzz.test.ts` replays `fuzz/highlight/` (first line
+  the language, the rest the code) and fuzzes mutations against an oracle
+  that the output is only escaped text and those spans and reads back to the
+  input exactly.
+- `src/docs.js` – the docs pages' only script, served from the site: a Copy
+  button on code blocks, the "On this page" link of the section being read
+  (`aria-current="location"`), and a filter box above the sidebar groups
+  (`/` focuses it). It makes no requests, and everything it enhances works
+  without it; Chromium also marks the current section through CSS
+  (`scroll-target-group`).
 - `src/index.md`, `src/download.md`, `src/404.md` – Markdown versions of
   those pages, rendered with the same template syntax. Keep them in step with
   the HTML: a test checks that every `<h2>` of the page is a `##` section of
@@ -92,11 +114,12 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   22.18 or newer) runs the build and the tests by stripping the types, so
   nothing is compiled; `npm run typecheck` runs `tsc`, and CI runs it before the tests.
 - `src/_headers` – security headers, and Markdown and `llms.txt` content
-  types. The CSP allows no script except Cloudflare Web Analytics, which the
-  edge injects into each page: `script-src https://static.cloudflareinsights.com`
-  for the beacon and `connect-src https://cloudflareinsights.com` beside
-  `'self'` for its reports. That beacon is the one approved exception to the
-  site's no-third-party-requests rule. `SECURITY_HEADERS` in `worker.ts`
+  types. The CSP allows only the site's own scripts (`'self'`, for
+  `docs.js`) and Cloudflare Web Analytics, which the edge injects into each
+  page: `script-src 'self' https://static.cloudflareinsights.com` and
+  `connect-src https://cloudflareinsights.com` beside `'self'` for its
+  reports. No inline script is allowed. That beacon is the one approved
+  exception to the site's no-third-party-requests rule. `SECURITY_HEADERS` in `worker.ts`
   carries the same policy, and a test keeps the two equal.
 - Brand assets are copied from `assets/brand/` at build time.
 

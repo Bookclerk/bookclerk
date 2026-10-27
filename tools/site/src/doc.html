@@ -3,21 +3,26 @@
 <head>
 {{> head}}
 </head>
-<body>
+<body class="docs-page">
 {{> ribbon}}
-{{> header}}
-<main id="main" class="wrap docs-layout">
+{{> docs-header}}
+<!--doc-menus-->
+<div class="docs-layout">
   <nav class="docs-nav" aria-label="Documentation">
     <!--doc-versions-->
-    <a class="docs-home" href="%%docsBase%%">Overview</a>
     <!--doc-nav-->
   </nav>
-  <article class="doc">
-    <!--doc-note-->
-    <!--doc-body-->
-    <!--doc-footer-->
-  </article>
-</main>
+  <main id="main" class="doc-main">
+    <article class="doc">
+      <!--doc-crumbs-->
+      <!--doc-body-->
+      <!--doc-pager-->
+      <!--doc-footer-->
+    </article>
+  </main>
+  <!--doc-toc-->
+</div>
 {{> footer}}
+<script src="/docs.js" defer></script>
 </body>
 </html>

@@ -228,7 +228,7 @@ export const PAGES: readonly Page[] = [
 ];
 
 /** Files copied verbatim from src/ to dist/. */
-const STATIC_FILES = ["site.css", "_headers", "social-card.png"];
+const STATIC_FILES = ["site.css", "docs.js", "_headers", "social-card.png"];
 
 /** Web fonts and their licenses copied from src/fonts/ to dist/fonts/ (see src/fonts/README.md). */
 const FONT_FILE = /^(?:[a-z0-9-]+\.woff2|OFL-[a-z0-9]+\.txt)$/;

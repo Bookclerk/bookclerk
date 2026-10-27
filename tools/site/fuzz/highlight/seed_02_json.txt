@@ -1,0 +1,6 @@
+json
+{
+  "name": "bookclerk",
+  "n": -1.5e3, "ok": true, "x": null, "s": "a\\"b" // c
+}
+/* block

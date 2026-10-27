@@ -206,6 +206,13 @@ non-Rust tooling (decision 6):
   `npm test`, checking every choice against an independent oracle (RFC 9110
   qvalues, `*` for unlisted codings, Brotli before gzip on a tie, nothing at
   `q=0`).
+- The website Worker's code-block highlighter (`highlight` in
+  `tools/site/highlight.ts`), which colors fenced code from the docs
+  repository. `tools/site/fuzz.test.ts` replays its seed corpus
+  (`tools/site/fuzz/highlight/`) and runs seeded mutation fuzzing in
+  `npm test` across its languages, checking with an independent reader that
+  the output is only escaped text and `hl-` spans and gives back the input
+  exactly.
 - The hosted demo Worker's inputs (`tools/demo/src/routes.ts` and
   `src/inputs.ts`): the route check (`classify`), which decides whether a
   visitor's request may reach their container; the visitor's cookies

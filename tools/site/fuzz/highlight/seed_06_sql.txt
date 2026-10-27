@@ -1,0 +1,3 @@
+sql
+SELECT id, "title" FROM books WHERE note = 'it''s' -- c
+/* x */ insert into t values (1);

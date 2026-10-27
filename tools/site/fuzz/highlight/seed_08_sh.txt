@@ -1,0 +1,4 @@
+sh
+$ sudo -u bc ./run --flag=1 | tee "log"; FOO=1 make
+#!/bin/sh
+echo a#b # c

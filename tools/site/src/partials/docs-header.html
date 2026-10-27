@@ -1,0 +1,13 @@
+<header class="site-header docs-header">
+  <div class="docs-header-row">
+    <a class="home" href="/" aria-label="Bookclerk home">{{> logo}}</a>
+    <a class="docs-label" href="%%docsBase%%">Docs</a>
+    <nav class="site-nav" aria-label="Main">
+      <a href="/#features">Features</a>
+      <a href="/#how">How it works</a>
+      {{#demo}}<a href="{{demoUrl}}">Demo</a>
+      {{/demo}}      <a href="{{repo}}">GitHub</a>
+      <a class="btn btn-primary" href="/download">Download</a>
+    </nav>
+  </div>
+</header>

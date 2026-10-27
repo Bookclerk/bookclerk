@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, URL } from "node:url";
 
+import { highlight } from "./highlight.ts";
 import { pickEncoding } from "./worker.ts";
 import type { Encoding } from "./worker.ts";
 
@@ -23,7 +24,7 @@ const SEED = Number(process.env["FUZZ_SEED"] ?? 0x5eed);
 /** Mutated inputs checked per target. */
 const ITERATIONS = Number(process.env["FUZZ_ITERATIONS"] ?? 20000);
 
-/** Fragments mutations splice in: list and parameter syntax, codings, odd qvalues and whitespace. */
+/** Fragments Accept-Encoding mutations splice in: list and parameter syntax, codings, odd qvalues and whitespace. */
 const FRAGMENTS = [",", ";", "=", " ", "\t", "q", "Q", "q=", "br", "BR", "gzip", "*", "identity", "0", "1", ".", "0.5", "1.000", "1.0001", ".5", "0x1", "1e0", "-0", " ", "\u0000", "é"];
 
 /**
@@ -49,16 +50,17 @@ function prng(seed: number): () => number {
  * @param input - The input to mutate.
  * @param seeds - Every seed, for splicing.
  * @param rand - The PRNG.
+ * @param fragments - Snippets of the target's syntax to splice in.
  * @returns The mutated input.
  */
-function mutate(input: string, seeds: readonly string[], rand: () => number): string {
+function mutate(input: string, seeds: readonly string[], rand: () => number, fragments: readonly string[] = FRAGMENTS): string {
   let out = input;
   const pick = (list: readonly string[]): string => list[Math.floor(rand() * list.length)] ?? "";
   for (let n = 1 + Math.floor(rand() * 4); n > 0; n--) {
     const at = Math.floor(rand() * (out.length + 1));
     switch (Math.floor(rand() * 5)) {
       case 0:
-        out = out.slice(0, at) + pick(FRAGMENTS) + out.slice(at);
+        out = out.slice(0, at) + pick(fragments) + out.slice(at);
         break;
       case 1:
         out = out.slice(0, at) + out.slice(at + 1 + Math.floor(rand() * 4));
@@ -148,5 +150,106 @@ test("pickEncoding agrees with the oracle on mutated inputs", () => {
     const got = pickEncoding(input);
     assert.ok(got === null || got === "br" || got === "gzip", JSON.stringify(input));
     assert.equal(got, oracleEncoding(input), `FUZZ_SEED=${SEED} iteration ${i}: ${JSON.stringify(input)}`);
+  }
+});
+
+/** Fragments code-block mutations splice in: quotes, escapes, comment marks, HTML-special characters and names. */
+const CODE_FRAGMENTS = ['"', "'", "`", "\\", "#", "//", "/*", "*/", "--", "-", "$", "${", "}", "[", "]", "[[", "=", ":", "\n", " ", "\t", "<", ">", "&", "&amp;", "0x1", "1.5", "true", "fn", "SELECT", "sudo", "|", ";", "é", "\u0000", "<span class=\"hl-c\">"];
+
+/** Language names the highlight seeds name, plus names it does not know. */
+const LANGUAGES = ["bash", "sh", "console", "toml", "yaml", "json", "ts", "rust", "python", "sql", "text", "", "nginx", "TOML"];
+
+/** The entities highlight.ts writes, and the characters they stand for. */
+const ENTITIES: readonly [string, string][] = [["&amp;", "&"], ["&lt;", "<"], ["&gt;", ">"], ["&quot;", '"'], ["&#39;", "'"]];
+
+/**
+ * Reads highlight.ts's output back to text, written without reference to
+ * highlight.ts: the output may only be escaped text and non-empty, unnested
+ * `<span class="hl-X">` elements with X one of c, s, n, k, v, f.
+ *
+ * @param html - The output.
+ * @returns The text it shows, or null when it holds anything else.
+ */
+function oracleText(html: string): string | null {
+  const open = '<span class="hl-';
+  let out = "";
+  let inSpan = false;
+  let spanText = 0;
+  let i = 0;
+  while (i < html.length) {
+    if (html.startsWith(open, i)) {
+      const kind = html[i + open.length] ?? "";
+      if (inSpan || !"csnkvf".includes(kind) || kind === "" || html.slice(i + open.length + 1, i + open.length + 3) !== '">') return null;
+      inSpan = true;
+      spanText = 0;
+      i += open.length + 3;
+      continue;
+    }
+    if (html.startsWith("</span>", i)) {
+      if (!inSpan || spanText === 0) return null;
+      inSpan = false;
+      i += "</span>".length;
+      continue;
+    }
+    const c = html[i] ?? "";
+    if (c === "<" || c === ">" || c === '"' || c === "'") return null;
+    if (c === "&") {
+      const entity = ENTITIES.find(([e]) => html.startsWith(e, i));
+      if (entity === undefined) return null;
+      out += entity[1];
+      i += entity[0].length;
+    } else {
+      out += c;
+      i += 1;
+    }
+    spanText++;
+  }
+  return inSpan ? null : out;
+}
+
+/**
+ * Splits a highlight seed into its language (first line) and code (the rest).
+ *
+ * @param seed - The seed file's text.
+ * @returns The language name and the code.
+ */
+function splitSeed(seed: string): [string, string] {
+  const newline = seed.indexOf("\n");
+  return newline === -1 ? [seed, ""] : [seed.slice(0, newline), seed.slice(newline + 1)];
+}
+
+/**
+ * Checks one highlight run against the oracle.
+ *
+ * @param code - The code block.
+ * @param lang - The fence's language.
+ * @param context - What to print on failure.
+ */
+function checkHighlight(code: string, lang: string, context: string): void {
+  const html = highlight(code, lang);
+  if (html === null) {
+    assert.ok(["text", "", "nginx"].includes(lang), `${context}: no grammar for ${JSON.stringify(lang)}`);
+    return;
+  }
+  assert.equal(oracleText(html), code, `${context}: ${JSON.stringify(code)} -> ${JSON.stringify(html)}`);
+}
+
+test("highlight keeps its seed corpus intact and markup-free", () => {
+  const seeds = corpus("highlight");
+  assert.ok(seeds.length >= 10);
+  for (const seed of seeds) {
+    const [lang, code] = splitSeed(seed);
+    checkHighlight(code, lang, "seed");
+    assert.notEqual(highlight(code, lang), null, lang);
+  }
+});
+
+test("highlight keeps mutated code intact and markup-free", () => {
+  const seeds = corpus("highlight").map((seed) => splitSeed(seed)[1]);
+  const rand = prng(SEED);
+  for (let i = 0; i < ITERATIONS; i++) {
+    const code = mutate(seeds[Math.floor(rand() * seeds.length)] ?? "", seeds, rand, CODE_FRAGMENTS);
+    const lang = LANGUAGES[Math.floor(rand() * LANGUAGES.length)] ?? "bash";
+    checkHighlight(code, lang, `FUZZ_SEED=${SEED} iteration ${i} (${lang})`);
   }
 });

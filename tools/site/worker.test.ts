@@ -241,7 +241,7 @@ test("the Worker sends the same security headers as src/_headers", () => {
   assert.deepEqual(fromFile, SECURITY_HEADERS);
 });
 
-test("the CSP lets only Cloudflare's analytics beacon run and report", () => {
+test("the CSP lets only the site's own scripts and Cloudflare's analytics beacon run", () => {
   const directives: Record<string, string[]> = Object.fromEntries(
     (SECURITY_HEADERS["Content-Security-Policy"] ?? "").split(";").map((d) => {
       const [name, ...sources] = d.trim().split(/\s+/);
@@ -249,7 +249,7 @@ test("the CSP lets only Cloudflare's analytics beacon run and report", () => {
     }),
   );
   assert.deepEqual(directives["default-src"], ["'none'"]);
-  assert.deepEqual(directives["script-src"], ["https://static.cloudflareinsights.com"]);
+  assert.deepEqual(directives["script-src"], ["'self'", "https://static.cloudflareinsights.com"]);
   assert.deepEqual(directives["connect-src"], ["'self'", "https://cloudflareinsights.com"]);
   assert.equal(directives["script-src-attr"], undefined);
   for (const [name, sources] of Object.entries(directives)) {
@@ -358,6 +358,11 @@ test("a browser gets the doc in the site's page, with its version and sidebar", 
   assert.match(html, /href="\/docs\/v\/main\/plugins\/"/);
   assert.match(html, /href="https:\/\/github.com\/Bookclerk\/bookclerk\/blob\/v0.2.0\/docs\/plugins\/README.md"/);
   assert.ok(!html.includes("doc-note"), "a release's docs carry no development note");
+  assert.match(html, /<nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="\/docs\/">Docs<\/a><\/li><li>Build plugins<\/li>/);
+  assert.match(html, /<aside class="toc" aria-label="On this page">/);
+  assert.match(html, /<div class="docs-menus"><details class="menu menu-nav"><summary>Menu<\/summary>/);
+  assert.match(html, /<details class="nav-group" open><summary>Build plugins<\/summary>/);
+  assert.match(html, /<script src="\/docs.js" defer><\/script>/);
   const ld: { "@graph": { "@type": string; url: string }[] } = JSON.parse(html.match(/<script type="application\/ld\+json">(.*?)<\/script>/)?.[1] ?? "{}");
   assert.equal(ld["@graph"][0]?.["@type"], "TechArticle");
   assert.equal(ld["@graph"][0]?.url, "https://bookclerk.app/docs/plugins/");

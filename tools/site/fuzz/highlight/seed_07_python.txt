@@ -1,0 +1,4 @@
+python
+def f(x: int) -> None:
+    return "a#b"  # c
+print(True)

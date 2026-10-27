@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { fileURLToPath, URL } from "node:url";
 
 import { docUrl, GENERATED_TITLES, markdownFiles, renderDocs, rewriteLink, siteMarkdown, slugify } from "./docs.ts";
-import { docMarkdownUrl, fillShell, normalizePath, renderDoc } from "./render.ts";
+import { crumbsHtml, docMarkdownUrl, fillShell, navHtml, navPlace, normalizePath, pagerHtml, renderDoc, SHELL_MARKERS, tocListHtml } from "./render.ts";
 
 /** The repository's docs/. */
 const DOCS = fileURLToPath(new URL("../../docs/", import.meta.url));
@@ -99,6 +99,41 @@ test("raw HTML in a doc is shown as text", () => {
   assert.ok(!out.html.includes("<script"));
 });
 
+test("code blocks get syntax colors and a language label when highlight.ts knows the language", () => {
+  const out = renderDoc("```toml\n[library]\nauto_acquire = false # off\n```\n\n```text\n<plain>\n```\n", "cluster-hosts", { blobBase: BLOB });
+  assert.match(out.html, /<div class="code" data-lang="toml"><pre tabindex="0"><code class="language-toml"><span class="hl-k">\[library\]<\/span>/);
+  assert.match(out.html, /<span class="hl-v">auto_acquire<\/span> = <span class="hl-n">false<\/span> <span class="hl-c"># off<\/span>/);
+  assert.match(out.html, /<div class="code"><pre tabindex="0"><code class="language-text">&lt;plain&gt;/);
+});
+
+test("a doc's section headings are collected for the On this page list", () => {
+  const out = renderDoc("# Title\n\n## First `step`\n\n### Detail\n\n#### Deeper\n\n## First step\n", "cluster-hosts", { blobBase: BLOB });
+  assert.deepEqual(out.headings, [
+    { level: 2, id: "first-step", text: "First step" },
+    { level: 3, id: "detail", text: "Detail" },
+    { level: 2, id: "first-step-1", text: "First step" },
+  ]);
+  assert.equal(tocListHtml(out.headings), '<ul><li><a href="#first-step">First step</a></li><li class="sub"><a href="#detail">Detail</a></li><li><a href="#first-step-1">First step</a></li></ul>');
+  assert.equal(tocListHtml([]), "");
+});
+
+test("the sidebar opens only the current group and places a doc for its breadcrumb and neighbours", () => {
+  const nav = [
+    { title: "Use", pages: [{ key: "guide/a", title: "A" }, { key: "guide/b", title: "B <b>" }] },
+    { title: "Run", pages: [{ key: "server/c", title: "C" }] },
+  ];
+  const html = navHtml(nav, "guide/b", "/docs/");
+  assert.match(html, /<details class="nav-group" open><summary>Use<\/summary>/);
+  assert.match(html, /<details class="nav-group"><summary>Run<\/summary>/);
+  assert.match(html, /<a href="\/docs\/guide\/b" aria-current="page">B &lt;b&gt;<\/a>/);
+  assert.deepEqual(navPlace(nav, "guide/b"), { group: "Use", previous: { key: "guide/a", title: "A" }, next: { key: "server/c", title: "C" } });
+  assert.deepEqual(navPlace(nav, "guide/a").previous, null);
+  assert.deepEqual(navPlace(nav, "README"), { group: null, previous: null, next: null });
+  assert.equal(pagerHtml(navPlace(nav, "README"), "/docs/"), "");
+  assert.match(pagerHtml(navPlace(nav, "server/c"), "/docs/"), /<a class="pager-prev" rel="prev" href="\/docs\/guide\/b"><span>Previous<\/span>B &lt;b&gt;<\/a>/);
+  assert.match(crumbsHtml(navPlace(nav, "server/c"), "C & D", "/docs/"), /<li><a href="\/docs\/">Docs<\/a><\/li><li>Run<\/li><li aria-current="page">C &amp; D<\/li>/);
+});
+
 test("code blocks and tables can be scrolled from the keyboard", () => {
   const out = renderDoc("```sh\ncargo build\n```\n\n    indented\n\n| a | b |\n| - | - |\n| 1 | 2 |\n", "cluster-hosts", { blobBase: BLOB });
   assert.equal(out.html.match(/<pre tabindex="0">/g)?.length, 2);
@@ -107,7 +142,7 @@ test("code blocks and tables can be scrolled from the keyboard", () => {
 });
 
 test("fillShell escapes values, fills markers once and refuses gaps", () => {
-  const shell = "<title>%%pageTitle%%</title><!--jsonld--><!--doc-versions--><!--doc-nav--><!--doc-note--><!--doc-body--><!--doc-footer-->";
+  const shell = `<title>%%pageTitle%%</title>${SHELL_MARKERS.map((m) => `<!--${m}-->`).join("")}`;
   const markers = { "doc-body": "<p>%%pageTitle%% <!--doc-footer--></p>" };
   const out = fillShell(shell, { pageTitle: "<a> & b" }, markers);
   // Text inside a marker's HTML is never read as a hole or a marker.

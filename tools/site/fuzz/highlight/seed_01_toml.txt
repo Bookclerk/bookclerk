@@ -1,0 +1,8 @@
+toml
+# comment
+[library]
+auto_acquire = false
+[[settings]]
+key = "root" # trailing
+port = 8787
+name.inner = 'lit'

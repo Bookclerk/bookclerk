@@ -10,6 +10,7 @@ import { URL } from "node:url";
 
 import { build, docsVersions, escapeHtml, inlineLogo, jsonLd, plainText, readState, render, templateContext } from "./build.ts";
 import type { BuildEnv } from "./build.ts";
+import { SHELL_MARKERS } from "./render.ts";
 import type { DocsShell } from "./render.ts";
 
 /** One node of the home page's JSON-LD `@graph`, as these tests read it. */
@@ -415,7 +416,7 @@ test("the docs shell has every hole and marker the Worker fills, once", () => {
   const site = built(REL);
   try {
     const shell = site.shell();
-    for (const marker of ["jsonld", "doc-versions", "doc-nav", "doc-note", "doc-body", "doc-footer"]) {
+    for (const marker of SHELL_MARKERS) {
       assert.equal(shell.html.split(`<!--${marker}-->`).length, 2, marker);
     }
     assert.ok(!shell.html.includes("{{"));
