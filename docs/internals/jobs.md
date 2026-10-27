@@ -89,10 +89,18 @@ fence and a cooperative cancel flag.
 
 ## State machine
 
-```text
-pending → running → succeeded
-                 ↘ failed (retry → pending with backoff, or terminal)
-                 ↘ cancelled
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> pending
+  pending --> running
+  running --> succeeded
+  running --> failed
+  running --> cancelled
+  failed --> pending: retry with backoff
+  succeeded --> [*]
+  failed --> [*]: terminal
+  cancelled --> [*]
 ```
 
 - **Admission** is one atomic backend operation (a guest atomic batch in

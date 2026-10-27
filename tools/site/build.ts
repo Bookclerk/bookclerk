@@ -228,7 +228,10 @@ export const PAGES: readonly Page[] = [
 ];
 
 /** The Worker's page renderers, whose sources are part of the docs shell's id (see buildDocsShell). */
-const RENDER_SOURCES = ["render.ts", "highlight.ts", "last-updated.ts"];
+const RENDER_SOURCES = ["render.ts", "diagram.ts", "highlight.ts", "last-updated.ts"];
+
+/** Libraries the renderers draw with, whose installed versions are part of the docs shell's id too. */
+const RENDER_LIBRARIES = ["beautiful-mermaid", "elkjs"];
 
 /** Files copied verbatim from src/ to dist/. */
 const STATIC_FILES = ["site.css", "docs.js", "_headers", "social-card.png"];
@@ -664,10 +667,12 @@ export function buildDocsShell(
     if (html.split(`<!--${marker}-->`).length !== 2) throw new Error(`docs shell needs exactly one <!--${marker}-->`);
   }
   const shell = { html, origin: context.values.origin, repository: REPOSITORY_URL, versions, nav: rendered.nav };
-  // The renderers' sources go into the id too: a change to how pages are
-  // rendered must drop pages cached by an earlier deploy, like a shell change.
+  // The renderers' sources and libraries go into the id too: a change to how
+  // pages are rendered must drop pages cached by an earlier deploy, like a
+  // shell change.
   const hash = createHash("sha256").update(JSON.stringify(shell));
   for (const file of RENDER_SOURCES) hash.update(readFileSync(join(HERE, file)));
+  for (const library of RENDER_LIBRARIES) hash.update(readFileSync(join(HERE, "node_modules", library, "package.json")));
   const id = hash.digest("hex").slice(0, 16);
   return { id, ...shell };
 }

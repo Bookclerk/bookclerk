@@ -11,6 +11,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, URL } from "node:url";
 
+import { renderMermaidSVG } from "beautiful-mermaid";
+
+import { cleanSvg, diagram } from "./diagram.ts";
 import { highlight } from "./highlight.ts";
 import { formatDate, pageDate } from "./last-updated.ts";
 import { pickEncoding } from "./worker.ts";
@@ -355,5 +358,114 @@ test("pageDate agrees with the oracle on mutated inputs", () => {
     const json = mutate(seeds[Math.floor(rand() * seeds.length)] ?? "", seeds, rand, DATE_FRAGMENTS);
     const key = DATE_KEYS[Math.floor(rand() * DATE_KEYS.length)] ?? "README";
     checkPageDate(json, key, `FUZZ_SEED=${SEED} iteration ${i}`);
+  }
+});
+
+/** Fragments diagram-source mutations splice in: Mermaid arrows, brackets, directives and HTML-special text. */
+const DIAGRAM_FRAGMENTS = ["-->", "---", "-.->", "==>", "--", "|", "[", "]", "(", ")", "{", "}", "((", "[(", ">", "<", "&", '"', "'", ":", ";", "\n", " ", "%%", "subgraph X", "end", "direction LR", "<br/>", "<b>", "<i>", "style A fill:#000", "classDef c fill:red", "url(", "url(#x)", "javascript:", "onload=", "<script>", "&amp;", "é", "\u0000", "[*]", "note right of A: x"];
+
+/** Fragments SVG mutations splice in: tags, attributes, references and the markup cleanSvg must refuse. */
+const SVG_FRAGMENTS = ["<", ">", "/>", "</g>", "<g>", '"', "=", " ", "<style>", "</style>", "<script>", "<foreignObject>", "<a href=\"x\">", ' onload="x"', ' href="#x"', ' xlink:href="x"', ' style="fill:red"', ' class="x"', ' data-x="y"', ' fill="url(#arrowhead)"', ' fill="url(http://x/)"', ' id="x y"', "&", "&amp;", "&#60;", "<!--", "-->", "<![CDATA[", "<svg>", "</svg>", "<text>", "</text>", "é", "\u0000"];
+
+/** Elements a drawn diagram may hold, written apart from diagram.ts's list. */
+const SVG_ELEMENTS = /^(svg|g|defs|marker|path|polygon|polyline|line|rect|circle|ellipse|text|tspan)$/;
+
+/**
+ * Checks markup the docs page will embed as a diagram, independently of
+ * diagram.ts: it splits on `<…>` runs and checks each tag and text, then
+ * that elements nest, that the root is one `<svg>`, that no attribute can run
+ * script, style, or load anything, that the only class is `mono`, and that
+ * every id and `url(#…)` carries the page prefix.
+ *
+ * @param svg - The markup.
+ * @param prefix - The id prefix it was drawn with.
+ * @param context - What to print on failure.
+ */
+function checkSvg(svg: string, prefix: string, context: string): void {
+  const stack: string[] = [];
+  let roots = 0;
+  for (const part of svg.split(/(<[^<>]*>)/)) {
+    if (!part.startsWith("<")) {
+      assert.ok(!part.includes("<") && !part.includes(">"), `${context}: stray bracket in text ${JSON.stringify(part)}`);
+      assert.ok(!/&(?!(?:[a-zA-Z]+|#[0-9]+|#x[0-9a-fA-F]+);)/.test(part), `${context}: bare & in ${JSON.stringify(part)}`);
+      if (stack.length === 0) assert.equal(part.trim(), "", `${context}: text outside the svg`);
+      continue;
+    }
+    const end = /^<\/([^\s>]+)>$/.exec(part);
+    if (end !== null) {
+      assert.equal(stack.pop(), end[1], `${context}: unbalanced ${part}`);
+      continue;
+    }
+    const tag = /^<([^\s/>]+)((?: [^\s=]+="[^"]*")*)( \/)?>$/.exec(part);
+    assert.ok(tag !== null, `${context}: malformed tag ${part}`);
+    const [, name = "", attrs = "", self] = tag;
+    assert.match(name, SVG_ELEMENTS, `${context}: element ${name}`);
+    if (stack.length === 0) {
+      roots++;
+      assert.equal(name, "svg", context);
+    }
+    for (const [, key = "", value = ""] of attrs.matchAll(/ ([^\s=]+)="([^"]*)"/g)) {
+      const lower = key.toLowerCase();
+      assert.ok(!lower.startsWith("on") && !lower.includes("href") && !["style", "src"].includes(lower) && !lower.startsWith("data-"), `${context}: attribute ${key}`);
+      if (lower === "class") assert.equal(value, "mono", `${context}: class ${value}`);
+      assert.ok(!/&(?!(?:[a-zA-Z]+|#[0-9]+|#x[0-9a-fA-F]+);)/.test(value), `${context}: bare & in ${key}`);
+      if (lower === "id") assert.ok(value.startsWith(`${prefix}-`), `${context}: id ${value}`);
+      for (const ref of value.matchAll(/url\s*\(([^)]*)\)?/gi)) assert.ok((ref[1] ?? "").startsWith(`#${prefix}-`) && ref[0].endsWith(")"), `${context}: reference ${ref[0]}`);
+      assert.ok(!value.includes("\\"), `${context}: escape in ${key}`);
+      assert.ok(!/javascript:|@import|https?:/i.test(value) || lower === "xmlns", `${context}: ${key}="${value}"`);
+    }
+    if (self === undefined) stack.push(name);
+  }
+  assert.deepEqual(stack, [], `${context}: unclosed elements`);
+  assert.equal(roots, 1, `${context}: one root`);
+}
+
+/** Mutated diagram sources drawn per run: each layout takes milliseconds, so fewer than the other targets. */
+const DIAGRAM_ITERATIONS = Math.max(1, Math.floor(ITERATIONS / 40));
+
+test("diagram draws its seed corpus as clean SVG, or leaves it as code", () => {
+  const seeds = corpus("diagram");
+  assert.ok(seeds.length >= 10);
+  let drawn = 0;
+  for (const seed of seeds) {
+    const one = diagram(seed, "seed");
+    if (one === null) continue;
+    drawn++;
+    checkSvg(one.svg, "seed", JSON.stringify(seed.slice(0, 40)));
+  }
+  // Everything but the unsupported type and the stylesheet injection draws.
+  assert.equal(drawn, seeds.length - 2);
+});
+
+test("diagram keeps mutated sources clean or leaves them as code", () => {
+  const seeds = corpus("diagram");
+  const rand = prng(SEED);
+  for (let i = 0; i < DIAGRAM_ITERATIONS; i++) {
+    const source = mutate(seeds[Math.floor(rand() * seeds.length)] ?? "", seeds, rand, DIAGRAM_FRAGMENTS);
+    const drawn = diagram(source, "f");
+    if (drawn !== null) checkSvg(drawn.svg, "f", `FUZZ_SEED=${SEED} iteration ${i}: ${JSON.stringify(source)}`);
+  }
+});
+
+test("cleanSvg passes only clean markup on mutated renderer output", () => {
+  // The renderer's own SVG, before cleaning: its <style>, font import,
+  // classes, data-* attributes and inline style are what cleanSvg sees.
+  // Every seed the site draws must come through cleanSvg from raw output.
+  const svgs = corpus("diagram").flatMap((seed) => {
+    let svg: string;
+    try {
+      svg = renderMermaidSVG(seed, { transparent: true });
+    } catch {
+      return [];
+    }
+    if (diagram(seed, "c") !== null) assert.notEqual(cleanSvg(svg, "c"), null, svg.slice(0, 200));
+    return [svg];
+  });
+  assert.ok(svgs.length >= 10);
+  const rand = prng(SEED);
+  for (let i = 0; i < ITERATIONS; i++) {
+    const input = mutate(svgs[Math.floor(rand() * svgs.length)] ?? "", svgs, rand, SVG_FRAGMENTS);
+    const out = cleanSvg(input, "c");
+    if (out !== null) checkSvg(out, "c", `FUZZ_SEED=${SEED} iteration ${i}: ${JSON.stringify(input.slice(0, 2000))}`);
   }
 });

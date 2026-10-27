@@ -1,0 +1,4 @@
+flowchart TB
+  Crates["crates.io"] -- "search / metadata" --> CLI["bookclerk plugins search | install"]
+  CLI --> Archive["HTTPS archive URL<br/>(native: per OS/arch; workerd: portable)"]
+  Archive --> Dir["plugins/&lt;plugin-key-fs-id&gt;/<br/>plugin.toml, binary and/or modules/"]

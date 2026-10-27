@@ -16,22 +16,14 @@ integrations.
 
 ## Data flow
 
-```text
-┌──────────────┐     scan      ┌────────────┐
-│ ContentSource│ ────────────► │ library.db │
-│ (per store)  │               │  (SQLite)  │
-└──────┬───────┘               └─────┬──────┘
-       │ fetch_title                 │ title ids / status
-       ▼                             ▼
-┌──────────────┐   pack (plain)   ┌────────────┐   put    ┌──────────────┐
-│ cache/ temp  │ ───────────────► │  acquire   │ ───────► │ Destinations │
-│ (plugin DRM) │                  │  pipeline  │          │ local / S3   │
-└──────────────┘                  └─────┬──────┘          └──────────────┘
-                                        │ book_acquired
-                                        ▼
-                                  ┌────────────┐
-                                  │Integrations│  (ABS scan, portal, …)
-                                  └────────────┘
+```mermaid
+flowchart TB
+  Source["Content source<br/>(per store)"] -- scan --> DB[("library.db<br/>(SQLite)")]
+  Source -- fetch_title --> Cache["cache/ temp<br/>(plugin DRM)"]
+  Cache -- "pack (plain)" --> Acquire["Acquire pipeline"]
+  DB -- "title ids / status" --> Acquire
+  Acquire -- put --> Dest["Destinations<br/>local / S3"]
+  Acquire -- book_acquired --> Int["Integrations<br/>(ABS scan, portal, …)"]
 ```
 
 1. **Scan** — each enabled source upserts owned titles into `library.db`.

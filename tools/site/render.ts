@@ -15,6 +15,7 @@
 import MarkdownIt from "markdown-it";
 import type { MarkdownIt as Markdown, RendererRule, Token } from "markdown-it";
 
+import { diagram, PAGE_DIAGRAM_MAX } from "./diagram.ts";
 import { highlight } from "./highlight.ts";
 import { formatDate } from "./last-updated.ts";
 import type { IsoDate } from "./last-updated.ts";
@@ -319,12 +320,18 @@ function renderer(docKey: string, keys: ReadonlySet<string> | null, blobBase: st
   // lets keyboard users scroll them too. Each code block sits in a
   // `div.code`, which holds the copy button docs.js adds; a fence in a
   // language highlight.ts knows gets syntax colors and a `data-lang` label.
+  // A `mermaid` fence is drawn as a diagram (drawDiagram) when it can be,
+  // and is otherwise shown as code.
   for (const rule of ["fence", "code_block"] as const) {
     const base = md.renderer.rules[rule];
     if (base === undefined) throw new Error(`markdown-it has no ${rule} rule`);
     md.renderer.rules[rule] = (tokens, idx, options, env, self) => {
       const token = tokens[idx];
       const lang = rule === "fence" ? (token?.info.trim().split(/\s+/)[0] ?? "") : "";
+      if (token !== undefined && lang.toLowerCase() === "mermaid") {
+        const drawn = drawDiagram(token.content, idx, (env ?? {}) as RenderEnv);
+        if (drawn !== null) return drawn;
+      }
       const colored = token === undefined || lang === "" ? null : highlight(token.content, lang);
       if (colored === null) return `<div class="code">${base(tokens, idx, options, env, self).replace(/^<pre/, '<pre tabindex="0"')}</div>\n`;
       const name = escapeHtml(lang.toLowerCase());
@@ -334,6 +341,34 @@ function renderer(docKey: string, keys: ReadonlySet<string> | null, blobBase: st
   md.renderer.rules["table_open"] = () => '<div class="table-scroll" tabindex="0"><table>\n';
   md.renderer.rules["table_close"] = () => "</table></div>\n";
   return md;
+}
+
+/** Per-render state markdown-it passes to every rule: diagram source drawn so far. */
+interface RenderEnv {
+  /** Characters of Mermaid source this page has drawn. */
+  diagramSource?: number;
+}
+
+/**
+ * Renders a `mermaid` fence as a diagram, within the page's budget.
+ *
+ * The figure scrolls sideways like a code block: a wide diagram shrinks to
+ * the column only down to 70% of its natural width (`--w`), so its labels
+ * stay readable on a phone. The ids get a capitalized prefix, which no
+ * heading slug can match.
+ *
+ * @param source - The fence's content.
+ * @param idx - The fence's token index, unique on the page.
+ * @param env - markdown-it's per-render state, holding the page's budget.
+ * @returns The figure, or null to show the fence as code.
+ */
+function drawDiagram(source: string, idx: number, env: RenderEnv): string | null {
+  const used = (env.diagramSource ?? 0) + source.length;
+  if (used > PAGE_DIAGRAM_MAX) return null;
+  env.diagramSource = used;
+  const drawn = diagram(source, `Diagram${idx}`);
+  if (drawn === null) return null;
+  return `<figure class="diagram" tabindex="0" style="--w: ${Math.ceil(drawn.width)}px">${drawn.svg}</figure>\n`;
 }
 
 /** Longest page description, in characters, before it is shortened. */

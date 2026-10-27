@@ -8,13 +8,14 @@ adapter isolate maps the wire onto them. See [`plugins.md`](../plugins/README.md
 the author model and the [Workers RPC ADR](../adr/plugin-workers-rpc-workerd.md)
 for the decision record.
 
-```
-host ──stdio Cap'n Proto (plugin.capnp)──▶ bookclerk-jail ──▶ bookclerk-workerd
-                                              │ loopback HTTP, Bearer BRIDGE_TOKEN
-                                              ▼
-                                   bridge.js ──Workers RPC──▶ adapter isolate ──Workers RPC──▶ author classes
-                                              ▲
-                     granted channel (isolate → launcher) ◀── GRANTED service binding
+```mermaid
+flowchart TB
+  Host["host"] -- "stdio Cap'n Proto<br/>(plugin.capnp)" --> Jail["bookclerk-jail"]
+  Jail --> Launcher["bookclerk-workerd"]
+  Launcher -- "loopback HTTP,<br/>Bearer BRIDGE_TOKEN" --> Bridge["bridge.js"]
+  Bridge -- "Workers RPC" --> Adapter["adapter isolate"]
+  Adapter -- "Workers RPC" --> Author["author classes"]
+  Adapter -- "GRANTED service binding:<br/>granted channel" --> Launcher
 ```
 
 For `runtime = "native"` the host also starts a **sibling** `bookclerk-jail`

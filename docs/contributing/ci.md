@@ -95,7 +95,7 @@ libraries such as `anyhow` from capturing one for every error they build.
 ### Plan → execution contract
 
 ```mermaid
-flowchart LR
+flowchart TB
   Diff["git diff --no-renames"] --> Stage1["stage 1: affected checks"]
   Meta["cargo metadata --no-deps"] --> Stage1
   Rel["scripts/ci_plan/relations.toml"] --> Stage1

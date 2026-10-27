@@ -1,0 +1,9 @@
+flowchart TB
+  Diff["git diff --no-renames"] --> Stage1["stage 1: affected checks"]
+  Meta["cargo metadata --no-deps"] --> Stage1
+  Rel["scripts/ci_plan/relations.toml"] --> Stage1
+  Stage1 --> Stage2["stage 2: prerequisites"]
+  Stage2 --> Resolve["ci-exec resolve: mode"]
+  Resolve --> Artifact["ci-plan.json artifact"]
+  Artifact --> Jobs["jobs: validate, then ci-exec run CHECK"]
+  Artifact --> Gate["CI Gate: expected execution vs results"]

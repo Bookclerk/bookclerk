@@ -98,15 +98,11 @@ operator package under `plugin-packages/`.
 See [packaging.md](../contributing/packaging.md) for `cargo package-*` aliases and GitHub Actions
 signing notes.
 
-```text
-crates.io ──search / metadata──► bookclerk plugins search|install
-                                        │
-                                        ▼
-                              HTTPS archive URL
-                              (native: per OS/arch; workerd: portable)
-                                        │
-                                        ▼
-                    plugins/<plugin-key-fs-id>/{plugin.toml, binary and/or modules/}
+```mermaid
+flowchart TB
+  Crates["crates.io"] -- "search / metadata" --> CLI["bookclerk plugins search | install"]
+  CLI --> Archive["HTTPS archive URL<br/>(native: per OS/arch; workerd: portable)"]
+  Archive --> Dir["plugins/&lt;plugin-key-fs-id&gt;/<br/>plugin.toml, binary and/or modules/"]
 ```
 
 ## Crate naming taxonomy
