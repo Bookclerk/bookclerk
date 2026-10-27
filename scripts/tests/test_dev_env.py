@@ -38,7 +38,7 @@ SHARED_DEVCONTAINER_KEYS = (
 )
 
 # `image:tag@sha256:<64 hex>`; the registry may carry a port.
-PINNED_REF = re.compile(r"^[^\s:@]+(?::\d+)?(?:/[^\s:@]+)*:[^\s@:/]+@sha256:[0-9a-f]{64}$")
+PINNED_REF = re.compile(r"^[^\s:@/]+(?::\d+)?(?:/[^\s:@/]+)*:[^\s@:/]+@sha256:[0-9a-f]{64}$")
 
 # Debian release codenames that may appear in base-image tags.
 DEBIAN_CODENAMES = ("bullseye", "bookworm", "trixie", "forky")
