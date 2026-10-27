@@ -44,8 +44,13 @@ jobs:
       # terminals), whose /etc/profile resets PATH.
       - name: Tools run as the dev user
         run: |
+          # In the checkout, so rust-toolchain.toml applies; with
+          # auto-install off, a toolchain missing from the image fails here
+          # instead of downloading when someone opens the Dev Container.
           for shell_flags in -c -lc; do
-            docker run --rm --user bookclerk bookclerk-dev:ci bash -euo pipefail "$shell_flags" '
+            docker run --rm --user bookclerk -e RUSTUP_AUTO_INSTALL=0 \
+              -v "$PWD:/workspace:ro" -w /workspace \
+              bookclerk-dev:ci bash -euo pipefail "$shell_flags" '
               cargo --version
               cargo fmt --version
               cargo clippy --version

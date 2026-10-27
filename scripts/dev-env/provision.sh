@@ -96,10 +96,14 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends "${APT_PACKAGES[@]}"
 
-# rust-toolchain.toml selects stable + rustfmt/clippy on first cargo use;
-# installing the components now makes the first `cargo check` faster.
-log "rust components"
-rustup component add rustfmt clippy
+# rust-toolchain.toml asks for the `stable` channel by name. Base images
+# install a numbered toolchain (1.x.y), which rustup does not treat as
+# `stable`, so without this the first cargo command in the checkout would
+# download stable at run time. Installing it here, with the components the
+# toolchain file lists, keeps that out of every new container.
+log "rust stable toolchain"
+rustup toolchain install stable --profile minimal --component rustfmt,clippy --no-self-update
+rustup default stable
 
 if [[ "$(cargo nextest --version 2>/dev/null | head -n1)" == "cargo-nextest ${NEXTEST_VERSION}"* ]]; then
   log "cargo-nextest ${NEXTEST_VERSION} already installed"

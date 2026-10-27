@@ -87,7 +87,7 @@ environment needs: add a tool there, not in the Dockerfile.
 
 | Piece | Notes |
 | --- | --- |
-| `rust:1-trixie` (digest-pinned, Dependabot bumps it) | `rust-toolchain.toml` selects `stable` + rustfmt/clippy |
+| `rust:1-trixie` (digest-pinned, Dependabot bumps it) | Base only: the provision script installs the `stable` toolchain `rust-toolchain.toml` names (with rustfmt/clippy), so the first cargo command downloads nothing |
 | Node.js 26 (from the `node:26-trixie-slim` image, digest-pinned) | `ui/` Vite build and the Workers under `tools/` |
 | uv (from its image, same version as CI) | Python plugin SDK dev and docs tools |
 | `cargo-nextest` | Same version CI pins; `rust_test` runs under it |
