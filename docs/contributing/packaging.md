@@ -210,7 +210,10 @@ Only the push jobs hold `packages: write`. Only the attest job holds
 
 The first publish creates each package as **private**, so `docker pull`
 without signing in is refused. An organization owner makes each package
-public once:
+public once. A package appears only after its first publish: pushes to
+`main` publish only `bookclerk-dev`, so `bookclerk` and `bookclerk-demo`
+first appear after the nightly run or a manual run (see
+[When it runs](#when-it-runs)).
 
 1. Open `https://github.com/orgs/<owner>/packages/container/<image>/settings`
    (for example `https://github.com/orgs/bookclerk/packages/container/bookclerk/settings`).
