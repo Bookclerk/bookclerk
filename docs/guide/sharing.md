@@ -6,18 +6,23 @@ themselves.
 
 ## Invite someone
 
-An Owner or Administrator opens **Settings → User Management**, adds the
-person with their email address, and picks a role (see
-[Roles](web-app.md#roles)). Bookclerk shows an invite link to copy and send
-them. When they open it, they choose a password or a passkey and they are
+An Owner or Administrator does this:
+
+1. Open **Settings → User Management**.
+2. Add the person with their email address, and pick a role (see
+   [Roles](web-app.md#roles)).
+3. Copy the invite link Bookclerk shows, and send it to them.
+
+When they open the link, they choose a password or a passkey, and they are
 in.
 
 An invite link works once and expires. If it has been used or has run out,
-open the person's actions in User Management and send a new one.
+open the person's actions in **User Management** and send a new one.
 
-For invite links that work from other devices, the library needs an address
-people can reach, such as `https://books.example.com`. The operator sets it;
-see [Integrations and sign-in](../server/integrations.md).
+> [!NOTE]
+> For invite links to work from other devices, the library needs an address
+> people can reach, such as `https://books.example.com`. The operator sets
+> it; see [Integrations and sign-in](../server/integrations.md).
 
 ## What people share, and what they keep
 

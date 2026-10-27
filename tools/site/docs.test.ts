@@ -260,3 +260,20 @@ test("Copy takes a session's commands and the lines that continue them", async (
   assert.equal(await copied('$ echo "a # b" \\\n  more\nout'), 'echo "a # b" \\\n  more');
   assert.equal(await copied("$ echo 'a \\' x\nout"), "echo 'a \\' x");
 });
+
+test("GitHub alert blockquotes render as callouts, other blockquotes stay quotes", () => {
+  const html = (source: string): string => renderDoc(source, "cluster-hosts", { blobBase: BLOB }).html;
+  assert.equal(
+    html("> [!WARNING]\n> Leave **Auto acquire** off.\n"),
+    '<div class="callout callout-warning" role="note"><p class="callout-title">Warning</p>\n<p>Leave <strong>Auto acquire</strong> off.</p>\n</div>\n',
+  );
+  // The kind is read without regard to case, and a marker alone still renders.
+  assert.match(html("> [!tip]\n"), /^<div class="callout callout-tip" role="note"><p class="callout-title">Tip<\/p>\n<\/div>\n$/);
+  // A second paragraph and a nested quote stay inside the callout.
+  const nested = html("> [!NOTE]\n> One.\n>\n> > Quoted.\n\nAfter.\n");
+  assert.match(nested, /^<div class="callout callout-note"[^>]*><p class="callout-title">Note<\/p>\n<p>One.<\/p>\n<blockquote>\n<p>Quoted.<\/p>\n<\/blockquote>\n<\/div>\n<p>After.<\/p>\n$/);
+  // Not a marker: an unknown kind, text after the marker, or no marker at all.
+  for (const source of ["> [!DANGER]\n> x\n", "> [!NOTE] inline\n", "> plain\n"]) {
+    assert.match(html(source), /^<blockquote>/, source);
+  }
+});

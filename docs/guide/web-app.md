@@ -34,10 +34,12 @@ Everyone in a library has a role. It decides what they can do:
 | Administrator | Everything a Member can, plus scan, download books and add people |
 | Owner | Everything an Administrator can, plus manage sign-in options and other Administrators |
 
-The **operator** is not a person in the library but the key to the server
-itself: the operator token. It is used to set up the server, turn on
-plugins and change server settings. Once an Owner exists, an Owner can
-step up to operator powers from their own account when needed.
+The **operator** is not a person in the library. It is the key to the
+server itself: the operator token. It is used to set up the server, turn on
+plugins and change server settings.
+
+Once an Owner exists, an Owner can step up to operator powers from their
+own account when needed.
 
 ## Signing in
 
@@ -53,8 +55,9 @@ Depending on how your library is set up, you can sign in with:
 New people join with an invite link; see
 [Sharing with your household](sharing.md).
 
-On the computer that runs Bookclerk, the tray icon opens the library and can
-copy a one-time sign-in link for the operator.
+> [!TIP]
+> On the computer that runs Bookclerk, the tray icon opens the library and
+> can copy a one-time sign-in link for the operator.
 
 The full reference for roles, sign-in and settings is
 [Web app and sign-in reference](../server/sign-in.md).
