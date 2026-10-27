@@ -586,13 +586,17 @@ def parse_coauthor_page(raw: bytes) -> CoauthorPage:
     return CoauthorPage(commits=out, next_cursor=cursor, assistant_ids=frozenset(assistants))
 
 
-def parse_comment_page(raw: bytes) -> list[Comment]:
+def parse_comment_page(raw: bytes) -> tuple[list[Comment], int]:
     """Reads one page of ``GET /issues/{n}/comments``.
 
     A comment whose author is missing or is an account this check does not
     model (a deleted user, an app login without ``[bot]``) is left out: it
     can neither sign nor be the check's own comment, and one such comment
     must not stop the check for good.
+
+    # Returns
+    The comments kept, and how many entries the page had before any were
+    left out (which decides whether another page follows).
 
     # Errors
     ``ClaInputError`` when the page or a comment's other fields have the
@@ -609,7 +613,7 @@ def parse_comment_page(raw: bytes) -> list[Comment]:
         except ClaInputError:
             continue
         comments.append(parse_comment(obj))
-    return comments
+    return comments, len(page)
 
 
 def parse_signatures(raw: bytes) -> SignatureBook:
@@ -893,9 +897,9 @@ class GitHub:
         comments: list[Comment] = []
         page = 1
         while True:
-            batch = parse_comment_page(self.call("GET", f"issues/{number}/comments?per_page={PAGE_SIZE}&page={page}"))
+            batch, entries = parse_comment_page(self.call("GET", f"issues/{number}/comments?per_page={PAGE_SIZE}&page={page}"))
             comments += batch
-            if len(batch) < PAGE_SIZE:
+            if entries < PAGE_SIZE:
                 return comments
             page += 1
 
@@ -976,8 +980,12 @@ def run(event: Event, api: GitHub, cla_url: str, run_url: str) -> None:
     book, _ = api.signatures()
     if event.before_sha is not None and event.before_sha != pull.head_sha:
         # A push moved this pull request off a head other pull requests may
-        # still have; their shared status no longer has to wait for it.
-        settle(api, event.before_sha, book, run_url)
+        # still have; their shared status no longer has to wait for it. A
+        # failure there is theirs to retry and must not stop this check.
+        try:
+            settle(api, event.before_sha, book, run_url)
+        except (ApiError, ClaInputError) as err:
+            print(f"cla_check: could not re-decide the previous head: {err}", file=sys.stderr)
     if not pull.open:
         # A closed pull request no longer holds its head; the open ones that
         # share it decide the status alone.

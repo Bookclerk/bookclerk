@@ -285,7 +285,9 @@ def module(kind: str, raw: bytes) -> object:
     if kind == "commits":
         return [(c.sha, None if c.author is None else acc(c.author)) for c in cla.parse_commit_page(raw)]
     if kind == "comments":
-        return [comment(c) for c in cla.parse_comment_page(raw)]
+        kept, entries = cla.parse_comment_page(raw)
+        assert entries == len(cla._load_json(raw))
+        return [comment(c) for c in kept]
     if kind == "pullrefs":
         return [(r.number, r.open, r.head_sha) for r in cla.parse_pull_refs(raw)]
     if kind == "coauthors":
@@ -740,6 +742,14 @@ class EndToEndTests(unittest.TestCase):
         drive(fake, cla.parse_event("pull_request_target", raw))
         self.assertEqual([(sha, b["state"]) for sha, b in fake.statuses], [(SHA_C, "success"), (SHA_B, "failure")])
 
+    def test_a_failure_on_the_previous_head_does_not_stop_the_check(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}])
+        for n in range(8, 8 + cla.MAX_SHARED_PULLS + 1):
+            fake.others[n] = {"author": BOB, "commits": [commit(SHA_B, BOB)], "head": SHA_B}
+        raw = json.dumps({"repository": {"id": 555}, "before": SHA_B, "pull_request": fake.pull()}).encode()
+        drive(fake, cla.parse_event("pull_request_target", raw))
+        self.assertEqual(fake.last_status(), "success")
+
     def test_a_closed_pull_request_never_passes_a_shared_head_alone(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}])
         fake.state = "closed"
@@ -784,6 +794,14 @@ class EndToEndTests(unittest.TestCase):
             {"id": 2, "user": account("Copilot", 198982749, "Bot"), "body": "Summary", "created_at": "t"},
         ]
         drive(fake, comment_event(ALICE, cla.SIGN_PHRASE + "\n"))
+        self.assertEqual(fake.signed_ids(), {101})
+        self.assertEqual(fake.last_status(), "success")
+
+    def test_odd_comment_authors_do_not_end_pagination_early(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        fake.comments += [{"id": n, "user": None, "body": "ghost", "created_at": "t"} for n in range(1, 101)]
+        fake.comments.append({"id": 500, "user": ALICE, "body": cla.SIGN_PHRASE, "created_at": "t"})
+        drive(fake, comment_event(BOB, cla.RECHECK_PHRASE))
         self.assertEqual(fake.signed_ids(), {101})
         self.assertEqual(fake.last_status(), "success")
 
