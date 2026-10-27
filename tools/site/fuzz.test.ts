@@ -374,8 +374,9 @@ const SVG_ELEMENTS = /^(svg|g|defs|marker|path|polygon|polyline|line|rect|circle
  * Checks markup the docs page will embed as a diagram, independently of
  * diagram.ts: it splits on `<…>` runs and checks each tag and text, then
  * that elements nest, that the root is one `<svg>`, that no attribute can run
- * script, style, or load anything, that the only class is `mono`, and that
- * every id and `url(#…)` carries the page prefix.
+ * script, style, or load anything, that the only class is `mono`, that
+ * paints are the site's variables rather than literal colors, and that every
+ * id and `url(#…)` carries the page prefix.
  *
  * @param svg - The markup.
  * @param prefix - The id prefix it was drawn with.
@@ -408,6 +409,7 @@ function checkSvg(svg: string, prefix: string, context: string): void {
       const lower = key.toLowerCase();
       assert.ok(!lower.startsWith("on") && !lower.includes("href") && !["style", "src"].includes(lower) && !lower.startsWith("data-"), `${context}: attribute ${key}`);
       if (lower === "class") assert.equal(value, "mono", `${context}: class ${value}`);
+      if (lower === "fill" || lower === "stroke") assert.ok(value === "none" || value.startsWith("var(--") || value.startsWith(`url(#${prefix}-`), `${context}: literal paint ${key}="${value}"`);
       assert.ok(!/&(?!(?:[a-zA-Z]+|#[0-9]+|#x[0-9a-fA-F]+);)/.test(value), `${context}: bare & in ${key}`);
       if (lower === "id") assert.ok(value.startsWith(`${prefix}-`), `${context}: id ${value}`);
       for (const ref of value.matchAll(/url\s*\(([^)]*)\)?/gi)) assert.ok((ref[1] ?? "").startsWith(`#${prefix}-`) && ref[0].endsWith(")"), `${context}: reference ${ref[0]}`);

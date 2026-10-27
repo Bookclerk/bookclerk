@@ -119,7 +119,7 @@ test("every Mermaid fence in docs/ is drawn as a diagram", () => {
   let fences = 0;
   for (const doc of docs) {
     const source = readFileSync(`${DOCS}${doc.key}.md`, "utf8");
-    const count = new MarkdownIt().parse(source, {}).filter((t) => t.type === "fence" && t.info.trim() === "mermaid").length;
+    const count = new MarkdownIt().parse(source, {}).filter((t) => t.type === "fence" && (t.info.trim().split(/\s+/)[0] ?? "").toLowerCase() === "mermaid").length;
     fences += count;
     assert.equal((doc.html.match(/<figure class="diagram"[^>]*><svg /g) ?? []).length, count, doc.key);
     assert.ok(!doc.html.includes("language-mermaid"), `${doc.key} has a Mermaid fence the site could not draw`);
@@ -134,9 +134,19 @@ test("diagrams keep their ids apart and leave the source's styling out", () => {
   assert.ok(ids.length >= 2);
   assert.equal(new Set(ids).size, ids.length);
   for (const [, ref = ""] of out.html.matchAll(/url\(#([^)]+)\)/g)) assert.ok(ids.includes(ref), ref);
-  assert.match(out.html, /<figure class="diagram" tabindex="0" style="--w: [0-9]+px"><svg /);
+  assert.match(out.html, /<figure class="diagram" tabindex="0" role="group" aria-label="Flowchart" style="--w: [0-9]+px"><svg /);
+  assert.match(out.html, /aria-label="State diagram"/);
   const svgs = out.html.slice(out.html.indexOf("<svg")).replace(/<\/?figure[^>]*>/g, "");
   assert.ok(!/<style|@import|googleapis| style="| class="(?!mono")| data-/.test(svgs));
+});
+
+test("a page draws at most twelve diagrams, and fences it cannot draw spend none of its budget", () => {
+  const small = (n: number): string => `\`\`\`mermaid\nflowchart LR\n  A${n} --> B\n\`\`\`\n\n`;
+  const many = renderDoc(Array.from({ length: 14 }, (_, n) => small(n)).join(""), "cluster-hosts", { blobBase: BLOB });
+  assert.equal((many.html.match(/<figure class="diagram"/g) ?? []).length, 12);
+  const long = `\`\`\`mermaid\nflowchart LR\n${"  A --> B\n".repeat(500)}\`\`\`\n\n`;
+  const after = renderDoc(long.repeat(5) + small(1), "cluster-hosts", { blobBase: BLOB });
+  assert.equal((after.html.match(/<figure class="diagram"/g) ?? []).length, 1);
 });
 
 test("a page draws diagrams only up to its budget, then shows code", () => {
@@ -147,7 +157,8 @@ test("a page draws diagrams only up to its budget, then shows code", () => {
 });
 
 test("a Mermaid fence the site cannot draw stays a code block", () => {
-  for (const body of ["pie title Formats\n  \"m4b\" : 70", "flowchart LR\n  A --> B\n  style A fill:url(https://example.com/x)", `flowchart LR\n${"  A --> B\n".repeat(500)}`]) {
+  const colored = ["style A fill:#f00", "classDef hot fill:#f00\n  class A hot", "linkStyle 0 stroke:#f00"].map((line) => `flowchart LR\n  A --> B\n  ${line}`);
+  for (const body of ["pie title Formats\n  \"m4b\" : 70", "flowchart LR\n  A --> B\n  style A fill:url(https://example.com/x)", `flowchart LR\n${"  A --> B\n".repeat(500)}`, ...colored]) {
     const out = renderDoc(`\`\`\`mermaid\n${body}\n\`\`\`\n`, "cluster-hosts", { blobBase: BLOB });
     assert.ok(!out.html.includes("<svg"), body.slice(0, 40));
     assert.match(out.html, /<code class="language-mermaid">/);

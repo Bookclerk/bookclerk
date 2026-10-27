@@ -107,8 +107,10 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   lays diagrams out without a DOM, so pages need no client-side script and
   the docs' Markdown stays what GitHub renders. Flowcharts, state, sequence,
   class and ER diagrams are drawn; any other type, a fence over 4,000
-  characters, fences past 16,000 characters on one page, or one that fails
-  to lay out stays a code block. Layout costs CPU (the first one in an
+  characters, fences past 12 diagrams or 16,000 characters on one page, a
+  diagram with its own colors (`style`, `classDef`, `linkStyle`), or one
+  that fails to lay out stays a code block. Each figure is named for its
+  kind ("Flowchart") for screen readers. Layout costs CPU (the first one in an
   isolate about a quarter of a second while elkjs starts), so an isolate
   keeps its recent layouts. The SVG is rebuilt from an allowlist of elements
   and attributes (its `<style>` with the font import, tooltips, classes but

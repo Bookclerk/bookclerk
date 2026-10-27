@@ -15,7 +15,7 @@
 import MarkdownIt from "markdown-it";
 import type { MarkdownIt as Markdown, RendererRule, Token } from "markdown-it";
 
-import { diagram, PAGE_DIAGRAM_MAX } from "./diagram.ts";
+import { diagram, drawable, PAGE_DIAGRAM_COUNT_MAX, PAGE_DIAGRAM_MAX } from "./diagram.ts";
 import { highlight } from "./highlight.ts";
 import { formatDate } from "./last-updated.ts";
 import type { IsoDate } from "./last-updated.ts";
@@ -355,19 +355,24 @@ function renderer(docKey: string, keys: ReadonlySet<string> | null, blobBase: st
   return md;
 }
 
-/** Per-render state markdown-it passes to every rule: diagram source drawn so far. */
+/** Per-render state markdown-it passes to every rule: the diagrams drawn so far. */
 interface RenderEnv {
-  /** Characters of Mermaid source this page has drawn. */
+  /** Characters of Mermaid source this page has laid out. */
   diagramSource?: number;
+  /** Diagrams this page has laid out. */
+  diagramCount?: number;
 }
 
 /**
- * Renders a `mermaid` fence as a diagram, within the page's budget.
+ * Renders a `mermaid` fence as a diagram, within the page's budget: at most
+ * PAGE_DIAGRAM_COUNT_MAX diagrams and PAGE_DIAGRAM_MAX characters of
+ * source, counting only fences that are laid out.
  *
  * The figure scrolls sideways like a code block: a wide diagram shrinks to
  * the column only down to 70% of its natural width (`--w`), so its labels
  * stay readable on a phone. The ids get a capitalized prefix, which no
- * heading slug can match.
+ * heading slug can match. The figure is named for its kind, so keyboard and
+ * screen-reader users know what they reached; the labels inside stay text.
  *
  * @param source - The fence's content.
  * @param idx - The fence's token index, unique on the page.
@@ -375,12 +380,15 @@ interface RenderEnv {
  * @returns The figure, or null to show the fence as code.
  */
 function drawDiagram(source: string, idx: number, env: RenderEnv): string | null {
+  if (!drawable(source)) return null;
   const used = (env.diagramSource ?? 0) + source.length;
-  if (used > PAGE_DIAGRAM_MAX) return null;
+  const count = (env.diagramCount ?? 0) + 1;
+  if (used > PAGE_DIAGRAM_MAX || count > PAGE_DIAGRAM_COUNT_MAX) return null;
   env.diagramSource = used;
+  env.diagramCount = count;
   const drawn = diagram(source, `Diagram${idx}`);
   if (drawn === null) return null;
-  return `<figure class="diagram" tabindex="0" style="--w: ${Math.ceil(drawn.width)}px">${drawn.svg}</figure>\n`;
+  return `<figure class="diagram" tabindex="0" role="group" aria-label="${escapeHtml(drawn.label)}" style="--w: ${Math.ceil(drawn.width)}px">${drawn.svg}</figure>\n`;
 }
 
 /** The callout kinds a doc can use, as GitHub's alert syntax names them. */

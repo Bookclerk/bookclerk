@@ -23,6 +23,9 @@ export const DIAGRAM_SOURCE_MAX = 4000;
 /** Most diagram source drawn on one page, in characters; later fences stay code. */
 export const PAGE_DIAGRAM_MAX = 16000;
 
+/** Most diagrams drawn on one page; later fences stay code. Layout cost is mostly per diagram. */
+export const PAGE_DIAGRAM_COUNT_MAX = 12;
+
 /** Layouts kept per isolate, by source; the oldest goes first. */
 const LAYOUT_CACHE_SIZE = 64;
 
@@ -35,14 +38,25 @@ export interface Diagram {
   svg: string;
   /** Its natural width in CSS pixels, from the root's `width`. */
   width: number;
+  /** What kind of diagram it is, for its accessible name ("Flowchart"). */
+  label: string;
 }
 
 /**
- * Diagram types the site draws, by the keyword that opens the source. These
+ * Diagram types the site draws, by the keyword that opens the source, with
+ * the name a screen reader announces for each. These
  * are the types both GitHub's Mermaid and beautiful-mermaid support and the
  * site's colors cover; the writing guide lists the same ones.
  */
-const DIAGRAM_TYPES: ReadonlySet<string> = new Set(["flowchart", "graph", "stateDiagram", "stateDiagram-v2", "sequenceDiagram", "classDiagram", "erDiagram"]);
+const DIAGRAM_TYPES: ReadonlyMap<string, string> = new Map([
+  ["flowchart", "Flowchart"],
+  ["graph", "Flowchart"],
+  ["stateDiagram", "State diagram"],
+  ["stateDiagram-v2", "State diagram"],
+  ["sequenceDiagram", "Sequence diagram"],
+  ["classDiagram", "Class diagram"],
+  ["erDiagram", "Entity relationship diagram"],
+]);
 
 /** SVG elements kept; see SKIPPED for those dropped, anything else rejects the diagram. */
 const ELEMENTS: ReadonlySet<string> = new Set(["svg", "g", "defs", "marker", "path", "polygon", "polyline", "line", "rect", "circle", "ellipse", "text", "tspan"]);
@@ -64,6 +78,14 @@ const ATTRIBUTES: ReadonlySet<string> = new Set([
   "fill", "stroke", "stroke-width", "stroke-dasharray", "stroke-linecap", "stroke-linejoin",
   "font-size", "font-weight", "font-style", "text-anchor", "text-decoration",
 ]);
+
+/**
+ * Paint values kept on `fill` and `stroke`: the site's variables, `none` and
+ * references inside the diagram. A literal color (from a `style`,
+ * `classDef` or `linkStyle` line) would ignore the light and dark palettes,
+ * so it rejects the diagram.
+ */
+const PAINT = /^(?:none|var\(--[A-Za-z0-9_-]+\)|url\(#[A-Za-z][A-Za-z0-9_-]*\))$/;
 
 /** The only `xmlns` value kept. */
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
@@ -164,6 +186,7 @@ export function cleanSvg(svg: string, prefix: string): string | null {
         // Numbers, keywords, `var(--…)` and `url(#…)` need nothing else; no
         // `:`, `;`, `/`, `\\` or `&` leaves room to name another resource.
         if (!/^[A-Za-z0-9 #.,%()_+-]*$/.test(value)) return null;
+        if ((key === "fill" || key === "stroke") && !PAINT.test(value)) return null;
         if (/url\s*\(/i.test(value)) {
           const ref = /^url\(#([A-Za-z][A-Za-z0-9_-]*)\)$/.exec(value);
           if (ref === null) return null;
@@ -190,12 +213,24 @@ export function cleanSvg(svg: string, prefix: string): string | null {
  *   rejects; the caller then shows it as a code block.
  */
 export function diagram(source: string, prefix: string): Diagram | null {
-  if (source.length > DIAGRAM_SOURCE_MAX || !DIAGRAM_TYPES.has(diagramType(source))) return null;
+  if (!drawable(source)) return null;
+  const label = DIAGRAM_TYPES.get(diagramType(source)) ?? "Diagram";
   const raw = layout(source);
   const svg = raw === null ? null : cleanSvg(raw.trim(), prefix);
   if (svg === null) return null;
-  const width = Number(/^<svg [^>]*?\bwidth="([0-9.]+)"/.exec(svg)?.[1]);
-  return Number.isFinite(width) && width > 0 ? { svg, width } : null;
+  const width = Number(/^<svg [^>]*?\swidth="([0-9.]+)"/.exec(svg)?.[1]);
+  return Number.isFinite(width) && width > 0 ? { svg, width, label } : null;
+}
+
+/**
+ * Whether a source is short enough and of a type the site draws, checked
+ * before any layout so a page's budget is spent only on diagrams it tries.
+ *
+ * @param source - The fence's content.
+ * @returns True when `diagram` will lay it out.
+ */
+export function drawable(source: string): boolean {
+  return source.length <= DIAGRAM_SOURCE_MAX && DIAGRAM_TYPES.has(diagramType(source));
 }
 
 /**

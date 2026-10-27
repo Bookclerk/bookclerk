@@ -242,7 +242,9 @@ const RENDER_SOURCES = ["render.ts", "diagram.ts", "highlight.ts", "last-updated
  * Libraries the renderers run, whose installed versions are part of the docs
  * shell's id too: an update can change the markup of every page.
  */
-const RENDER_LIBRARIES = ["markdown-it", "@shikijs/core", "@shikijs/engine-javascript", "@shikijs/langs", "beautiful-mermaid", "elkjs"];
+// beautiful-mermaid's own copy of entities escapes diagram labels; markdown-it
+// has another, so it is named by its nested path.
+const RENDER_LIBRARIES = ["markdown-it", "@shikijs/core", "@shikijs/engine-javascript", "@shikijs/langs", "beautiful-mermaid", "beautiful-mermaid/node_modules/entities", "elkjs"];
 
 /** Files copied verbatim from src/ to dist/. */
 const STATIC_FILES = ["site.css", "docs.js", "_headers", "social-card.png"];
