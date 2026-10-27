@@ -1,10 +1,11 @@
 # Bookclerk trademark policy
 
 "Bookclerk", the Bookclerk logo and the Bookclerk mark are the project's
-trademarks. The code is free software under the
-[GNU Affero General Public License](LICENSE), but that license covers
-copyright only: section 7(e) lets the project decline to grant trademark
-rights, and it does. This policy says how you may use the name and logo.
+trademarks. Bookclerk is free software under the
+[GNU Affero General Public License](LICENSE), with some parts under other
+licenses (see the README). None of these licenses grants trademark rights:
+for the AGPL, section 7(e) lets the project decline them, and it does. This
+policy says how you may use the name and logo.
 
 The goal is simple: when someone sees the Bookclerk name, they should be able
 to trust that it is the software this project releases, or that the text
@@ -21,8 +22,8 @@ around the name makes clear it is not.
 - **Say what your work does with Bookclerk.** "A plugin for Bookclerk", "works
   with Bookclerk" and "Libation importer for Bookclerk" are fine, as long as
   your own name comes first and is more prominent than ours.
-- **Name a plugin** `bookclerk-plugin-<name>` or similar. The registry and the
-  SDKs use that naming, so plugin authors may use it.
+- **Name a plugin package** `bookclerk-plugin-{kind}-{id}`, the pattern the
+  [plugin registry](docs/plugins/registry.md) requires.
 - **Run Bookclerk for yourself, your household or your organization**,
   including on a public server, under the Bookclerk name, as long as you run
   unmodified releases.
@@ -34,7 +35,8 @@ around the name makes clear it is not.
   a name that is not "Bookclerk" or confusingly similar, and do not use the
   logo. You may say your project is "based on Bookclerk" or "a fork of
   Bookclerk".
-- **Commercial products and services.** Do not use "Bookclerk" as or in the
+- **Products, companies and services.** Apart from the uses listed above,
+  which are fine in commercial work too, do not use "Bookclerk" as or in the
   name of a product, company, domain name or hosted service, and do not imply
   the project endorses, sponsors or certifies you.
 - **Changed logos.** Do not change the logo's shape, wordmark or colors except

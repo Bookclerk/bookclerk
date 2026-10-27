@@ -92,8 +92,17 @@ Setup, once, by a repository administrator:
 
 ## The Bookclerk name and logo
 
-The licenses cover copyright only. The name, logo and mark are covered by
-the [trademark policy](../../TRADEMARK.md), which the AGPL allows as an
-additional term under section 7(e). In short: talk about Bookclerk and
+None of the licenses grants trademark rights. The name, logo and mark are
+covered by the [trademark policy](../../TRADEMARK.md), which the AGPL allows
+as an additional term under section 7(e). In short: talk about Bookclerk and
 redistribute unmodified releases freely, and give forks and modified hosted
 versions a different name.
+
+## Next steps
+
+- Read the [Contributor License Agreement](../../CLA.md) before your first
+  pull request.
+- Read the [trademark policy](../../TRADEMARK.md) before naming a plugin,
+  fork or service.
+- See [Plugins](../plugins/README.md) to start building on the MIT OR
+  Apache-2.0 SDKs.
