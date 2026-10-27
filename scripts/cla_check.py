@@ -577,7 +577,13 @@ def parse_coauthor_page(raw: bytes) -> CoauthorPage:
             user = author.get("user")
             if user is not None:
                 obj = _object(user, "user")
-                account = parse_account({"id": obj.get("databaseId"), "login": obj.get("login"), "type": "User"})
+                # GraphQL types a commit's linked account as ``User`` even for
+                # an App's bot (Dependabot's commits link `dependabot[bot]`),
+                # so the type comes from the login: GitHub gives the `[bot]`
+                # suffix only to App bots and no user login can carry it.
+                login = obj.get("login")
+                kind = "Bot" if isinstance(login, str) and login.endswith("[bot]") else "User"
+                account = parse_account({"id": obj.get("databaseId"), "login": login, "type": kind})
                 if isinstance(email, str) and email.lower() in ASSISTANT_EMAILS:
                     assistants.add(account.id)
                 else:

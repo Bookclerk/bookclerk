@@ -222,7 +222,9 @@ def oracle(kind: str, raw: bytes) -> object:
                 user = e.get("user")
                 if user is not None:
                     user = o_obj(user)
-                    account = o_account({"id": user.get("databaseId"), "login": user.get("login"), "type": "User"})
+                    login = user.get("login")
+                    kind = "Bot" if type(login) is str and login[-5:] == "[bot]" else "User"
+                    account = o_account({"id": user.get("databaseId"), "login": login, "type": kind})
                     if email is not None and email.casefold() == "noreply@anthropic.com":
                         assistants.add(account[0])
                     else:
@@ -348,7 +350,7 @@ class CorpusTests(unittest.TestCase):
             "signatures__missing_key", "signatures__string_id", "signatures__no_name", "signatures__zero_id",
             "signatures__deep", "contents__dir", "contents__bad_base64", "contents__none_encoding",
             "coauthors__errors", "coauthors__too_many", "coauthors__count_mismatch", "coauthors__repeat",
-            "coauthors__no_cursor", "coauthors__bot_login_as_user", "coauthors__null_pull",
+            "coauthors__no_cursor", "coauthors__bad_bot_login", "coauthors__null_pull",
             "coauthors__email_not_string",
         ):
             kind = name.partition("__")[0]
@@ -370,6 +372,11 @@ class CorpusTests(unittest.TestCase):
             ({SHA_A: [(101, "alice", "User"), (102, "bob", "User")], SHA_B: []}, None, frozenset()),
         )
         self.assertEqual(module("coauthors", load("coauthors__next_page"))[1], "Y3Vyc29yOnYyOpHOAAAAAQ==")
+        # GraphQL links a bot's commit to a `User` whose login ends in `[bot]`.
+        self.assertEqual(
+            module("coauthors", load("coauthors__bot_author")),
+            ({SHA_A: [(49699333, "dependabot[bot]", "Bot")]}, None, frozenset()),
+        )
         self.assertEqual(
             module("coauthors", load("coauthors__assistant")),
             ({SHA_A: [(101, "alice", "User")]}, None, frozenset({900001})),
@@ -581,7 +588,8 @@ class FakeGitHub:
         start = int(variables["after"] or 0)
         nodes = []
         for c in commit_list[start:start + 100]:
-            primary = c["author"] if c["author"] and c["author"]["type"] == "User" else None
+            # GraphQL links bot authors too, as a `User` with the bot's login.
+            primary = c["author"] if c["author"] and c["author"]["type"] in ("User", "Bot") else None
             users = [primary, *c.get("coauthors", [])]
             user_nodes = [
                 {"email": (u or {}).get("email", "x@example.com"), "user": None if u is None else {"databaseId": u["id"], "login": u["login"]}}
