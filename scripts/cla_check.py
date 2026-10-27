@@ -953,18 +953,21 @@ class GitHub:
         return numbers
 
     def pulls_from(self, head: RunHead) -> list[int]:
-        """Lists the pull requests, open or closed, whose head is ``head``.
+        """Lists the open pull requests whose head is ``head``.
 
         Matches the listing's head commit and head repository against the
         run's, so a branch name reused by another fork or a later push does
-        not count.
+        not count. Closed pull requests are left out: one only hands its
+        head's shared status to the open ones, which the caller does when
+        nothing matches, and a branch reused for many pull requests (a
+        fork's ``main``) would otherwise fill the page with closed ones.
 
         # Errors
         ``ApiError`` when the listing fills a page or more than
         ``MAX_SHARED_PULLS`` match.
         """
         label = f"{urllib.parse.quote(head.owner, safe='')}:{urllib.parse.quote(head.branch, safe='')}"
-        refs = parse_pull_refs(self.call("GET", f"pulls?state=all&head={label}&per_page={PAGE_SIZE}"))
+        refs = parse_pull_refs(self.call("GET", f"pulls?state=open&head={label}&per_page={PAGE_SIZE}"))
         if len(refs) >= PAGE_SIZE:
             raise ApiError("too many pull requests come from the head branch")
         numbers = sorted({r.number for r in refs if r.head_sha == head.sha and r.head_repo_id == head.repo_id})
@@ -1053,8 +1056,9 @@ def run(event: Event, api: GitHub, cla_url: str, run_url: str) -> None:
     if event.run_head is not None:
         numbers = api.pulls_from(event.run_head)
         if not numbers:
-            # The pull request moved on (a later push) or its branch is gone;
-            # the open pull requests still on that commit decide it alone.
+            # The pull request was closed or moved on (a later push), or its
+            # branch is gone; the open pull requests still on that commit
+            # decide it alone.
             book, _ = api.signatures()
             settle(api, event.run_head.sha, book, run_url)
         for number in numbers:

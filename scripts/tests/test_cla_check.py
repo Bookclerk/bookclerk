@@ -652,10 +652,10 @@ class FakeGitHub:
 
         parts = route.split("/")
         if method == "GET" and route == "pulls":
-            assert params["state"] == "all"
+            assert params["state"] == "open"
             label = urllib.parse.unquote(params["head"])
             listed = [self.pull_of(n) for n in (7, *self.others)]
-            return 200, json.dumps([p for p in listed if p["head"]["label"] == label]).encode()
+            return 200, json.dumps([p for p in listed if p["head"]["label"] == label and p["state"] == "open"]).encode()
         if method == "GET" and len(parts) == 2 and parts[0] == "pulls" and self.pull_of(int(parts[1])) is not None:
             return 200, json.dumps(self.pull_of(int(parts[1]))).encode()
         if method == "GET" and len(parts) == 3 and parts[0] == "pulls" and parts[2] == "commits":
@@ -828,6 +828,15 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(fake.comments, [])
         drive(fake, run_event(fake, 7))
         self.assertEqual(len(fake.comments), 1)
+
+    def test_closed_pull_requests_on_a_reused_branch_do_not_count(self) -> None:
+        # A fork that opens every pull request from its `main` piles up
+        # closed ones with that label; they must not fill the listing.
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}])
+        for n in range(8, 8 + 2 * cla.MAX_SHARED_PULLS):
+            fake.others[n] = {"author": ALICE, "commits": [commit(SHA_A, ALICE)], "label": "alice:feature", "repo": 700, "state": "closed"}
+        drive(fake, run_event(fake))
+        self.assertEqual(fake.last_status(), "success")
 
     def test_too_many_pull_requests_from_one_head_fail_closed(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
