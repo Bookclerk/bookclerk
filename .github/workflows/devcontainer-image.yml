@@ -13,6 +13,7 @@ on:
       - ".devcontainer/**"
       - "scripts/dev-env/**"
       - "scripts/tests/requirements.txt"
+      - "rust-toolchain.toml"
       - ".dockerignore"
       - ".github/workflows/devcontainer-image.yml"
   workflow_dispatch:

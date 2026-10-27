@@ -15,6 +15,8 @@ import subprocess
 import unittest
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[2]
 PROVISION = ROOT / "scripts" / "dev-env" / "provision.sh"
 DEVCONTAINER_DOCKERFILE = ROOT / ".devcontainer" / "Dockerfile"
@@ -104,18 +106,24 @@ def _split_ref(ref: str) -> tuple[str, str, str]:
     return name, tag, digest
 
 
-def _workflow_pin(pattern: str) -> set[str]:
-    """Return every value a regex captures across the workflows.
+def _action_inputs(action: str, key: str) -> list[str]:
+    """Return one input of every step that uses an action, across the workflows.
 
     Args:
-        pattern: Regex with one capture group, matched per workflow file.
+        action: Action name without the ref, e.g. ``astral-sh/setup-uv``.
+        key: Input under the step's ``with:`` mapping.
 
     Returns:
-        The distinct captured values.
+        The input's value for each such step; a step without it yields ``""``
+        so a missing pin fails the comparison instead of being skipped.
     """
-    found: set[str] = set()
-    for workflow in (ROOT / ".github" / "workflows").glob("*.yml"):
-        found.update(re.findall(pattern, workflow.read_text(encoding="utf-8")))
+    found: list[str] = []
+    for workflow in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+        jobs = yaml.safe_load(workflow.read_text(encoding="utf-8")).get("jobs", {})
+        for job in jobs.values():
+            for step in job.get("steps", []):
+                if str(step.get("uses", "")).split("@", 1)[0] == action:
+                    found.append(str((step.get("with") or {}).get(key, "")))
     return found
 
 
@@ -134,8 +142,11 @@ class ProvisionScriptTests(unittest.TestCase):
     def test_image_tools_match_ci_versions(self) -> None:
         """uv and the Node.js major in the Dev Container are the ones CI sets up."""
         images = {_split_ref(ref)[0]: _split_ref(ref)[1] for ref in _base_images(DEVCONTAINER_DOCKERFILE)}
-        self.assertEqual({images["ghcr.io/astral-sh/uv"]}, _workflow_pin(r'setup-uv@\S+[^\n]*\n\s+with:\s*\n\s+version:\s*"([^"]+)"'))
-        self.assertEqual({images["node"].split("-", 1)[0]}, _workflow_pin(r'node-version:\s*"([^"]+)"'))
+        uv = _action_inputs("astral-sh/setup-uv", "version")
+        node = _action_inputs("actions/setup-node", "node-version")
+        self.assertTrue(uv and node, "no setup-uv or setup-node step found")
+        self.assertEqual({images["ghcr.io/astral-sh/uv"]}, set(uv))
+        self.assertEqual({images["node"].split("-", 1)[0]}, set(node))
 
     def test_dockerfile_installs_through_provision_script(self) -> None:
         """The Dev Container Dockerfile delegates every package install."""

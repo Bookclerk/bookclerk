@@ -61,6 +61,10 @@ repo="$(cd "${script_dir}/../.." && pwd)"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo)
+      if [[ -z "${2:-}" ]]; then
+        printf 'usage: %s [--repo <checkout>]\n' "$0" >&2
+        exit 2
+      fi
       repo="$(cd "$2" && pwd)"
       shift 2
       ;;
@@ -105,7 +109,7 @@ log "rust stable toolchain"
 rustup toolchain install stable --profile minimal --component rustfmt,clippy --no-self-update
 rustup default stable
 
-if [[ "$(cargo nextest --version 2>/dev/null | head -n1)" == "cargo-nextest ${NEXTEST_VERSION}"* ]]; then
+if [[ "$(cargo nextest --version 2>/dev/null | head -n1)" == "cargo-nextest ${NEXTEST_VERSION} "* ]]; then
   log "cargo-nextest ${NEXTEST_VERSION} already installed"
 else
   # Built from crates.io with its lockfile: checksums come from the registry

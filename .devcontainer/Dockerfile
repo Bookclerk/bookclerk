@@ -38,8 +38,12 @@ COPY --from=uv /uv /uvx /usr/local/bin/
 # development environment needs, so add tools there, not here.
 COPY scripts/dev-env/provision.sh /tmp/bookclerk-dev/scripts/dev-env/provision.sh
 COPY scripts/tests/requirements.txt /tmp/bookclerk-dev/scripts/tests/requirements.txt
+# The base image leaves RUSTUP_HOME and CARGO_HOME world-writable so the dev
+# user can add components and targets; provision runs as root, so restore
+# that for the toolchain it installs.
 RUN /tmp/bookclerk-dev/scripts/dev-env/provision.sh --repo /tmp/bookclerk-dev \
-    && rm -rf /tmp/bookclerk-dev /var/lib/apt/lists/* /usr/local/cargo/registry
+    && rm -rf /tmp/bookclerk-dev /var/lib/apt/lists/* /usr/local/cargo/registry \
+    && chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME"
 
 # Some non-login shells start with a minimal PATH that omits
 # /usr/local/cargo/bin. Symlink the toolchain into /usr/local/bin so
