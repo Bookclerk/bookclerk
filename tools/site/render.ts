@@ -911,6 +911,8 @@ export interface DocsShell {
   versions: DocsVersion[];
   /** The sidebar, from the docs the site was built with. */
   nav: NavGroup[];
+  /** URL paths of the indexable pages outside /docs/ (build.ts `PAGES`), which the sitemap lists first. */
+  pages: string[];
 }
 
 /**

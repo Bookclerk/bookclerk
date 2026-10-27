@@ -100,8 +100,11 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   and formats the "Last updated" date under each page's title (also
   `dateModified` in its JSON-LD). The Worker fetches the file beside the
   page, for HTML only; when it is missing or unreadable, the page has no
-  date. The file comes from outside the Worker, so `fuzz.test.ts` replays
+  date. It also lists every dated page (`datedPages`) for the sitemap. The
+  file comes from outside the Worker, so `fuzz.test.ts` replays
   `fuzz/last_updated/` and fuzzes mutations against an independent oracle.
+- `sitemap.ts` – writes `sitemap.xml`, for the build's fallback copy and for
+  the Worker's full one (see "Search engines, link previews and agents").
 - `diagram.ts` – draws each ```` ```mermaid ```` fence as inline SVG with
   [beautiful-mermaid](https://github.com/lukilabs/beautiful-mermaid), which
   lays diagrams out without a DOM, so pages need no client-side script and
@@ -141,7 +144,7 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   the shell's `<!--source-->` marker and publishes as `/security.md`, so the
   site and GitHub show the same policy. Edit `SECURITY.md`, not the page;
   links to it from the docs point at `/security`.
-- `worker.ts` – the docs route and content negotiation (see below).
+- `worker.ts` – the docs route, the sitemap and content negotiation (see below).
   `wrangler.toml` runs it only for page paths (`run_worker_first`). It
   compresses what it answers with (Brotli, else gzip) itself, because
   Cloudflare's edge leaves `text/markdown` uncompressed; files served without
@@ -213,8 +216,8 @@ versions.
   and a hash of the shell, so a deploy (a new release, sidebar or template)
   starts fresh; browsers keep any docs page for five minutes, since each
   carries the version picker.
-- The sidebar, `sitemap.xml` and `llms.txt` come from the `docs/` the site
-  is built with (the newest release tag's, else `main`'s), so a new doc
+- The sidebar, the fallback `sitemap.xml` and `llms.txt` come from the
+  `docs/` the site is built with (the newest release tag's, else `main`'s), so a new doc
   appears there on the next deploy. Every version shares that sidebar; a
   doc that exists in one version only is still reachable by its links.
 - Only the default version is indexed: pages of `main` (once a release
@@ -233,7 +236,15 @@ versions.
   (`homeFacts` in `build.ts`), so structured data never says anything a
   visitor cannot see on the page. Search engines treat text shown only to
   crawlers as cloaking, so keep it that way.
-- `sitemap.xml` lists every indexable page; `robots.txt` allows all crawlers and points to it.
+- `/sitemap.xml` lists every indexable page: the Worker writes it from the
+  default docs version's `last-updated.json`, so it holds the pages outside
+  `/docs/` and every page of that version, the generated API reference
+  included, each doc with its date as `<lastmod>`. It is cached like that
+  version's pages. When the file cannot be read the Worker serves the
+  sitemap `build.ts` wrote (the pages and the sidebar's docs, no dates) for
+  a minute. Keys that are not plain docs paths are left out, and only the
+  first 50,000 URLs are listed. `robots.txt` allows all crawlers and points
+  to it.
 - For agents: each doc is also served as Markdown at `/docs/<path>.md` (and
   `/docs/v/<ref>/<path>.md`)
   (linked from the page with `rel="alternate"` and "View as Markdown"), with

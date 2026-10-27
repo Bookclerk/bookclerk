@@ -15,7 +15,7 @@ import { renderMermaidSVG } from "beautiful-mermaid";
 
 import { cleanSvg, diagram } from "./diagram.ts";
 import { highlight } from "./highlight.ts";
-import { formatDate, pageDate } from "./last-updated.ts";
+import { datedPages, formatDate, MAX_DOC_KEY_LENGTH, pageDate } from "./last-updated.ts";
 import { pickEncoding } from "./worker.ts";
 import type { Encoding } from "./worker.ts";
 
@@ -358,6 +358,78 @@ test("pageDate agrees with the oracle on mutated inputs", () => {
     const json = mutate(seeds[Math.floor(rand() * seeds.length)] ?? "", seeds, rand, DATE_FRAGMENTS);
     const key = DATE_KEYS[Math.floor(rand() * DATE_KEYS.length)] ?? "README";
     checkPageDate(json, key, `FUZZ_SEED=${SEED} iteration ${i}`);
+  }
+});
+
+/**
+ * Tells whether a key may become a sitemap URL, written apart from
+ * last-updated.ts's pattern: `/`-separated segments, each non-empty, not
+ * starting with `.`, and made of ASCII letters, digits, `.`, `_` and `-`.
+ *
+ * @param key - The page key.
+ * @returns True when the sitemap may list it.
+ */
+function oracleDocKey(key: string): boolean {
+  if (key.length === 0 || key.length > MAX_DOC_KEY_LENGTH) return false;
+  return key.split("/").every((segment) => {
+    if (segment === "" || segment.startsWith(".")) return false;
+    for (const ch of segment) {
+      const ok = (ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z") || (ch >= "0" && ch <= "9") || ch === "." || ch === "_" || ch === "-";
+      if (!ok) return false;
+    }
+    return true;
+  });
+}
+
+/**
+ * Checks one datedPages run against the oracle: null exactly when the
+ * document is not a version 1 dates file, else every listed key with a real
+ * date that may become a URL, in the file's order, and nothing else.
+ *
+ * @param json - The dates file.
+ * @param context - What to print on failure.
+ */
+function checkDatedPages(json: string, context: string): void {
+  const got = datedPages(json);
+  let pages: unknown = null;
+  try {
+    const document: unknown = JSON.parse(json);
+    if (typeof document === "object" && document !== null && !(document instanceof Array)) {
+      const top: Record<string, unknown> = Object.assign(Object.create(null), document);
+      if (top["version"] === 1 && typeof top["pages"] === "object" && top["pages"] !== null && !(top["pages"] instanceof Array)) pages = top["pages"];
+    }
+  } catch {
+    pages = null;
+  }
+  if (pages === null) {
+    assert.equal(got, null, `${context}: ${JSON.stringify(json)}`);
+    return;
+  }
+  const expected = Object.getOwnPropertyNames(pages)
+    .filter((key) => oracleDocKey(key))
+    .flatMap((key) => {
+      const date = oraclePageDate(json, key);
+      return date === null ? [] : [{ key, date }];
+    });
+  assert.deepEqual(got, expected, `${context}: ${JSON.stringify(json)}`);
+}
+
+test("datedPages agrees with the oracle on its seed corpus", () => {
+  const seeds = corpus("last_updated");
+  let listed = 0;
+  for (const seed of seeds) {
+    checkDatedPages(seed, "seed");
+    listed += datedPages(seed)?.length ?? 0;
+  }
+  assert.ok(listed >= 5, "the seeds list valid pages");
+});
+
+test("datedPages agrees with the oracle on mutated inputs", () => {
+  const seeds = corpus("last_updated");
+  const rand = prng(SEED ^ 0x51);
+  for (let i = 0; i < ITERATIONS; i++) {
+    const json = mutate(seeds[Math.floor(rand() * seeds.length)] ?? "", seeds, rand, [...DATE_FRAGMENTS, "/", "//", "./", "../", ".", "_"]);
+    checkDatedPages(json, `FUZZ_SEED=${SEED} iteration ${i}`);
   }
 });
 

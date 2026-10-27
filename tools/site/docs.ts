@@ -1,5 +1,5 @@
 // Reads the repository's docs/ for the site build: the sidebar titles, the
-// sitemap and llms.txt / llms-full.txt come from the docs checked out beside
+// fallback sitemap and llms.txt / llms-full.txt come from the docs checked out beside
 // the site (the newest release tag's docs once there is a release, else
 // main's). The pages themselves are rendered by the Worker from the docs
 // repository at request time (worker.ts); render.ts holds the rendering both

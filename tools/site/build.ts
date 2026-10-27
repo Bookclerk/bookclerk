@@ -43,6 +43,7 @@ import { fileURLToPath } from "node:url";
 
 import { docMarkdownUrl, docUrl, GENERATED_TITLES, NAV, renderDocs } from "./docs.ts";
 import { escapeHtml, jsonLd, renderDoc, SHELL_MARKERS, SHELL_VALUES } from "./render.ts";
+import { sitemapXml } from "./sitemap.ts";
 import type { DocsShell, DocsVersion } from "./render.ts";
 import type { RenderedDocs } from "./docs.ts";
 
@@ -251,7 +252,7 @@ export const PAGES: readonly Page[] = [
 ];
 
 /** The Worker's page renderers, whose sources are part of the docs shell's id (see buildDocsShell). */
-const RENDER_SOURCES = ["render.ts", "diagram.ts", "highlight.ts", "last-updated.ts"];
+const RENDER_SOURCES = ["render.ts", "diagram.ts", "highlight.ts", "last-updated.ts", "sitemap.ts"];
 
 /**
  * Libraries the renderers run, whose installed versions are part of the docs
@@ -697,7 +698,8 @@ export function buildDocsShell(
   for (const marker of SHELL_MARKERS) {
     if (html.split(`<!--${marker}-->`).length !== 2) throw new Error(`docs shell needs exactly one <!--${marker}-->`);
   }
-  const shell = { html, origin: context.values.origin, repository: REPOSITORY_URL, versions, nav: rendered.nav };
+  const pages = PAGES.filter((p) => p.indexable).map((p) => p.path);
+  const shell = { html, origin: context.values.origin, repository: REPOSITORY_URL, versions, nav: rendered.nav, pages };
   // The renderers' sources and libraries go into the id too: a change to how
   // pages are rendered must drop pages cached by an earlier deploy, like a
   // shell change.
@@ -776,7 +778,7 @@ function writeLlmsTxt(context: SiteContext, rendered: RenderedDocs, facts: HomeF
 }
 
 /**
- * Writes sitemap.xml and robots.txt.
+ * Writes the fallback sitemap.xml and robots.txt.
  *
  * @param context - Site-wide values.
  * @param paths - URL paths of every indexable page.
@@ -784,11 +786,9 @@ function writeLlmsTxt(context: SiteContext, rendered: RenderedDocs, facts: HomeF
  */
 function writeCrawlerFiles(context: SiteContext, paths: readonly string[], outDir: string): void {
   const { origin } = context.values;
-  const urls = paths.map((p) => `  <url><loc>${escapeHtml(origin + p)}</loc></url>`).join("\n");
-  writeFileSync(
-    join(outDir, "sitemap.xml"),
-    `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`,
-  );
+  // The Worker answers /sitemap.xml with every docs page and its date; this
+  // copy is what it falls back to when the docs repository cannot be read.
+  writeFileSync(join(outDir, "sitemap.xml"), sitemapXml(origin, paths.map((path) => ({ path, lastmod: null }))));
   writeFileSync(join(outDir, "robots.txt"), `User-agent: *\nAllow: /\n\nSitemap: ${origin}/sitemap.xml\n`);
 }
 
