@@ -1,10 +1,11 @@
 # Contributor License Agreement check.
 #
 # Policy:
-# - The pull request author and the account linked to every commit must have
-#   accepted CLA.md, maintainers and organization members included. Only the
-#   bots in `BOT_ALLOWLIST` (scripts/cla_check.py) are exempt, matched by
-#   account type and login, never by git author name.
+# - The pull request author, the account linked to every commit, and every
+#   linked `Co-authored-by:` account must have accepted CLA.md, maintainers
+#   and organization members included. Only the bots in `BOT_ALLOWLIST`
+#   (scripts/cla_check.py) are exempt, matched by account type and login,
+#   never by git author name.
 # - A contributor accepts by commenting the exact sentence in `SIGN_PHRASE`
 #   on a pull request they are part of. The check records the signature in
 #   `signatures/cla.json` on the `cla-signatures` branch (a GitHub-signed API
@@ -47,7 +48,8 @@ jobs:
     permissions:
       # Read the checker and write signatures to the `cla-signatures` branch.
       contents: write
-      # Read the pull request and its commits, and keep the check's comment.
+      # Read the pull request and its commits (REST and GraphQL), and keep
+      # the check's comment.
       pull-requests: write
       # Report the `CLA` commit status.
       statuses: write

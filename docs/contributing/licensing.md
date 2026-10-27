@@ -77,8 +77,9 @@ token.
 
 Who must sign:
 
-- The pull request author, and the GitHub account linked to every commit.
-  Everyone signs, maintainers and organization members included.
+- The pull request author, the GitHub account linked to every commit, and
+  every account a commit credits with a `Co-authored-by:` line. Everyone
+  signs, maintainers and organization members included.
 - Only the project's bots are exempt: `dependabot[bot]`, `bookclerk[bot]`
   and `github-actions[bot]`. A bot is recognized by its account type and
   login, never by the name in a commit, which anyone can set.
@@ -87,6 +88,9 @@ Who must sign:
 - A commit whose author email belongs to no GitHub account fails the check,
   because nobody can sign for it. Add the email to your account, or amend
   the commit with an email it already has.
+- A co-author whose email belongs to no account does not fail the check.
+  The pull request author's signature covers what they submit, and section
+  4 of the CLA asks them to name work that is not their own.
 - A signature comment counts only from someone the pull request needs a
   signature from.
 

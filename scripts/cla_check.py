@@ -5,13 +5,15 @@ The ``CLA`` workflow runs this on ``pull_request_target``, on signature and
 ``recheck`` comments, and on ``merge_group``. It reads only pull request
 metadata through the REST API and never checks out pull request code.
 
-Who must sign: the pull request author and the GitHub account linked to every
-commit, maintainers and organization members included. People are matched by
+Who must sign: the pull request author, the GitHub account linked to every
+commit, and every account a commit credits with a ``Co-authored-by:`` line,
+maintainers and organization members included. People are matched by
 numeric account id, never by name. The only exemptions are the bot accounts
 in ``BOT_ALLOWLIST``, recognized by their API account type and login, which
 no human account can take. A commit not linked to any account fails the
-check, since nobody can sign for it. The pull request author is the one
-authenticated party, so their signature always counts for what they submit.
+check, since nobody can sign for it. A co-author whose email matches no
+account does not: the pull request author is the one authenticated party,
+and their signature covers what they submit (CLA section 4).
 
 The verdict is the ``CLA`` commit status on the pull request's head commit.
 Signatures live in ``signatures/cla.json`` on the ``cla-signatures`` branch,
@@ -71,6 +73,27 @@ COMMENT_AUTHOR = "github-actions[bot]"
 #: Most commits the pull request commits endpoint returns; larger pull
 #: requests fail closed rather than be checked in part.
 MAX_COMMITS = 250
+
+#: Most authors one commit may credit; a commit with more fails closed.
+MAX_COAUTHORS = 25
+
+#: Longest GraphQL page cursor accepted, in characters.
+MAX_CURSOR_CHARS = 1024
+
+#: Reads the accounts GitHub links to each commit's authors, co-authors
+#: included, one page of commits at a time.
+COAUTHOR_QUERY = """
+query($owner: String!, $name: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      commits(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes { commit { oid authors(first: 25) { totalCount nodes { user { databaseId login } } } } }
+      }
+    }
+  }
+}
+"""
 
 #: Page size for every paginated request.
 PAGE_SIZE = 100
@@ -149,6 +172,20 @@ class Commit:
     #: The linked author account, or ``None`` when the author email matches
     #: no account. The git author name is never read.
     author: Account | None
+    #: The user accounts linked to the commit's authors and
+    #: ``Co-authored-by:`` lines, as GitHub resolves them; authors whose
+    #: email matches no user are left out.
+    coauthors: tuple[Account, ...] = ()
+
+
+@dataclass(frozen=True)
+class CoauthorPage:
+    """One page of the co-author query."""
+
+    #: Each commit's linked author accounts, by SHA-1.
+    commits: dict[str, tuple[Account, ...]]
+    #: The cursor of the next page, or ``None`` on the last one.
+    next_cursor: str | None
 
 
 @dataclass(frozen=True)
@@ -414,6 +451,58 @@ def parse_commit_page(raw: bytes) -> list[Commit]:
     return commits
 
 
+def parse_coauthor_page(raw: bytes) -> CoauthorPage:
+    """Reads one page of the ``COAUTHOR_QUERY`` GraphQL response.
+
+    GraphQL users are always people, so each linked author is read as a
+    ``USER`` account; bots resolve to no user and are left out.
+
+    # Errors
+    ``ClaInputError`` when the response has errors or the wrong shape, a
+    commit repeats, a commit credits more than ``MAX_COAUTHORS`` authors, or
+    the next-page cursor is missing or too long.
+    """
+    doc = _object(_load_json(raw), "GraphQL response")
+    if doc.get("errors") is not None:
+        raise ClaInputError("GraphQL response has errors")
+    data = _object(doc.get("data"), "GraphQL data")
+    pull = _object(_object(data.get("repository"), "repository").get("pullRequest"), "pull request")
+    commits = _object(pull.get("commits"), "commits")
+    info = _object(commits.get("pageInfo"), "page info")
+    has_next = info.get("hasNextPage")
+    if type(has_next) is not bool:
+        raise ClaInputError("hasNextPage is not a boolean")
+    cursor = None
+    if has_next:
+        cursor = _string(info.get("endCursor"), "page cursor")
+        if not 1 <= len(cursor) <= MAX_CURSOR_CHARS:
+            raise ClaInputError("page cursor has a bad length")
+    nodes = commits.get("nodes")
+    if not isinstance(nodes, list):
+        raise ClaInputError("commit nodes are not a list")
+    out: dict[str, tuple[Account, ...]] = {}
+    for node in nodes:
+        commit = _object(_object(node, "commit node").get("commit"), "commit")
+        sha = _sha(commit.get("oid"), "commit")
+        if sha in out:
+            raise ClaInputError("commit repeats")
+        authors = _object(commit.get("authors"), "commit authors")
+        total = authors.get("totalCount")
+        if type(total) is not int or not 0 <= total <= MAX_COAUTHORS:
+            raise ClaInputError("commit credits too many authors")
+        entries = authors.get("nodes")
+        if not isinstance(entries, list) or len(entries) != total:
+            raise ClaInputError("author nodes do not match their count")
+        linked = []
+        for entry in entries:
+            user = _object(entry, "author").get("user")
+            if user is not None:
+                obj = _object(user, "user")
+                linked.append(parse_account({"id": obj.get("databaseId"), "login": obj.get("login"), "type": "User"}))
+        out[sha] = tuple(linked)
+    return CoauthorPage(commits=out, next_cursor=cursor)
+
+
 def parse_comment_page(raw: bytes) -> list[Comment]:
     """Reads one page of ``GET /issues/{n}/comments``.
 
@@ -484,12 +573,15 @@ def is_exempt(account: Account) -> bool:
 def required_signers(pull: PullRequest, commits: list[Commit]) -> list[Account]:
     """Lists the accounts that must sign, once each, in first-seen order.
 
-    The pull request author comes first, then each commit's linked author.
-    Exempt bots are left out.
+    The pull request author comes first, then each commit's linked author
+    and co-authors. Exempt bots are left out.
     """
     seen: set[int] = set()
     signers = []
-    for account in [pull.author, *(c.author for c in commits if c.author is not None)]:
+    accounts = [pull.author]
+    for commit in commits:
+        accounts += [a for a in (commit.author, *commit.coauthors) if a is not None]
+    for account in accounts:
         if account.id not in seen and not is_exempt(account):
             seen.add(account.id)
             signers.append(account)
@@ -591,8 +683,10 @@ class GitHub:
         """Wraps ``send`` for ``repository`` (``owner/name``)."""
         #: The function that performs requests.
         self.send = send
-        #: ``repos/<owner>/<name>``, the prefix of every path.
+        #: ``repos/<owner>/<name>``, the prefix of every REST path.
         self.base = f"repos/{repository}"
+        #: The repository's owner and name, for GraphQL.
+        self.owner, self.name = repository.split("/", 1)
 
     def call(self, method: str, path: str, body: dict[str, object] | None = None, ok: tuple[int, ...] = (200, 201)) -> bytes:
         """Sends a request and returns the body of a successful response.
@@ -610,11 +704,11 @@ class GitHub:
         return parse_pull_request(_load_json(self.call("GET", f"pulls/{number}")))
 
     def commits(self, pull: PullRequest) -> list[Commit]:
-        """Fetches every commit of ``pull``.
+        """Fetches every commit of ``pull`` with its linked co-authors.
 
         # Errors
-        ``ApiError`` when it has more than ``MAX_COMMITS`` commits or the
-        pages disagree with its commit count.
+        ``ApiError`` when it has more than ``MAX_COMMITS`` commits, or the
+        pages disagree with its commit count or with each other.
         """
         if pull.commits > MAX_COMMITS:
             raise ApiError(f"pull request has more than {MAX_COMMITS} commits")
@@ -628,7 +722,28 @@ class GitHub:
             page += 1
         if len(commits) != pull.commits:
             raise ApiError("commit pages do not match the pull request's commit count")
-        return commits
+        coauthors = self.coauthors(pull)
+        if set(coauthors) != {c.sha for c in commits}:
+            raise ApiError("the co-author query and the commit pages list different commits")
+        return [Commit(sha=c.sha, author=c.author, coauthors=coauthors[c.sha]) for c in commits]
+
+    def coauthors(self, pull: PullRequest) -> dict[str, tuple[Account, ...]]:
+        """Fetches the linked authors and co-authors of every commit of ``pull``."""
+        out: dict[str, tuple[Account, ...]] = {}
+        cursor: str | None = None
+        for _ in range(MAX_COMMITS // PAGE_SIZE + 1):
+            variables = {"owner": self.owner, "name": self.name, "number": pull.number, "after": cursor}
+            status, data = self.send("POST", "graphql", {"query": COAUTHOR_QUERY, "variables": variables})
+            if status != 200:
+                raise ApiError(f"POST graphql: HTTP {status}")
+            page = parse_coauthor_page(data)
+            if set(page.commits) & set(out):
+                raise ApiError("co-author pages repeat a commit")
+            out.update(page.commits)
+            cursor = page.next_cursor
+            if cursor is None:
+                return out
+        raise ApiError(f"pull request has more than {MAX_COMMITS} commits")
 
     def own_comment(self, number: int) -> Comment | None:
         """Finds the check's earlier comment on pull request ``number``."""

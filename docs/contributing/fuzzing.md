@@ -173,7 +173,8 @@ The tests live in `scripts/tests/`, and each corpus beside them.
 ### CLA check (Python)
 
 - **CLA checker** (`scripts/cla_check.py`). It reads the workflow event,
-  the pull request, its commit and comment pages, and the signature file,
+  the pull request, its commit and comment pages, the co-author query
+  answer, and the signature file,
   and decides who still has to sign. Logins, comment bodies and commit
   metadata in them are chosen by contributors.
   - Test and corpus: `scripts/tests/test_cla_check.py`,
@@ -181,7 +182,8 @@ The tests live in `scripts/tests/`, and each corpus beside them.
   - Oracle: an independent field-by-field reading of each document, which
     refuses any account whose login does not fit its type (`[bot]` logins
     only for bot accounts). For fuzzed commit pages, the unsigned accounts
-    are exactly the pull request author and linked commit authors, minus
+    are exactly the pull request author and linked commit authors and
+    co-authors, minus
     the allowlisted bots and the signed ids. The comment mentions only
     them and links only to the CLA.
 

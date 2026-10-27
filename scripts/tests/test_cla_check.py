@@ -161,6 +161,41 @@ def oracle(kind: str, raw: bytes) -> object:
         if type(page) is not list:
             raise Refused
         return [o_comment(e) for e in page]
+    if kind == "coauthors":
+        doc = o_obj(o_json(raw))
+        if doc.get("errors") is not None:
+            raise Refused
+        commits = o_obj(o_obj(o_obj(o_obj(doc.get("data")).get("repository")).get("pullRequest")).get("commits"))
+        info = o_obj(commits.get("pageInfo"))
+        if type(info.get("hasNextPage")) is not bool:
+            raise Refused
+        cursor = None
+        if info["hasNextPage"]:
+            cursor = o_str(info.get("endCursor"))
+            if cursor == "" or len(cursor) > 1024:
+                raise Refused
+        nodes = commits.get("nodes")
+        if type(nodes) is not list:
+            raise Refused
+        out = {}
+        for n in nodes:
+            commit = o_obj(o_obj(n).get("commit"))
+            sha = o_sha(commit.get("oid"))
+            if sha in out:
+                raise Refused
+            authors = o_obj(commit.get("authors"))
+            total = authors.get("totalCount")
+            entries = authors.get("nodes")
+            if type(total) is not int or total < 0 or total > 25 or type(entries) is not list or len(entries) != total:
+                raise Refused
+            linked = []
+            for e in entries:
+                user = o_obj(e).get("user")
+                if user is not None:
+                    user = o_obj(user)
+                    linked.append(o_account({"id": user.get("databaseId"), "login": user.get("login"), "type": "User"}))
+            out[sha] = linked
+        return (out, cursor)
     if kind == "signatures":
         doc = o_obj(o_json(raw, 1024 * 1024))
         entries = doc.get("signedContributors")
@@ -218,6 +253,9 @@ def module(kind: str, raw: bytes) -> object:
         return [(c.sha, None if c.author is None else acc(c.author)) for c in cla.parse_commit_page(raw)]
     if kind == "comments":
         return [comment(c) for c in cla.parse_comment_page(raw)]
+    if kind == "coauthors":
+        page = cla.parse_coauthor_page(raw)
+        return ({sha: [acc(a) for a in accounts] for sha, accounts in page.commits.items()}, page.next_cursor)
     if kind == "signatures":
         book = cla.parse_signatures(raw)
         return (len(book.entries), book.signed_ids)
@@ -271,6 +309,8 @@ class CorpusTests(unittest.TestCase):
             "commits__not_list", "commits__missing_sha", "commits__bad_author", "comments__null_body",
             "signatures__missing_key", "signatures__string_id", "signatures__no_name", "signatures__zero_id",
             "signatures__deep", "contents__dir", "contents__bad_base64", "contents__none_encoding",
+            "coauthors__errors", "coauthors__too_many", "coauthors__count_mismatch", "coauthors__repeat",
+            "coauthors__no_cursor", "coauthors__bot_login_as_user", "coauthors__null_pull",
         ):
             kind = name.partition("__")[0]
             self.assertEqual(outcome(module, kind, load(name), cla.ClaInputError), ("refused",), name)
@@ -286,6 +326,11 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(data, load("signatures__seed"))
         self.assertEqual(blob, SHA_A)
         self.assertEqual(module("event_issue_comment", load("event_issue_comment__plain_issue"))[2], None)
+        self.assertEqual(
+            module("coauthors", load("coauthors__basic")),
+            ({SHA_A: [(101, "alice", "User"), (102, "bob", "User")], SHA_B: []}, None),
+        )
+        self.assertEqual(module("coauthors", load("coauthors__next_page"))[1], "Y3Vyc29yOnYyOpHOAAAAAQ==")
 
     def test_unknown_event_is_refused(self) -> None:
         with self.assertRaises(cla.ClaInputError):
@@ -377,7 +422,8 @@ class MutationFuzzTests(unittest.TestCase):
                 continue
             checked += 1
             verdict = cla.evaluate(pull, commits, book)
-            required = {a.id for a in [pull.author, *(c.author for c in commits if c.author)] if not cla.is_exempt(a)}
+            linked = [pull.author] + [a for c in commits for a in (c.author, *c.coauthors) if a is not None]
+            required = {a.id for a in linked if not cla.is_exempt(a)}
             self.assertEqual({a.id for a in verdict.unsigned}, required - book.signed_ids)
             self.assertEqual(set(verdict.unlinked), {c.sha for c in commits if c.author is None})
             self.assertEqual(verdict.passed, not verdict.unsigned and not verdict.unlinked)
@@ -436,8 +482,26 @@ class FakeGitHub:
     def blob_sha(self) -> str:
         return f"{self.blob:040x}"
 
+    def graphql(self, body: dict) -> tuple[int, bytes]:
+        variables = body["variables"]
+        assert (variables["owner"], variables["name"], variables["number"]) == ("bookclerk", "bookclerk", 7)
+        start = int(variables["after"] or 0)
+        nodes = []
+        for c in self.commit_list[start:start + 100]:
+            primary = c["author"] if c["author"] and c["author"]["type"] == "User" else None
+            users = [primary, *c.get("coauthors", [])]
+            user_nodes = [{"user": None if u is None else {"databaseId": u["id"], "login": u["login"]}} for u in users]
+            nodes.append({"commit": {"oid": c["sha"], "authors": {"totalCount": len(user_nodes), "nodes": user_nodes}}})
+        more = start + 100 < len(self.commit_list)
+        info = {"hasNextPage": more, "endCursor": str(start + 100) if more else None}
+        page = {"data": {"repository": {"pullRequest": {"commits": {"pageInfo": info, "nodes": nodes}}}}}
+        return 200, json.dumps(page).encode()
+
     def send(self, method: str, path: str, body: dict | None) -> tuple[int, bytes]:
         self.requests.append((method, path))
+        if (method, path) == ("POST", "graphql"):
+            assert body is not None
+            return self.graphql(body)
         prefix = "repos/bookclerk/bookclerk/"
         assert path.startswith(prefix), path
         path = path[len(prefix):]
@@ -493,8 +557,13 @@ class FakeGitHub:
         return body["state"]
 
 
-def commit(sha: str, author: dict | None, git_name: str = "someone") -> dict:
-    return {"sha": sha, "author": author, "commit": {"author": {"name": git_name, "email": "x@example.com"}}}
+def commit(sha: str, author: dict | None, git_name: str = "someone", coauthors: list | None = None) -> dict:
+    """A REST commit entry; ``coauthors`` (user dicts, or ``None`` for an
+    unlinked email) only feeds the fake GraphQL answer."""
+    entry = {"sha": sha, "author": author, "commit": {"author": {"name": git_name, "email": "x@example.com"}}}
+    if coauthors is not None:
+        entry["coauthors"] = coauthors
+    return entry
 
 
 def pr_event(fake: FakeGitHub) -> object:
@@ -575,6 +644,28 @@ class EndToEndTests(unittest.TestCase):
         self.assertIn("@bob", body)
         self.assertNotIn("@alice", body)
 
+    def test_linked_co_authors_must_sign(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE, coauthors=[BOB])], [{"name": "alice", "id": 101}])
+        drive(fake, pr_event(fake))
+        self.assertEqual(fake.last_status(), "failure")
+        self.assertIn("@bob", fake.comments[0]["body"])
+        drive(fake, comment_event(BOB, cla.SIGN_PHRASE))
+        self.assertEqual(fake.signed_ids(), {101, 102})
+        self.assertEqual(fake.last_status(), "success")
+
+    def test_unlinked_co_authors_are_covered_by_the_author(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE, coauthors=[None])], [{"name": "alice", "id": 101}])
+        drive(fake, pr_event(fake))
+        self.assertEqual(fake.last_status(), "success")
+
+    def test_co_author_query_must_list_the_same_commits(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}])
+        real = fake.graphql
+        fake.graphql = lambda body: (200, real(body)[1].replace(SHA_A.encode(), SHA_B.encode()))
+        with self.assertRaises(cla.ApiError):
+            drive(fake, pr_event(fake))
+        self.assertEqual(fake.statuses, [])
+
     def test_signatures_match_by_id_not_login(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 999}])
         drive(fake, pr_event(fake))
@@ -606,10 +697,12 @@ class EndToEndTests(unittest.TestCase):
 
     def test_commits_are_paginated(self) -> None:
         commits = [commit(f"{i:040x}", BOB if i == 150 else ALICE) for i in range(1, 201)]
+        commits[180]["coauthors"] = [account("carol", 103)]
         fake = FakeGitHub(ALICE, commits, [{"name": "alice", "id": 101}])
         drive(fake, pr_event(fake))
         self.assertEqual(fake.last_status(), "failure")
         self.assertIn("@bob", fake.comments[0]["body"])
+        self.assertIn("@carol", fake.comments[0]["body"])
 
     def test_too_many_commits_fail_closed(self) -> None:
         commits = [commit(f"{i:040x}", ALICE) for i in range(1, cla.MAX_COMMITS + 2)]

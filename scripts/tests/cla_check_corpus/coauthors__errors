@@ -1,0 +1,20 @@
+{
+ "data": {
+  "repository": {
+   "pullRequest": {
+    "commits": {
+     "pageInfo": {
+      "hasNextPage": false,
+      "endCursor": null
+     },
+     "nodes": []
+    }
+   }
+  }
+ },
+ "errors": [
+  {
+   "message": "x"
+  }
+ ]
+}
