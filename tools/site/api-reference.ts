@@ -3,8 +3,10 @@
 // the site lays each operation out the way OpenAPI viewers such as Scalar
 // do: a method badge beside the path, the description, parameters and
 // responses in one column, and the example request and response in a
-// second column beside them on wide screens. Nothing here runs in the
-// browser; it rearranges markdown-it tokens before they are rendered.
+// second column beside them on wide screens. The index gets the same look:
+// its quick start beside the introduction and a card per route group with
+// method badges. Nothing here runs in the browser; it rearranges
+// markdown-it tokens before they are rendered.
 
 import type { Token } from "markdown-it";
 
@@ -38,8 +40,14 @@ export type MakeToken = (type: string, tag: string, nesting: -1 | 0 | 1) => Toke
  * @returns True for `api/web/<group>`, false for its index and schema page.
  */
 export function isApiOperationsPage(key: string): boolean {
-  return key.startsWith("api/web/") && key !== "api/web/README" && key !== "api/web/schemas";
+  return key.startsWith("api/web/") && key !== API_INDEX && key !== "api/web/schemas";
 }
+
+/** Key of the Web API reference's index, which {@link layoutIndex} lays out. */
+export const API_INDEX = "api/web/README";
+
+/** The heading of the index section that sits beside its introduction. */
+const QUICK_START = "Quick start";
 
 /**
  * Reads the operation an `##` heading names.
@@ -51,8 +59,19 @@ export function isApiOperationsPage(key: string): boolean {
 export function operationOf(inline: Token | undefined): ApiOperation | null {
   const children = inline?.children ?? [];
   const only = children[0];
-  if (children.length !== 1 || only === undefined || only.type !== "code_inline") return null;
-  const match = OPERATION_RE.exec(only.content);
+  return children.length === 1 && only !== undefined ? operationOfCode(only) : null;
+}
+
+/**
+ * Reads the operation a code span names.
+ *
+ * @param token - An inline token.
+ * @returns The method and path when it is a code span such as
+ *   `` `GET /api/jobs` ``, else null.
+ */
+function operationOfCode(token: Token): ApiOperation | null {
+  if (token.type !== "code_inline") return null;
+  const match = OPERATION_RE.exec(token.content);
   const method = match?.[1];
   const path = match?.[2];
   if (method === undefined || path === undefined || !isHttpMethod(method)) return null;
@@ -179,6 +198,161 @@ export function layoutOperations(tokens: readonly Token[], make: MakeToken): Tok
   }
   out.push(...tokens.slice(at), html("</div>\n"));
   return out;
+}
+
+/**
+ * Lays out the Web API index the way OpenAPI viewers lay out their
+ * introduction: the opening text and the `## Quick start` section that
+ * follows it sit side by side on wide screens, each `###` heading that is a
+ * link (a route group) becomes a `section` card, and each route link in a
+ * card whose text is one code span such as `` `GET /api/jobs` `` gets a
+ * method badge. The body is wrapped in `div.api-ref api-index`, as
+ * {@link layoutOperations} wraps an operations page.
+ *
+ * A group heading's `heading_open` token keeps `{ group: true }` on its
+ * `meta`, and a badged link's `link_open` token keeps its operation, for
+ * {@link indexRoutes}.
+ *
+ * @param tokens - The page's block tokens, after heading ids are set.
+ * @param make - markdown-it's token constructor.
+ * @returns The new token list.
+ */
+export function layoutIndex(tokens: readonly Token[], make: MakeToken): Token[] {
+  const html = (content: string): Token => {
+    const token = make("html_block", "", 0);
+    token.content = content;
+    return token;
+  };
+  // Top-level h2 and h3 headings bound the sections; one that opened inside
+  // a list or quote would close outside it.
+  const isHeading = (t: Token | undefined, tag: string): boolean => t?.type === "heading_open" && t.tag === tag && t.level === 0;
+  const bounds = tokens.flatMap((t, i) => (isHeading(t, "h2") || isHeading(t, "h3") ? [i] : []));
+  const nextBound = (after: number, tags: readonly string[]): number =>
+    bounds.find((i) => i > after && tags.includes(tokens[i]?.tag ?? "")) ?? tokens.length;
+
+  const titled = tokens[0]?.type === "heading_open" && tokens[0].tag === "h1" ? 3 : 0;
+  const out: Token[] = [...tokens.slice(0, titled), html('<div class="api-ref api-index">\n')];
+  let at = titled;
+  const firstH2 = nextBound(titled - 1, ["h2"]);
+  const side = tokens[firstH2];
+  if (firstH2 > titled && side !== undefined && tokens[firstH2 + 1]?.content === QUICK_START) {
+    const end = nextBound(firstH2, ["h2"]);
+    const id = String(side.attrGet("id") ?? "");
+    out.push(
+      html('<div class="api-intro">\n<div class="api-intro-main">\n'),
+      ...tokens.slice(titled, firstH2),
+      html(`</div>\n<aside class="api-intro-side" aria-labelledby="${id}">\n`),
+      ...tokens.slice(firstH2, end),
+      html("</aside>\n</div>\n"),
+    );
+    at = end;
+  }
+  for (const start of bounds) {
+    if (start < at || !isHeading(tokens[start], "h3") || !isLinkHeading(tokens[start + 1])) continue;
+    const end = nextBound(start, ["h2", "h3"]);
+    const open = tokens[start];
+    if (open === undefined) continue;
+    open.meta = { group: true };
+    out.push(...tokens.slice(at, start), html(`<section class="api-group" aria-labelledby="${String(open.attrGet("id") ?? "")}">\n`));
+    for (const token of tokens.slice(start, end)) {
+      if (token.type === "inline") badgeRouteLinks(token, make);
+      out.push(token);
+    }
+    out.push(html("</section>\n"));
+    at = end;
+  }
+  out.push(...tokens.slice(at), html("</div>\n"));
+  return out;
+}
+
+/**
+ * Whether a heading's text is exactly one link.
+ *
+ * @param inline - The heading's `inline` token.
+ * @returns True when its children open a link first and close it last.
+ */
+function isLinkHeading(inline: Token | undefined): boolean {
+  const children = inline?.children ?? [];
+  if (children[0]?.type !== "link_open" || children[children.length - 1]?.type !== "link_close") return false;
+  return children.filter((t) => t.type === "link_open").length === 1;
+}
+
+/**
+ * Gives each link whose text is one operation code span a method badge and
+ * keeps the operation on its `link_open` token's `meta`.
+ *
+ * @param inline - An `inline` token; its children change in place.
+ * @param make - markdown-it's token constructor.
+ */
+function badgeRouteLinks(inline: Token, make: MakeToken): void {
+  const children = inline.children ?? [];
+  const out: Token[] = [];
+  children.forEach((token, i) => {
+    const open = children[i - 1];
+    const close = children[i + 1];
+    const op = open?.type === "link_open" && close?.type === "link_close" ? operationOfCode(token) : null;
+    if (op === null || open === undefined) {
+      out.push(token);
+      return;
+    }
+    open.meta = { method: op.method, path: op.path };
+    // The path may wrap after a slash, never inside a segment.
+    const label = make("html_inline", "", 0);
+    const path = escapeCode(op.path).replaceAll("/", "/<wbr>");
+    label.content = `<span class="${methodClass(op.method)}">${op.method}</span> <code>${path}</code>`;
+    out.push(label);
+  });
+  inline.children = out;
+}
+
+/** Entities for the characters markdown-it escapes in a code span. */
+const CODE_ENTITIES: Readonly<Record<string, string>> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
+
+/**
+ * Escapes text as markdown-it escapes a code span's content.
+ *
+ * @param text - Raw text.
+ * @returns The text with `& < > "` replaced by entities.
+ */
+function escapeCode(text: string): string {
+  return text.replace(/[&<>"]/g, (c) => CODE_ENTITIES[c] ?? c);
+}
+
+/** A route group the index lists, for the sidebar. */
+export interface ApiRouteGroup {
+  /** The group's name. */
+  title: string;
+  /** The link to its page, as the Markdown has it. */
+  href: string;
+  /** Its routes, in order: each operation and the link to it, as the Markdown has it. */
+  routes: (ApiOperation & { href: string })[];
+}
+
+/**
+ * Reads the route groups {@link layoutIndex} marked.
+ *
+ * @param tokens - The laid-out tokens.
+ * @returns Each group heading's link text and target, with the badged
+ *   route links that follow it up to the next group.
+ */
+export function indexRoutes(tokens: readonly Token[]): ApiRouteGroup[] {
+  const groups: ApiRouteGroup[] = [];
+  tokens.forEach((token, i) => {
+    const meta: unknown = token.meta;
+    if (token.type === "heading_open" && typeof meta === "object" && meta !== null && "group" in meta) {
+      const children = tokens[i + 1]?.children ?? [];
+      const title = children.filter((t) => t.type === "text" || t.type === "code_inline").map((t) => t.content).join("").trim();
+      groups.push({ title, href: String(children[0]?.attrGet("href") ?? ""), routes: [] });
+      return;
+    }
+    const group = groups[groups.length - 1];
+    if (token.type !== "inline" || group === undefined) return;
+    for (const child of token.children ?? []) {
+      const op = child.type === "link_open" ? operationMeta(child) : null;
+      if (op !== null) group.routes.push({ ...op, href: String(child.attrGet("href") ?? "") });
+    }
+  });
+  return groups;
 }
 
 /**

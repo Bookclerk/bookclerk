@@ -15,8 +15,8 @@
 import MarkdownIt from "markdown-it";
 import type { MarkdownIt as Markdown, RendererRule, Token } from "markdown-it";
 
-import { isApiOperationsPage, layoutOperations, methodClass, operationMeta } from "./api-reference.ts";
-import type { HttpMethod } from "./api-reference.ts";
+import { API_INDEX, indexRoutes, isApiOperationsPage, layoutIndex, layoutOperations, methodClass, operationMeta } from "./api-reference.ts";
+import type { ApiRouteGroup, HttpMethod } from "./api-reference.ts";
 import { diagram, drawable, PAGE_DIAGRAM_COUNT_MAX, PAGE_DIAGRAM_MAX } from "./diagram.ts";
 import { highlight } from "./highlight.ts";
 import { formatDate } from "./last-updated.ts";
@@ -72,6 +72,8 @@ export interface RenderedDoc {
   headings: DocHeading[];
   /** The Markdown copy with links rewritten for the site (see siteMarkdown). */
   markdown: string;
+  /** The route groups the Web API index lists, links rewritten for the site; empty on any other page. */
+  routes: ApiRouteGroup[];
 }
 
 /** A full page and its Markdown version. */
@@ -332,6 +334,11 @@ function renderer(docKey: string, keys: ReadonlySet<string> | null, blobBase: st
   if (isApiOperationsPage(docKey)) {
     md.core.ruler.after("heading_ids", "api_operations", (state) => {
       state.tokens = layoutOperations(state.tokens, (type, tag, nesting) => new state.Token(type, tag, nesting));
+    });
+  }
+  if (docKey === API_INDEX) {
+    md.core.ruler.after("heading_ids", "api_index", (state) => {
+      state.tokens = layoutIndex(state.tokens, (type, tag, nesting) => new state.Token(type, tag, nesting));
     });
   }
   for (const rule of ["blockquote_open", "blockquote_close"] as const) {
@@ -650,12 +657,20 @@ export function renderDoc(
     if (inOperation) return [];
     return [{ level: t.tag === "h2" ? 2 : 3, id, text: inlineText(tokens[i + 1]) }];
   });
+  // Read before rendering, which rewrites the links in place.
+  const link = (href: string): string => rewriteLink(href, key, keys, blobBase, (k) => docUrl(k, base));
+  const routes = indexRoutes(tokens).map((group) => ({
+    ...group,
+    href: link(group.href),
+    routes: group.routes.map((route) => ({ ...route, href: link(route.href) })),
+  }));
   return {
     title: docTitle(source, key),
     description: describe(tokens),
     html: md.renderer.render(tokens, md.options, {}),
     headings,
     markdown: siteMarkdown(source, key, keys, blobBase, base),
+    routes,
   };
 }
 
@@ -782,25 +797,38 @@ export interface NavNested {
 }
 
 /**
- * The sidebar list for a Web API page other than its index: the page
- * itself, marked current, with its operations (if any) under it, shown
- * beneath the Web API entry.
+ * The sidebar list for a Web API page, shown beneath the Web API entry: on
+ * the index, every route group with its routes; on any other page, the page
+ * itself, marked current, with its operations (if any) under it.
  *
  * @param key - The page's key.
  * @param title - Its title.
  * @param headings - Its headings (see renderDoc).
  * @param base - URL prefix of the docs version.
- * @returns The list, or null for a page outside `api/web/` and for its index.
+ * @param routes - The index's route groups (see renderDoc).
+ * @returns The list, or null for a page outside `api/web/` and for an
+ *   index that lists no group.
  */
-export function apiNavNested(key: string, title: string, headings: readonly DocHeading[], base: string): NavNested | null {
-  if (!key.startsWith("api/web/") || key === "api/web/README") return null;
+export function apiNavNested(key: string, title: string, headings: readonly DocHeading[], base: string, routes: readonly ApiRouteGroup[] = []): NavNested | null {
+  if (key === API_INDEX) {
+    const groups = routes
+      .map((group) => {
+        const ops = group.routes
+          .map((r) => `<li><a class="nav-op" href="${escapeHtml(r.href)}">${headingLabel({ level: 2, id: "", text: r.path, method: r.method })}</a></li>`)
+          .join("");
+        return `<li><a href="${escapeHtml(group.href)}">${escapeHtml(group.title)}</a>${ops === "" ? "" : `<ul class="nav-ops">${ops}</ul>`}</li>`;
+      })
+      .join("");
+    return groups === "" ? null : { under: API_INDEX, html: `<ul class="nav-sub">${groups}</ul>` };
+  }
+  if (!key.startsWith("api/web/")) return null;
   const ops = headings
     .filter((h) => h.method !== undefined)
     .map((h) => `<li><a class="nav-op" href="#${escapeHtml(h.id)}">${headingLabel(h)}</a></li>`)
     .join("");
   const list = ops === "" ? "" : `<ul class="nav-ops">${ops}</ul>`;
   return {
-    under: "api/web/README",
+    under: API_INDEX,
     html: `<ul class="nav-sub"><li><a href="${escapeHtml(docUrl(key, base))}" aria-current="page">${escapeHtml(title)}</a>${list}</li></ul>`,
   };
 }
@@ -1121,7 +1149,7 @@ export function renderDocPage(
   const place = navPlace(shell.nav, key);
   const trail = crumbTrail(shell.nav, key, doc.title);
   const versions = versionsHtml(shell.versions, at.ref, key);
-  const nav = homeLink(at.base, key === "README") + navHtml(shell.nav, key, at.base, apiNavNested(key, doc.title, doc.headings, at.base));
+  const nav = homeLink(at.base, key === "README") + navHtml(shell.nav, key, at.base, apiNavNested(key, doc.title, doc.headings, at.base, doc.routes));
   const html = fillShell(
     shell.html,
     {

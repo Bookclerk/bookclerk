@@ -361,6 +361,13 @@ fuzzing in `npm test`.
   properly, every section is labelled by its own heading with one badge
   for a known method, and the page keeps the same text as it has without
   the layout.
+- **Web API index layout** (`layoutIndex` and `indexRoutes` in
+  `tools/site/api-reference.ts`, through `renderDoc`) lays out the
+  generated `api/web/README.md` as route group cards with a quick-start
+  aside, and reads its routes for the sidebar. Corpus
+  `tools/site/fuzz/api_index/`. Oracle: the HTML nests properly, every card
+  and aside is labelled by its own heading, every badge names a known
+  method, and the page keeps the same text as it has without the layout.
 - **Last-updated reader** (`pageDate` and `datedPages` in
   `tools/site/last-updated.ts`) dates each docs page from the docs
   repository's `last-updated.json`, and lists every page for

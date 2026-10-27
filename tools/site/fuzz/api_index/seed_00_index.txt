@@ -1,0 +1,103 @@
+# Bookclerk daemon API
+
+The HTTP API of `bookclerkd`, the Bookclerk daemon: the web interface, the CLI and other nodes use it. Request bodies are JSON (`Content-Type: application/json`; send `{}` for defaults) unless a route says otherwise. Error responses are JSON objects with an `error` slug (`ApiError`); bare statuses get `{"error", "message", "status"}` (`ErrorJson`).
+
+The daemon serves this reference as an OpenAPI 3.1 document at `GET /api/openapi.json` (API version `0.1.0`). Load it into an OpenAPI viewer such as Scalar or Swagger UI, or a client generator. Tools that only read OpenAPI 3.0, such as Cloudflare API Shield's schema validation, can use the same API restated as OpenAPI 3.0.3 at `GET /api/openapi-3.0.json`.
+
+## Quick start
+
+The daemon listens on `http://127.0.0.1:8787` unless `daemon.listen` says otherwise. This request calls `GET /api/status` with the `operatorToken` credential; [Authentication](#authentication) says where to get it.
+
+```console
+$ curl 'http://127.0.0.1:8787/api/status' \
+    -H 'Authorization: Bearer <operatorToken>'
+```
+
+[`GET /api/status`](status.md#get-apistatus) describes the response.
+
+## Authentication
+
+Each route lists the credentials it accepts and who may call it. The credentials are:
+
+| Name | Kind | Description |
+| --- | --- | --- |
+| `nodeSignature` | header `Authorization` | A node's signed request, as `Authorization: Bookclerk-Node <node_id> <issued_at> <signature>` with the node's identity key. |
+| `oidcAccessToken` | HTTP bearer | An access token from this daemon's OIDC token endpoint (`POST /oidc/token`), as `Authorization: Bearer <token>`. |
+| `operatorSession` | cookie `bookclerk_operator_session` | The operator's browser session, set by `POST /api/auth/login`. |
+| `operatorToken` | HTTP bearer | The operator token (`bookclerk daemon token`), as `Authorization: Bearer <token>`. |
+| `portalSession` | cookie `bookclerk_portal_session` | A library user's browser session, set by a sign-in route. Cookie-authenticated writes must send an `Origin` (or `Referer`) matching the daemon's public origin or its host. |
+| `uploadToken` | header `Authorization` | The token of an upload grant, as `Authorization: Bookclerk-Upload <token>`. |
+
+## Routes
+
+### [Health](health.md)
+
+Liveness.
+
+| Route | Summary |
+| --- | --- |
+| [`GET /health`](health.md#get-health) | Serves `GET /health` with a static `ok` payload for liveness probes. |
+
+### [Spec](spec.md)
+
+This document.
+
+| Route | Summary |
+| --- | --- |
+| [`GET /api/openapi.json`](spec.md#get-apiopenapijson) | Serves the OpenAPI document. |
+| [`GET /api/openapi-3.0.json`](spec.md#get-apiopenapi-30json) | Serves the OpenAPI document restated as OpenAPI 3.0.3. |
+
+### [Auth](auth.md)
+
+Sign-in, sessions, passkeys, TOTP and the operator's elevation.
+
+| Route | Summary |
+| --- | --- |
+| [`POST /api/auth/login`](auth.md#post-apiauthlogin) | Validates the operator token (throttled, constant-time) and issues a hashed session cookie. |
+| [`GET /api/auth/signin`](auth.md#get-apiauthsignin) | Public sign-in picker: operator-token availability, SSO IdPs, integration logins. |
+| [`POST /api/auth/tray-handoff/prepare`](auth.md#post-apiauthtray-handoffprepare) | Mint a single-use tray Open Bookclerk ticket (Bearer, direct loopback only). |
+| [`GET /api/auth/tray-handoff`](auth.md#get-apiauthtray-handoff) | Consume the pending tray ticket and set a localhost operator session cookie. |
+| [`GET /api/auth/me`](auth.md#get-apiauthme) | Resolves the caller and returns `/me` JSON; unauthenticated callers get 401. |
+| [`POST /api/auth/elevate`](auth.md#post-apiauthelevate) | Owner portal session + password re-auth → short-lived elevated operator cookie. |
+| [`DELETE /api/auth/elevate`](auth.md#delete-apiauthelevate) | End elevation by revoking the elevated operator session cookie. |
+| [`POST /api/auth/bootstrap`](auth.md#post-apiauthbootstrap) | Operator-only bootstrap of the first Owner when none exist. |
+| [`PUT /api/auth/password`](auth.md#put-apiauthpassword) | Set password for self (portal) or target user (operator/admin); revokes sessions. |
+| [`POST /api/auth/password`](auth.md#post-apiauthpassword) | Local password login → portal session cookie, or a TOTP challenge when enabled. |
+| [`POST /api/auth/impersonate`](auth.md#post-apiauthimpersonate) | Operator (or elevated) session starts impersonating a User. |
+| [`DELETE /api/auth/impersonate`](auth.md#delete-apiauthimpersonate) | Clear impersonation on the current operator session. |
+| [`GET /api/auth/branch-consent`](auth.md#get-apiauthbranch-consent) | `GET /api/auth/branch-consent?<authorize params>`: what the consent page shows. 400 `invalid_request` for a malformed request (the page then shows the problem and never redirects). |
+| [`POST /api/auth/branch-consent`](auth.md#post-apiauthbranch-consent) | `POST /api/auth/branch-consent`: approve or deny. Answers `{redirect}`, the URL to send the browser to: the branch's callback with a code (or `error=access_denied`). Approving needs an active signed-in user, host enrollment on, and a connection the transport policy allows. |
+| [`POST /api/auth/branch-consent/step-up`](auth.md#post-apiauthbranch-consentstep-up) | `POST /api/auth/branch-consent/step-up`: starts a passkey step-up for a clerk consent (an Owner with a passkey). Answers the WebAuthn request options with a `challenge_id` to send back in the consent's `step_up`. |
+| [`POST /api/auth/logout`](auth.md#post-apiauthlogout) | Revokes hashed operator and portal sessions and clears both cookies. |
+| [`GET /api/auth/sessions`](auth.md#get-apiauthsessions) | List sessions for the current principal only (not every operator session). |
+| [`DELETE /api/auth/sessions/{id}`](auth.md#delete-apiauthsessionsid) | Revoke a session by id. Operators may revoke any operator session; portal users may only revoke their own. |
+| [`PATCH /api/auth/profile`](auth.md#patch-apiauthprofile) | Updates the caller's display name and/or email. |
+| [`PUT /api/auth/profile/avatar`](auth.md#put-apiauthprofileavatar) | Accepts a JPEG/PNG/WebP upload and stores it under `files_dir/avatars`. |
+| [`DELETE /api/auth/profile/avatar`](auth.md#delete-apiauthprofileavatar) | Removes the caller's stored avatar, if any. |
+| [`GET /api/auth/oidc/providers`](auth.md#get-apiauthoidcproviders) | Lists enabled IdPs for the login picker (id and display name only). |
+| [`GET /api/auth/oidc/identities`](auth.md#get-apiauthoidcidentities) | Lists OIDC portal identities for the cookie-authenticated caller. |
+| [`GET /api/auth/oidc/login`](auth.md#get-apiauthoidclogin) | Starts an OIDC login authorize redirect, honoring login throttle. |
+| [`GET /api/auth/oidc/elevate`](auth.md#get-apiauthoidcelevate) | Starts an Owner re-auth elevate flow against a linked IdP (`prompt=login`). |
+| [`GET /api/auth/oidc/callback`](auth.md#get-apiauthoidccallback) | GET callback (most IdPs); finishes the code exchange. |
+| [`POST /api/auth/oidc/callback`](auth.md#post-apiauthoidccallback) | POST callback (Apple `form_post`); finishes the code exchange. |
+| [`GET /api/auth/oidc/config`](auth.md#get-apiauthoidcconfig) | Operator GET: broker settings plus secret-presence flags (never plaintext). |
+| [`PUT /api/auth/oidc/config`](auth.md#put-apiauthoidcconfig) | Operator PUT: writes next-generation sealed secrets, then publishes config.toml. |
+| [`GET /api/auth/passkeys`](auth.md#get-apiauthpasskeys) | Lists this user's stored passkeys as `{ id, credential_id }` rows. |
+| [`POST /api/auth/passkeys/register/begin`](auth.md#post-apiauthpasskeysregisterbegin) | Starts passkey registration (skips reauth only for first local-only setup). |
+| [`POST /api/auth/passkeys/register/finish`](auth.md#post-apiauthpasskeysregisterfinish) | Completes registration, stores the passkey, and revokes elevated operator sessions. |
+| [`DELETE /api/auth/passkeys/{id}`](auth.md#delete-apiauthpasskeysid) | Deletes one passkey after recent reauth; 404 when the id is not this user's. |
+| [`POST /api/auth/passkeys/login/begin`](auth.md#post-apiauthpasskeysloginbegin) | Rate-limits and starts passkey login; records a failure on any error. |
+| [`POST /api/auth/passkeys/login/finish`](auth.md#post-apiauthpasskeysloginfinish) | Verifies the assertion, updates the credential counter, and issues a portal session. |
+| [`POST /api/auth/passkeys/elevate/begin`](auth.md#post-apiauthpasskeyselevatebegin) | Starts Owner elevation; 403 unless the signed-in user is an Owner with passkeys. |
+| [`POST /api/auth/passkeys/elevate/finish`](auth.md#post-apiauthpasskeyselevatefinish) | Completes Owner elevation only when the assertion is user-verified. |
+| [`POST /api/auth/totp/login`](auth.md#post-apiauthtotplogin) | Completes password+TOTP login and issues a portal session cookie. |
+| [`POST /api/auth/totp/enroll/begin`](auth.md#post-apiauthtotpenrollbegin) | Starts TOTP enrollment: new pending secret, otpauth URL, and QR SVG. |
+| [`POST /api/auth/totp/enroll/finish`](auth.md#post-apiauthtotpenrollfinish) | Confirms the pending secret with a valid code and sets `users.totp_enabled`. |
+| [`GET /api/auth/totp`](auth.md#get-apiauthtotp) | GET `/api/auth/totp` — whether TOTP is confirmed for this user. |
+| [`DELETE /api/auth/totp`](auth.md#delete-apiauthtotp) | Disables TOTP after recent reauth and deletes sealed secrets. |
+| [`GET /api/auth/mfa-policy`](auth.md#get-apiauthmfa-policy) | Current MFA policy (`require_second_factor`). |
+| [`PUT /api/auth/mfa-policy`](auth.md#put-apiauthmfa-policy) | Persists `daemon.auth.require_second_factor` to `config.toml`. |
+
+## Schemas
+
+Request and response bodies are described in [Schemas](schemas.md).

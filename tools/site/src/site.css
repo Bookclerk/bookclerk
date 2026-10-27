@@ -628,7 +628,7 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
   color: color-mix(in srgb, var(--method) 72%, var(--ink)); background: color-mix(in srgb, var(--method) 16%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--method) 32%, transparent);
 }
-.api-method-get { --method: #2f855a; }
+.api-method-get { --method: #276749; }
 .api-method-post { --method: #2b6cb0; }
 .api-method-put { --method: #975a16; }
 .api-method-patch { --method: #805ad5; }
@@ -660,9 +660,35 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
 .docs-nav .nav-op, .docs-menus .nav-op { display: flex; gap: 8px; align-items: baseline; padding: 4px 8px; font-size: 13px; line-height: 18px; }
 .nav-op .api-method { min-width: 3.4em; font-size: 10px; line-height: 15px; padding: 0 4px; flex: none; }
 .nav-op code { font: 13px/18px var(--font-mono); overflow-wrap: anywhere; background: none; border: 0; padding: 0; }
+/* The index (layoutIndex): the introduction with the Quick start beside it,
+   then one card per route group listing its routes with method badges. */
+.api-intro-main > * + *, .api-intro-side > * + * { margin-top: 1.15em; }
+.doc .api-intro-side { margin-top: 2em; }
+.doc .api-intro-side h2 { font: 600 12px/16px var(--font-sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--docs-soft); margin: 0 0 0.6em; }
+.doc .api-intro-side p { font-size: 15px; }
+.doc .api-intro-side .code { margin-block: 0.8em; }
+.doc .api-group { margin-top: 2.2em; }
+.doc .api-group h3 { margin-bottom: 0.3em; }
+.doc .api-group h3 a { color: var(--ink); text-decoration: none; }
+.doc .api-group h3 a:hover { color: var(--teal); text-decoration: underline; }
+.doc .api-group .table-scroll { margin-top: 0.8em; }
+.doc .api-group td:first-child { width: 1%; white-space: nowrap; }
+.doc .api-group td:first-child a { display: inline-flex; align-items: baseline; gap: 10px; text-decoration: none; color: var(--ink); }
+.doc .api-group td:first-child a:hover code { text-decoration: underline; }
+.doc .api-group td:first-child code { background: none; border: 0; padding: 0; font-size: 14px; }
+.doc .api-group td:first-child .api-method { min-width: 4.8em; }
+/* On a phone the path wraps so the summary column stays in view. */
+@media (max-width: 720px) {
+  .doc .api-group td:first-child { width: auto; min-width: 0; white-space: normal; }
+  .doc .api-group td:first-child a { flex-wrap: wrap; gap: 4px 10px; }
+  .doc .api-group td code { white-space: normal; overflow-wrap: break-word; }
+  .doc .api-group td + td code { overflow-wrap: anywhere; }
+}
 .toc .api-method, .menu-toc .api-method { font-size: 10px; line-height: 15px; padding: 0 4px; margin-right: 4px; }
 
 @media (min-width: 1201px) {
+  .doc .api-intro { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 0 40px; align-items: start; }
+  .doc .api-intro-side { margin-top: 0; padding: 18px 20px; border: 1px solid var(--docs-line); border-radius: 10px; background: color-mix(in srgb, var(--parchment) 30%, transparent); }
   .doc .api-op-body { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 0 40px; align-items: start; }
   .doc .api-op-examples { position: sticky; top: calc(var(--docs-header) + 20px); max-height: calc(100vh - var(--docs-header) - 40px); overflow-y: auto; margin-top: 1.4em; }
 }

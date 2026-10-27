@@ -1,0 +1,16 @@
+# API
+
+## Routes
+
+### [Jobs](jobs.md)
+
+Jobs.
+
+| Route | Summary |
+| --- | --- |
+| [`GET /api/jobs`](jobs.md#get-apijobs) | Lists. |
+| [`DELETE /api/jobs/{id}`](jobs.md#delete) (deprecated) | Removes. |
+
+### [Health](health.md)
+
+- [`GET /health`](health.md#get-health)
