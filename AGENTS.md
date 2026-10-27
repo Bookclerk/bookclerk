@@ -33,10 +33,6 @@ the publish crates, by TypeDoc and lint checks on the TypeScript SDK and
 - No crate- or module-wide `allow(missing_docs)`; narrow allows only for
   generated code that cannot carry comments.
 
-Pages under `docs/` follow [`docs/contributing/writing-docs.md`](docs/contributing/writing-docs.md):
-Markdown that GitHub renders (the site renders the same files), short
-paragraphs, numbered steps and `> [!NOTE]`-style callouts.
-
 Types:
 
 - Encode meaning in types: newtypes for ids, keys, units and secrets instead of
@@ -80,6 +76,35 @@ Untrusted input ([ADR](docs/adr/untrusted-input-fuzzing.md)):
 - A crash from scheduled fuzzing is a security report: fix it first and land
   the minimized input as `fuzz/corpus/<target>/regression_*` with the fix.
 
+### Documentation
+
+The docs under `docs/` describe what is on `main`, so they change in the same
+pull request as the behavior they describe:
+
+- A change to behavior, configuration, the CLI, an API (web, plugin ABI or
+  SDK), a workflow or a decision updates every affected page under `docs/`.
+  If no page is affected, the description's **Docs** section says why.
+- Pages follow [`docs/contributing/writing-docs.md`](docs/contributing/writing-docs.md):
+  Markdown that GitHub renders (the site renders the same files), short
+  paragraphs, numbered steps and `> [!NOTE]`-style callouts. ADRs under
+  `docs/adr/` keep the standard ADR format (a **Status** line, then
+  **Context**, **Decision** and **Consequences**) instead.
+- A new architecture decision gets an ADR; when a later change supersedes
+  one, update that ADR's **Status** rather than rewriting its body.
+- A new page is listed in [`docs/README.md`](docs/README.md) and in the site
+  navigation (`NAV` in `tools/site/render.ts`).
+- Generated references are regenerated, never edited by hand:
+  - CLI reference ([`docs/server/cli-reference.md`](docs/server/cli-reference.md)):
+    `UPDATE_CLI_REFERENCE=1 cargo test -p bookclerk-cli cli_reference`
+    (`cli_reference_is_current` fails when it is stale).
+  - Web API reference: commit the daemon's OpenAPI document with
+    `cargo run -p bookclerkd -- --print-openapi > crates/bookclerkd/openapi.json`
+    (`the_committed_document_is_current` fails when it is stale); the docs
+    pipeline renders it.
+  - SDK and crate references come from doc comments (see
+    [`docs/contributing/code-documentation.md`](docs/contributing/code-documentation.md)),
+    so update the comments.
+
 ### Before every push
 
 - `cargo fmt --all -- --check` and
@@ -95,6 +120,7 @@ Untrusted input ([ADR](docs/adr/untrusted-input-fuzzing.md)):
   changes, a dependency vulnerability scan when a lockfile changed, and static
   analysis for security-surface changes. Where they are not available, CI runs
   them.
+- Docs updated for what changed (see [Documentation](#documentation)).
 - Review your own diff against `<base>`, including a security pass for
   security-surface changes, and fix what you confirm.
 
@@ -132,6 +158,10 @@ and review the change against them:
 - Does it break behavior outside its files? That is in scope.
 - Does it add or widen an untrusted-input boundary without a fuzz target,
   seed corpus and replay test? That is a finding inside the scope.
+- Does it leave a page under `docs/` describing the old behavior, or skip a
+  generated reference? Stale or missing docs for what the change touches are
+  a finding inside the scope, unless the **Docs** section gives a reason that
+  holds.
 
 Findings that are substantially different from the pull request's intent
 (pre-existing problems, other features, redesigns, "while you're here"
