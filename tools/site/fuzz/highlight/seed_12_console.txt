@@ -1,0 +1,7 @@
+console
+$ cargo build \
+    --release
+   Compiling bookclerk v0.1.0
+
+$ echo "done" | tee out.txt
+done

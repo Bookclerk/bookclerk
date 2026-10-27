@@ -10,8 +10,12 @@ export const LAST_UPDATED_FILE = "last-updated.json";
 /** The `version` of last-updated.json this parser reads. */
 const LAST_UPDATED_VERSION = 1;
 
-/** Largest last-updated.json the Worker reads, in bytes; today's is under 3 KB. */
-export const MAX_LAST_UPDATED_BYTES = 256 * 1024;
+/**
+ * Largest last-updated.json the Worker reads, in bytes. It lists every page,
+ * the generated API reference included, at about 60 bytes each, so this
+ * leaves room for some 30,000 pages.
+ */
+export const MAX_LAST_UPDATED_BYTES = 2 * 1024 * 1024;
 
 /** A calendar date as `YYYY-MM-DD` (UTC), checked to exist. */
 export type IsoDate = string & { readonly __isoDate: unique symbol };

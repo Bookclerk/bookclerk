@@ -1,0 +1,5 @@
+console
+$ printf %s \\
+\
+$ cargo build \\\
+  --release

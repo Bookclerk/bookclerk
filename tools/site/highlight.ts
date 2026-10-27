@@ -53,6 +53,11 @@ interface Grammar {
   literals: ReadonlySet<string>;
   /** Whether keywords match in any letter case (SQL). */
   caseless: boolean;
+  /**
+   * Whether only lines after a `$ ` prompt (and their `\` continuations)
+   * hold commands, as in a terminal session; other lines are output.
+   */
+  promptOnly: boolean;
 }
 
 /** Literals most languages share. */
@@ -83,19 +88,19 @@ const COMMAND_PREFIXES = new Set(["then", "do", "else", "elif", "sudo", "time", 
 /** Grammar for each language name a fence may give, lower-cased. */
 const GRAMMARS: ReadonlyMap<string, Grammar> = (() => {
   const none: ReadonlySet<string> = new Set();
-  const shell: Grammar = { mode: "shell", lineComments: ["#"], blockComment: null, quotes: `"'`, keywords: SHELL_KEYWORDS, literals: none, caseless: false };
-  const toml: Grammar = { mode: "toml", lineComments: ["#"], blockComment: null, quotes: `"'`, keywords: none, literals: new Set(["true", "false"]), caseless: false };
-  const yaml: Grammar = { mode: "yaml", lineComments: ["#"], blockComment: null, quotes: `"'`, keywords: none, literals: new Set([...COMMON_LITERALS, "yes", "no", "on", "off"]), caseless: false };
-  const json: Grammar = { mode: "json", lineComments: ["//"], blockComment: ["/*", "*/"], quotes: `"`, keywords: none, literals: COMMON_LITERALS, caseless: false };
-  const ts: Grammar = { mode: "code", lineComments: ["//"], blockComment: ["/*", "*/"], quotes: "\"'`", keywords: TS_KEYWORDS, literals: new Set([...COMMON_LITERALS, "undefined"]), caseless: false };
-  const rust: Grammar = { mode: "code", lineComments: ["//"], blockComment: ["/*", "*/"], quotes: `"`, keywords: RUST_KEYWORDS, literals: new Set(["true", "false", "None", "Some", "Ok", "Err"]), caseless: false };
-  const python: Grammar = { mode: "code", lineComments: ["#"], blockComment: null, quotes: `"'`, keywords: PYTHON_KEYWORDS, literals: new Set(["True", "False", "None"]), caseless: false };
-  const sql: Grammar = { mode: "code", lineComments: ["--"], blockComment: ["/*", "*/"], quotes: `'"`, keywords: SQL_KEYWORDS, literals: none, caseless: true };
+  const shell: Grammar = { mode: "shell", lineComments: ["#"], blockComment: null, quotes: `"'`, keywords: SHELL_KEYWORDS, literals: none, caseless: false, promptOnly: false };
+  const toml: Grammar = { mode: "toml", lineComments: ["#"], blockComment: null, quotes: `"'`, keywords: none, literals: new Set(["true", "false"]), caseless: false, promptOnly: false };
+  const yaml: Grammar = { mode: "yaml", lineComments: ["#"], blockComment: null, quotes: `"'`, keywords: none, literals: new Set([...COMMON_LITERALS, "yes", "no", "on", "off"]), caseless: false, promptOnly: false };
+  const json: Grammar = { mode: "json", lineComments: ["//"], blockComment: ["/*", "*/"], quotes: `"`, keywords: none, literals: COMMON_LITERALS, caseless: false, promptOnly: false };
+  const ts: Grammar = { mode: "code", lineComments: ["//"], blockComment: ["/*", "*/"], quotes: "\"'`", keywords: TS_KEYWORDS, literals: new Set([...COMMON_LITERALS, "undefined"]), caseless: false, promptOnly: false };
+  const rust: Grammar = { mode: "code", lineComments: ["//"], blockComment: ["/*", "*/"], quotes: `"`, keywords: RUST_KEYWORDS, literals: new Set(["true", "false", "None", "Some", "Ok", "Err"]), caseless: false, promptOnly: false };
+  const python: Grammar = { mode: "code", lineComments: ["#"], blockComment: null, quotes: `"'`, keywords: PYTHON_KEYWORDS, literals: new Set(["True", "False", "None"]), caseless: false, promptOnly: false };
+  const sql: Grammar = { mode: "code", lineComments: ["--"], blockComment: ["/*", "*/"], quotes: `'"`, keywords: SQL_KEYWORDS, literals: none, caseless: true, promptOnly: false };
   return new Map<string, Grammar>([
     ["bash", shell],
     ["sh", shell],
     ["shell", shell],
-    ["console", shell],
+    ["console", { ...shell, promptOnly: true }],
     ["zsh", shell],
     ["toml", toml],
     ["yaml", yaml],
@@ -210,16 +215,37 @@ export function highlight(code: string, lang: string): string | null {
     while (code[j] === " " || code[j] === "\t") j++;
     return code[j];
   };
+  // In a terminal session, whether this line is a command after a `$ `
+  // prompt (or continues one).
+  let promptLine = false;
+  // Whether the current line ended in a line comment.
+  let commentEnded = false;
   // In shell mode, whether the next word starts a command.
-  let commandNext = true;
+  let commandNext = !g.promptOnly;
   // Where the last search for a `${` closing brace stopped (see below).
   let braceScanEnd = -1;
   let i = 0;
   while (i < code.length) {
     const c = code[i] ?? "";
+    // In a terminal session, a line that is not a command is output: plain.
+    if (g.promptOnly && !promptLine && c !== "\n" && (i === 0 || code[i - 1] === "\n") && !code.startsWith("$ ", i)) {
+      const end = code.indexOf("\n", i);
+      const stop = end === -1 ? code.length : end;
+      plain += code.slice(i, stop);
+      i = stop;
+      continue;
+    }
     if (c === "\n") {
+      // A shell line ending in an unescaped `\` (an odd run of them, outside
+      // a comment) continues the command, so the next line carries on where
+      // this one stopped. `\\` is a literal backslash and ends the line.
+      let run = 0;
+      while (g.mode === "shell" && code[i - 1 - run] === "\\") run++;
+      const continues = g.mode === "shell" && run % 2 === 1 && !commentEnded;
+      promptLine = promptLine && continues;
+      commentEnded = false;
       plain += c;
-      commandNext = true;
+      if (!continues) commandNext = !g.promptOnly;
       i += 1;
       continue;
     }
@@ -229,6 +255,7 @@ export function highlight(code: string, lang: string): string | null {
       const end = code.indexOf("\n", i);
       const stop = end === -1 ? code.length : end;
       mark("c", code.slice(i, stop));
+      commentEnded = true;
       i = stop;
       continue;
     }
@@ -314,9 +341,14 @@ export function highlight(code: string, lang: string): string | null {
     }
     if (g.mode === "shell") {
       // A pipe, `;`, `&&` or `||` starts the next command; a `$ ` prompt
-      // at the start of a line is not one.
-      if (c === "|" || c === ";" || c === "&" || c === "(") commandNext = true;
-      else if (!(c === " " || c === "\t" || (c === "$" && atLineStart(i)))) commandNext = false;
+      // at the start of a line is not one, but starts a command line in a
+      // terminal session.
+      if (c === "$" && atLineStart(i) && code[i + 1] === " ") {
+        promptLine = true;
+        commandNext = true;
+      } else if (c === "|" || c === ";" || c === "&" || c === "(") commandNext = true;
+      // A `\` that ends the line keeps the state for the next line.
+      else if (!(c === " " || c === "\t" || (c === "\\" && code[i + 1] === "\n"))) commandNext = false;
     }
     plain += c;
     i += 1;

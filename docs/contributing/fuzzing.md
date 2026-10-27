@@ -39,6 +39,15 @@ non-Rust tooling (decision 6):
   inside it, nothing else in the body changes, the list and body stay within
   their caps, and a second append changes nothing).
 
+- The docs publish step's reader of the docs repository's current
+  `last-updated.json` (`previous_dates` in `scripts/docs-publish.py`), which
+  carries the generated pages' dates forward from one publish to the next.
+  `scripts/tests/test_docs_publish.py` replays its seed corpus
+  (`scripts/tests/docs_publish_dates_corpus/`) and runs seeded mutation
+  fuzzing on every PR, checking each result against an independent reading
+  (the document's shape by exact types, each date digit by digit against a
+  days-in-month table).
+
 - The diagnostics triage plan validator
   (`tools/diagnostics-collector/scripts/validate_plan.py`), which decides what
   model output reaches public issues.

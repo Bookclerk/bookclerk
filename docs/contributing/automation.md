@@ -366,7 +366,11 @@ step with this one, as Markdown that the website and agents read:
   path rather than counted, and author dates survive history rewrites that
   reset commit dates. The workflow checks out the full history and passes
   `--require-history`, so a shallow checkout fails the build; a local build
-  from a shallow clone leaves the file out with a warning.
+  from a shallow clone leaves the file out with a warning. The build dates
+  only `docs/`; `docs-publish.py` adds the generated `api/` pages, since
+  only it can compare them with the docs repository: a page whose content
+  is unchanged there keeps its previous date, and a new or changed one
+  gets the publish date.
 
 The `build` job has no secrets and a read-only token; it runs
 `scripts/docs-markdown.py` and uploads the tree as an artifact. The `publish`
