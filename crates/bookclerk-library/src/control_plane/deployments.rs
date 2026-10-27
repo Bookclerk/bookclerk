@@ -28,8 +28,10 @@ use crate::store::LibraryStore;
 /// and retires it for `absent` and `unplaced`; the split only records whose
 /// decision the row carries, so "the operator turned this off" never reads
 /// like "the scheduler put the replica elsewhere".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, utoipa::ToSchema)]
-#[schema(rename_all = "lowercase")]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, utoipa::ToSchema,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum DesiredState {
     /// An operator enabled the instance on this node.
     Present,

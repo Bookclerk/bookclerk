@@ -701,8 +701,7 @@ pub(crate) struct PluginDeploymentView {
     pub node_id: String,
     /// What the row asks the node to do: `present` / `absent` from an
     /// operator, `placed` / `unplaced` from the scheduler.
-    #[schema(value_type = bookclerk_library::control_plane::DesiredState)]
-    pub desired: String,
+    pub desired: bookclerk_library::control_plane::DesiredState,
     /// Compare-and-swap revision of the desired row.
     pub revision: i64,
     /// Latest observation status from that node, when it reported one.
@@ -849,7 +848,7 @@ pub(crate) async fn list_plugin_instance_views(
             deployments.push(PluginDeploymentView {
                 deployment_id: deployment.deployment_id,
                 node_id: deployment.node_id,
-                desired: deployment.desired.as_str().to_string(),
+                desired: deployment.desired,
                 revision: deployment.revision,
                 status: observation.as_ref().map(|o| o.status.as_str().to_string()),
                 detail: observation

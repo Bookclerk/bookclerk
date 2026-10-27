@@ -289,11 +289,9 @@ pub struct JobInfo {
     /// Opaque job id returned to the client when the job is accepted.
     pub id: String,
     /// What the job does.
-    #[schema(value_type = bookclerk_library::JobKind)]
-    pub kind: String,
+    pub kind: bookclerk_library::JobKind,
     /// Where the job is in its lifecycle.
-    #[schema(value_type = bookclerk_library::JobState)]
-    pub status: String,
+    pub status: bookclerk_library::JobState,
     /// Optional operator-facing progress or error text.
     pub detail: Option<String>,
     /// Human-readable progress string while the job is running.
@@ -1128,7 +1126,11 @@ pub(crate) fn documented_groups() -> Vec<DocumentedGroup> {
     ));
     out.push(DocumentedGroup::new(
         OpenApiRouter::<Arc<utoipa::openapi::OpenApi>>::new()
-            .routes(routes!(crate::openapi::get_openapi))
+            .routes(routes!(crate::openapi::get_openapi)),
+        Access::Public,
+    ));
+    out.push(DocumentedGroup::new(
+        OpenApiRouter::<crate::openapi::V30Document>::new()
             .routes(routes!(crate::openapi::get_openapi_v30)),
         Access::Public,
     ));
@@ -1160,8 +1162,14 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     app = app.merge(
         OpenApiRouter::new()
             .routes(routes!(crate::openapi::get_openapi))
-            .routes(routes!(crate::openapi::get_openapi_v30))
             .with_state(openapi_doc)
+            .split_for_parts()
+            .0,
+    );
+    app = app.merge(
+        OpenApiRouter::new()
+            .routes(routes!(crate::openapi::get_openapi_v30))
+            .with_state(crate::openapi::shared_v30_document())
             .split_for_parts()
             .0,
     );
@@ -2595,7 +2603,7 @@ fn instance_settings_group(
         present_on: view
             .deployments
             .iter()
-            .filter(|deployment| deployment.desired == "present" || deployment.desired == "placed")
+            .filter(|deployment| deployment.desired.runs())
             .map(|deployment| deployment.node_id.clone())
             .collect(),
     }
@@ -4024,8 +4032,8 @@ fn job_info_from_record(job: JobRecord) -> JobInfo {
     let detail = job.progress.clone().or(job.error_message.clone());
     JobInfo {
         id: job.id,
-        kind: job.kind.as_str().to_string(),
-        status: job.state.as_str().to_string(),
+        kind: job.kind,
+        status: job.state,
         detail,
         progress: job.progress,
         attempt_count: job.attempt_count,

@@ -2435,6 +2435,7 @@ dependencies = [
  "clap",
  "futures",
  "http-body-util",
+ "indexmap 2.14.0",
  "jsonwebtoken",
  "libc",
  "openidconnect",

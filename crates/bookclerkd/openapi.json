@@ -14119,8 +14119,8 @@
         "tags": [
           "Spec"
         ],
-        "summary": "Serves the document restated as OpenAPI 3.0.3, for tools that only read\n3.0 (Cloudflare API Shield's schema validation, older generators).",
-        "description": "The same API as `GET /api/openapi.json`, restated in OpenAPI 3.0.3 form: nullable types use `nullable: true` and keywords 3.0 lacks are restated or dropped. Upload this one where a tool only accepts OpenAPI 3.0.",
+        "summary": "Serves the OpenAPI document restated as OpenAPI 3.0.3.",
+        "description": "The same API as `GET /api/openapi.json`, restated in OpenAPI 3.0.3 form for tools that only read 3.0, such as Cloudflare API Shield's schema validation: nullable types use `nullable: true`, and a nullable reference is a copy of the schema it names.",
         "operationId": "get_openapi_v30",
         "responses": {
           "200": {

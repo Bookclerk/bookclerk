@@ -7,30 +7,39 @@
 //! [`OPENAPI_V30_PATH`]. The translation is sans-IO: [`downgrade`] maps one
 //! JSON document to another and fails, naming the place, on any 3.1 form it
 //! has no 3.0 equivalent for, so a new construct cannot slip through
-//! silently.
+//! silently. It works on [`Json`], which keeps object keys in document
+//! order, so the 3.0 copy lists paths and fields as the 3.1 one does.
 //!
 //! What changes:
 //!
 //! - `type: [T, "null"]` becomes `type: T` with `nullable: true`.
 //! - A `oneOf` / `anyOf` with a `{"type": "null"}` branch drops that branch
-//!   and sets `nullable: true`; a single remaining branch is folded in.
+//!   and sets `nullable: true`. A single remaining inline branch is folded
+//!   in; a single remaining `$ref` to a component schema is replaced by a
+//!   copy of that schema, because 3.0 ignores `nullable` beside a bare
+//!   `allOf` and would refuse `null`.
 //! - A `$ref` with sibling keys (3.0 ignores siblings) moves into a
 //!   one-item `allOf` so the siblings, such as `description`, still apply.
+//! - A nullable `enum` gets `null` among its values, as 3.0.3 requires.
 //! - `const` becomes a one-value `enum`, `examples` becomes `example` (the
 //!   first one), and numeric `exclusiveMinimum` / `exclusiveMaximum` become
 //!   `minimum` / `maximum` with the boolean flag.
-//! - `propertyNames` has no 3.0 form and is dropped; the map's
-//!   `description` still states what its keys are.
+//! - `propertyNames: {"type": "string"}` says nothing (JSON keys are always
+//!   strings) and is dropped; any other `propertyNames` is refused.
 
 use std::fmt;
 
-use serde_json::{Map, Value};
+use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
 
 /// Path the 3.0.3 document is served at.
 pub const OPENAPI_V30_PATH: &str = "/api/openapi-3.0.json";
 
 /// The OpenAPI version the translation writes.
 const VERSION: &str = "3.0.3";
+
+/// Prefix of a local component schema reference.
+const SCHEMA_REF_PREFIX: &str = "#/components/schemas/";
 
 /// Keywords an OpenAPI 3.0.3 Schema Object may carry, besides `x-*`
 /// extensions.
@@ -75,6 +84,54 @@ const SCHEMA_KEYWORDS_V30: &[&str] = &[
 /// The non-null JSON types a 3.0 `type` may name.
 const TYPES_V30: &[&str] = &["string", "number", "integer", "boolean", "array", "object"];
 
+/// A JSON value whose objects keep their keys in document order.
+///
+/// `serde_json::Value` sorts object keys in this workspace (its
+/// `preserve_order` feature is off, and turning it on would change every
+/// crate's JSON), so the translation reads and writes this instead.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Json {
+    /// `null`.
+    Null,
+    /// `true` or `false`.
+    Bool(bool),
+    /// Any JSON number, kept exactly as parsed.
+    Number(serde_json::Number),
+    /// A string.
+    String(String),
+    /// An array.
+    Array(Vec<Json>),
+    /// An object, keys in document order.
+    Object(IndexMap<String, Json>),
+}
+
+/// An ordered JSON object.
+type Object = IndexMap<String, Json>;
+
+impl Json {
+    /// The string, when this is one.
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            Json::String(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// The object, when this is one.
+    fn as_object(&self) -> Option<&Object> {
+        match self {
+            Json::Object(map) => Some(map),
+            _ => None,
+        }
+    }
+
+    /// The value at `key`, when this is an object holding it.
+    fn get(&self, key: &str) -> Option<&Json> {
+        self.as_object().and_then(|map| map.get(key))
+    }
+}
+
 /// Why a 3.1 document could not be restated as 3.0.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DowngradeError {
@@ -112,24 +169,34 @@ impl fmt::Display for DowngradeError {
 
 impl std::error::Error for DowngradeError {}
 
+/// What every step of the translation can see.
+struct Context<'a> {
+    /// The 3.1 document's `components.schemas`, for inlining a nullable
+    /// reference.
+    schemas: Option<&'a Object>,
+    /// Component names being inlined, outermost first, so a schema that
+    /// refers to itself is not inlined forever.
+    inlining: Vec<String>,
+}
+
 /// Restates an OpenAPI 3.1 document as OpenAPI 3.0.3.
 ///
 /// # Arguments
 ///
-/// * `doc` - The 3.1 document as JSON.
+/// * `doc` - The 3.1 document.
 ///
 /// # Returns
 ///
-/// The 3.0.3 document: the same paths, operations, components and texts,
-/// with every schema in 3.0 form.
+/// The 3.0.3 document: the same paths, operations, components and texts in
+/// the same order, with every schema in 3.0 form.
 ///
 /// # Errors
 ///
 /// [`DowngradeError`] when the document uses a 3.1 form without a 3.0
 /// equivalent (`webhooks`, `prefixItems`, a `type` list of two non-null
 /// types, …) or a schema is not an object.
-pub fn downgrade(doc: &Value) -> Result<Value, DowngradeError> {
-    let Value::Object(root) = doc else {
+pub fn downgrade(doc: &Json) -> Result<Json, DowngradeError> {
+    let Json::Object(root) = doc else {
         return Err(shape("", "a JSON object"));
     };
     for keyword in ["webhooks", "jsonSchemaDialect"] {
@@ -137,10 +204,10 @@ pub fn downgrade(doc: &Value) -> Result<Value, DowngradeError> {
             return Err(unsupported("", keyword));
         }
     }
-    if root.get("info").and_then(|i| i.get("summary")).is_some() {
+    if doc.get("info").and_then(|i| i.get("summary")).is_some() {
         return Err(unsupported("/info", "summary"));
     }
-    if root
+    if doc
         .get("info")
         .and_then(|i| i.get("license"))
         .and_then(|l| l.get("identifier"))
@@ -148,24 +215,31 @@ pub fn downgrade(doc: &Value) -> Result<Value, DowngradeError> {
     {
         return Err(unsupported("/info/license", "identifier"));
     }
-    if root
+    if doc
         .get("components")
         .and_then(|c| c.get("pathItems"))
         .is_some()
     {
         return Err(unsupported("/components", "pathItems"));
     }
-    let mut out = Map::new();
+    let mut cx = Context {
+        schemas: doc
+            .get("components")
+            .and_then(|c| c.get("schemas"))
+            .and_then(Json::as_object),
+        inlining: Vec::new(),
+    };
+    let mut out = Object::new();
     for (key, value) in root {
         let pointer = format!("/{}", escape(key));
         let value = match key.as_str() {
-            "openapi" => Value::String(VERSION.to_string()),
-            "components" => components(value, &pointer)?,
-            _ => non_schema(value, &pointer)?,
+            "openapi" => Json::String(VERSION.to_string()),
+            "components" => components(&mut cx, value, &pointer)?,
+            _ => non_schema(&mut cx, value, &pointer)?,
         };
         out.insert(key.clone(), value);
     }
-    Ok(Value::Object(out))
+    Ok(Json::Object(out))
 }
 
 /// Translates the `components` object: its `schemas` map holds schemas, and
@@ -173,6 +247,7 @@ pub fn downgrade(doc: &Value) -> Result<Value, DowngradeError> {
 ///
 /// # Arguments
 ///
+/// * `cx` - The translation context.
 /// * `value` - The `components` object.
 /// * `pointer` - Its JSON Pointer.
 ///
@@ -183,21 +258,21 @@ pub fn downgrade(doc: &Value) -> Result<Value, DowngradeError> {
 /// # Errors
 ///
 /// As [`downgrade`].
-fn components(value: &Value, pointer: &str) -> Result<Value, DowngradeError> {
-    let Value::Object(map) = value else {
+fn components(cx: &mut Context<'_>, value: &Json, pointer: &str) -> Result<Json, DowngradeError> {
+    let Json::Object(map) = value else {
         return Err(shape(pointer, "a JSON object"));
     };
-    let mut out = Map::new();
+    let mut out = Object::new();
     for (key, inner) in map {
         let at = format!("{pointer}/{}", escape(key));
         let inner = if key == "schemas" {
-            schema_map(inner, &at)?
+            schema_map(cx, inner, &at)?
         } else {
-            non_schema(inner, &at)?
+            non_schema(cx, inner, &at)?
         };
         out.insert(key.clone(), inner);
     }
-    Ok(Value::Object(out))
+    Ok(Json::Object(out))
 }
 
 /// Walks a part of the document that is not a schema, translating every
@@ -208,6 +283,7 @@ fn components(value: &Value, pointer: &str) -> Result<Value, DowngradeError> {
 ///
 /// # Arguments
 ///
+/// * `cx` - The translation context.
 /// * `value` - The value to walk.
 /// * `pointer` - Its JSON Pointer.
 ///
@@ -218,27 +294,27 @@ fn components(value: &Value, pointer: &str) -> Result<Value, DowngradeError> {
 /// # Errors
 ///
 /// As [`downgrade`].
-fn non_schema(value: &Value, pointer: &str) -> Result<Value, DowngradeError> {
+fn non_schema(cx: &mut Context<'_>, value: &Json, pointer: &str) -> Result<Json, DowngradeError> {
     match value {
-        Value::Object(map) => {
-            let mut out = Map::new();
+        Json::Object(map) => {
+            let mut out = Object::new();
             for (key, inner) in map {
                 let at = format!("{pointer}/{}", escape(key));
                 let inner = match key.as_str() {
-                    "schema" => schema(inner, &at)?,
+                    "schema" => schema(cx, inner, &at)?,
                     "example" | "examples" => inner.clone(),
-                    _ => non_schema(inner, &at)?,
+                    _ => non_schema(cx, inner, &at)?,
                 };
                 out.insert(key.clone(), inner);
             }
-            Ok(Value::Object(out))
+            Ok(Json::Object(out))
         }
-        Value::Array(items) => items
+        Json::Array(items) => items
             .iter()
             .enumerate()
-            .map(|(i, item)| non_schema(item, &format!("{pointer}/{i}")))
+            .map(|(i, item)| non_schema(cx, item, &format!("{pointer}/{i}")))
             .collect::<Result<Vec<_>, _>>()
-            .map(Value::Array),
+            .map(Json::Array),
         other => Ok(other.clone()),
     }
 }
@@ -248,6 +324,7 @@ fn non_schema(value: &Value, pointer: &str) -> Result<Value, DowngradeError> {
 ///
 /// # Arguments
 ///
+/// * `cx` - The translation context.
 /// * `value` - The map.
 /// * `pointer` - Its JSON Pointer.
 ///
@@ -258,24 +335,25 @@ fn non_schema(value: &Value, pointer: &str) -> Result<Value, DowngradeError> {
 /// # Errors
 ///
 /// As [`downgrade`].
-fn schema_map(value: &Value, pointer: &str) -> Result<Value, DowngradeError> {
-    let Value::Object(map) = value else {
+fn schema_map(cx: &mut Context<'_>, value: &Json, pointer: &str) -> Result<Json, DowngradeError> {
+    let Json::Object(map) = value else {
         return Err(shape(pointer, "a map of schemas"));
     };
-    let mut out = Map::new();
+    let mut out = Object::new();
     for (key, inner) in map {
         out.insert(
             key.clone(),
-            schema(inner, &format!("{pointer}/{}", escape(key)))?,
+            schema(cx, inner, &format!("{pointer}/{}", escape(key)))?,
         );
     }
-    Ok(Value::Object(out))
+    Ok(Json::Object(out))
 }
 
 /// Translates a list of schemas (`allOf`, `oneOf`, `anyOf`).
 ///
 /// # Arguments
 ///
+/// * `cx` - The translation context.
 /// * `value` - The list.
 /// * `pointer` - Its JSON Pointer.
 ///
@@ -286,29 +364,64 @@ fn schema_map(value: &Value, pointer: &str) -> Result<Value, DowngradeError> {
 /// # Errors
 ///
 /// As [`downgrade`].
-fn schema_list(value: &Value, pointer: &str) -> Result<Value, DowngradeError> {
-    let Value::Array(items) = value else {
+fn schema_list(cx: &mut Context<'_>, value: &Json, pointer: &str) -> Result<Json, DowngradeError> {
+    let Json::Array(items) = value else {
         return Err(shape(pointer, "a list of schemas"));
     };
     items
         .iter()
         .enumerate()
-        .map(|(i, item)| schema(item, &format!("{pointer}/{i}")))
+        .map(|(i, item)| schema(cx, item, &format!("{pointer}/{i}")))
         .collect::<Result<Vec<_>, _>>()
-        .map(Value::Array)
+        .map(Json::Array)
 }
 
 /// Whether a schema is exactly `{"type": "null"}`.
-fn is_null_schema(value: &Value) -> bool {
-    value.as_object().is_some_and(|map| {
-        map.len() == 1 && map.get("type").and_then(Value::as_str) == Some("null")
-    })
+fn is_null_schema(value: &Json) -> bool {
+    value
+        .as_object()
+        .is_some_and(|map| map.len() == 1 && map.get("type").and_then(Json::as_str) == Some("null"))
+}
+
+/// Adds `branch`'s keys to `map`; a key both hold keeps `map`'s value.
+fn merge_under(map: &mut Object, branch: &Object) {
+    for (key, inner) in branch {
+        if !map.contains_key(key) {
+            map.insert(key.clone(), inner.clone());
+        }
+    }
+}
+
+/// The component a `$ref` names, when it is a local schema that can be
+/// copied in place of the reference.
+///
+/// # Arguments
+///
+/// * `cx` - The translation context.
+/// * `branch` - The `{"$ref": …}` schema.
+///
+/// # Returns
+///
+/// The component's name and 3.1 schema, or `None` for another kind of
+/// reference, an unknown name, a component that is itself only a
+/// reference, or one already being inlined.
+fn inlinable<'a>(cx: &Context<'a>, branch: &Object) -> Option<(String, &'a Object)> {
+    let name = branch
+        .get("$ref")?
+        .as_str()?
+        .strip_prefix(SCHEMA_REF_PREFIX)?;
+    let target = cx.schemas?.get(name)?.as_object()?;
+    if target.contains_key("$ref") || cx.inlining.iter().any(|n| n == name) {
+        return None;
+    }
+    Some((name.to_string(), target))
 }
 
 /// Translates one schema and everything nested in it.
 ///
 /// # Arguments
 ///
+/// * `cx` - The translation context.
 /// * `value` - The 3.1 schema.
 /// * `pointer` - Its JSON Pointer.
 ///
@@ -319,59 +432,112 @@ fn is_null_schema(value: &Value) -> bool {
 /// # Errors
 ///
 /// As [`downgrade`].
-fn schema(value: &Value, pointer: &str) -> Result<Value, DowngradeError> {
-    let Value::Object(input) = value else {
+fn schema(cx: &mut Context<'_>, value: &Json, pointer: &str) -> Result<Json, DowngradeError> {
+    let Json::Object(input) = value else {
         return Err(shape(pointer, "a schema object"));
     };
     let mut map = input.clone();
     let mut nullable = false;
+    // A component copied in for a nullable reference; popped once its
+    // nested schemas are translated.
+    let mut inlined = None;
 
     // Null branches first: `{"type": "null"}` has no 3.0 form of its own.
     for keyword in ["oneOf", "anyOf"] {
-        let Some(Value::Array(branches)) = map.get(keyword) else {
+        let Some(Json::Array(branches)) = map.get(keyword) else {
             continue;
         };
         if !branches.iter().any(is_null_schema) {
             continue;
         }
         nullable = true;
-        let rest: Vec<Value> = branches
+        let rest: Vec<Json> = branches
             .iter()
             .filter(|b| !is_null_schema(b))
             .cloned()
             .collect();
         match rest.as_slice() {
             [] => return Err(shape(pointer, "a non-null branch")),
-            [only] => {
-                map.remove(keyword);
-                let only_is_ref = only.get("$ref").is_some();
-                match only {
-                    Value::Object(branch) if !only_is_ref => {
-                        for (key, inner) in branch {
-                            if map.contains_key(key) {
-                                return Err(unsupported(pointer, key));
-                            }
+            [Json::Object(branch)] => {
+                let index = map.get_index_of(keyword).unwrap_or(map.len());
+                map.shift_remove(keyword);
+                if !branch.contains_key("$ref") {
+                    for (key, inner) in branch {
+                        if map.contains_key(key) {
+                            return Err(unsupported(pointer, key));
+                        }
+                        map.insert(key.clone(), inner.clone());
+                    }
+                } else if let Some((name, target)) = inlinable(cx, branch) {
+                    // The component's keys, then the branch's siblings
+                    // (`description`), with this schema's own keys winning.
+                    let mut copy = branch.clone();
+                    copy.shift_remove("$ref");
+                    merge_under(&mut map, &copy);
+                    merge_under(&mut map, target);
+                    cx.inlining.push(name);
+                    inlined = Some(());
+                } else {
+                    if map.contains_key("allOf") {
+                        return Err(unsupported(pointer, "allOf"));
+                    }
+                    let mut only = Object::new();
+                    for (key, inner) in branch {
+                        if key == "$ref" {
+                            only.insert(key.clone(), inner.clone());
+                        } else if !map.contains_key(key) {
                             map.insert(key.clone(), inner.clone());
                         }
                     }
-                    _ => {
-                        if map.contains_key("allOf") {
-                            return Err(unsupported(pointer, "allOf"));
-                        }
-                        map.insert("allOf".to_string(), Value::Array(vec![only.clone()]));
-                    }
+                    let index = index.min(map.len());
+                    map.shift_insert(
+                        index,
+                        "allOf".to_string(),
+                        Json::Array(vec![Json::Object(only)]),
+                    );
                 }
             }
+            [_] => return Err(shape(pointer, "a schema object")),
             _ => {
-                map.insert(keyword.to_string(), Value::Array(rest));
+                map.insert(keyword.to_string(), Json::Array(rest));
             }
         }
     }
 
+    let result = translate_keywords(cx, map, nullable, pointer);
+    if inlined.is_some() {
+        cx.inlining.pop();
+    }
+    result
+}
+
+/// The rest of [`schema`]: rewrites the keywords of one schema whose null
+/// branches are already resolved, then translates its nested schemas.
+///
+/// # Arguments
+///
+/// * `cx` - The translation context.
+/// * `map` - The schema's keywords.
+/// * `nullable` - Whether a null branch was dropped.
+/// * `pointer` - The schema's JSON Pointer.
+///
+/// # Returns
+///
+/// The 3.0 schema.
+///
+/// # Errors
+///
+/// As [`downgrade`].
+fn translate_keywords(
+    cx: &mut Context<'_>,
+    mut map: Object,
+    mut nullable: bool,
+    pointer: &str,
+) -> Result<Json, DowngradeError> {
     if let Some(types) = map.get("type").cloned() {
         match types {
-            Value::String(t) if TYPES_V30.contains(&t.as_str()) => {}
-            Value::Array(list) => {
+            Json::String(t) if TYPES_V30.contains(&t.as_str()) => {}
+            Json::Array(list) => {
                 let mut named = Vec::new();
                 for t in &list {
                     match t.as_str() {
@@ -382,7 +548,7 @@ fn schema(value: &Value, pointer: &str) -> Result<Value, DowngradeError> {
                 }
                 match named.as_slice() {
                     [only] => {
-                        map.insert("type".to_string(), Value::String(only.clone()));
+                        map.insert("type".to_string(), Json::String(only.clone()));
                     }
                     _ => {
                         return Err(shape(
@@ -396,69 +562,93 @@ fn schema(value: &Value, pointer: &str) -> Result<Value, DowngradeError> {
         }
     }
 
-    if let Some(value) = map.remove("const") {
+    if let Some(index) = map.get_index_of("const") {
         if map.contains_key("enum") {
             return Err(unsupported(pointer, "const"));
         }
-        map.insert("enum".to_string(), Value::Array(vec![value]));
+        if let Some((_, value)) = map.shift_remove_index(index) {
+            map.shift_insert(index, "enum".to_string(), Json::Array(vec![value]));
+        }
     }
-    if let Some(examples) = map.remove("examples") {
-        let Value::Array(examples) = examples else {
-            return Err(shape(&format!("{pointer}/examples"), "a list of examples"));
-        };
-        if let Some(first) = examples.into_iter().next() {
-            map.entry("example").or_insert(first);
+    if let Some(index) = map.get_index_of("examples") {
+        if let Some((_, examples)) = map.shift_remove_index(index) {
+            let Json::Array(examples) = examples else {
+                return Err(shape(&format!("{pointer}/examples"), "a list of examples"));
+            };
+            if let Some(first) = examples.into_iter().next() {
+                if !map.contains_key("example") {
+                    map.shift_insert(index, "example".to_string(), first);
+                }
+            }
         }
     }
     for (exclusive, bound) in [
         ("exclusiveMinimum", "minimum"),
         ("exclusiveMaximum", "maximum"),
     ] {
-        if let Some(Value::Number(limit)) = map.get(exclusive).cloned() {
+        if let Some(Json::Number(limit)) = map.get(exclusive).cloned() {
             if map.contains_key(bound) {
                 return Err(unsupported(pointer, exclusive));
             }
-            map.insert(bound.to_string(), Value::Number(limit));
-            map.insert(exclusive.to_string(), Value::Bool(true));
+            map.insert(bound.to_string(), Json::Number(limit));
+            map.insert(exclusive.to_string(), Json::Bool(true));
         }
     }
-    map.remove("propertyNames");
+    if let Some(names) = map.shift_remove("propertyNames") {
+        let only_string = names.as_object().is_some_and(|n| {
+            n.len() == 1 && n.get("type").and_then(Json::as_str) == Some("string")
+        });
+        if !only_string {
+            return Err(unsupported(pointer, "propertyNames"));
+        }
+    }
 
     if nullable {
-        map.insert("nullable".to_string(), Value::Bool(true));
+        map.insert("nullable".to_string(), Json::Bool(true));
+        if let Some(Json::Array(values)) = map.get_mut("enum") {
+            if !values.contains(&Json::Null) {
+                values.push(Json::Null);
+            }
+        }
     }
 
     // A 3.0 Reference Object ignores siblings, so keep them beside an
     // `allOf` that holds the reference.
     if map.len() > 1 {
-        if let Some(reference) = map.remove("$ref") {
+        if let Some(index) = map.get_index_of("$ref") {
             if map.contains_key("allOf") {
                 return Err(unsupported(pointer, "$ref"));
             }
-            let mut only = Map::new();
-            only.insert("$ref".to_string(), reference);
-            map.insert("allOf".to_string(), Value::Array(vec![Value::Object(only)]));
+            if let Some((key, reference)) = map.shift_remove_index(index) {
+                let mut only = Object::new();
+                only.insert(key, reference);
+                map.shift_insert(
+                    index,
+                    "allOf".to_string(),
+                    Json::Array(vec![Json::Object(only)]),
+                );
+            }
         }
     }
 
-    let mut out = Map::new();
+    let mut out = Object::new();
     for (key, inner) in map {
         let at = format!("{pointer}/{}", escape(&key));
         let inner = match key.as_str() {
             "$ref" => inner,
-            "properties" => schema_map(&inner, &at)?,
-            "items" | "not" => schema(&inner, &at)?,
+            "properties" => schema_map(cx, &inner, &at)?,
+            "items" | "not" => schema(cx, &inner, &at)?,
             "additionalProperties" => match inner {
-                Value::Bool(_) => inner,
-                other => schema(&other, &at)?,
+                Json::Bool(_) => inner,
+                other => schema(cx, &other, &at)?,
             },
-            "allOf" | "oneOf" | "anyOf" => schema_list(&inner, &at)?,
+            "allOf" | "oneOf" | "anyOf" => schema_list(cx, &inner, &at)?,
             k if k.starts_with("x-") || SCHEMA_KEYWORDS_V30.contains(&k) => inner,
             _ => return Err(unsupported(pointer, &key)),
         };
         out.insert(key, inner);
     }
-    Ok(Value::Object(out))
+    Ok(Json::Object(out))
 }
 
 /// Escapes a key for use as a JSON Pointer segment (RFC 6901).
@@ -487,40 +677,129 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// Wraps a schema in a minimal document under `components.schemas.S`.
-    fn doc_with(schema: Value) -> Value {
-        json!({
+    /// Converts a `json!` value into a [`Json`] tree.
+    fn tree(value: serde_json::Value) -> Json {
+        serde_json::from_value(value).expect("valid JSON")
+    }
+
+    /// Wraps schemas in a minimal document under `components.schemas`.
+    fn doc_with(schemas: serde_json::Value) -> Json {
+        tree(json!({
             "openapi": "3.1.0",
             "info": {"title": "t", "version": "1"},
             "paths": {},
-            "components": {"schemas": {"S": schema}}
-        })
+            "components": {"schemas": schemas}
+        }))
     }
 
-    /// Translates one schema through [`downgrade`].
-    fn translate(schema: Value) -> Result<Value, DowngradeError> {
-        downgrade(&doc_with(schema)).map(|doc| doc["components"]["schemas"]["S"].clone())
+    /// Translates schema `S` through [`downgrade`].
+    fn translate(schema: serde_json::Value) -> Result<Json, DowngradeError> {
+        translate_beside(schema, json!({}))
+    }
+
+    /// Translates schema `S` beside other component schemas.
+    fn translate_beside(
+        schema: serde_json::Value,
+        others: serde_json::Value,
+    ) -> Result<Json, DowngradeError> {
+        let mut schemas = others;
+        schemas["S"] = schema;
+        downgrade(&doc_with(schemas)).map(|doc| {
+            doc.get("components")
+                .and_then(|c| c.get("schemas"))
+                .and_then(|s| s.get("S"))
+                .cloned()
+                .unwrap_or(Json::Null)
+        })
     }
 
     #[test]
     fn the_version_is_3_0_3() {
-        let doc = downgrade(&doc_with(json!({"type": "string"}))).expect("downgrades");
-        assert_eq!(doc["openapi"], "3.0.3");
+        let doc = downgrade(&doc_with(json!({"S": {"type": "string"}}))).expect("downgrades");
+        assert_eq!(doc.get("openapi"), Some(&Json::String("3.0.3".into())));
+    }
+
+    #[test]
+    fn key_order_is_kept() {
+        let text = r#"{"openapi":"3.1.0","info":{"title":"t","version":"1"},"paths":{},
+            "components":{"schemas":{"Z":{"type":"object","properties":{"b":{"type":"string"},"a":{"type":["string","null"]}}},"A":{"type":"string"}}}}"#;
+        let doc: Json = serde_json::from_str(text).expect("JSON");
+        let out = serde_json::to_string(&downgrade(&doc).expect("downgrades")).expect("JSON");
+        assert_eq!(
+            out,
+            r#"{"openapi":"3.0.3","info":{"title":"t","version":"1"},"paths":{},"components":{"schemas":{"Z":{"type":"object","properties":{"b":{"type":"string"},"a":{"type":"string","nullable":true}}},"A":{"type":"string"}}}}"#
+        );
     }
 
     #[test]
     fn a_nullable_type_list_becomes_nullable() {
         assert_eq!(
             translate(json!({"type": ["string", "null"], "format": "date-time"})),
-            Ok(json!({"type": "string", "format": "date-time", "nullable": true}))
+            Ok(tree(
+                json!({"type": "string", "format": "date-time", "nullable": true})
+            ))
         );
     }
 
     #[test]
-    fn a_null_branch_beside_a_reference_becomes_a_nullable_all_of() {
+    fn a_nullable_reference_is_replaced_by_a_copy_of_the_component() {
         assert_eq!(
-            translate(json!({"oneOf": [{"$ref": "#/components/schemas/A"}, {"type": "null"}]})),
-            Ok(json!({"allOf": [{"$ref": "#/components/schemas/A"}], "nullable": true}))
+            translate_beside(
+                json!({"oneOf": [{"$ref": "#/components/schemas/A"}, {"type": "null"}], "description": "outer"}),
+                json!({"A": {"type": "object", "description": "inner", "properties": {"x": {"type": ["integer", "null"]}}}})
+            ),
+            Ok(tree(json!({
+                "description": "outer",
+                "type": "object",
+                "properties": {"x": {"type": "integer", "nullable": true}},
+                "nullable": true
+            })))
+        );
+    }
+
+    #[test]
+    fn a_nullable_enum_reference_lists_null() {
+        assert_eq!(
+            translate_beside(
+                json!({"oneOf": [{"$ref": "#/components/schemas/E"}, {"type": "null"}]}),
+                json!({"E": {"type": "string", "enum": ["a", "b"]}})
+            ),
+            Ok(tree(
+                json!({"type": "string", "enum": ["a", "b", null], "nullable": true})
+            ))
+        );
+    }
+
+    #[test]
+    fn a_self_referencing_nullable_component_is_inlined_once() {
+        let node = json!({
+            "type": "object",
+            "properties": {"parent": {"oneOf": [{"$ref": "#/components/schemas/N"}, {"type": "null"}]}}
+        });
+        let out = translate_beside(
+            json!({"oneOf": [{"$ref": "#/components/schemas/N"}, {"type": "null"}]}),
+            json!({"N": node}),
+        )
+        .expect("downgrades");
+        assert_eq!(
+            out,
+            tree(json!({
+                "type": "object",
+                "properties": {"parent": {"allOf": [{"$ref": "#/components/schemas/N"}], "nullable": true}},
+                "nullable": true
+            }))
+        );
+    }
+
+    #[test]
+    fn an_unknown_nullable_reference_becomes_a_nullable_all_of_with_its_siblings_lifted() {
+        assert_eq!(
+            translate(
+                json!({"oneOf": [{"$ref": "#/components/schemas/Missing", "description": "d"}, {"type": "null"}]})
+            ),
+            Ok(tree(
+                json!({"allOf": [{"$ref": "#/components/schemas/Missing"}], "description": "d", "nullable": true})
+            ))
         );
     }
 
@@ -530,7 +809,9 @@ mod tests {
             translate(
                 json!({"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}], "description": "d"})
             ),
-            Ok(json!({"type": "integer", "minimum": 0, "description": "d", "nullable": true}))
+            Ok(tree(
+                json!({"description": "d", "type": "integer", "minimum": 0, "nullable": true})
+            ))
         );
     }
 
@@ -540,7 +821,9 @@ mod tests {
             translate(
                 json!({"oneOf": [{"type": "integer"}, {"type": "string"}, {"type": "null"}]})
             ),
-            Ok(json!({"oneOf": [{"type": "integer"}, {"type": "string"}], "nullable": true}))
+            Ok(tree(
+                json!({"oneOf": [{"type": "integer"}, {"type": "string"}], "nullable": true})
+            ))
         );
     }
 
@@ -548,11 +831,13 @@ mod tests {
     fn reference_siblings_move_beside_an_all_of() {
         assert_eq!(
             translate(json!({"$ref": "#/components/schemas/A", "description": "d"})),
-            Ok(json!({"allOf": [{"$ref": "#/components/schemas/A"}], "description": "d"}))
+            Ok(tree(
+                json!({"allOf": [{"$ref": "#/components/schemas/A"}], "description": "d"})
+            ))
         );
         assert_eq!(
             translate(json!({"$ref": "#/components/schemas/A"})),
-            Ok(json!({"$ref": "#/components/schemas/A"}))
+            Ok(tree(json!({"$ref": "#/components/schemas/A"})))
         );
     }
 
@@ -560,23 +845,33 @@ mod tests {
     fn const_examples_and_numeric_exclusive_bounds_are_restated() {
         assert_eq!(
             translate(json!({"type": "string", "const": "all", "examples": ["all", "x"]})),
-            Ok(json!({"type": "string", "enum": ["all"], "example": "all"}))
+            Ok(tree(
+                json!({"type": "string", "enum": ["all"], "example": "all"})
+            ))
         );
         assert_eq!(
             translate(json!({"type": "number", "exclusiveMinimum": 0})),
-            Ok(json!({"type": "number", "minimum": 0, "exclusiveMinimum": true}))
+            Ok(tree(
+                json!({"type": "number", "minimum": 0, "exclusiveMinimum": true})
+            ))
         );
     }
 
     #[test]
-    fn property_names_are_dropped() {
+    fn string_property_names_are_dropped_and_others_refused() {
         assert_eq!(
             translate(
                 json!({"type": "object", "propertyNames": {"type": "string"}, "additionalProperties": {"type": ["integer", "null"]}})
             ),
-            Ok(
+            Ok(tree(
                 json!({"type": "object", "additionalProperties": {"type": "integer", "nullable": true}})
-            )
+            ))
+        );
+        assert_eq!(
+            translate(
+                json!({"type": "object", "propertyNames": {"type": "string", "pattern": "^a"}})
+            ),
+            Err(unsupported("/components/schemas/S", "propertyNames"))
         );
     }
 
@@ -588,17 +883,17 @@ mod tests {
                 "properties": {"a": {"type": "array", "items": {"type": ["string", "null"]}}},
                 "not": {"type": ["boolean", "null"]}
             })),
-            Ok(json!({
+            Ok(tree(json!({
                 "type": "object",
                 "properties": {"a": {"type": "array", "items": {"type": "string", "nullable": true}}},
                 "not": {"type": "boolean", "nullable": true}
-            }))
+            })))
         );
     }
 
     #[test]
     fn schemas_under_operations_are_translated_and_examples_are_kept() {
-        let doc = json!({
+        let doc = tree(json!({
             "openapi": "3.1.0",
             "info": {"title": "t", "version": "1"},
             "paths": {"/a": {"get": {
@@ -608,8 +903,8 @@ mod tests {
                     "example": {"schema": {"type": ["string", "null"]}}
                 }}}}
             }}}
-        });
-        let out = downgrade(&doc).expect("downgrades");
+        }));
+        let out = serde_json::to_value(downgrade(&doc).expect("downgrades")).expect("JSON");
         let get = &out["paths"]["/a"]["get"];
         assert_eq!(
             get["parameters"][0]["schema"],
@@ -644,20 +939,21 @@ mod tests {
             translate(json!(true)),
             Err(shape("/components/schemas/S", "a schema object"))
         );
-        let mut doc = doc_with(json!({"type": "string"}));
+        let mut doc =
+            serde_json::to_value(doc_with(json!({"S": {"type": "string"}}))).expect("JSON");
         doc["webhooks"] = json!({});
-        assert_eq!(downgrade(&doc), Err(unsupported("", "webhooks")));
+        assert_eq!(downgrade(&tree(doc)), Err(unsupported("", "webhooks")));
     }
 
     #[test]
     fn pointers_escape_slashes_and_tildes() {
-        let doc = json!({
+        let doc = tree(json!({
             "openapi": "3.1.0",
             "info": {"title": "t", "version": "1"},
             "paths": {"/a~b": {"get": {"responses": {"200": {"description": "ok", "content": {
                 "application/json": {"schema": {"contentMediaType": "x"}}
             }}}}}}
-        });
+        }));
         assert_eq!(
             downgrade(&doc),
             Err(unsupported(

@@ -704,37 +704,78 @@ pub async fn get_openapi(
     Json(doc)
 }
 
-/// Serves the document restated as OpenAPI 3.0.3, for tools that only read
-/// 3.0 (Cloudflare API Shield's schema validation, older generators).
+/// The document restated as OpenAPI 3.0.3, or why it could not be built.
+pub type V30Document = Arc<Result<v30::Json, String>>;
+
+/// Restates a document as OpenAPI 3.0.3.
+///
+/// # Arguments
+///
+/// * `doc` - The OpenAPI 3.1 document.
+///
+/// # Returns
+///
+/// The 3.0.3 document, keys in the 3.1 document's order.
+///
+/// # Errors
+///
+/// Fails when the document uses an OpenAPI 3.1 form [`v30::downgrade`] has
+/// no 3.0 equivalent for, or cannot be serialized; either is a bug the
+/// tests catch.
+fn document_v30(doc: &OpenApi) -> anyhow::Result<v30::Json> {
+    // Through text, not `serde_json::Value`, whose maps would sort the keys.
+    let text = serde_json::to_string(doc)?;
+    let tree: v30::Json = serde_json::from_str(&text)?;
+    Ok(v30::downgrade(&tree)?)
+}
+
+/// The 3.0.3 document, built once per process (when the router is built)
+/// from [`shared_document`].
+///
+/// # Returns
+///
+/// The same document each call, or the error that stopped it, which is
+/// logged once.
+pub fn shared_v30_document() -> V30Document {
+    static DOCUMENT: std::sync::OnceLock<V30Document> = std::sync::OnceLock::new();
+    DOCUMENT
+        .get_or_init(|| {
+            let built = document_v30(&shared_document()).map_err(|err| err.to_string());
+            if let Err(err) = &built {
+                tracing::error!(error = %err, "the OpenAPI 3.0 document could not be built");
+            }
+            Arc::new(built)
+        })
+        .clone()
+}
+
+/// Serves the OpenAPI document restated as OpenAPI 3.0.3.
 #[utoipa::path(
     get,
     path = "/api/openapi-3.0.json",
-    description = "The same API as `GET /api/openapi.json`, restated in OpenAPI 3.0.3 form: \
-                   nullable types use `nullable: true` and keywords 3.0 lacks are restated or \
-                   dropped. Upload this one where a tool only accepts OpenAPI 3.0.",
+    description = "The same API as `GET /api/openapi.json`, restated in OpenAPI 3.0.3 form for \
+                   tools that only read 3.0, such as Cloudflare API Shield's schema validation: \
+                   nullable types use `nullable: true`, and a nullable reference is a copy of \
+                   the schema it names.",
     responses(
         (status = 200, description = "The OpenAPI 3.0.3 document for this daemon's version.", content_type = "application/json"),
         (status = 500, description = "The document could not be restated; this is a bug."),
     ),
 )]
 pub async fn get_openapi_v30(
-    axum::extract::State(doc): axum::extract::State<Arc<OpenApi>>,
+    axum::extract::State(doc): axum::extract::State<V30Document>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    static DOCUMENT: std::sync::OnceLock<Result<Arc<serde_json::Value>, String>> =
-        std::sync::OnceLock::new();
-    let translated = DOCUMENT.get_or_init(|| {
-        let value = serde_json::to_value(&*doc).map_err(|err| err.to_string())?;
-        v30::downgrade(&value)
-            .map(Arc::new)
-            .map_err(|err| err.to_string())
-    });
-    match translated {
-        Ok(value) => Json(value.clone()).into_response(),
-        Err(err) => {
-            tracing::error!(error = %err, "the OpenAPI 3.0 document could not be built");
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
+    match doc.as_ref() {
+        Ok(value) => Json(value).into_response(),
+        Err(_) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": "openapi_v30_unavailable",
+                "message": "The OpenAPI 3.0 document could not be built; see the daemon log.",
+            })),
+        )
+            .into_response(),
     }
 }
 
@@ -769,8 +810,7 @@ pub fn document_json() -> serde_json::Result<String> {
 /// no 3.0 equivalent for, or cannot be serialized; either is a bug the
 /// tests catch.
 pub fn document_v30_json() -> anyhow::Result<String> {
-    let value = serde_json::to_value(document())?;
-    let mut text = serde_json::to_string_pretty(&v30::downgrade(&value)?)?;
+    let mut text = serde_json::to_string_pretty(&document_v30(&document())?)?;
     text.push('\n');
     Ok(text)
 }
