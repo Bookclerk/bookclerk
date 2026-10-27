@@ -26,7 +26,7 @@
 [Get started](https://bookclerk.app/docs/guide/getting-started) ·
 [Live demo](https://demo.bookclerk.app) ·
 [Privacy](https://bookclerk.app/privacy) ·
-[Security](SECURITY.md)
+[Security](https://bookclerk.app/security)
 
 </div>
 
