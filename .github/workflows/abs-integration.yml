@@ -4,7 +4,7 @@ name: ABS Integration
 # production image with the Audiobookshelf plugin, configured with the CLI
 # and exercised end to end (tests/abs-integration/smoke.sh). Heavyweight, so
 # it runs by hand, on a published release, and on pull requests that change
-# the test itself.
+# the test or the plugin it exercises.
 
 on:
   workflow_dispatch:
@@ -14,6 +14,7 @@ on:
     paths:
       - ".github/workflows/abs-integration.yml"
       - "tests/abs-integration/**"
+      - "crates/bookclerk-plugins/optional/integration-audiobookshelf/**"
 
 # Least privilege: checkout and a local Docker stack only.
 permissions:

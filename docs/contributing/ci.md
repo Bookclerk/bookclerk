@@ -318,7 +318,7 @@ operator would:
 
 Both containers share one network namespace, because the plugin accepts plain
 `http` only for a loopback host. The job runs by hand, on a published
-release, and on pull requests that change the test. It is not part of
+release, and on pull requests that change the test or the plugin. It is not part of
 `CI Gate`. Run it locally with `bash tests/abs-integration/smoke.sh` after
 building the images as its workflow does.
 

@@ -42,10 +42,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# wait_for <label> <url>: poll until the URL answers 2xx (3 minutes).
+# wait_for <label> <url>: poll until the URL answers 2xx (90 tries, 5 s each
+# at most, 2 s apart: about 3 to 10 minutes).
 wait_for() {
   for _ in $(seq 1 90); do
-    if curl -fs -o /dev/null "$2"; then
+    if curl -fs --max-time 5 -o /dev/null "$2"; then
       return 0
     fi
     sleep 2
@@ -125,7 +126,7 @@ printf '{"provider":"audiobookshelf","username":"%s","password":"%s"}' "$admin_u
   | curl -fsS -c "$work/portal2.jar" -o /dev/null -X POST "$bookclerk_url/api/portal/login/integration" \
     -H 'Content-Type: application/json' --data-binary @-
 curl -fsS -b "$work/portal2.jar" "$bookclerk_url/api/portal/me" >"$work/me2.json"
-test -n "$(json 'd["external_user_id"]' <"$work/me2.json")"
+json 'd["external_user_id"] if isinstance(d.get("external_user_id"), str) and d["external_user_id"] else sys.exit("portal sign-in has no external user id")' <"$work/me2.json" >/dev/null
 
 echo "== remote library scan"
 cli integrations scan --integration audiobookshelf

@@ -32,6 +32,10 @@
 # The output is also appended to /var/log/bookclerk-session-setup.log.
 set -uo pipefail
 
+# A setup hook may run with PATH unset or empty; the basic tools below (id,
+# tee, getent, dirname) need a usable one before anything else runs.
+export PATH="${PATH:-/usr/sbin:/usr/bin:/sbin:/bin}"
+
 log() { printf 'session-setup: %s\n' "$*"; }
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -50,12 +54,12 @@ log_file="/var/log/bookclerk-session-setup.log"
 exec > >(tee -a "${log_file}") 2>&1
 log "$(date -u +%Y-%m-%dT%H:%M:%SZ) start (log: ${log_file})"
 
-# A setup hook may run with a minimal environment: HOME unset or not root's,
-# and PATH without cargo. The toolchain is root's, so use root's home, and
+# A setup hook may also run with HOME unset or not root's, and PATH without
+# cargo. The toolchain is root's, so use root's home, and
 # find rustup where it is usually installed before provision.sh looks for it.
 root_home="$(getent passwd root | cut -d: -f6)"
 export HOME="${root_home:-/root}"
-export PATH="/usr/local/cargo/bin:${HOME}/.cargo/bin:${PATH:-/usr/sbin:/usr/bin:/sbin:/bin}"
+export PATH="/usr/local/cargo/bin:${HOME}/.cargo/bin:${PATH}"
 if [[ -n "${BOOKCLERK_DEV_CA_BUNDLE:-}" && -f "${BOOKCLERK_DEV_CA_BUNDLE}" ]]; then
   BOOKCLERK_DEV_CA_BUNDLE="$(realpath "${BOOKCLERK_DEV_CA_BUNDLE}")"
   export BOOKCLERK_DEV_CA_BUNDLE
