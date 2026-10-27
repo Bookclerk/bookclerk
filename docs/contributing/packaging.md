@@ -146,6 +146,8 @@ paths run the same build steps from that action. Every published index gets a
 GitHub build-provenance attestation, signed through Sigstore with the
 workflow's OIDC identity and stored in the registry
 (`gh attestation verify oci://ghcr.io/<owner>/bookclerk:edge --owner <owner>`).
+If the attest job fails, re-running the workflow attests the published index
+without rebuilding it.
 Only the push jobs hold `packages: write`, and only the attest job holds
 `id-token: write` and `attestations: write`.
 

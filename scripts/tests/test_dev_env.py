@@ -290,6 +290,12 @@ class ImagePublishWorkflowTests(unittest.TestCase):
             self.jobs["build"]["strategy"]["matrix"],
         )
 
+    def test_rerun_repairs_missing_attestation(self) -> None:
+        """A re-run attests an index an earlier run published but failed to attest."""
+        digest = self.jobs["attest"]["steps"][0]["run"]
+        self.assertIn('gh api "repos/$GH_REPO/attestations/$digest"', digest)
+        self.assertIn("has no attestation, attesting it", digest)
+
     def test_architectures(self) -> None:
         """Production and the Dev Container ship arm64 as well as amd64, each built natively."""
         built = {(e["image"], e["arch"]): e["runner"] for e in self.jobs["build"]["strategy"]["matrix"]["include"]}

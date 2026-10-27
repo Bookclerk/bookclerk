@@ -282,8 +282,10 @@ jobs:
       matrix:
         image: [bookclerk, bookclerk-dev, bookclerk-demo]
     steps:
-      # The index this run published for the image, if any (an image that
-      # was neither built nor retagged has no new tag to attest).
+      # The index to attest: the one this run built or retagged, or one an
+      # earlier run published whose attest job failed (re-running the
+      # workflow skips the build but still repairs the provenance). An
+      # index that already has an attestation is left alone.
       - name: Digest
         id: digest
         env:
@@ -291,18 +293,33 @@ jobs:
           BUILD: ${{ needs.plan.outputs.build }}
           RETAG: ${{ needs.plan.outputs.retag }}
           REF: ${{ needs.plan.outputs.registry }}/${{ matrix.image }}:${{ needs.plan.outputs.sha_tag }}
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
           ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
-          if ! jq -n -e --argjson b "$BUILD" --argjson r "$RETAG" --arg i "$IMAGE" \
-            '($b + $r) | index($i) != null' >/dev/null; then
-            echo "digest=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin >/dev/null
-          digest="$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest}}' | jq -r .digest)"
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          if jq -n -e --argjson b "$BUILD" --argjson r "$RETAG" --arg i "$IMAGE" \
+            '($b + $r) | index($i) != null' >/dev/null; then
+            digest="$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest}}' | jq -r .digest)"
+          elif digest="$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest}}' 2>/dev/null | jq -r .digest)" \
+            && [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            # Published earlier: attest only when no attestation exists yet
+            # (the API answers 404 when there is none).
+            count="$(gh api "repos/$GH_REPO/attestations/$digest" --jq '.attestations | length' 2>/dev/null)" || count=0
+            [[ "$count" =~ ^[0-9]+$ ]] || count=0
+            if [[ "$count" -gt 0 ]]; then
+              echo "$IMAGE: $digest already attested"
+              digest=""
+            else
+              echo "$IMAGE: $digest has no attestation, attesting it"
+            fi
+          else
+            digest=""
+          fi
+          if [[ -n "$digest" ]]; then
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          fi
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Attest build provenance
