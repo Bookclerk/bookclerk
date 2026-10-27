@@ -384,6 +384,8 @@ function drawDiagram(source: string, idx: number, env: RenderEnv): string | null
   const used = (env.diagramSource ?? 0) + source.length;
   const count = (env.diagramCount ?? 0) + 1;
   if (used > PAGE_DIAGRAM_MAX || count > PAGE_DIAGRAM_COUNT_MAX) return null;
+  // Charged before drawing: a fence that fails layout or cleaning has still
+  // cost the layout's CPU, which is what the budget limits.
   env.diagramSource = used;
   env.diagramCount = count;
   const drawn = diagram(source, `Diagram${idx}`);

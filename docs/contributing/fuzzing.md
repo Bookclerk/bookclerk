@@ -228,8 +228,9 @@ non-Rust tooling (decision 6):
   corpus (`tools/site/fuzz/diagram/`) and runs seeded mutation fuzzing in
   `npm test` on both the diagram sources and the SVG `cleanSvg` rebuilds,
   checking with an independent reader that the output is one `<svg>` of
-  allowed elements, with no script, style or class attributes, no reference
-  outside the diagram, and ids carrying the page's prefix.
+  allowed elements, with no script or style attributes, no class but
+  `mono`, no reference outside the diagram, and ids carrying the page's
+  prefix.
 - The website Worker's reader of the docs repository's `last-updated.json`
   (`pageDate` in `tools/site/last-updated.ts`), which dates each docs page.
   `tools/site/fuzz.test.ts` replays its seed corpus
