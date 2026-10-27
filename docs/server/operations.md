@@ -1,116 +1,205 @@
-# Operations
+# Running Bookclerk
+
+This page runs Bookclerk as a server: the daemon, putting it behind a TLS
+proxy, systemd, Docker and logs. To try Bookclerk on your own computer
+first, see [Getting started](../guide/getting-started.md).
 
 ## Daemon (`bookclerkd`)
 
-```bash
+`bookclerkd` is the long-running server. Start it with a files directory:
+
+```sh
 export BOOKCLERK_FILES_DIR=/var/lib/bookclerk
 bookclerkd
 ```
 
-Reads bootstrap settings from `config.toml` (or `BOOKCLERK_CONFIG`), opens the
-library database, then enrolls a stable host id (`node-identity.json`) and
-loads `[events]` from the database. Other sections are still TOML. Schedules:
+At start, the daemon:
 
-- library scan every `library.scan_interval_minutes`
-- auto-acquire when `library.auto_acquire = true` (keep **false** until ready)
+1. reads the bootstrap settings from `config.toml` (or `BOOKCLERK_CONFIG`);
+2. opens the library database;
+3. enrolls a stable host id (`node-identity.json`);
+4. loads `[events]` and `[output]` from the database. The other sections
+   still come from TOML.
 
-HTTP control plane (default `127.0.0.1:8787`):
+It then runs two schedules:
 
-| Endpoint | Auth | Purpose |
+- a library scan every `library.scan_interval_minutes`;
+- auto-acquire, when `library.auto_acquire = true`.
+
+> [!WARNING]
+> Keep `library.auto_acquire = false` until you are happy with where
+> files land.
+
+### Listen addresses
+
+By default the daemon listens on **both** loopbacks:
+`["127.0.0.1:8787", "[::1]:8787"]`.
+
+- Change it with `daemon.listen` or `BOOKCLERK_DAEMON_LISTEN`.
+- TOML takes a string or an array. The environment and CLI take one
+  address or a comma-separated list.
+- Write IPv6 in brackets: `[::1]:8787`.
+- The daemon binds each address, and skips failures as long as one
+  succeeds.
+
+Changing `daemon.listen` and reloading (`POST /api/config/reload` or
+SIGHUP) **rebinds without a restart**. See
+[Changing settings without a restart](#changing-settings-without-a-restart).
+
+The tray opens `http://localhost:<port>` and leaves name resolution to the
+OS.
+
+### HTTP API
+
+| Endpoint | Sign-in | Purpose |
 | --- | --- | --- |
-| `GET /health` | no | Liveness |
-| `POST /api/auth/login` | no | Operator token → session cookie |
-| `POST /api/auth/bootstrap` | operator | Create first Owner (once) |
-| `POST /api/auth/elevate` | owner + password / passkey / OIDC step-up | Short-lived elevated operator session |
-| `GET` / `POST` / `PATCH` `/api/users…` | provisioner | List/create/patch users; remint claim tickets |
-| `GET` / `POST` `/api/plugins/{id}/consent` | operator | Plugin grant status / approve (widen or narrow; host-capped) |
-| `GET` / `PATCH` `/api/settings` | operator | Daemon, library, plugins, confinement knobs. `events.*` and `output.*` are compare-and-swap against the database (one authority per request) |
-| `GET` / `PUT /api/config/domains/core.events` | operator | Authoritative `[events]` document and revision |
-| `GET` / `PUT /api/config/domains/core.output` | operator | Authoritative shared `[output]` document and revision (`{expected_revision, document}`) |
-| `GET` / `PUT /api/auth/mfa-policy` | owner or operator | Host `require_second_factor` (password login must use TOTP or a passkey) |
-| `GET /api/status` (also `/status`) | yes | Status snapshot |
-| `POST /api/library/scan` (also `/scan`) | yes | Queue scan (`Content-Type: application/json`); `409` if already pending/running, `429` if the queue is full |
-| `POST /api/library/acquire` (also `/acquire`) | yes | Queue acquire (`409` / `429` as above) |
-| `GET /api/library/books` | yes | Book rows for the GUI |
-| `GET /api/jobs` (also `/jobs`) | yes | Durable job list (progress, attempts, timestamps) |
-| `POST /api/jobs/{id}/cancel` | yes | Cancel pending work or request cooperative stop |
-| `/` static UI | no | Built React SPA when `ui/dist` is present |
+| `GET /health` | None | Liveness |
+| `POST /api/auth/login` | None | Operator token to session cookie |
+| `POST /api/auth/bootstrap` | Operator | Create the first Owner (once) |
+| `POST /api/auth/elevate` | Owner, with password, passkey or OIDC step-up | A short-lived elevated operator session |
+| `GET`/`POST`/`PATCH /api/users…` | Provisioner | List, create and change users; mint new claim tickets |
+| `GET`/`POST /api/plugins/{id}/consent` | Operator | A plugin's grant status, or approve it (widen or narrow, within host caps) |
+| `GET`/`PATCH /api/settings` | Operator | Daemon, library, plugin and confinement settings. `events.*` and `output.*` are compare-and-swap against the database (one authority per request) |
+| `GET`/`PUT /api/config/domains/core.events` | Operator | The authoritative `[events]` document and revision |
+| `GET`/`PUT /api/config/domains/core.output` | Operator | The authoritative shared `[output]` document and revision (`{expected_revision, document}`) |
+| `GET`/`PUT /api/auth/mfa-policy` | Owner or operator | `require_second_factor`: password sign-in needs TOTP or a passkey |
+| `GET /api/status` (also `/status`) | Yes | Status snapshot |
+| `POST /api/library/scan` (also `/scan`) | Yes | Queue a scan |
+| `POST /api/library/acquire` (also `/acquire`) | Yes | Queue an acquire |
+| `GET /api/library/books` | Yes | Book rows for the web app |
+| `GET /api/jobs` (also `/jobs`) | Yes | The durable job list: progress, attempts, times |
+| `POST /api/jobs/{id}/cancel` | Yes | Cancel pending work, or ask running work to stop |
+| `/` | None | The web app, when `ui/dist` is present |
 
-Override listen with `BOOKCLERK_DAEMON_LISTEN` or `daemon.listen`. Defaults to
-**both** loopbacks: `["127.0.0.1:8787", "[::1]:8787"]`. TOML accepts a string or
-an array; env/CLI accept a single address or a comma-separated list. IPv6 uses
-bracketed form (`[::1]:8787`). The daemon binds each address (skips failures if
-at least one succeeds). Changing `daemon.listen` and reloading
-(`POST /api/config/reload` or SIGHUP) **rebinds without restarting**. Reload also
-rebuilds operator auth, sources, integrations, destinations, and (when needed)
-the database plugin as one transactional swap — auth is published **before** any
-listen rebind so a public listener never outruns middleware. The tray opens
-`http://localhost:<port>` and leaves resolution to the OS.
+- `POST` bodies need `Content-Type: application/json`.
+- Scan and acquire return `409` if one is already pending or running, and
+  `429` if the queue is full.
+- `GET /api/settings` returns `settings` (configured) and `effective` (the
+  live auth flag and the loaded plugin ids). `GET /api/status` includes
+  `auth_enabled`.
 
-Operator auth defaults **on** (`[daemon.auth]`). The token is sealed in
-`encrypted_secrets` (legacy `operator.token` files are imported once then
-deleted). Optional override: `BOOKCLERK_OPERATOR_TOKEN`. Show or rotate the
-durable Bearer token with `bookclerk daemon token` / `bookclerk daemon token
-rotate`. For a browser session, use the system tray **Copy sign-in link** or
-`bookclerk login` (prints a loopback `http://localhost:<port>/api/auth/tray-handoff?code=…`
-URL). Browser operator sessions are stored hashed in `operator_sessions`
-(survive restart; logout revokes server-side). After an Owner exists, the web
-sign-in form no longer accepts the operator token (`POST /api/auth/login`
-returns 403); prefer the loopback handoff (`POST /api/auth/tray-handoff/prepare`
-with Bearer, then `GET /api/auth/tray-handoff?code=…` with the returned one-time
-code — never the durable operator token) or Owner elevate. `Authorization:
-Bearer` API access is unchanged. The handoff is refused unless the TCP peer is
-loopback, `Host` is a single well-formed localhost/`127.0.0.1`/`::1` authority,
-and no `X-Forwarded-*` / `Forwarded` / `Via` / `X-Real-IP` headers are present —
-so a same-host reverse proxy cannot mint an operator cookie on the public origin.
-The one-time code is stored hashed in-process, registered for log redaction,
-and the GET redirect sets `Referrer-Policy: no-referrer`. Lifetime is
-`[daemon.auth] tray_handoff_ttl_secs` (default **180**, clamped **30..=900**;
-env `BOOKCLERK_DAEMON_AUTH_TRAY_HANDOFF_TTL_SECS`). The system tray **Copy
-sign-in link** copies that URL to the clipboard for the same TTL, then removes
-that exact URL if it is still present (never copies the durable token). Copy
-and Open Bookclerk each mint a new code and invalidate any unused previous
-ticket.
+### The CLI against a running daemon
 
-User provisioning is role-scoped: Administrators may manage Members only;
-non-elevated Owners may manage Members and Administrators (not Owners);
-Operator tokens and elevated Owners may assign any role, including Owner.
-Last-active-Owner demote/disable/delete is refused. Changing an existing
-password requires the current password (invite/bootstrap first-password setup
-does not). Elevated Operator sessions are revoked when the origin Owner is
-demoted, disabled, deleted, or has their password changed.
+These commands send the Bearer token when auth is on:
 
-When exposing the daemon behind TLS, set `integrations.public_origin =
-"https://…"` so session cookies gain the `Secure` flag, invite magic links
-and SSO callbacks are absolute, and Bookclerk advertises that origin as the
-OpenID issuer. If it is unset, Bookclerk accepts only a **bound loopback**
-request `Origin` or `Host` (matching `daemon.listen` ports) and otherwise
-uses `http://localhost:<ui-port>`. Hostile hostnames, unbound ports, and
-`X-Forwarded-*` / `Forwarded` / `Via` are never used as the issuer —
-non-loopback operation must pin `public_origin`. Settings → Sign-in can set
-or clear this origin without editing TOML.
-List reverse-proxy
-peers in `daemon.trusted_proxies` (IP or CIDR) before login throttling will
-honor `X-Forwarded-For` — empty means always use the direct TCP peer. Do not
-expose publicly without TLS (reverse proxy) and a protected token.
-Details: [sign-in.md](sign-in.md).
+```sh
+bookclerk daemon health
+bookclerk daemon status
+bookclerk login
+bookclerk daemon token
+bookclerk daemon token rotate
+bookclerk daemon jobs
+bookclerk daemon scan [--account <id>]
+bookclerk daemon acquire [--asin <id>] [--account <id>]
+```
 
-### Reverse proxy + TLS
+Every command and option is in the [CLI reference](cli-reference.md).
 
-Terminate TLS at the proxy and forward to loopback `bookclerkd`. Set
-`integrations.public_origin` to the **external** `https://` origin (no trailing
-slash). That pin is required off loopback: unset origin only accepts a bound
-loopback `Origin` / `Host` (tray/`cargo dev` on `http://localhost:8787`).
-Forwarded headers are not used to mint the issuer. That origin is the OIDC issuer
-for players, the WebAuthn relying
-party for passkeys, and the base for invite magic links.
-Cookie-authenticated `POST` / `PATCH` / `DELETE` under `/api/*` require
-a matching `Origin` (or `Referer`) host; login / redeem / password paths are
-exempt. The web UI's live socket (`GET /api/live`) and, in `proxy` mode,
-the host-node socket (`GET /api/node/v1/connect`) are WebSockets, so the
-proxy must forward the upgrade. The live socket also requires `Origin` to
-equal `public_origin` exactly; without a working socket the UI falls back
-to polling. Example nginx:
+## Operator sign-in
+
+Operator auth is on by default (`[daemon.auth]`).
+
+### The operator token
+
+- The token is sealed in `encrypted_secrets`. Legacy `operator.token`
+  files are imported once, then deleted.
+- `BOOKCLERK_OPERATOR_TOKEN` overrides it.
+- Show the durable Bearer token with `bookclerk daemon token`, and replace
+  it with `bookclerk daemon token rotate`.
+- `Authorization: Bearer` API access always works.
+
+Once an Owner exists, the web sign-in form refuses the token
+(`POST /api/auth/login` returns 403). Use a sign-in link or Owner
+elevation instead.
+
+### Sign-in links
+
+For a browser session, use the tray's **Copy sign-in link**, or run
+`bookclerk login`. Either gives a one-time loopback URL:
+`http://localhost:<port>/api/auth/tray-handoff?code=…`.
+
+Under the hood, the CLI calls `POST /api/auth/tray-handoff/prepare` with
+the Bearer token, then opens `GET /api/auth/tray-handoff?code=…` with the
+one-time code. The durable token never appears in the URL.
+
+The handoff is refused unless:
+
+- the TCP peer is loopback;
+- `Host` is a single, well-formed `localhost`, `127.0.0.1` or `::1`
+  authority;
+- there are no `X-Forwarded-*`, `Forwarded`, `Via` or `X-Real-IP`
+  headers.
+
+So a reverse proxy on the same host can't mint an operator cookie on the
+public address.
+
+More about the code:
+
+- It is stored hashed in memory, registered for log redaction, and the
+  redirect sets `Referrer-Policy: no-referrer`.
+- It lasts `[daemon.auth] tray_handoff_ttl_secs`: **180** seconds by
+  default, clamped to 30–900. The variable is
+  `BOOKCLERK_DAEMON_AUTH_TRAY_HANDOFF_TTL_SECS`.
+- The tray copies the URL for that long, then removes that exact URL from
+  the clipboard if it is still there. It never copies the durable token.
+- **Copy sign-in link** and **Open Bookclerk** each mint a new code, and
+  invalidate any unused earlier one.
+
+Browser operator sessions are stored hashed in `operator_sessions`. They
+survive a restart, and logging out revokes them on the server.
+
+### Who can manage whom
+
+- Administrators manage Members only.
+- Owners who haven't elevated manage Members and Administrators, not
+  Owners.
+- The operator token and elevated Owners can assign any role, including
+  Owner.
+- Demoting, disabling or deleting the last active Owner is refused.
+- Changing a password needs the current one (setting the first password
+  from an invite or bootstrap doesn't).
+- An elevated session ends when its Owner is demoted, disabled, deleted
+  or has their password changed.
+
+Details: [Web app and sign-in](sign-in.md).
+
+## Reverse proxy + TLS
+
+To reach Bookclerk from other computers, terminate TLS at a reverse proxy
+and forward to `bookclerkd` on loopback.
+
+> [!CAUTION]
+> Don't expose Bookclerk without TLS and a protected operator token.
+
+### What the public address does
+
+Set `integrations.public_origin` to the **external** `https://` address,
+with no trailing slash. It is required off loopback. It becomes:
+
+- the OIDC issuer for players;
+- the WebAuthn relying party for passkeys;
+- the base for invite links and SSO callbacks;
+- the reason session cookies get the `Secure` flag.
+
+Without it, Bookclerk accepts only a **bound loopback** `Origin` or
+`Host` (matching the `daemon.listen` ports), and otherwise uses
+`http://localhost:<ui-port>`. Hostile host names, unbound ports and
+forwarded headers (`X-Forwarded-*`, `Forwarded`, `Via`) are never used as
+the issuer. **Settings → Sign-in** can set or clear the address without
+editing TOML.
+
+### Requests the proxy must allow
+
+- Cookie-authenticated `POST`, `PATCH` and `DELETE` under `/api/*` need a
+  matching `Origin` (or `Referer`) host. Sign-in, redeem and password
+  paths are exempt.
+- The web app's live socket (`GET /api/live`) is a WebSocket, as is the
+  host-node socket (`GET /api/node/v1/connect`) in `proxy` mode. The proxy
+  must forward the upgrade.
+- The live socket also needs `Origin` to equal `public_origin` exactly.
+  Without a working socket, the web app falls back to polling.
+
+### Example: nginx
 
 ```nginx
 map $http_upgrade $connection_upgrade {
@@ -144,118 +233,123 @@ trusted_proxies = ["127.0.0.1", "::1"]
 public_origin = "https://bookclerk.example.com"
 ```
 
-`trusted_proxies` is for login throttling (`X-Forwarded-For`). Tray operator
-handoff does **not** honor it: Open Bookclerk always talks to
-`http://localhost:<listen-port>` directly. Browse the proxied hostname as a
-User; use localhost or Owner elevate for Operator.
+### Trusted proxies
 
-### Hot-reloadable settings
+List your proxies in `daemon.trusted_proxies` (IP addresses or CIDRs).
+Only then does sign-in throttling honor `X-Forwarded-For`; an empty list
+means the direct TCP peer is always used.
+
+The tray's operator handoff ignores this list. **Open Bookclerk** always
+talks to `http://localhost:<listen-port>` directly. So browse the proxied
+host name as a user, and use localhost or Owner elevation for operator
+work.
+
+## Changing settings without a restart
+
+Reload with `POST /api/config/reload` or SIGHUP. A reload rebuilds
+operator auth, stores, integrations, destinations and (when needed) the
+database plugin in one transactional swap. Auth is published **before**
+any listen rebind, so a public listener never runs ahead of its
+middleware.
 
 | Setting | On reload |
 | --- | --- |
-| `daemon.listen` | Rebind listeners (after auth swap); preflight-binds free ports and rolls back to the last successful bind if rebind fails |
-| `daemon.auth.*` / operator token | Rebuild `OperatorAuthState` (DB sessions unchanged; previous token accepted for ~60s after rotate/reload) |
-| `sources.*` / `integrations.*` / `output.*` | Rebuild registries; integration watchers stopped then restarted |
-| `database.plugin` | Re-open library + destinations |
-| `[media]` | Swap media worker pool |
-| `[events]` | Database compare-and-swap. Reload overlays the committed revision; it does not copy TOML back over the database. Every committed write wakes each node through its `node.<node_id>` queue; a 60-second backstop pass covers a missed wakeup |
+| `daemon.listen` | Rebinds the listeners, after the auth swap. Free ports are bound first, and a failed rebind rolls back to the last good bind |
+| `daemon.auth.*`, operator token | Rebuilds `OperatorAuthState`. Database sessions stay; the old token works for about 60 seconds after a rotation or reload |
+| `sources.*`, `integrations.*`, `output.*` | Rebuilds the registries; integration watchers stop and start again |
+| `database.plugin` | Reopens the library and destinations |
+| `[media]` | Swaps the media worker pool |
+| `[events]` | Compare-and-swap in the database. A reload overlays the committed revision and never copies TOML back over it. Each committed write wakes every node through its `node.<node_id>` queue, with a 60-second backstop for a missed wakeup |
 
-`GET /api/settings` returns both `settings` (configured) and `effective`
-(runtime auth flag + loaded plugin ids). `GET /api/status` includes
-`auth_enabled` for the live middleware.
+## Host nodes
 
-Talk to a running daemon from the CLI (sends Bearer when auth is enabled):
+A Bookclerk install can join another library as a host node, and run its
+scans and acquires. The web app calls this a **branch**. The full guide
+is [Libraries and branches](cluster-hosts.md).
 
-```bash
-bookclerk daemon health
-bookclerk daemon status
-bookclerk login
-bookclerk daemon token
-bookclerk daemon token rotate
-bookclerk daemon jobs
-bookclerk daemon scan [--account <id>]
-bookclerk daemon acquire [--asin <id>] [--account <id>]
-```
+In the web app, join from **Settings → Library → Join a library** (or the
+first-start welcome screen), with a sign-in on the library. The
+connection starts without a restart.
 
-Every built-in `bookclerk` command and option is listed in the [CLI reference](cli-reference.md).
+On the command line:
 
-### Host nodes
+| Task | Command |
+| --- | --- |
+| Join, signing in through a browser | `bookclerk clusters join --url https://owner.example` |
+| Join with a branch invite | `bookclerk clusters join` (paste the invite, or pipe it on stdin) |
+| See what the library asks to run here | `bookclerk clusters consents` |
+| Approve a request | `bookclerk clusters approve <plugin_key> --request <digest> [--deny-domain …] [--deny-binding …]` |
+| Revoke an approval | `bookclerk clusters revoke <plugin_key>` |
+| Leave | `bookclerk clusters leave` (tells the library, which revokes the node, then deletes the node keys) |
 
-A Bookclerk install can join another cluster as a host node and run its
-scans and acquires (full guide: [Libraries and branches](cluster-hosts.md)).
-The web UI calls this a *branch*: on the host, **Settings → Library → Join
-a library** (or the first-start welcome screen) joins with a sign-in on the
-owner, and the connection starts without a restart. On the command line:
+What a host needs:
 
-```bash
-bookclerk clusters join --url https://owner.example  # sign in in a browser (loopback callback)
-bookclerk clusters join            # or paste a branch invite at the prompt, or pipe it on stdin
-bookclerk clusters consents        # what the owner asks to run here
-bookclerk clusters approve <plugin_key> --request <digest> [--deny-domain …] [--deny-binding …]
-bookclerk clusters revoke <plugin_key>
-bookclerk clusters leave           # tells the owner (which revokes the node), deletes the node keys
-```
+- `bookclerk-workerd` and the pinned `workerd` beside the daemon, like any
+  plugin host;
+- outbound HTTPS to the library's `public_origin`.
 
-The host's daemon needs `bookclerk-workerd` and the pinned `workerd` beside
-it like any plugin host, and outbound HTTPS to the owner's
-`public_origin`. It keeps its own database and `master.key`; it never sees
-the owner's. On the owner, `bookclerk nodes list` shows the host
-(`kind = host`) with its heartbeats, and `bookclerk nodes revoke <node_id>`
-disconnects it for good.
+A host keeps its own database and `master.key`, and never sees the
+library's. On the library, `bookclerk nodes list` shows the host
+(`kind = host`) with its heartbeats, and `bookclerk nodes revoke
+<node_id>` disconnects it for good.
 
 ## systemd
 
-Sample unit: [`packaging/systemd/bookclerkd.service`](../../packaging/systemd/bookclerkd.service).
+A sample unit is in
+[`packaging/systemd/bookclerkd.service`](../../packaging/systemd/bookclerkd.service).
 
-```bash
-# after installing bookclerkd, bookclerk-media-worker, and bookclerk-jail to
-# /usr/local/bin and creating user/dirs:
-sudo systemctl enable --now bookclerkd
-```
+1. Install `bookclerkd`, `bookclerk-media-worker` and `bookclerk-jail` to
+   `/usr/local/bin`, from the same directory.
+2. Create the user and folders.
+3. Enable and start the service:
 
-Install all three from the same directory. `bookclerkd` looks for its helpers
-beside itself and, by default, refuses media work or declines to load an external
-plugin rather than running either unconfined.
+   ```sh
+   sudo systemctl enable --now bookclerkd
+   ```
 
-Highlights from the sample unit:
+> [!IMPORTANT]
+> `bookclerkd` looks for its helpers beside itself. By default it refuses
+> media work, and won't load an external plugin, rather than run either
+> unconfined.
+
+What the sample unit sets:
 
 - `Environment=BOOKCLERK_FILES_DIR=/var/lib/bookclerk`
-- `ProtectSystem=strict` + `ReadWritePaths=/var/lib/bookclerk`
-- Prefer `BOOKCLERK_AUTH_PASSWORD` (or `[auth].password`) — not under the files dir.
-  Wrap an existing BCK1 key later with `bookclerk config master-key wrap` or
-  reload `bookclerkd` after setting the password (SIGHUP / `POST /api/config/reload`).
+- `ProtectSystem=strict` with `ReadWritePaths=/var/lib/bookclerk`
 
-If acquired media lives outside the files dir, set an absolute root
-(`bookclerk plugins config set local root /srv/audiobooks`) and add that path
-to `ReadWritePaths`.
+Give `master.key` a password with `BOOKCLERK_AUTH_PASSWORD` (or
+`[auth].password`), kept outside the files directory. To wrap an
+existing BCK1 key later, run `bookclerk config master-key wrap`, or
+reload `bookclerkd` after setting the password (SIGHUP or
+`POST /api/config/reload`).
+
+If your books live outside the files directory, set an absolute root and
+add it to `ReadWritePaths`:
+
+```sh
+bookclerk plugins config set local root /srv/audiobooks
+```
 
 ## Docker
 
-Dockerfile: [`packaging/docker/Dockerfile`](../../packaging/docker/Dockerfile)
-(build from the repo root: `docker build -f packaging/docker/Dockerfile .`).
-The image ships the same bundle as a platform release (`cargo
-package-platform`) under `/opt/bookclerk`: `bookclerk`, `bookclerkd`,
-`bookclerk-media-worker`, `bookclerk-jail`, `bookclerk-workerd`, the pinned
-`workerd`, the web UI, and the `sqlite` and `local` platform plugins in
-`/opt/bookclerk/plugins/`.
+The Dockerfile is
+[`packaging/docker/Dockerfile`](../../packaging/docker/Dockerfile). Build
+it from the repository root:
 
-On every start, before it looks for the database plugin, `bookclerkd` (and the
-CLI) installs any platform plugin from the `plugins/` directory beside its
-executable unless the files directory already holds a trusted, byte-identical
-copy, and records it in `install-ledger.json`. A fresh `/config` volume
-therefore boots with a working database and local output, and an image upgrade
-(or rollback) brings the plugins to the build that image was released with.
-A directory that another install owns under the same name (`sqlite`, `local`)
-is left alone with a warning. The same applies to an unpacked platform archive
-run from its own directory.
-
-For day-to-day compile/test with a controlled OpenSSL/Node toolchain (and host-
-runnable `target/` binaries), use the [Dev Container](../contributing/devcontainer.md) instead
-of fighting missing `libssl-dev` on the host.
-
-```bash
+```sh
 docker build -f packaging/docker/Dockerfile -t bookclerkd .
-export BOOKCLERK_AUTH_PASSWORD   # set it in your shell or an env file, not on the command line
+```
+
+The image holds the same bundle as a platform release
+(`cargo package-platform`), under `/opt/bookclerk`: `bookclerk`,
+`bookclerkd`, `bookclerk-media-worker`, `bookclerk-jail`,
+`bookclerk-workerd`, the pinned `workerd`, the web app, and the `sqlite`
+and `local` platform plugins in `/opt/bookclerk/plugins/`.
+
+### Run it
+
+```sh
+export BOOKCLERK_AUTH_PASSWORD
 docker run --rm \
   -v bookclerk-config:/config \
   -v bookclerk-data:/data \
@@ -263,56 +357,107 @@ docker run --rm \
   bookclerkd
 ```
 
-| Path / env | Role |
+Set `BOOKCLERK_AUTH_PASSWORD` in your shell or an env file, never on the
+command line.
+
+| Path or variable | Role |
 | --- | --- |
-| `/config` | `BOOKCLERK_FILES_DIR` (`config.toml`, `library.db` incl. `encrypted_secrets`, `master.key`, installed `plugins/`) |
-| `/data` | Books root (`bookclerk plugins config set local root /data/Audiobooks`) |
-| `/opt/bookclerk` | Read-only bundle: hosts, helpers, pinned `workerd`, UI, bundled platform plugins |
-| `BOOKCLERK_DAEMON_LISTEN` | Default loopback inside the container |
+| `/config` | `BOOKCLERK_FILES_DIR`: `config.toml`, `library.db` (with `encrypted_secrets`), `master.key`, installed `plugins/` |
+| `/data` | The books root (`bookclerk plugins config set local root /data/Audiobooks`) |
+| `/opt/bookclerk` | The read-only bundle: hosts, helpers, pinned `workerd`, web app, platform plugins |
+| `BOOKCLERK_DAEMON_LISTEN` | Loopback inside the container by default |
 
-To publish the UI / API (keep operator auth enabled; terminate TLS at a proxy):
+A starting config is in the image at
+`/etc/bookclerk/config.example.toml`.
 
-```bash
-docker run … -e BOOKCLERK_DAEMON_LISTEN=0.0.0.0:8787 -p 8787:8787 bookclerkd
-docker exec <container> bookclerk daemon token   # the sealed operator token
+### Publish the web app
+
+Keep operator auth on, and terminate TLS at a proxy:
+
+```sh
+docker run -d --name bookclerk \
+  -v bookclerk-config:/config \
+  -v bookclerk-data:/data \
+  -e BOOKCLERK_AUTH_PASSWORD \
+  -e BOOKCLERK_DAEMON_LISTEN=0.0.0.0:8787 \
+  -p 8787:8787 \
+  bookclerkd
+docker exec bookclerk bookclerk daemon token
 ```
 
-(`BOOKCLERK_OPERATOR_TOKEN` overrides the sealed token; pass it by name with
-`-e BOOKCLERK_OPERATOR_TOKEN` rather than putting the value on the command
-line.)
+The second command prints the sealed operator token.
+`BOOKCLERK_OPERATOR_TOKEN` overrides it; pass it by name
+(`-e BOOKCLERK_OPERATOR_TOKEN`), never with its value on the command line.
 
-Copy `/etc/bookclerk/config.example.toml` from the image as a starting config.
+### Platform plugins on start
 
-Plugin and media isolation keep their shipped default (`"required"`) in the
-image. Both confined tiers work under the default Docker seccomp profile,
-which has allowed the `landlock_*` syscalls since Docker 20.10.14. On an older engine the
-syscalls are refused, and `bookclerkd` says so at startup instead of quietly
-running codecs and plugin guests unconfined. Do not reach for
-`--security-opt seccomp=unconfined` to fix it: that removes a boundary rather
-than restoring one. Upgrade the engine, or lower `isolation` deliberately.
+On every start, before it looks for the database plugin, `bookclerkd`
+(and the CLI) installs each platform plugin from the `plugins/` folder
+beside its executable. It skips a plugin when the files directory already
+holds a trusted, byte-identical copy, and records each install in
+`install-ledger.json`.
+
+- A fresh `/config` volume boots with a working database and local output.
+- Upgrading (or rolling back) the image brings the plugins to the build
+  that image shipped with.
+- A folder of the same name (`sqlite`, `local`) owned by another install
+  is left alone, with a warning.
+
+The same applies to an unpacked platform archive run from its own folder.
+
+### Isolation in Docker
+
+Plugin and media isolation keep their default, `"required"`, in the
+image. Both confined tiers work under Docker's default seccomp profile,
+which has allowed the `landlock_*` syscalls since Docker 20.10.14. An
+older engine refuses those syscalls, and `bookclerkd` says so at startup
+instead of quietly running codecs and plugins unconfined.
+
+> [!CAUTION]
+> Don't fix that with `--security-opt seccomp=unconfined`: it removes a
+> boundary instead of restoring one. Upgrade the engine, or lower
+> `isolation` on purpose.
+
+For day-to-day building and testing with a known OpenSSL and Node
+toolchain, use the [Dev Container](../contributing/devcontainer.md)
+instead.
 
 ## Logging
 
-- **bookclerkd** stderr is structured JSON (`daemon.json_logs = true` by default)
-  plus the OS facility (journald / macOS `os_log` / Windows Event Log). Guest
-  jail/media-worker lines are captured and re-emitted as tracing events; ANSI
-  from piped guests is stripped so JSON does not contain `\u001b` CSI escapes.
-  Spawn-stage text is the same kind of event (`bookclerk::spawn`). It is not
-  mixed in as raw stderr unless `BOOKCLERK_SPAWN_DIAG` is `1`, `true`, or
+- **`bookclerkd`** writes structured JSON to stderr
+  (`daemon.json_logs = true` by default), and to the OS facility:
+  journald, macOS `os_log` or the Windows Event Log.
+- Lines from plugin jails and media workers are captured and re-emitted
+  as tracing events. ANSI codes from piped plugins are stripped, so the
+  JSON holds no `\u001b` escapes.
+- Spawn-stage text is the same kind of event (`bookclerk::spawn`). It
+  goes to raw stderr only when `BOOKCLERK_SPAWN_DIAG` is `1`, `true` or
   `stderr`.
-- **CLI** (`bookclerk`) prints human command output only. Tracing is off until
-  `-v` / `-vv` / `-vvv` (or `BOOKCLERK_LOG` / `RUST_LOG`).
-- `BOOKCLERK_LOG` → `RUST_LOG` → daemon default `bookclerk=info,warn`
-- Secrets are redacted; diagnostics uploads abort if a registered secret remains
+- The **CLI** (`bookclerk`) prints command output only. Tracing is off
+  until `-v`, `-vv` or `-vvv` (or `BOOKCLERK_LOG` or `RUST_LOG`).
+- The level comes from `BOOKCLERK_LOG`, then `RUST_LOG`, then the daemon
+  default `bookclerk=info,warn`.
+- Secrets are redacted, and a diagnostics upload is abandoned if a
+  registered secret remains.
 
-Opt-in crash/error reporting: [diagnostics.md](diagnostics.md).
+Opt-in error reports: [Diagnostics](diagnostics.md).
 
 ## Safe live testing
 
-When exercising real store credentials:
+When testing with real store accounts:
 
 1. Keep `library.auto_acquire = false`.
-2. After login, `bookclerk library set-scan <account> --scan false`.
-3. Acquire **one** title (`--asin` / `--isbn` / UUID), not the whole library.
-4. Prefer CLI over `POST /scan` / `/acquire` so nothing bulk-queues.
-5. One-shot sync without re-enabling scan: `library scan --account <id>`.
+2. After signing in, run `bookclerk library set-scan <account> --scan false`.
+3. Acquire **one** title (`--asin`, `--isbn` or a UUID), never the whole
+   library.
+4. Use the CLI rather than `POST /scan` or `/acquire`, so nothing queues
+   in bulk.
+5. To sync once without turning scans back on, run
+   `bookclerk library scan --account <id>`.
+
+## Next steps
+
+- [Security checklist](security.md): before the server goes public.
+- [Configuration](configuration.md): every setting.
+- [Backups, updates, import and export](backups.md): recovery points and
+  updates.
