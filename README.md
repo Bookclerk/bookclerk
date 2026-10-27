@@ -1,6 +1,39 @@
-# Bookclerk
+<h1 align="center">
+  <a href="https://bookclerk.app">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="assets/brand/svg/bookclerk-logo-dark.svg">
+      <img src="assets/brand/svg/bookclerk-logo.svg" alt="Bookclerk" width="420">
+    </picture>
+  </a>
+</h1>
 
-**Every purchase, properly placed.**
+<p align="center">
+  <strong>Every purchase, properly placed.</strong>
+  <br/>
+  One library for the audiobooks you bought from every store,
+  <br/>
+  with copies you control, shelved where your player already looks.
+</p>
+
+<div align="center">
+
+[![CI](https://github.com/Bookclerk/bookclerk/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Bookclerk/bookclerk/actions/workflows/ci.yml?query=branch%3Amain)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-3D7F7A.svg)](LICENSE)
+[![Status: pre-release](https://img.shields.io/badge/status-pre--release-C84A34.svg)](https://bookclerk.app/download#pre-release)
+
+[Website](https://bookclerk.app) ·
+[Docs](https://bookclerk.app/docs/) ·
+[Get started](https://bookclerk.app/docs/guide/getting-started) ·
+[Live demo](https://demo.bookclerk.app) ·
+[Privacy](https://bookclerk.app/privacy) ·
+[Security](https://bookclerk.app/security)
+
+</div>
+
+> [!WARNING]
+> Bookclerk has not had a release yet. The development version changes often
+> and may break your library. See
+> [what pre-release means](https://bookclerk.app/download#pre-release).
 
 Bookclerk is a headless-first **multi-storefront audiobook library manager**.
 It syncs owned titles from multiple stores into one library, acquires and
