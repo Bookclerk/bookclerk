@@ -22,10 +22,11 @@
 // go to --out (default audit/report). Exits 1 when any page misses.
 
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -255,6 +256,114 @@ async function serveSite(docsOrigin: string, logFile: string): Promise<{ origin:
   throw new Error(`wrangler dev did not serve / within two minutes; see ${logFile}`);
 }
 
+/** The part of chrome-launcher this audit uses, so a test can stand in for it. */
+export type ChromeLauncher = Pick<typeof chromeLauncher, "launch" | "killAll">;
+
+/** A running Chrome and the profile directory it was given, which `kill` does not remove. */
+export interface AuditChrome {
+  /** The browser, with the debugging port Lighthouse connects to. */
+  chrome: chromeLauncher.LaunchedChrome;
+  /** Its `--user-data-dir`; remove it after `chrome.kill()`. */
+  userDataDir: string;
+}
+
+/** How many lines of a failed start's `chrome-err.log` go to stderr. */
+const CHROME_ERR_TAIL = 40;
+
+/**
+ * Whether a failed start is worth another try. chrome-launcher's own errors
+ * (`ERR_LAUNCHER_*`: no browser, unsupported platform, unusable profile
+ * directory) fail the same way every time. Anything else is the browser not
+ * answering in time: a plain `Error` when it never reported its debugging
+ * port, a socket error when it reported the port but did not accept a
+ * connection; both are seen on busy CI runners. A browser that died at once
+ * looks the same from here and costs one more wait before the audit fails.
+ *
+ * @param err - What `launch` rejected with.
+ * @returns True for a start that may work the next time.
+ */
+export function isTransientStartFailure(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code: unknown = Reflect.get(err, "code");
+  return !(typeof code === "string" && code.startsWith("ERR_LAUNCHER_"));
+}
+
+/**
+ * Removes a profile directory Chrome may still be letting go of; a directory
+ * that stays is left for the OS's temporary-file cleanup rather than failing
+ * the audit.
+ *
+ * @param dir - The profile directory.
+ */
+function removeProfile(dir: string): void {
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+  } catch (err) {
+    console.error(`could not remove ${dir}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * Keeps a failed start's `chrome-err.log`: a copy at `to` and its last
+ * CHROME_ERR_TAIL lines on stderr. The log is a diagnostic aid, so a log that
+ * is missing or cannot be read or copied is reported and does not replace the
+ * start's own error.
+ *
+ * @param from - The log in the profile directory.
+ * @param to - Where the copy goes.
+ */
+function keepChromeErrLog(from: string, to: string): void {
+  if (!existsSync(from)) return;
+  try {
+    const text = readFileSync(from, "utf8");
+    writeFileSync(to, text);
+    const lines = text.trimEnd().split("\n");
+    if (lines[0] === "" && lines.length === 1) return;
+    console.error(`last ${Math.min(lines.length, CHROME_ERR_TAIL)} lines of chrome-err.log:`);
+    for (const line of lines.slice(-CHROME_ERR_TAIL)) console.error(`  ${line}`);
+  } catch (err) {
+    console.error(`could not keep ${from}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * Starts Chrome for Lighthouse, once more when the first start never reaches
+ * its debugging port, and keeps each failed start's `chrome-err.log` (tail on
+ * stderr, copy in `out` as `chrome-err-<attempt>.log`), so the cause travels
+ * with the uploaded reports. A browser whose start timed out is still
+ * running; it is killed before the next start.
+ *
+ * @param launcher - chrome-launcher, or a stand-in.
+ * @param chromePath - The browser.
+ * @param chromeFlags - Flags for the browser.
+ * @param out - The report directory the logs go to.
+ * @param attempts - How many starts to try.
+ * @returns The browser and its profile directory.
+ * @throws The last attempt's error when none started, or the first error
+ *   that another start would not fix.
+ */
+export async function launchChrome(launcher: ChromeLauncher, chromePath: string, chromeFlags: string[], out: string, attempts = 2): Promise<AuditChrome> {
+  for (let attempt = 1; ; attempt++) {
+    // Our own profile directory rather than chrome-launcher's temporary one, so
+    // its chrome-err.log is still there to read after a failed start.
+    const userDataDir = mkdtempSync(join(tmpdir(), "bookclerk-audit-chrome-"));
+    try {
+      const chrome = await launcher.launch({ chromePath, chromeFlags, userDataDir });
+      return { chrome, userDataDir };
+    } catch (err) {
+      // chrome-launcher leaves a browser that never answered running and
+      // gives no handle to it, only killAll (this audit starts one Chrome).
+      for (const killErr of launcher.killAll()) console.error(`could not stop Chrome: ${killErr.message}`);
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`Chrome did not start (attempt ${attempt} of ${attempts}): ${message}`);
+      keepChromeErrLog(join(userDataDir, "chrome-err.log"), join(out, `chrome-err-${attempt}.log`));
+      removeProfile(userDataDir);
+      if (attempt >= attempts || !isTransientStartFailure(err)) throw err;
+      console.error("trying again");
+    }
+  }
+}
+
 /**
  * Runs Lighthouse on one page, once more when only performance misses (lab
  * noise on shared runners), and keeps the better run.
@@ -287,6 +396,16 @@ async function runLighthouse(url: string, form: "mobile" | "desktop", port: numb
   }
   if (best === null) throw new Error(`Lighthouse did not run for ${url}`);
   return best;
+}
+
+/**
+ * Stops a Chrome from `launchChrome` and removes its profile directory.
+ *
+ * @param running - The browser and its profile directory.
+ */
+async function stopChrome(running: AuditChrome): Promise<void> {
+  await running.chrome.kill();
+  removeProfile(running.userDataDir);
 }
 
 /**
@@ -356,7 +475,7 @@ async function main(): Promise<number> {
 
   const docs = await serveDocs();
   let site: { stop: () => void } | null = null;
-  let chrome: chromeLauncher.LaunchedChrome | null = null;
+  let chrome: AuditChrome | null = null;
   const failures: string[] = [];
   const rows = ["| Page | Form | Status | Perf | A11y | BP | SEO | CLS | Result |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"];
   try {
@@ -371,10 +490,10 @@ async function main(): Promise<number> {
     const flags = ["--headless=new", "--no-sandbox", "--disable-gpu"];
     const proxy = process.env["HTTPS_PROXY"];
     if (proxy) flags.push(`--proxy-server=${proxy}`, "--proxy-bypass-list=127.0.0.1;localhost");
-    chrome = await chromeLauncher.launch({ chromePath, chromeFlags: flags });
+    chrome = await launchChrome(chromeLauncher, chromePath, flags, out);
     for (const page of PAGES) {
       for (const form of ["mobile", "desktop"] as const) {
-        const run = await runLighthouse(served.origin + page.path, form, chrome.port, page.limits);
+        const run = await runLighthouse(served.origin + page.path, form, chrome.chrome.port, page.limits);
         writeFileSync(join(out, `${page.name}-${form}.json`), run.report[0]);
         writeFileSync(join(out, `${page.name}-${form}.html`), run.report[1]);
         const c = run.lhr.categories;
@@ -389,13 +508,13 @@ async function main(): Promise<number> {
         for (const miss of run.misses) failures.push(`${page.name} (${form}): ${miss}`);
       }
     }
-    await chrome.kill();
+    await stopChrome(chrome);
     chrome = null;
 
     const axe = await runAxe(served.origin, chromePath);
     failures.push(...axe.map((v) => `axe: ${v}`));
   } finally {
-    if (chrome !== null) await chrome.kill();
+    if (chrome !== null) await stopChrome(chrome);
     site?.stop();
     docs.close();
   }

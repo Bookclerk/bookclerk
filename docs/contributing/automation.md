@@ -421,7 +421,10 @@ kept, since lab scores vary on shared runners. axe-core then checks every
 page in light and dark color schemes at 1350 and 390 px against WCAG 2.0 to
 2.2 A/AA and its best-practice rules, and any violation fails the check. The
 results table goes to the job summary; a failed audit uploads the Lighthouse
-reports as the `site-audit` artifact. Locally: `npm run build` in
+reports as the `site-audit` artifact. Chrome is started once more when its
+first start never reaches the debugging port (busy runners); the tail of each
+failed start's `chrome-err.log` goes to the job log, and a copy
+(`chrome-err-<attempt>.log`) sits beside the reports when the audit fails. Locally: `npm run build` in
 `tools/site`, then `npm ci && node audit.ts` in `tools/site/audit`
 (`--chrome <path>` or `CHROME_PATH` picks the browser).
 
