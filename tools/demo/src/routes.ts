@@ -27,6 +27,7 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   // Health and the API description.
   ["GET", "/health", "allow"],
   ["GET", "/api/openapi.json", "allow"],
+  ["GET", "/api/openapi-3.0.json", "allow"],
   ["GET", "/api/status", "allow"],
 
   // Sign-in and the visitor's own account. The demo signs the visitor in;

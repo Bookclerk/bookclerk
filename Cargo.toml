@@ -141,6 +141,9 @@ tower-service = "0.3"
 # route cannot be registered without its spec entry.
 utoipa = { version = "6", features = ["macros", "preserve_order", "preserve_path_order", "chrono", "uuid"] }
 utoipa-axum = "0.3"
+# Order-preserving JSON objects, so bookclerkd's OpenAPI 3.0 copy keeps the
+# 3.1 document's key order (serde_json's own map sorts keys here).
+indexmap = { version = "2", features = ["serde"] }
 
 # DB / storage — rusqlite 0.39 shares libsqlite3-sys 0.37 with SeaORM's sqlx-sqlite
 # (`>=0.30.1, <0.38`). rusqlite 0.40 needs libsqlite3-sys ^0.38 and cannot

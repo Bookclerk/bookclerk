@@ -78,6 +78,15 @@ OS.
   live auth flag and the loaded plugin ids). `GET /api/status` includes
   `auth_enabled`.
 
+The table lists the common routes. The daemon describes every route in an
+OpenAPI document, with no sign-in needed:
+
+- `GET /api/openapi.json` is OpenAPI 3.1. Open it in a viewer such as
+  [Scalar](https://scalar.com) or Swagger UI, or generate a client from it.
+- `GET /api/openapi-3.0.json` is the same API restated as OpenAPI 3.0.3,
+  for tools that only read 3.0. Use it for
+  [request validation at the proxy](#validate-api-requests-at-the-proxy).
+
 ### The CLI against a running daemon
 
 These commands send the Bearer token when auth is on:
@@ -232,6 +241,27 @@ trusted_proxies = ["127.0.0.1", "::1"]
 [integrations]
 public_origin = "https://bookclerk.example.com"
 ```
+
+### Validate API requests at the proxy
+
+A proxy that validates requests against an OpenAPI schema can refuse
+malformed API calls before they reach the daemon. Cloudflare API Shield's
+schema validation is one; it only reads OpenAPI 3.0.
+
+1. Download the OpenAPI 3.0 document from your daemon:
+
+   ```console
+   $ curl -o bookclerk-openapi-3.0.json https://bookclerk.example.com/api/openapi-3.0.json
+   ```
+
+2. Upload it as the schema, and scope the rule to your Bookclerk hostname.
+3. Watch the violations in log-only mode before you block anything.
+
+> [!NOTE]
+> Download the document again after each Bookclerk upgrade, since routes
+> and fields change between versions. Validators check request bodies only
+> up to a size limit, and file uploads (`application/octet-stream`,
+> `image/*`) are not validated at all.
 
 ### Trusted proxies
 

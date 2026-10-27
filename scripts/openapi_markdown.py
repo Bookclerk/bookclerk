@@ -376,9 +376,14 @@ class Document:
             lines += [prose(str(info["description"])), ""]
         version = info.get("version")
         lines += [
-            "The daemon serves this reference as an OpenAPI document at "
+            "The daemon serves this reference as an OpenAPI 3.1 document at "
             + code("GET /api/openapi.json")
-            + (f" (API version {code(str(version))})." if version else "."),
+            + (f" (API version {code(str(version))})." if version else ".")
+            + " Load it into an OpenAPI viewer such as Scalar or Swagger UI, or a client generator. "
+            + "Tools that only read OpenAPI 3.0, such as Cloudflare API Shield's schema validation, "
+            + "can use the same API restated as OpenAPI 3.0.3 at "
+            + code("GET /api/openapi-3.0.json")
+            + ".",
             "",
         ]
         if self.security_schemes:

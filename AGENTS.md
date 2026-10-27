@@ -99,7 +99,10 @@ pull request as the behavior they describe:
     (`cli_reference_is_current` fails when it is stale).
   - Web API reference: commit the daemon's OpenAPI document with
     `cargo run -p bookclerkd -- --print-openapi > crates/bookclerkd/openapi.json`
-    (`the_committed_document_is_current` fails when it is stale); the docs
+    and its OpenAPI 3.0 copy with
+    `cargo run -p bookclerkd -- --print-openapi 3.0 > crates/bookclerkd/openapi-3.0.json`
+    (`the_committed_document_is_current` and
+    `the_committed_v30_document_is_current` fail when they are stale); the docs
     pipeline renders it.
   - SDK and crate references come from doc comments (see
     [`docs/contributing/code-documentation.md`](docs/contributing/code-documentation.md)),
