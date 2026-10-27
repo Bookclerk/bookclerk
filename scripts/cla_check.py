@@ -20,7 +20,7 @@ and their signature covers what they submit (CLA section 4).
 The verdict is the ``CLA`` commit status on the pull request's head commit.
 Signatures live in ``signatures/cla.json`` on the ``cla-signatures`` branch,
 in the format CLA Assistant Lite used, and are written through the contents
-API. One comment, marked with ``COMMENT_MARKER``, says who still has to sign
+API with the automation App's token. One comment, marked with ``COMMENT_MARKER``, says who still has to sign
 and is edited in place.
 
 Everything that parses bytes from GitHub (the event payload, pull requests,
@@ -30,7 +30,10 @@ fails closed.
 
 Usage (inside the workflow): ``cla_check.py`` with ``GITHUB_TOKEN``,
 ``GITHUB_REPOSITORY``, ``GITHUB_EVENT_NAME``, ``GITHUB_EVENT_PATH`` and
-``GITHUB_SERVER_URL`` set. It exits 0 once the status is posted, whatever the
+``GITHUB_SERVER_URL`` set, plus ``CLA_SIGNATURE_TOKEN``, an automation App
+token that may write to ``cla-signatures``. Only that token records
+signatures, so the branch can refuse every other writer and each signature
+commit is signed by GitHub for the App. It exits 0 once the status is posted, whatever the
 verdict, and 1 when it could not decide.
 """
 
@@ -855,10 +858,20 @@ Transport = Callable[[str, str, "dict[str, object] | None"], "tuple[int, bytes]"
 class GitHub:
     """The few REST calls the check makes, over a ``Transport``."""
 
-    def __init__(self, send: Transport, repository: str) -> None:
-        """Wraps ``send`` for ``repository`` (``owner/name``)."""
+    def __init__(self, send: Transport, repository: str, write: Transport | None = None) -> None:
+        """Wraps ``send`` for ``repository`` (``owner/name``).
+
+        # Arguments
+        * ``send``: performs every request except signature writes.
+        * ``repository``: ``owner/name``.
+        * ``write``: performs signature writes, with the automation App's
+          token, or ``None`` when none is configured (recording a signature
+          then fails closed).
+        """
         #: The function that performs requests.
         self.send = send
+        #: The function that writes the signature file, if any.
+        self.write = write
         #: ``repos/<owner>/<name>``, the prefix of every REST path.
         self.base = f"repos/{repository}"
         #: The repository's owner and name, for GraphQL.
@@ -995,7 +1008,12 @@ class GitHub:
         """Appends the commenter's signature unless it is already there.
 
         Retries when another run replaced the file between the read and the
-        write.
+        write. The write goes through ``self.write``, so the commit is made,
+        and signed, by the automation App.
+
+        # Errors
+        ``ApiError`` when no signature token is configured, the write is
+        refused, or the file keeps changing.
 
         # Returns
         The signature book as written.
@@ -1004,8 +1022,10 @@ class GitHub:
             book, blob = self.signatures()
             if comment.author.id in book.signed_ids:
                 return book
+            if self.write is None:
+                raise ApiError("CLA_SIGNATURE_TOKEN is not set, so signatures cannot be recorded")
             data = add_signature(book, comment, repo_id, pull_number)
-            status, _ = self.send(
+            status, _ = self.write(
                 "PUT",
                 f"{self.base}/contents/{SIGNATURE_PATH}",
                 {
@@ -1215,7 +1235,10 @@ def main(env: dict[str, str]) -> int:
         print("cla_check: GITHUB_REPOSITORY is not owner/name", file=sys.stderr)
         return 1
     server = env.get("GITHUB_SERVER_URL", "https://github.com")
-    api = GitHub(urllib_transport(env["GITHUB_TOKEN"], env.get("GITHUB_API_URL", "https://api.github.com")), repository)
+    api_url = env.get("GITHUB_API_URL", "https://api.github.com")
+    signature_token = env.get("CLA_SIGNATURE_TOKEN", "")
+    write = urllib_transport(signature_token, api_url) if signature_token else None
+    api = GitHub(urllib_transport(env["GITHUB_TOKEN"], api_url), repository, write)
     run_url = f"{server}/{repository}/actions/runs/{env.get('GITHUB_RUN_ID', '')}"
     cla_url = f"{server}/{repository}/blob/main/CLA.md"
     try:
