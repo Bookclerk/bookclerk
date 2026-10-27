@@ -1,0 +1,77 @@
+# Build one of the published images for the runner's architecture and check
+# it, leaving it tagged `local/image`.
+#
+# Used by images-publish.yml twice: by the read-only dry run a pull request
+# gets, and by the build job that then pushes the result. Keeping the steps
+# here lets the dry run hold no registry write rights while still exercising
+# exactly what a publish builds. Run it after actions/checkout.
+
+name: Image build
+description: Build and check one published container image as local/image.
+
+inputs:
+  image:
+    description: Package name, one of bookclerk, bookclerk-dev or bookclerk-demo.
+    required: true
+  revision:
+    description: Commit id recorded in the image's OCI revision label (and the demo's version.txt).
+    required: true
+  source:
+    description: Repository URL recorded in the image's OCI source label.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Build
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        SHA: ${{ inputs.revision }}
+        SOURCE: ${{ inputs.source }}
+      run: |
+        set -euo pipefail
+        labels=(--label "org.opencontainers.image.source=$SOURCE" --label "org.opencontainers.image.revision=$SHA")
+        case "$IMAGE" in
+          bookclerk)
+            docker build "${labels[@]}" -f packaging/docker/Dockerfile -t local/image .
+            ;;
+          bookclerk-dev)
+            # Inline cache metadata lets a Dev Container build use this
+            # image as its layer cache (build.cacheFrom).
+            docker build "${labels[@]}" --build-arg BUILDKIT_INLINE_CACHE=1 \
+              -f .devcontainer/Dockerfile -t local/image .
+            ;;
+          bookclerk-demo)
+            # Same two steps demo-deploy runs, then the demo layer on top.
+            docker build -f packaging/docker/Dockerfile --target builder -t bookclerk-builder:demo .
+            docker build -f packaging/docker/Dockerfile -t bookclerk:demo .
+            printf '%s\n' "$SHA" > packaging/demo/version.txt
+            docker build "${labels[@]}" -f packaging/demo/Dockerfile -t local/image packaging/demo
+            ;;
+          *)
+            echo "::error::unknown image $IMAGE"
+            exit 1
+            ;;
+        esac
+
+    - name: Check
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+      run: |
+        set -euo pipefail
+        case "$IMAGE" in
+          bookclerk) bash packaging/docker/smoke.sh local/image ;;
+          bookclerk-dev)
+            docker run --rm --user bookclerk -e RUSTUP_AUTO_INSTALL=0 \
+              -v "$PWD:/workspace:ro" -w /workspace local/image bash -euo pipefail -lc '
+                cargo --version; cargo nextest --version; capnp --version
+                node --version; uv --version; python3 -c "import yaml"
+              '
+            ;;
+          bookclerk-demo)
+            docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' local/image \
+              | grep -qx 'BOOKCLERK_PLUGIN_ISOLATION=best-effort'
+            ;;
+        esac

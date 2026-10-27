@@ -249,6 +249,25 @@ A directory that another install owns under the same name (`sqlite`, `local`)
 is left alone with a warning. The same applies to an unpacked platform archive
 run from its own directory.
 
+### Published images
+
+Prebuilt images are published to the GitHub Container Registry for `amd64`
+and `arm64`:
+
+```bash
+docker pull ghcr.io/bookclerk/bookclerk:edge
+```
+
+Until the first release only `edge` (the newest build from `main`) and
+`sha-<commit>` tags exist; releases add `<version>`, `<major>.<minor>`,
+`<major>` and `latest`. Pin the digest in production
+(`ghcr.io/bookclerk/bookclerk@sha256:…`), and check where an image was built
+before running it:
+
+```bash
+gh attestation verify oci://ghcr.io/bookclerk/bookclerk:edge --owner bookclerk
+```
+
 For day-to-day compile/test with a controlled OpenSSL/Node toolchain (and host-
 runnable `target/` binaries), use the [Dev Container](../contributing/devcontainer.md) instead
 of fighting missing `libssl-dev` on the host.
