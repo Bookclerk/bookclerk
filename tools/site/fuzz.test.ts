@@ -12,6 +12,7 @@ import { test } from "node:test";
 import { fileURLToPath, URL } from "node:url";
 
 import { highlight } from "./highlight.ts";
+import { formatDate, pageDate } from "./last-updated.ts";
 import { pickEncoding } from "./worker.ts";
 import type { Encoding } from "./worker.ts";
 
@@ -251,5 +252,95 @@ test("highlight keeps mutated code intact and markup-free", () => {
     const code = mutate(seeds[Math.floor(rand() * seeds.length)] ?? "", seeds, rand, CODE_FRAGMENTS);
     const lang = LANGUAGES[Math.floor(rand() * LANGUAGES.length)] ?? "bash";
     checkHighlight(code, lang, `FUZZ_SEED=${SEED} iteration ${i} (${lang})`);
+  }
+});
+
+/** Fragments dates-file mutations splice in: JSON syntax, keys, numbers, dates and odd characters. */
+const DATE_FRAGMENTS = ['"', "{", "}", "[", "]", ":", ",", "\\", "\\u0000", " ", "\n", "1", "2", "0", "9", "-", "-02-29", "-13-", "1.0", "1e0", "null", "true", '"version"', '"pages"', '"README"', '"__proto__"', "2026-10-26", "<", "&", "é"];
+
+/** Page keys the dates-file fuzzing asks for. */
+const DATE_KEYS = ["README", "guide/getting-started", "adr/control-plane", "server/backups", "__proto__", "constructor", "toString", "", "missing"];
+
+/** Full month names, written without reference to last-updated.ts. */
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+/**
+ * The date pageDate should find, computed independently of last-updated.ts:
+ * the structure is checked with `in`/`typeof` lookups on a null-prototype copy,
+ * and the date with digit-by-digit reading and a days-in-month table.
+ *
+ * @param json - The dates file.
+ * @param key - The page key.
+ * @returns The expected `YYYY-MM-DD`, or null.
+ */
+function oraclePageDate(json: string, key: string): string | null {
+  let document: unknown;
+  try {
+    document = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (typeof document !== "object" || document === null || document instanceof Array) return null;
+  const top: Record<string, unknown> = Object.assign(Object.create(null), document);
+  if (top["version"] !== 1) return null;
+  const pages = top["pages"];
+  if (typeof pages !== "object" || pages === null || pages instanceof Array) return null;
+  if (!Object.getOwnPropertyNames(pages).includes(key)) return null;
+  const value = Object.getOwnPropertyDescriptor(pages, key)?.value;
+  if (typeof value !== "string" || value.length !== 10 || value[4] !== "-" || value[7] !== "-") return null;
+  let year = 0;
+  let month = 0;
+  let day = 0;
+  for (let i = 0; i < 10; i++) {
+    if (i === 4 || i === 7) continue;
+    const code = value.charCodeAt(i) - 48;
+    if (code < 0 || code > 9) return null;
+    if (i < 4) year = year * 10 + code;
+    else if (i < 7) month = month * 10 + code;
+    else day = day * 10 + code;
+  }
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+  if (year === 0 || days === undefined || day < 1 || day > days) return null;
+  return value;
+}
+
+/**
+ * Checks one pageDate run, and the text the page would show, against the oracle.
+ *
+ * @param json - The dates file.
+ * @param key - The page key.
+ * @param context - What to print on failure.
+ */
+function checkPageDate(json: string, key: string, context: string): void {
+  const got = pageDate(json, key);
+  assert.equal(got, oraclePageDate(json, key), `${context}: ${JSON.stringify(key)} in ${JSON.stringify(json)}`);
+  if (got === null) return;
+  const shown = formatDate(got);
+  const [year = "", month = "", day = ""] = got.split("-");
+  assert.equal(shown, `${MONTH_NAMES[Number(month) - 1]?.slice(0, 3)} ${Number(day)}, ${year}`, context);
+  assert.match(shown, /^[A-Za-z]{3} [0-9]{1,2}, [0-9]{4}$/, context);
+}
+
+test("pageDate agrees with the oracle on its seed corpus", () => {
+  const seeds = corpus("last_updated");
+  assert.ok(seeds.length >= 10);
+  let found = 0;
+  for (const seed of seeds) {
+    for (const key of DATE_KEYS) {
+      checkPageDate(seed, key, "seed");
+      if (pageDate(seed, key) !== null) found++;
+    }
+  }
+  assert.ok(found >= 5, "the seeds hold valid dates");
+});
+
+test("pageDate agrees with the oracle on mutated inputs", () => {
+  const seeds = corpus("last_updated");
+  const rand = prng(SEED);
+  for (let i = 0; i < ITERATIONS; i++) {
+    const json = mutate(seeds[Math.floor(rand() * seeds.length)] ?? "", seeds, rand, DATE_FRAGMENTS);
+    const key = DATE_KEYS[Math.floor(rand() * DATE_KEYS.length)] ?? "README";
+    checkPageDate(json, key, `FUZZ_SEED=${SEED} iteration ${i}`);
   }
 });

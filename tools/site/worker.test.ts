@@ -26,6 +26,7 @@ import {
 import type { DocsFetch, Env, PageCache } from "./worker.ts";
 import type { BuildEnv } from "./build.ts";
 import type { DocsShell } from "./render.ts";
+import { MAX_LAST_UPDATED_BYTES } from "./last-updated.ts";
 
 /** This directory. */
 const HERE = new URL(".", import.meta.url).pathname;
@@ -45,6 +46,8 @@ const DOCS = join(HERE, "..", "..", "docs");
 /** Generated pages the stand-in docs repository adds to docs/. */
 const GENERATED: Readonly<Record<string, string>> = {
   "api/rust/demo/index.md": "# Crate `demo`\n\nA demo crate. See [the SDK](../../typescript/README.md) and [`Thing`](#thing).\n\n## Thing\n",
+  // The generated page is dated here only to check that its date is not shown.
+  "last-updated.json": JSON.stringify({ version: 1, pages: { "plugins/README": "2026-10-26", "api/rust/demo/index": "2026-10-01" } }),
 };
 
 /** What a browser sends. */
@@ -335,7 +338,7 @@ test("only listed versions and plain paths reach the docs repository", async () 
   }
   assert.deepEqual(fetched, []);
   await get("/docs/v/v0.1.0/plugins/", BROWSER);
-  assert.deepEqual(fetched, [`${DOCS_RAW_BASE}v0.1.0/plugins/README.md`]);
+  assert.deepEqual(fetched, [`${DOCS_RAW_BASE}v0.1.0/last-updated.json`, `${DOCS_RAW_BASE}v0.1.0/plugins/README.md`]);
 });
 
 test("a browser gets the doc in the site's page, with its version and sidebar", async () => {
@@ -366,6 +369,8 @@ test("a browser gets the doc in the site's page, with its version and sidebar", 
   const ld: { "@graph": { "@type": string; url: string }[] } = JSON.parse(html.match(/<script type="application\/ld\+json">(.*?)<\/script>/)?.[1] ?? "{}");
   assert.equal(ld["@graph"][0]?.["@type"], "TechArticle");
   assert.equal(ld["@graph"][0]?.url, "https://bookclerk.app/docs/plugins/");
+  assert.match(html, /<span class="doc-updated">Last updated <time datetime="2026-10-26">Oct 26, 2026<\/time><\/span>/);
+  assert.equal((ld["@graph"][0] as { dateModified?: string } | undefined)?.dateModified, "2026-10-26");
 
   const home = await get("/", "*/*");
   assert.equal(home.headers.get("Link"), '<https://bookclerk.app/index.md>; rel="alternate"; type="text/markdown"');
@@ -387,6 +392,33 @@ test("generated pages render without a source link and keep links inside the tre
   assert.match(html, /Generated from the source at v0.2.0/);
   assert.match(html, /href="\/docs\/api\/typescript\/"/);
   assert.match(html, /<h2 id="thing">/);
+  assert.doesNotMatch(html, /Last updated|dateModified/, "the generated reference has no date");
+});
+
+test("a page shows no date when the dates file leaves it out, is broken or cannot be read", async () => {
+  assert.doesNotMatch(await (await get("/docs/server/cluster-hosts", BROWSER)).text(), /Last updated|dateModified/);
+  const broken = (answer: () => Promise<Response>): DocsFetch => async (url, init) => (url.endsWith("/last-updated.json") ? answer() : docsFetch(url, init));
+  const answers = [
+    async () => new Response("oops", { status: 502 }),
+    async () => new Response(null, { status: 302, headers: { Location: "https://example.com/" } }),
+    async () => new Response("{not json"),
+    async () => new Response(JSON.stringify({ version: 2, pages: { "plugins/README": "2026-10-26" } })),
+    async () => new Response(JSON.stringify({ version: 1, pages: { "plugins/README": "2026-02-30" } })),
+    async () => new Response(JSON.stringify({ version: 1, pages: { "plugins/README": "<b>x</b>" } })),
+    async () => new Response("x", { headers: { "Content-Length": String(MAX_LAST_UPDATED_BYTES + 1) } }),
+    async () => Promise.reject(new Error("network")),
+  ];
+  for (const answer of answers) {
+    const res = await handle(new Request("https://bookclerk.app/docs/plugins/", { headers: { Accept: BROWSER } }), env, { shell, fetch: broken(answer) });
+    assert.equal(res.status, 200);
+    assert.doesNotMatch(await res.text(), /Last updated|dateModified/);
+  }
+});
+
+test("a Markdown request does not read the dates file", async () => {
+  fetched.length = 0;
+  assert.equal((await get("/docs/plugins/", "text/markdown")).status, 200);
+  assert.deepEqual(fetched, [`${DOCS_RAW_BASE}v0.2.0/plugins/README.md`]);
 });
 
 test("a directory whose entry page is index serves it", async () => {
@@ -409,15 +441,18 @@ test("a failing or oversized docs repository answer is a 503, not a page", async
   // No Content-Length: the body is cut off once it passes the cap.
   const chunk = new Uint8Array(1024 * 1024);
   let sent = 0;
-  const endless = async () =>
-    new Response(
-      new ReadableStream({
-        pull(controller) {
-          sent += chunk.byteLength;
-          controller.enqueue(chunk);
-        },
-      }),
-    );
+  // The dates file is missing here, so only the page's body is counted.
+  const endless: DocsFetch = async (url) =>
+    url.endsWith("/last-updated.json")
+      ? new Response(null, { status: 404 })
+      : new Response(
+          new ReadableStream({
+            pull(controller) {
+              sent += chunk.byteLength;
+              controller.enqueue(chunk);
+            },
+          }),
+        );
   const moved: DocsFetch = async (_url, init) => {
     assertWorkersFetchInit(init);
     assert.equal(init.redirect, "manual");
@@ -480,7 +515,8 @@ test("rendered pages are cached per deploy, version, path and format", async () 
     assert.equal(res.status, 200);
     await Promise.all(pending);
   }
-  assert.equal(fetched.length, 1);
+  // The dates file is asked for first, beside the page.
+  assert.deepEqual(fetched, [`${DOCS_RAW_BASE}v0.2.0/last-updated.json`, `${DOCS_RAW_BASE}v0.2.0/plugins/README.md`]);
   assert.deepEqual([...store.keys()], [`https://bookclerk.app/docs/plugins/?format=html&ref=v0.2.0&shell=${shell.id}`]);
   assert.match(shell.id, /^[0-9a-f]{16}$/);
   const head = await handle(new Request("https://bookclerk.app/docs/plugins/", { method: "HEAD", headers: { Accept: BROWSER } }), env, deps);

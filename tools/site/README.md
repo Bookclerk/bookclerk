@@ -87,6 +87,14 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   the language, the rest the code) and fuzzes mutations against an oracle
   that the output is only escaped text and those spans and reads back to the
   input exactly.
+- `last-updated.ts` – reads `last-updated.json`, which the docs publishing
+  workflow writes at the root of each docs version from this repository's
+  git history (`scripts/docs-markdown.py`), and formats the "Last updated"
+  date under each page's title (also `dateModified` in its JSON-LD). The
+  Worker fetches the file beside the page, for HTML only; when it is
+  missing or unreadable, or for the generated `api/` pages, the page has no
+  date. The file comes from outside the Worker, so `fuzz.test.ts` replays
+  `fuzz/last_updated/` and fuzzes mutations against an independent oracle.
 - `src/docs.js` – the docs pages' only script, served from the site: a Copy
   button on code blocks, the "On this page" link of the section being read
   (`aria-current="location"`), and a filter box above the sidebar groups
@@ -153,7 +161,9 @@ versions.
   no length and runs past it), and a failing fetch is a 503, never a partial
   page: the "docs could not be loaded" page in the site's look (Markdown for
   Markdown readers), linking to the same doc in the docs repository on
-  GitHub, with `Retry-After: 60`, `no-store` and `noindex`.
+  GitHub, with `Retry-After: 60`, `no-store` and `noindex`. The version's
+  `last-updated.json` is fetched the same way (capped at 256 KB), but a
+  failure there only leaves out the page's date.
 - Each page is rendered into the shell `build.ts` bakes from `src/doc.html`
   (`%%name%%` holes take escaped values, `<!--name-->` markers take the
   rendered parts). Links between docs stay in the same version, links to

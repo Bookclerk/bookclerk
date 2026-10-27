@@ -16,6 +16,8 @@ import MarkdownIt from "markdown-it";
 import type { MarkdownIt as Markdown, RendererRule, Token } from "markdown-it";
 
 import { highlight } from "./highlight.ts";
+import { formatDate } from "./last-updated.ts";
+import type { IsoDate } from "./last-updated.ts";
 
 /** One sidebar group: its heading and the docs it lists, by key. */
 export interface NavSpec {
@@ -501,11 +503,12 @@ export function jsonLd(data: object | null): string {
  *
  * @param origin - The site's origin.
  * @param base - URL prefix of the docs version, ending in `/`.
- * @param doc - The doc.
+ * @param doc - The doc, with the date it last changed when known
+ *   (`dateModified`).
  * @returns A JSON-LD `@graph` with the TechArticle and its
  *   breadcrumb trail (Docs › title).
  */
-export function docJsonLd(origin: string, base: string, doc: { key: string; title: string; description: string }): object {
+export function docJsonLd(origin: string, base: string, doc: { key: string; title: string; description: string; updated?: IsoDate | null }): object {
   const url = origin + docUrl(doc.key, base);
   const crumbs = [{ name: "Docs", item: origin + base }];
   if (doc.key !== "README") crumbs.push({ name: doc.title, item: url });
@@ -516,6 +519,7 @@ export function docJsonLd(origin: string, base: string, doc: { key: string; titl
         "@type": "TechArticle",
         headline: doc.title,
         ...(doc.description ? { description: doc.description } : {}),
+        ...(doc.updated ? { dateModified: doc.updated } : {}),
         url,
         inLanguage: "en",
         isPartOf: { "@id": `${origin}/#website` },
@@ -782,11 +786,17 @@ export interface DocsShell {
  * @param source - The doc's Markdown.
  * @param key - The doc's key (path without `.md`).
  * @param at - The docs version: its ref, its URL prefix and the docs it
- *   holds (null when unknown).
+ *   holds (null when unknown), and the date the page last changed (null
+ *   when unknown, which leaves out the "Last updated" line).
  * @returns The full HTML page and the Markdown copy with links rewritten for
  *   the site.
  */
-export function renderDocPage(shell: DocsShell, source: string, key: string, at: { ref: string; base: string; keys?: ReadonlySet<string> | null }): RenderedPage {
+export function renderDocPage(
+  shell: DocsShell,
+  source: string,
+  key: string,
+  at: { ref: string; base: string; keys?: ReadonlySet<string> | null; updated?: IsoDate | null },
+): RenderedPage {
   const blobBase = `${shell.repository}/blob/${at.ref}/`;
   const doc = renderDoc(source, key, { keys: at.keys ?? null, blobBase, base: at.base });
   const markdownUrl = docMarkdownUrl(key, at.base);
@@ -801,7 +811,8 @@ export function renderDocPage(shell: DocsShell, source: string, key: string, at:
     at.ref === "main"
       ? '<span class="doc-note" role="note"><span class="badge unstable-badge">Development</span> These docs follow the development version and change with every merge.</span>'
       : "";
-  const meta = `<p class="doc-meta">${note}<a href="${escapeHtml(markdownUrl)}" type="text/markdown">View as Markdown</a></p>`;
+  const updated = at.updated ? `<span class="doc-updated">Last updated <time datetime="${at.updated}">${formatDate(at.updated)}</time></span>` : "";
+  const meta = `<p class="doc-meta">${note}${updated}<a href="${escapeHtml(markdownUrl)}" type="text/markdown">View as Markdown</a></p>`;
   const place = navPlace(shell.nav, key);
   const versions = versionsHtml(shell.versions, at.ref, key);
   const nav = homeLink(at.base, key === "README") + navHtml(shell.nav, key, at.base);
@@ -815,7 +826,7 @@ export function renderDocPage(shell: DocsShell, source: string, key: string, at:
       docsBase: at.base,
     },
     {
-      jsonld: jsonLd(docJsonLd(shell.origin, at.base, { key, title: doc.title, description: doc.description })),
+      jsonld: jsonLd(docJsonLd(shell.origin, at.base, { key, title: doc.title, description: doc.description, updated: at.updated ?? null })),
       "doc-menus": mobileMenusHtml(versions + nav, doc.headings),
       "doc-versions": versions,
       "doc-nav": nav,

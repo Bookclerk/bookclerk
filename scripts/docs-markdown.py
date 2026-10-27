@@ -35,6 +35,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,6 +75,13 @@ TYPEDOC_MARKDOWN_OPTIONS = (
     "table",
     "--useCodeBlocks",
 )
+# Written at the output root: the date each page of docs/ last changed.
+LAST_UPDATED_FILE = "last-updated.json"
+LAST_UPDATED_VERSION = 1
+# Starts each commit's header line in the `git log` output read by
+# page_dates. A NUL cannot start a path, and git writes it for `%x00`.
+COMMIT_MARK = "\x00commit "
+COMMIT_FORMAT = "%x00commit %at"
 # The daemon's OpenAPI document, regenerated and checked by bookclerkd's tests.
 OPENAPI_DOCUMENT = "crates/bookclerkd/openapi.json"
 PYTHON_SDK = "packages/plugin-sdk-python"
@@ -110,6 +118,10 @@ class BuildError(RuntimeError):
 
 class UnsafeOutputDir(BuildError):
     """The output directory is not one this script may clear."""
+
+
+class NoHistory(BuildError):
+    """The checkout has no complete git history to date the pages from."""
 
 
 def _forbidden_dirs() -> set[Path]:
@@ -220,6 +232,141 @@ def copy_docs(src: Path, out: Path) -> None:
         dest = out / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, dest)
+
+
+def page_dates(log: str, pages: set[str]) -> dict[str, str]:
+    """Date each page from ``git log --name-status`` output over ``docs/``.
+
+    A page's date is the newest commit that changed its content. A pure move
+    (a rename git scores 100, the content unchanged) is not an update: the
+    page is followed back to its old path instead. A partial rename is an
+    update and is followed back too. An add ends the page's history, so a
+    path that was deleted and later re-added is not dated by the old file.
+
+    Args:
+        log: The output of ``git log -M --name-status`` with
+            ``--format=COMMIT_FORMAT`` and newest commits first, as
+            :func:`git_docs_log` returns it.
+        pages: Repository paths of the pages to date (``docs/x.md``).
+
+    Returns:
+        ``YYYY-MM-DD`` (UTC, from the author date) by repository path, for
+        each page some commit touched.
+
+    Raises:
+        BuildError: A line is not one ``git log`` writes.
+    """
+    # Path in the commit being read -> the page it is now.
+    names = {page: page for page in pages}
+    dates: dict[str, int] = {}
+    when: int | None = None
+
+    def touch(page: str) -> None:
+        """Record the current commit as a change to ``page``."""
+        assert when is not None  # a status line follows a commit line
+        dates[page] = max(dates.get(page, when), when)
+
+    for line in log.split("\n"):
+        if not line:
+            continue
+        if line.startswith(COMMIT_MARK):
+            stamp = line[len(COMMIT_MARK) :]
+            if not stamp.isdigit():
+                raise BuildError(f"git log: bad commit line {line!r}")
+            when = int(stamp)
+            continue
+        fields = line.split("\t")
+        status = fields[0]
+        if when is None or not status:
+            raise BuildError(f"git log: status line outside a commit: {line!r}")
+        if status[0] in "RC" and len(fields) == 3:
+            old, new = fields[1], fields[2]
+            page = names.get(new)
+            if page is None:
+                continue
+            if status[0] == "R":
+                del names[new]
+                names[old] = page
+            if status != f"{status[0]}100":
+                touch(page)
+        elif status in ("A", "M", "D", "T") and len(fields) == 2:
+            page = names.get(fields[1])
+            if page is None:
+                continue
+            if status == "D":
+                # Deleted here, re-added by a newer commit already read.
+                del names[fields[1]]
+                continue
+            touch(page)
+            if status == "A":
+                del names[fields[1]]
+        else:
+            raise BuildError(f"git log: unexpected status line {line!r}")
+    return {page: datetime.fromtimestamp(stamp, timezone.utc).strftime("%Y-%m-%d") for page, stamp in dates.items()}
+
+
+def git_docs_log(repo: Path) -> str:
+    """Read the history of ``docs/`` for :func:`page_dates`.
+
+    Args:
+        repo: The repository root.
+
+    Returns:
+        The ``git log`` output, newest commit first.
+
+    Raises:
+        NoHistory: ``repo`` is not a git checkout or its history is shallow,
+            so dates would be wrong.
+        BuildError: ``git log`` failed.
+    """
+
+    def git(*args: str) -> str:
+        """Run git in ``repo`` and return its standard output."""
+        result = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise NoHistory(f"git {args[0]}: {result.stderr.strip() or f'exited {result.returncode}'}")
+        return result.stdout
+
+    if git("rev-parse", "--is-shallow-repository").strip() != "false":
+        raise NoHistory("the checkout is shallow; fetch the full history (fetch-depth: 0)")
+    return git(
+        "-c",
+        "core.quotePath=false",
+        "log",
+        "-M",
+        "--name-status",
+        f"--format={COMMIT_FORMAT}",
+        "--",
+        "docs",
+    )
+
+
+def write_last_updated(out: Path, log: str) -> int:
+    """Write :data:`LAST_UPDATED_FILE`: the date each copied page last changed.
+
+    The site shows it as "Last updated". Only pages copied from ``docs/`` are
+    dated; the generated ``api/`` tree is not.
+
+    Args:
+        out: The output root, after :func:`copy_docs`.
+        log: The history of ``docs/``, from :func:`git_docs_log`.
+
+    Returns:
+        How many pages got a date.
+
+    Raises:
+        BuildError: The log could not be read.
+    """
+    keys = {
+        f"docs/{md.relative_to(out).as_posix()}": md.relative_to(out).with_suffix("").as_posix()
+        for md in out.rglob("*.md")
+        if md.relative_to(out).parts[0] != "api"
+    }
+    dated = page_dates(log, set(keys))
+    pages = {keys[path]: date for path, date in sorted(dated.items(), key=lambda item: keys[item[0]])}
+    document = {"version": LAST_UPDATED_VERSION, "pages": pages}
+    (out / LAST_UPDATED_FILE).write_text(json.dumps(document, indent=1, sort_keys=False) + "\n", encoding="utf-8")
+    return len(pages)
 
 
 def build_rust_json(target_dir: Path) -> Path:
@@ -664,12 +811,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skip-typescript", action="store_true")
     parser.add_argument("--skip-python", action="store_true")
     parser.add_argument("--skip-web", action="store_true")
+    parser.add_argument(
+        "--require-history",
+        action="store_true",
+        help=f"fail instead of leaving out {LAST_UPDATED_FILE} when the git history is missing or shallow",
+    )
     args = parser.parse_args(argv)
 
     try:
         out = prepare_output_dir(args.out, args.scratch_root)
         scratch = args.scratch_root.resolve()
         copy_docs(ROOT / "docs", out)
+        try:
+            dated = write_last_updated(out, git_docs_log(ROOT))
+            print(f"==> Last updated: {dated} pages")
+        except NoHistory as err:
+            if args.require_history:
+                raise
+            print(f"::warning::no {LAST_UPDATED_FILE}: {err}", file=sys.stderr)
         api = out / "api"
         api.mkdir()
 

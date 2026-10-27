@@ -359,6 +359,14 @@ step with this one, as Markdown that the website and agents read:
 
   Every relative link to a file in the tree must resolve, and links in
   `api/` must stay inside the tree, or the build fails.
+- `last-updated.json` at the root: the date (UTC, `YYYY-MM-DD`) each page
+  of `docs/` last changed, which the website shows as "Last updated". It
+  is the author date of the newest commit that changed the page's content.
+  A pure move (a rename git sees as unchanged) is followed back to the old
+  path rather than counted, and author dates survive history rewrites that
+  reset commit dates. The workflow checks out the full history and passes
+  `--require-history`, so a shallow checkout fails the build; a local build
+  from a shallow clone leaves the file out with a warning.
 
 The `build` job has no secrets and a read-only token; it runs
 `scripts/docs-markdown.py` and uploads the tree as an artifact. The `publish`

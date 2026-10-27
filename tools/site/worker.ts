@@ -14,7 +14,10 @@
 // fetched, responses over MAX_DOC_BYTES are refused, and rendered pages are
 // cached at the edge (tags for a day, main for five minutes). When the docs
 // repository cannot be read, the reader gets a 503 page in the site's look
-// that links to the same doc on GitHub.
+// that links to the same doc on GitHub. Beside each HTML page the Worker
+// reads the version's last-updated.json (parsed by last-updated.ts) for the
+// page's "Last updated" date; when that file cannot be read the page simply
+// has no date.
 //
 // Content negotiation: when the Accept header ranks `text/markdown` (or
 // `text/x-markdown`) at least as high as HTML, `/`, `/download` and
@@ -37,6 +40,7 @@
 // Accept-Encoding headers (and conditional headers it passes on), and
 // fetches only from its own assets and the docs repository.
 
+import { LAST_UPDATED_FILE, MAX_LAST_UPDATED_BYTES, pageDate } from "./last-updated.ts";
 import { docMarkdownUrl, docUrl, renderDocPage, renderUnavailablePage } from "./render.ts";
 import type { DocsShell, DocsVersion } from "./render.ts";
 
@@ -330,32 +334,68 @@ export function docsTarget(pathname: string, versions: readonly DocsVersion[]): 
  *   is over MAX_DOC_BYTES.
  */
 export async function fetchDoc(ref: string, key: string, fetcher: DocsFetch): Promise<string | null> {
+  return fetchDocsFile(ref, `${key}.md`, fetcher, MAX_DOC_BYTES);
+}
+
+/**
+ * Reads a docs version's last-updated.json, which dates its pages.
+ *
+ * The date is a nicety: any failure is logged and gives no file, so a page
+ * never fails because its date could not be read.
+ *
+ * @param ref - The docs version's git ref.
+ * @param fetcher - `fetch`, or a stand-in in tests.
+ * @returns The file's text, or null when it is missing or unreadable.
+ */
+export async function fetchLastUpdated(ref: string, fetcher: DocsFetch): Promise<string | null> {
+  try {
+    return await fetchDocsFile(ref, LAST_UPDATED_FILE, fetcher, MAX_LAST_UPDATED_BYTES);
+  } catch (err) {
+    console.error(`docs dates unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+/**
+ * Reads one file of a docs version from the docs repository, through the
+ * edge cache.
+ *
+ * @param ref - The docs version's git ref.
+ * @param file - The file's path in the version.
+ * @param fetcher - `fetch`, or a stand-in in tests.
+ * @param limit - Largest body accepted, in bytes.
+ * @returns The text, or null when the file does not exist at that ref.
+ * @throws {Error} When the docs repository fails or redirects, or the file
+ *   is over `limit`.
+ */
+async function fetchDocsFile(ref: string, file: string, fetcher: DocsFetch, limit: number): Promise<string | null> {
   const ttl = ttlFor(ref);
-  const response = await fetcher(`${DOCS_RAW_BASE}${ref}/${key}.md`, {
+  const response = await fetcher(`${DOCS_RAW_BASE}${ref}/${file}`, {
     // The Workers runtime rejects `redirect: "error"` outright, so redirects
     // are taken as answers and refused below.
     redirect: "manual",
     cf: { cacheEverything: true, cacheTtlByStatus: { "200-299": ttl, 404: MISSING_TTL, "500-599": 0 } },
   });
   if (response.status === 404) return null;
-  if (response.status >= 300 && response.status < 400) throw new Error(`docs repository redirected ${ref}/${key}.md`);
-  if (!response.ok) throw new Error(`docs repository answered ${response.status} for ${ref}/${key}.md`);
+  if (response.status >= 300 && response.status < 400) throw new Error(`docs repository redirected ${ref}/${file}`);
+  if (!response.ok) throw new Error(`docs repository answered ${response.status} for ${ref}/${file}`);
   const declared = Number(response.headers.get("Content-Length") ?? "0");
-  if (declared > MAX_DOC_BYTES) throw new Error(`${ref}/${key}.md is ${declared} bytes`);
+  if (declared > limit) throw new Error(`${ref}/${file} is ${declared} bytes`);
   // UTF-8, with invalid bytes replaced rather than refused.
-  return new TextDecoder().decode(await readCapped(response, `${ref}/${key}.md`));
+  return new TextDecoder().decode(await readCapped(response, `${ref}/${file}`, limit));
 }
 
 /**
- * Reads a response body, giving up as soon as it passes MAX_DOC_BYTES, so a
- * body without Content-Length cannot make the Worker buffer it whole.
+ * Reads a response body, giving up as soon as it passes `limit`, so a body
+ * without Content-Length cannot make the Worker buffer it whole.
  *
  * @param response - The docs repository's answer.
  * @param name - The file, for the error message.
+ * @param limit - Largest body accepted, in bytes.
  * @returns The body.
- * @throws {Error} When the body is over MAX_DOC_BYTES.
+ * @throws {Error} When the body is over `limit`.
  */
-async function readCapped(response: Response, name: string): Promise<Uint8Array> {
+async function readCapped(response: Response, name: string, limit: number): Promise<Uint8Array> {
   if (response.body === null) return new Uint8Array(0);
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -364,9 +404,9 @@ async function readCapped(response: Response, name: string): Promise<Uint8Array>
     const { done, value } = await reader.read();
     if (done) break;
     size += value.byteLength;
-    if (size > MAX_DOC_BYTES) {
+    if (size > limit) {
       await reader.cancel();
-      throw new Error(`${name} is over ${MAX_DOC_BYTES} bytes`);
+      throw new Error(`${name} is over ${limit} bytes`);
     }
     chunks.push(value);
   }
@@ -482,6 +522,8 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
   }
 
   const { version } = target;
+  // Fetched beside the page and only for HTML, which shows the date.
+  const dates = wantsMarkdown ? null : fetchLastUpdated(version.ref, deps.fetch);
   let key: string | null = null;
   let source: string | null = null;
   // The last key asked for, so the unavailable page links on GitHub to the
@@ -518,7 +560,10 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
   const page = docUrl(key, version.base);
   if (target.kind === "page" && page !== url.pathname) return redirect(url, page);
 
-  const rendered = renderDocPage(deps.shell, source, key, { ref: version.ref, base: version.base });
+  // The generated API reference is rebuilt on every publish and has no date.
+  const datesFile = dates === null || key.startsWith("api/") ? null : await dates;
+  const updated = datesFile === null ? null : pageDate(datesFile, key);
+  const rendered = renderDocPage(deps.shell, source, key, { ref: version.ref, base: version.base, updated });
   const common: Record<string, string> = { "Cache-Control": `public, max-age=${BROWSER_TTL}, s-maxage=${ttlFor(version.ref)}`, Vary: "Accept" };
   // Only the default version is for search engines; older releases and main
   // (once a release exists) are reachable but not indexed.

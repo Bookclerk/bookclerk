@@ -1,4 +1,4 @@
-// Tests for docs.ts and render.ts: URLs, link rewriting and every doc in
+// Tests for docs.ts, render.ts and last-updated.ts: URLs, link rewriting and every doc in
 // docs/ rendered the way the Worker renders it. Run with `npm test`.
 
 import assert from "node:assert/strict";
@@ -7,6 +7,8 @@ import { fileURLToPath, URL } from "node:url";
 
 import { docUrl, GENERATED_TITLES, markdownFiles, renderDocs, rewriteLink, siteMarkdown, slugify } from "./docs.ts";
 import { highlight } from "./highlight.ts";
+import { formatDate, pageDate, parseIsoDate } from "./last-updated.ts";
+import type { IsoDate } from "./last-updated.ts";
 import { crumbsHtml, docMarkdownUrl, fillShell, navHtml, navPlace, normalizePath, pagerHtml, renderDoc, SHELL_MARKERS, tocListHtml } from "./render.ts";
 
 /** The repository's docs/. */
@@ -183,4 +185,24 @@ test("Markdown copies rewrite whole link targets outside code", () => {
   assert.equal(out[1], "Inline `[x](media.md)` stays.");
   assert.equal(out[3], "[y](media.md)");
   assert.equal(out[5], "[ref]: /docs/plugins.md");
+});
+
+test("page dates are real calendar dates, shown as month, day and year", () => {
+  for (const ok of ["2026-10-26", "2024-02-29", "2000-02-29", "0001-01-01", "9999-12-31"]) assert.equal(parseIsoDate(ok), ok, ok);
+  for (const bad of ["2026-02-29", "1900-02-29", "2026-13-01", "2026-00-10", "2026-04-31", "2026-10-00", "0000-01-01", "2026-1-01", "26-10-26", " 2026-10-26", "2026-10-26T00:00Z", "２０２６-10-26", ""]) {
+    assert.equal(parseIsoDate(bad), null, bad);
+  }
+  assert.equal(formatDate("2026-10-26" as IsoDate), "Oct 26, 2026");
+  assert.equal(formatDate("2026-01-05" as IsoDate), "Jan 5, 2026");
+  assert.equal(formatDate("0099-12-31" as IsoDate), "Dec 31, 0099");
+});
+
+test("pageDate reads one page's date and ignores anything malformed", () => {
+  const file = JSON.stringify({ version: 1, pages: { README: "2026-10-26", "guide/x": "2026-02-30", "guide/y": 20261026 } });
+  assert.equal(pageDate(file, "README"), "2026-10-26");
+  for (const key of ["guide/x", "guide/y", "missing", "__proto__", "constructor", "toString"]) assert.equal(pageDate(file, key), null, key);
+  for (const bad of ["", "{", "null", "[]", '"x"', '{"version":2,"pages":{"README":"2026-10-26"}}', '{"version":"1","pages":{"README":"2026-10-26"}}', '{"version":1,"pages":[]}', '{"version":1}']) {
+    assert.equal(pageDate(bad, "README"), null, bad);
+  }
+  assert.equal(pageDate('{"version":1,"pages":{"__proto__":"2026-10-26"}}', "__proto__"), "2026-10-26");
 });

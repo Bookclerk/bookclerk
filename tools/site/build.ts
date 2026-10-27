@@ -228,7 +228,7 @@ export const PAGES: readonly Page[] = [
 ];
 
 /** The Worker's page renderers, whose sources are part of the docs shell's id (see buildDocsShell). */
-const RENDER_SOURCES = ["render.ts", "highlight.ts"];
+const RENDER_SOURCES = ["render.ts", "highlight.ts", "last-updated.ts"];
 
 /** Files copied verbatim from src/ to dist/. */
 const STATIC_FILES = ["site.css", "docs.js", "_headers", "social-card.png"];
