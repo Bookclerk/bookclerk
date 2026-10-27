@@ -100,8 +100,11 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   and formats the "Last updated" date under each page's title (also
   `dateModified` in its JSON-LD). The Worker fetches the file beside the
   page, for HTML only; when it is missing or unreadable, the page has no
-  date. The file comes from outside the Worker, so `fuzz.test.ts` replays
+  date. It also lists every dated page (`datedPages`) for the sitemap. The
+  file comes from outside the Worker, so `fuzz.test.ts` replays
   `fuzz/last_updated/` and fuzzes mutations against an independent oracle.
+- `sitemap.ts` – writes sitemaps and sitemap indexes, for the build's
+  fallback copy and for the Worker's sectioned one (see "Search engines, link previews and agents").
 - `diagram.ts` – draws each ```` ```mermaid ```` fence as inline SVG with
   [beautiful-mermaid](https://github.com/lukilabs/beautiful-mermaid), which
   lays diagrams out without a DOM, so pages need no client-side script and
@@ -141,7 +144,7 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   the shell's `<!--source-->` marker and publishes as `/security.md`, so the
   site and GitHub show the same policy. Edit `SECURITY.md`, not the page;
   links to it from the docs point at `/security`.
-- `worker.ts` – the docs route and content negotiation (see below).
+- `worker.ts` – the docs route, the sitemap and content negotiation (see below).
   `wrangler.toml` runs it only for page paths (`run_worker_first`). It
   compresses what it answers with (Brotli, else gzip) itself, because
   Cloudflare's edge leaves `text/markdown` uncompressed; files served without
@@ -210,11 +213,11 @@ versions.
 - Caching: GitHub responses and rendered pages are cached at the edge, for
   a day for release tags (which never move), five minutes for `main` and a
   minute for missing files. Rendered pages are keyed by the version's ref
-  and a hash of the shell, so a deploy (a new release, sidebar or template)
+  and a hash of the shell, so a deploy (a new release, sidebar, template or Worker)
   starts fresh; browsers keep any docs page for five minutes, since each
   carries the version picker.
-- The sidebar, `sitemap.xml` and `llms.txt` come from the `docs/` the site
-  is built with (the newest release tag's, else `main`'s), so a new doc
+- The sidebar, the fallback `sitemap.xml` and `llms.txt` come from the
+  `docs/` the site is built with (the newest release tag's, else `main`'s), so a new doc
   appears there on the next deploy. Every version shares that sidebar; a
   doc that exists in one version only is still reachable by its links.
 - Only the default version is indexed: pages of `main` (once a release
@@ -243,7 +246,33 @@ versions.
   (`homeFacts` in `build.ts`), so structured data never says anything a
   visitor cannot see on the page. Search engines treat text shown only to
   crawlers as cloaking, so keep it that way.
-- `sitemap.xml` lists every indexable page; `robots.txt` allows all crawlers and points to it.
+- `/sitemap.xml` is a sitemap index with one sitemap per section, so
+  Search Console reports indexing per shelf: `/sitemap-site.xml` holds the
+  pages outside `/docs/` and the docs home, and each top docs folder gets
+  its own (`/sitemap-guide.xml`, `/sitemap-server.xml`,
+  `/sitemap-api.xml`, ...), dated by its newest page. The Worker writes
+  them from the default docs version's `last-updated.json`, so together
+  they list every page of that version, the generated API reference
+  included, each doc with its date as `<lastmod>`. They are cached like
+  that version's pages, and a deploy that changes the Worker starts them
+  fresh. When the file cannot be read, `/sitemap.xml` is the flat sitemap
+  `build.ts` wrote (the pages and the sidebar's docs, no dates) for a
+  minute and section sitemaps answer 503. Keys the docs route would not
+  serve at their URL are left out, and each sitemap lists at most 50,000
+  URLs. `robots.txt` allows all crawlers and points to `/sitemap.xml`.
+- `/sitemap` is the same list for people, linked from the footer. It is a
+  website page like `/privacy`, not a docs page: `build.ts` bakes
+  `src/sitemap.html` into the shell and the Worker fills in the list
+  (`renderSitemapPage` in `render.ts`), grouped like the sidebar, with the
+  API reference split by language and each doc's date. Its Markdown version
+  is `/sitemap.md` (and `Accept: text/markdown`). When the dates file cannot
+  be read it lists the sidebar's docs without dates, for a minute.
+- Every sitemap starts with `<?xml-stylesheet type="text/css"
+  href="/sitemap.css"?>`, so a person who opens one sees it in the site's
+  colors and fonts with a pointer to `/sitemap`. CSS cannot make the URLs
+  clickable, which is why `/sitemap` exists. XSLT is not used because
+  browsers are removing it (Chrome from November 2026), and the XML is the
+  same for every client: serving people something else would be cloaking.
 - For agents: each doc is also served as Markdown at `/docs/<path>.md` (and
   `/docs/v/<ref>/<path>.md`)
   (linked from the page with `rel="alternate"` and "View as Markdown"), with

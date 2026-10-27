@@ -945,6 +945,12 @@ export interface DocsShell {
   versions: DocsVersion[];
   /** The sidebar, from the docs the site was built with. */
   nav: NavGroup[];
+  /** URL paths of the indexable pages outside /docs/ (build.ts `PAGES`), which the sitemap lists first. */
+  pages: string[];
+  /** The titles of `pages`, in the same order, for the human-readable sitemap. */
+  pageTitles: string[];
+  /** src/sitemap.html rendered for the site, with SITEMAP_MARKER where the list goes. */
+  sitemapHtml: string;
 }
 
 /**
@@ -1073,4 +1079,142 @@ export function renderUnavailablePage(shell: DocsShell, key: string, at: { ref: 
     "",
   ].join("\n");
   return { html, markdown };
+}
+
+/** Where the human-readable sitemap's list goes in src/sitemap.html. */
+export const SITEMAP_MARKER = "<!--sitemap-->";
+
+/** One page the human-readable sitemap lists. */
+export interface SitemapPageLink {
+  /** Its doc key, or null for a page outside /docs/. */
+  key: string | null;
+  /** Its URL path. */
+  path: string;
+  /** Its title, or null to name it from its path. */
+  title: string | null;
+  /** When it last changed, or null when unknown. */
+  updated: IsoDate | null;
+}
+
+/** One heading of the human-readable sitemap and the pages under it. */
+interface SitemapGroup {
+  /** The heading. */
+  title: string;
+  /** Pages listed straight under the heading. */
+  links: SitemapPageLink[];
+  /** Subheadings (one per API reference language), in first-seen order. */
+  parts: Map<string, SitemapPageLink[]>;
+}
+
+/** Subheadings for the API reference's folders on the sitemap page; others show the folder name. */
+const API_PART_TITLES: Readonly<Record<string, string>> = {
+  python: "Python plugin SDK",
+  rust: "Rust crates",
+  typescript: "TypeScript plugin SDK",
+  ui: "Web interface",
+  web: "Web API",
+};
+
+/**
+ * Names a doc for the sitemap page when the sidebar does not: its path
+ * below `prefix`, without a trailing README or index.
+ *
+ * @param key - The doc's key.
+ * @param prefix - The part of the key its heading already says, ending in `/`, or "".
+ * @returns A readable label.
+ */
+function sitemapLabel(key: string, prefix: string): string {
+  const rest = key.startsWith(prefix) ? key.slice(prefix.length) : key;
+  const trimmed = rest.replace(/(?:^|\/)(?:README|index)$/, "");
+  return trimmed === "" ? "Overview" : trimmed;
+}
+
+/**
+ * Renders /sitemap: every page the site serves, grouped the way the docs
+ * sidebar groups them, for people (sitemap.xml is for search engines). It
+ * is a website page (src/sitemap.html), not a docs page.
+ *
+ * Site pages come first, then each sidebar group in order with every doc
+ * whose key, or top folder, the group lists; the API reference is split by
+ * language. Docs the sidebar does not place go under "More".
+ *
+ * @param shell - The baked page shell.
+ * @param links - The pages, site pages first, then docs in key order.
+ * @returns The full HTML page and its Markdown version.
+ */
+export function renderSitemapPage(shell: DocsShell, links: readonly SitemapPageLink[]): RenderedPage {
+  const site: SitemapGroup = { title: "Website", links: [], parts: new Map() };
+  const groups = shell.nav.map((g): SitemapGroup => ({ title: g.title, links: [], parts: new Map() }));
+  const more: SitemapGroup = { title: "More", links: [], parts: new Map() };
+  const byKey = new Map<string, { group: number; title: string }>();
+  const byFolder = new Map<string, number>();
+  for (const [i, g] of shell.nav.entries()) {
+    for (const p of g.pages) {
+      byKey.set(p.key, { group: i, title: p.title });
+      const folder = p.key.split("/")[0] ?? "";
+      if (p.key.includes("/") && !byFolder.has(folder)) byFolder.set(folder, i);
+    }
+  }
+  for (const link of links) {
+    if (link.key === null) {
+      site.links.push(link);
+      continue;
+    }
+    const placed = byKey.get(link.key);
+    const segments = link.key.split("/");
+    const index = placed?.group ?? byFolder.get(segments[0] ?? "");
+    const group = index === undefined ? more : (groups[index] ?? more);
+    if (link.key === "README") {
+      site.links.push({ ...link, title: link.title ?? "Documentation" });
+    } else if (segments[0] === "api" && segments.length > 2) {
+      // The API reference runs to hundreds of pages: one subheading per language.
+      const part = segments[1] ?? "";
+      const label = placed?.title ?? sitemapLabel(link.key, `api/${part}/`);
+      const list = group.parts.get(part) ?? [];
+      if (list.length === 0) group.parts.set(part, list);
+      list.push({ ...link, title: label });
+    } else {
+      group.links.push({ ...link, title: placed?.title ?? link.title ?? sitemapLabel(link.key, "") });
+    }
+  }
+  // Docs the sidebar lists keep its order; the rest follow in key order.
+  const order = new Map(shell.nav.flatMap((g) => g.pages.map((p) => p.key)).map((key, i) => [key, i] as const));
+  const rank = (l: SitemapPageLink): number => (l.key === null ? -1 : (order.get(l.key) ?? Number.MAX_SAFE_INTEGER));
+  for (const g of [...groups, more]) g.links.sort((a, b) => rank(a) - rank(b));
+  const all = [site, ...groups, more].filter((g) => g.links.length > 0 || g.parts.size > 0);
+  const total = links.length;
+
+  const itemHtml = (l: SitemapPageLink): string => {
+    const date = l.updated ? ` <span class="faint">· <time datetime="${l.updated}">${formatDate(l.updated)}</time></span>` : "";
+    return `<li><a href="${escapeHtml(l.path)}">${escapeHtml(l.title ?? l.path)}</a>${date}</li>`;
+  };
+  const itemMd = (l: SitemapPageLink): string => {
+    const date = l.updated ? ` (${formatDate(l.updated)})` : "";
+    return `- [${(l.title ?? l.path).replace(/[\\[\]]/g, "\\$&")}](${shell.origin}${l.path})${date}`;
+  };
+  const ids = all.map((g) => `sitemap-${slugify(g.title)}`);
+  const html: string[] = [
+    "<h1>Sitemap</h1>",
+    `<p class="muted">Every page on this site, ${total} in all. Search engines read the same list from <a href="/sitemap.xml">sitemap.xml</a>.</p>`,
+    `<nav aria-label="Sections"><p>${all.map((g, i) => `<a href="#${escapeHtml(ids[i] ?? "")}">${escapeHtml(g.title)}</a>`).join(" · ")}</p></nav>`,
+  ];
+  const md: string[] = ["# Sitemap", "", `Every page on this site, ${total} in all. Search engines read the same list from ${shell.origin}/sitemap.xml.`, ""];
+  for (const [i, g] of all.entries()) {
+    html.push(`<h2 id="${escapeHtml(ids[i] ?? "")}">${escapeHtml(g.title)}</h2>`);
+    md.push(`## ${g.title}`, "");
+    if (g.links.length > 0) {
+      html.push(`<ul>${g.links.map(itemHtml).join("")}</ul>`);
+      md.push(...g.links.map(itemMd), "");
+    }
+    for (const [part, list] of g.parts) {
+      const name = API_PART_TITLES[part] ?? part;
+      list.sort((a, b) => rank(a) - rank(b));
+      html.push(`<h3>${escapeHtml(name)}</h3>`, `<ul>${list.map(itemHtml).join("")}</ul>`);
+      md.push(`### ${name}`, "", ...list.map(itemMd), "");
+    }
+  }
+  const at = shell.sitemapHtml.indexOf(SITEMAP_MARKER);
+  if (at === -1) throw new Error(`the sitemap shell has no ${SITEMAP_MARKER}`);
+  const page = shell.sitemapHtml.slice(0, at) + html.join("\n") + shell.sitemapHtml.slice(at + SITEMAP_MARKER.length);
+  return { html: page, markdown: md.join("\n") };
 }

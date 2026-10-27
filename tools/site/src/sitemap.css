@@ -1,0 +1,73 @@
+/* Styles sitemap.xml and its section sitemaps when a person opens them in a
+   browser (an <?xml-stylesheet type="text/css"?> line in each, written by
+   sitemap.ts). Browsers show raw XML elements here, not HTML, so nothing is
+   clickable; the page points people to /sitemap for links. Colors and fonts
+   follow site.css. */
+
+@font-face { font-family: "Source Sans 3"; font-style: normal; font-weight: 200 900; font-display: swap; src: url("/fonts/source-sans-3-v20-latin.woff2") format("woff2"); }
+@font-face { font-family: "Literata"; font-style: normal; font-weight: 400 900; font-display: swap; src: url("/fonts/literata-v40-latin.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("/fonts/ibm-plex-mono-v20-400-latin.woff2") format("woff2"); }
+
+:root {
+  --paper: #fbf7ee;
+  --ink: #0b3553;
+  --teal-text: #2e615d;
+  --line: color-mix(in srgb, var(--ink) 12%, transparent);
+  --soft: color-mix(in srgb, var(--ink) 72%, transparent);
+  color-scheme: light;
+  /* A column, so the note below can sit above the entries with `order`. */
+  display: flex;
+  flex-direction: column;
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 48px 24px 88px;
+  background: var(--paper);
+  color: var(--ink);
+  font: 17px/1.6 "Source Sans 3", "Segoe UI", Candara, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #121c26;
+    --ink: #f3e5c6;
+    --teal-text: #7cc2bc;
+    color-scheme: dark;
+  }
+}
+
+urlset::before, sitemapindex::before {
+  display: block;
+  order: -2;
+  margin-bottom: 8px;
+  font: 600 40px/1.15 "Literata", "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+}
+urlset::before { content: "Sitemap section"; }
+sitemapindex::before { content: "Sitemap"; }
+
+urlset::after, sitemapindex::after {
+  display: block;
+  order: -1;
+  margin-bottom: 24px;
+  color: var(--soft);
+  content: "This is the list search engines read. For a page with links, open /sitemap on this site.";
+}
+
+url, sitemap {
+  display: block;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+loc {
+  display: block;
+  color: var(--teal-text);
+  font: 15px/1.5 "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+lastmod {
+  display: block;
+  color: var(--soft);
+  font-size: 14px;
+}
+lastmod::before { content: "Last updated "; }

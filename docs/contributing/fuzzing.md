@@ -328,11 +328,13 @@ fuzzing in `npm test`.
   an independent reader confirms the output is one `<svg>` of allowed
   elements, with no script or style attributes, no class but `mono`, no
   reference outside the diagram, and ids carrying the page's prefix.
-- **Last-updated reader** (`pageDate` in `tools/site/last-updated.ts`)
-  dates each docs page from the docs repository's `last-updated.json`.
-  Corpus `tools/site/fuzz/last_updated/`. Oracle: the document's shape read
-  through property descriptors, and the date digit by digit against a
-  days-in-month table. The date shown is only `Mon D, YYYY`.
+- **Last-updated reader** (`pageDate` and `datedPages` in
+  `tools/site/last-updated.ts`) dates each docs page from the docs
+  repository's `last-updated.json`, and lists every page for
+  `/sitemap.xml`. Corpus `tools/site/fuzz/last_updated/`. Oracle: the
+  document's shape read through property descriptors, the date digit by
+  digit against a days-in-month table, and each sitemap key segment by
+  segment. The date shown is only `Mon D, YYYY`.
 
 ### Hosted demo Worker
 
