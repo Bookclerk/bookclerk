@@ -75,6 +75,30 @@ The `CLA` workflow (`.github/workflows/cla.yml`) runs
 pull request through the API, so pull request code never runs with its
 token.
 
+Pull request events reach it in two steps, so the repository never needs
+`pull_request_target`, which GitHub blocks by default on public
+repositories:
+
+1. The `CLA trigger` workflow (`.github/workflows/cla-trigger.yml`) runs on
+   `pull_request`. It does nothing and gets a read-only token, like any
+   other check on a fork pull request.
+2. When it completes, the `CLA` workflow runs on `workflow_run` from the
+   default branch, with the token it needs to comment and record
+   signatures. It finds the pull request from the head commit, branch and
+   repository that GitHub records for the trigger run, and takes nothing
+   else from it.
+
+A pull request that edits or deletes the trigger can only delay the check
+or keep it from running, and a required **CLA** status that never arrives
+keeps the pull request from merging.
+
+> [!NOTE]
+> When a fork pull request's workflows wait for a maintainer's approval
+> (the repository's setting for first-time contributors), the trigger
+> waits too, so the check and its comment appear once a maintainer
+> approves the run. A signature comment still runs the check straight
+> away.
+
 Who must sign:
 
 - The pull request author, the GitHub account linked to every commit, and
@@ -104,9 +128,9 @@ Who must sign:
   so a signature posted while another run was busy still counts.
 - Each signature records the version of the CLA it accepts (`claVersion`),
   so a later edit to `CLA.md` does not blur what earlier signers agreed to.
-- The check runs again when a pull request moves to another base branch,
-  because the new base can bring in commits from other authors without
-  changing the head commit.
+- The check runs when a pull request is opened, pushed to, reopened or
+  closed, and when it moves to another base branch, because the new base can
+  bring in commits from other authors without changing the head commit.
 
 The result is the **CLA** commit status on the pull request's head commit,
 and one comment that lists who still has to sign, edited in place. Merge
@@ -118,8 +142,10 @@ The status belongs to the commit, not to the pull request. When other open
 pull requests have the same head commit (from another author, or against
 another base), the status passes only when every one of them passes, so
 nobody can borrow a signed contributor's result. When one of them is
-closed or pushed to, the others decide the status again. More than 10 such
-pull requests fail closed.
+closed, the others decide the status again. When one is pushed to, the
+commit it left keeps its last status until one of the others is checked
+again; comment `recheck` there. More than 10 such pull requests fail
+closed.
 
 > [!NOTE]
 > Anyone can open a pull request on the same head commit as yours and turn
