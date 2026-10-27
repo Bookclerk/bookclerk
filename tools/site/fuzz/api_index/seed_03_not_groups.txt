@@ -1,0 +1,13 @@
+# API
+
+### Plain heading
+
+[`GET /x`](x.md)
+
+> ### [Quoted](q.md)
+>
+> [`POST /y`](y.md)
+
+- ### [Listed](l.md)
+
+### [Two](a.md) [links](b.md)

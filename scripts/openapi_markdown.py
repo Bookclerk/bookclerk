@@ -7,8 +7,9 @@ as JSON, nothing is executed.
 
 The pages are:
 
-- ``README.md``: the API's description, how to authenticate, and an index of
-  the route groups (OpenAPI tags) with every route;
+- ``README.md``: the API's description, a quick-start request, how to
+  authenticate, and an index of the route groups (OpenAPI tags) with every
+  route;
 - one page per tag (``<tag slug>.md``) with each operation: who may call it
   (``x-bookclerk-access``), its parameters, request body and responses, and
   an example request (``curl``) and response built from the schemas;
@@ -42,6 +43,8 @@ MAX_FIELD_DEPTH = 3
 PARAM_ORDER = {"path": 0, "query": 1, "header": 2, "cookie": 3}
 # The daemon's default listen address, used in example requests.
 EXAMPLE_ORIGIN = "http://127.0.0.1:8787"
+# The route the index's Quick start calls when the document has a GET for it.
+QUICK_START_PATH = "/api/status"
 # Example values nest objects and arrays this deep; deeper ones are empty.
 MAX_EXAMPLE_DEPTH = 4
 # Example strings by `format`.
@@ -707,6 +710,7 @@ class Document:
             + ".",
             "",
         ]
+        lines += self.quick_start()
         if self.security_schemes:
             lines += [
                 "## Authentication",
@@ -731,6 +735,36 @@ class Document:
             lines.append("")
         lines += ["## Schemas", "", f"Request and response bodies are described in [Schemas]({SCHEMA_PAGE}).", ""]
         return _join(lines)
+
+    def quick_start(self) -> list[str]:
+        """Render the index's ``Quick start``: one ready-to-run request.
+
+        The request is :data:`QUICK_START_PATH` when the document has a
+        ``GET`` for it, else the first ``GET`` that needs a credential.
+
+        Returns:
+            Markdown lines: the heading, a sentence naming the route and its
+            credential, the ``curl`` command and a link to the route; nothing
+            when no ``GET`` needs a credential.
+        """
+        pages = [(group, op) for group in self.tags for op in group.operations if op.method == "GET" and op.spec.get("security")]
+        chosen = next((pair for pair in pages if pair[1].path == QUICK_START_PATH), pages[0] if pages else None)
+        if chosen is None:
+            return []
+        group, op = chosen
+        command = self.example_request(op)[2:]
+        requirement = next(iter(spec_list(op.spec["security"], "security")), {})
+        credential = f" with the {code(str(next(iter(requirement))))} credential" if isinstance(requirement, Mapping) and requirement else ""
+        return [
+            "## Quick start",
+            "",
+            f"The daemon listens on {code(EXAMPLE_ORIGIN)} unless `daemon.listen` says otherwise. "
+            + f"This request calls {code(op.title)}{credential}; [Authentication](#authentication) says where to get it.",
+            "",
+            *command,
+            f"[{code(op.title)}]({group.page}#{op.anchor}) describes the response.",
+            "",
+        ]
 
     def _scheme_kind(self, scheme: Any) -> str:
         """Describe how a security scheme is sent."""

@@ -567,14 +567,7 @@ function checkApiPage(source: string, context: string): void {
   const plain = renderDoc(source, "guide/fuzz", { blobBase: "https://example.invalid/" }).html;
   assert.ok(!/<script/i.test(laid), `script element: ${context}`);
 
-  const stack: string[] = [];
-  for (const [tag, close, name] of laid.matchAll(/<(\/?)([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/g)) {
-    const element = (name ?? "").toLowerCase();
-    if (VOID_ELEMENTS.test(element) || tag.endsWith("/>")) continue;
-    if (close === "") stack.push(element);
-    else assert.equal(stack.pop(), element, `misnested </${element}>: ${context}`);
-  }
-  assert.deepEqual(stack, [], `unclosed elements: ${context}`);
+  checkNesting(laid, context);
 
   const ids = new Set([...laid.matchAll(/ id="([^"]*)"/g)].map((m) => m[1]));
   const sections = [...laid.matchAll(/<section class="api-op" aria-labelledby="([^"]*)">\n<h2 id="([^"]*)" class="api-op-title"><span class="api-method api-method-([a-z]+)">([A-Z]+)<\/span> <code>/g)];
@@ -600,6 +593,60 @@ function checkApiPage(source: string, context: string): void {
   assert.equal(chars(laid + methods), chars(plain), `text changed: ${context}`);
 }
 
+/** Fragments Web API index mutations splice in, on top of {@link API_FRAGMENTS}: links, group headings and the Quick start. */
+const INDEX_FRAGMENTS = [...API_FRAGMENTS, "Quick start", "## Quick start\n\n", "### [", "[", "]", "](jobs.md)", "](x.md#a)", "[`GET /x`](x.md)", "(deprecated)", "<aside>", "</section>"];
+
+/**
+ * Checks a rendered Web API index against an oracle that does not use
+ * api-reference.ts: the HTML nests properly, every card and the Quick
+ * start aside are labelled by their own heading, every badge names a known
+ * method, and the visible text is the same as the page rendered without
+ * the layout (a badge and its path spell out the code span they replace).
+ *
+ * @param source - The Markdown.
+ * @param context - What to print when a check fails.
+ */
+function checkApiIndex(source: string, context: string): void {
+  const laid = renderDoc(source, "api/web/README", { blobBase: "https://example.invalid/" }).html;
+  const plain = renderDoc(source, "guide/fuzz", { blobBase: "https://example.invalid/" }).html;
+  assert.ok(!/<script/i.test(laid), `script element: ${context}`);
+  checkNesting(laid, context);
+
+  const ids = new Set([...laid.matchAll(/ id="([^"]*)"/g)].map((m) => m[1]));
+  const cards = [...laid.matchAll(/<section class="api-group" aria-labelledby="([^"]*)">\n<h3 id="([^"]*)"><a /g)];
+  assert.equal(cards.length, (laid.match(/<section/g) ?? []).length, `card without its heading: ${context}`);
+  const asides = [...laid.matchAll(/<aside class="api-intro-side" aria-labelledby="([^"]*)">\n<h2 id="([^"]*)">Quick start<\/h2>/g)];
+  assert.equal(asides.length, (laid.match(/<aside/g) ?? []).length, `aside without its heading: ${context}`);
+  assert.ok(asides.length <= 1, context);
+  for (const [, labelled, id] of [...cards, ...asides]) {
+    assert.equal(labelled, id, context);
+    assert.ok(ids.has(id), context);
+  }
+  for (const [, lower, method] of laid.matchAll(/<span class="api-method api-method-([a-z]+)">([^<]*)<\/span>/g)) {
+    assert.ok((HTTP_METHODS as readonly string[]).includes(method ?? ""), context);
+    assert.equal(lower, method?.toLowerCase(), context);
+  }
+  const chars = (html: string): string => [...html.split(/<[^>]*>/).join("").replace(/\s/g, "")].sort().join("");
+  assert.equal(chars(laid), chars(plain), `text changed: ${context}`);
+}
+
+/**
+ * Checks that every element in some HTML is closed, in order.
+ *
+ * @param html - The HTML.
+ * @param context - What to print when the check fails.
+ */
+function checkNesting(html: string, context: string): void {
+  const stack: string[] = [];
+  for (const [tag, close, name] of html.matchAll(/<(\/?)([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/g)) {
+    const element = (name ?? "").toLowerCase();
+    if (VOID_ELEMENTS.test(element) || tag.endsWith("/>")) continue;
+    if (close === "") stack.push(element);
+    else assert.equal(stack.pop(), element, `misnested </${element}>: ${context}`);
+  }
+  assert.deepEqual(stack, [], `unclosed elements: ${context}`);
+}
+
 /** Mutated Web API pages checked per run; each renders twice, highlighting included. */
 const API_ITERATIONS = Math.max(1, Math.floor(ITERATIONS / 40));
 
@@ -615,5 +662,20 @@ test("the Web API layout keeps mutated pages well formed and complete", () => {
   for (let i = 0; i < API_ITERATIONS; i++) {
     const source = mutate(seeds[Math.floor(rand() * seeds.length)] ?? "", seeds, rand, API_FRAGMENTS);
     checkApiPage(source, `FUZZ_SEED=${SEED} iteration ${i}: ${JSON.stringify(source)}`);
+  }
+});
+
+test("the Web API index layout keeps its seed corpus well formed and complete", () => {
+  const seeds = corpus("api_index");
+  assert.ok(seeds.length >= 5);
+  for (const seed of seeds) checkApiIndex(seed, JSON.stringify(seed.slice(0, 60)));
+});
+
+test("the Web API index layout keeps mutated pages well formed and complete", () => {
+  const seeds = corpus("api_index");
+  const rand = prng(SEED);
+  for (let i = 0; i < API_ITERATIONS; i++) {
+    const source = mutate(seeds[Math.floor(rand() * seeds.length)] ?? "", seeds, rand, INDEX_FRAGMENTS);
+    checkApiIndex(source, `FUZZ_SEED=${SEED} iteration ${i}: ${JSON.stringify(source)}`);
   }
 });

@@ -159,3 +159,89 @@ test("odd operation pages still render balanced", () => {
     assert.equal(html.split("<div").length, html.split("</div>").length, source);
   }
 });
+
+/** The Web API index as scripts/openapi_markdown.py writes it. */
+const INDEX = `# Bookclerk daemon API
+
+The HTTP API of \`bookclerkd\`.
+
+## Quick start
+
+\`\`\`console
+$ curl 'http://127.0.0.1:8787/api/status'
+\`\`\`
+
+## Authentication
+
+| Name | Kind | Description |
+| --- | --- | --- |
+| \`operatorToken\` | HTTP bearer | The operator token. |
+
+## Routes
+
+### [Jobs](jobs.md)
+
+Queued and running control-plane jobs.
+
+| Route | Summary |
+| --- | --- |
+| [\`GET /api/jobs\`](jobs.md#get-apijobs) | Lists jobs. |
+| [\`POST /api/jobs/{id}/cancel\`](jobs.md#post-apijobsidcancel) (deprecated) | Cancels a job. |
+
+### [Health](health.md)
+
+| Route | Summary |
+| --- | --- |
+| [\`GET /health\`](health.md#get-health) | Liveness. |
+
+## Schemas
+
+See [\`GET /api/jobs\`](jobs.md#get-apijobs) and [Schemas](schemas.md).
+`;
+
+test("the index puts its Quick start beside the introduction", () => {
+  const out = renderDoc(INDEX, "api/web/README", { blobBase: BLOB });
+  assert.ok(out.html.startsWith('<h1 id="bookclerk-daemon-api">Bookclerk daemon API</h1>\n<div class="api-ref api-index">\n<div class="api-intro">\n<div class="api-intro-main">\n<p>'));
+  assert.ok(out.html.includes('</div>\n<aside class="api-intro-side" aria-labelledby="quick-start">\n<h2 id="quick-start">Quick start</h2>'));
+  assert.ok(out.html.indexOf("</aside>") < out.html.indexOf('<h2 id="authentication">'));
+});
+
+test("each route group on the index is a card whose routes carry method badges", () => {
+  const out = renderDoc(INDEX, "api/web/README", { blobBase: BLOB });
+  assert.equal(out.html.split('<section class="api-group"').length, 3);
+  assert.ok(out.html.includes('<section class="api-group" aria-labelledby="jobs">\n<h3 id="jobs"><a href="/docs/api/web/jobs">Jobs</a></h3>'));
+  assert.ok(
+    out.html.includes('<a href="/docs/api/web/jobs#post-apijobsidcancel"><span class="api-method api-method-post">POST</span> <code>/<wbr>api/<wbr>jobs/<wbr>{id}/<wbr>cancel</code></a> (deprecated)'),
+  );
+  // A route link outside the groups stays as it is.
+  assert.ok(out.html.includes('See <a href="/docs/api/web/jobs#get-apijobs"><code>GET /api/jobs</code></a>'));
+  assert.ok(out.html.indexOf("</section>") < out.html.indexOf('<h3 id="health">'));
+});
+
+test("the index's sidebar lists every route group with its routes", () => {
+  const out = renderDoc(INDEX, "api/web/README", { blobBase: BLOB });
+  assert.deepEqual(out.routes, [
+    {
+      title: "Jobs",
+      href: "/docs/api/web/jobs",
+      routes: [
+        { method: "GET", path: "/api/jobs", href: "/docs/api/web/jobs#get-apijobs" },
+        { method: "POST", path: "/api/jobs/{id}/cancel", href: "/docs/api/web/jobs#post-apijobsidcancel" },
+      ],
+    },
+    { title: "Health", href: "/docs/api/web/health", routes: [{ method: "GET", path: "/health", href: "/docs/api/web/health#get-health" }] },
+  ]);
+  const nested = apiNavNested("api/web/README", out.title, out.headings, "/docs/", out.routes);
+  assert.equal(nested?.under, "api/web/README");
+  const nav = navHtml([{ title: "API reference", pages: [{ key: "api/web/README", title: "Web API" }] }], "api/web/README", "/docs/", nested);
+  assert.ok(nav.includes('<a href="/docs/api/web/" aria-current="page">Web API</a><ul class="nav-sub"><li><a href="/docs/api/web/jobs">Jobs</a><ul class="nav-ops">'));
+  assert.ok(nav.includes('<a class="nav-op" href="/docs/api/web/health#get-health"><span class="api-method api-method-get">GET</span> <code>/<wbr>health</code></a>'));
+  assert.equal(apiNavNested("api/web/README", out.title, out.headings, "/docs/", []), null);
+  assert.deepEqual(renderDoc(PAGE, "api/web/jobs", { blobBase: BLOB }).routes, []);
+});
+
+test("an index without a Quick start or groups keeps its text in order", () => {
+  const out = renderDoc("# API\n\nIntro.\n\n## Routes\n\n### Plain\n\n- [`GET /x`](x.md)\n", "api/web/README", { blobBase: BLOB });
+  assert.ok(out.html.startsWith('<h1 id="api">API</h1>\n<div class="api-ref api-index">\n<p>Intro.</p>'));
+  assert.ok(!out.html.includes("api-intro") && !out.html.includes("api-group") && !out.html.includes("api-method"));
+});

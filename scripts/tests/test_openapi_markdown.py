@@ -127,6 +127,29 @@ class RenderTest(unittest.TestCase):
         self.assertLess(index.index("GET /books/{id}"), index.index("DELETE /books/{id}"))
         self.assertNotIn("Empty", index)
 
+    def test_index_quick_start_calls_a_credentialed_get(self) -> None:
+        index = self.pages["README.md"]
+        start = index.index("## Quick start")
+        self.assertLess(start, index.index("## Authentication"))
+        section = index[start : index.index("## Authentication")]
+        self.assertIn("calls `GET /books/{id}` with the `token` credential", section)
+        self.assertIn("$ curl 'http://127.0.0.1:8787/books/<id>' \\\n    -H 'Authorization: Bearer <token>'", section)
+        self.assertIn("[`GET /books/{id}`](books.md#get-booksid) describes the response.", section)
+
+    def test_index_quick_start_prefers_the_status_route(self) -> None:
+        doc = json.loads(json.dumps(DOCUMENT))
+        doc["paths"]["/api/status"] = {"get": {"tags": ["books"], "summary": "Status.", "security": [{"token": []}], "responses": {"200": {"description": "OK"}}}}
+        index = om.Document(doc).render_all()["README.md"]
+        self.assertIn("calls `GET /api/status` with the `token` credential", index)
+
+    def test_index_without_a_credentialed_get_has_no_quick_start(self) -> None:
+        doc = json.loads(json.dumps(DOCUMENT))
+        for item in doc["paths"].values():
+            for op in item.values():
+                if isinstance(op, dict):
+                    op.pop("security", None)
+        self.assertNotIn("Quick start", om.Document(doc).render_all()["README.md"])
+
     def test_operation_sections(self) -> None:
         page = self.pages["books.md"]
         self.assertIn("## `GET /books/{id}`", page)
