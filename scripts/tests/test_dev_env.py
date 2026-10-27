@@ -148,6 +148,12 @@ class ProvisionScriptTests(unittest.TestCase):
         self.assertEqual({images["ghcr.io/astral-sh/uv"]}, set(uv))
         self.assertEqual({images["node"].split("-", 1)[0]}, set(node))
 
+    def test_session_setup_finds_node_and_uv_images(self) -> None:
+        """session-setup.sh copies Node.js and uv out of these two FROM lines."""
+        names = {_split_ref(ref)[0] for ref in _base_images(DEVCONTAINER_DOCKERFILE)}
+        self.assertIn("node", names)
+        self.assertIn("ghcr.io/astral-sh/uv", names)
+
     def test_dockerfile_installs_through_provision_script(self) -> None:
         """The Dev Container Dockerfile delegates every package install."""
         dockerfile = DEVCONTAINER_DOCKERFILE.read_text(encoding="utf-8")
