@@ -9,7 +9,7 @@
   "scripts": {
     "build": "node build.ts",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.worker.json",
-    "test": "node --test build.test.ts diagram.test.ts docs.test.ts fuzz.test.ts worker.test.ts",
+    "test": "node --test api-reference.test.ts build.test.ts diagram.test.ts docs.test.ts fuzz.test.ts worker.test.ts",
     "deploy": "wrangler deploy",
     "dev": "node build.ts && wrangler dev"
   },

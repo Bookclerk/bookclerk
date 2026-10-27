@@ -157,6 +157,45 @@ class RenderTest(unittest.TestCase):
         self.assertIn("| 201 | Added. | binary (`image/png`) |", page)
         self.assertNotIn("Optional.", page.split("## `POST /books`")[1])
 
+    def test_example_request(self) -> None:
+        get = self.pages["books.md"].split("## `GET /books/{id}`")[1].split("\n## ")[0]
+        self.assertIn(
+            "### Example request\n\n```console\n$ curl 'http://127.0.0.1:8787/books/<id>' \\\n    -H 'Authorization: Bearer <token>'\n```",
+            get,
+        )
+        post = self.pages["books.md"].split("## `POST /books`")[1]
+        self.assertIn("    -X POST \\\n    -H 'Content-Type: application/json' \\\n    -d '{\n  \"title\": \"string\",", post)
+        # An open route sends no credential.
+        shelf = self.pages["books.md"].split("## `GET /shelves/{shelf}`")[1]
+        self.assertIn("$ curl 'http://127.0.0.1:8787/shelves/<shelf>'\n```", shelf)
+
+    def test_example_response(self) -> None:
+        get = self.pages["books.md"].split("## `GET /books/{id}`")[1].split("## `DELETE")[0]
+        self.assertIn("### Example response\n\nStatus `200`:\n\n```json\n", get)
+        body = json.loads(get.split("```json\n")[1].split("\n```")[0])
+        self.assertEqual(body, {"id": 0, "status": "new", "tags": ["string"], "extra": {"key": "new"}, "count": 0})
+        # Untyped and binary bodies get no example.
+        self.assertNotIn("Example response", self.pages["other.md"])
+        self.assertNotIn("Example response", self.pages["books.md"].split("## `POST /books`")[1])
+
+    def test_examples_follow_references_and_stop_at_cycles(self) -> None:
+        doc = om.Document(
+            {
+                **DOCUMENT,
+                "components": {
+                    "schemas": {
+                        "Node": {"type": "object", "properties": {"next": {"oneOf": [{"$ref": "#/components/schemas/Node"}, {"type": "null"}]}, "at": {"type": "string", "format": "date-time"}}}
+                    }
+                },
+            }
+        )
+        self.assertEqual(doc.example({"$ref": "#/components/schemas/Node"}), {"next": {}, "at": "2026-01-01T12:00:00Z"})
+        self.assertIs(doc.example({}), om.NO_EXAMPLE)
+        self.assertEqual(doc.example({"type": "string", "example": "x", "enum": ["y"]}), "x")
+
+    def test_shell_quote(self) -> None:
+        self.assertEqual(om.shell_quote("it's"), "'it'\\''s'")
+
     def test_unknown_schemas_are_any_json(self) -> None:
         self.assertIn("any JSON (`application/json`)", self.pages["other.md"])
 

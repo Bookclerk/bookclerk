@@ -15,6 +15,8 @@
 import MarkdownIt from "markdown-it";
 import type { MarkdownIt as Markdown, RendererRule, Token } from "markdown-it";
 
+import { isApiOperationsPage, layoutOperations, methodClass, operationMeta } from "./api-reference.ts";
+import type { HttpMethod } from "./api-reference.ts";
 import { diagram, drawable, PAGE_DIAGRAM_COUNT_MAX, PAGE_DIAGRAM_MAX } from "./diagram.ts";
 import { highlight } from "./highlight.ts";
 import { formatDate } from "./last-updated.ts";
@@ -54,6 +56,8 @@ export interface DocHeading {
   id: string;
   /** Its plain text. */
   text: string;
+  /** For a Web API operation heading: its method (the text is its path). */
+  method?: HttpMethod;
 }
 
 /** A rendered doc: what the build and the Worker take from one Markdown file. */
@@ -128,7 +132,7 @@ export const NAV: NavSpec[] = [
   },
   {
     title: "API reference",
-    pages: ["api/README", "api/typescript/README", "api/python/README", "api/rust/bookclerk_plugin_sdk/index", "api/rust/README"],
+    pages: ["api/README", "api/typescript/README", "api/python/README", "api/rust/bookclerk_plugin_sdk/index", "api/web/README", "api/rust/README"],
   },
   {
     title: "How it works",
@@ -172,6 +176,7 @@ export const GENERATED_TITLES: Readonly<Record<string, string>> = {
   "api/typescript/README": "TypeScript plugin SDK",
   "api/python/README": "Python plugin SDK",
   "api/rust/bookclerk_plugin_sdk/index": "Rust plugin SDK",
+  "api/web/README": "Web API",
   "api/rust/README": "Rust crates",
 };
 
@@ -322,6 +327,11 @@ function renderer(docKey: string, keys: ReadonlySet<string> | null, blobBase: st
     });
   });
   md.core.ruler.after("block", "callouts", (state) => markCallouts(state.tokens));
+  if (isApiOperationsPage(docKey)) {
+    md.core.ruler.after("heading_ids", "api_operations", (state) => {
+      state.tokens = layoutOperations(state.tokens, (type, tag, nesting) => new state.Token(type, tag, nesting));
+    });
+  }
   for (const rule of ["blockquote_open", "blockquote_close"] as const) {
     const base: RendererRule = md.renderer.rules[rule] ?? ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
     md.renderer.rules[rule] = (tokens, idx, options, env, self) => {
@@ -626,9 +636,16 @@ export function renderDoc(
 ): RenderedDoc {
   const md = renderer(key, keys, blobBase, (k) => docUrl(k, base));
   const tokens = md.parse(source, {});
+  // A Web API page lists its operations only; their subsections
+  // (Parameters, Responses, …) repeat on every one.
+  const operationsOnly = isApiOperationsPage(key);
   const headings = tokens.flatMap((t, i): DocHeading[] => {
     if (t.type !== "heading_open" || (t.tag !== "h2" && t.tag !== "h3")) return [];
-    return [{ level: t.tag === "h2" ? 2 : 3, id: String(t.attrGet("id") ?? ""), text: inlineText(tokens[i + 1]) }];
+    const id = String(t.attrGet("id") ?? "");
+    const op = operationMeta(t);
+    if (op !== null) return [{ level: 2, id, text: op.path, method: op.method }];
+    if (operationsOnly && t.tag === "h3") return [];
+    return [{ level: t.tag === "h2" ? 2 : 3, id, text: inlineText(tokens[i + 1]) }];
   });
   return {
     title: docTitle(source, key),
@@ -728,19 +745,51 @@ export function buildNav(titles: ReadonlyMap<string, string>): NavGroup[] {
  * @param base - URL prefix of the docs version, ending in `/`.
  * @returns One heading and list per group.
  */
-export function navHtml(nav: readonly NavGroup[], current: string, base: string): string {
+export function navHtml(nav: readonly NavGroup[], current: string, base: string, nested: NavNested | null = null): string {
   return nav
     .map((group) => {
       const links = group.pages
         .map((p) => {
           const mark = p.key === current ? ' aria-current="page"' : "";
-          return `<li><a href="${escapeHtml(docUrl(p.key, base))}"${mark}>${escapeHtml(p.title)}</a></li>`;
+          const inner = nested !== null && nested.under === p.key ? nested.html : "";
+          return `<li><a href="${escapeHtml(docUrl(p.key, base))}"${mark}>${escapeHtml(p.title)}</a>${inner}</li>`;
         })
         .join("");
-      const open = group.pages.some((p) => p.key === current) ? " open" : "";
+      const open = group.pages.some((p) => p.key === current || p.key === nested?.under) ? " open" : "";
       return `<details class="nav-group"${open}><summary>${escapeHtml(group.title)}</summary><ul>${links}</ul></details>`;
     })
     .join("\n");
+}
+
+/** A list the sidebar shows under one of its pages. */
+export interface NavNested {
+  /** Key of the sidebar page the list goes under. */
+  under: string;
+  /** The list's HTML. */
+  html: string;
+}
+
+/**
+ * The sidebar list for a Web API page: the page itself, marked current,
+ * with its operations under it, shown beneath the Web API entry.
+ *
+ * @param key - The page's key.
+ * @param title - Its title.
+ * @param headings - Its headings (see renderDoc).
+ * @param base - URL prefix of the docs version.
+ * @returns The list, or null for a page that is not a Web API operations page.
+ */
+export function apiNavNested(key: string, title: string, headings: readonly DocHeading[], base: string): NavNested | null {
+  if (!isApiOperationsPage(key)) return null;
+  const ops = headings
+    .filter((h) => h.method !== undefined)
+    .map((h) => `<li><a class="nav-op" href="#${escapeHtml(h.id)}">${headingLabel(h)}</a></li>`)
+    .join("");
+  const list = ops === "" ? "" : `<ul class="nav-ops">${ops}</ul>`;
+  return {
+    under: "api/web/README",
+    html: `<ul class="nav-sub"><li><a href="${escapeHtml(docUrl(key, base))}" aria-current="page">${escapeHtml(title)}</a>${list}</li></ul>`,
+  };
 }
 
 /** Where a doc sits in the sidebar. */
@@ -811,8 +860,20 @@ export function pagerHtml(place: NavPlace, base: string): string {
  */
 export function tocListHtml(headings: readonly DocHeading[]): string {
   if (headings.length === 0) return "";
-  const items = headings.map((h) => `<li${h.level === 3 ? ' class="sub"' : ""}><a href="#${escapeHtml(h.id)}">${escapeHtml(h.text)}</a></li>`);
+  const items = headings.map((h) => `<li${h.level === 3 ? ' class="sub"' : ""}><a href="#${escapeHtml(h.id)}">${headingLabel(h)}</a></li>`);
   return `<ul>${items.join("")}</ul>`;
+}
+
+/**
+ * A heading's link text: a Web API operation as a method badge and its
+ * path, anything else as its text.
+ *
+ * @param heading - The heading.
+ * @returns HTML.
+ */
+function headingLabel(heading: DocHeading): string {
+  if (heading.method === undefined) return escapeHtml(heading.text);
+  return `<span class="${methodClass(heading.method)}">${heading.method}</span> <code>${escapeHtml(heading.text)}</code>`;
 }
 
 /**
@@ -989,7 +1050,7 @@ export function renderDocPage(
   const meta = `<p class="doc-meta">${note}${updated}<a href="${escapeHtml(markdownUrl)}" type="text/markdown">View as Markdown</a></p>`;
   const place = navPlace(shell.nav, key);
   const versions = versionsHtml(shell.versions, at.ref, key);
-  const nav = homeLink(at.base, key === "README") + navHtml(shell.nav, key, at.base);
+  const nav = homeLink(at.base, key === "README") + navHtml(shell.nav, key, at.base, apiNavNested(key, doc.title, doc.headings, at.base));
   const html = fillShell(
     shell.html,
     {
