@@ -1126,7 +1126,8 @@ pub(crate) fn documented_groups() -> Vec<DocumentedGroup> {
     ));
     out.push(DocumentedGroup::new(
         OpenApiRouter::<Arc<utoipa::openapi::OpenApi>>::new()
-            .routes(routes!(crate::openapi::get_openapi)),
+            .routes(routes!(crate::openapi::get_openapi))
+            .routes(routes!(crate::openapi::get_openapi_v30)),
         Access::Public,
     ));
     out.push(DocumentedGroup::new(portal_spa_routes(), Access::Public).nested("/api/portal"));
@@ -1157,6 +1158,7 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     app = app.merge(
         OpenApiRouter::new()
             .routes(routes!(crate::openapi::get_openapi))
+            .routes(routes!(crate::openapi::get_openapi_v30))
             .with_state(openapi_doc)
             .split_for_parts()
             .0,

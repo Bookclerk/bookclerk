@@ -82,9 +82,22 @@ struct Args {
     listen: Option<String>,
 
     /// Print the HTTP API's OpenAPI document (JSON) to stdout and exit,
-    /// without reading any configuration.
-    #[arg(long)]
-    print_openapi: bool,
+    /// without reading any configuration. `3.1` (the default) is the
+    /// document the daemon serves at `/api/openapi.json`; `3.0` is the same
+    /// API restated for tools that only read OpenAPI 3.0.
+    #[arg(long, value_name = "VERSION", num_args = 0..=1, default_missing_value = "3.1")]
+    print_openapi: Option<OpenApiVersion>,
+}
+
+/// Which OpenAPI version `--print-openapi` writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum OpenApiVersion {
+    /// OpenAPI 3.1, the document the daemon serves at `/api/openapi.json`.
+    #[value(name = "3.1")]
+    V31,
+    /// OpenAPI 3.0.3, served at `/api/openapi-3.0.json`.
+    #[value(name = "3.0")]
+    V30,
 }
 
 /// How many more times the first start after a clerk join tries the
@@ -94,8 +107,12 @@ const CLERK_JOIN_OPEN_RETRIES: u32 = 3;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    if args.print_openapi {
-        print!("{}", openapi::document_json()?);
+    if let Some(version) = args.print_openapi {
+        let text = match version {
+            OpenApiVersion::V31 => openapi::document_json()?,
+            OpenApiVersion::V30 => openapi::document_v30_json()?,
+        };
+        print!("{text}");
         return Ok(());
     }
     let mut config = Config::load(args.bookclerk_files, args.config)?;

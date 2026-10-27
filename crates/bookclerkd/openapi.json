@@ -14114,6 +14114,48 @@
         "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
+    "/api/openapi-3.0.json": {
+      "get": {
+        "tags": [
+          "Spec"
+        ],
+        "summary": "Serves the document restated as OpenAPI 3.0.3, for tools that only read\n3.0 (Cloudflare API Shield's schema validation, older generators).",
+        "description": "The same API as `GET /api/openapi.json`, restated in OpenAPI 3.0.3 form: nullable types use `nullable: true` and keywords 3.0 lacks are restated or dropped. Upload this one where a tool only accepts OpenAPI 3.0.",
+        "operationId": "get_openapi_v30",
+        "responses": {
+          "200": {
+            "description": "The OpenAPI 3.0.3 document for this daemon's version.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "500": {
+            "description": "The document could not be restated; this is a bug.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      }
+    },
     "/api/portal/redeem": {
       "post": {
         "tags": [

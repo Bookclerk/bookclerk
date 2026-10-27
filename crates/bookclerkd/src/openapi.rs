@@ -10,6 +10,11 @@
 //! Routes registered with a plain `.route(…)` (the SPA documents, the
 //! static assets, the invite page) are left out of the document on purpose;
 //! the `only_listed_routes_bypass_the_spec` test keeps that list closed.
+//!
+//! The document is OpenAPI 3.1. [`v30`] restates it as OpenAPI 3.0.3 for
+//! tools that only read 3.0, served at [`v30::OPENAPI_V30_PATH`].
+
+pub mod v30;
 
 use std::sync::Arc;
 
@@ -187,6 +192,7 @@ fn security_schemes() -> [(&'static str, SecurityScheme); 6] {
 const TAGS: &[(&str, &str, &str)] = &[
     ("Health", "/health", "Liveness."),
     ("Spec", OPENAPI_PATH, "This document."),
+    ("Spec", v30::OPENAPI_V30_PATH, "This document."),
     ("Auth", "/api/auth", "Sign-in, sessions, passkeys, TOTP and the operator's elevation."),
     ("Users", "/api/users", "Library users and their claim tickets."),
     ("Library", "/api/library", "Books in the library, scans and acquires."),
@@ -698,6 +704,40 @@ pub async fn get_openapi(
     Json(doc)
 }
 
+/// Serves the document restated as OpenAPI 3.0.3, for tools that only read
+/// 3.0 (Cloudflare API Shield's schema validation, older generators).
+#[utoipa::path(
+    get,
+    path = "/api/openapi-3.0.json",
+    description = "The same API as `GET /api/openapi.json`, restated in OpenAPI 3.0.3 form: \
+                   nullable types use `nullable: true` and keywords 3.0 lacks are restated or \
+                   dropped. Upload this one where a tool only accepts OpenAPI 3.0.",
+    responses(
+        (status = 200, description = "The OpenAPI 3.0.3 document for this daemon's version.", content_type = "application/json"),
+        (status = 500, description = "The document could not be restated; this is a bug."),
+    ),
+)]
+pub async fn get_openapi_v30(
+    axum::extract::State(doc): axum::extract::State<Arc<OpenApi>>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    static DOCUMENT: std::sync::OnceLock<Result<Arc<serde_json::Value>, String>> =
+        std::sync::OnceLock::new();
+    let translated = DOCUMENT.get_or_init(|| {
+        let value = serde_json::to_value(&*doc).map_err(|err| err.to_string())?;
+        v30::downgrade(&value)
+            .map(Arc::new)
+            .map_err(|err| err.to_string())
+    });
+    match translated {
+        Ok(value) => Json(value.clone()).into_response(),
+        Err(err) => {
+            tracing::error!(error = %err, "the OpenAPI 3.0 document could not be built");
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
 /// The document as pretty JSON, as `bookclerkd --print-openapi` prints it
 /// and `crates/bookclerkd/openapi.json` holds it.
 ///
@@ -713,6 +753,26 @@ pub fn document_json() -> serde_json::Result<String> {
         s.push('\n');
         s
     })
+}
+
+/// The document restated as OpenAPI 3.0.3, as pretty JSON: what
+/// `bookclerkd --print-openapi 3.0` prints and
+/// `crates/bookclerkd/openapi-3.0.json` holds.
+///
+/// # Returns
+///
+/// The JSON text with a trailing newline.
+///
+/// # Errors
+///
+/// Fails when the document uses an OpenAPI 3.1 form [`v30::downgrade`] has
+/// no 3.0 equivalent for, or cannot be serialized; either is a bug the
+/// tests catch.
+pub fn document_v30_json() -> anyhow::Result<String> {
+    let value = serde_json::to_value(document())?;
+    let mut text = serde_json::to_string_pretty(&v30::downgrade(&value)?)?;
+    text.push('\n');
+    Ok(text)
 }
 
 #[cfg(test)]
@@ -794,6 +854,120 @@ mod tests {
              `cargo run -p bookclerkd -- --print-openapi > crates/bookclerkd/openapi.json`",
             path.display()
         );
+    }
+
+    /// `crates/bookclerkd/openapi-3.0.json` matches the code too.
+    #[test]
+    fn the_committed_v30_document_is_current() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("openapi-3.0.json");
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        let current = document_v30_json().expect("the document restates as 3.0");
+        let without_version = |text: &str| {
+            let mut value: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+            if let Some(info) = value.get_mut("info").and_then(|i| i.as_object_mut()) {
+                info.remove("version");
+            }
+            value
+        };
+        assert!(
+            without_version(&committed) == without_version(&current),
+            "{} is stale; regenerate it with \
+             `cargo run -p bookclerkd -- --print-openapi 3.0 > crates/bookclerkd/openapi-3.0.json`",
+            path.display()
+        );
+    }
+
+    /// The 3.0 document holds no OpenAPI 3.1-only form anywhere, checked
+    /// by walking the whole JSON rather than by the translation's own rules,
+    /// and it describes the same operations and schemas as the 3.1 one.
+    #[test]
+    fn the_v30_document_is_openapi_3_0() {
+        /// Keywords that only exist in OpenAPI 3.1 / JSON Schema 2020-12.
+        const ONLY_3_1: &[&str] = &[
+            "const",
+            "examples",
+            "prefixItems",
+            "propertyNames",
+            "contentMediaType",
+            "contentEncoding",
+            "$schema",
+            "$id",
+            "$defs",
+            "if",
+            "then",
+            "else",
+            "dependentRequired",
+            "dependentSchemas",
+            "unevaluatedProperties",
+            "unevaluatedItems",
+            "patternProperties",
+            "webhooks",
+            "jsonSchemaDialect",
+        ];
+        const TYPES: &[&str] = &["string", "number", "integer", "boolean", "array", "object"];
+        fn check(value: &serde_json::Value, at: &str, problems: &mut Vec<String>) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    if map.contains_key("$ref") && map.len() > 1 {
+                        problems.push(format!("{at}: `$ref` with siblings"));
+                    }
+                    for (key, inner) in map {
+                        let here = format!("{at}/{key}");
+                        // `properties` maps and examples hold names and data, not keywords.
+                        let names_or_data = at.ends_with("/properties")
+                            || at.ends_with("/schemas")
+                            || key == "example";
+                        if !names_or_data {
+                            if ONLY_3_1.contains(&key.as_str()) {
+                                problems.push(format!("{here}: 3.1-only keyword"));
+                            }
+                            if key == "type" {
+                                match inner.as_str() {
+                                    Some(t) if TYPES.contains(&t) => {}
+                                    _ => problems.push(format!("{here}: not a 3.0 type")),
+                                }
+                            }
+                            if key == "nullable" && !inner.is_boolean() {
+                                problems.push(format!("{here}: not a boolean"));
+                            }
+                        }
+                        // Security schemes have a `type` of their own (`http`, `apiKey`).
+                        if key != "example" && key != "securitySchemes" {
+                            check(inner, &here, problems);
+                        }
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for (i, item) in items.iter().enumerate() {
+                        check(item, &format!("{at}/{i}"), problems);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let v31 = document_value();
+        let v30: serde_json::Value =
+            serde_json::from_str(&document_v30_json().expect("restates")).expect("JSON");
+        assert_eq!(v30["openapi"], "3.0.3");
+        let mut problems = Vec::new();
+        check(&v30, "", &mut problems);
+        assert!(problems.is_empty(), "{problems:#?}");
+        let ids = |doc: &serde_json::Value| {
+            operations(doc)
+                .into_iter()
+                .map(|(m, p, op)| (m, p, op["operationId"].clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&v30), ids(&v31));
+        let names = |doc: &serde_json::Value| {
+            doc["components"]["schemas"]
+                .as_object()
+                .expect("schemas")
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&v30), names(&v31));
     }
 
     /// A route without an auth layer that refuses callers who are not signed
@@ -1151,6 +1325,7 @@ mod tests {
         let (_state, app, _library) =
             crate::auth::tests::phase2_harness_unseeded("op-token-openapi").await;
         let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri(OPENAPI_PATH)
@@ -1168,5 +1343,26 @@ mod tests {
             .to_bytes();
         let served: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
         assert_eq!(served, document_value());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(v30::OPENAPI_V30_PATH)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        let served: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
+        let expected: serde_json::Value =
+            serde_json::from_str(&document_v30_json().expect("restates")).expect("JSON");
+        assert_eq!(served, expected);
     }
 }
