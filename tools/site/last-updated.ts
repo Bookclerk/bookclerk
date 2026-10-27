@@ -59,6 +59,61 @@ export function parseIsoDate(text: string): IsoDate | null {
  * @returns The date, or null.
  */
 export function pageDate(json: string, key: string): IsoDate | null {
+  const pages = readPages(json);
+  if (pages === null || !Object.hasOwn(pages, key)) return null;
+  const date = pages[key];
+  return typeof date === "string" ? parseIsoDate(date) : null;
+}
+
+/** One page last-updated.json lists, as the sitemap needs it. */
+export interface DatedPage {
+  /** The page's doc key (`guide/getting-started`), made of plain path segments. */
+  key: string;
+  /** When the page last changed. */
+  date: IsoDate;
+}
+
+/**
+ * A doc key the sitemap may turn into a URL: path segments of letters,
+ * digits, `.`, `_` and `-`, none empty or starting with `.`. The Worker
+ * further keeps only keys its docs route serves at that URL.
+ */
+const DOC_KEY_RE = /^(?:[A-Za-z0-9_-][A-Za-z0-9._-]*\/)*[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
+
+/** Longest doc key the sitemap lists, in characters; real keys stay under 150. */
+export const MAX_DOC_KEY_LENGTH = 512;
+
+/**
+ * Lists every page last-updated.json dates, for the sitemap.
+ *
+ * Entries whose key is not a plain docs path (see DOC_KEY_RE) or longer
+ * than MAX_DOC_KEY_LENGTH, or whose value is not a real date, are left out;
+ * the rest come in JSON object order (integer-like keys first, then the
+ * file's order).
+ *
+ * @param json - The file's text.
+ * @returns The pages, or null when the document is not a version 1
+ *   last-updated.json (bad JSON, another version, no `pages` object).
+ */
+export function datedPages(json: string): DatedPage[] | null {
+  const pages = readPages(json);
+  if (pages === null) return null;
+  const out: DatedPage[] = [];
+  for (const [key, value] of Object.entries(pages)) {
+    if (key.length > MAX_DOC_KEY_LENGTH || !DOC_KEY_RE.test(key) || typeof value !== "string") continue;
+    const date = parseIsoDate(value);
+    if (date !== null) out.push({ key, date });
+  }
+  return out;
+}
+
+/**
+ * Reads the `pages` object of a version 1 last-updated.json.
+ *
+ * @param json - The file's text.
+ * @returns The object, or null when the text is not such a document.
+ */
+function readPages(json: string): Record<string, unknown> | null {
   let document: unknown;
   try {
     document = JSON.parse(json);
@@ -67,9 +122,7 @@ export function pageDate(json: string, key: string): IsoDate | null {
   }
   if (!isRecord(document) || document["version"] !== LAST_UPDATED_VERSION) return null;
   const pages = document["pages"];
-  if (!isRecord(pages) || !Object.hasOwn(pages, key)) return null;
-  const date = pages[key];
-  return typeof date === "string" ? parseIsoDate(date) : null;
+  return isRecord(pages) ? pages : null;
 }
 
 /**

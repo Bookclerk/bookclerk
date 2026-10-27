@@ -19,6 +19,15 @@
 // page's "Last updated" date; when that file cannot be read the page simply
 // has no date.
 //
+// Sitemap: /sitemap.xml is a sitemap index with one sitemap per section:
+// /sitemap-site.xml for the pages outside /docs/ and the docs home, and one per top docs
+// folder (/sitemap-guide.xml, /sitemap-api.xml). Together they list every
+// page of the default docs version, from that version's last-updated.json
+// (which names each page, the generated API reference included), with each
+// page's date as `<lastmod>`. They are cached at the edge like the version's
+// pages. When the file cannot be read /sitemap.xml is the flat sitemap
+// build.ts wrote (the pages and the sidebar's docs, no dates), for a minute.
+//
 // Content negotiation: when the Accept header ranks `text/markdown` (or
 // `text/x-markdown`) at least as high as HTML, `/`, `/download`, `/privacy`, `/security` and
 // `/docs/<path>` return their Markdown version instead, with
@@ -40,9 +49,12 @@
 // Accept-Encoding headers (and conditional headers it passes on), and
 // fetches only from its own assets and the docs repository.
 
-import { LAST_UPDATED_FILE, MAX_LAST_UPDATED_BYTES, pageDate } from "./last-updated.ts";
-import { docMarkdownUrl, docUrl, renderDocPage, renderUnavailablePage } from "./render.ts";
-import type { DocsShell, DocsVersion } from "./render.ts";
+import { datedPages, LAST_UPDATED_FILE, MAX_LAST_UPDATED_BYTES, pageDate } from "./last-updated.ts";
+import type { IsoDate } from "./last-updated.ts";
+import { docMarkdownUrl, docUrl, renderDocPage, renderSitemapPage, renderUnavailablePage } from "./render.ts";
+import type { DocsShell, DocsVersion, SitemapPageLink } from "./render.ts";
+import { MAX_SITEMAP_URLS, sitemapIndexXml, sitemapXml } from "./sitemap.ts";
+import type { SitemapEntry } from "./sitemap.ts";
 
 /** The static assets binding, or a stand-in in tests. */
 export interface Assets {
@@ -137,6 +149,15 @@ const CONDITIONAL_HEADERS = ["If-None-Match", "If-Modified-Since"];
 
 /** Markdown version of the not-found page. */
 const NOT_FOUND_MARKDOWN = "/404.md";
+
+/** The sitemap's path, which robots.txt names. */
+const SITEMAP_PATH = "/sitemap.xml";
+
+/** The human-readable sitemap page; its Markdown version adds `.md`. */
+const SITEMAP_PAGE_PATH = "/sitemap";
+
+/** Content type of the sitemap. */
+const XML_CONTENT_TYPE = "application/xml; charset=utf-8";
 
 /** A docs path inside a version: segments of letters, digits, `.`, `_` and `-`, none starting with `.`. */
 const DOC_REST_RE = /^(?:[A-Za-z0-9_-][A-Za-z0-9._-]*\/)*(?:[A-Za-z0-9_-][A-Za-z0-9._-]*)?$/;
@@ -596,6 +617,213 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
   return request.method === "HEAD" ? new Response(null, response) : response;
 }
 
+/**
+ * Sitemap sections, as `/sitemap-<name>.xml`. They sit at the site root
+ * because a sitemap may only list URLs under its own directory
+ * (https://www.sitemaps.org/protocol.html#location).
+ */
+const SECTION_PATH_RE = /^\/sitemap-([a-z0-9][a-z0-9-]*)\.xml$/;
+
+/** A docs folder name that can be a section name as it is. */
+const SECTION_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
+
+/** The section holding the pages outside /docs/. */
+const SITE_SECTION = "site";
+
+/** The section holding docs in folders whose name cannot be a section name. */
+const DOCS_SECTION = "docs";
+
+/**
+ * Names the sitemap section a doc belongs to: its top folder (`guide`,
+ * `server`, `api`), so Search Console reports indexing per shelf. Docs at
+ * the top of a version (the docs home) join the site's pages.
+ *
+ * @param key - The doc's key.
+ * @returns The section name, made of lowercase letters, digits and `-`.
+ */
+export function sitemapSection(key: string): string {
+  const slash = key.indexOf("/");
+  if (slash === -1) return SITE_SECTION;
+  const top = key.slice(0, slash);
+  return SECTION_NAME_RE.test(top) && top !== SITE_SECTION ? top : DOCS_SECTION;
+}
+
+/**
+ * Serves /sitemap.xml and its sections.
+ *
+ * `/sitemap.xml` is a sitemap index naming one sitemap per section:
+ * `/sitemap-site.xml` for the pages outside /docs/ and the docs home, then one per top docs
+ * folder of the default version (`/sitemap-guide.xml`, `/sitemap-api.xml`),
+ * each with the newest date of its pages. The sections list every page that
+ * version's last-updated.json dates and the docs route serves at its URL,
+ * with its date.
+ *
+ * @param request - The incoming GET or HEAD request.
+ * @param url - Its URL: `/sitemap.xml` or `/sitemap-<name>.xml`.
+ * @param deps - The shell, assets and fetcher.
+ * @returns The index or section. When the dates file is missing, cannot be
+ *   read or lists no page the docs route serves, `/sitemap.xml` is the flat
+ *   sitemap build.ts wrote and sections are 503 (a failed read) or 404.
+ */
+async function serveSitemap(request: Request, url: URL, deps: DocsDeps): Promise<Response> {
+  const isIndex = url.pathname === SITEMAP_PATH;
+  const [version] = deps.shell.versions;
+  if (version === undefined) return isIndex ? fallbackSitemap(request, url, deps.assets, MISSING_TTL) : notFound(url, request.method, false, deps.assets);
+  const cacheKey = new Request(`${url.origin}${url.pathname}?ref=${encodeURIComponent(version.ref)}&shell=${encodeURIComponent(deps.shell.id)}`);
+  if (deps.cache) {
+    const hit = await deps.cache.match(cacheKey);
+    if (hit) return request.method === "HEAD" ? new Response(null, hit) : hit;
+  }
+  const { file, docs: listed } = await listDocs(version, deps);
+  const sections = new Map<string, SitemapEntry[]>([[SITE_SECTION, siteSitemapPages(deps.shell).map((path) => ({ path, lastmod: null }))]]);
+  const docs = listed.length;
+  for (const { key, path, date } of listed) {
+    const name = sitemapSection(key);
+    const section = sections.get(name) ?? [];
+    if (section.length === 0) sections.set(name, section);
+    section.push({ path, lastmod: date });
+  }
+
+  let response: Response;
+  const cached = `public, max-age=${BROWSER_TTL}, s-maxage=${ttlFor(version.ref)}`;
+  if (docs === 0) {
+    // A tag published without the file never gets one, so its fallback
+    // keeps like its pages; a failed or empty read is retried in a minute.
+    if (!isIndex) {
+      if (file.kind === "missing") return notFound(url, request.method, false, deps.assets);
+      return withHeaders(new Response(null), { "Retry-After": "60", "Cache-Control": "no-store" }, 503);
+    }
+    const ttl = file.kind === "missing" ? ttlFor(version.ref) : MISSING_TTL;
+    response = await fallbackSitemap(request, url, deps.assets, ttl);
+    if (file.kind !== "missing" || !response.ok) return response;
+  } else if (isIndex) {
+    const index = [...sections].map(([name, entries]) => ({
+      path: `/sitemap-${name}.xml`,
+      lastmod: entries.reduce<SitemapEntry["lastmod"]>((newest, e) => (e.lastmod !== null && (newest === null || e.lastmod > newest) ? e.lastmod : newest), null),
+    }));
+    response = withHeaders(new Response(sitemapIndexXml(deps.shell.origin, index)), { "Content-Type": XML_CONTENT_TYPE, "Cache-Control": cached });
+  } else {
+    const entries = sections.get(SECTION_PATH_RE.exec(url.pathname)?.[1] ?? "");
+    if (entries === undefined) return notFound(url, request.method, false, deps.assets);
+    if (entries.length > MAX_SITEMAP_URLS) console.error(`${url.pathname} lists the first ${MAX_SITEMAP_URLS} of ${entries.length} pages`);
+    response = withHeaders(new Response(sitemapXml(deps.shell.origin, entries)), { "Content-Type": XML_CONTENT_TYPE, "Cache-Control": cached });
+  }
+  if (deps.cache && request.method === "GET") deps.waitUntil(deps.cache.put(cacheKey, response.clone()));
+  return request.method === "HEAD" ? new Response(null, response) : response;
+}
+
+/** A doc of the default version that the sitemaps list. */
+interface ListedDoc {
+  /** Its key. */
+  key: string;
+  /** Its URL path. */
+  path: string;
+  /** When it last changed. */
+  date: IsoDate;
+}
+
+/**
+ * Lists the docs of a version that its last-updated.json dates and that the
+ * docs route serves at their URL as themselves (not a `v/…` path, a
+ * Markdown copy or another spelling that redirects).
+ *
+ * @param version - The docs version.
+ * @param deps - The shell and fetcher.
+ * @returns What reading the dates file gave, and the docs in its order.
+ */
+async function listDocs(version: DocsVersion, deps: DocsDeps): Promise<{ file: DatesFile; docs: ListedDoc[] }> {
+  const file = await fetchLastUpdated(version.ref, deps.fetch);
+  const docs: ListedDoc[] = [];
+  for (const { key, date } of file.kind === "file" ? (datedPages(file.text) ?? []) : []) {
+    const path = docUrl(key, version.base);
+    const target = docsTarget(path, deps.shell.versions);
+    if (target.kind === "page" && target.version === version && target.keys[0] === key) docs.push({ key, path, date });
+  }
+  return { file, docs };
+}
+
+/**
+ * The pages outside /docs/ that the sitemaps list: build.ts's indexable
+ * pages and the human-readable sitemap.
+ *
+ * @param shell - The baked page shell.
+ * @returns Their URL paths.
+ */
+function siteSitemapPages(shell: DocsShell): string[] {
+  return [...shell.pages, SITEMAP_PAGE_PATH];
+}
+
+/**
+ * Serves /sitemap (and /sitemap.md): every page the site serves, grouped
+ * like the docs sidebar, for people. It lists the same docs as the
+ * sitemaps with their dates; when the dates file cannot be read it lists the
+ * sidebar's docs without dates, for a minute.
+ *
+ * @param request - The incoming GET or HEAD request.
+ * @param url - Its URL.
+ * @param deps - The shell, assets and fetcher.
+ * @param markdown - Whether to answer with the Markdown version.
+ * @returns The page.
+ */
+async function serveSitemapPage(request: Request, url: URL, deps: DocsDeps, markdown: boolean): Promise<Response> {
+  const [version] = deps.shell.versions;
+  if (version === undefined) return notFound(url, request.method, markdown, deps.assets);
+  const format = markdown ? "md" : "html";
+  const cacheKey = new Request(`${url.origin}${SITEMAP_PAGE_PATH}?format=${format}&ref=${encodeURIComponent(version.ref)}&shell=${encodeURIComponent(deps.shell.id)}`);
+  if (deps.cache) {
+    const hit = await deps.cache.match(cacheKey);
+    if (hit) return request.method === "HEAD" ? new Response(null, hit) : hit;
+  }
+  const { file, docs } = await listDocs(version, deps);
+  const titles = new Map(deps.shell.nav.flatMap((g) => g.pages.map((p) => [p.key, p.title] as const)));
+  const pageTitles = new Map(deps.shell.pages.map((path, i) => [path, deps.shell.pageTitles[i] ?? path] as const));
+  const links: SitemapPageLink[] = siteSitemapPages(deps.shell)
+    .filter((path) => path !== SITEMAP_PAGE_PATH)
+    .map((path) => ({ key: null, path, title: pageTitles.get(path) ?? path, updated: null }));
+  if (docs.length > 0) {
+    for (const d of docs) links.push({ key: d.key, path: d.path, title: titles.get(d.key) ?? null, updated: d.date });
+  } else {
+    links.push({ key: "README", path: version.base, title: null, updated: null });
+    for (const [key, title] of titles) links.push({ key, path: docUrl(key, version.base), title, updated: null });
+  }
+  const page = renderSitemapPage(deps.shell, links);
+  const cacheable = docs.length > 0 || file.kind === "missing";
+  const cacheControl = cacheable ? `public, max-age=${BROWSER_TTL}, s-maxage=${ttlFor(version.ref)}` : `public, max-age=${MISSING_TTL}, s-maxage=0`;
+  const response = markdown
+    ? withHeaders(new Response(page.markdown), {
+        "Cache-Control": cacheControl,
+        Vary: "Accept",
+        "Content-Type": MARKDOWN_CONTENT_TYPE,
+        Link: `<${url.origin}${SITEMAP_PAGE_PATH}>; rel="canonical"`,
+      })
+    : withHeaders(new Response(page.html), {
+        "Cache-Control": cacheControl,
+        Vary: "Accept",
+        "Content-Type": "text/html; charset=utf-8",
+        Link: `<${url.origin}${SITEMAP_PAGE_PATH}.md>; rel="alternate"; type="text/markdown"`,
+      });
+  if (deps.cache && cacheable && request.method === "GET") deps.waitUntil(deps.cache.put(cacheKey, response.clone()));
+  return request.method === "HEAD" ? new Response(null, response) : response;
+}
+
+/**
+ * Serves the sitemap build.ts wrote, which lists the pages and the
+ * sidebar's docs without dates.
+ *
+ * @param request - The incoming GET or HEAD request.
+ * @param url - Its URL.
+ * @param assets - The static assets.
+ * @param ttl - How long the edge may keep it, in seconds; browsers keep it
+ *   no longer than a minute.
+ * @returns The built sitemap, or the assets' answer unchanged when it is
+ *   not there.
+ */
+async function fallbackSitemap(request: Request, url: URL, assets: Assets, ttl: number): Promise<Response> {
+  const built = await assets.fetch(new URL(SITEMAP_PATH, url), { method: request.method });
+  if (!built.ok) return built;
+  return withHeaders(built, { "Content-Type": XML_CONTENT_TYPE, "Cache-Control": `public, max-age=${MISSING_TTL}, s-maxage=${ttl}` });
+}
+
 /** Everything the docs route needs besides the request. */
 interface DocsDeps {
   /** The baked page shell. */
@@ -722,15 +950,20 @@ export async function handle(request: Request, env: Env, docs: DocsOptions): Pro
 async function route(request: Request, env: Env, docs: DocsOptions): Promise<Response> {
   const url = new URL(request.url);
   const isRead = request.method === "GET" || request.method === "HEAD";
-  if (isRead && (url.pathname === "/docs" || url.pathname.startsWith("/docs/"))) {
-    return serveDocs(request, url, {
-      shell: docs.shell,
-      assets: env.ASSETS,
-      fetch: docs.fetch ?? fetch,
-      cache: docs.cache ?? null,
-      waitUntil: docs.waitUntil ?? (() => {}),
-    });
+  const deps: DocsDeps = {
+    shell: docs.shell,
+    assets: env.ASSETS,
+    fetch: docs.fetch ?? fetch,
+    cache: docs.cache ?? null,
+    waitUntil: docs.waitUntil ?? (() => {}),
+  };
+  if (isRead && (url.pathname === "/docs" || url.pathname.startsWith("/docs/"))) return serveDocs(request, url, deps);
+  if (isRead && (url.pathname === SITEMAP_PATH || SECTION_PATH_RE.test(url.pathname))) return serveSitemap(request, url, deps);
+  if (isRead && (url.pathname === SITEMAP_PAGE_PATH || url.pathname === `${SITEMAP_PAGE_PATH}/`)) {
+    if (url.pathname.endsWith("/")) return redirect(url, SITEMAP_PAGE_PATH);
+    return serveSitemapPage(request, url, deps, prefersMarkdown(request.headers.get("Accept")));
   }
+  if (isRead && url.pathname === `${SITEMAP_PAGE_PATH}.md`) return serveSitemapPage(request, url, deps, true);
   const md = isRead ? markdownPath(url.pathname) : null;
 
   if (md !== null && prefersMarkdown(request.headers.get("Accept"))) {

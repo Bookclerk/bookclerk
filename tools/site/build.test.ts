@@ -246,10 +246,12 @@ test("after a release the demo follows the download", () => {
 test("the build publishes pages, styles, headers and brand assets", () => {
   const site = built(PRE);
   try {
-    for (const name of ["index.html", "download.html", "privacy.html", "privacy.md", "security.html", "security.md", "404.html", "site.css", "_headers", "robots.txt", "sitemap.xml", "llms.txt", "llms-full.txt", "social-card.png", "favicon.ico", "bookclerk-mark.svg", "site.webmanifest"]) {
+    for (const name of ["index.html", "download.html", "privacy.html", "privacy.md", "security.html", "security.md", "404.html", "site.css", "sitemap.css", "_headers", "robots.txt", "sitemap.xml", "llms.txt", "llms-full.txt", "social-card.png", "favicon.ico", "bookclerk-mark.svg", "site.webmanifest"]) {
       assert.ok(site.files.includes(name), name);
     }
     assert.match(site.page("_headers"), /Content-Security-Policy: default-src 'none'/);
+    // The Worker renders /sitemap; only its shell is baked.
+    assert.ok(!site.files.includes("sitemap.html"));
   } finally {
     site.done();
   }

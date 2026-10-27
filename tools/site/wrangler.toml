@@ -8,8 +8,8 @@ compatibility_date = "2026-01-01"
 workers_dev = false
 
 # The Worker (entry.ts → worker.ts) runs first for page paths only: it
-# renders /docs/ from the docs repository and answers `Accept: text/markdown`
-# with each page's Markdown version. Everything else (styles, images, the .md
+# renders /docs/ from the docs repository, lists its pages in /sitemap.xml and
+# answers `Accept: text/markdown` with each page's Markdown version. Everything else (styles, images, the .md
 # and .txt files under other paths) is served from dist/ without it.
 # `npm run build` must run first: entry.ts imports generated/docs-shell.json.
 main = "entry.ts"
@@ -21,4 +21,4 @@ directory = "./dist"
 binding = "ASSETS"
 html_handling = "auto-trailing-slash"
 not_found_handling = "404-page"
-run_worker_first = ["/", "/index.html", "/index.md", "/download", "/download.html", "/download.md", "/privacy", "/privacy.html", "/privacy.md", "/security", "/security.html", "/security.md", "/404.md", "/docs", "/docs/*"]
+run_worker_first = ["/", "/index.html", "/index.md", "/download", "/download.html", "/download.md", "/privacy", "/privacy.html", "/privacy.md", "/security", "/security.html", "/security.md", "/404.md", "/sitemap", "/sitemap/", "/sitemap.md", "/sitemap.xml", "/sitemap-*", "/docs", "/docs/*"]
