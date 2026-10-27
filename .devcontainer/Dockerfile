@@ -1,6 +1,8 @@
 # Dev Container base image for Bookclerk.
 #
-# The Dev Container bind-mounts the repo (do not COPY sources). The images are
+# The Dev Container bind-mounts the repo, so do not COPY sources. The only
+# files taken from the build context are scripts/dev-env/provision.sh and
+# scripts/tests/requirements.txt (so .dockerignore must keep them). The images are
 # pinned by digest; Dependabot (docker ecosystem) bumps the FROM lines, the same
 # rust and node images as packaging/docker/Dockerfile so the two stay aligned.
 # Debian 13 (trixie) throughout, matching the production image.
@@ -37,7 +39,7 @@ COPY --from=uv /uv /uvx /usr/local/bin/
 COPY scripts/dev-env/provision.sh /tmp/bookclerk-dev/scripts/dev-env/provision.sh
 COPY scripts/tests/requirements.txt /tmp/bookclerk-dev/scripts/tests/requirements.txt
 RUN /tmp/bookclerk-dev/scripts/dev-env/provision.sh --repo /tmp/bookclerk-dev \
-    && rm -rf /tmp/bookclerk-dev
+    && rm -rf /tmp/bookclerk-dev /var/lib/apt/lists/* /usr/local/cargo/registry
 
 # Some non-login shells start with a minimal PATH that omits
 # /usr/local/cargo/bin. Symlink the toolchain into /usr/local/bin so
@@ -49,7 +51,12 @@ RUN for b in cargo rustc rustup rustfmt rustdoc cargo-clippy clippy-driver cargo
 # Create a non-root dev user. The Dev Containers `updateRemoteUserUID` setting
 # remaps this account to the host UID/GID at container create time (no
 # hardcoded host IDs).
-RUN groupadd --gid 1000 bookclerk \
+#
+# Login shells (`bash -l`, the postCreate command) reset PATH in /etc/profile,
+# so profile.d puts the script-test virtualenv and cargo back in front.
+RUN printf '%s\n' 'export PATH="/opt/bookclerk-dev/venv/bin:/usr/local/cargo/bin:$PATH"' \
+        > /etc/profile.d/bookclerk-dev.sh \
+    && groupadd --gid 1000 bookclerk \
     && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash bookclerk \
     && mkdir -p /home/bookclerk/.cargo/registry /home/bookclerk/.cargo/git \
     && chown -R bookclerk:bookclerk /home/bookclerk/.cargo

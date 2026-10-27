@@ -8,6 +8,11 @@
 # anything added here lands in the Dev Container; add new tools here rather
 # than in the Dockerfile.
 #
+# Meant for containers and disposable machines (the Dev Container image, a
+# cloud development session), not a personal workstation: it installs as root
+# into root's Rust toolchain. It deletes nothing; image builds clean their own
+# caches afterwards.
+#
 # Usage (as root, from anywhere):
 #   scripts/dev-env/provision.sh [--repo <checkout>]
 #
@@ -75,6 +80,11 @@ if ! command -v apt-get >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v rustup >/dev/null 2>&1 || ! command -v cargo >/dev/null 2>&1; then
+  log "rustup and cargo not found on PATH; install Rust first (https://rustup.rs)"
+  exit 1
+fi
+
 requirements="${repo}/scripts/tests/requirements.txt"
 if [[ ! -f "${requirements}" ]]; then
   log "missing ${requirements}; pass --repo <checkout>"
@@ -85,17 +95,11 @@ log "system packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends "${APT_PACKAGES[@]}"
-rm -rf /var/lib/apt/lists/*
 
-if command -v rustup >/dev/null 2>&1; then
-  # rust-toolchain.toml selects stable + rustfmt/clippy on first cargo use;
-  # installing the components now makes the first `cargo check` faster.
-  log "rust components"
-  rustup component add rustfmt clippy
-else
-  log "rustup not found; install Rust first (https://rustup.rs)"
-  exit 1
-fi
+# rust-toolchain.toml selects stable + rustfmt/clippy on first cargo use;
+# installing the components now makes the first `cargo check` faster.
+log "rust components"
+rustup component add rustfmt clippy
 
 if [[ "$(cargo nextest --version 2>/dev/null | head -n1)" == "cargo-nextest ${NEXTEST_VERSION}"* ]]; then
   log "cargo-nextest ${NEXTEST_VERSION} already installed"
@@ -104,7 +108,6 @@ else
   # index, and no prebuilt binary is downloaded.
   log "cargo-nextest ${NEXTEST_VERSION}"
   cargo install cargo-nextest --locked --version "${NEXTEST_VERSION}"
-  rm -rf "${CARGO_HOME:-${HOME}/.cargo}/registry/src"
 fi
 
 venv="${BOOKCLERK_DEV_VENV:-/opt/bookclerk-dev/venv}"

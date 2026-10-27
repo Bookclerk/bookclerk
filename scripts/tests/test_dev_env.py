@@ -37,8 +37,11 @@ SHARED_DEVCONTAINER_KEYS = (
     "customizations",
 )
 
-# `FROM image:tag@sha256:<64 hex>` with an optional `AS name`.
-PINNED_FROM = re.compile(r"^FROM\s+(?P<image>[^\s:@]+(?::\d+)?(?:/[^\s:@]+)*):(?P<tag>[^\s@]+)@sha256:[0-9a-f]{64}(?:\s+AS\s+\S+)?$", re.IGNORECASE)
+# `image:tag@sha256:<64 hex>`; the registry may carry a port.
+PINNED_REF = re.compile(r"^[^\s:@]+(?::\d+)?(?:/[^\s:@]+)*:[^\s@:/]+@sha256:[0-9a-f]{64}$")
+
+# Debian release codenames that may appear in base-image tags.
+DEBIAN_CODENAMES = ("bullseye", "bookworm", "trixie", "forky")
 
 
 def _tracked_dockerfiles() -> list[Path]:
@@ -57,32 +60,63 @@ def _tracked_dockerfiles() -> list[Path]:
     return [ROOT / line for line in out.splitlines() if line.endswith("Dockerfile")]
 
 
-def _from_lines(dockerfile: Path) -> list[str]:
-    """Return the FROM instructions of a Dockerfile.
+def _base_images(dockerfile: Path) -> list[str]:
+    """Return the external base images a Dockerfile builds from.
+
+    Flags such as ``--platform`` are skipped, and FROM lines that name an
+    earlier stage or a build argument are left out: Dependabot can pin
+    neither, and neither pulls an image of its own.
 
     Args:
         dockerfile: Dockerfile to read.
 
     Returns:
-        Each FROM line, stripped.
+        Each external image reference (``name:tag@sha256:...`` when pinned).
     """
-    return [
-        line.strip()
-        for line in dockerfile.read_text(encoding="utf-8").splitlines()
-        if line.strip().upper().startswith("FROM ")
-    ]
+    images: list[str] = []
+    stages: set[str] = set()
+    for raw in dockerfile.read_text(encoding="utf-8").splitlines():
+        tokens = raw.split()
+        if not tokens or tokens[0].upper() != "FROM":
+            continue
+        args = [t for t in tokens[1:] if not t.startswith("--")]
+        if not args:
+            continue
+        image = args[0]
+        if not image.startswith("$") and image.lower() not in stages:
+            images.append(image)
+        if len(args) >= 3 and args[1].upper() == "AS":
+            stages.add(args[2].lower())
+    return images
 
 
-def _is_build_arg_from(line: str) -> bool:
-    """Tell whether a FROM line names its image through a build argument.
+def _split_ref(ref: str) -> tuple[str, str, str]:
+    """Split a pinned image reference into name, tag and digest.
 
     Args:
-        line: A FROM instruction.
+        ref: ``name:tag@sha256:<hex>``, as accepted by ``PINNED_REF``.
 
     Returns:
-        True when the image is ``${ARG}``, which Dependabot cannot pin.
+        The image name, tag and ``sha256:<hex>`` digest.
     """
-    return line.split()[1].startswith("$")
+    name_tag, digest = ref.split("@", 1)
+    name, tag = name_tag.rsplit(":", 1)
+    return name, tag, digest
+
+
+def _workflow_pin(pattern: str) -> set[str]:
+    """Return every value a regex captures across the workflows.
+
+    Args:
+        pattern: Regex with one capture group, matched per workflow file.
+
+    Returns:
+        The distinct captured values.
+    """
+    found: set[str] = set()
+    for workflow in (ROOT / ".github" / "workflows").glob("*.yml"):
+        found.update(re.findall(pattern, workflow.read_text(encoding="utf-8")))
+    return found
 
 
 class ProvisionScriptTests(unittest.TestCase):
@@ -96,6 +130,12 @@ class ProvisionScriptTests(unittest.TestCase):
         ci = re.findall(r"tool:\s*cargo-nextest@(\S+)", CI_WORKFLOW.read_text(encoding="utf-8"))
         self.assertTrue(ci, "cargo-nextest pin not found in ci.yml")
         self.assertEqual({ours.group(1)}, set(ci))
+
+    def test_image_tools_match_ci_versions(self) -> None:
+        """uv and the Node.js major in the Dev Container are the ones CI sets up."""
+        images = {_split_ref(ref)[0]: _split_ref(ref)[1] for ref in _base_images(DEVCONTAINER_DOCKERFILE)}
+        self.assertEqual({images["ghcr.io/astral-sh/uv"]}, _workflow_pin(r'setup-uv@\S+[^\n]*\n\s+with:\s*\n\s+version:\s*"([^"]+)"'))
+        self.assertEqual({images["node"].split("-", 1)[0]}, _workflow_pin(r'node-version:\s*"([^"]+)"'))
 
     def test_dockerfile_installs_through_provision_script(self) -> None:
         """The Dev Container Dockerfile delegates every package install."""
@@ -111,32 +151,38 @@ class BaseImageTests(unittest.TestCase):
     def test_every_from_is_tag_and_digest_pinned(self) -> None:
         """Dependabot needs the tag to track and the digest to pin."""
         for dockerfile in _tracked_dockerfiles():
-            for line in _from_lines(dockerfile):
-                if _is_build_arg_from(line):
-                    continue
-                with self.subTest(dockerfile=str(dockerfile.relative_to(ROOT)), line=line):
-                    self.assertRegex(line, PINNED_FROM)
+            for ref in _base_images(dockerfile):
+                with self.subTest(dockerfile=str(dockerfile.relative_to(ROOT)), ref=ref):
+                    self.assertRegex(ref, PINNED_REF)
 
-    def test_shared_images_use_one_digest(self) -> None:
-        """An image used in several Dockerfiles is pinned to the same digest."""
+    def test_shared_images_use_one_tag_and_digest(self) -> None:
+        """An image used in several Dockerfiles is pinned identically."""
         seen: dict[str, tuple[str, str]] = {}
         for dockerfile in _tracked_dockerfiles():
-            for line in _from_lines(dockerfile):
-                if _is_build_arg_from(line):
+            rel = str(dockerfile.relative_to(ROOT))
+            for ref in _base_images(dockerfile):
+                name, tag, digest = _split_ref(ref)
+                if name not in seen:
+                    seen[name] = (f"{tag}@{digest}", rel)
                     continue
-                ref = line.split()[1]
-                name_tag, digest = ref.split("@", 1)
-                rel = str(dockerfile.relative_to(ROOT))
-                if name_tag in seen:
-                    other_digest, other_file = seen[name_tag]
-                    with self.subTest(image=name_tag):
-                        self.assertEqual(
-                            digest,
-                            other_digest,
-                            f"{name_tag} pinned differently in {rel} and {other_file}",
-                        )
-                else:
-                    seen[name_tag] = (digest, rel)
+                with self.subTest(image=name):
+                    self.assertEqual(
+                        f"{tag}@{digest}",
+                        seen[name][0],
+                        f"{name} pinned differently in {rel} and {seen[name][1]}",
+                    )
+
+    def test_one_debian_release(self) -> None:
+        """Every Debian-based image tag names the same release."""
+        releases: dict[str, str] = {}
+        for dockerfile in _tracked_dockerfiles():
+            for ref in _base_images(dockerfile):
+                _, tag, _ = _split_ref(ref)
+                for codename in DEBIAN_CODENAMES:
+                    if codename in tag:
+                        releases[f"{dockerfile.relative_to(ROOT)}: {ref.split('@', 1)[0]}"] = codename
+        self.assertTrue(releases, "no Debian-based base image found")
+        self.assertEqual(len(set(releases.values())), 1, releases)
 
     def test_dependabot_covers_every_dockerfile_directory(self) -> None:
         """Every directory with a pinnable Dockerfile is in the docker ecosystem."""
@@ -145,7 +191,7 @@ class BaseImageTests(unittest.TestCase):
         self.assertEqual(len(block), 2, "no docker ecosystem in dependabot.yml")
         listed = set(re.findall(r'^\s+-\s+"(/[^"]*)"\s*$', block[1].split("package-ecosystem:", 1)[0], re.MULTILINE))
         for dockerfile in _tracked_dockerfiles():
-            if all(_is_build_arg_from(line) for line in _from_lines(dockerfile)):
+            if not _base_images(dockerfile):
                 continue
             directory = "/" + str(dockerfile.parent.relative_to(ROOT))
             with self.subTest(directory=directory):
