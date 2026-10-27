@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { isApiOperationsPage, statusClass } from "./api-reference.ts";
-import { apiNavNested, crumbsHtml, crumbTrail, docJsonLd, navHtml, navParent, renderDoc, tocListHtml } from "./render.ts";
+import { apiNavNested, apiRouteGroups, crumbsHtml, crumbTrail, docJsonLd, navHtml, navParent, renderDoc, tocListHtml } from "./render.ts";
 
 /** GitHub prefix for repository links. */
 const BLOB = "https://github.com/Bookclerk/bookclerk/blob/main/";
@@ -68,7 +68,7 @@ test("each operation is a section with a method badge and an examples column", (
   assert.equal(out.html.split("</section>").length, 3);
   assert.match(
     out.html,
-    /<section class="api-op" aria-labelledby="get-apijobs">\n<h2 id="get-apijobs" class="api-op-title"><span class="api-method api-method-get">GET<\/span> <code>\/api\/jobs<\/code><\/h2>/,
+    /<section class="api-op" aria-labelledby="get-apijobs">\n<div class="heading-wrapper level-h2"><h2 id="get-apijobs" class="api-op-title"><span class="api-method api-method-get">GET<\/span> <code>\/api\/jobs<\/code><\/h2><a class="heading-anchor" href="#get-apijobs"/,
   );
   const first = out.html.slice(out.html.indexOf('aria-labelledby="get-apijobs"'), out.html.indexOf('aria-labelledby="post-apijobsidcancel"'));
   const main = first.indexOf('<div class="api-op-main">');
@@ -202,14 +202,14 @@ See [\`GET /api/jobs\`](jobs.md#get-apijobs) and [Schemas](schemas.md).
 test("the index puts its Quick start beside the introduction", () => {
   const out = renderDoc(INDEX, "api/web/README", { blobBase: BLOB });
   assert.ok(out.html.startsWith('<h1 id="bookclerk-daemon-api">Bookclerk daemon API</h1>\n<div class="api-ref api-index">\n<div class="api-intro">\n<div class="api-intro-main">\n<p>'));
-  assert.ok(out.html.includes('</div>\n<aside class="api-intro-side" aria-labelledby="quick-start">\n<h2 id="quick-start">Quick start</h2>'));
+  assert.ok(out.html.includes('</div>\n<aside class="api-intro-side" aria-labelledby="quick-start">\n<div class="heading-wrapper level-h2"><h2 id="quick-start">Quick start</h2>'));
   assert.ok(out.html.indexOf("</aside>") < out.html.indexOf('<h2 id="authentication">'));
 });
 
 test("each route group on the index is a card whose routes carry method badges", () => {
   const out = renderDoc(INDEX, "api/web/README", { blobBase: BLOB });
   assert.equal(out.html.split('<section class="api-group"').length, 3);
-  assert.ok(out.html.includes('<section class="api-group" aria-labelledby="jobs">\n<h3 id="jobs"><a href="/docs/api/web/jobs">Jobs</a></h3>'));
+  assert.ok(out.html.includes('<section class="api-group" aria-labelledby="jobs">\n<div class="heading-wrapper level-h3"><h3 id="jobs"><a href="/docs/api/web/jobs">Jobs</a></h3>'));
   assert.ok(
     out.html.includes('<a href="/docs/api/web/jobs#post-apijobsidcancel"><span class="api-method api-method-post">POST</span> <code>/<wbr>api/<wbr>jobs/<wbr>{id}/<wbr>cancel</code></a> (deprecated)'),
   );
@@ -234,9 +234,21 @@ test("the index's sidebar lists every route group with its routes", () => {
   const nested = apiNavNested("api/web/README", out.title, out.headings, "/docs/", out.routes);
   assert.equal(nested?.under, "api/web/README");
   const nav = navHtml([{ title: "API reference", pages: [{ key: "api/web/README", title: "Web API" }] }], "api/web/README", "/docs/", nested);
-  assert.ok(nav.includes('<a href="/docs/api/web/" aria-current="page">Web API</a><ul class="nav-sub"><li><a href="/docs/api/web/jobs">Jobs</a><ul class="nav-ops">'));
-  assert.ok(nav.includes('<a class="nav-op" href="/docs/api/web/health#get-health"><span class="api-method api-method-get">GET</span> <code>/<wbr>health</code></a>'));
+  // On the index every group is collapsed, and the schemas page follows them.
+  assert.ok(
+    nav.includes(
+      '<a href="/docs/api/web/" aria-current="page">Web API</a><ul class="nav-sub"><li><a href="/docs/api/web/jobs">Jobs</a></li>' +
+        '<li><a href="/docs/api/web/health">Health</a></li><li><a href="/docs/api/web/schemas">Schemas</a></li></ul>',
+    ),
+  );
+  assert.ok(!nav.includes("nav-ops"));
   assert.equal(apiNavNested("api/web/README", out.title, out.headings, "/docs/", []), null);
+  // On a group's page only that group opens, on its own operations.
+  const jobs = renderDoc(PAGE, "api/web/jobs", { blobBase: BLOB });
+  const onJobs = apiNavNested("api/web/jobs", jobs.title, jobs.headings, "/docs/", out.routes)?.html ?? "";
+  assert.ok(onJobs.startsWith('<ul class="nav-sub"><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a><ul class="nav-ops"><li><a class="nav-op" href="#get-apijobs">'));
+  assert.ok(onJobs.endsWith('<li><a href="/docs/api/web/health">Health</a></li><li><a href="/docs/api/web/schemas">Schemas</a></li></ul>'));
+  assert.deepEqual(apiRouteGroups(INDEX, { blobBase: BLOB }), out.routes);
   assert.deepEqual(renderDoc(PAGE, "api/web/jobs", { blobBase: BLOB }).routes, []);
 });
 
@@ -244,4 +256,13 @@ test("an index without a Quick start or groups keeps its text in order", () => {
   const out = renderDoc("# API\n\nIntro.\n\n## Routes\n\n### Plain\n\n- [`GET /x`](x.md)\n", "api/web/README", { blobBase: BLOB });
   assert.ok(out.html.startsWith('<h1 id="api">API</h1>\n<div class="api-ref api-index">\n<p>Intro.</p>'));
   assert.ok(!out.html.includes("api-intro") && !out.html.includes("api-group") && !out.html.includes("api-method"));
+});
+
+test("section headings link to themselves, after the heading so its name stays its text", () => {
+  const out = renderDoc("# Title\n\n## Install it\n\n### `cargo` & co\n\n- ## In a list\n", "guide/x", { blobBase: BLOB });
+  assert.ok(out.html.startsWith('<h1 id="title">Title</h1>\n<div class="heading-wrapper level-h2"><h2 id="install-it">Install it</h2>'));
+  assert.ok(out.html.includes('<a class="heading-anchor" href="#install-it" aria-label="Link to section: Install it"><svg aria-hidden="true"'));
+  assert.ok(out.html.includes('<h3 id="cargo--co"><code>cargo</code> &amp; co</h3><a class="heading-anchor" href="#cargo--co" aria-label="Link to section: cargo &amp; co">'));
+  assert.ok(out.html.includes('<li>\n<div class="heading-wrapper level-h2"><h2 id="in-a-list">In a list</h2><a class="heading-anchor" href="#in-a-list"'));
+  assert.ok(!out.html.includes('href="#title"'), "the title has no link to itself");
 });

@@ -74,8 +74,12 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   orders the sidebar; a doc in `docs/` missing from it is listed under "More".
   The layout follows developers.cloudflare.com's measurements: a slim sticky
   header, a sticky sidebar whose groups fold (only the current page's group
-  opens), a reading column of about 80 characters, and an "On this page"
-  rail the Worker builds from the doc's `##` and `###` headings, with a
+  opens) pinned left, a reading column of about 88 characters centred
+  between it and an "On this page" rail pinned right, which the Worker
+  builds from the doc's `##` and `###` headings. Each `##`–`######` heading
+  carries a self-link that shows on hover, and a row under the title holds
+  the last updated date, Copy as Markdown and View as Markdown. The rail
+  ends with Source on GitHub and Report a problem, and comes with a
   breadcrumb and previous and next links taken from `NAV`. Every crumb is a
   link: a sidebar group links to its first page, and a Web API route page
   runs through the Web API entry it sits under. Below 1200px the
@@ -128,10 +132,12 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   check of the markup; `diagram.test.ts` runs it without Node's `global`,
   as the Worker does.
 - `src/docs.js` – the docs pages' only script, served from the site: a Copy
-  button on code blocks, the "On this page" link of the section being read
-  (`aria-current="location"`), and a filter box above the sidebar groups
-  (`/` focuses it). It makes no requests, and everything it enhances works
-  without it; Chromium also marks the current section through CSS
+  button on code blocks, heading self-links that copy their URL, the Copy
+  as Markdown button (hidden without the script; its fetch of the page's
+  `.md` copy is the script's only request), the "On this page" link of the
+  section being read (`aria-current="location"`) and the stepped line
+  beside the rail that follows it, and a filter box above the sidebar
+  groups (`/` focuses it). Everything it enhances works without it; Chromium also marks the current section through CSS
   (`scroll-target-group`).
 - `src/index.md`, `src/download.md`, `src/privacy.md`, `src/404.md` – Markdown versions of
   those pages, rendered with the same template syntax. Keep them in step with

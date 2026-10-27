@@ -1,8 +1,9 @@
 // Small enhancements for docs pages, served from the site itself (the CSP
 // allows scripts from 'self' and Cloudflare's analytics beacon only). Pages
-// work without it: it adds copy buttons to code blocks, marks the section
-// being read in the "On this page" rail, and adds a filter box to the
-// sidebar. It makes no network requests.
+// work without it: it adds copy buttons to code blocks, copies a heading's
+// link when it is clicked, offers Copy as Markdown, draws and follows the
+// "On this page" rail, and adds a filter box to the sidebar. Its only
+// network request is Copy as Markdown reading the page's own Markdown.
 
 (() => {
   "use strict";
@@ -89,6 +90,154 @@
     }
   }
 
+  /** Called with the id of the section being read whenever it changes. */
+  const sectionListeners = [];
+
+  /**
+   * Copies a heading's link to the clipboard when its link icon is clicked;
+   * the click still moves to the heading.
+   */
+  function copyHeadingLinks() {
+    if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") return;
+    for (const anchor of document.querySelectorAll(".doc .heading-anchor")) {
+      const label = anchor.getAttribute("aria-label") || "";
+      let reset = 0;
+      anchor.addEventListener("click", () => {
+        navigator.clipboard.writeText(anchor.href).then(() => {
+          anchor.classList.add("copied");
+          anchor.setAttribute("aria-label", "Link copied");
+          window.clearTimeout(reset);
+          reset = window.setTimeout(() => {
+            anchor.classList.remove("copied");
+            anchor.setAttribute("aria-label", label);
+          }, 2000);
+        }, () => {});
+      });
+    }
+  }
+
+  /**
+   * Shows the Copy as Markdown button, which puts the page's Markdown
+   * version on the clipboard.
+   */
+  function addCopyMarkdown() {
+    const button = document.querySelector(".doc-copy-markdown");
+    if (!button || !navigator.clipboard) return;
+    const label = button.querySelector("span");
+    const url = button.getAttribute("data-markdown");
+    if (!label || !url) return;
+    const read = () =>
+      fetch(url, { headers: { Accept: "text/markdown" } }).then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.text();
+      });
+    // Safari only lets a click write to the clipboard if the write starts in
+    // the click, so the text is handed over as a promise where it can be.
+    const write =
+      typeof window.ClipboardItem === "function" && typeof navigator.clipboard.write === "function"
+        ? () => navigator.clipboard.write([new window.ClipboardItem({ "text/plain": read().then((text) => new Blob([text], { type: "text/plain" })) })])
+        : typeof navigator.clipboard.writeText === "function"
+          ? () => read().then((text) => navigator.clipboard.writeText(text))
+          : null;
+    if (write === null) return;
+    let reset = 0;
+    const show = (text) => {
+      label.textContent = text;
+      window.clearTimeout(reset);
+      reset = window.setTimeout(() => {
+        label.textContent = "Copy as Markdown";
+      }, 2000);
+    };
+    button.addEventListener("click", () => {
+      write().then(
+        () => show("Copied"),
+        () => show("Could not copy"),
+      );
+    });
+    label.setAttribute("aria-live", "polite");
+    button.hidden = false;
+  }
+
+  /**
+   * Draws the "On this page" rail: a line beside the links that steps in
+   * beside subsections, with the section being read traced over it.
+   */
+  function drawTocRail() {
+    const box = document.querySelector(".toc .toc-list");
+    const list = box ? box.querySelector("ul") : null;
+    if (!box || !list || typeof ResizeObserver !== "function") return;
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("class", "toc-rail");
+    svg.setAttribute("aria-hidden", "true");
+    const base = document.createElementNS(ns, "path");
+    base.setAttribute("class", "toc-rail-base");
+    const active = document.createElementNS(ns, "path");
+    active.setAttribute("class", "toc-rail-active");
+    for (const path of [base, active]) {
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke-linecap", "round");
+    }
+    base.setAttribute("stroke-width", "1.5");
+    active.setAttribute("stroke-width", "2");
+    svg.append(base, active);
+    box.prepend(svg);
+    box.classList.add("has-rail");
+
+    const links = [...list.querySelectorAll("li > a")];
+    // Where each link's stretch of the rail starts along the path, and how long it is.
+    let spans = [];
+    let total = 0;
+    let current = "";
+    const highlight = () => {
+      const at = links.findIndex((link) => link.getAttribute("href") === `#${current}`);
+      const span = spans[at];
+      if (!span) {
+        active.style.strokeDasharray = `0 ${total + 1}`;
+        return;
+      }
+      active.style.strokeDasharray = `${span.length} ${total + 1}`;
+      active.style.strokeDashoffset = String(-span.start);
+    };
+    const draw = () => {
+      const top = list.getBoundingClientRect().top;
+      const items = links.map((link) => {
+        const rect = link.getBoundingClientRect();
+        return { x: link.parentElement.classList.contains("sub") ? 15 : 1, top: rect.top - top, bottom: rect.bottom - top };
+      });
+      if (items.length === 0) return;
+      // Each stretch ends 4px before its link does when the next one steps
+      // in or out, and a curve joins the two.
+      const parts = [];
+      items.forEach((item, i) => {
+        const next = items[i + 1];
+        const start = i === 0 ? item.top : item.top + (items[i - 1].x === item.x ? 0 : 4);
+        const end = next && next.x !== item.x ? item.bottom - 4 : item.bottom;
+        parts.push({ line: `L ${item.x} ${end}`, from: `${item.x} ${start}`, curve: next && next.x !== item.x ? `C ${item.x} ${item.bottom}, ${next.x} ${item.bottom}, ${next.x} ${item.bottom + 4}` : "" });
+      });
+      let d = `M ${parts[0].from}`;
+      spans = [];
+      for (const part of parts) {
+        base.setAttribute("d", d);
+        const start = d === `M ${parts[0].from}` ? 0 : base.getTotalLength();
+        d += ` ${part.line}`;
+        base.setAttribute("d", d);
+        const end = base.getTotalLength();
+        spans.push({ start, length: end - start });
+        if (part.curve) d += ` ${part.curve}`;
+      }
+      base.setAttribute("d", d);
+      active.setAttribute("d", d);
+      total = base.getTotalLength();
+      highlight();
+    };
+    new ResizeObserver(draw).observe(list);
+    sectionListeners.push((id) => {
+      current = id;
+      highlight();
+    });
+  }
+
   /**
    * Marks the "On this page" link of the section at the top of the window
    * with aria-current="location", in the rail and in the phone menu.
@@ -105,6 +254,7 @@
         if (link.getAttribute("href") === `#${id}`) link.setAttribute("aria-current", "location");
         else link.removeAttribute("aria-current");
       }
+      for (const listener of sectionListeners) listener(id);
     };
     const update = () => {
       // The last heading above a line a quarter of the way down the window.
@@ -197,6 +347,9 @@
   }
 
   addCopyButtons();
+  copyHeadingLinks();
+  addCopyMarkdown();
+  drawTocRail();
   trackSection();
   addSidebarFilter();
 })();

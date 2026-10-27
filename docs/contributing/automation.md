@@ -510,12 +510,13 @@ Rust crates and the web UI library.
   schemas. A request body that names a schema lists that schema's fields
   in place, so a route reads without a trip to the schemas page. The website lays the route group pages out like an OpenAPI
   viewer (`tools/site/api-reference.ts`): a method badge beside each path,
-  the examples in a second column on wide screens, and the page's routes in
-  the sidebar under **Web API**. The index gets the same treatment: its
-  quick start sits beside the introduction, each route group is a card whose
-  routes carry method badges, and the sidebar lists every group with its
-  routes. The Markdown itself stays plain, so the pages read the same on
-  GitHub.
+  the examples in a second column when the reading column is wide enough,
+  and the usual "On this page" rail. Under **Web API** the sidebar lists
+  every route group, and only the open group's page shows its routes. The
+  index, titled **Web API** like its sidebar entry and breadcrumb, gets the
+  same treatment: its quick start sits beside the introduction and each
+  route group is a card whose routes carry method badges. The Markdown
+  itself stays plain, so the pages read the same on GitHub.
 
 Every relative link to a file in the tree must resolve, and links in `api/`
 must stay inside the tree, or the build fails.

@@ -570,7 +570,7 @@ function checkApiPage(source: string, context: string): void {
   checkNesting(laid, context);
 
   const ids = new Set([...laid.matchAll(/ id="([^"]*)"/g)].map((m) => m[1]));
-  const sections = [...laid.matchAll(/<section class="api-op" aria-labelledby="([^"]*)">\n<h2 id="([^"]*)" class="api-op-title"><span class="api-method api-method-([a-z]+)">([A-Z]+)<\/span> <code>/g)];
+  const sections = [...laid.matchAll(/<section class="api-op" aria-labelledby="([^"]*)">\n<div class="heading-wrapper level-h2"><h2 id="([^"]*)" class="api-op-title"><span class="api-method api-method-([a-z]+)">([A-Z]+)<\/span> <code>/g)];
   assert.equal(sections.length, (laid.match(/<section/g) ?? []).length, `section without its heading: ${context}`);
   for (const [, labelled, id, lower, method] of sections) {
     assert.equal(labelled, id, context);
@@ -613,9 +613,13 @@ function checkApiIndex(source: string, context: string): void {
   checkNesting(laid, context);
 
   const ids = new Set([...laid.matchAll(/ id="([^"]*)"/g)].map((m) => m[1]));
-  const cards = [...laid.matchAll(/<section class="api-group" aria-labelledby="([^"]*)">\n<h3 id="([^"]*)"><a /g)];
-  assert.equal(cards.length, (laid.match(/<section/g) ?? []).length, `card without its heading: ${context}`);
-  const asides = [...laid.matchAll(/<aside class="api-intro-side" aria-labelledby="([^"]*)">\n<h2 id="([^"]*)">Quick start<\/h2>/g)];
+  // A heading whose text gives no id (an empty link) gets no self-link, so
+  // no wrapper either.
+  const wrapped = [...laid.matchAll(/<section class="api-group" aria-labelledby="([^"]*)">\n(<div class="heading-wrapper level-h3">)?<h3 id="([^"]*)"><a /g)];
+  assert.equal(wrapped.length, (laid.match(/<section/g) ?? []).length, `card without its heading: ${context}`);
+  for (const [, , wrapper, id] of wrapped) assert.equal(wrapper !== undefined, id !== "", `self-link wrapper: ${context}`);
+  const cards = wrapped.map(([all, labelled, , id]) => [all, labelled, id] as const);
+  const asides = [...laid.matchAll(/<aside class="api-intro-side" aria-labelledby="([^"]*)">\n<div class="heading-wrapper level-h2"><h2 id="([^"]*)">Quick start<\/h2>/g)];
   assert.equal(asides.length, (laid.match(/<aside/g) ?? []).length, `aside without its heading: ${context}`);
   assert.ok(asides.length <= 1, context);
   for (const [, labelled, id] of [...cards, ...asides]) {

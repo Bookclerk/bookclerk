@@ -48,6 +48,8 @@ const DOCS = join(HERE, "..", "..", "docs");
 /** Generated pages the stand-in docs repository adds to docs/. */
 const GENERATED: Readonly<Record<string, string>> = {
   "api/rust/demo/index.md": "# Crate `demo`\n\nA demo crate. See [the SDK](../../typescript/README.md) and [`Thing`](#thing).\n\n## Thing\n",
+  "api/web/README.md": "# Web API\n\n## Routes\n\n### [Jobs](jobs.md)\n\n| Route | Summary |\n| --- | --- |\n| [`GET /api/jobs`](jobs.md#get-apijobs) | Lists. |\n\n### [Health](health.md)\n\n| Route | Summary |\n| --- | --- |\n| [`GET /health`](health.md#get-health) | Liveness. |\n",
+  "api/web/jobs.md": "# Jobs\n\n## `GET /api/jobs`\n\nLists jobs.\n",
   "last-updated.json": JSON.stringify({ version: 1, pages: { "plugins/README": "2026-10-26", "api/rust/demo/index": "2026-10-01" } }),
 };
 
@@ -370,7 +372,9 @@ test("a browser gets the doc in the site's page, with its version and sidebar", 
   const ld: { "@graph": { "@type": string; url: string }[] } = JSON.parse(html.match(/<script type="application\/ld\+json">(.*?)<\/script>/)?.[1] ?? "{}");
   assert.equal(ld["@graph"][0]?.["@type"], "TechArticle");
   assert.equal(ld["@graph"][0]?.url, "https://bookclerk.app/docs/plugins/");
-  assert.match(html, /<span class="doc-updated">Last updated <time datetime="2026-10-26">Oct 26, 2026<\/time><\/span>/);
+  assert.match(html, /<span class="doc-action doc-updated"><svg [^>]*>.*?<\/svg>Last updated <time datetime="2026-10-26">Oct 26, 2026<\/time><\/span>/);
+  assert.match(html, /<button type="button" class="doc-action doc-copy-markdown" data-markdown="\/docs\/plugins\/README.md" hidden>/);
+  assert.match(html, /<a class="doc-action" href="\/docs\/plugins\/README.md" type="text\/markdown">/);
   assert.equal((ld["@graph"][0] as { dateModified?: string } | undefined)?.dateModified, "2026-10-26");
 
   const home = await get("/", "*/*");
@@ -865,4 +869,28 @@ test("docPageTitle names the site when it fits and otherwise keeps what identifi
   assert.equal(shortLast.length, TITLE_MAX);
   assert.ok(shortLast.endsWith(".io"));
   assert.doesNotMatch(docPageTitle(`${"😀".repeat(40)} title`), /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+});
+
+test("a Web API page's sidebar lists every route group from the index, with only its own open", async () => {
+  const res = await get("/docs/api/web/jobs", BROWSER);
+  assert.equal(res.status, 200);
+  const html = await res.text();
+  assert.ok(
+    html.includes(
+      '<ul class="nav-sub"><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a><ul class="nav-ops"><li><a class="nav-op" href="#get-apijobs">',
+    ),
+  );
+  assert.ok(html.includes('<li><a href="/docs/api/web/health">Health</a></li><li><a href="/docs/api/web/schemas">Schemas</a></li></ul>'));
+  // The Markdown version needs no sidebar, so it does not read the index.
+  fetched.length = 0;
+  await get("/docs/api/web/jobs.md", "text/markdown");
+  assert.ok(!fetched.some((url) => url.endsWith("/api/web/README.md")), fetched.join(" "));
+});
+
+test("a Web API page is shown, and not cached, when its index cannot be read", async () => {
+  const broken: DocsFetch = async (url, init) => (url.endsWith("/api/web/README.md") ? new Response("oops", { status: 502 }) : docsFetch(url, init));
+  const res = await handle(new Request("https://bookclerk.app/docs/api/web/jobs", { headers: { Accept: BROWSER } }), env, { shell, fetch: broken });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("Cache-Control"), "public, max-age=60, s-maxage=0");
+  assert.ok((await res.text()).includes('<ul class="nav-sub"><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a>'));
 });
