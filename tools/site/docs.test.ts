@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { fileURLToPath, URL } from "node:url";
 
 import { docUrl, GENERATED_TITLES, markdownFiles, renderDocs, rewriteLink, siteMarkdown, slugify } from "./docs.ts";
+import { highlight } from "./highlight.ts";
 import { crumbsHtml, docMarkdownUrl, fillShell, navHtml, navPlace, normalizePath, pagerHtml, renderDoc, SHELL_MARKERS, tocListHtml } from "./render.ts";
 
 /** The repository's docs/. */
@@ -104,6 +105,20 @@ test("code blocks get syntax colors and a language label when highlight.ts knows
   assert.match(out.html, /<div class="code" data-lang="toml"><pre tabindex="0"><code class="language-toml"><span class="hl-k">\[library\]<\/span>/);
   assert.match(out.html, /<span class="hl-v">auto_acquire<\/span> = <span class="hl-n">false<\/span> <span class="hl-c"># off<\/span>/);
   assert.match(out.html, /<div class="code"><pre tabindex="0"><code class="language-text">&lt;plain&gt;/);
+});
+
+test("highlight colors each language's own names and leaves the rest plain", () => {
+  assert.equal(highlight("[a] # see [b]", "toml"), '<span class="hl-k">[a]</span> <span class="hl-c"># see [b]</span>');
+  assert.equal(highlight("[[settings]]", "toml"), '<span class="hl-k">[[settings]]</span>');
+  assert.equal(highlight("k = 'C:\\' # path", "toml"), '<span class="hl-v">k</span> = <span class="hl-s">&#39;C:\\&#39;</span> <span class="hl-c"># path</span>');
+  assert.equal(
+    highlight("for x in a; do echo ${HOME}; done", "bash"),
+    '<span class="hl-k">for</span> x <span class="hl-k">in</span> a; <span class="hl-k">do</span> <span class="hl-f">echo</span> <span class="hl-v">${HOME}</span>; <span class="hl-k">done</span>',
+  );
+  assert.equal(highlight("$ cargo dev --optional", "console"), '$ <span class="hl-f">cargo</span> dev <span class="hl-v">--optional</span>');
+  assert.equal(highlight("- name: x\n  key: y", "yaml"), '- <span class="hl-v">name</span>: x\n  <span class="hl-v">key</span>: y');
+  assert.equal(highlight('{"a": "b", "n": 1}', "json"), '{<span class="hl-v">&quot;a&quot;</span>: <span class="hl-s">&quot;b&quot;</span>, <span class="hl-v">&quot;n&quot;</span>: <span class="hl-n">1</span>}');
+  assert.equal(highlight("x", "text"), null);
 });
 
 test("a doc's section headings are collected for the On this page list", () => {

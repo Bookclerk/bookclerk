@@ -8,6 +8,20 @@
   "use strict";
 
   /**
+   * The text a Copy button puts on the clipboard: for a terminal session
+   * (lines starting with a `$ ` prompt), only the commands without their
+   * prompts; otherwise the whole block.
+   *
+   * @param {string} text - The code block's text.
+   * @returns {string} What to copy.
+   */
+  function copyText(text) {
+    const lines = text.replace(/\n$/, "").split("\n");
+    const commands = lines.filter((line) => line.startsWith("$ "));
+    return commands.length === 0 ? lines.join("\n") : commands.map((line) => line.slice(2)).join("\n");
+  }
+
+  /**
    * Adds a Copy button to every code block that the clipboard can take.
    */
   function addCopyButtons() {
@@ -22,7 +36,7 @@
       button.setAttribute("aria-label", "Copy this code");
       let reset = 0;
       button.addEventListener("click", () => {
-        navigator.clipboard.writeText(pre.innerText.replace(/\n$/, "")).then(
+        navigator.clipboard.writeText(copyText(pre.innerText)).then(
           () => {
             button.textContent = "Copied";
             window.clearTimeout(reset);

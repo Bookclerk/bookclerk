@@ -647,15 +647,15 @@ export function tocListHtml(headings: readonly DocHeading[]): string {
  * Renders the "On this page" rail beside a doc.
  *
  * @param headings - The doc's headings (see renderDoc).
- * @param links - The page's Markdown URL, its source on GitHub (null for
- *   generated pages) and a link to report a problem with it.
+ * @param links - The page's source on GitHub (null for generated pages) and
+ *   a link to report a problem with it.
  * @returns An `aside` with the section list and the page's links.
  */
-export function tocHtml(headings: readonly DocHeading[], links: { markdown: string; source: string | null; issue: string }): string {
+export function tocHtml(headings: readonly DocHeading[], links: { source: string | null; issue: string }): string {
   const list = tocListHtml(headings);
   const sections = list === "" ? "" : `<p class="toc-title">On this page</p>${list}`;
   const source = links.source === null ? "" : `<a href="${escapeHtml(links.source)}">Source on GitHub</a>`;
-  const actions = `<p class="toc-actions"><a href="${escapeHtml(links.markdown)}" type="text/markdown">View as Markdown</a>${source}<a href="${escapeHtml(links.issue)}">Report a problem</a></p>`;
+  const actions = `<p class="toc-actions">${source}<a href="${escapeHtml(links.issue)}">Report a problem</a></p>`;
   return `<aside class="toc" aria-label="On this page">${sections}${actions}</aside>`;
 }
 
@@ -672,6 +672,17 @@ export function mobileMenusHtml(sidebar: string, headings: readonly DocHeading[]
   const list = tocListHtml(headings);
   const sections = list === "" ? "" : `<details class="menu menu-toc"><summary>On this page</summary><div class="menu-body">${list}</div></details>`;
   return `<div class="docs-menus"><details class="menu menu-nav"><summary>Menu</summary><div class="menu-body">${sidebar}</div></details>${sections}</div>`;
+}
+
+/**
+ * Renders the sidebar's link to the docs home.
+ *
+ * @param base - URL prefix of the docs version.
+ * @param current - Whether the page shown is the docs home.
+ * @returns The link.
+ */
+function homeLink(base: string, current: boolean): string {
+  return `<a class="docs-home" href="${escapeHtml(base)}"${current ? ' aria-current="page"' : ""}>Overview</a>`;
 }
 
 /**
@@ -792,9 +803,8 @@ export function renderDocPage(shell: DocsShell, source: string, key: string, at:
       : "";
   const meta = `<p class="doc-meta">${note}<a href="${escapeHtml(markdownUrl)}" type="text/markdown">View as Markdown</a></p>`;
   const place = navPlace(shell.nav, key);
-  const home = `<a class="docs-home" href="${escapeHtml(at.base)}"${key === "README" ? ' aria-current="page"' : ""}>Overview</a>`;
-  const nav = home + navHtml(shell.nav, key, at.base);
-  const sidebar = versionsHtml(shell.versions, at.ref, key) + nav;
+  const versions = versionsHtml(shell.versions, at.ref, key);
+  const nav = homeLink(at.base, key === "README") + navHtml(shell.nav, key, at.base);
   const html = fillShell(
     shell.html,
     {
@@ -806,14 +816,14 @@ export function renderDocPage(shell: DocsShell, source: string, key: string, at:
     },
     {
       jsonld: jsonLd(docJsonLd(shell.origin, at.base, { key, title: doc.title, description: doc.description })),
-      "doc-menus": mobileMenusHtml(sidebar, doc.headings),
-      "doc-versions": versionsHtml(shell.versions, at.ref, key),
+      "doc-menus": mobileMenusHtml(versions + nav, doc.headings),
+      "doc-versions": versions,
       "doc-nav": nav,
       "doc-crumbs": crumbsHtml(place, doc.title, at.base),
       "doc-body": afterTitle(doc.html, meta),
       "doc-pager": pagerHtml(place, at.base),
       "doc-footer": `<p class="doc-source faint">${sourceLink} · <a href="${escapeHtml(markdownUrl)}" type="text/markdown">View as Markdown</a></p>`,
-      "doc-toc": tocHtml(doc.headings, { markdown: markdownUrl, source: sourceUrl, issue: issueUrl }),
+      "doc-toc": tocHtml(doc.headings, { source: sourceUrl, issue: issueUrl }),
     },
   );
   return { html, markdown: doc.markdown };
@@ -838,6 +848,8 @@ export const DOCS_REPOSITORY_URL = "https://github.com/Bookclerk/bookclerk-docs"
  * @returns The full HTML page and its Markdown version.
  */
 export function renderUnavailablePage(shell: DocsShell, key: string, at: { ref: string; base: string; githubKey?: string }): RenderedPage {
+  const versions = versionsHtml(shell.versions, at.ref, key);
+  const home = homeLink(at.base, false);
   const github = `${DOCS_REPOSITORY_URL}/blob/${at.ref}/${at.githubKey ?? key}.md`;
   const all = `${DOCS_REPOSITORY_URL}/tree/${at.ref}`;
   const body = [
@@ -861,9 +873,9 @@ export function renderUnavailablePage(shell: DocsShell, key: string, at: { ref: 
     },
     {
       jsonld: "",
-      "doc-menus": mobileMenusHtml(versionsHtml(shell.versions, at.ref, key), []),
-      "doc-versions": versionsHtml(shell.versions, at.ref, key),
-      "doc-nav": "",
+      "doc-menus": mobileMenusHtml(versions + home, []),
+      "doc-versions": versions,
+      "doc-nav": home,
       "doc-crumbs": "",
       "doc-body": body,
       "doc-pager": "",

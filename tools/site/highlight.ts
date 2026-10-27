@@ -77,6 +77,9 @@ const SQL_KEYWORDS = new Set(
 /** Shell words that are syntax, not commands. */
 const SHELL_KEYWORDS = new Set("if then else elif fi for in do done while until case esac function export local return".split(" "));
 
+/** Shell words after which the next word is a command again. */
+const COMMAND_PREFIXES = new Set(["then", "do", "else", "elif", "sudo", "time", "exec"]);
+
 /** Grammar for each language name a fence may give, lower-cased. */
 const GRAMMARS: ReadonlyMap<string, Grammar> = (() => {
   const none: ReadonlySet<string> = new Set();
@@ -111,16 +114,6 @@ const GRAMMARS: ReadonlyMap<string, Grammar> = (() => {
     ["sql", sql],
   ]);
 })();
-
-/**
- * Whether a fence's language has syntax colors.
- *
- * @param lang - The first word of the fence's info string.
- * @returns True when {@link highlight} colors it.
- */
-export function highlightable(lang: string): boolean {
-  return GRAMMARS.has(lang.toLowerCase());
-}
 
 /**
  * Escapes text for an HTML element body.
@@ -204,6 +197,13 @@ export function highlight(code: string, lang: string): string | null {
     while (j >= 0 && (code[j] === " " || code[j] === "\t")) j--;
     return j < 0 || code[j] === "\n";
   };
+  /** Whether `i` starts a YAML key: at the start of a line or after a list item's `- `. */
+  const atKeyStart = (i: number): boolean => {
+    if (atLineStart(i)) return true;
+    let j = i - 1;
+    while (j >= 0 && (code[j] === " " || code[j] === "\t")) j--;
+    return j < i - 1 && code[j] === "-" && atLineStart(j);
+  };
   /** The next character after `i` that is not a space or tab. */
   const nextSolid = (i: number): string | undefined => {
     let j = i;
@@ -212,6 +212,8 @@ export function highlight(code: string, lang: string): string | null {
   };
   // In shell mode, whether the next word starts a command.
   let commandNext = true;
+  // Where the last search for a `${` closing brace stopped (see below).
+  let braceScanEnd = -1;
   let i = 0;
   while (i < code.length) {
     const c = code[i] ?? "";
@@ -238,9 +240,12 @@ export function highlight(code: string, lang: string): string | null {
       continue;
     }
     if (g.quotes.includes(c)) {
-      const stop = stringEnd(code, i, !(g.mode === "shell" && c === "'"));
+      // Single-quoted shell, TOML and YAML strings and SQL strings take no
+      // backslash escapes.
+      const literal = (c === "'" && (g.mode === "shell" || g.mode === "toml" || g.mode === "yaml")) || g.caseless;
+      const stop = stringEnd(code, i, !literal);
       const text = code.slice(i, stop);
-      const isKey = (g.mode === "json" || g.mode === "yaml") && nextSolid(stop) === ":";
+      const isKey = (g.mode === "json" || (g.mode === "yaml" && atKeyStart(i))) && nextSolid(stop) === ":";
       mark(isKey ? "v" : "s", text);
       i = stop;
       commandNext = false;
@@ -249,19 +254,25 @@ export function highlight(code: string, lang: string): string | null {
     if (g.mode === "toml" && c === "[" && atLineStart(i)) {
       const end = code.indexOf("\n", i);
       const line = code.slice(i, end === -1 ? code.length : end);
-      const close = line.lastIndexOf("]");
-      if (close > 0) {
-        mark("k", line.slice(0, close + 1));
-        i += close + 1;
+      const closer = line.startsWith("[[") ? "]]" : "]";
+      const close = line.indexOf(closer, closer.length);
+      if (close !== -1) {
+        mark("k", line.slice(0, close + closer.length));
+        i += close + closer.length;
         continue;
       }
     }
     if (g.mode === "shell" && c === "$" && (code[i + 1] === "{" || isNameChar(code[i + 1], false))) {
       let stop = i + 1;
       if (code[stop] === "{") {
-        const close = code.indexOf("}", stop);
-        const newline = code.indexOf("\n", stop);
-        stop = close === -1 || (newline !== -1 && newline < close) ? stop + 1 : close + 1;
+        // The closing brace must be on this line. A scan stops at the first
+        // `}` or newline, and a later `${` before that point stops there too,
+        // so its result is reused: many unclosed `${` stay linear.
+        if (stop >= braceScanEnd) {
+          braceScanEnd = stop + 1;
+          while (braceScanEnd < code.length && code[braceScanEnd] !== "}" && code[braceScanEnd] !== "\n") braceScanEnd++;
+        }
+        stop = code[braceScanEnd] === "}" ? braceScanEnd + 1 : stop + 1;
       } else {
         while (isNameChar(code[stop], false)) stop++;
       }
@@ -292,12 +303,12 @@ export function highlight(code: string, lang: string): string | null {
       const key = g.caseless ? word.toLowerCase() : word;
       const after = nextSolid(stop);
       if (g.mode === "toml" && atLineStart(i) && after === "=") mark("v", word);
-      else if (g.mode === "yaml" && atLineStart(i) && after === ":") mark("v", word);
+      else if (g.mode === "yaml" && atKeyStart(i) && after === ":") mark("v", word);
       else if (g.keywords.has(key)) mark("k", word);
       else if (g.literals.has(word)) mark("n", word);
       else if (g.mode === "shell" && commandNext && after !== "=") mark("f", word);
       else plain += word;
-      if (g.mode === "shell") commandNext = word === "sudo" || (SHELL_KEYWORDS.has(word) && word !== "in");
+      if (g.mode === "shell") commandNext = COMMAND_PREFIXES.has(word);
       i = stop;
       continue;
     }
