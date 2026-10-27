@@ -136,9 +136,12 @@ DOC_FILES = frozenset(
     {
         "AGENTS.md",
         "CHANGELOG.md",
+        "CLA.md",
         "CODE_OF_CONDUCT.md",
         "CONTRIBUTING.md",
+        "LICENSE",
         "README.md",
+        "TRADEMARK.md",
         "config/config.example.toml",
     }
 )
@@ -170,6 +173,7 @@ KNOWN_TOP_LEVEL = frozenset(
         "Cargo.lock",
         "Cargo.toml",
         "CHANGELOG.md",
+        "CLA.md",
         "CODE_OF_CONDUCT.md",
         "CONTRIBUTING.md",
         "LICENSE",
@@ -177,6 +181,7 @@ KNOWN_TOP_LEVEL = frozenset(
         "LICENSE-MIT",
         "README.md",
         "SECURITY.md",
+        "TRADEMARK.md",
         "deny.toml",
         "osv-scanner.toml",
         "rust-toolchain.toml",
