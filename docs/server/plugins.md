@@ -215,7 +215,8 @@ The daemon offers the same operations to an operator session:
 - Secret fields are write-only.
 - Save writes the document with compare-and-swap.
 
-`PATCH /api/settings` now only edits daemon, jail and `[database]` keys.
+`PATCH /api/settings` no longer edits plugin keys (see
+[Configuration](configuration.md) for the keys it takes).
 
 ### The pinned schema
 

@@ -13,8 +13,8 @@ to Bookclerk's Rust HTTP API; TypeScript never hosts the API.
 | Role | Signs in with | Can do |
 | --- | --- | --- |
 | **Operator** | The operator token, until an Owner exists; then a sign-in link or Owner elevation | Everything on the server, except connect stores |
-| **Owner** | Invite link, password, passkey, SSO or integration login | Administrator powers, plus elevation to operator |
-| **Administrator** | Invite link, password, passkey, SSO or integration login | Member powers, plus acquire, scan, jobs and adding users |
+| **Owner** | Invite link, password, passkey, SSO or integration login | Administrator powers, plus elevation to operator and **Settings → Nodes** for the nodes they own |
+| **Administrator** | Invite link, password, passkey, SSO or integration login | Member powers, plus acquire, scan, jobs, adding users and **Settings → Nodes** for the nodes they own |
 | **Host** | Invite link, password, passkey, SSO or integration return visit | Member powers, plus **Status** and **Settings → Nodes** for the nodes they own |
 | **Member** | Invite link, password, passkey, SSO or integration return visit | Discover, Wishlist, browsing the shared library, **Accounts**, and their own **Settings → Account** |
 
@@ -163,7 +163,7 @@ than the OS hint alone:
 | Passkeys | `GET`/`POST`/`DELETE /api/auth/passkeys…` (sign-in, register, elevate) |
 | TOTP | `POST /api/auth/totp/enroll/begin` and `/finish`, `GET`/`DELETE /api/auth/totp`, `POST /api/auth/totp/login` |
 | Second-factor policy | `GET`/`PUT /api/auth/mfa-policy` `{ require_second_factor }` (Owner or operator) |
-| Preferences | `GET`/`PATCH /api/preferences`: `default_view`, `disabled_shelves`, `theme` (subject `user:{id}` or `operator`) |
+| Preferences | `GET`/`PATCH /api/preferences`: `default_view`, `disabled_shelves`, `theme` (subject `user:{id}`, `portal:{identity_id}` or `operator`) |
 | Portal | `/api/portal/*` (Accounts, invite claims) |
 
 `GET /api/auth/me` returns
@@ -218,7 +218,8 @@ Content-Type: application/json
 { "default_view": "library" }
 ```
 
-It is stored per user (subject `operator` or `portal:{identity_id}`).
+It is stored per user (subject `user:{id}` for a linked user, `portal:{identity_id}` for an
+unlinked identity, or `operator`).
 
 ## Appearance
 
@@ -289,8 +290,8 @@ prefers an upload, then the last SSO picture, then Gravatar
 
 ### Settings → User Management
 
-For the operator, Owners and Administrators: add the first Owner, create
-users with an invite link, change role and status, send a new invite, and
+The operator adds the first Owner. The operator, Owners and Administrators
+create users with an invite link, change role and status, send a new invite, and
 reset passwords.
 
 Who can grant which role:

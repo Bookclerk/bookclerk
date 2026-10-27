@@ -7,8 +7,9 @@ configure it, and what to check when media work fails.
 ## What it does
 
 Every decode, encode and packaging step runs in a short-lived
-`bookclerk-media-worker` process. The worker locks itself to the paths its
-job declared, then runs the codec.
+`bookclerk-media-worker` process, confined to the paths its job declared.
+On Linux and macOS the worker confines itself; on Windows `bookclerk-jail`
+confines it at spawn.
 
 Acquire feeds audio from outside sources through three C libraries: LAME
 (`mp3lame-sys`), FDK-AAC (`fdk-aac-sys`) and Symphonia's native
@@ -114,8 +115,11 @@ or nothing sits beside the host) or the platform has no way to confine
 itself. The startup log says which, naming the folder it searched or the
 backend that fell short.
 
-Install the worker beside the host binary, or point `media.worker_bin` at
-it. If you accept unconfined codecs, drop to `best-effort` or `off`.
+- **The worker is missing.** Install it beside the host binary, or point
+  `media.worker_bin` at it. `best-effort` doesn't help here; only `off`
+  runs without the worker.
+- **The platform can't confine.** If you accept unconfined codecs, drop to
+  `best-effort`.
 
 ### `media worker (<job>) failed: worker exited with <status> before replying`
 
@@ -156,7 +160,8 @@ seconds to minutes, so a few milliseconds to spawn a process is nothing
 next to a tight per-job allowlist.
 
 1. The host writes a JSON `MediaJob` to the worker's stdin, and closes it.
-2. The worker builds its policy from the job and confines itself.
+2. The worker builds its policy from the job and confines itself. On
+   Windows, `bookclerk-jail` applied that policy at spawn instead.
 3. It runs the codec and writes a JSON reply to stdout.
 
 Nothing configures the jail apart from the request, so a job can never
@@ -168,7 +173,7 @@ get more than it declared.
 | --- | --- | --- | --- | --- | --- |
 | Linux | Landlock and seccomp-bpf | Allowlist, ABI-probed | Deny list | No IP sockets | cgroup v2, only when the spec sets limits (the media spec doesn't) |
 | macOS | Seatbelt (`sandbox_init`) | Deny-by-default SBPL profile | Not applicable | Denied in the profile | Not supported (file system and network only) |
-| Windows | AppContainer | At spawn only | Not applicable | — | Job Object (media defaults: 2 GiB, 64 processes, CPU uncapped) |
+| Windows | AppContainer | At spawn only | Not applicable | No network capabilities | Job Object (media defaults: 2 GiB, 64 processes, CPU uncapped) |
 
 **macOS** has no seccomp. Seatbelt gates classes of operations, not
 syscall numbers, so the syscall layer reports "not applicable" rather
@@ -215,8 +220,9 @@ ends.
 The worker starts with a scrubbed environment. It gets its job over stdin
 and needs nothing from Bookclerk's configuration, so `BOOKCLERK_*`
 variables, operator tokens and cloud credentials are dropped at spawn.
-It keeps only locale, time zone, `RUST_BACKTRACE` and the Windows loader
-variables. Otherwise a compromised codec could read the host's settings
+It keeps only locale, time zone, `RUST_BACKTRACE`, and the Windows
+variables the loader and AppContainer need (such as `SystemRoot`, `PATH`
+and `LOCALAPPDATA`). Otherwise a compromised codec could read the host's settings
 from its own environment.
 
 ### Symbolic links

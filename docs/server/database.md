@@ -285,8 +285,8 @@ can't be stored in it:
 
 - `BOOKCLERK_AUTH_PASSWORD` or `[auth].password`, which wraps `master.key`
   at rest (the environment is preferred);
-- `BOOKCLERK_DATABASE_POSTGRES_URL` and `BOOKCLERK_D1_API_TOKEN`, the
-  database connection;
+- `BOOKCLERK_DATABASE_POSTGRES_URL` and `BOOKCLERK_D1_API_TOKEN` (or
+  `CLOUDFLARE_API_TOKEN`), the database connection;
 - `BOOKCLERK_OPERATOR_TOKEN`, an optional override for the durable
   operator API token (otherwise it is sealed in `encrypted_secrets`; see
   `bookclerk daemon token`);

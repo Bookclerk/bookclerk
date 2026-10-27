@@ -38,7 +38,7 @@ Classic Libation setting names work as aliases where
 | Table | What it sets |
 | --- | --- |
 | `[library]` | Auto-acquire, scan interval, Audible matching, storage layout fix |
-| `[database]`, `[database.sqlite]`, `[database.d1]` | The library database plugin (`sqlite` by default, or Cloudflare D1) |
+| `[database]`, `[database.sqlite]`, `[database.d1]`, `[database.postgres]` | The library database plugin (`sqlite` by default, Cloudflare D1 or PostgreSQL) |
 | `[auth]` | `[auth].password` to wrap `master.key` (prefer `BOOKCLERK_AUTH_PASSWORD`), and `[auth.oidc]` sign-in providers |
 | `[media]` | The codec worker pool: concurrency and confinement; see [Media worker](media.md) |
 | `[plugins]` | How external plugins are jailed; see [Isolation modes](plugins.md#isolation-modes) |
@@ -343,7 +343,7 @@ from a LAN address is refused, and forwarding headers from a peer that
 isn't a trusted proxy are ignored. A mode missing a required setting
 refuses every connection.
 
-The TLS listener serves only node API routes. In `acme` and
+The TLS listener serves the web app and the node API routes. In `acme` and
 `self_signed` mode, the node API stays unmounted on every listener,
 loopback included, until the TLS listener has a certificate. Until then
 (or if it couldn't bind), node API routes answer

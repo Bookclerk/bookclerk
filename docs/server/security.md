@@ -73,8 +73,8 @@ Details: [Libraries and branches](cluster-hosts.md).
 - **Ask for a second factor** on password sign-ins: **Settings → Sign-in**,
   the `require_second_factor` policy. Passkeys and single sign-on are
   other strong options. Details: [Sign-in](sign-in.md).
-- **Give people the lowest role that works.** Only Owners manage sign-in
-  options and other Administrators. See
+- **Give people the lowest role that works.** Only Owners and the operator
+  manage sign-in options and other Administrators. See
   [Sharing with your household](../guide/sharing.md).
 
 ## Plugins and media

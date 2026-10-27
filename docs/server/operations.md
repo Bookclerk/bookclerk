@@ -18,8 +18,8 @@ At start, the daemon:
 1. reads the bootstrap settings from `config.toml` (or `BOOKCLERK_CONFIG`);
 2. opens the library database;
 3. enrolls a stable host id (`node-identity.json`);
-4. loads `[events]` from the database. The other sections still come from
-   TOML.
+4. loads `[events]` and `[output]` from the database. The other sections
+   still come from TOML.
 
 It then runs two schedules:
 
@@ -375,8 +375,14 @@ A starting config is in the image at
 Keep operator auth on, and terminate TLS at a proxy:
 
 ```sh
-docker run … -e BOOKCLERK_DAEMON_LISTEN=0.0.0.0:8787 -p 8787:8787 bookclerkd
-docker exec <container> bookclerk daemon token
+docker run -d --name bookclerk \
+  -v bookclerk-config:/config \
+  -v bookclerk-data:/data \
+  -e BOOKCLERK_AUTH_PASSWORD \
+  -e BOOKCLERK_DAEMON_LISTEN=0.0.0.0:8787 \
+  -p 8787:8787 \
+  bookclerkd
+docker exec bookclerk bookclerk daemon token
 ```
 
 The second command prints the sealed operator token.

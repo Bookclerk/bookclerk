@@ -474,15 +474,18 @@ other workflows.
 The App needs, in its settings:
 
 - the organization permission **Members: read**, accepted on its
-  installation (the repository permission **Issues: write** that the
-  ingest Action already uses covers the **Update GitHub now** button);
+  installation;
+- the repository permission **Issues: write**, for the **Update GitHub
+  now** button. The App's token is separate from the ingest Action's
+  `GITHUB_TOKEN`, so the Action's permission doesn't cover it;
 - the callback URL `https://diagnostics.<DOMAIN>/auth/callback`, or the
   workers.dev URL.
 
 ### Sessions
 
 A random 32-byte `__Host-bc_session` cookie (HttpOnly, Secure,
-SameSite=Strict) names a row in D1 that stores only its SHA-256.
+SameSite=Strict) names a row in D1. The row keeps the cookie only as its
+SHA-256, with the member, their role and the session's times.
 
 - Sessions end 8 hours after sign-in, so a member removed from the
   organization loses access within 8 hours.
