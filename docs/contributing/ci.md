@@ -172,6 +172,7 @@ Each changed path (renames contribute old and new paths) is classified:
 | `fuzz/corpus/<target>/**`, `fuzz/oracles/<target>.rs` | Owning crate's tests (declared `test_input`; an undeclared corpus or oracle is unclassified) |
 | `fuzz/fuzz_targets/**`, `fuzz/dictionaries/**` | Nothing here; the ClusterFuzzLite workflows select themselves by path |
 | `packaging/docker/**`, `.dockerignore` | Nothing here; the [Docker image](#jobs) workflow selects itself by path |
+| `.devcontainer/**`, `scripts/dev-env/**` | **Full suite** (unclassified); the [Dev Container image](#jobs) workflow also selects itself by path |
 | `packaging/demo/**` | Nothing here; the demo image is built by the [demo deploy](automation.md#cloudflare-worker-deploys) |
 
 A planner error still uses that normal full plan when metadata, relations, and
@@ -297,6 +298,16 @@ full release build, so it runs on pull requests that touch the image or its
 startup install path (`packaging/docker/**`, `.dockerignore`, the workflow,
 `bookclerk-dev`, the platform plugin sources, the bundled-install, trust and
 ledger modules, the database loader, the workerd pin), weekly, and on demand. It is not part of `CI Gate`.
+
+The **Dev Container image** job (`.github/workflows/devcontainer-image.yml`)
+builds `.devcontainer/Dockerfile` and runs the contributor toolchain inside it
+as the dev user (cargo, rustfmt, Clippy, cargo-nextest, `capnp`, Node.js, npm,
+uv, PyYAML, git, ssh). It runs on pull requests that touch `.devcontainer/**`,
+`scripts/dev-env/**`, `scripts/tests/requirements.txt` or the workflow,
+weekly, and on demand. It is not part of `CI Gate`;
+`scripts/tests/test_dev_env.py` (plan job) checks on every run that the
+image's tool pins match CI and that every Dockerfile's base images are tag and
+digest pinned, aligned, and covered by Dependabot.
 
 ### Native-behind-workerd gateway smoke
 
