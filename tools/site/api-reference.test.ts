@@ -116,9 +116,9 @@ test("the breadcrumb of an operations page runs through Web API", () => {
   const parent = navParent(nav, "api/web/jobs");
   assert.deepEqual(parent, { key: "api/web/README", title: "Web API" });
   assert.equal(
-    crumbsHtml(navPlace(nav, "api/web/README"), "Jobs", "/docs/", parent),
-    '<nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/docs/">Docs</a></li><li>API reference</li>' +
-      '<li><a href="/docs/api/web/">Web API</a></li><li aria-current="page">Jobs</li></ol></nav>',
+    crumbsHtml(navPlace(nav, "api/web/README"), "Jobs", "/docs/", parent, "api/web/jobs"),
+    '<nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/docs/">Docs</a></li><li><a href="/docs/api/">API reference</a></li>' +
+      '<li><a href="/docs/api/web/">Web API</a></li><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a></li></ol></nav>',
   );
   const graph = JSON.stringify(docJsonLd("https://x", "/docs/", { key: "api/web/jobs", title: "Jobs", description: "" }, parent));
   assert.ok(graph.includes('{"@type":"ListItem","position":2,"name":"Web API","item":"https://x/docs/api/web/"}'));

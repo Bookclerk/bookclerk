@@ -803,6 +803,8 @@ export function apiNavNested(key: string, title: string, headings: readonly DocH
 export interface NavPlace {
   /** Title of the sidebar group that lists it, or null when none does. */
   group: string | null;
+  /** Key of that group's first page, which its breadcrumb crumb links to; null with `group`. */
+  groupFirst: string | null;
   /** The doc before it in sidebar order, if any. */
   previous: { key: string; title: string } | null;
   /** The doc after it in sidebar order, if any. */
@@ -820,12 +822,14 @@ export interface NavPlace {
 export function navPlace(nav: readonly NavGroup[], key: string): NavPlace {
   const flat = nav.flatMap((g) => g.pages.map((p) => ({ ...p, group: g.title })));
   const at = flat.findIndex((p) => p.key === key);
-  if (at === -1) return { group: null, previous: null, next: null };
+  if (at === -1) return { group: null, groupFirst: null, previous: null, next: null };
   const pick = (i: number): { key: string; title: string } | null => {
     const page = flat[i];
     return page === undefined ? null : { key: page.key, title: page.title };
   };
-  return { group: flat[at]?.group ?? null, previous: pick(at - 1), next: pick(at + 1) };
+  const group = flat[at]?.group ?? null;
+  const groupFirst = flat.find((p) => p.group === group)?.key ?? null;
+  return { group, groupFirst, previous: pick(at - 1), next: pick(at + 1) };
 }
 
 /** A sidebar page that a doc the sidebar does not list sits under. */
@@ -860,14 +864,18 @@ export function navParent(nav: readonly NavGroup[], key: string): NavParent | nu
  * @param title - The doc's title.
  * @param base - URL prefix of the docs version.
  * @param parent - The sidebar page the doc sits under (see navParent).
- * @returns A `nav` with Docs, the sidebar group (when there is one), the
- *   parent (when there is one) and the page itself.
+ * @param key - The doc's key, for the last crumb's link.
+ * @returns A `nav` with Docs, the sidebar group (when there is one; it links
+ *   to the group's first page), the parent (when there is one) and the page
+ *   itself, each a link.
  */
-export function crumbsHtml(place: NavPlace, title: string, base: string, parent: NavParent | null = null): string {
-  const items = [`<li><a href="${escapeHtml(base)}">Docs</a></li>`];
-  if (place.group !== null) items.push(`<li>${escapeHtml(place.group)}</li>`);
-  if (parent !== null) items.push(`<li><a href="${escapeHtml(docUrl(parent.key, base))}">${escapeHtml(parent.title)}</a></li>`);
-  items.push(`<li aria-current="page">${escapeHtml(title)}</li>`);
+export function crumbsHtml(place: NavPlace, title: string, base: string, parent: NavParent | null, key: string): string {
+  const link = (href: string, text: string, current = false): string =>
+    `<li><a href="${escapeHtml(href)}"${current ? ' aria-current="page"' : ""}>${escapeHtml(text)}</a></li>`;
+  const items = [link(base, "Docs")];
+  if (place.group !== null && place.groupFirst !== null) items.push(link(docUrl(place.groupFirst, base), place.group));
+  if (parent !== null) items.push(link(docUrl(parent.key, base), parent.title));
+  items.push(link(docUrl(key, base), title, true));
   return `<nav class="crumbs" aria-label="Breadcrumb"><ol>${items.join("")}</ol></nav>`;
 }
 
@@ -1102,7 +1110,7 @@ export function renderDocPage(
       "doc-menus": mobileMenusHtml(versions + nav, doc.headings),
       "doc-versions": versions,
       "doc-nav": nav,
-      "doc-crumbs": crumbsHtml(parent === null ? place : navPlace(shell.nav, parent.key), doc.title, at.base, parent),
+      "doc-crumbs": crumbsHtml(parent === null ? place : navPlace(shell.nav, parent.key), doc.title, at.base, parent, key),
       "doc-body": afterTitle(doc.html, meta),
       "doc-pager": pagerHtml(place, at.base),
       "doc-footer": `<p class="doc-source faint">${sourceLink} · <a href="${escapeHtml(markdownUrl)}" type="text/markdown">View as Markdown</a></p>`,

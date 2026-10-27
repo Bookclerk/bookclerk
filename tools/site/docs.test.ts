@@ -212,12 +212,16 @@ test("the sidebar opens only the current group and places a doc for its breadcru
   assert.match(html, /<details class="nav-group" open><summary>Use<\/summary>/);
   assert.match(html, /<details class="nav-group"><summary>Run<\/summary>/);
   assert.match(html, /<a href="\/docs\/guide\/b" aria-current="page">B &lt;b&gt;<\/a>/);
-  assert.deepEqual(navPlace(nav, "guide/b"), { group: "Use", previous: { key: "guide/a", title: "A" }, next: { key: "server/c", title: "C" } });
+  assert.deepEqual(navPlace(nav, "guide/b"), { group: "Use", groupFirst: "guide/a", previous: { key: "guide/a", title: "A" }, next: { key: "server/c", title: "C" } });
   assert.deepEqual(navPlace(nav, "guide/a").previous, null);
-  assert.deepEqual(navPlace(nav, "README"), { group: null, previous: null, next: null });
+  assert.deepEqual(navPlace(nav, "README"), { group: null, groupFirst: null, previous: null, next: null });
   assert.equal(pagerHtml(navPlace(nav, "README"), "/docs/"), "");
   assert.match(pagerHtml(navPlace(nav, "server/c"), "/docs/"), /<a class="pager-prev" rel="prev" href="\/docs\/guide\/b"><span>Previous<\/span>B &lt;b&gt;<\/a>/);
-  assert.match(crumbsHtml(navPlace(nav, "server/c"), "C & D", "/docs/"), /<li><a href="\/docs\/">Docs<\/a><\/li><li>Run<\/li><li aria-current="page">C &amp; D<\/li>/);
+  assert.equal(
+    crumbsHtml(navPlace(nav, "guide/b"), "B & C", "/docs/", null, "guide/b"),
+    '<nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/docs/">Docs</a></li><li><a href="/docs/guide/a">Use</a></li>' +
+      '<li><a href="/docs/guide/b" aria-current="page">B &amp; C</a></li></ol></nav>',
+  );
 });
 
 test("code blocks and tables can be scrolled from the keyboard", () => {
