@@ -589,9 +589,13 @@ function checkApiPage(source: string, context: string): void {
   assert.equal(badges, sections.length, `badge outside an operation heading: ${context}`);
 
   // Same characters as the page without the layout: the badge's method
-  // was part of the heading's code span there.
-  const chars = (html: string): string =>
-    [...html.replace(/<span class="api-method [^"]*">[A-Z]+<\/span>/g, "").replace(/<[^>]*>/g, "").replace(/\s/g, "")].sort().join("");
+  // was part of the heading's code span there. Splitting on tags keeps
+  // the text runs (even indices) and the tags before them (odd ones).
+  const chars = (html: string): string => {
+    const parts = html.split(/(<[^>]*>)/);
+    const text = parts.filter((_part, i) => i % 2 === 0 && !(parts[i - 1] ?? "").startsWith('<span class="api-method '));
+    return [...text.join("").replace(/\s/g, "")].sort().join("");
+  };
   const methods = sections.map((m) => m[4] ?? "").join("");
   assert.equal(chars(laid + methods), chars(plain), `text changed: ${context}`);
 }
