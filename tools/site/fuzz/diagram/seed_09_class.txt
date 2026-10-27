@@ -1,0 +1,7 @@
+classDiagram
+  class Source {
+    +String id
+    +scan() Titles
+  }
+  Source <|-- Audible
+  Source *-- Account

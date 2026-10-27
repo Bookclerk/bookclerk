@@ -1,0 +1,7 @@
+flowchart TB
+  Host["host"] -- "stdio Cap'n Proto<br/>(plugin.capnp)" --> Jail["bookclerk-jail"]
+  Jail --> Launcher["bookclerk-workerd"]
+  Launcher -- "loopback HTTP,<br/>Bearer BRIDGE_TOKEN" --> Bridge["bridge.js"]
+  Bridge -- "Workers RPC" --> Adapter["adapter isolate"]
+  Adapter -- "Workers RPC" --> Author["author classes"]
+  Adapter -- "GRANTED service binding:<br/>granted channel" --> Launcher

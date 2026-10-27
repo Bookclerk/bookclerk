@@ -318,10 +318,10 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
 .caveats li { display: flex; gap: 14px; padding-block: 14px; border-bottom: 1px solid color-mix(in srgb, var(--ink) 12%, transparent); }
 .caveats svg { flex: 0 0 20px; width: 20px; height: 20px; margin-top: 3px; stroke: var(--brick); fill: none; stroke-width: 2; stroke-linecap: round; }
 
-/* Privacy page: a docs-style reading column outside the docs layout (its
+/* Privacy and security pages: a docs-style reading column outside the docs layout (its
    line and soft-text tokens are shared with .docs-page below). */
-.privacy { --docs-header: 0px; }
-.privacy .doc { padding-block: 40px 88px; }
+.reading { --docs-header: 0px; }
+.reading .doc { padding-block: 40px 88px; }
 
 /* Footer */
 .site-footer { border-top: 1px solid color-mix(in srgb, var(--ink) 12%, transparent); background: color-mix(in srgb, var(--parchment) 40%, var(--paper)); }
@@ -364,7 +364,7 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
    developers.cloudflare.com: a column of about 80 characters, line height
    1.7 and generous space above sections. Below 1200px the rail goes; below
    900px the sidebar and the rail become the two menus in .docs-menus. */
-.docs-page, .privacy {
+.docs-page, .reading {
   --docs-line: color-mix(in srgb, var(--ink) 12%, transparent);
   --docs-soft: color-mix(in srgb, var(--ink) 72%, transparent);
 }
@@ -491,6 +491,33 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
   font: 600 11px/16px var(--font-sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--docs-soft); pointer-events: none;
 }
 .doc pre code { background: none; border: 0; padding: 0; font-size: 14px; overflow-wrap: normal; }
+/* Mermaid diagrams (diagram.ts): inline SVG whose shapes and text color
+   themselves from these variables, the names beautiful-mermaid uses. A wide
+   diagram shrinks to the column down to 70% of its natural width (--w, set
+   by render.ts), then scrolls sideways like a code block. */
+.doc .diagram {
+  margin: 1.5em 0; padding: 8px; overflow-x: auto; text-align: center;
+  background: var(--code-card); border: 1px solid color-mix(in srgb, var(--ink) 14%, transparent); border-radius: 8px;
+}
+.doc .diagram svg {
+  max-width: 100%; min-width: calc(var(--w, 0px) * 0.7); height: auto; vertical-align: middle;
+  --bg: var(--code-card);
+  --fg: var(--ink);
+  --_text: var(--ink);
+  --_text-sec: var(--docs-soft);
+  --_text-muted: var(--docs-soft);
+  --_text-faint: color-mix(in srgb, var(--ink) 40%, var(--code-card));
+  --_line: color-mix(in srgb, var(--ink) 50%, var(--code-card));
+  --_arrow: var(--teal-text);
+  --_node-fill: color-mix(in srgb, var(--parchment) 45%, var(--code-card));
+  --_node-stroke: color-mix(in srgb, var(--ink) 28%, var(--code-card));
+  --_group-fill: var(--code-card);
+  --_group-hdr: color-mix(in srgb, var(--ink) 6%, var(--code-card));
+  --_inner-stroke: color-mix(in srgb, var(--ink) 14%, var(--code-card));
+  --_key-badge: color-mix(in srgb, var(--ink) 10%, var(--code-card));
+}
+.doc .diagram text { font-family: var(--font-sans); }
+.doc .diagram .mono { font-family: var(--font-mono); }
 .doc .copy {
   position: absolute; top: 6px; right: 6px; min-height: 28px; padding: 2px 10px; border-radius: 6px; cursor: pointer;
   border: 1px solid var(--docs-line); background: var(--paper); color: var(--docs-soft); font: 600 12px/1 var(--font-sans);

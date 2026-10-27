@@ -1,0 +1,3 @@
+flowchart LR
+  Seeds["Local taste seeds<br/>finished, rated, listening"] --> Expand["Storefront expansion<br/>Libro.fm related audiobooks<br/>Audible author, series, ASIN, narrator (optional)<br/>Chirp related, series, author, catalog, deals<br/>GraphicAudio Magento related, series, search"]
+  Expand --> Score["Local scoring<br/>filter owned<br/>embedding similarity<br/>author and series boost<br/>purchase hints"]

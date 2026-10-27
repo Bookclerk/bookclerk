@@ -1,0 +1,6 @@
+erDiagram
+  ACCOUNT ||--o{ TITLE : owns
+  TITLE {
+    string asin PK
+    string title
+  }

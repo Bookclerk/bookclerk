@@ -102,6 +102,26 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   page, for HTML only; when it is missing or unreadable, the page has no
   date. The file comes from outside the Worker, so `fuzz.test.ts` replays
   `fuzz/last_updated/` and fuzzes mutations against an independent oracle.
+- `diagram.ts` – draws each ```` ```mermaid ```` fence as inline SVG with
+  [beautiful-mermaid](https://github.com/lukilabs/beautiful-mermaid), which
+  lays diagrams out without a DOM, so pages need no client-side script and
+  the docs' Markdown stays what GitHub renders. Flowcharts, state, sequence,
+  class and ER diagrams are drawn; any other type, a fence over 4,000
+  characters, fences past 12 diagrams or 16,000 characters on one page, a
+  diagram with its own colors (`style`, `classDef`, `linkStyle`), or one
+  that fails to lay out stays a code block. Each figure is named for its
+  kind ("Flowchart") for screen readers. Layout costs CPU (the first one in an
+  isolate about a quarter of a second while elkjs starts), so an isolate
+  keeps its recent layouts. The SVG is rebuilt from an allowlist of elements
+  and attributes (its `<style>` with the font import, tooltips, classes but
+  `mono`, and inline styles are dropped, and nothing may name an outside
+  resource), its ids get a per-diagram prefix no heading slug can match, and
+  `site.css` (`.doc .diagram`) colors it in the site's fonts and light and
+  dark colors. A wide diagram shrinks to 70% at most, then scrolls sideways.
+  It reads doc text, so `fuzz.test.ts` replays `fuzz/diagram/` and fuzzes
+  both mutated sources and mutated renderer output against an independent
+  check of the markup; `diagram.test.ts` runs it without Node's `global`,
+  as the Worker does.
 - `src/docs.js` – the docs pages' only script, served from the site: a Copy
   button on code blocks, the "On this page" link of the section being read
   (`aria-current="location"`), and a filter box above the sidebar groups
@@ -116,6 +136,11 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   the diagnostics dashboard set; `build.test.ts` reads the cookie names from
   those Workers' sources, so renaming one without updating the page fails.
   Keep it in step when a Worker starts collecting or storing anything new.
+- `src/security.html` – the shell of the security page. Its `source` in
+  `PAGES` is the repository's root `SECURITY.md`, which the build renders into
+  the shell's `<!--source-->` marker and publishes as `/security.md`, so the
+  site and GitHub show the same policy. Edit `SECURITY.md`, not the page;
+  links to it from the docs point at `/security`.
 - `worker.ts` – the docs route and content negotiation (see below).
   `wrangler.toml` runs it only for page paths (`run_worker_first`). It
   compresses what it answers with (Brotli, else gzip) itself, because

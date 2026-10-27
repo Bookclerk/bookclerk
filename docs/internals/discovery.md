@@ -23,15 +23,10 @@ Connect-portal identities later.
 
 ## Candidate generation (storefronts first)
 
-```text
- local taste seeds          storefront expansion           local scoring
- (finished / rated /   →   Libro related_audiobooks   →   filter owned
-  listening)                Audible author / series         embed similarity
-                            ASIN / (opt) narrator           author/series boost
-                            Chirp related / series /        purchase hints
-                            author / catalog / deals
-                            GraphicAudio Magento
-                            related + series + search
+```mermaid
+flowchart LR
+  Seeds["Local taste seeds<br/>finished, rated, listening"] --> Expand["Storefront expansion<br/>Libro.fm related audiobooks<br/>Audible author, series, ASIN, narrator (optional)<br/>Chirp related, series, author, catalog, deals<br/>GraphicAudio Magento related, series, search"]
+  Expand --> Score["Local scoring<br/>filter owned<br/>embedding similarity<br/>author and series boost<br/>purchase hints"]
 ```
 
 Owned library rows are **seeds**, not the candidate pool. Open wishlist items
