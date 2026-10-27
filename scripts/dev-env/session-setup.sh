@@ -158,6 +158,15 @@ step_node_uv() {
 }
 
 step_provision() {
+  # A hosted environment may write its proxy CA bundle only after the setup
+  # hook has run. Provision with the default trust store then; the profile
+  # still points later shells at the bundle, which exists by the time they
+  # start.
+  if [[ -n "${BOOKCLERK_DEV_CA_BUNDLE:-}" && ! -f "${BOOKCLERK_DEV_CA_BUNDLE}" ]]; then
+    log "CA bundle ${BOOKCLERK_DEV_CA_BUNDLE} does not exist yet; provisioning with the default trust store"
+    BOOKCLERK_DEV_CA_BUNDLE="" "${script_dir}/provision.sh" --repo "${repo}"
+    return
+  fi
   "${script_dir}/provision.sh" --repo "${repo}"
 }
 
