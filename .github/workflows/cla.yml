@@ -15,7 +15,8 @@
 #   commits without changing the head.
 # - `recheck` re-runs the check after a signature or allowlist change.
 # - The verdict is the `CLA` commit status on the pull request's head; that
-#   context is the one to require. Merge groups get a passing `CLA` status:
+#   context is the one to require. It passes only when every open pull
+#   request with that head passes, since they share the status. Merge groups get a passing `CLA` status:
 #   each pull request in them already passed it to enter the queue.
 # - Runs on `pull_request_target` so fork pull requests get a token that can
 #   comment and record signatures. It checks out the base branch only and

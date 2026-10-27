@@ -161,6 +161,18 @@ def oracle(kind: str, raw: bytes) -> object:
         if type(page) is not list:
             raise Refused
         return [o_comment(e) for e in page]
+    if kind == "pullrefs":
+        page = o_json(raw)
+        if type(page) is not list:
+            raise Refused
+        out = []
+        for e in page:
+            obj = o_obj(e)
+            state = obj.get("state")
+            if type(state) is not str or state not in ("open", "closed"):
+                raise Refused
+            out.append((o_id(obj.get("number")), state == "open", o_sha(o_obj(obj.get("head")).get("sha"))))
+        return out
     if kind == "coauthors":
         doc = o_obj(o_json(raw))
         if doc.get("errors") is not None:
@@ -262,6 +274,8 @@ def module(kind: str, raw: bytes) -> object:
         return [(c.sha, None if c.author is None else acc(c.author)) for c in cla.parse_commit_page(raw)]
     if kind == "comments":
         return [comment(c) for c in cla.parse_comment_page(raw)]
+    if kind == "pullrefs":
+        return [(r.number, r.open, r.head_sha) for r in cla.parse_pull_refs(raw)]
     if kind == "coauthors":
         page = cla.parse_coauthor_page(raw)
         commits = {sha: [acc(a) for a in accounts] for sha, accounts in page.commits.items()}
@@ -511,6 +525,8 @@ class FakeGitHub:
     def __init__(self, author: dict, commits: list[dict], signed: list[dict] | None = None) -> None:
         self.author = author
         self.commit_list = commits
+        #: Other pull requests by number: ``{"author", "commits", "head", "state"}``.
+        self.others: dict[int, dict] = {}
         self.file = json.dumps({"signedContributors": signed or []}).encode()
         self.blob = 1
         self.comments: list[dict] = []
@@ -521,15 +537,27 @@ class FakeGitHub:
     def pull(self) -> dict:
         return {"number": 7, "user": self.author, "head": {"sha": SHA_C}, "commits": len(self.commit_list)}
 
+    def pull_of(self, number: int) -> dict | None:
+        if number == 7:
+            return self.pull()
+        other = self.others.get(number)
+        if other is None:
+            return None
+        return {"number": number, "user": other["author"], "head": {"sha": other.get("head", SHA_C)}, "commits": len(other["commits"])}
+
+    def commits_of(self, number: int) -> list[dict]:
+        return self.commit_list if number == 7 else self.others[number]["commits"]
+
     def blob_sha(self) -> str:
         return f"{self.blob:040x}"
 
     def graphql(self, body: dict) -> tuple[int, bytes]:
         variables = body["variables"]
-        assert (variables["owner"], variables["name"], variables["number"]) == ("bookclerk", "bookclerk", 7)
+        assert (variables["owner"], variables["name"]) == ("bookclerk", "bookclerk")
+        commit_list = self.commits_of(variables["number"])
         start = int(variables["after"] or 0)
         nodes = []
-        for c in self.commit_list[start:start + 100]:
+        for c in commit_list[start:start + 100]:
             primary = c["author"] if c["author"] and c["author"]["type"] == "User" else None
             users = [primary, *c.get("coauthors", [])]
             user_nodes = [
@@ -537,7 +565,7 @@ class FakeGitHub:
                 for u in users
             ]
             nodes.append({"commit": {"oid": c["sha"], "authors": {"totalCount": len(user_nodes), "nodes": user_nodes}}})
-        more = start + 100 < len(self.commit_list)
+        more = start + 100 < len(commit_list)
         info = {"hasNextPage": more, "endCursor": str(start + 100) if more else None}
         page = {"data": {"repository": {"pullRequest": {"commits": {"pageInfo": info, "nodes": nodes}}}}}
         return 200, json.dumps(page).encode()
@@ -558,10 +586,16 @@ class FakeGitHub:
         def page_of(items: list) -> bytes:
             return json.dumps(items[(page - 1) * size: page * size]).encode()
 
-        if method == "GET" and route == "pulls/7":
-            return 200, json.dumps(self.pull()).encode()
-        if method == "GET" and route == "pulls/7/commits":
-            return 200, page_of(self.commit_list)
+        parts = route.split("/")
+        if method == "GET" and len(parts) == 2 and parts[0] == "pulls" and self.pull_of(int(parts[1])) is not None:
+            return 200, json.dumps(self.pull_of(int(parts[1]))).encode()
+        if method == "GET" and len(parts) == 3 and parts[0] == "pulls" and parts[2] == "commits":
+            return 200, page_of(self.commits_of(int(parts[1])))
+        if method == "GET" and len(parts) == 3 and parts[0] == "commits" and parts[2] == "pulls":
+            refs = [{"number": 7, "state": "open", "head": {"sha": SHA_C}}]
+            for n, o in self.others.items():
+                refs.append({"number": n, "state": o.get("state", "open"), "head": {"sha": o.get("head", SHA_C)}})
+            return 200, json.dumps(refs).encode()
         if method == "GET" and route == "issues/7/comments":
             return 200, page_of(self.comments)
         if method == "GET" and route == "contents/signatures/cla.json":
@@ -645,6 +679,40 @@ class EndToEndTests(unittest.TestCase):
         self.assertNotIn("@alice", fake.comments[0]["body"])
         entry = json.loads(fake.file)["signedContributors"][0]
         self.assertEqual(entry, {"name": "alice", "id": 101, "comment_id": 900, "created_at": "2026-10-27T17:00:00Z", "repoId": 555, "pullRequestNo": 7})
+
+    def test_a_shared_head_passes_only_when_every_pull_request_passes(self) -> None:
+        # Bob opens #8 on alice's signed head; a recheck on #7 must not
+        # turn the shared status green while bob has not signed.
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}])
+        fake.others[8] = {"author": BOB, "commits": [commit(SHA_A, ALICE)]}
+        drive(fake, comment_event(ALICE, cla.RECHECK_PHRASE))
+        self.assertEqual(fake.last_status(), "failure")
+        self.assertIn("#8", fake.statuses[-1][1]["description"])
+        self.assertLessEqual(len(fake.statuses[-1][1]["description"]), 140)
+        # The comment on #7 itself still says everyone there has signed.
+        self.assertEqual(fake.comments, [])
+
+    def test_closed_or_moved_pull_requests_do_not_hold_a_head(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}])
+        fake.others[8] = {"author": BOB, "commits": [commit(SHA_A, ALICE)], "state": "closed"}
+        fake.others[9] = {"author": BOB, "commits": [commit(SHA_A, ALICE)], "head": SHA_B}
+        drive(fake, pr_event(fake))
+        self.assertEqual(fake.last_status(), "success")
+        self.assertNotIn(("GET", "repos/bookclerk/bookclerk/pulls/8"), fake.requests)
+
+    def test_a_signed_shared_head_passes(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}, {"name": "bob", "id": 102}])
+        fake.others[8] = {"author": BOB, "commits": [commit(SHA_A, ALICE)]}
+        drive(fake, pr_event(fake))
+        self.assertEqual(fake.last_status(), "success")
+
+    def test_too_many_pull_requests_on_one_head_fail_closed(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}])
+        for n in range(8, 8 + cla.MAX_SHARED_PULLS + 1):
+            fake.others[n] = {"author": ALICE, "commits": [commit(SHA_A, ALICE)]}
+        with self.assertRaises(cla.ApiError):
+            drive(fake, pr_event(fake))
+        self.assertEqual(fake.statuses, [])
 
     def test_signed_pull_request_posts_no_comment(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "old-login", "id": 101}])

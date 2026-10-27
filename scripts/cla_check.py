@@ -115,6 +115,11 @@ MAX_SIGNATURE_BYTES = 1024 * 1024
 #: Times a signature write is retried after another run changed the file.
 SIGNATURE_WRITE_ATTEMPTS = 3
 
+#: Most open pull requests that may share one head commit. The ``CLA``
+#: status belongs to the commit, so each of them is checked before it passes;
+#: more than this fails closed.
+MAX_SHARED_PULLS = 10
+
 #: A GitHub user or organization login. New logins cannot end in a hyphen
 #: or repeat one, but some older accounts do, so only the first character
 #: is restricted beyond the alphabet.
@@ -213,6 +218,18 @@ class PullRequest:
     head_sha: str
     #: How many commits it has.
     commits: int
+
+
+@dataclass(frozen=True)
+class PullRef:
+    """One entry of the pull requests that contain a commit."""
+
+    #: The pull request number.
+    number: int
+    #: Whether it is open.
+    open: bool
+    #: The SHA-1 of its head commit.
+    head_sha: str
 
 
 @dataclass(frozen=True)
@@ -394,6 +411,32 @@ def parse_pull_request(value: object) -> PullRequest:
         head_sha=_sha(head.get("sha"), "pull request head"),
         commits=commits,
     )
+
+
+def parse_pull_refs(raw: bytes) -> list[PullRef]:
+    """Reads ``GET /commits/{sha}/pulls``.
+
+    # Errors
+    ``ClaInputError`` when the page or an entry has the wrong shape.
+    """
+    page = _load_json(raw)
+    if not isinstance(page, list):
+        raise ClaInputError("pull request list is not a list")
+    refs = []
+    for entry in page:
+        obj = _object(entry, "pull request")
+        state = obj.get("state")
+        if state not in ("open", "closed"):
+            raise ClaInputError("pull request state is not open or closed")
+        head = _object(obj.get("head"), "pull request head")
+        refs.append(
+            PullRef(
+                number=_id(obj.get("number"), "pull request number"),
+                open=state == "open",
+                head_sha=_sha(head.get("sha"), "pull request head"),
+            )
+        )
+    return refs
 
 
 def parse_comment(value: object) -> Comment:
@@ -783,6 +826,20 @@ class GitHub:
                 return out, frozenset(assistants)
         raise ApiError(f"pull request has more than {MAX_COMMITS} commits")
 
+    def shared_head(self, pull: PullRequest) -> list[int]:
+        """Lists the other open pull requests whose head is ``pull``'s head.
+
+        # Errors
+        ``ApiError`` when more than ``MAX_SHARED_PULLS`` share it.
+        """
+        refs = parse_pull_refs(self.call("GET", f"commits/{pull.head_sha}/pulls?per_page={PAGE_SIZE}"))
+        if len(refs) >= PAGE_SIZE:
+            raise ApiError("too many pull requests contain the head commit")
+        numbers = sorted({r.number for r in refs if r.open and r.head_sha == pull.head_sha and r.number != pull.number})
+        if len(numbers) > MAX_SHARED_PULLS:
+            raise ApiError(f"more than {MAX_SHARED_PULLS} pull requests share the head commit")
+        return numbers
+
     def comments(self, number: int) -> list[Comment]:
         """Fetches every comment on pull request ``number``, oldest first."""
         comments: list[Comment] = []
@@ -877,7 +934,19 @@ def run(event: Event, api: GitHub, cla_url: str, run_url: str) -> None:
         book = api.record(comment, event.repo_id, pull.number)
     verdict = evaluate(pull, commits, book)
     api.upsert_comment(pull.number, comments, render_comment(verdict, cla_url), create=not verdict.passed)
-    api.set_status(pull.head_sha, "success" if verdict.passed else "failure", status_description(verdict), run_url)
+    if not verdict.passed:
+        api.set_status(pull.head_sha, "failure", status_description(verdict), run_url)
+        return
+    # The status belongs to the commit, which other pull requests (another
+    # author or base) can share; pass only when every one of them passes.
+    for number in api.shared_head(pull):
+        other = api.pull_request(number)
+        if other.head_sha != pull.head_sha:
+            continue
+        if not evaluate(other, api.commits(other), book).passed:
+            api.set_status(pull.head_sha, "failure", f"CLA: #{number}, which shares this commit, still needs signatures.", run_url)
+            return
+    api.set_status(pull.head_sha, "success", status_description(verdict), run_url)
 
 
 def own_comment(comments: list[Comment]) -> Comment | None:

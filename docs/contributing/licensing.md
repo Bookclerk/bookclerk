@@ -111,6 +111,12 @@ queue runs report a passing **CLA** status, because each pull request
 passed it to enter the queue. A pull request with more than 250 commits
 cannot be checked and fails closed.
 
+The status belongs to the commit, not to the pull request. When other open
+pull requests have the same head commit (from another author, or against
+another base), the status passes only when every one of them passes, so
+nobody can borrow a signed contributor's result. More than 10 such pull
+requests fail closed.
+
 Signatures are recorded in `signatures/cla.json` on the `cla-signatures`
 branch, so recording one needs no pull request and no bypass of the main
 branch rules. The copy on `main` stays empty and only seeds the branch.
