@@ -64,6 +64,9 @@ function hostOf(site: string): string {
  * the website's privacy page.
  *
  * @param title - Page title.
+ * @param description - One or two plain-text sentences on what the page
+ *   is for, for the description tag search engines show and check for (the
+ *   pages are `noindex`, but crawlers still read them).
  * @param body - Body HTML (already escaped).
  * @param opts - Script URLs to load, deferred; the website to link back to
  *   (an https URL, or empty for none); and `card` to set the content in a
@@ -71,7 +74,7 @@ function hostOf(site: string): string {
  *   (the launch page).
  * @returns The document.
  */
-function documentHtml(title: string, body: string, opts: { scripts?: string[]; siteUrl?: string; card?: boolean; } = {}): string {
+function documentHtml(title: string, description: string, body: string, opts: { scripts?: string[]; siteUrl?: string; card?: boolean; } = {}): string {
   const scripts = (opts.scripts ?? []).map((src) => `<script src="${esc(src)}" defer></script>`).join("");
   const site = opts.siteUrl ?? "";
   const home = site ? esc(site) : "/";
@@ -85,6 +88,7 @@ function documentHtml(title: string, body: string, opts: { scripts?: string[]; s
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <title>${esc(title)}</title>
+<meta name="description" content="${esc(description)}">
 <link rel="preload" href="/_demo/fonts/literata-v40-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/_demo/fonts/source-sans-3-v20-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/_demo/demo.css">
@@ -215,6 +219,7 @@ ${estimate}
   const stores = STORES.map((name) => `<li>${esc(name)}</li>`).join("");
   return documentHtml(
     "Try Bookclerk",
+    "Try Bookclerk, the self-hosted audiobook library manager, in a private copy that is deleted afterwards: sign in to a store you use and see your books.",
     `<section class="demo-intro">
 <p class="demo-eyebrow">Live demo</p>
 <h1>Try Bookclerk with your own stores</h1>
@@ -259,6 +264,7 @@ export function waitPage(p: { estimateSeconds: number | null; siteUrl: string; }
     p.estimateSeconds === null ? "This usually takes under a minute." : `This usually takes ${aboutHowLong(p.estimateSeconds)}.`;
   return documentHtml(
     "Starting your demo",
+    "Your private copy of Bookclerk is starting.",
     `${WAVEFORM_THROBBER}
 <h1>Starting your copy of Bookclerk</h1>
 <p id="demo-wait-status" role="status">${typical}</p>
@@ -276,6 +282,7 @@ export function waitPage(p: { estimateSeconds: number | null; siteUrl: string; }
 export function endedPage(p: { siteUrl: string; }): string {
   return documentHtml(
     "Demo ended",
+    "Your Bookclerk demo has ended and your copy has been deleted.",
     `<h1>Your demo has ended</h1>
 <p>Your copy of Bookclerk and everything in it has been deleted. Bookclerk signs your store accounts out before it deletes a copy; if Amazon still lists a device named Bookclerk, you can remove it under <em>Manage Your Content and Devices</em>.</p>
 <p><a href="/">Start a new demo</a></p>`,
