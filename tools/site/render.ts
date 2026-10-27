@@ -493,12 +493,13 @@ function inlineText(inline: Token | undefined): string {
  *
  * @param text - Plain text.
  * @param max - Longest result, in characters, ellipsis included.
- * @returns The text, or at most `max` characters of it ending in an
- *   ellipsis; cut mid-word only when the first word alone is too long.
+ * @returns The text, or at most `max` UTF-16 code units of it ending in
+ *   an ellipsis; cut mid-word only when the first word alone is too long,
+ *   and never inside a surrogate pair.
  */
 function shorten(text: string, max: number = DESCRIPTION_MAX): string {
   if (text.length <= max) return text;
-  const cut = text.slice(0, max - 1);
+  const cut = text.slice(0, max - 1).replace(/[\uD800-\uDBFF]$/, "");
   const space = cut.lastIndexOf(" ");
   return `${(space > 0 ? cut.slice(0, space) : cut).replace(/[\s,;:.]+$/, "")}…`;
 }
@@ -527,9 +528,11 @@ export function docPageTitle(title: string): string {
   if (full.length <= TITLE_MAX) return full;
   if (title.length <= TITLE_MAX) return title;
   if (/\s/.test(title)) return shorten(title, TITLE_MAX);
-  const tail = title.slice(title.length - (TITLE_MAX - 1));
+  const tail = title.slice(title.length - (TITLE_MAX - 1)).replace(/^[\uDC00-\uDFFF]/, "");
   const boundary = tail.search(/(?<=::|[./])[^:./]/);
-  return `…${boundary > 0 ? tail.slice(boundary) : tail}`;
+  // Starting at a segment is tidier, but not when it would leave only a
+  // short last segment that no longer identifies the page.
+  return `…${boundary > 0 && tail.length - boundary >= TITLE_MAX / 2 ? tail.slice(boundary) : tail}`;
 }
 
 /**
