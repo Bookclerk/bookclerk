@@ -489,6 +489,11 @@ operator, because the Worker's B2 key cannot change bucket settings:
 | Days from uploading to hiding | `180` |
 | Days from hiding to deleting | `1` |
 
+"Days from hiding to deleting" also removes a replaced older version of a
+file one day later, so this rule does what the "Keep only the last version"
+preset did; the collector writes only under `diagnostics/`, so one rule
+covers the bucket.
+
 In the Backblaze web console: **Buckets** → the bucket → **Lifecycle
 Settings** → **Use custom lifecycle rules**, add the rule above and save.
 With the B2 command-line tool:
