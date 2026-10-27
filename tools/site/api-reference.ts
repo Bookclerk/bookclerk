@@ -128,7 +128,9 @@ export function layoutOperations(tokens: readonly Token[], make: MakeToken): Tok
   };
   const sections: { start: number; end: number; op: ApiOperation }[] = [];
   tokens.forEach((token, i) => {
-    if (token.type !== "heading_open" || token.tag !== "h2") return;
+    // Only top-level headings split the page: a section that opened inside
+    // a list or quote would close outside it.
+    if (token.type !== "heading_open" || token.tag !== "h2" || token.level !== 0) return;
     const op = operationOf(tokens[i + 1]);
     const last = sections[sections.length - 1];
     if (last !== undefined && last.end === tokens.length) last.end = i;
@@ -161,7 +163,7 @@ export function layoutOperations(tokens: readonly Token[], make: MakeToken): Tok
     for (let i = start + 3; i < end; i++) {
       const token = tokens[i];
       if (token === undefined) continue;
-      if (token.type === "heading_open" && token.tag === "h3") {
+      if (token.type === "heading_open" && token.tag === "h3" && token.level === 0) {
         target = EXAMPLE_HEADINGS.has(tokens[i + 1]?.content ?? "") ? examples : main;
       }
       target.push(token);

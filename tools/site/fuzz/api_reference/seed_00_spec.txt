@@ -1,0 +1,26 @@
+# Spec
+
+This document.
+
+Back to the [web API reference](README.md).
+
+## `GET /api/openapi.json`
+
+Serves the OpenAPI document.
+
+**Access:** No auth layer. Routes that need a caller say so in `security`; the handler checks it.
+
+**Credentials:** none
+
+### Responses
+
+| Status | Description | Body |
+| --- | --- | --- |
+| 200 | The OpenAPI 3.1 document for this daemon's version. | any JSON (`application/json`) |
+| 504 | The request ran past the API's time budget. | string (`text/plain`) |
+
+### Example request
+
+```console
+$ curl 'http://127.0.0.1:8787/api/openapi.json'
+```

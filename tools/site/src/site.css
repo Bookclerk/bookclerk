@@ -627,9 +627,15 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
 }
 .api-method-get { --method: #2f855a; }
 .api-method-post { --method: #2b6cb0; }
-.api-method-put { --method: #b7791f; }
+.api-method-put { --method: #975a16; }
 .api-method-patch { --method: #805ad5; }
 .api-method-delete { --method: var(--brick); }
+@media (prefers-color-scheme: dark) {
+  .api-method-get { --method: #68d391; }
+  .api-method-post { --method: #90cdf4; }
+  .api-method-put { --method: #f6ad55; }
+  .api-method-patch { --method: #b794f4; }
+}
 .doc .api-op { border-top: 1px solid var(--docs-line); margin-top: 3em; padding-top: 0.4em; }
 .doc .api-op > * + * { margin-top: 1.15em; }
 .doc .api-op-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 0.8em; font: 600 20px/28px var(--font-sans); }

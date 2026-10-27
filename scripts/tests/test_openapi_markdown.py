@@ -8,6 +8,7 @@ heading that exists.
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 import sys
@@ -229,6 +230,13 @@ class HelpersTest(unittest.TestCase):
     def test_cell_folds_lines_and_escapes_pipes(self) -> None:
         self.assertEqual(om.cell("a |\n\n b"), "a \\| b")
 
+    def test_nested_demotes_headings_outside_fences(self) -> None:
+        text = "Intro.\n\n# Errors\n\n```\n# comment\n```\n\n##### Deep\n#hashtag"
+        self.assertEqual(
+            om.nested(text, 2),
+            "Intro.\n\n### Errors\n\n```\n# comment\n```\n\n###### Deep\n#hashtag",
+        )
+
     def test_description_joins_constraints(self) -> None:
         document = om.Document(DOCUMENT)
         self.assertEqual(document.describe({"description": "Size.", "maximum": 3}), "Size. At most 3.")
@@ -274,6 +282,16 @@ class DaemonDocumentTest(unittest.TestCase):
         routes = sum(1 for item in spec["paths"].values() for method in om.METHODS if method in item)
         self.assertEqual(operations, routes)
         self.assertEqual(slug("`GET /api/openapi.json`"), "get-apiopenapijson")
+
+    def test_route_pages_keep_heading_order(self) -> None:
+        spec = json.loads((ROOT / "crates" / "bookclerkd" / "openapi.json").read_text(encoding="utf-8"))
+        for name, text in om.Document(spec).render_all().items():
+            levels = [len(m) for m in re.findall(r"^(#{1,6}) ", re.sub(r"```.*?```", "", text, flags=re.DOTALL), re.MULTILINE)]
+            with self.subTest(page=name):
+                self.assertEqual(levels[:1], [1])
+                self.assertNotIn(1, levels[1:])
+                for before, after in itertools.pairwise(levels):
+                    self.assertLessEqual(after, before + 1)
 
 
 if __name__ == "__main__":

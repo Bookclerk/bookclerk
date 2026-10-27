@@ -89,6 +89,39 @@ def prose(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.strip().splitlines())
 
 
+def nested(text: str, level: int) -> str:
+    """Normalize a description that sits under a heading of ``level``.
+
+    Descriptions come from doc comments, whose sections (``# Errors``) are
+    top-level headings; left as they are they would outrank the operation
+    they describe. Every ATX heading outside a code fence moves down by
+    ``level`` (capped at six) so the description nests under its section.
+
+    Args:
+        text: Markdown text from the document.
+        level: The level of the heading the text sits under.
+
+    Returns:
+        The text, normalized as by :func:`prose`, with headings demoted.
+    """
+    lines: list[str] = []
+    fence = ""
+    for line in prose(text).splitlines():
+        stripped = line.lstrip()
+        marker = stripped[:3]
+        if marker in ("```", "~~~"):
+            if not fence:
+                fence = marker
+            elif marker == fence:
+                fence = ""
+        elif not fence and len(line) - len(stripped) < 4:
+            hashes = len(stripped) - len(stripped.lstrip("#"))
+            if 1 <= hashes <= 6 and stripped[hashes:hashes + 1] in ("", " ", "\t"):
+                line = "#" * min(6, hashes + level) + stripped[hashes:]
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def code(text: str) -> str:
     """Return ``text`` as an inline code span that survives backticks in it.
 
@@ -674,7 +707,7 @@ class Document:
         if spec.get("summary"):
             lines += [prose(str(spec["summary"])), ""]
         if spec.get("description"):
-            lines += [prose(str(spec["description"])), ""]
+            lines += [nested(str(spec["description"]), 2), ""]
         access = spec.get("x-bookclerk-access")
         if access:
             lines += [f"**Access:** {' '.join(str(access).split())}", ""]

@@ -1,0 +1,16 @@
+# Lookalikes
+
+## GET /api/plain-text
+
+## `get /api/lower`
+
+## `GET  /api/two-spaces`
+
+## `FETCH /api/unknown`
+
+## `GET /api/x` and more
+
+## `GET /api/<script>alert(1)</script>`
+
+Setext `POST /api/setext`
+-------------------------
