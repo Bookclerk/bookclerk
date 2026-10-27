@@ -140,9 +140,10 @@ pull request as the behavior they describe:
 
 ### Licensing
 
-The project is AGPL-3.0-or-later; the plugin SDKs, the crates they link
+The project is AGPL-3.0-or-later; the Rust plugin crates
 (`bookclerk-plugin-sdk`, `bookclerk-plugin-abi`, `bookclerk-plugin-manifest`)
-and `examples/` are MIT; code ported from GPL-3.0 projects keeps
+are MIT OR Apache-2.0; the TS and Python SDKs and `examples/` are MIT; code
+ported from GPL-3.0 projects keeps
 GPL-3.0-only. Keep `LICENSE` the verbatim AGPL text. A new crate inherits the
 workspace license unless plugins link it; a port of someone else's code sets
 the upstream license in `Cargo.toml` and names its source in the module docs.

@@ -3,7 +3,8 @@
 Version 1.0
 
 Thank you for contributing to Bookclerk. This agreement lets the project
-accept your contribution and keep licensing the project as a whole. You keep
+accept your contribution and decide how the project as a whole is
+licensed, now and later, without asking every contributor again. You keep
 the copyright in your work; you give the project a license to use it.
 
 You accept this agreement by posting the comment below on your pull request.
@@ -62,15 +63,7 @@ the litigation is filed.
    know of.
 5. You will tell the Maintainers if any of these statements stops being true.
 
-## 5. What the Maintainers promise
-
-Each Contribution will also stay available under the license that covered
-the part of the project You contributed to when You submitted it (for most
-of the project, the GNU Affero General Public License version 3 or later;
-for the plugin SDKs, the MIT License), so it remains free software even if
-the project later adds other license options.
-
-## 6. Everything else
+## 5. Everything else
 
 - You do not have to support Your Contributions. Unless You agree otherwise
   in writing, You provide them "as is", without warranties or conditions of

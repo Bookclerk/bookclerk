@@ -43,9 +43,10 @@ showed:
 1. The project is licensed under **AGPL-3.0-or-later**. `LICENSE` holds the
    verbatim AGPL-3.0 text so GitHub detects it; the copyright line and the
    "or later" notice live in the README's License section.
-2. The code plugins build on is **MIT**: `bookclerk-plugin-sdk`,
-   `bookclerk-plugin-abi`, `bookclerk-plugin-manifest`, the TypeScript and
-   Python SDKs and the example plugins.
+2. The code plugins build on is permissive: `bookclerk-plugin-sdk`,
+   `bookclerk-plugin-abi` and `bookclerk-plugin-manifest` are
+   **MIT OR Apache-2.0**, the Rust ecosystem's usual dual license; the
+   TypeScript and Python SDKs and the example plugins are **MIT**.
 3. Ports of GPL-3.0 code keep **GPL-3.0-only**: `bookclerk-naming` and
    `bookclerk-enrich`'s `match_score`. Section 13 of both licenses allows
    combining them with the AGPL code.
@@ -53,9 +54,11 @@ showed:
    added to the license as a section 7(e) term in the README.
 5. Contributions are accepted under a **Contributor License Agreement**
    ([`CLA.md`](../../CLA.md)), checked on every pull request by the `CLA`
-   workflow. It grants the project a license to relicense contributions and
-   promises they stay available under the license they were submitted
-   under.
+   workflow. It grants the project a license to relicense contributions
+   without asking each contributor again, and deliberately makes no
+   promise to keep a contribution under the license it was submitted
+   under, so the maintainers can change the project's licensing without
+   tracking down or rewriting small contributions.
 6. The project does not restrict commercial use.
 
 ## Consequences

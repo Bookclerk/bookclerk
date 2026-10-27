@@ -13,15 +13,18 @@ may be used. The reasons behind these choices are in
 | Part | License |
 | --- | --- |
 | Everything not listed below: the hosts, helpers, built-in plugins, web app, tools and docs | [AGPL-3.0-or-later](../../LICENSE) |
-| `bookclerk-plugin-sdk`, `bookclerk-plugin-abi` (including `plugin.capnp`) and `bookclerk-plugin-manifest` | MIT |
+| `bookclerk-plugin-sdk`, `bookclerk-plugin-abi` (including `plugin.capnp`) and `bookclerk-plugin-manifest` | MIT OR Apache-2.0 |
 | The TypeScript and Python SDKs under `packages/` | MIT |
 | The example plugins under `examples/` | MIT |
 | `bookclerk-naming`, ported from Libation | GPL-3.0-only |
 | `match_score` in `bookclerk-enrich`, ported from audiobookshelf | GPL-3.0-only |
 | Vendored code under `third_party/` and fonts under `ui/public/fonts/` | Their own licenses, next to them |
 
-The plugin SDKs and everything a plugin links are MIT so plugin authors can
-license their plugins however they like. A plugin runs as a separate,
+The plugin SDKs and everything a plugin links are permissive so plugin
+authors can license their plugins however they like. The Rust crates use
+the Rust ecosystem's usual MIT OR Apache-2.0 dual license (the user picks
+either; Apache-2.0 adds an explicit patent grant), with both texts next to
+each crate. A plugin runs as a separate,
 jailed process and talks to the host only over the plugin ABI, so the
 project does not treat plugins as derivative works of the host.
 
@@ -47,8 +50,7 @@ asks nothing extra.
 Contributions are accepted under the
 [Contributor License Agreement](../../CLA.md). You keep the copyright; you
 give the project a broad license to your contribution, including the right
-to offer it under other licenses later. In return the project promises your
-contribution stays available under the license it was submitted under.
+to offer it under other licenses later.
 
 To sign:
 
