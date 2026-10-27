@@ -27,14 +27,14 @@
 #
 # Base images are pinned by digest; Dependabot (docker ecosystem) bumps them.
 
-FROM node:26-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS ui
+FROM node:26-trixie-slim@sha256:36793bcbb160a6a16cede1e62b93f84e26b78a972a8a4c0b879c1c12f22761ec AS ui
 WORKDIR /src/ui
 COPY ui/package.json ui/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY ui/ ./
 RUN npm run build
 
-FROM rust:1-bookworm@sha256:48b7f435b8fc6378ce43b44f15e3a47fd8919b2825f835c39bd4bd3da50af5b8 AS builder
+FROM rust:1-trixie@sha256:931c2c0531a8b143e044f0f3914dfe802f15bb3d1955f0b657e9359327ac2ffc AS builder
 RUN apt-get update \
     && apt-get install -y --no-install-recommends capnproto \
     && rm -rf /var/lib/apt/lists/*
@@ -59,7 +59,7 @@ RUN cargo package-platform --out /dist \
     && test -x /opt/bookclerk/workerd \
     && test "$(find /opt/bookclerk/plugins -mindepth 2 -maxdepth 2 -name plugin.toml | wc -l)" -ge 2
 
-FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS runtime
+FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \

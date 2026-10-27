@@ -1,7 +1,7 @@
 # Dev Container
 
 Bookclerk’s Dev Container gives a controlled Linux build environment (Debian
-Bookworm + Rust + OpenSSL headers + Node) so local hosts without `libssl-dev`
+13 trixie + Rust + OpenSSL headers + Node) so local hosts without `libssl-dev`
 (or with mismatched toolchains) can still compile.
 
 The image is [`.devcontainer/Dockerfile`](../../.devcontainer/Dockerfile). It must
@@ -35,7 +35,7 @@ Docker fails container create if a bind `source` is missing or
 the default `devcontainer.json` omits desktop mounts so headless hosts can start
 cleanly.
 
-Fallback: run the bind-mounted binaries on the host itself (glibc ≥ Bookworm):
+Fallback: run the bind-mounted binaries on the host itself (glibc ≥ 2.41, Debian 13 trixie or newer):
 
 ```bash
 # inside the Dev Container
@@ -80,17 +80,31 @@ absolute workspace path via `remoteEnv`.
 
 ## What is installed
 
+The Dockerfile takes Rust, Node.js and uv from their official images and runs
+[`scripts/dev-env/provision.sh`](../../scripts/dev-env/provision.sh) for
+everything else. That script is the one list of what a development
+environment needs: add a tool there, not in the Dockerfile.
+
 | Piece | Notes |
 | --- | --- |
-| `rust:1-bookworm` (digest-pinned, Dependabot bumps it) | `rust-toolchain.toml` selects `stable` + rustfmt/clippy |
+| `rust:1-trixie` (digest-pinned, Dependabot bumps it) | Base only: the provision script installs the `stable` toolchain `rust-toolchain.toml` names (with rustfmt/clippy), so the first cargo command downloads nothing |
+| Node.js 26 (from the `node:26-trixie-slim` image, digest-pinned) | `ui/` Vite build and the Workers under `tools/` |
+| uv (from its image, same version as CI) | Python plugin SDK dev and docs tools |
+| `cargo-nextest` | Same version CI pins; `rust_test` runs under it |
+| Python 3 + a virtualenv with `scripts/tests/requirements.txt` | First on `PATH`, so `python3` has PyYAML for the CI planner tests |
 | `pkg-config` + `libssl-dev` | Fixes the local OpenSSL / `openssl-sys` failure mode |
 | `capnproto` | Compiles `schema/plugin.capnp` (plugin ABI native RPC) |
 | `libdbus-1-dev` + `xdg-utils` | Linux tray (`ksni` / zbus) and `xdg-open` for “Open Bookclerk” |
 | `openssh-client` | SSH commit signing in the Dev Container |
-| Node.js 26 (from the `node` image, digest-pinned) | `ui/` Vite build and the Workers under `tools/` |
 | Cargo registry/git | Workspace `.cargo-home/` (`CARGO_HOME` on the bind mount) |
 | Linux desktop + tray | Optional [`devcontainer.linux-desktop.json`](../../.devcontainer/devcontainer.linux-desktop.json) |
 | `PATH` | `target/debug` then `target/release` (via `remoteEnv`) |
+
+The **Dev Container image** CI workflow builds the image whenever these files
+change and weekly, and checks each tool runs as the dev user
+([CI jobs](ci.md#jobs)). The Linux desktop configuration must keep the default
+configuration's shared keys verbatim and only add to them;
+`scripts/tests/test_dev_env.py` enforces that.
 
 ## SSH commit signing (Dev Container)
 

@@ -178,6 +178,7 @@ jobs:
           "$PY" scripts/tests/test_regression_issue.py
           "$PY" scripts/tests/test_summary_comment.py
           "$PY" scripts/tests/test_release_baseline.py
+          "$PY" scripts/tests/test_dev_env.py
 
       - name: Database plugin isolation
         run: python3 scripts/tests/test_db_plugin_isolation.py -q
@@ -265,7 +266,7 @@ jobs:
         if: needs.plan.outputs.check_needs_uv == 'true'
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
-          version: "0.11.32"
+          version: "0.13.5" # = the Dev Container uv image (scripts/tests/test_dev_env.py)
           enable-cache: false
 
       - name: Install capnproto

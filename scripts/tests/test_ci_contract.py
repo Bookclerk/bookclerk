@@ -319,7 +319,9 @@ class WorkflowContractTests(unittest.TestCase):
 
         found = set()
         for manifest in REPO.glob("**/Cargo.toml"):
-            if "target" in manifest.parts or "node_modules" in manifest.parts:
+            # .cargo-home is the Dev Container's CARGO_HOME, inside the
+            # checkout: its registry sources are not workspace packages.
+            if {"target", "node_modules", ".cargo-home"} & set(manifest.parts):
                 continue
             data = tomllib.loads(manifest.read_text(encoding="utf-8"))
             for test in data.get("test", []):
