@@ -29,6 +29,13 @@ On the Use Bookclerk shelf, name screens and buttons, not config keys or
 crate names. Link to the server reference for the details an operator
 needs.
 
+Design decisions (`adr/`) are the exception. Each one is an architecture
+decision record in the usual form: a title, a **Status** line, then
+**Context**, **Decision** and **Consequences** sections (plus optional
+ones such as **Non-goals**). Keep that structure rather than the page
+shape below. The Markdown rules still apply, because the site renders
+these pages too.
+
 ## Shape each page
 
 1. **Title.** Name the task or the thing, such as "Connect a store" or
