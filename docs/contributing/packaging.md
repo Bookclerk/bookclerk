@@ -134,7 +134,7 @@ joined into one index.
 | --- | --- |
 | `sha-<12 hex>` | Built from that `main` commit; never moved. Per-architecture `sha-<12 hex>-<arch>` tags are the index's inputs. |
 | `edge` | Newest build from `main`. |
-| `<version>`, `<major>.<minor>`, `<major>`, `latest` | Added when a `v<semver>` release is published, by retagging that commit's images (built then if missing). |
+| `<version>`, `<major>.<minor>`, `<major>`, `latest` | Added when a `v<major>.<minor>.<patch>` release is published (no leading zeros or suffixes; `scripts/image_release_tags.py` refuses any other tag), by retagging that commit's images (built then if missing). |
 
 It runs nightly when `main` has moved (an image whose `sha-` tag exists is not
 rebuilt), on a published release, on `main` pushes that change the Dev

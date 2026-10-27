@@ -261,9 +261,17 @@ class ImagePublishWorkflowTests(unittest.TestCase):
                     self.assertNotIn("id-token", perms)
                     self.assertNotIn("attestations", perms)
 
+    def test_release_tag_goes_through_the_parser(self) -> None:
+        """The release tag reaches the registry only through the fuzzed parser."""
+        plan = next(step for step in self.jobs["plan"]["steps"] if step.get("id") == "plan")
+        self.assertIn("python3 scripts/image_release_tags.py", plan["run"])
+        self.assertNotIn("BASH_REMATCH", plan["run"])
+        self.assertFalse(self.jobs["plan"]["steps"][0]["with"]["persist-credentials"])
+        self.assertIn("scripts/image_release_tags.py", self.workflow[True]["pull_request"]["paths"])
+
     def test_pull_requests_never_push(self) -> None:
         """A pull request run builds and checks but cannot publish."""
-        plan = self.jobs["plan"]["steps"][0]["run"]
+        plan = next(step for step in self.jobs["plan"]["steps"] if step.get("id") == "plan")["run"]
         self.assertIn("pull_request) push=false", plan)
         # A run by hand from another branch must not publish unreviewed code.
         self.assertIn('if [[ "$EVENT" != release && "$REF" != refs/heads/main ]]; then\n  push=false', plan)

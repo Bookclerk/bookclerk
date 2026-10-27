@@ -40,6 +40,7 @@ on:
     paths:
       - ".github/workflows/images-publish.yml"
       - ".github/actions/image-build/**"
+      - "scripts/image_release_tags.py"
   release:
     types: [published]
   schedule:
@@ -70,6 +71,10 @@ jobs:
       build: ${{ steps.plan.outputs.build }}
       retag: ${{ steps.plan.outputs.retag }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Decide images and tags
         id: plan
         env:
@@ -90,11 +95,13 @@ jobs:
             push) images="bookclerk-dev"; tags="$sha_tag edge" ;;
             release)
               images="bookclerk bookclerk-dev bookclerk-demo"
-              if [[ ! "$RELEASE_TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              # The tag is text the release's author chose: the sans-IO
+              # parser (fuzzed in scripts/tests) admits only v<major>.<minor>.<patch>.
+              if ! version_tags=$(printf '%s' "$RELEASE_TAG" | python3 scripts/image_release_tags.py); then
                 echo "::error::release tag must be v<major>.<minor>.<patch>"
                 exit 1
               fi
-              tags="$sha_tag ${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]} ${BASH_REMATCH[1]}.${BASH_REMATCH[2]} ${BASH_REMATCH[1]} latest"
+              tags="$sha_tag $version_tags"
               ;;
             *) images="bookclerk bookclerk-dev bookclerk-demo"; tags="$sha_tag edge" ;;
           esac
