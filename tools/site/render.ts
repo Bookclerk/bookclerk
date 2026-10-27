@@ -915,6 +915,8 @@ export interface DocsShell {
   pages: string[];
   /** The titles of `pages`, in the same order, for the human-readable sitemap. */
   pageTitles: string[];
+  /** src/sitemap.html rendered for the site, with SITEMAP_MARKER where the list goes. */
+  sitemapHtml: string;
 }
 
 /**
@@ -1045,6 +1047,9 @@ export function renderUnavailablePage(shell: DocsShell, key: string, at: { ref: 
   return { html, markdown };
 }
 
+/** Where the human-readable sitemap's list goes in src/sitemap.html. */
+export const SITEMAP_MARKER = "<!--sitemap-->";
+
 /** One page the human-readable sitemap lists. */
 export interface SitemapPageLink {
   /** Its doc key, or null for a page outside /docs/. */
@@ -1092,7 +1097,8 @@ function sitemapLabel(key: string, prefix: string): string {
 
 /**
  * Renders /sitemap: every page the site serves, grouped the way the docs
- * sidebar groups them, for people (sitemap.xml is for search engines).
+ * sidebar groups them, for people (sitemap.xml is for search engines). It
+ * is a website page (src/sitemap.html), not a docs page.
  *
  * Site pages come first, then each sidebar group in order with every doc
  * whose key, or top folder, the group lists; the API reference is split by
@@ -1100,10 +1106,9 @@ function sitemapLabel(key: string, prefix: string): string {
  *
  * @param shell - The baked page shell.
  * @param links - The pages, site pages first, then docs in key order.
- * @param at - The default docs version's ref and URL prefix.
  * @returns The full HTML page and its Markdown version.
  */
-export function renderSitemapPage(shell: DocsShell, links: readonly SitemapPageLink[], at: { ref: string; base: string }): RenderedPage {
+export function renderSitemapPage(shell: DocsShell, links: readonly SitemapPageLink[]): RenderedPage {
   const site: SitemapGroup = { title: "Website", links: [], parts: new Map() };
   const groups = shell.nav.map((g): SitemapGroup => ({ title: g.title, links: [], parts: new Map() }));
   const more: SitemapGroup = { title: "More", links: [], parts: new Map() };
@@ -1153,16 +1158,15 @@ export function renderSitemapPage(shell: DocsShell, links: readonly SitemapPageL
     const date = l.updated ? ` (${formatDate(l.updated)})` : "";
     return `- [${(l.title ?? l.path).replace(/[\\[\]]/g, "\\$&")}](${shell.origin}${l.path})${date}`;
   };
+  const ids = all.map((g) => `sitemap-${slugify(g.title)}`);
   const html: string[] = [
     "<h1>Sitemap</h1>",
-    `<p class="muted">Every page on this site, ${total} in all, grouped like the docs sidebar. Search engines read the same list from <a href="/sitemap.xml">sitemap.xml</a>.</p>`,
+    `<p class="muted">Every page on this site, ${total} in all. Search engines read the same list from <a href="/sitemap.xml">sitemap.xml</a>.</p>`,
+    `<nav aria-label="Sections"><p>${all.map((g, i) => `<a href="#${escapeHtml(ids[i] ?? "")}">${escapeHtml(g.title)}</a>`).join(" · ")}</p></nav>`,
   ];
   const md: string[] = ["# Sitemap", "", `Every page on this site, ${total} in all. Search engines read the same list from ${shell.origin}/sitemap.xml.`, ""];
-  const headings: DocHeading[] = [];
-  for (const g of all) {
-    const id = `sitemap-${slugify(g.title)}`;
-    headings.push({ level: 2, id, text: g.title });
-    html.push(`<h2 id="${escapeHtml(id)}">${escapeHtml(g.title)}</h2>`);
+  for (const [i, g] of all.entries()) {
+    html.push(`<h2 id="${escapeHtml(ids[i] ?? "")}">${escapeHtml(g.title)}</h2>`);
     md.push(`## ${g.title}`, "");
     if (g.links.length > 0) {
       html.push(`<ul>${g.links.map(itemHtml).join("")}</ul>`);
@@ -1175,28 +1179,8 @@ export function renderSitemapPage(shell: DocsShell, links: readonly SitemapPageL
       md.push(`### ${name}`, "", ...list.map(itemMd), "");
     }
   }
-  const versions = versionsHtml(shell.versions, at.ref, "README");
-  const nav = homeLink(at.base, false) + navHtml(shell.nav, "", at.base);
-  const page = fillShell(
-    shell.html,
-    {
-      pageTitle: "Sitemap · Bookclerk",
-      pageDescription: "Every page on the Bookclerk website and in its documentation, grouped by section.",
-      pagePath: "/sitemap",
-      markdownUrl: "/sitemap.md",
-      docsBase: at.base,
-    },
-    {
-      jsonld: "",
-      "doc-menus": mobileMenusHtml(versions + nav, headings),
-      "doc-versions": versions,
-      "doc-nav": nav,
-      "doc-crumbs": "",
-      "doc-body": html.join("\n"),
-      "doc-pager": "",
-      "doc-footer": "",
-      "doc-toc": tocHtml(headings, { source: null, issue: `${shell.repository}/issues/new?title=${encodeURIComponent("Docs: Sitemap")}` }),
-    },
-  );
+  const at = shell.sitemapHtml.indexOf(SITEMAP_MARKER);
+  if (at === -1) throw new Error(`the sitemap shell has no ${SITEMAP_MARKER}`);
+  const page = shell.sitemapHtml.slice(0, at) + html.join("\n") + shell.sitemapHtml.slice(at + SITEMAP_MARKER.length);
   return { html: page, markdown: md.join("\n") };
 }

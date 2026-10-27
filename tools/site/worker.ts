@@ -786,7 +786,7 @@ async function serveSitemapPage(request: Request, url: URL, deps: DocsDeps, mark
     links.push({ key: "README", path: version.base, title: null, updated: null });
     for (const [key, title] of titles) links.push({ key, path: docUrl(key, version.base), title, updated: null });
   }
-  const page = renderSitemapPage(deps.shell, links, { ref: version.ref, base: version.base });
+  const page = renderSitemapPage(deps.shell, links);
   const cacheable = docs.length > 0 || file.kind === "missing";
   const cacheControl = cacheable ? `public, max-age=${BROWSER_TTL}, s-maxage=${ttlFor(version.ref)}` : `public, max-age=${MISSING_TTL}, s-maxage=0`;
   const response = markdown

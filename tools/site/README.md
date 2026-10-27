@@ -250,14 +250,19 @@ versions.
   minute and section sitemaps answer 503. Keys the docs route would not
   serve at their URL are left out, and each sitemap lists at most 50,000
   URLs. `robots.txt` allows all crawlers and points to `/sitemap.xml`.
-- `/sitemap` is the same list for people, linked from the footer: the
-  Worker renders it into the docs page shell (`renderSitemapPage` in
-  `render.ts`), grouped like the sidebar, with the API reference split by
-  language and each doc's date. Its Markdown version is `/sitemap.md` (and
-  `Accept: text/markdown`). When the dates file cannot be read it lists the
-  sidebar's docs without dates, for a minute. It is plain HTML rather than
-  an XSL stylesheet on `sitemap.xml` because browsers are removing XSLT
-  (Chrome from November 2026).
+- `/sitemap` is the same list for people, linked from the footer. It is a
+  website page like `/privacy`, not a docs page: `build.ts` bakes
+  `src/sitemap.html` into the shell and the Worker fills in the list
+  (`renderSitemapPage` in `render.ts`), grouped like the sidebar, with the
+  API reference split by language and each doc's date. Its Markdown version
+  is `/sitemap.md` (and `Accept: text/markdown`). When the dates file cannot
+  be read it lists the sidebar's docs without dates, for a minute.
+- Every sitemap starts with `<?xml-stylesheet type="text/css"
+  href="/sitemap.css"?>`, so a person who opens one sees it in the site's
+  colors and fonts with a pointer to `/sitemap`. CSS cannot make the URLs
+  clickable, which is why `/sitemap` exists. XSLT is not used because
+  browsers are removing it (Chrome from November 2026), and the XML is the
+  same for every client: serving people something else would be cloaking.
 - For agents: each doc is also served as Markdown at `/docs/<path>.md` (and
   `/docs/v/<ref>/<path>.md`)
   (linked from the page with `rel="alternate"` and "View as Markdown"), with

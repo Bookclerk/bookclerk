@@ -42,7 +42,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { docMarkdownUrl, docUrl, GENERATED_TITLES, NAV, renderDocs } from "./docs.ts";
-import { escapeHtml, jsonLd, renderDoc, SHELL_MARKERS, SHELL_VALUES } from "./render.ts";
+import { escapeHtml, jsonLd, renderDoc, SHELL_MARKERS, SHELL_VALUES, SITEMAP_MARKER } from "./render.ts";
 import { sitemapXml } from "./sitemap.ts";
 import type { DocsShell, DocsVersion } from "./render.ts";
 import type { RenderedDocs } from "./docs.ts";
@@ -251,6 +251,19 @@ export const PAGES: readonly Page[] = [
   },
 ];
 
+/**
+ * The human-readable sitemap (src/sitemap.html). The Worker renders it at
+ * request time from the docs it serves (renderSitemapPage in render.ts), so
+ * it is not in PAGES and has no file in dist/.
+ */
+const SITEMAP_PAGE: Omit<Page, "file"> = {
+  path: "/sitemap",
+  title: "Sitemap · Bookclerk",
+  description: "Every page on the Bookclerk website and in its documentation, grouped by section.",
+  indexable: true,
+  markdown: "/sitemap.md",
+};
+
 /** The Worker and its page and sitemap renderers, whose sources are part of the docs shell's id (see buildDocsShell). */
 const RENDER_SOURCES = ["render.ts", "diagram.ts", "highlight.ts", "last-updated.ts", "sitemap.ts", "worker.ts"];
 
@@ -263,7 +276,7 @@ const RENDER_SOURCES = ["render.ts", "diagram.ts", "highlight.ts", "last-updated
 const RENDER_LIBRARIES = ["markdown-it", "@shikijs/core", "@shikijs/engine-javascript", "@shikijs/langs", "beautiful-mermaid", "beautiful-mermaid/node_modules/entities", "elkjs"];
 
 /** Files copied verbatim from src/ to dist/. */
-const STATIC_FILES = ["site.css", "docs.js", "_headers", "social-card.png"];
+const STATIC_FILES = ["site.css", "sitemap.css", "docs.js", "_headers", "social-card.png"];
 
 /** Web fonts and their licenses copied from src/fonts/ to dist/fonts/ (see src/fonts/README.md). */
 const FONT_FILE = /^(?:[a-z0-9-]+\.woff2|OFL-[a-z0-9]+\.txt)$/;
@@ -698,11 +711,15 @@ export function buildDocsShell(
   for (const marker of SHELL_MARKERS) {
     if (html.split(`<!--${marker}-->`).length !== 2) throw new Error(`docs shell needs exactly one <!--${marker}-->`);
   }
+  // The human-readable sitemap is a website page whose list the Worker
+  // fills in at request time, so its shell is baked here, not written to dist/.
+  const sitemapHtml = render(readFileSync(join(HERE, "src", "sitemap.html"), "utf8"), pageContext(context, SITEMAP_PAGE), partials);
+  if (sitemapHtml.split(SITEMAP_MARKER).length !== 2) throw new Error(`src/sitemap.html needs exactly one ${SITEMAP_MARKER}`);
   const indexable = PAGES.filter((p) => p.indexable);
   const pages = indexable.map((p) => p.path);
   // Titles without the site name, as a list of pages shows them.
   const pageTitles = indexable.map((p) => (p.path === "/" ? "Home" : p.title.replace(/ · Bookclerk$/, "")));
-  const shell = { html, origin: context.values.origin, repository: REPOSITORY_URL, versions, nav: rendered.nav, pages, pageTitles };
+  const shell = { html, origin: context.values.origin, repository: REPOSITORY_URL, versions, nav: rendered.nav, pages, pageTitles, sitemapHtml };
   // The renderers' sources and libraries go into the id too: a change to how
   // pages are rendered must drop pages cached by an earlier deploy, like a
   // shell change.

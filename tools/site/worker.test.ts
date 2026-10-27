@@ -545,7 +545,7 @@ test("the sitemap is an index of one sitemap per section, listing every dated pa
   assert.equal(res.headers.get("X-Content-Type-Options"), "nosniff");
   assert.deepEqual(fetched, [`${DOCS_RAW_BASE}v0.2.0/last-updated.json`]);
   const index = await res.text();
-  assert.match(index, /^<\?xml version="1.0" encoding="UTF-8"\?>\n<sitemapindex xmlns="http:\/\/www.sitemaps.org\/schemas\/sitemap\/0.9">\n/);
+  assert.match(index, /^<\?xml version="1.0" encoding="UTF-8"\?>\n<\?xml-stylesheet type="text\/css" href="\/sitemap.css"\?>\n<sitemapindex xmlns="http:\/\/www.sitemaps.org\/schemas\/sitemap\/0.9">\n/);
   const sitemaps = [...index.matchAll(/<sitemap><loc>([^<]*)<\/loc>(?:<lastmod>([^<]*)<\/lastmod>)?<\/sitemap>/g)].map((m) => [m[1], m[2] ?? null]);
   assert.deepEqual(sitemaps, [
     ["https://bookclerk.app/sitemap-site.xml", null],
@@ -579,6 +579,10 @@ test("/sitemap lists every page for people, grouped like the sidebar, with dates
   const html = await res.text();
   assert.match(html, /<title>Sitemap · Bookclerk<\/title>/);
   assert.match(html, /<link rel="canonical" href="https:\/\/bookclerk.app\/sitemap">/);
+  // A website page, like /privacy, not a docs page.
+  assert.match(html, /<main id="main" class="reading">/);
+  assert.doesNotMatch(html, /version-picker|docs-menus|class="toc"/);
+  assert.match(html, /<nav aria-label="Sections"><p><a href="#sitemap-website">Website<\/a> · <a href="#sitemap-build-plugins">/);
   assert.match(html, /<h2 id="sitemap-website">Website<\/h2>\n<ul><li><a href="\/">Home<\/a><\/li><li><a href="\/download">Download Bookclerk<\/a><\/li>/);
   assert.match(html, /<h2 id="sitemap-build-plugins">Build plugins<\/h2>\n<ul><li><a href="\/docs\/plugins\/">[^<]+<\/a> <span class="faint">· <time datetime="2026-10-26">Oct 26, 2026<\/time><\/span><\/li><\/ul>/);
   assert.match(html, /<h2 id="sitemap-api-reference">API reference<\/h2>\n<h3>Rust crates<\/h3>\n<ul><li><a href="\/docs\/api\/rust\/demo\/index">demo<\/a>/);

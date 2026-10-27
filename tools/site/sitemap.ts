@@ -8,6 +8,13 @@
 import type { IsoDate } from "./last-updated.ts";
 import { escapeHtml } from "./render.ts";
 
+/**
+ * The stylesheet line every sitemap starts with, so a person who opens one
+ * in a browser sees it in the site's look (src/sitemap.css). CSS rather than
+ * XSLT, which browsers are removing.
+ */
+const STYLESHEET = '<?xml-stylesheet type="text/css" href="/sitemap.css"?>';
+
 /** Most URLs one sitemap file may list, per the protocol. */
 export const MAX_SITEMAP_URLS = 50_000;
 
@@ -32,7 +39,7 @@ export function sitemapXml(origin: string, entries: readonly SitemapEntry[]): st
     const date = lastmod === null ? "" : `<lastmod>${lastmod}</lastmod>`;
     return `  <url><loc>${escapeHtml(origin + path)}</loc>${date}</url>`;
   });
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join("\n")}\n</urlset>\n`;
+  return `<?xml version="1.0" encoding="UTF-8"?>\n${STYLESHEET}\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join("\n")}\n</urlset>\n`;
 }
 
 /**
@@ -48,5 +55,5 @@ export function sitemapIndexXml(origin: string, sitemaps: readonly SitemapEntry[
     const date = lastmod === null ? "" : `<lastmod>${lastmod}</lastmod>`;
     return `  <sitemap><loc>${escapeHtml(origin + path)}</loc>${date}</sitemap>`;
   });
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${items.join("\n")}\n</sitemapindex>\n`;
+  return `<?xml version="1.0" encoding="UTF-8"?>\n${STYLESHEET}\n<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${items.join("\n")}\n</sitemapindex>\n`;
 }
