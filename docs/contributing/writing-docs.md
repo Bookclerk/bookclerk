@@ -107,7 +107,8 @@ two callouts in a section; if everything stands out, nothing does.
 
 - Give every code block a language: `sh` for commands, `toml` for
   settings, `console` for a terminal session where `$ ` marks the
-  commands and the other lines are output.
+  commands and the other lines are output. A command that ends in `\`
+  continues on the next line, without a `$ `.
 - Put one command on each line. Readers copy the whole block with its
   copy button.
 - Write placeholders as `<branch>` and say what to put in their place.

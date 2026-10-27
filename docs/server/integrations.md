@@ -1,157 +1,216 @@
 # Integrations
 
-Integrations are **outbound** plugins: they react to library events, expose
-health/diagnose probes, and optionally participate in the **SPA Accounts /
-claim-ticket** flow (external identities for Discover personalization).
-There is no plugin `kind = "integration"` — guests export `remoteLibrary`
-and/or declare `[[events.consumers]]` / `oidc` / `cli` (see
-[plugins.md](../plugins/README.md)).
+This page connects Bookclerk to other apps, such as Audiobookshelf. It
+also covers Bookclerk acting as the sign-in provider for those apps, and
+signing in to Bookclerk with another provider.
 
-First-party today: **Audiobookshelf** (dual load — in-process `register()` for
-`cargo run`, plus `crates/bookclerk-plugins/integration-audiobookshelf/`).
-Third-party integrations install as external plugins ([plugins.md](../plugins/README.md)).
+## How integrations work
 
-The ABS plugin is **ABS-only** (scan, listening sync, credential auth, user
-observation via `pollEvents`). Claim tickets and the SPA Accounts portal live
-in core Bookclerk; the host polls `pollEvents` and kicks off those workflows.
+An **integration** is an outbound plugin. It can:
 
-## CLI
+- react to library events, such as a finished acquire;
+- report its health through probes;
+- take part in the **Accounts** and claim-ticket flow, which links people
+  to their identity in another app (used to personalize Discover).
 
-```bash
-bookclerk integrations status
-bookclerk integrations test
-bookclerk integrations test --integration audiobookshelf
-bookclerk integrations scan --integration audiobookshelf [--force]
+There is no plugin `kind = "integration"`. An integration plugin exports
+`remoteLibrary`, declares `[[events.consumers]]`, or both, and may
+declare `oidc` and `cli`. See [Plugins](../plugins/README.md).
 
-bookclerk integrations tickets create \
-  --provider audiobookshelf \
-  --external-user-id <id> \
-  [--label "Display name"]
-bookclerk integrations tickets list
-```
+Third-party integrations install as external plugins; see
+[Turning on a third-party integration](#turning-on-a-third-party-integration).
 
-Host commands go through `IntegrationRegistry` capabilities; adapter-specific
-HTTP clients stay inside the ABS plugin package
-(`bookclerk-plugin-integration-audiobookshelf`).
+## Commands
 
-Account linking and claim redemption live in the main SPA (`Accounts` nav /
-login page). Portal HTTP APIs are at `/api/portal/*`.
+| Task | Command |
+| --- | --- |
+| Show each integration's health | `bookclerk integrations status` |
+| Run the probes | `bookclerk integrations test` |
+| Probe one integration | `bookclerk integrations test --integration audiobookshelf` |
+| Ask it to scan | `bookclerk integrations scan --integration audiobookshelf [--force]` |
+| Make a claim ticket | `bookclerk integrations tickets create --provider audiobookshelf --external-user-id <id> [--label "Display name"]` |
+| List claim tickets | `bookclerk integrations tickets list` |
+
+These commands go through the `IntegrationRegistry` capabilities. Each
+plugin keeps its own HTTP client inside its package.
 
 ## Audiobookshelf
 
-Portal-wide settings stay in `config.toml`:
+The first-party integration is **Audiobookshelf**. It loads two ways: an
+in-process `register()` for `cargo run`, and the plugin package in
+`crates/bookclerk-plugins/optional/integration-audiobookshelf/`.
 
-```toml
-[integrations]
-# public_origin = "https://bookclerk.example.com"   # OIDC issuer, shareable /invite?ticket= URLs
-```
+The plugin does Audiobookshelf work only: scans, listening sync, sign-in
+with Audiobookshelf credentials, and watching users through `pollEvents`.
+Claim tickets and the Accounts page are part of Bookclerk itself; the host
+polls `pollEvents` and starts those workflows.
 
-The integration itself is a plugin instance. Its settings are the plugin's
-`[[settings]]`, stored in the database, and it runs on a host when its
-deployment there is `present`:
+### Set it up
+
+The integration is a plugin instance, with its settings in the database.
+It runs on a host when its deployment there is `present`.
 
 | Setting | Default | Notes |
 | --- | --- | --- |
-| `base_url` | — | required; the ABS origin. Granted to the guest as its deployed network endpoint |
-| `api_key` | — | `secret`; sealed in `encrypted_secrets` |
-| `library_id` | — | optional |
-| `watch_users` | `true` | poll ABS users for claim tickets |
-| `notify_scan_on_acquire` | `true` | |
-| `allow_credential_login` | `true` | SPA credential return-visit login |
+| `base_url` | none | Required: the Audiobookshelf address, granted to the plugin as its network endpoint |
+| `api_key` | none | A secret, sealed in `encrypted_secrets` |
+| `library_id` | none | Optional |
+| `watch_users` | `true` | Watch Audiobookshelf users for claim tickets |
+| `notify_scan_on_acquire` | `true` | Ask Audiobookshelf to scan after an acquire |
+| `allow_credential_login` | `true` | Let people sign back in with Audiobookshelf credentials |
 
-```bash
-bookclerk plugins config set audiobookshelf base_url http://audiobookshelf:80
-bookclerk plugins config set audiobookshelf api_key --secret   # value on stdin
-bookclerk plugins deploy audiobookshelf
+1. Set the address:
+
+   ```sh
+   bookclerk plugins config set audiobookshelf base_url http://audiobookshelf:80
+   ```
+
+2. Enter the API key (read from stdin):
+
+   ```sh
+   bookclerk plugins config set audiobookshelf api_key --secret
+   ```
+
+3. Deploy it:
+
+   ```sh
+   bookclerk plugins deploy audiobookshelf
+   ```
+
+The one setting that stays in `config.toml` is the public address, used
+as the sign-in issuer and in shareable invite links:
+
+```toml
+[integrations]
+# public_origin = "https://bookclerk.example.com"
 ```
 
-Typical behavior when enabled:
+### What it does
 
-- Health / diagnose via `integrations status` / `test`
-- On `book_acquired`, optionally notify ABS to scan the library
-- Optional user watch via `pollEvents` — host may mint claim tickets / notify
-- SPA credential return-visit login (`oidc.authenticateUser`) when allowed
-- Optional **listening sync** (`supports_listening_sync`) into the shared
-  `listening_progress` table — used by Discover when present, ignored when not
+- Reports health through `integrations status` and `integrations test`.
+- On `book_acquired`, can ask Audiobookshelf to scan the library.
+- Can watch Audiobookshelf users with `pollEvents`, so the host can mint
+  claim tickets.
+- Lets people sign back in with Audiobookshelf credentials
+  (`oidc.authenticateUser`), when allowed.
+- Can sync listening progress (`supports_listening_sync`) into the shared
+  `listening_progress` table. Discover uses it when it is there.
 
-Listening sync is a registry capability, not an ABS-only host path:
+### Listening sync
 
-```bash
+Listening sync is a registry capability, open to any integration:
+
+```sh
 bookclerk discover sync-listening
-# POST /api/discover/sync-listening
 ```
 
-Any enabled integration that advertises listening sync contributes; ranking
-reads the generic table and never imports adapter clients.
+The API equivalent is `POST /api/discover/sync-listening`. Every enabled
+integration that offers listening sync contributes. Ranking reads only the
+shared table and never calls a plugin's client.
 
-OpenAPI pin / coverage notes:
+API coverage notes:
 [`crates/bookclerk-plugins/optional/integration-audiobookshelf/openapi/PIN.md`](../../crates/bookclerk-plugins/optional/integration-audiobookshelf/openapi/PIN.md).
 
-## Claim tickets & Accounts
+## Claim tickets and Accounts
 
-When `bookclerkd` is running with integrations configured:
+A **claim ticket** links a person to their identity in another app. With
+`bookclerkd` running and an integration configured:
 
-1. Operator mints a claim ticket (`integrations tickets create`).
-2. User opens the ticket URL (needs `public_origin` for a shareable
-   `https://…/?ticket=` link into the SPA login page).
-3. Ticket redeems via `POST /api/portal/redeem` into a portal session
-   (`bookclerk_portal_session`, `Path=/`) bound to that external identity.
-4. Optional return visits use integration credential login
-   (`POST /api/portal/login/integration`) when `allow_credential_login` is
-   enabled.
-5. Linked bookstore accounts are managed on the SPA **Accounts** page
-   (`/api/portal/sources`, `/api/portal/connections`, …).
+1. The operator makes a ticket with `integrations tickets create`.
+2. The person opens the ticket link. A shareable `https://…/?ticket=`
+   link needs `integrations.public_origin`.
+3. The ticket is redeemed (`POST /api/portal/redeem`) into a session
+   (`bookclerk_portal_session`, `Path=/`) tied to that identity.
+4. On later visits, the person can sign in with the integration's
+   credentials (`POST /api/portal/login/integration`), if
+   `allow_credential_login` is on.
+5. They manage their store accounts on **Accounts**
+   (`/api/portal/sources`, `/api/portal/connections` and others).
 
-Keep the daemon listen address trusted — the control plane itself is
-operator-authenticated; portal tickets are the user-facing claim mechanism.
+Linking accounts and redeeming tickets happen in the web app, on
+**Accounts** and the sign-in page. The portal API is `/api/portal/*`.
 
-## OIDC for Audiobookshelf
+> [!IMPORTANT]
+> Keep the daemon's listen address trusted. The control plane itself
+> needs the operator's authentication; claim tickets are only how people
+> claim an identity.
 
-Bookclerk can act as an OpenID Connect authorization server so Audiobookshelf
-(or another client) logs users in with Bookclerk Users — never the shared
-operator token.
+## Bookclerk as the sign-in provider
 
-Discovery: `GET /.well-known/openid-configuration`
+Bookclerk can be an OpenID Connect authorization server, so
+Audiobookshelf (or another app) signs people in with their Bookclerk
+user, never with the shared operator token.
+
+Discovery document: `GET /.well-known/openid-configuration`.
 
 | Endpoint | Notes |
 | --- | --- |
-| `/oidc/authorize` | Auth code + PKCE (`S256`). Requires a **User** portal session (operator bearer is rejected). |
-| `/oidc/token` | `authorization_code` / `refresh_token` |
-| `/oidc/userinfo` | Bearer access token |
-| `/oidc/revoke` | Refresh token revoke |
+| `/oidc/authorize` | Authorization code with PKCE (`S256`). Needs a user's session; the operator Bearer is refused |
+| `/oidc/token` | `authorization_code` and `refresh_token` |
+| `/oidc/userinfo` | Takes a Bearer access token |
+| `/oidc/revoke` | Revokes a refresh token |
 
-Register each relying party as an OIDC client (Settings → Sign-in → OIDC
-clients, or `GET`/`POST`/`PUT`/`DELETE /api/auth/oidc/clients`). Every client
-has an **Enabled** toggle; disabled clients cannot authorize. Custom clients
-are operator-defined. When the Audiobookshelf plugin is installed, Bookclerk
-materializes a plugin-owned `audiobookshelf` public PKCE client (**disabled**
-until you turn it on) from the guest `oidcClients` RPC (or `[[oidc.clients]]`
-in `plugin.toml` when the guest is not loaded). Its redirect URIs are read-only and built from
-the Audiobookshelf instance's `base_url` setting plus ABS’s callback path
-(`/auth/openid/callback`) — not from Bookclerk’s listen port. Audiobookshelf’s
-default web UI is port **13378**; Bookclerk stays on `daemon.listen` (default
-**8787**) and does not bind 13378. Set ABS OpenID issuer to Bookclerk's
-`integrations.public_origin` when pinned, or to the bound loopback origin you
-open the UI at (`http://localhost:8787` in tray/`cargo dev`). Off loopback,
-pin `public_origin`; request `Host` / `X-Forwarded-*` are not used as the
-issuer. Access/ID tokens are HS256 JWTs
-keyed from the operator token material (rotate token → existing JWTs stop
-verifying). Clients may opt out of refresh tokens and restrict scopes to
-`openid` / `profile` / `email`. Decision record:
-[plugin-provided OIDC clients](../adr/plugin-oidc-clients.md).
+### Register an app
 
-See also the ABS plugin notes under
-`crates/bookclerk-plugins/optional/integration-audiobookshelf/`.
+Add each app as an OIDC client in **Settings → Sign-in → OIDC clients**,
+or with `GET`/`POST`/`PUT`/`DELETE /api/auth/oidc/clients`.
 
-## Optional identity broker (upstream OIDC / social)
+- Every client has an **Enabled** switch. A disabled client can't
+  authorize.
+- A client can turn off refresh tokens and limit its scopes to `openid`,
+  `profile` and `email`.
+- You define custom clients yourself.
 
-Bookclerk can **consume** one or more upstream OIDC or OAuth providers while
-remaining the authorization server for Audiobookshelf. Upstream login creates
-or links a first-party User; ABS still trusts Bookclerk’s issuer (`sub` =
-Bookclerk `user_id`). Upstream tokens are never forwarded.
+### The Audiobookshelf client
 
-The **Operator** token is never an OAuth subject (not JIT’d, linked, or shown
-on the SSO login page).
+When the Audiobookshelf plugin is installed, Bookclerk adds an
+`audiobookshelf` public PKCE client. It starts **disabled** until you turn
+it on.
+
+- It comes from the plugin's `oidcClients` call, or from
+  `[[oidc.clients]]` in `plugin.toml` when the plugin isn't loaded.
+- Its redirect URIs are read-only. They are built from the plugin's
+  `base_url` plus Audiobookshelf's callback path,
+  `/auth/openid/callback`, not from Bookclerk's own port.
+
+### Point Audiobookshelf at Bookclerk
+
+Set Audiobookshelf's OpenID issuer to:
+
+- `integrations.public_origin`, when you set one; or
+- the loopback address you open Bookclerk at, such as
+  `http://localhost:8787` under the tray or `cargo dev`.
+
+> [!WARNING]
+> Off loopback, set `integrations.public_origin`. Bookclerk never uses
+> the request's `Host` or `X-Forwarded-*` headers as the issuer.
+
+> [!NOTE]
+> Audiobookshelf's web UI is on port **13378**. Bookclerk stays on
+> `daemon.listen` (**8787** by default) and never binds 13378.
+
+### Tokens
+
+Access and ID tokens are HS256 JWTs, keyed from the operator token's
+material. Rotating the operator token makes existing JWTs stop verifying.
+
+Decision record:
+[Plugin-provided OIDC clients](../adr/plugin-oidc-clients.md). Plugin
+notes: `crates/bookclerk-plugins/optional/integration-audiobookshelf/`.
+
+## Single sign-on from another provider
+
+Bookclerk can also **use** one or more OIDC or OAuth providers for its own
+sign-in, while staying the authorization server for Audiobookshelf.
+
+- Signing in through a provider creates or links a Bookclerk user.
+- Audiobookshelf still trusts Bookclerk's issuer; its `sub` is the
+  Bookclerk `user_id`.
+- The provider's tokens are never passed on.
+- The operator is never an OAuth subject: never created, linked or shown
+  on the SSO sign-in page.
+
+### Configure providers
 
 ```toml
 [auth.oidc]
@@ -178,70 +237,114 @@ allowed_email_domains = ["family.example"]
 link_by_email = true
 ```
 
-Client secrets: `BOOKCLERK_OIDC_<ID>_CLIENT_SECRET` (hyphens → underscores),
-`encrypted_secrets` (`kind=oidc_client`, `name=<provider id>`), or
-`client_secret` in TOML (redacted from logs). Sign in with Apple also needs
-`apple_team_id`, `apple_key_id`, and a `.p8` private key (`BOOKCLERK_OIDC_<ID>_APPLE_PRIVATE_KEY`
-or the sealed store) to mint the ES256 client-secret JWT; the callback is
-`POST` `form_post`. Redirect URI is
-`{effective origin}/api/auth/oidc/callback` (`integrations.public_origin` when
-set, otherwise a bound loopback listen origin — `localhost` in tray/`cargo
-dev`). Off loopback, pin `public_origin`.
+Owners (without elevating) and the operator can manage the same settings
+in **Settings → Sign-in**. The page writes `[auth.oidc]` and
+`integrations.public_origin` to `config.toml`, and keeps client secrets in
+`encrypted_secrets` instead of TOML. Administrators can't change them.
 
-Owners (without elevating) and Operators can also manage this from **Settings →
-Sign-in**. The UI writes `[auth.oidc]` and `integrations.public_origin` to
-`config.toml` and stores client secrets in `encrypted_secrets` rather than TOML.
-The same page has **SSO into Bookclerk** (upstream Google/GitHub/…) above
-**Bookclerk as identity provider** (detected origin, discovery URLs, and OIDC
-clients). Administrators cannot change IdP settings.
+### Client secrets
+
+Give each provider's secret in one of these ways:
+
+- the environment variable `BOOKCLERK_OIDC_<ID>_CLIENT_SECRET` (hyphens in
+  the id become underscores);
+- the sealed store, `encrypted_secrets` (`kind=oidc_client`,
+  `name=<provider id>`);
+- `client_secret` in TOML, which is redacted from logs.
+
+**Sign in with Apple** also needs `apple_team_id`, `apple_key_id` and a
+`.p8` private key (`BOOKCLERK_OIDC_<ID>_APPLE_PRIVATE_KEY`, or the sealed
+store). Bookclerk uses them to mint the ES256 client-secret JWT, and
+Apple's callback is a `POST` (`form_post`).
+
+The redirect URI is `{effective origin}/api/auth/oidc/callback`. The
+effective origin is `integrations.public_origin` when set, and otherwise
+the bound loopback address (`localhost` under the tray or `cargo dev`).
+Off loopback, set `public_origin`.
+
+### Who gets in
 
 | `provision` | Who gets in |
 | --- | --- |
-| `mapped_role` | Must present a mapped group (`owner` / `administrator` / `member`). Default for enterprise IdPs. Role sync on every login (Owner > Administrator > Member). Last-Owner demote is blocked; sign-in still succeeds. |
-| `any` | Any authenticated account; JIT as `default_role` (usually `member`). Social / open homelab. Does not promote to Owner/Admin unless `role_map` also matches. |
-| `allowlist` | Authenticated **and** email / domain / `sub` allowlist. |
-| `invite_only` | No JIT. SSO only links a pre-created User (`sub` or unique email). |
+| `mapped_role` | Only people with a mapped group (`owner`, `administrator` or `member`). The default for company providers |
+| `any` | Anyone the provider signs in, created as `default_role` (usually `member`). Suits social sign-in at home |
+| `allowlist` | People who sign in **and** match the email, domain or `sub` allowlist |
+| `invite_only` | Nobody new. SSO only links a user you created first (by `sub` or a unique email) |
 
-Primary key is `(provider id, sub)` stored as `portal_identities.provider = oidc:{id}`.
-`link_by_email` attaches a new `sub` to the unique matching
-active User only when the provider adapter proves a **verified** email
-(`email_verified` / GitHub `/user/emails` / Discord `verified` / Apple ID token).
-Social presets (Google, GitHub, Apple, Discord) default **on** in Settings; custom
-OIDC defaults **off** so an unverified upstream email cannot attach to an existing
-Owner. Mapping a role to `operator` is rejected.
+- With `mapped_role`, the role syncs at every sign-in (Owner, then
+  Administrator, then Member). Demoting the last Owner is blocked, though
+  the sign-in still succeeds.
+- With `any`, nobody becomes Owner or Administrator unless `role_map` also
+  matches.
+- Mapping a role to `operator` is rejected.
 
-Owner elevation uses IdP step-up (`prompt=login` on a linked provider), a
-**passkey**, or a local password — never a stored IdP password. Passkeys are
-the User-plane hatch when an IdP is down; the Operator token remains host
-break-glass. Logout is local (`POST /api/auth/logout`); the upstream IdP
-session is not terminated.
+### Linking by email
+
+A provider identity is keyed by `(provider id, sub)`, stored as
+`portal_identities.provider = oidc:{id}`.
+
+`link_by_email` attaches a new `sub` to the one active user with that
+email, but only when the provider proves the email is **verified**:
+`email_verified`, GitHub's `/user/emails`, Discord's `verified`, or
+Apple's ID token.
+
+> [!CAUTION]
+> The social presets (Google, GitHub, Apple, Discord) turn
+> `link_by_email` on by default in Settings. Custom providers default to
+> off, so an unverified email from them can't attach to an existing
+> Owner.
+
+### Elevation and sign-out
+
+- An Owner elevates with a provider step-up (`prompt=login` on a linked
+  provider), a passkey or a local password. Bookclerk never stores a
+  provider password.
+- If a provider is down, passkeys are the way in for users. The operator
+  token stays the host's break-glass.
+- Logging out (`POST /api/auth/logout`) is local; it doesn't end the
+  provider's session.
+
+### Endpoints
 
 | Endpoint | Notes |
 | --- | --- |
-| `GET /api/auth/oidc/providers` | Public list of enabled login buttons |
-| `GET`/`PUT /api/auth/oidc/config` | Owner or Operator: list/replace providers (secrets redacted); `public_origin` pins the issuer; `detected_origin` is this request only when it is a bound loopback listen address |
-| `GET`/`POST /api/auth/oidc/clients` | Owner or Operator: list/create Bookclerk-as-IdP clients (confidential secrets returned once) |
+| `GET /api/auth/oidc/providers` | Public list of sign-in buttons |
+| `GET`/`PUT /api/auth/oidc/config` | Owner or operator: list or replace providers (secrets redacted). `public_origin` pins the issuer; `detected_origin` is this request's origin, only when it is a bound loopback address |
+| `GET`/`POST /api/auth/oidc/clients` | Owner or operator: list or create clients of Bookclerk as provider (a confidential secret is returned once) |
 | `PUT`/`DELETE /api/auth/oidc/clients/{id}` | Update or delete a client |
-| `POST /api/auth/oidc/clients/{id}/rotate-secret` | Mint a new confidential secret (returned once) |
-| `GET /api/auth/oidc/login?provider=` | Start SSO (PKCE + nonce; Apple uses `response_mode=form_post`) |
+| `POST /api/auth/oidc/clients/{id}/rotate-secret` | Make a new confidential secret (returned once) |
+| `GET /api/auth/oidc/login?provider=` | Start SSO (PKCE and nonce; Apple uses `response_mode=form_post`) |
 | `GET /api/auth/oidc/elevate?provider=` | Owner step-up (`prompt=login`) |
-| `GET`/`POST /api/auth/oidc/callback` | Token exchange + JIT / link (Apple POST `form_post`) |
-| `GET /api/auth/oidc/identities` | Linked IdPs for the current User |
-| `GET`/`POST`/`DELETE /api/auth/passkeys…` | WebAuthn register (optional `name`), login, elevate |
-| `GET`/`PUT /api/auth/mfa-policy` | Owner/operator: require TOTP or passkey for password login |
-| `POST /api/auth/totp/enroll/*` / `GET`/`DELETE /api/auth/totp` / `POST /api/auth/totp/login` | Authenticator-app TOTP |
+| `GET`/`POST /api/auth/oidc/callback` | Token exchange, then create or link the user (Apple posts `form_post`) |
+| `GET /api/auth/oidc/identities` | The current user's linked providers |
+| `GET`/`POST`/`DELETE /api/auth/passkeys…` | Passkeys: register (optional `name`), sign in, elevate |
+| `GET`/`PUT /api/auth/mfa-policy` | Owner or operator: require TOTP or a passkey with a password |
+| `POST /api/auth/totp/enroll/*`, `GET`/`DELETE /api/auth/totp`, `POST /api/auth/totp/login` | Authenticator-app TOTP |
 
 See [ADR: first-party identity](../adr/first-party-identity.md) and
-[sign-in.md](sign-in.md).
+[Web app and sign-in](sign-in.md).
 
-## Enabling third-party integrations
+## Turning on a third-party integration
 
-External integrations enrol with an `absent` deployment. Install under
-`$BOOKCLERK_FILES_DIR/plugins/<name>/`, approve the grant, and enable by id:
+An external integration enrolls with an `absent` deployment.
 
-```bash
-bookclerk plugins approve echo --yes
-bookclerk plugins deploy echo
-```
+1. Install it under `$BOOKCLERK_FILES_DIR/plugins/<name>/`.
+2. Approve what it asks for:
 
-See the echo example walkthrough in [plugins.md](../plugins/README.md).
+   ```sh
+   bookclerk plugins approve echo --yes
+   ```
+
+3. Deploy it:
+
+   ```sh
+   bookclerk plugins deploy echo
+   ```
+
+The Echo example walks through this in [Plugins](../plugins/README.md).
+
+## Next steps
+
+- [Web app and sign-in](sign-in.md): roles, passkeys and second factors.
+- [Managing plugins](plugins.md): deploy, configure and approve plugins.
+- [Security checklist](security.md): before the server goes public.
