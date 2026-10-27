@@ -4,9 +4,9 @@
 // a stand-in for the docs repository. Run with `npm test`.
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { extname, join } from "node:path";
+import { extname, join, relative } from "node:path";
 import { after, before, test } from "node:test";
 
 import { build, PAGES } from "./build.ts";
@@ -25,6 +25,7 @@ import {
 } from "./worker.ts";
 import type { DocsFetch, Env, PageCache } from "./worker.ts";
 import type { BuildEnv } from "./build.ts";
+import { docPageTitle, docUrl, TITLE_MAX } from "./render.ts";
 import type { DocsShell } from "./render.ts";
 import { MAX_LAST_UPDATED_BYTES } from "./last-updated.ts";
 
@@ -633,4 +634,68 @@ test("compression leaves alone what must not or need not be compressed", async (
   assert.equal(md304.headers.get("ETag"), 'W/"abc"');
   const post = await handle(new Request("https://bookclerk.app/", { method: "POST", headers: { "Accept-Encoding": "br" } }), env, { shell });
   assert.equal(post.headers.get("Content-Encoding"), null);
+});
+
+/** Where scripts/generate-api-docs.sh writes the API reference into docs/ (gitignored, see docs/api/README.md). */
+const GENERATED_API_DIRS: ReadonlySet<string> = new Set(["api/rust", "api/typescript", "api/ui", "api/python"]);
+
+/**
+ * Decodes the character references escapeHtml writes.
+ *
+ * @param text - Escaped HTML text.
+ * @returns The text a browser or crawler reads.
+ */
+function unescapeHtml(text: string): string {
+  return text.replace(/&(#\d+|#x[0-9a-f]+|amp|lt|gt|quot|apos);/gi, (_, ref: string) => {
+    const named: Readonly<Record<string, string>> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+    if (!ref.startsWith("#")) return named[ref.toLowerCase()] ?? "";
+    return String.fromCodePoint(ref[1] === "x" || ref[1] === "X" ? parseInt(ref.slice(2), 16) : parseInt(ref.slice(1), 10));
+  });
+}
+
+/**
+ * Every Markdown file under a directory.
+ *
+ * @param dir - Directory to walk.
+ * @returns Absolute paths of its `.md` files, subdirectories included.
+ */
+function markdownFiles(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    // The generated API reference is gitignored here; GENERATED stands in for it.
+    if (entry.isDirectory()) return GENERATED_API_DIRS.has(relative(DOCS, path)) ? [] : markdownFiles(path);
+    return entry.isFile() && entry.name.endsWith(".md") ? [path] : [];
+  });
+}
+
+test("every page has a description, a title search engines show whole, and alt text on every image", async () => {
+  const docs = [...markdownFiles(DOCS).map((file) => relative(DOCS, file).slice(0, -".md".length)), ...Object.keys(GENERATED).filter((f) => f.endsWith(".md")).map((f) => f.slice(0, -".md".length))];
+  const paths = [...PAGES.map((page) => page.path), "/no-such-page", ...docs.map((key) => docUrl(key))];
+  assert.ok(docs.length > 50, "the docs were found");
+  for (const path of paths) {
+    const res = await get(path, BROWSER);
+    const html = await res.text();
+    assert.equal(res.status, path === "/no-such-page" ? 404 : 200, path);
+    assert.match(res.headers.get("Content-Type") ?? "", /^text\/html/, path);
+    const description = /<meta name="description" content="([^"]*)">/.exec(html)?.[1] ?? "";
+    assert.ok(description.trim().length > 0, `${path} has no description`);
+    const title = unescapeHtml(/<title>([^<]*)<\/title>/.exec(html)?.[1] ?? "");
+    assert.ok(title.length > 0 && title.length <= TITLE_MAX, `${path} title is ${title.length} characters: ${title}`);
+    for (const img of html.match(/<img\b[^>]*>/g) ?? []) {
+      assert.match(img, /\salt="[^"]*\S[^"]*"/, `${path} has an image without alt text: ${img}`);
+    }
+  }
+});
+
+test("docPageTitle names the site when it fits and otherwise keeps what identifies the page", () => {
+  assert.equal(docPageTitle("Getting started"), "Getting started · Bookclerk docs");
+  const prose = docPageTitle("ADR: Control plane — bootstrap, host identity, and database configuration");
+  assert.equal(prose, "ADR: Control plane — bootstrap, host identity, and database…");
+  const path = docPageTitle("bookclerk_plugin_abi::plugin_capnp::adapter_database_session::assert_restore_constraints_results");
+  assert.equal(path, "…adapter_database_session::assert_restore_constraints_results");
+  assert.equal(docPageTitle("x".repeat(200)).length, TITLE_MAX);
+  const shortLast = docPageTitle(`crate.${"m".repeat(80)}.io`);
+  assert.equal(shortLast.length, TITLE_MAX);
+  assert.ok(shortLast.endsWith(".io"));
+  assert.doesNotMatch(docPageTitle(`${"😀".repeat(40)} title`), /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
 });

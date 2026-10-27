@@ -103,6 +103,17 @@ describe("footer", () => {
   });
 });
 
+describe("search engine tags", () => {
+  it("gives every page a description and a title search engines show whole", () => {
+    for (const html of [launchPage(LAUNCH), waitPage({ estimateSeconds: null, siteUrl: "" }), endedPage({ siteUrl: "" })]) {
+      const description = /<meta name="description" content="([^"]*)">/.exec(html)?.[1] ?? "";
+      assert.ok(description.length >= 25 && description.length <= 160, `description: ${description}`);
+      const title = /<title>([^<]*)<\/title>/.exec(html)?.[1] ?? "";
+      assert.ok(title.length > 0 && title.length <= 70, `title: ${title}`);
+    }
+  });
+});
+
 describe("privacy link", () => {
   it("links every page to the website's privacy page when there is a website", () => {
     const site = "https://bookclerk.app";
