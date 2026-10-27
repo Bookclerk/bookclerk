@@ -462,6 +462,18 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
 .doc a:not([class]):hover { text-decoration-color: currentColor; }
 .doc code { font-size: 0.84em; background: color-mix(in srgb, var(--ink) 5%, transparent); border: 1px solid var(--docs-line); padding: 1px 5px; border-radius: 5px; overflow-wrap: anywhere; }
 .doc blockquote { margin-inline: 0; padding: 4px 16px; border-left: 3px solid var(--fold); color: color-mix(in srgb, var(--ink) 80%, transparent); }
+/* Callouts (GitHub's `> [!NOTE]` alerts): a tinted card with its kind as a
+   title. Accents reuse the syntax hues, which already pass 4.5:1. */
+.doc .callout { --callout: var(--hl-v); margin-block: 1.5em; padding: 12px 16px; border-left: 4px solid var(--callout); border-radius: 0 10px 10px 0; background: color-mix(in srgb, var(--callout) 6%, transparent); }
+.doc .callout-tip { --callout: var(--hl-s); }
+.doc .callout-important { --callout: var(--hl-k); }
+.doc .callout-warning { --callout: var(--hl-n); }
+.doc .callout-caution { --callout: #b91c1c; }
+@media (prefers-color-scheme: dark) { .doc .callout-caution { --callout: #fca5a5; } }
+.doc .callout > :first-child { margin-top: 0; }
+.doc .callout > :last-child { margin-bottom: 0; }
+/* Mixed toward the body ink so the title keeps 4.5:1 on the tinted card. */
+.doc .callout-title { font-weight: 650; color: color-mix(in srgb, var(--callout) 70%, var(--ink)); margin-bottom: 0.25em; }
 .doc hr { border: 0; border-top: 1px solid var(--docs-line); }
 
 .doc .code { position: relative; margin-block: 1.5em; }

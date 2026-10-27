@@ -33,6 +33,10 @@ the publish crates, by TypeDoc and lint checks on the TypeScript SDK and
 - No crate- or module-wide `allow(missing_docs)`; narrow allows only for
   generated code that cannot carry comments.
 
+Pages under `docs/` follow [`docs/contributing/writing-docs.md`](docs/contributing/writing-docs.md):
+Markdown that GitHub renders (the site renders the same files), short
+paragraphs, numbered steps and `> [!NOTE]`-style callouts.
+
 Types:
 
 - Encode meaning in types: newtypes for ids, keys, units and secrets instead of

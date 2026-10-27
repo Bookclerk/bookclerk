@@ -1,10 +1,11 @@
 # What is Bookclerk?
 
-Bookclerk gathers the audiobooks you have bought from Audible, Libro.fm,
-Chirp and GraphicAudio into one catalog on your own computer, keeps copies
-you control, and shelves them where your player already looks. You use it
-in a web browser, on the computer that runs it or anywhere on your home
-network.
+Bookclerk gathers the audiobooks you bought from Audible, Libro.fm, Chirp
+and GraphicAudio into one library on your own computer. It keeps copies you
+control, and saves them where your player already looks.
+
+You use it in a web browser, on the computer that runs it or anywhere on
+your home network.
 
 ## What it does
 
@@ -38,13 +39,16 @@ development version yourself, and things may change between updates.
 
 While the hosted demo is running, the [Bookclerk website](https://bookclerk.app/)
 has a **Try the demo** button. It gives you your own copy of Bookclerk in
-the browser for 30 minutes, with a sample library from a made-up member
-called Sam. You can sign in to your stores, scan your library and search
-it. Not every store can sign in from the demo yet.
+the browser for 30 minutes.
 
-The demo cannot download books. It ends when the 30 minutes are up, or
-after 10 minutes without activity. Then it signs your stores out and deletes
-everything.
+The demo comes with a sample library from a made-up member called Sam. You
+can sign in to your stores, scan your library and search it. Not every
+store can sign in from the demo yet.
+
+> [!NOTE]
+> The demo cannot download books. It ends when the 30 minutes are up, or
+> after 10 minutes without activity. Then it signs your stores out and
+> deletes everything.
 
 ## Where to go next
 

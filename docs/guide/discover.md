@@ -17,27 +17,35 @@ Discover shows rows of suggestions, each with its reason, for example:
 - **Wishlist**: what people in your household want.
 
 Suggestions come from the stores' catalogs, so they include books nobody in
-your library owns yet. The more you rate and finish, the better they get. If
-your household uses Audiobookshelf, Bookclerk can also learn from what you
-listen to there.
+your library owns yet. The more you rate and finish, the better they get.
 
-The search box at the top searches every store's catalog at once. Each book
-shows up once, with where to buy it and the best current price. Prices
-consider the stores you have connected, so a member price counts where you
-are a member.
+If your household uses Audiobookshelf, Bookclerk can also learn from what
+you listen to there.
 
 To hide rows you do not want, open **Preferences** in the top bar.
+
+## Search every store
+
+The search box at the top searches every store's catalog at once. Each book
+shows up once, with where to buy it and the best current price.
+
+Prices take the stores you have connected into account, so a member price
+counts where you are a member.
 
 ## Wishlist
 
 Add a book to your wishlist from any card or search result. Your wishlist is
-yours; it does not matter which store the book comes from.
+yours, whichever store the book comes from.
 
-Beside your list, the **Global queue** shows every book that anyone has
-on their wishlist, with the faces of the people who want it. Books more
-people want rise to the top. When a book on the queue joins the library, it
-leaves the queue. There is no approval step: whoever buys books for the
-household can simply work down the list.
+## Global queue
+
+Beside your list, the **Global queue** shows every book that anyone has on
+their wishlist, with the faces of the people who want it.
+
+- Books more people want rise to the top.
+- When a book on the queue joins the library, it leaves the queue.
+- There is no approval step. Whoever buys books for the household can
+  simply work down the list.
 
 How suggestions are found and ranked is described in
 [Discovery design](../internals/discovery.md).

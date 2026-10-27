@@ -1,10 +1,11 @@
 # Join a library as a branch
 
-A **library** is the Bookclerk everyone in a household signs in to. A
-**branch** is a second Bookclerk install, on another computer, that joins
-that library to help with the work. It downloads books for its owner's
-store accounts on its own machine and sends the results back to the
-library.
+A **branch** is a second Bookclerk install, on another computer, that joins
+a library to help with its work. The **library** is the Bookclerk everyone
+in a household signs in to.
+
+A branch downloads books for its owner's store accounts on its own machine,
+and sends the results back to the library.
 
 You might add a branch when:
 
@@ -13,34 +14,43 @@ You might add a branch when:
 - the library runs on a small server, and a stronger computer should do
   the heavy work.
 
-A branch keeps its own database and its own operator, and it never holds
-the library's database password or encryption keys.
+> [!NOTE]
+> A branch keeps its own database and its own operator. It never holds the
+> library's database password or encryption keys.
 
 ## Join from a new install
 
-1. Install Bookclerk on the second computer ([Getting started](getting-started.md),
-   steps 1 and 2).
-2. On the welcome screen, choose **Join a library**. (On an install that is
-   already set up: **Settings → Library → Join a library**.)
+1. Install Bookclerk on the second computer and paste its operator token
+   (steps 1 and 2 of [Getting started](getting-started.md)).
+2. On the welcome screen, choose **Join a library**. On an install that is
+   already set up, use **Settings → Library → Join a library** instead.
 3. Enter the library's address, for example `https://books.example.com`.
 4. If the library uses its own certificate, Bookclerk shows its
-   fingerprint. Check it against the one on the library's
-   **Settings → Branches** page, and confirm they match.
-5. Name the branch and choose **Sign in**. Your browser goes to the library;
-   sign in there as yourself and choose **Allow**.
-6. You are back on the branch, which now says it is connected.
+   fingerprint. Check that it matches the one on the library's
+   **Settings → Branches** page, and confirm.
+5. Name the branch and choose **Sign in**. Your browser goes to the
+   library.
+6. Sign in there as yourself and choose **Allow**.
+7. You are back on the branch, which now says it is connected.
 
-If you cannot sign in to the library yourself, someone who can opens
-**Add a branch** for you (in their menu, or in **Settings → User
-Management**) and sends you the invite. Use the **I have an invite** tab in
-step 3 instead. An invite works once and expires, after a day by default.
+### Join with an invite
+
+If you cannot sign in to the library yourself, someone who can sends you an
+invite instead:
+
+1. They open **Add a branch**, in their menu or in **Settings → User
+   Management**, and send you the invite.
+2. In step 3 above, you use the **I have an invite** tab.
+
+An invite works once and expires, after a day by default.
 
 ## Approve the library's plugins
 
 The library tells the branch which plugins it needs, such as the stores you
 use. Nothing runs on the branch until its operator approves each one in
-**Settings → Library**, where you can also see and limit what each plugin
-may reach.
+**Settings → Library**.
+
+The same page shows what each plugin may reach, and lets you limit it.
 
 ## What the library can ask of a branch
 
@@ -50,11 +60,13 @@ work from the library.
 
 ## Leave a library
 
-**Settings → Library → Leave library** on the branch. The library's
-operator or an Owner can also remove a branch from **Settings → Nodes**.
+On the branch, open **Settings → Library → Leave library**.
+
+The library's operator or an Owner can also remove a branch from
+**Settings → Nodes**.
 
 ## Clerks
 
-A **clerk** is different: an extra copy of the library itself that shares
-the library's database, for running it on more than one machine. Setting up
-clerks is an operator task; see [Libraries and branches](../server/cluster-hosts.md#clerks).
+A **clerk** is different from a branch. It is an extra copy of the library
+itself, sharing the library's database, so the library runs on more than
+one machine. Setting up clerks is an operator task; see [Libraries and branches](../server/cluster-hosts.md#clerks).
