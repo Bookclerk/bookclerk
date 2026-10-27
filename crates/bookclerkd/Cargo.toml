@@ -25,6 +25,7 @@ bookclerk-node-client.workspace = true
 bookclerk-node-proto.workspace = true
 chrono.workspace = true
 clap.workspace = true
+indexmap.workspace = true
 bookclerk-config.workspace = true
 bookclerk-enrich.workspace = true
 bookclerk-acquire.workspace = true
