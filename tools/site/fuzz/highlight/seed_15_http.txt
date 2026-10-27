@@ -1,0 +1,5 @@
+http
+POST /api/auth/login HTTP/1.1
+Content-Type: application/json
+
+{"token": "<operator token>"}
