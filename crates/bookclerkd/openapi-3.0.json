@@ -1201,6 +1201,16 @@
         ],
         "type": "object"
       },
+      "DesiredState": {
+        "description": "What a deployment row asks its node to do, and who decided it.\n\nOperators write [`DesiredState::Present`] and [`DesiredState::Absent`]\n(`plugins deploy|undeploy`, the Settings switch). The placement scheduler\nwrites [`DesiredState::Placed`] and [`DesiredState::Unplaced`] for an\ninstance it owns. A node runs the instance for `present` and `placed`\nand retires it for `absent` and `unplaced`; the split only records whose\ndecision the row carries, so \"the operator turned this off\" never reads\nlike \"the scheduler put the replica elsewhere\".",
+        "enum": [
+          "present",
+          "absent",
+          "placed",
+          "unplaced"
+        ],
+        "type": "string"
+      },
       "DiscoverFeed": {
         "description": "Full Discover page payload: ordered shelves of personalized candidates.",
         "properties": {
@@ -1779,8 +1789,12 @@
             "type": "string"
           },
           "kind": {
-            "description": "Job type (`scan`, `acquire`, `listen_sync`).",
-            "type": "string"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/JobKind"
+              }
+            ],
+            "description": "What the job does."
           },
           "max_attempts": {
             "description": "Maximum claims before a failure is terminal.",
@@ -1793,8 +1807,12 @@
             "type": "string"
           },
           "status": {
-            "description": "Lifecycle string (`pending`, `running`, `succeeded`, `failed`, `cancelled`).",
-            "type": "string"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/JobState"
+              }
+            ],
+            "description": "Where the job is in its lifecycle."
           }
         },
         "required": [
@@ -1803,6 +1821,29 @@
           "status"
         ],
         "type": "object"
+      },
+      "JobKind": {
+        "description": "Kind of durable daemon work stored in the `jobs` table.",
+        "enum": [
+          "scan",
+          "acquire",
+          "listen_sync",
+          "integration_scan",
+          "plugin_copy",
+          "invalid"
+        ],
+        "type": "string"
+      },
+      "JobState": {
+        "description": "Lifecycle state of a durable job row.",
+        "enum": [
+          "pending",
+          "running",
+          "succeeded",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
       },
       "LeaveBody": {
         "additionalProperties": false,
@@ -2822,8 +2863,12 @@
             "type": "string"
           },
           "desired": {
-            "description": "`present` or `absent`.",
-            "type": "string"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DesiredState"
+              }
+            ],
+            "description": "What the row asks the node to do: `present` / `absent` from an\noperator, `placed` / `unplaced` from the scheduler."
           },
           "detail": {
             "description": "Observation detail (error text, redacted).",
@@ -3776,8 +3821,12 @@
         "description": "`PUT /api/config/plugin-instances/{id}/deployments/{node_id}` body.",
         "properties": {
           "desired": {
-            "description": "`present` or `absent`.",
-            "type": "string"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DesiredState"
+              }
+            ],
+            "description": "What the node should do: `present` or `absent` (the scheduler's\n`placed` / `unplaced` are accepted too)."
           },
           "expected_revision": {
             "description": "Revision the caller last observed; required when the row exists and\nthe caller wants compare-and-swap. Omitted means \"replace whatever is\ncurrent\".",

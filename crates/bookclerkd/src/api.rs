@@ -288,9 +288,11 @@ async fn serve_invite_spa(index: &Path) -> Response {
 pub struct JobInfo {
     /// Opaque job id returned to the client when the job is accepted.
     pub id: String,
-    /// Job type (`scan`, `acquire`, `listen_sync`).
+    /// What the job does.
+    #[schema(value_type = bookclerk_library::JobKind)]
     pub kind: String,
-    /// Lifecycle string (`pending`, `running`, `succeeded`, `failed`, `cancelled`).
+    /// Where the job is in its lifecycle.
+    #[schema(value_type = bookclerk_library::JobState)]
     pub status: String,
     /// Optional operator-facing progress or error text.
     pub detail: Option<String>,

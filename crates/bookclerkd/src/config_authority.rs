@@ -699,7 +699,9 @@ pub(crate) struct PluginDeploymentView {
     pub deployment_id: String,
     /// Node the row targets.
     pub node_id: String,
-    /// `present` or `absent`.
+    /// What the row asks the node to do: `present` / `absent` from an
+    /// operator, `placed` / `unplaced` from the scheduler.
+    #[schema(value_type = bookclerk_library::control_plane::DesiredState)]
     pub desired: String,
     /// Compare-and-swap revision of the desired row.
     pub revision: i64,
@@ -1203,7 +1205,9 @@ pub async fn put_plugin_instance_config(
 /// `PUT /api/config/plugin-instances/{id}/deployments/{node_id}` body.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct PutPluginDeployment {
-    /// `present` or `absent`.
+    /// What the node should do: `present` or `absent` (the scheduler's
+    /// `placed` / `unplaced` are accepted too).
+    #[schema(value_type = bookclerk_library::control_plane::DesiredState)]
     desired: String,
     /// Revision the caller last observed; required when the row exists and
     /// the caller wants compare-and-swap. Omitted means "replace whatever is

@@ -154,7 +154,7 @@ useful stays a review responsibility (see GitHub issue #157).
 | Python Google docstrings | Ruff `D` rules with `lint.pydocstyle.convention = "google"` (section shape only) |
 | UI smoke | `npm run lint` + `npm run test:safe-html` when the UI is affected |
 | CLI reference | `cli_reference_is_current` in `bookclerk-cli` (see below) |
-| Web API reference | `the_committed_document_is_current` in `bookclerkd` (see below) |
+| Web API reference | `the_committed_document_is_current` and `the_committed_v30_document_is_current` in `bookclerkd` (see below) |
 | Private-docs regression | `python3 scripts/tests/test_private_docs_lint.py` (every workspace package has `[lints] workspace = true`) |
 
 Some of these need more than a cell:
@@ -171,10 +171,13 @@ Some of these need more than a cell:
   [the CLI reference](../server/cli-reference.md) no longer matches the
   clap definitions. Regenerate it with
   `UPDATE_CLI_REFERENCE=1 cargo test -p bookclerk-cli cli_reference`.
-- **Web API reference.** The test fails when
-  `crates/bookclerkd/openapi.json` no longer matches the routes.
-  Regenerate it with
-  `cargo run -p bookclerkd -- --print-openapi > crates/bookclerkd/openapi.json`.
+- **Web API reference.** The tests fail when
+  `crates/bookclerkd/openapi.json` (OpenAPI 3.1) or its OpenAPI 3.0 copy
+  `crates/bookclerkd/openapi-3.0.json` no longer matches the routes.
+  Regenerate them with
+  `cargo run -p bookclerkd -- --print-openapi > crates/bookclerkd/openapi.json`
+  and
+  `cargo run -p bookclerkd -- --print-openapi 3.0 > crates/bookclerkd/openapi-3.0.json`.
 
 Pull requests use a dependency-aware planner
 ([`scripts/ci-plan.py`](../../scripts/ci-plan.py)), so only the affected

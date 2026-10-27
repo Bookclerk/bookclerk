@@ -1201,7 +1201,7 @@ pub fn normalize_theme(raw: &str) -> String {
 }
 
 /// Kind of durable daemon work stored in the `jobs` table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum JobKind {
     /// Library scan for one account or every scan-enabled account.
@@ -1306,7 +1306,7 @@ impl JobKind {
 }
 
 /// Lifecycle state of a durable job row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum JobState {
     /// Admitted and waiting to be claimed.

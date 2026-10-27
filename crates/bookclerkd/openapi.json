@@ -16183,6 +16183,16 @@
           }
         }
       },
+      "DesiredState": {
+        "type": "string",
+        "description": "What a deployment row asks its node to do, and who decided it.\n\nOperators write [`DesiredState::Present`] and [`DesiredState::Absent`]\n(`plugins deploy|undeploy`, the Settings switch). The placement scheduler\nwrites [`DesiredState::Placed`] and [`DesiredState::Unplaced`] for an\ninstance it owns. A node runs the instance for `present` and `placed`\nand retires it for `absent` and `unplaced`; the split only records whose\ndecision the row carries, so \"the operator turned this off\" never reads\nlike \"the scheduler put the replica elsewhere\".",
+        "enum": [
+          "present",
+          "absent",
+          "placed",
+          "unplaced"
+        ]
+      },
       "DiscoverFeed": {
         "type": "object",
         "description": "Full Discover page payload: ordered shelves of personalized candidates.",
@@ -16758,12 +16768,12 @@
             "description": "Opaque job id returned to the client when the job is accepted."
           },
           "kind": {
-            "type": "string",
-            "description": "Job type (`scan`, `acquire`, `listen_sync`)."
+            "$ref": "#/components/schemas/JobKind",
+            "description": "What the job does."
           },
           "status": {
-            "type": "string",
-            "description": "Lifecycle string (`pending`, `running`, `succeeded`, `failed`, `cancelled`)."
+            "$ref": "#/components/schemas/JobState",
+            "description": "Where the job is in its lifecycle."
           },
           "detail": {
             "type": [
@@ -16811,6 +16821,29 @@
             "description": "RFC 3339 timestamp when the row reached a terminal state."
           }
         }
+      },
+      "JobKind": {
+        "type": "string",
+        "description": "Kind of durable daemon work stored in the `jobs` table.",
+        "enum": [
+          "scan",
+          "acquire",
+          "listen_sync",
+          "integration_scan",
+          "plugin_copy",
+          "invalid"
+        ]
+      },
+      "JobState": {
+        "type": "string",
+        "description": "Lifecycle state of a durable job row.",
+        "enum": [
+          "pending",
+          "running",
+          "succeeded",
+          "failed",
+          "cancelled"
+        ]
       },
       "LeaveBody": {
         "type": "object",
@@ -17903,8 +17936,8 @@
             "description": "Node the row targets."
           },
           "desired": {
-            "type": "string",
-            "description": "`present` or `absent`."
+            "$ref": "#/components/schemas/DesiredState",
+            "description": "What the row asks the node to do: `present` / `absent` from an\noperator, `placed` / `unplaced` from the scheduler."
           },
           "revision": {
             "type": "integer",
@@ -18962,8 +18995,8 @@
         ],
         "properties": {
           "desired": {
-            "type": "string",
-            "description": "`present` or `absent`."
+            "$ref": "#/components/schemas/DesiredState",
+            "description": "What the node should do: `present` or `absent` (the scheduler's\n`placed` / `unplaced` are accepted too)."
           },
           "expected_revision": {
             "type": [
