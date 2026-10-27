@@ -8,6 +8,10 @@ mark SVG sources.
 - `svg/bookclerk-logo.svg` — horizontal logo with the outlined Literata
   wordmark
 - `svg/bookclerk-mark.svg` — standalone application mark
+- `svg/bookclerk-logo-dark.svg` — the horizontal logo for dark backgrounds,
+  identical to `svg/bookclerk-logo.svg` except that the wordmark is parchment
+  `#F3E5C6` (see Usage). The root `README.md` shows it to readers whose GitHub
+  theme is dark.
 
 The SVG sources are copied byte-for-byte from the approved files. The wordmark
 has already been converted to paths and does not require Literata to be
