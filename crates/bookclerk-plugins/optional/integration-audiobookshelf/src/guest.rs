@@ -48,6 +48,35 @@ impl AbsGuestState {
         Self::from_config(parsed)
     }
 
+    /// Build guest state from the `open` bindings: `CONFIG` plus `SECRETS`.
+    ///
+    /// The host keeps secret settings out of `CONFIG`: an `api_key` set with
+    /// `bookclerk plugins config set audiobookshelf api_key --secret` arrives
+    /// only in `SECRETS`, so it fills `api_key` when `CONFIG` has none.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - The `CONFIG` binding's JSON (instance settings).
+    /// * `secrets` - The `SECRETS` binding's JSON (unsealed secret settings).
+    #[must_use]
+    pub fn from_bindings_json(config: &Value, secrets: &Value) -> Self {
+        let mut parsed: AudiobookshelfConfig =
+            serde_json::from_value(config.clone()).unwrap_or_default();
+        if parsed
+            .api_key
+            .as_deref()
+            .is_none_or(|key| key.trim().is_empty())
+        {
+            parsed.api_key = ["api_key", "apiKey"]
+                .iter()
+                .filter_map(|key| secrets.get(*key).and_then(Value::as_str))
+                .map(str::trim)
+                .find(|key| !key.is_empty())
+                .map(str::to_owned);
+        }
+        Self::from_config(parsed)
+    }
+
     /// Build guest state from a typed ABS config.
     #[must_use]
     pub fn from_config(config: AudiobookshelfConfig) -> Self {
@@ -326,4 +355,41 @@ pub async fn guest_on_event(state: &Mutex<AbsGuestState>, params: &Value) -> Res
     };
     info!(%library_id, "ABS guest triggering library scan after book_acquired");
     client.scan_library(&library_id, false).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Whether the state built a client, i.e. found an API key.
+    fn has_client(state: &AbsGuestState) -> bool {
+        state.client.is_some()
+    }
+
+    #[test]
+    fn api_key_comes_from_secrets_when_config_has_none() {
+        let config = json!({ "base_url": "http://127.0.0.1:13378" });
+        let state = AbsGuestState::from_bindings_json(&config, &json!({ "api_key": "k" }));
+        assert!(has_client(&state));
+        assert!(state.config_error.is_none());
+    }
+
+    #[test]
+    fn api_key_in_config_wins_over_secrets() {
+        let config = json!({ "base_url": "http://127.0.0.1:13378", "api_key": "from-config" });
+        let state =
+            AbsGuestState::from_bindings_json(&config, &json!({ "api_key": "from-secrets" }));
+        assert_eq!(state.config.api_key.as_deref(), Some("from-config"));
+    }
+
+    #[test]
+    fn blank_or_missing_secret_leaves_the_key_missing() {
+        let config = json!({ "base_url": "http://127.0.0.1:13378" });
+        for secrets in [json!({}), json!({ "api_key": "  " }), json!(null)] {
+            let state = AbsGuestState::from_bindings_json(&config, &secrets);
+            assert!(!has_client(&state));
+            assert!(state.config_error.is_some());
+        }
+    }
 }

@@ -150,8 +150,24 @@ them in the profile for later shells:
 | `BOOKCLERK_DEV_REGISTRY_MIRROR` | Registry mirror for a newly started `dockerd` (for example `https://mirror.gcr.io` when shared egress is rate-limited by Docker Hub). Images stay pinned by digest. |
 | `BOOKCLERK_DEV_CA_BUNDLE` | Complete PEM trust bundle (system roots plus the CA of a TLS-intercepting proxy): passed to the image build as the `extra_ca` secret and mounted into the container. It replaces the default trust store for cargo, rustup and pip, so a bundle holding only the proxy's CA breaks hosts the proxy does not intercept. The setup script also points `SSL_CERT_FILE`, `CARGO_HTTP_CAINFO`, `PIP_CERT` and `NODE_EXTRA_CA_CERTS` at it in the profile. |
 
-A hosted environment's setup script can call it directly, for example
-`cd bookclerk && BOOKCLERK_DEV_REGISTRY_MIRROR=https://mirror.gcr.io scripts/dev-env/session-setup.sh`.
+A hosted environment's setup script can run it before the session starts.
+Such a script usually runs before the repository is cloned and must exit 0,
+so it takes its own shallow clone:
+
+```bash
+#!/bin/bash
+d=$(mktemp -d)
+if git clone -q --depth 1 https://github.com/Bookclerk/bookclerk "$d"; then
+  BOOKCLERK_DEV_REGISTRY_MIRROR=https://mirror.gcr.io "$d/scripts/dev-env/session-setup.sh" || true
+fi
+rm -rf "$d"
+exit 0
+```
+
+The setup script appends everything it prints to
+`/var/log/bookclerk-session-setup.log`, so a session that starts without a
+tool can show why. It installs into root's toolchain whatever `HOME` the
+hook passes.
 
 ## SSH commit signing (Dev Container)
 

@@ -299,6 +299,29 @@ startup install path (`packaging/docker/**`, `.dockerignore`, the workflow,
 `bookclerk-dev`, the platform plugin sources, the bundled-install, trust and
 ledger modules, the database loader, the workerd pin), weekly, and on demand. It is not part of `CI Gate`.
 
+The **ABS Integration** job (`.github/workflows/abs-integration.yml`) runs a
+real Audiobookshelf server beside the production image with the
+`audiobookshelf` plugin added
+([`tests/abs-integration/`](../../tests/abs-integration/)). The plugin is
+built from the checkout, so it does not get the host-implied grant to its
+`base_url` that the crates.io package gets. The test sets it up the way an
+operator would:
+
+1. It approves the plugin through the consent API with a TCP grant to the
+   server.
+2. It sets `base_url`, `library_id` and the sealed `api_key` with
+   `bookclerk plugins config set`, and deploys the plugin.
+3. It checks `integrations test` and `integrations status`.
+4. It redeems a claim ticket on the portal and signs in to the portal with
+   Audiobookshelf credentials.
+5. It starts a remote library scan.
+
+Both containers share one network namespace, because the plugin accepts plain
+`http` only for a loopback host. The job runs by hand, on a published
+release, and on pull requests that change the test or the plugin. It is not part of
+`CI Gate`. Run it locally with `bash tests/abs-integration/smoke.sh` after
+building the images as its workflow does.
+
 The **Dev Container image** job (`.github/workflows/devcontainer-image.yml`)
 builds `.devcontainer/Dockerfile` and runs the contributor toolchain inside it
 as the dev user (cargo, rustfmt, Clippy, cargo-nextest, `capnp`, Node.js, npm,
