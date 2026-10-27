@@ -9,9 +9,11 @@
 #
 # The image is built from .devcontainer/Dockerfile on first use and tagged
 # with a hash of the files it is built from, so it is rebuilt only when one
-# of them changes. Cargo writes to target/devcontainer/ (not target/), so
-# host and container builds of different toolchains do not invalidate each
-# other. The command runs as the caller's UID/GID with HOME under /tmp.
+# of them changes. The host's target/devcontainer/ is mounted over the
+# container's target/, so host and container builds of different toolchains
+# do not invalidate each other while tools that expect target/ (cargo dev,
+# cargo stage-plugins) still find their artifacts there. The command runs
+# as the caller's UID/GID with HOME under /tmp.
 #
 # Environment:
 #   BOOKCLERK_DEV_CA_BUNDLE        complete PEM trust bundle (system roots plus
@@ -60,13 +62,16 @@ workspace="/workspaces/${name}"
 rel="$(realpath --relative-to="${repo}" "${PWD}" 2>/dev/null || echo .)"
 [[ "${rel}" == ..* ]] && rel="."
 
+# Created here so Docker does not create it as root.
+mkdir -p "${repo}/target/devcontainer"
+
 run=(docker run --rm -i --network host
   --user "$(id -u):$(id -g)"
   -v "${repo}:${workspace}"
+  -v "${repo}/target/devcontainer:${workspace}/target"
   -w "${workspace}/${rel}"
   -e HOME=/tmp/home
   -e "CARGO_HOME=${workspace}/.cargo-home"
-  -e "CARGO_TARGET_DIR=${workspace}/target/devcontainer"
   -e "BOOKCLERK_FILES_DIR=${workspace}/BookclerkFiles"
   -e CARGO_TERM_COLOR)
 [[ -t 0 && -t 1 ]] && run+=(-t)

@@ -138,8 +138,9 @@ scripts/dev-env/in-devcontainer.sh bash
 
 The image is built on first use and rebuilt only when the Dockerfile, the
 provision script or the test requirements change. The checkout is
-bind-mounted, Cargo writes to `target/devcontainer/`, and the command runs as
-your UID.
+bind-mounted with the host's `target/devcontainer/` mounted over its `target/`
+(so `cargo dev` and the other helpers find their builds where they expect
+them, apart from the host's), and the command runs as your UID.
 
 Two variables adapt both to restricted networks, and the setup script records
 them in the profile for later shells:
