@@ -48,6 +48,7 @@ from ci_plan.plan import (  # noqa: E402
     DEMO_TEST_INPUTS,
     E2E_PACKAGE,
     JOB_CHECKS,
+    SITE_SOURCE_FILES,
     SITE_TEST_INPUTS,
     STEP_GATED_JOBS,
     build_plan,
@@ -216,6 +217,13 @@ class ScenarioTests(unittest.TestCase):
             self.assertIn("demo_test", p.checks, path)
         for font in ("literata-v40-latin.woff2", "source-sans-3-v20-latin-ext.woff2", "OFL-literata.txt"):
             self.assertIn(f"tools/site/src/fonts/{font}", DEMO_TEST_INPUTS)
+
+    def test_pages_the_site_renders_run_the_site_checks(self) -> None:
+        for path in sorted(SITE_SOURCE_FILES):
+            p = plan(path)
+            self.assertFalse(p.full_suite, p.reasons)
+            self.assertIn("site_test", p.checks, path)
+            self.assertIn("site_audit", p.checks, path)
 
     def test_cookie_sources_run_the_site_tests(self) -> None:
         for path in sorted(SITE_TEST_INPUTS):

@@ -4,9 +4,10 @@
 
 Please report security problems privately, not in a public issue:
 
-1. **GitHub private reporting (preferred).** Open the repository's
-   **Security** tab and choose **Report a vulnerability**. The report stays
-   visible only to you and the maintainers.
+1. **GitHub private reporting (preferred).**
+   [Report a vulnerability](https://github.com/Bookclerk/bookclerk/security/advisories/new)
+   on GitHub (the repository's **Security** tab). The report stays visible
+   only to you and the maintainers.
 2. **Email.** If you cannot use GitHub, write to
    [contact@bookclerk.app](mailto:contact@bookclerk.app).
 

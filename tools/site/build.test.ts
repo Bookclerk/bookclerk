@@ -149,7 +149,7 @@ test("inlineLogo keeps the wordmark recolorable and drops editor attributes", ()
 test("a pre-release build says so on every page", () => {
   const site = built(PRE);
   try {
-    for (const name of ["index.html", "download.html", "privacy.html", "404.html"]) {
+    for (const name of ["index.html", "download.html", "privacy.html", "security.html", "404.html"]) {
       const html = site.page(name);
       assert.ok(html.includes('<span class="badge">Pre-release</span>'), name);
       // A landmark, so screen-reader users can find and skip the notice.
@@ -167,7 +167,7 @@ test("a pre-release build says so on every page", () => {
 test("a release build drops the pre-release notices", () => {
   const site = built(REL);
   try {
-    for (const name of ["index.html", "download.html", "privacy.html", "404.html"]) {
+    for (const name of ["index.html", "download.html", "privacy.html", "security.html", "404.html"]) {
       assert.ok(!site.page(name).includes("Pre-release"), name);
     }
     assert.ok(site.page("download.html").includes("/releases/tag/v0.1.0"));
@@ -196,7 +196,7 @@ test("a build without a demo links to none", () => {
   for (const env of [PRE, REL]) {
     const site = built(env);
     try {
-      for (const name of ["index.html", "download.html", "privacy.html", "404.html", "index.md", "download.md", "privacy.md", "llms.txt"]) {
+      for (const name of ["index.html", "download.html", "privacy.html", "security.html", "404.html", "index.md", "download.md", "privacy.md", "security.md", "llms.txt"]) {
         assert.doesNotMatch(site.page(name), /live demo|demo\.bookclerk/i, name);
       }
       assert.ok(site.page("index.html").includes('href="#how">See how it works'));
@@ -246,7 +246,7 @@ test("after a release the demo follows the download", () => {
 test("the build publishes pages, styles, headers and brand assets", () => {
   const site = built(PRE);
   try {
-    for (const name of ["index.html", "download.html", "privacy.html", "privacy.md", "404.html", "site.css", "_headers", "robots.txt", "sitemap.xml", "llms.txt", "llms-full.txt", "social-card.png", "favicon.ico", "bookclerk-mark.svg", "site.webmanifest"]) {
+    for (const name of ["index.html", "download.html", "privacy.html", "privacy.md", "security.html", "security.md", "404.html", "site.css", "_headers", "robots.txt", "sitemap.xml", "llms.txt", "llms-full.txt", "social-card.png", "favicon.ico", "bookclerk-mark.svg", "site.webmanifest"]) {
       assert.ok(site.files.includes(name), name);
     }
     assert.match(site.page("_headers"), /Content-Security-Policy: default-src 'none'/);
@@ -354,6 +354,7 @@ test("crawler and agent files list the site", () => {
     assert.match(llms, /^- \[[^\]]+\]\(https:\/\/bookclerk.app\/docs\/plugins\/README.md\): \S/m);
     assert.match(llms, /^## Optional$/m);
     assert.ok(llms.includes("unstable development version"));
+    assert.ok(llms.includes("https://bookclerk.app/security.md"));
     assert.ok(llms.includes("- **One library for every store.** Search, tag and rate"));
     assert.ok(llms.includes("- **Which stores are supported?** Audible, Libro.fm"));
     // No headings between the summary and the first link section.
@@ -369,7 +370,7 @@ test("crawler and agent files list the site", () => {
   }
 });
 
-test("home, download and privacy pages have Markdown versions that keep their sections", () => {
+test("home, download, privacy and security pages have Markdown versions that keep their sections", () => {
   for (const env of [PRE, REL, { ...PRE, ...DEMO }, { ...REL, ...DEMO }]) {
     const site = built(env);
     try {
@@ -377,6 +378,7 @@ test("home, download and privacy pages have Markdown versions that keep their se
         ["index.html", "index.md"],
         ["download.html", "download.md"],
         ["privacy.html", "privacy.md"],
+        ["security.html", "security.md"],
       ] as const) {
         const page = site.page(html);
         const markdown = site.page(md);
@@ -429,6 +431,29 @@ test("the privacy page names every cookie the demo and the dashboard set", () =>
     } finally {
       site.done();
     }
+  }
+});
+
+test("the security page is SECURITY.md from the repository root, with links kept on the site", () => {
+  const source = readFileSync(new URL("../../SECURITY.md", import.meta.url), "utf8");
+  const site = built(PRE);
+  try {
+    const html = site.page("security.html");
+    const heading = source.match(/^# (.+)$/m)?.[1];
+    assert.ok(heading !== undefined);
+    assert.ok(html.includes(`<h1 id="security-policy">${heading}</h1>`));
+    for (const [, title = ""] of source.matchAll(/^## (.+)$/gm)) assert.ok(html.includes(`>${title}</h2>`), title);
+    // Docs links stay on the site; only the reporting form itself is on GitHub.
+    assert.ok(html.includes('href="/docs/server/security"'));
+    assert.ok(!html.includes("github.com/Bookclerk/bookclerk/blob/"));
+    assert.ok(!html.includes("<!--source-->"));
+    const md = site.page("security.md");
+    assert.match(md, /^# Security policy$/m);
+    assert.ok(md.includes("](/docs/server/security.md)"));
+    assert.match(site.page("index.html"), /<a href="\/security">Security<\/a>/);
+    assert.doesNotMatch(site.page("index.html"), /github\.com\/Bookclerk\/bookclerk\/security"/);
+  } finally {
+    site.done();
   }
 });
 

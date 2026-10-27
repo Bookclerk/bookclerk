@@ -41,6 +41,8 @@ on:
       - "tools/site/**"
       - "docs/**"
       - "assets/brand/**"
+      # Rendered as /security.
+      - "SECURITY.md"
       - ".github/workflows/site-deploy.yml"
   release:
     types: [published]

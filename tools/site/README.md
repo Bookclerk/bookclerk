@@ -116,6 +116,11 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   the diagnostics dashboard set; `build.test.ts` reads the cookie names from
   those Workers' sources, so renaming one without updating the page fails.
   Keep it in step when a Worker starts collecting or storing anything new.
+- `src/security.html` – the shell of the security page. Its `source` in
+  `PAGES` is the repository's root `SECURITY.md`, which the build renders into
+  the shell's `<!--source-->` marker and publishes as `/security.md`, so the
+  site and GitHub show the same policy. Edit `SECURITY.md`, not the page;
+  links to it from the docs point at `/security`.
 - `worker.ts` – the docs route and content negotiation (see below).
   `wrangler.toml` runs it only for page paths (`run_worker_first`). It
   compresses what it answers with (Brotli, else gzip) itself, because
