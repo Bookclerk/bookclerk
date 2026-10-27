@@ -11,6 +11,8 @@
 #   on a pull request they are part of. The check records the signature in
 #   `signatures/cla.json` on the `cla-signatures` branch (a GitHub-signed API
 #   commit), so main is never written.
+# - Runs again when a pull request is retargeted, since a new base can add
+#   commits without changing the head.
 # - `recheck` re-runs the check after a signature or allowlist change.
 # - The verdict is the `CLA` commit status on the pull request's head; that
 #   context is the one to require. Merge groups get a passing `CLA` status:
@@ -26,7 +28,9 @@ name: CLA
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened]
+    # `edited` covers a new base branch, which can add commits (and so
+    # authors) without moving the head; other edits are filtered out below.
+    types: [opened, synchronize, reopened, edited]
   issue_comment:
     types: [created]
   merge_group:
@@ -41,7 +45,9 @@ jobs:
   cla:
     name: CLA check
     if: >-
-      github.event_name != 'issue_comment' ||
+      (github.event_name == 'pull_request_target' &&
+        (github.event.action != 'edited' || github.event.changes.base)) ||
+      github.event_name == 'merge_group' ||
       (github.event.issue.pull_request &&
         (github.event.comment.body == 'recheck' ||
          github.event.comment.body == 'I have read the Bookclerk CLA and I agree to it.'))

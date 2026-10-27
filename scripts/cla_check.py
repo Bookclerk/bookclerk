@@ -232,7 +232,7 @@ class Comment:
 class EventKind(Enum):
     """Which workflow event triggered the run."""
 
-    #: A pull request was opened, pushed to or reopened.
+    #: A pull request was opened, pushed to, reopened or retargeted.
     PULL_REQUEST = "pull_request_target"
     #: A comment was posted on an issue or pull request.
     ISSUE_COMMENT = "issue_comment"

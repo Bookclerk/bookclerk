@@ -101,6 +101,9 @@ Who must sign:
 - A signature comment counts only from someone the pull request needs a
   signature from. Every run reads the whole comment history, so a
   signature posted while another run was busy still counts.
+- The check runs again when a pull request moves to another base branch,
+  because the new base can bring in commits from other authors without
+  changing the head commit.
 
 The result is the **CLA** commit status on the pull request's head commit,
 and one comment that lists who still has to sign, edited in place. Merge
