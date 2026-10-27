@@ -50,8 +50,9 @@
 // fetches only from its own assets and the docs repository.
 
 import { datedPages, LAST_UPDATED_FILE, MAX_LAST_UPDATED_BYTES, pageDate } from "./last-updated.ts";
-import { docMarkdownUrl, docUrl, renderDocPage, renderUnavailablePage } from "./render.ts";
-import type { DocsShell, DocsVersion } from "./render.ts";
+import type { IsoDate } from "./last-updated.ts";
+import { docMarkdownUrl, docUrl, renderDocPage, renderSitemapPage, renderUnavailablePage } from "./render.ts";
+import type { DocsShell, DocsVersion, SitemapPageLink } from "./render.ts";
 import { MAX_SITEMAP_URLS, sitemapIndexXml, sitemapXml } from "./sitemap.ts";
 import type { SitemapEntry } from "./sitemap.ts";
 
@@ -151,6 +152,9 @@ const NOT_FOUND_MARKDOWN = "/404.md";
 
 /** The sitemap's path, which robots.txt names. */
 const SITEMAP_PATH = "/sitemap.xml";
+
+/** The human-readable sitemap page; its Markdown version adds `.md`. */
+const SITEMAP_PAGE_PATH = "/sitemap";
 
 /** Content type of the sitemap. */
 const XML_CONTENT_TYPE = "application/xml; charset=utf-8";
@@ -670,20 +674,14 @@ async function serveSitemap(request: Request, url: URL, deps: DocsDeps): Promise
     const hit = await deps.cache.match(cacheKey);
     if (hit) return request.method === "HEAD" ? new Response(null, hit) : hit;
   }
-  const file = await fetchLastUpdated(version.ref, deps.fetch);
-  const sections = new Map<string, SitemapEntry[]>([[SITE_SECTION, deps.shell.pages.map((path) => ({ path, lastmod: null }))]]);
-  let docs = 0;
-  for (const { key, date } of file.kind === "file" ? (datedPages(file.text) ?? []) : []) {
-    // Only keys the docs route serves at that URL as themselves: not a
-    // `v/…` path, a Markdown copy or another spelling that redirects.
-    const path = docUrl(key, version.base);
-    const target = docsTarget(path, deps.shell.versions);
-    if (target.kind !== "page" || target.version !== version || target.keys[0] !== key) continue;
+  const { file, docs: listed } = await listDocs(version, deps);
+  const sections = new Map<string, SitemapEntry[]>([[SITE_SECTION, siteSitemapPages(deps.shell).map((path) => ({ path, lastmod: null }))]]);
+  const docs = listed.length;
+  for (const { key, path, date } of listed) {
     const name = sitemapSection(key);
     const section = sections.get(name) ?? [];
     if (section.length === 0) sections.set(name, section);
     section.push({ path, lastmod: date });
-    docs += 1;
   }
 
   let response: Response;
@@ -711,6 +709,100 @@ async function serveSitemap(request: Request, url: URL, deps: DocsDeps): Promise
     response = withHeaders(new Response(sitemapXml(deps.shell.origin, entries)), { "Content-Type": XML_CONTENT_TYPE, "Cache-Control": cached });
   }
   if (deps.cache && request.method === "GET") deps.waitUntil(deps.cache.put(cacheKey, response.clone()));
+  return request.method === "HEAD" ? new Response(null, response) : response;
+}
+
+/** A doc of the default version that the sitemaps list. */
+interface ListedDoc {
+  /** Its key. */
+  key: string;
+  /** Its URL path. */
+  path: string;
+  /** When it last changed. */
+  date: IsoDate;
+}
+
+/**
+ * Lists the docs of a version that its last-updated.json dates and that the
+ * docs route serves at their URL as themselves (not a `v/…` path, a
+ * Markdown copy or another spelling that redirects).
+ *
+ * @param version - The docs version.
+ * @param deps - The shell and fetcher.
+ * @returns What reading the dates file gave, and the docs in its order.
+ */
+async function listDocs(version: DocsVersion, deps: DocsDeps): Promise<{ file: DatesFile; docs: ListedDoc[] }> {
+  const file = await fetchLastUpdated(version.ref, deps.fetch);
+  const docs: ListedDoc[] = [];
+  for (const { key, date } of file.kind === "file" ? (datedPages(file.text) ?? []) : []) {
+    const path = docUrl(key, version.base);
+    const target = docsTarget(path, deps.shell.versions);
+    if (target.kind === "page" && target.version === version && target.keys[0] === key) docs.push({ key, path, date });
+  }
+  return { file, docs };
+}
+
+/**
+ * The pages outside /docs/ that the sitemaps list: build.ts's indexable
+ * pages and the human-readable sitemap.
+ *
+ * @param shell - The baked page shell.
+ * @returns Their URL paths.
+ */
+function siteSitemapPages(shell: DocsShell): string[] {
+  return [...shell.pages, SITEMAP_PAGE_PATH];
+}
+
+/**
+ * Serves /sitemap (and /sitemap.md): every page the site serves, grouped
+ * like the docs sidebar, for people. It lists the same docs as the
+ * sitemaps with their dates; when the dates file cannot be read it lists the
+ * sidebar's docs without dates, for a minute.
+ *
+ * @param request - The incoming GET or HEAD request.
+ * @param url - Its URL.
+ * @param deps - The shell, assets and fetcher.
+ * @param markdown - Whether to answer with the Markdown version.
+ * @returns The page.
+ */
+async function serveSitemapPage(request: Request, url: URL, deps: DocsDeps, markdown: boolean): Promise<Response> {
+  const [version] = deps.shell.versions;
+  if (version === undefined) return notFound(url, request.method, markdown, deps.assets);
+  const format = markdown ? "md" : "html";
+  const cacheKey = new Request(`${url.origin}${SITEMAP_PAGE_PATH}?format=${format}&ref=${encodeURIComponent(version.ref)}&shell=${encodeURIComponent(deps.shell.id)}`);
+  if (deps.cache) {
+    const hit = await deps.cache.match(cacheKey);
+    if (hit) return request.method === "HEAD" ? new Response(null, hit) : hit;
+  }
+  const { file, docs } = await listDocs(version, deps);
+  const titles = new Map(deps.shell.nav.flatMap((g) => g.pages.map((p) => [p.key, p.title] as const)));
+  const pageTitles = new Map(deps.shell.pages.map((path, i) => [path, deps.shell.pageTitles[i] ?? path] as const));
+  const links: SitemapPageLink[] = siteSitemapPages(deps.shell)
+    .filter((path) => path !== SITEMAP_PAGE_PATH)
+    .map((path) => ({ key: null, path, title: pageTitles.get(path) ?? path, updated: null }));
+  if (docs.length > 0) {
+    for (const d of docs) links.push({ key: d.key, path: d.path, title: titles.get(d.key) ?? null, updated: d.date });
+  } else {
+    links.push({ key: "README", path: version.base, title: null, updated: null });
+    for (const [key, title] of titles) links.push({ key, path: docUrl(key, version.base), title, updated: null });
+  }
+  const page = renderSitemapPage(deps.shell, links, { ref: version.ref, base: version.base });
+  const cacheable = docs.length > 0 || file.kind === "missing";
+  const cacheControl = cacheable ? `public, max-age=${BROWSER_TTL}, s-maxage=${ttlFor(version.ref)}` : `public, max-age=${MISSING_TTL}, s-maxage=0`;
+  const response = markdown
+    ? withHeaders(new Response(page.markdown), {
+        "Cache-Control": cacheControl,
+        Vary: "Accept",
+        "Content-Type": MARKDOWN_CONTENT_TYPE,
+        Link: `<${url.origin}${SITEMAP_PAGE_PATH}>; rel="canonical"`,
+      })
+    : withHeaders(new Response(page.html), {
+        "Cache-Control": cacheControl,
+        Vary: "Accept",
+        "Content-Type": "text/html; charset=utf-8",
+        Link: `<${url.origin}${SITEMAP_PAGE_PATH}.md>; rel="alternate"; type="text/markdown"`,
+      });
+  if (deps.cache && cacheable && request.method === "GET") deps.waitUntil(deps.cache.put(cacheKey, response.clone()));
   return request.method === "HEAD" ? new Response(null, response) : response;
 }
 
@@ -867,6 +959,11 @@ async function route(request: Request, env: Env, docs: DocsOptions): Promise<Res
   };
   if (isRead && (url.pathname === "/docs" || url.pathname.startsWith("/docs/"))) return serveDocs(request, url, deps);
   if (isRead && (url.pathname === SITEMAP_PATH || SECTION_PATH_RE.test(url.pathname))) return serveSitemap(request, url, deps);
+  if (isRead && (url.pathname === SITEMAP_PAGE_PATH || url.pathname === `${SITEMAP_PAGE_PATH}/`)) {
+    if (url.pathname.endsWith("/")) return redirect(url, SITEMAP_PAGE_PATH);
+    return serveSitemapPage(request, url, deps, prefersMarkdown(request.headers.get("Accept")));
+  }
+  if (isRead && url.pathname === `${SITEMAP_PAGE_PATH}.md`) return serveSitemapPage(request, url, deps, true);
   const md = isRead ? markdownPath(url.pathname) : null;
 
   if (md !== null && prefersMarkdown(request.headers.get("Accept"))) {

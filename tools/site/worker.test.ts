@@ -560,13 +560,50 @@ test("the sitemap is an index of one sitemap per section, listing every dated pa
     assert.match(xml, /<urlset xmlns="http:\/\/www.sitemaps.org\/schemas\/sitemap\/0.9">/, path);
     return [...xml.matchAll(/<url><loc>([^<]*)<\/loc>(?:<lastmod>([^<]*)<\/lastmod>)?<\/url>/g)].map((m) => [m[1] ?? "", m[2] ?? null]);
   };
-  assert.deepEqual(await urls("/sitemap-site.xml"), PAGES.filter((p) => p.indexable).map((p) => [`https://bookclerk.app${p.path}`, null]));
+  assert.deepEqual(await urls("/sitemap-site.xml"), [...PAGES.filter((p) => p.indexable).map((p) => p.path), "/sitemap"].map((p) => [`https://bookclerk.app${p}`, null]));
   assert.deepEqual(await urls("/sitemap-plugins.xml"), [["https://bookclerk.app/docs/plugins/", "2026-10-26"]]);
   assert.deepEqual(await urls("/sitemap-api.xml"), [["https://bookclerk.app/docs/api/rust/demo/index", "2026-10-01"]]);
   for (const path of ["/sitemap-guide.xml", "/sitemap-x.xml"]) assert.equal((await get(path, "*/*")).status, 404, path);
   const head = await get("/sitemap.xml", "*/*", "HEAD");
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");
+});
+
+test("/sitemap lists every page for people, grouped like the sidebar, with dates", async () => {
+  const routes: string[] = JSON.parse(readFileSync(join(HERE, "wrangler.toml"), "utf8").match(/^run_worker_first = (\[.*\])$/m)?.[1] ?? "[]");
+  for (const path of ["/sitemap", "/sitemap/", "/sitemap.md"]) assert.ok(routes.includes(path), path);
+  const res = await get("/sitemap", BROWSER);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("Content-Type"), "text/html; charset=utf-8");
+  assert.equal(res.headers.get("Link"), '<https://bookclerk.app/sitemap.md>; rel="alternate"; type="text/markdown"');
+  const html = await res.text();
+  assert.match(html, /<title>Sitemap · Bookclerk<\/title>/);
+  assert.match(html, /<link rel="canonical" href="https:\/\/bookclerk.app\/sitemap">/);
+  assert.match(html, /<h2 id="sitemap-website">Website<\/h2>\n<ul><li><a href="\/">Home<\/a><\/li><li><a href="\/download">Download Bookclerk<\/a><\/li>/);
+  assert.match(html, /<h2 id="sitemap-build-plugins">Build plugins<\/h2>\n<ul><li><a href="\/docs\/plugins\/">[^<]+<\/a> <span class="faint">· <time datetime="2026-10-26">Oct 26, 2026<\/time><\/span><\/li><\/ul>/);
+  assert.match(html, /<h2 id="sitemap-api-reference">API reference<\/h2>\n<h3>Rust crates<\/h3>\n<ul><li><a href="\/docs\/api\/rust\/demo\/index">demo<\/a>/);
+  assert.match(html, /<a href="\/sitemap">Sitemap<\/a>/, "footer link");
+  assert.doesNotMatch(html, /<script(?! type="application\/ld\+json")(?! src="\/)/);
+  for (const [path, accept] of [["/sitemap.md", "*/*"], ["/sitemap", "text/markdown"]] as const) {
+    const md = await get(path, accept);
+    assert.equal(md.status, 200, path);
+    assert.equal(md.headers.get("Content-Type"), "text/markdown; charset=utf-8", path);
+    assert.equal(md.headers.get("Link"), '<https://bookclerk.app/sitemap>; rel="canonical"', path);
+    assert.match(await md.text(), /^# Sitemap\n[\s\S]*## API reference\n\n### Rust crates\n\n- \[demo\]\(https:\/\/bookclerk.app\/docs\/api\/rust\/demo\/index\) \(Oct 1, 2026\)/, path);
+  }
+  const slash = await get("/sitemap/", BROWSER);
+  assert.equal(slash.status, 301);
+  assert.equal(slash.headers.get("Location"), "https://bookclerk.app/sitemap");
+});
+
+test("/sitemap lists the sidebar without dates when the dates file cannot be read", async () => {
+  const down: DocsFetch = async (url, init) => (url.endsWith("/last-updated.json") ? new Response("oops", { status: 502 }) : docsFetch(url, init));
+  const res = await handle(new Request("https://bookclerk.app/sitemap", { headers: { Accept: BROWSER } }), env, { shell, fetch: down });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("Cache-Control"), "public, max-age=60, s-maxage=0");
+  const html = await res.text();
+  assert.match(html, /<a href="\/docs\/guide\/getting-started">/);
+  assert.doesNotMatch(html, /<time /);
 });
 
 test("sitemapSection names a doc's top folder, site for the docs home, or docs", () => {

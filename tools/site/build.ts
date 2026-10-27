@@ -698,8 +698,11 @@ export function buildDocsShell(
   for (const marker of SHELL_MARKERS) {
     if (html.split(`<!--${marker}-->`).length !== 2) throw new Error(`docs shell needs exactly one <!--${marker}-->`);
   }
-  const pages = PAGES.filter((p) => p.indexable).map((p) => p.path);
-  const shell = { html, origin: context.values.origin, repository: REPOSITORY_URL, versions, nav: rendered.nav, pages };
+  const indexable = PAGES.filter((p) => p.indexable);
+  const pages = indexable.map((p) => p.path);
+  // Titles without the site name, as a list of pages shows them.
+  const pageTitles = indexable.map((p) => (p.path === "/" ? "Home" : p.title.replace(/ · Bookclerk$/, "")));
+  const shell = { html, origin: context.values.origin, repository: REPOSITORY_URL, versions, nav: rendered.nav, pages, pageTitles };
   // The renderers' sources and libraries go into the id too: a change to how
   // pages are rendered must drop pages cached by an earlier deploy, like a
   // shell change.
