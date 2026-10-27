@@ -175,6 +175,13 @@ export const GENERATED_TITLES: Readonly<Record<string, string>> = {
 };
 
 /**
+ * Repository files outside docs/ that the site renders as pages of their
+ * own (build.ts `PAGES`): repository path -> page path. A doc linking to one
+ * links to the page, or to its Markdown copy (`<page>.md`) from Markdown.
+ */
+export const SITE_PAGES: ReadonlyMap<string, string> = new Map([["SECURITY.md", "/security"]]);
+
+/**
  * Normalizes a POSIX path the way `path.posix.normalize` does.
  *
  * @param path - A relative path.
@@ -254,8 +261,9 @@ export function slugify(text: string): string {
  *   ending in `/blob/<ref>/`.
  * @param urlFor - Site URL of another doc:
  *   {@link docUrl} for pages, {@link docMarkdownUrl} for Markdown copies.
- * @returns A site URL for another doc, a GitHub URL for any other
- *   repository file, or the link unchanged when it is absolute or an anchor.
+ * @returns A site URL for another doc or for a repository file the site
+ *   renders (see {@link SITE_PAGES}), a GitHub URL for any other repository
+ *   file, or the link unchanged when it is absolute or an anchor.
  */
 export function rewriteLink(href: string, docKey: string, keys: ReadonlySet<string> | null, blobBase: string, urlFor: UrlFor = docUrl): string {
   if (href === "" || href.startsWith("#") || /^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("//")) {
@@ -277,6 +285,9 @@ export function rewriteLink(href: string, docKey: string, keys: ReadonlySet<stri
     if (keys === null || keys.has(key)) return urlFor(key) + hash;
   }
   if (target === "docs" || target === "docs/") return urlFor("README") + hash;
+  const page = SITE_PAGES.get(target);
+  // Markdown copies link to Markdown copies; urlFor tells which this is.
+  if (page !== undefined) return (urlFor("README").endsWith(".md") ? `${page}.md` : page) + hash;
   if (target.startsWith("..")) return href;
   // normalizePath keeps a trailing slash, which marks a directory.
   const base = target.endsWith("/") ? blobBase.replace(/\/blob\//, "/tree/") : blobBase;

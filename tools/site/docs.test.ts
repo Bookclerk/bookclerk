@@ -51,6 +51,9 @@ test("links between docs stay on the site", () => {
   assert.equal(rewriteLink("../plugins.md", "adr/control-plane", KEYS, BLOB), "/docs/plugins");
   assert.equal(rewriteLink("adr/control-plane.md", "README", KEYS, BLOB), "/docs/adr/control-plane");
   assert.equal(rewriteLink("api/README.md", "README", KEYS, BLOB), "/docs/api/");
+  // Repository files the site renders as pages link to those pages.
+  assert.equal(rewriteLink("../../SECURITY.md", "server/security", KEYS, BLOB), "/security");
+  assert.equal(rewriteLink("../../SECURITY.md#scope", "server/security", KEYS, BLOB, docMarkdownUrl), "/security.md#scope");
 });
 
 test("links to other repository files go to GitHub at the same ref", () => {

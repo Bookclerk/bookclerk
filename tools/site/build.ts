@@ -42,7 +42,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { docMarkdownUrl, docUrl, GENERATED_TITLES, NAV, renderDocs } from "./docs.ts";
-import { escapeHtml, jsonLd, SHELL_MARKERS, SHELL_VALUES } from "./render.ts";
+import { escapeHtml, jsonLd, renderDoc, SHELL_MARKERS, SHELL_VALUES } from "./render.ts";
 import type { DocsShell, DocsVersion } from "./render.ts";
 import type { RenderedDocs } from "./docs.ts";
 
@@ -157,6 +157,12 @@ export interface Page {
   markdown?: string;
   /** False when the Markdown version is not advertised with `rel="alternate"`. */
   alternate?: boolean;
+  /**
+   * A repository Markdown file (path from the repository root) rendered
+   * into the template's `<!--source-->` marker; its Markdown version is that
+   * file with links rewritten for the site, rather than a template.
+   */
+  source?: string;
 }
 
 /** What the rendered home page shows (see homeFacts). */
@@ -223,6 +229,15 @@ export const PAGES: readonly Page[] = [
     description: "What the Bookclerk website and services collect, which cookies they set and why, who else handles it, and how long it is kept.",
     indexable: true,
     markdown: "/privacy.md",
+  },
+  {
+    file: "security.html",
+    path: "/security",
+    title: "Security policy · Bookclerk",
+    description: "How to report a security problem in Bookclerk privately, which versions are supported, and how fixes are published.",
+    indexable: true,
+    markdown: "/security.md",
+    source: "SECURITY.md",
   },
   {
     file: "404.html",
@@ -482,6 +497,9 @@ export function inlineLogo(svg: string): string {
 /** Marker in the head partial replaced by the page's JSON-LD after templating. */
 const JSONLD_MARKER = "<!--jsonld-->";
 
+/** Where a page's rendered `source` file goes in its template (see Page). */
+const SOURCE_MARKER = "<!--source-->";
+
 /**
  * Adds one page's metadata to the site-wide template context.
  *
@@ -718,7 +736,7 @@ function writeLlmsTxt(context: SiteContext, rendered: RenderedDocs, facts: HomeF
     "",
     `> ${SUMMARY} It is free, self-hosted software (GNU GPL v3 or later) with a command-line tool, a daemon with a web interface, and a plugin system for stores and destinations.`,
     "",
-    `${status} Each doc below is Markdown; the same page as HTML is at the URL without \`.md\`. Source code: ${repo}. Every doc in one file: ${origin}/llms-full.txt. Every page also answers a request with \`Accept: text/markdown\` in Markdown; the home, download and privacy pages are at ${origin}/index.md, ${origin}/download.md and ${origin}/privacy.md.`,
+    `${status} Each doc below is Markdown; the same page as HTML is at the URL without \`.md\`. Source code: ${repo}. Every doc in one file: ${origin}/llms-full.txt. Every page also answers a request with \`Accept: text/markdown\` in Markdown; the home, download, privacy and security pages are at ${origin}/index.md, ${origin}/download.md, ${origin}/privacy.md and ${origin}/security.md.`,
     "",
   ];
   if (context.flags.demo) {
@@ -794,12 +812,28 @@ export function build(env: BuildEnv, outDir: string, shellFile: string = DOCS_SH
   mkdirSync(outDir, { recursive: true });
   const indexable: string[] = [];
   let facts: HomeFacts | null = null;
+  const rendered = renderDocs(join(REPO_ROOT, "docs"), context.values.blobBase, GENERATED_TITLES);
+  const docKeys = new Set(rendered.docs.map((d) => d.key));
   for (const page of PAGES) {
-    const html = render(readFileSync(join(src, page.file), "utf8"), pageContext(context, page), partials);
+    let html = render(readFileSync(join(src, page.file), "utf8"), pageContext(context, page), partials);
     const pageFacts = page.path === "/" ? homeFacts(html) : null;
     if (pageFacts !== null) facts = pageFacts;
-    writeFileSync(join(outDir, page.file), html.replace(JSONLD_MARKER, () => jsonLd(pageFacts === null ? null : homeJsonLd(context, pageFacts))));
-    if (page.markdown) {
+    html = html.replace(JSONLD_MARKER, () => jsonLd(pageFacts === null ? null : homeJsonLd(context, pageFacts)));
+    if (page.source) {
+      if (html.split(SOURCE_MARKER).length !== 2) throw new Error(`${page.file} needs exactly one ${SOURCE_MARKER}`);
+      // The key places the file at the repository root, so its relative
+      // links resolve from there (`docs/…` becomes a docs page). Once a
+      // release's docs are published they come from its tag, so a link to a
+      // newer doc falls back to GitHub; build.test.ts fails the deploy then.
+      const doc = renderDoc(readFileSync(join(REPO_ROOT, page.source), "utf8"), `../${page.source.replace(/\.md$/, "")}`, {
+        keys: docKeys,
+        blobBase: context.values.blobBase,
+      });
+      html = html.replace(SOURCE_MARKER, () => doc.html);
+      if (page.markdown) writeFileSync(join(outDir, page.markdown.slice(1)), doc.markdown);
+    }
+    writeFileSync(join(outDir, page.file), html);
+    if (page.markdown && !page.source) {
       // Template values are validated tags, dates, commit ids and URLs, so
       // HTML escaping leaves them unchanged in Markdown too.
       const md = render(readFileSync(join(src, page.markdown.slice(1)), "utf8"), pageContext(context, page), partials);
@@ -807,7 +841,6 @@ export function build(env: BuildEnv, outDir: string, shellFile: string = DOCS_SH
     }
     if (page.indexable) indexable.push(page.path);
   }
-  const rendered = renderDocs(join(REPO_ROOT, "docs"), context.values.blobBase, GENERATED_TITLES);
   indexable.push(docUrl("README"), ...rendered.nav.flatMap((g) => g.pages.map((p) => docUrl(p.key))));
   mkdirSync(dirname(shellFile), { recursive: true });
   writeFileSync(shellFile, JSON.stringify(buildDocsShell(context, partials, rendered, docsVersions(state))));

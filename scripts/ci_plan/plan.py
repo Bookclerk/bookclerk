@@ -128,6 +128,9 @@ DOCKER_IMAGE_PREFIX = "packaging/docker/"
 # builds it; the path-filtered `demo-deploy.yml` workflow does.
 DEMO_IMAGE_PREFIX = "packaging/demo/"
 DOCKER_IMAGE_FILES = frozenset({".dockerignore"})
+# Repository files the website renders as pages of their own
+# (tools/site/build.ts `PAGES`, `source`).
+SITE_SOURCE_FILES = frozenset({"SECURITY.md"})
 # Prose outside `docs/` that no build, test or script reads.
 DOC_FILES = frozenset(
     {
@@ -136,7 +139,6 @@ DOC_FILES = frozenset(
         "CODE_OF_CONDUCT.md",
         "CONTRIBUTING.md",
         "README.md",
-        "SECURITY.md",
         "config/config.example.toml",
     }
 )
@@ -785,7 +787,7 @@ def build_plan(
         if path in ABI_SYNC_PATHS:
             surf.abi.append(path)
             classified = True
-        if path.startswith(SITE_PREFIX) or path.startswith(BRAND_PREFIX):
+        if path.startswith(SITE_PREFIX) or path.startswith(BRAND_PREFIX) or path in SITE_SOURCE_FILES:
             surf.site.append(path)
             classified = True
         if path.startswith(COLLECTOR_PREFIX):
