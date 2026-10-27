@@ -86,13 +86,23 @@ copy_from_image() {
   docker rm "${cid}" >/dev/null
 }
 
-# Moves a staged file or directory over its destination.
+# Moves a staged file or directory over its destination. The stage is on
+# the destination's filesystem, so the move is a rename; the old copy is
+# kept aside until it succeeds and put back if it fails.
 #
 # Arguments: $1 staged path, $2 destination.
+# Returns: non-zero when the destination could not be replaced.
 replace_with() {
-  rm -rf "$2"
-  mkdir -p "$(dirname "$2")"
-  mv "$1" "$2"
+  local old="$2.bookclerk-dev-old"
+  rm -rf "${old}"
+  if [[ -e "$2" || -L "$2" ]]; then
+    mv "$2" "${old}" || return 1
+  fi
+  if ! mv "$1" "$2"; then
+    [[ -e "${old}" || -L "${old}" ]] && mv "${old}" "$2"
+    return 1
+  fi
+  rm -rf "${old}"
 }
 
 step_node_uv() {
@@ -105,20 +115,28 @@ step_node_uv() {
   fi
   "${script_dir}/docker-up.sh" || return 1
   local stage entry
-  stage="$(mktemp -d)"
+  # Under /usr/local, the destinations' filesystem, so replace_with renames.
+  stage="$(mktemp -d /usr/local/.bookclerk-dev-stage.XXXXXX)" || return 1
   log "Node.js from ${node_ref%%@*}, uv from ${uv_ref%%@*}"
   if ! copy_from_image "${node_ref}" "${stage}" /usr/local/bin/node /usr/local/lib/node_modules \
     || ! copy_from_image "${uv_ref}" "${stage}" /uv /uvx; then
     rm -rf "${stage}"
     return 1
   fi
-  replace_with "${stage}/node" /usr/local/bin/node
-  replace_with "${stage}/uv" /usr/local/bin/uv
-  replace_with "${stage}/uvx" /usr/local/bin/uvx
+  mkdir -p /usr/local/bin /usr/local/lib/node_modules
+  if ! replace_with "${stage}/node" /usr/local/bin/node \
+    || ! replace_with "${stage}/uv" /usr/local/bin/uv \
+    || ! replace_with "${stage}/uvx" /usr/local/bin/uvx; then
+    rm -rf "${stage}"
+    return 1
+  fi
   # Only the packages the image bundles (npm, corepack) are replaced; other
   # globally installed packages on the host stay.
   for entry in "${stage}/node_modules"/*; do
-    replace_with "${entry}" "/usr/local/lib/node_modules/$(basename "${entry}")"
+    if ! replace_with "${entry}" "/usr/local/lib/node_modules/$(basename "${entry}")"; then
+      rm -rf "${stage}"
+      return 1
+    fi
   done
   rm -rf "${stage}"
   ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm

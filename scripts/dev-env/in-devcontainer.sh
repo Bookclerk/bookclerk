@@ -52,8 +52,14 @@ fi
 
 if ! docker image inspect "${tag}" >/dev/null 2>&1; then
   printf 'in-devcontainer: building %s\n' "${tag}" >&2
-  build=(docker build -f "${repo}/.devcontainer/Dockerfile" -t "${tag}")
+  # Host network and the caller's proxy settings, as for docker run below,
+  # so a loopback proxy also works for the build's downloads. Docker keeps
+  # these predefined proxy arguments out of the image history.
+  build=(docker build --network host -f "${repo}/.devcontainer/Dockerfile" -t "${tag}")
   [[ -n "${ca}" ]] && build+=(--secret "id=extra_ca,src=${ca}")
+  for var in HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy; do
+    [[ -n "${!var:-}" ]] && build+=(--build-arg "${var}")
+  done
   "${build[@]}" "${repo}" >&2
 fi
 
