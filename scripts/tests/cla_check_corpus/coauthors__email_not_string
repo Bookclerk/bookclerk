@@ -1,0 +1,30 @@
+{
+ "data": {
+  "repository": {
+   "pullRequest": {
+    "commits": {
+     "pageInfo": {
+      "hasNextPage": false,
+      "endCursor": null
+     },
+     "nodes": [
+      {
+       "commit": {
+        "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "authors": {
+         "totalCount": 1,
+         "nodes": [
+          {
+           "email": 7,
+           "user": null
+          }
+         ]
+        }
+       }
+      }
+     ]
+    }
+   }
+  }
+ }
+}

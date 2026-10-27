@@ -183,9 +183,8 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     refuses any account whose login does not fit its type (`[bot]` logins
     only for bot accounts). For fuzzed commit pages, the unsigned accounts
     are exactly the pull request author and linked commit authors and
-    co-authors, minus
-    the allowlisted bots and the signed ids. The comment mentions only
-    them and links only to the CLA.
+    co-authors, minus the allowlisted bots, the assistant accounts and the
+    signed ids. The comment mentions only them and links only to the CLA.
 
 ### Diagnostics collector Worker
 

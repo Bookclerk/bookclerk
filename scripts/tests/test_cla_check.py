@@ -178,6 +178,7 @@ def oracle(kind: str, raw: bytes) -> object:
         if type(nodes) is not list:
             raise Refused
         out = {}
+        assistants = set()
         for n in nodes:
             commit = o_obj(o_obj(n).get("commit"))
             sha = o_sha(commit.get("oid"))
@@ -190,12 +191,20 @@ def oracle(kind: str, raw: bytes) -> object:
                 raise Refused
             linked = []
             for e in entries:
-                user = o_obj(e).get("user")
+                e = o_obj(e)
+                email = e.get("email")
+                if email is not None and type(email) is not str:
+                    raise Refused
+                user = e.get("user")
                 if user is not None:
                     user = o_obj(user)
-                    linked.append(o_account({"id": user.get("databaseId"), "login": user.get("login"), "type": "User"}))
+                    account = o_account({"id": user.get("databaseId"), "login": user.get("login"), "type": "User"})
+                    if email is not None and email.casefold() == "noreply@anthropic.com":
+                        assistants.add(account[0])
+                    else:
+                        linked.append(account)
             out[sha] = linked
-        return (out, cursor)
+        return (out, cursor, frozenset(assistants))
     if kind == "signatures":
         doc = o_obj(o_json(raw, 1024 * 1024))
         entries = doc.get("signedContributors")
@@ -255,7 +264,8 @@ def module(kind: str, raw: bytes) -> object:
         return [comment(c) for c in cla.parse_comment_page(raw)]
     if kind == "coauthors":
         page = cla.parse_coauthor_page(raw)
-        return ({sha: [acc(a) for a in accounts] for sha, accounts in page.commits.items()}, page.next_cursor)
+        commits = {sha: [acc(a) for a in accounts] for sha, accounts in page.commits.items()}
+        return (commits, page.next_cursor, page.assistant_ids)
     if kind == "signatures":
         book = cla.parse_signatures(raw)
         return (len(book.entries), book.signed_ids)
@@ -311,6 +321,7 @@ class CorpusTests(unittest.TestCase):
             "signatures__deep", "contents__dir", "contents__bad_base64", "contents__none_encoding",
             "coauthors__errors", "coauthors__too_many", "coauthors__count_mismatch", "coauthors__repeat",
             "coauthors__no_cursor", "coauthors__bot_login_as_user", "coauthors__null_pull",
+            "coauthors__email_not_string",
         ):
             kind = name.partition("__")[0]
             self.assertEqual(outcome(module, kind, load(name), cla.ClaInputError), ("refused",), name)
@@ -328,9 +339,13 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(module("event_issue_comment", load("event_issue_comment__plain_issue"))[2], None)
         self.assertEqual(
             module("coauthors", load("coauthors__basic")),
-            ({SHA_A: [(101, "alice", "User"), (102, "bob", "User")], SHA_B: []}, None),
+            ({SHA_A: [(101, "alice", "User"), (102, "bob", "User")], SHA_B: []}, None, frozenset()),
         )
         self.assertEqual(module("coauthors", load("coauthors__next_page"))[1], "Y3Vyc29yOnYyOpHOAAAAAQ==")
+        self.assertEqual(
+            module("coauthors", load("coauthors__assistant")),
+            ({SHA_A: [(101, "alice", "User")]}, None, frozenset({900001})),
+        )
 
     def test_unknown_event_is_refused(self) -> None:
         with self.assertRaises(cla.ClaInputError):
@@ -490,7 +505,10 @@ class FakeGitHub:
         for c in self.commit_list[start:start + 100]:
             primary = c["author"] if c["author"] and c["author"]["type"] == "User" else None
             users = [primary, *c.get("coauthors", [])]
-            user_nodes = [{"user": None if u is None else {"databaseId": u["id"], "login": u["login"]}} for u in users]
+            user_nodes = [
+                {"email": (u or {}).get("email", "x@example.com"), "user": None if u is None else {"databaseId": u["id"], "login": u["login"]}}
+                for u in users
+            ]
             nodes.append({"commit": {"oid": c["sha"], "authors": {"totalCount": len(user_nodes), "nodes": user_nodes}}})
         more = start + 100 < len(self.commit_list)
         info = {"hasNextPage": more, "endCursor": str(start + 100) if more else None}
@@ -657,6 +675,32 @@ class EndToEndTests(unittest.TestCase):
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE, coauthors=[None])], [{"name": "alice", "id": 101}])
         drive(fake, pr_event(fake))
         self.assertEqual(fake.last_status(), "success")
+
+    def test_assistant_accounts_do_not_sign(self) -> None:
+        assistant = {**account("assistant-app", 900001), "email": "NoReply@Anthropic.com"}
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE, coauthors=[assistant])], [{"name": "alice", "id": 101}])
+        drive(fake, pr_event(fake))
+        self.assertEqual(fake.last_status(), "success")
+
+    def test_assistant_author_does_not_sign_but_the_pull_request_author_does(self) -> None:
+        assistant = account("assistant-app", 900001)
+        fake = FakeGitHub(BOB, [commit(SHA_A, assistant)])
+        real = fake.graphql
+        fake.graphql = lambda body: (200, real(body)[1].replace(b'"x@example.com"', b'"noreply@anthropic.com"', 1))
+        drive(fake, pr_event(fake))
+        self.assertEqual(fake.last_status(), "failure")
+        body = fake.comments[0]["body"]
+        self.assertIn("@bob", body)
+        self.assertNotIn("assistant-app", body)
+        self.assertNotIn(SHA_A, body)
+
+    def test_a_person_cannot_borrow_the_assistant_exemption(self) -> None:
+        """An assistant address on another commit exempts only its own account."""
+        assistant = {**account("assistant-app", 900001), "email": "noreply@anthropic.com"}
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE, coauthors=[assistant]), commit(SHA_B, BOB)], [{"name": "alice", "id": 101}])
+        drive(fake, pr_event(fake))
+        self.assertEqual(fake.last_status(), "failure")
+        self.assertIn("@bob", fake.comments[0]["body"])
 
     def test_co_author_query_must_list_the_same_commits(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}])

@@ -4,8 +4,9 @@
 # - The pull request author, the account linked to every commit, and every
 #   linked `Co-authored-by:` account must have accepted CLA.md, maintainers
 #   and organization members included. Only the bots in `BOT_ALLOWLIST`
-#   (scripts/cla_check.py) are exempt, matched by account type and login,
-#   never by git author name.
+#   (matched by account type and login, never by git author name) and AI
+#   coding assistant accounts in `ASSISTANT_EMAILS` (scripts/cla_check.py)
+#   are exempt.
 # - A contributor accepts by commenting the exact sentence in `SIGN_PHRASE`
 #   on a pull request they are part of. The check records the signature in
 #   `signatures/cla.json` on the `cla-signatures` branch (a GitHub-signed API

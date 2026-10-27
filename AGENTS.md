@@ -136,7 +136,8 @@ pull request as the behavior they describe:
 - Never skip or disable a test, push an empty commit, or close and reopen a
   pull request to re-run CI.
 - Every author, maintainers included, must have accepted the
-  [CLA](CLA.md); the `CLA` check says how. Only bots are exempt.
+  [CLA](CLA.md); the `CLA` check says how. Only bots and AI coding
+  assistant accounts are exempt.
 
 ### Licensing
 

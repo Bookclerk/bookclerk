@@ -80,9 +80,13 @@ Who must sign:
 - The pull request author, the GitHub account linked to every commit, and
   every account a commit credits with a `Co-authored-by:` line. Everyone
   signs, maintainers and organization members included.
-- Only the project's bots are exempt: `dependabot[bot]`, `bookclerk[bot]`
-  and `github-actions[bot]`. A bot is recognized by its account type and
-  login, never by the name in a commit, which anyone can set.
+- Only tools are exempt. The project's bots (`dependabot[bot]`,
+  `bookclerk[bot]` and `github-actions[bot]`) are recognized by their
+  account type and login, never by the name in a commit, which anyone can
+  set. The account of an AI coding assistant that a commit credits as a
+  co-author is recognized by its address (`ASSISTANT_EMAILS` in the
+  checker), which only that account can own. The pull request author still
+  signs for what they submit.
 - People are matched by GitHub account id, so a signature survives a
   renamed account.
 - A commit whose author email belongs to no GitHub account fails the check,

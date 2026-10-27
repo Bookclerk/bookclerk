@@ -8,9 +8,10 @@ metadata through the REST API and never checks out pull request code.
 Who must sign: the pull request author, the GitHub account linked to every
 commit, and every account a commit credits with a ``Co-authored-by:`` line,
 maintainers and organization members included. People are matched by
-numeric account id, never by name. The only exemptions are the bot accounts
-in ``BOT_ALLOWLIST``, recognized by their API account type and login, which
-no human account can take. A commit not linked to any account fails the
+numeric account id, never by name. The only exemptions are tools: the bot
+accounts in ``BOT_ALLOWLIST``, recognized by their API account type and
+login, which no human account can take, and the accounts GitHub links to an
+AI coding assistant's address in ``ASSISTANT_EMAILS``. A commit not linked to any account fails the
 check, since nobody can sign for it. A co-author whose email matches no
 account does not: the pull request author is the one authenticated party,
 and their signature covers what they submit (CLA section 4).
@@ -67,6 +68,13 @@ SIGNATURE_PATH = "signatures/cla.json"
 #: and ``[bot]`` logins cannot be registered by people.
 BOT_ALLOWLIST = frozenset({"dependabot[bot]", "bookclerk[bot]", "github-actions[bot]"})
 
+#: Commit author addresses of AI coding assistants. Commits often credit an
+#: assistant with a ``Co-authored-by:`` line; the account GitHub links to
+#: such an address is a tool, not a person, so like a bot it does not sign.
+#: Matching on the address is safe because only the assistant's own account
+#: can own it, so no person's account is ever exempted this way.
+ASSISTANT_EMAILS = frozenset({"noreply@anthropic.com"})
+
 #: The account the workflow's token comments as.
 COMMENT_AUTHOR = "github-actions[bot]"
 
@@ -88,7 +96,7 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
     pullRequest(number: $number) {
       commits(first: 100, after: $after) {
         pageInfo { hasNextPage endCursor }
-        nodes { commit { oid authors(first: 25) { totalCount nodes { user { databaseId login } } } } }
+        nodes { commit { oid authors(first: 25) { totalCount nodes { email user { databaseId login } } } } }
       }
     }
   }
@@ -176,14 +184,19 @@ class Commit:
     #: ``Co-authored-by:`` lines, as GitHub resolves them; authors whose
     #: email matches no user are left out.
     coauthors: tuple[Account, ...] = ()
+    #: Whether ``author`` is an AI coding assistant's account, which does
+    #: not sign (see ``ASSISTANT_EMAILS``).
+    assistant_author: bool = False
 
 
 @dataclass(frozen=True)
 class CoauthorPage:
     """One page of the co-author query."""
 
-    #: Each commit's linked author accounts, by SHA-1.
+    #: Each commit's linked author accounts, by SHA-1, without assistants.
     commits: dict[str, tuple[Account, ...]]
+    #: Ids of the accounts linked to an ``ASSISTANT_EMAILS`` address.
+    assistant_ids: frozenset[int]
     #: The cursor of the next page, or ``None`` on the last one.
     next_cursor: str | None
 
@@ -455,7 +468,8 @@ def parse_coauthor_page(raw: bytes) -> CoauthorPage:
     """Reads one page of the ``COAUTHOR_QUERY`` GraphQL response.
 
     GraphQL users are always people, so each linked author is read as a
-    ``USER`` account; bots resolve to no user and are left out.
+    ``USER`` account; bots resolve to no user and are left out. Accounts
+    linked to an ``ASSISTANT_EMAILS`` address are reported separately.
 
     # Errors
     ``ClaInputError`` when the response has errors or the wrong shape, a
@@ -481,6 +495,7 @@ def parse_coauthor_page(raw: bytes) -> CoauthorPage:
     if not isinstance(nodes, list):
         raise ClaInputError("commit nodes are not a list")
     out: dict[str, tuple[Account, ...]] = {}
+    assistants: set[int] = set()
     for node in nodes:
         commit = _object(_object(node, "commit node").get("commit"), "commit")
         sha = _sha(commit.get("oid"), "commit")
@@ -495,12 +510,20 @@ def parse_coauthor_page(raw: bytes) -> CoauthorPage:
             raise ClaInputError("author nodes do not match their count")
         linked = []
         for entry in entries:
-            user = _object(entry, "author").get("user")
+            author = _object(entry, "author")
+            email = author.get("email")
+            if email is not None:
+                _string(email, "author email")
+            user = author.get("user")
             if user is not None:
                 obj = _object(user, "user")
-                linked.append(parse_account({"id": obj.get("databaseId"), "login": obj.get("login"), "type": "User"}))
+                account = parse_account({"id": obj.get("databaseId"), "login": obj.get("login"), "type": "User"})
+                if isinstance(email, str) and email.lower() in ASSISTANT_EMAILS:
+                    assistants.add(account.id)
+                else:
+                    linked.append(account)
         out[sha] = tuple(linked)
-    return CoauthorPage(commits=out, next_cursor=cursor)
+    return CoauthorPage(commits=out, next_cursor=cursor, assistant_ids=frozenset(assistants))
 
 
 def parse_comment_page(raw: bytes) -> list[Comment]:
@@ -574,13 +597,14 @@ def required_signers(pull: PullRequest, commits: list[Commit]) -> list[Account]:
     """Lists the accounts that must sign, once each, in first-seen order.
 
     The pull request author comes first, then each commit's linked author
-    and co-authors. Exempt bots are left out.
+    and co-authors. Exempt bots and AI coding assistants are left out.
     """
     seen: set[int] = set()
     signers = []
     accounts = [pull.author]
     for commit in commits:
-        accounts += [a for a in (commit.author, *commit.coauthors) if a is not None]
+        author = None if commit.assistant_author else commit.author
+        accounts += [a for a in (author, *commit.coauthors) if a is not None]
     for account in accounts:
         if account.id not in seen and not is_exempt(account):
             seen.add(account.id)
@@ -722,14 +746,27 @@ class GitHub:
             page += 1
         if len(commits) != pull.commits:
             raise ApiError("commit pages do not match the pull request's commit count")
-        coauthors = self.coauthors(pull)
+        coauthors, assistants = self.coauthors(pull)
         if set(coauthors) != {c.sha for c in commits}:
             raise ApiError("the co-author query and the commit pages list different commits")
-        return [Commit(sha=c.sha, author=c.author, coauthors=coauthors[c.sha]) for c in commits]
+        return [
+            Commit(
+                sha=c.sha,
+                author=c.author,
+                assistant_author=c.author is not None and c.author.id in assistants,
+                coauthors=tuple(a for a in coauthors[c.sha] if a.id not in assistants),
+            )
+            for c in commits
+        ]
 
-    def coauthors(self, pull: PullRequest) -> dict[str, tuple[Account, ...]]:
-        """Fetches the linked authors and co-authors of every commit of ``pull``."""
+    def coauthors(self, pull: PullRequest) -> tuple[dict[str, tuple[Account, ...]], frozenset[int]]:
+        """Fetches the linked authors and co-authors of every commit of ``pull``.
+
+        # Returns
+        Each commit's accounts by SHA-1, and the ids of assistant accounts.
+        """
         out: dict[str, tuple[Account, ...]] = {}
+        assistants: set[int] = set()
         cursor: str | None = None
         for _ in range(MAX_COMMITS // PAGE_SIZE + 1):
             variables = {"owner": self.owner, "name": self.name, "number": pull.number, "after": cursor}
@@ -740,9 +777,10 @@ class GitHub:
             if set(page.commits) & set(out):
                 raise ApiError("co-author pages repeat a commit")
             out.update(page.commits)
+            assistants |= page.assistant_ids
             cursor = page.next_cursor
             if cursor is None:
-                return out
+                return out, frozenset(assistants)
         raise ApiError(f"pull request has more than {MAX_COMMITS} commits")
 
     def comments(self, number: int) -> list[Comment]:
