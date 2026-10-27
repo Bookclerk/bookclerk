@@ -148,7 +148,7 @@ them in the profile for later shells:
 | Variable | Purpose |
 | --- | --- |
 | `BOOKCLERK_DEV_REGISTRY_MIRROR` | Registry mirror for a newly started `dockerd` (for example `https://mirror.gcr.io` when shared egress is rate-limited by Docker Hub). Images stay pinned by digest. |
-| `BOOKCLERK_DEV_CA_BUNDLE` | Complete PEM trust bundle (system roots plus the CA of a TLS-intercepting proxy): passed to the image build as the `extra_ca` secret and mounted into the container. It replaces the default trust store for cargo, rustup and pip, so a bundle holding only the proxy's CA breaks hosts the proxy does not intercept. |
+| `BOOKCLERK_DEV_CA_BUNDLE` | Complete PEM trust bundle (system roots plus the CA of a TLS-intercepting proxy): passed to the image build as the `extra_ca` secret and mounted into the container. It replaces the default trust store for cargo, rustup and pip, so a bundle holding only the proxy's CA breaks hosts the proxy does not intercept. The setup script also points `SSL_CERT_FILE`, `CARGO_HTTP_CAINFO`, `PIP_CERT` and `NODE_EXTRA_CA_CERTS` at it in the profile. |
 
 A hosted environment's setup script can call it directly, for example
 `cd bookclerk && BOOKCLERK_DEV_REGISTRY_MIRROR=https://mirror.gcr.io scripts/dev-env/session-setup.sh`.

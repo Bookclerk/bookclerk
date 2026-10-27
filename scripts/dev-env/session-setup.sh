@@ -144,6 +144,13 @@ step_path() {
       printf 'export %s=%q\n' "${var}" "${!var}" >>/etc/profile.d/zz-bookclerk-dev.sh
     fi
   done
+  # The same trust the provisioning used, for later cargo, rustup, pip and
+  # Node.js downloads (as in-devcontainer.sh sets inside the container).
+  if [[ -n "${BOOKCLERK_DEV_CA_BUNDLE:-}" ]]; then
+    for var in SSL_CERT_FILE CARGO_HTTP_CAINFO PIP_CERT NODE_EXTRA_CA_CERTS; do
+      printf 'export %s=%q\n' "${var}" "${BOOKCLERK_DEV_CA_BUNDLE}" >>/etc/profile.d/zz-bookclerk-dev.sh
+    done
+  fi
   local rc="${HOME}/.bashrc" line='[ -f /etc/profile.d/zz-bookclerk-dev.sh ] && . /etc/profile.d/zz-bookclerk-dev.sh'
   touch "${rc}"
   grep -qxF "${line}" "${rc}" || printf '%s\n' "${line}" >>"${rc}"
