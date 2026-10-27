@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import random
 import re
 import sys
 import tempfile
@@ -118,6 +119,8 @@ class FakeGitHub:
             entries = self.trees[m.group(1)]
             listing = [{"path": p, "mode": mode, "type": "blob", "sha": sha} for p, (mode, sha) in entries.items()]
             return 200, {"tree": listing, "truncated": False}
+        if method == "GET" and (m := re.fullmatch(r"/git/blobs/([0-9a-f]{40})", rest)):
+            return 200, {"content": base64.b64encode(self.blobs[m.group(1)]).decode(), "encoding": "base64"}
         if method == "POST" and rest == "/git/blobs":
             return 201, {"sha": self._blob(base64.b64decode(body["content"]))}
         if method == "POST" and rest == "/git/trees":
@@ -159,6 +162,87 @@ class FakeGitHub:
             per_page, page = int(m.group(2)), int(m.group(3))
             return 200, history[(page - 1) * per_page : page * per_page]
         raise AssertionError(f"unexpected call {method} {path}")
+
+
+#: Seed corpus for the reader of the docs repository's previous ``last-updated.json``.
+DATES_CORPUS = Path(__file__).resolve().parent / "docs_publish_dates_corpus"
+
+#: Fragments dates mutations splice in: JSON syntax, keys, numbers and dates.
+DATE_FRAGMENTS = [
+    '"', "{", "}", "[", "]", ":", ",", "\\", "\\u0000", " ", "\n", "0", "1", "2", "9", "-", "-02-29", "-13-",
+    "1.0", "1e0", "true", "null", '"version"', '"pages"', '"README"', "2026-10-26", "é",
+]
+
+
+def oracle_previous_dates(data: bytes) -> dict[str, str]:
+    """Independent oracle for ``previous_dates``: the dates ``data`` should yield.
+
+    The date is read digit by digit against a days-in-month table rather
+    than with ``datetime``.
+    """
+    try:
+        document = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return {}
+    if type(document) is not dict or type(document.get("pages")) is not dict:
+        return {}
+    version = document.get("version")
+    if type(version) not in (int, float) or version != 1:
+        return {}
+    out = {}
+    for key, value in document["pages"].items():
+        if type(value) is not str or len(value) != 10 or value[4] != "-" or value[7] != "-":
+            continue
+        digits = value[:4] + value[5:7] + value[8:]
+        if not all("0" <= c <= "9" for c in digits):
+            continue
+        year, month, day = int(value[:4]), int(value[5:7]), int(value[8:])
+        leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+        days = [31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        if year >= 1 and 1 <= month <= 12 and 1 <= day <= days[month - 1]:
+            out[key] = value
+    return out
+
+
+class PreviousDatesFuzzTest(unittest.TestCase):
+    """The docs repository's ``last-updated.json`` as read back by the next publish:
+    seed corpus replay and seeded mutation fuzzing against an independent oracle."""
+
+    ITERATIONS = 4000
+
+    def check(self, data: bytes, label: str) -> None:
+        got = dp.previous_dates(data)
+        self.assertEqual(got, oracle_previous_dates(data), label)
+        for value in got.values():
+            self.assertRegex(value, r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$", label)
+
+    def test_corpus_matches_oracle(self) -> None:
+        paths = sorted(DATES_CORPUS.glob("*.json"))
+        self.assertGreaterEqual(len(paths), 10)
+        for path in paths:
+            self.check(path.read_bytes(), path.name)
+        self.assertEqual(
+            dp.previous_dates((DATES_CORPUS / "valid.json").read_bytes()),
+            {"README": "2026-10-26", "api/README": "2026-10-27", "api/rust/bookclerk_media": "2024-02-29"},
+        )
+        self.assertEqual(dp.previous_dates((DATES_CORPUS / "impossible_dates.json").read_bytes()), {"e": "2000-02-29"})
+
+    def test_mutations_match_oracle(self) -> None:
+        seeds = [p.read_bytes().decode("utf-8", "replace") for p in sorted(DATES_CORPUS.glob("*.json"))]
+        rng = random.Random(20261027)
+        for n in range(self.ITERATIONS):
+            text = rng.choice(seeds)
+            for _ in range(rng.randint(1, 5)):
+                pos = rng.randint(0, len(text))
+                op = rng.random()
+                if op < 0.5:
+                    text = text[:pos] + rng.choice(DATE_FRAGMENTS) + text[pos:]
+                elif op < 0.75:
+                    text = text[:pos] + text[pos + rng.randint(1, 6) :]
+                else:
+                    text = text[:pos] + chr(rng.randint(0x20, 0x7E)) + text[pos:]
+            data = text.encode("utf-8", "surrogatepass")
+            self.check(data, f"iteration {n}: {data[:200]!r}")
 
 
 class PublishTest(unittest.TestCase):
@@ -274,6 +358,47 @@ class PublishTest(unittest.TestCase):
         with self.assertRaises(dp.PublishError):
             dp.publish_main(dp.DocsRepo(REPO, truncated), "main", self.write({"README.md": "x\n"}), SRC, SHA_B)
 
+    def dates(self, ref: str = "heads/main") -> dict[str, str]:
+        """The page dates published at ``ref``."""
+        return json.loads(self.gh.files(ref)[dp.LAST_UPDATED_FILE])["pages"]
+
+    def test_generated_pages_keep_their_date_until_they_change(self) -> None:
+        built = json.dumps({"version": 1, "pages": {"README": "2026-10-20"}}, indent=1) + "\n"
+        tree = {"README.md": "# Docs\n", "api/README.md": "# API\n", "api/rust/a.md": "A\n", dp.LAST_UPDATED_FILE: built}
+        dp.publish_main(self.repo, "main", self.write(tree), SRC, SHA_A, today="2026-10-27")
+        self.assertEqual(self.dates(), {"README": "2026-10-20", "api/README": "2026-10-27", "api/rust/a": "2026-10-27"})
+
+        # Rebuilt identically a day later: no new commit, dates kept.
+        head = self.gh.refs["heads/main"]
+        summary = dp.publish_main(self.repo, "main", self.write(tree), SRC, SHA_B, today="2026-10-28")
+        self.assertIn("no changes", summary)
+        self.assertEqual(self.gh.refs["heads/main"], head)
+
+        # One generated page changes, another is added: only those move.
+        tree["api/rust/a.md"] = "A, changed\n"
+        tree["api/rust/b.md"] = "B\n"
+        dp.publish_main(self.repo, "main", self.write(tree), SRC, SHA_C, today="2026-10-29")
+        self.assertEqual(
+            self.dates(),
+            {"README": "2026-10-20", "api/README": "2026-10-27", "api/rust/a": "2026-10-29", "api/rust/b": "2026-10-29"},
+        )
+
+    def test_a_release_beside_main_dates_its_generated_pages_too(self) -> None:
+        built = json.dumps({"version": 1, "pages": {}}, indent=1) + "\n"
+        dp.publish_main(self.repo, "main", self.write({"api/x.md": "X\n", dp.LAST_UPDATED_FILE: built}), SRC, SHA_A, today="2026-10-27")
+        files = self.write({"api/x.md": "X\n", dp.LAST_UPDATED_FILE: built})
+        dp.publish_release(self.repo, "main", files, SRC, SHA_B, "v1.0.0", today="2026-11-01")
+        self.assertEqual(self.dates("tags/v1.0.0"), {"api/x": "2026-10-27"})
+
+    def test_a_tree_without_dates_is_published_without_them(self) -> None:
+        dp.publish_main(self.repo, "main", self.write({"api/x.md": "X\n"}), SRC, SHA_A, today="2026-10-27")
+        self.assertNotIn(dp.LAST_UPDATED_FILE, self.gh.files("heads/main"))
+
+    def test_a_malformed_built_dates_file_is_refused(self) -> None:
+        for bad in ("{", "[]", '{"version": 2, "pages": {}}', '{"version": 1, "pages": []}'):
+            with self.subTest(bad=bad), self.assertRaises(dp.PublishError):
+                dp.publish_main(self.repo, "main", self.write({dp.LAST_UPDATED_FILE: bad}), SRC, SHA_A, today="2026-10-27")
+
     def test_chunks_split_large_trees(self) -> None:
         entries = [{"path": f"f{i}.md", "content": "x" * 50} for i in range(10)]
         batches = list(dp.chunks(entries, limit=200))
@@ -318,6 +443,13 @@ class InputTest(unittest.TestCase):
     def test_blob_sha_matches_git(self) -> None:
         # `printf 'hello\n' | git hash-object --stdin`
         self.assertEqual(dp.blob_sha(b"hello\n"), "ce013625030ba8dba906f756967f9e9ca394464a")
+
+    def test_previous_dates_keep_only_real_dates(self) -> None:
+        self.assertEqual(dp.previous_dates(None), {})
+        for bad in (b"\xff", b"{", b"[]", b'{"version": 2, "pages": {"a": "2026-10-27"}}', b'{"version": 1, "pages": []}'):
+            self.assertEqual(dp.previous_dates(bad), {}, bad)
+        document = {"version": 1, "pages": {"a": "2026-10-27", "b": "2026-02-30", "c": 20261027, "d": "2026-1-01", "e": "2024-02-29"}}
+        self.assertEqual(dp.previous_dates(json.dumps(document).encode()), {"a": "2026-10-27", "e": "2024-02-29"})
 
     def test_trailer_round_trip(self) -> None:
         message = dp.commit_message(SRC, SHA_A, None)

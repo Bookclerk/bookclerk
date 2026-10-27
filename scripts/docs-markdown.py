@@ -360,7 +360,8 @@ def write_last_updated(out: Path, log: str) -> int:
     """Write :data:`LAST_UPDATED_FILE`: the date each copied page last changed.
 
     The site shows it as "Last updated". Only pages copied from ``docs/`` are
-    dated; the generated ``api/`` tree is not.
+    dated here; ``docs-publish.py`` adds the generated ``api/`` pages, which
+    it can compare with the docs repository.
 
     Args:
         out: The output root, after :func:`copy_docs`.

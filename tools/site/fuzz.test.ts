@@ -233,6 +233,18 @@ function checkHighlight(code: string, lang: string, context: string): void {
     return;
   }
   assert.equal(oracleText(html), code, `${context}: ${JSON.stringify(code)} -> ${JSON.stringify(html)}`);
+  if (lang.toLowerCase() === "console") {
+    // Terminal output stays plain: only a `$ ` line, or a line continuing
+    // one that ends in `\`, may carry spans. Spans never cross a newline.
+    const codeLines = code.split("\n");
+    const htmlLines = html.split("\n");
+    assert.equal(htmlLines.length, codeLines.length, context);
+    let command = false;
+    codeLines.forEach((line, n) => {
+      command = line.startsWith("$ ") || (command && (codeLines[n - 1] ?? "").endsWith("\\"));
+      if (!command) assert.ok(!(htmlLines[n] ?? "").includes("<span"), `${context}: output line ${n} colored in ${JSON.stringify(code)} -> ${JSON.stringify(html)}`);
+    });
+  }
 }
 
 test("highlight keeps its seed corpus intact and markup-free", () => {

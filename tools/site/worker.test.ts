@@ -46,7 +46,6 @@ const DOCS = join(HERE, "..", "..", "docs");
 /** Generated pages the stand-in docs repository adds to docs/. */
 const GENERATED: Readonly<Record<string, string>> = {
   "api/rust/demo/index.md": "# Crate `demo`\n\nA demo crate. See [the SDK](../../typescript/README.md) and [`Thing`](#thing).\n\n## Thing\n",
-  // The generated page is dated here only to check that its date is not shown.
   "last-updated.json": JSON.stringify({ version: 1, pages: { "plugins/README": "2026-10-26", "api/rust/demo/index": "2026-10-01" } }),
 };
 
@@ -392,7 +391,8 @@ test("generated pages render without a source link and keep links inside the tre
   assert.match(html, /Generated from the source at v0.2.0/);
   assert.match(html, /href="\/docs\/api\/typescript\/"/);
   assert.match(html, /<h2 id="thing">/);
-  assert.doesNotMatch(html, /Last updated|dateModified/, "the generated reference has no date");
+  // The publish step dates generated pages by when their content last changed.
+  assert.match(html, /Last updated <time datetime="2026-10-01">Oct 1, 2026<\/time>/);
 });
 
 test("a page shows no date when the dates file leaves it out, is broken or cannot be read", async () => {
@@ -422,12 +422,6 @@ test("a page shows no date when the dates file leaves it out, is broken or canno
     assert.equal(store.size, failed.has(i) ? 0 : 1, `answer ${i}`);
     assert.equal(res.headers.get("Cache-Control"), failed.has(i) ? "public, max-age=60, s-maxage=0" : "public, max-age=300, s-maxage=86400", `answer ${i}`);
   }
-});
-
-test("generated reference pages do not read the dates file", async () => {
-  fetched.length = 0;
-  assert.equal((await get("/docs/api/rust/demo/index", BROWSER)).status, 200);
-  assert.deepEqual(fetched, [`${DOCS_RAW_BASE}v0.2.0/api/rust/demo/index.md`]);
 });
 
 test("a Markdown request does not read the dates file", async () => {

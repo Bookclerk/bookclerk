@@ -81,7 +81,9 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   page (`<details>`, so they work without a script).
 - `highlight.ts` – syntax colors for fenced code blocks in the languages the
   docs use (shell, TOML, YAML, JSON, TypeScript, Rust, Python, SQL), as
-  `<span class="hl-…">` around escaped text; other fences stay plain. The
+  `<span class="hl-…">` around escaped text; other fences stay plain. In a
+  `console` fence only `$ ` prompt lines (and their `\` continuations) are
+  colored, and the output lines stay plain. The
   Worker runs it while rendering, so pages need no client-side highlighter.
   It reads doc text, so `fuzz.test.ts` replays `fuzz/highlight/` (first line
   the language, the rest the code) and fuzzes mutations against an oracle
@@ -89,10 +91,11 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   input exactly.
 - `last-updated.ts` – reads `last-updated.json`, which the docs publishing
   workflow writes at the root of each docs version from this repository's
-  git history (`scripts/docs-markdown.py`), and formats the "Last updated"
-  date under each page's title (also `dateModified` in its JSON-LD). The
-  Worker fetches the file beside the page, for HTML only; when it is
-  missing or unreadable, or for the generated `api/` pages, the page has no
+  git history (`scripts/docs-markdown.py`; the generated `api/` pages are
+  dated by `scripts/docs-publish.py` from when their content last changed),
+  and formats the "Last updated" date under each page's title (also
+  `dateModified` in its JSON-LD). The Worker fetches the file beside the
+  page, for HTML only; when it is missing or unreadable, the page has no
   date. The file comes from outside the Worker, so `fuzz.test.ts` replays
   `fuzz/last_updated/` and fuzzes mutations against an independent oracle.
 - `src/docs.js` – the docs pages' only script, served from the site: a Copy
@@ -162,8 +165,8 @@ versions.
   page: the "docs could not be loaded" page in the site's look (Markdown for
   Markdown readers), linking to the same doc in the docs repository on
   GitHub, with `Retry-After: 60`, `no-store` and `noindex`. The version's
-  `last-updated.json` is fetched the same way (capped at 256 KB, and not
-  for the generated `api/` pages), but a failure there only leaves out the
+  `last-updated.json` is fetched the same way (capped at 2 MB), but a
+  failure there only leaves out the
   page's date, and that page is kept out of the edge cache so the date
   returns once the docs repository answers.
 - Each page is rendered into the shell `build.ts` bakes from `src/doc.html`

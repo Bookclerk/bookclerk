@@ -118,6 +118,12 @@ test("highlight colors each language's own names and leaves the rest plain", () 
     '<span class="hl-k">for</span> x <span class="hl-k">in</span> a; <span class="hl-k">do</span> <span class="hl-f">echo</span> <span class="hl-v">${HOME}</span>; <span class="hl-k">done</span>',
   );
   assert.equal(highlight("$ cargo dev --optional", "console"), '$ <span class="hl-f">cargo</span> dev <span class="hl-v">--optional</span>');
+  // In a terminal session only prompt lines and their continuations are highlighted; output stays plain.
+  assert.equal(
+    highlight("$ cargo build \\\n  --release | tee log\n   Compiling foo v1\nok | done", "console"),
+    '$ <span class="hl-f">cargo</span> build \\\n  <span class="hl-v">--release</span> | <span class="hl-f">tee</span> log\n   Compiling foo v1\nok | done',
+  );
+  assert.equal(highlight("Compiling foo\ncargo dev", "bash"), '<span class="hl-f">Compiling</span> foo\n<span class="hl-f">cargo</span> dev');
   assert.equal(highlight("- name: x\n  key: y", "yaml"), '- <span class="hl-v">name</span>: x\n  <span class="hl-v">key</span>: y');
   assert.equal(highlight('{"a": "b", "n": 1}', "json"), '{<span class="hl-v">&quot;a&quot;</span>: <span class="hl-s">&quot;b&quot;</span>, <span class="hl-v">&quot;n&quot;</span>: <span class="hl-n">1</span>}');
   assert.equal(highlight("x", "text"), null);

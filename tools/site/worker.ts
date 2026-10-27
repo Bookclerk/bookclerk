@@ -532,10 +532,8 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
   }
 
   const { version } = target;
-  // Fetched beside the page and only for HTML, which shows the date. The
-  // generated API reference is rebuilt on every publish and has no date.
-  const dated = !wantsMarkdown && !target.keys[0].startsWith("api/");
-  const dates = dated ? fetchLastUpdated(version.ref, deps.fetch) : null;
+  // Fetched beside the page and only for HTML, which shows the date.
+  const dates = wantsMarkdown ? null : fetchLastUpdated(version.ref, deps.fetch);
   let key: string | null = null;
   let source: string | null = null;
   // The last key asked for, so the unavailable page links on GitHub to the

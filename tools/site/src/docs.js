@@ -10,15 +10,25 @@
   /**
    * The text a Copy button puts on the clipboard: for a terminal session
    * (lines starting with a `$ ` prompt), only the commands without their
-   * prompts; otherwise the whole block.
+   * prompts, with the lines that continue a command ending in `\`;
+   * otherwise the whole block.
    *
    * @param {string} text - The code block's text.
    * @returns {string} What to copy.
    */
   function copyText(text) {
     const lines = text.replace(/\n$/, "").split("\n");
-    const commands = lines.filter((line) => line.startsWith("$ "));
-    return commands.length === 0 ? lines.join("\n") : commands.map((line) => line.slice(2)).join("\n");
+    if (!lines.some((line) => line.startsWith("$ "))) return lines.join("\n");
+    const commands = [];
+    let continued = false;
+    for (const line of lines) {
+      if (line.startsWith("$ ")) commands.push(line.slice(2));
+      else if (continued) commands.push(line);
+      else continue;
+      // A `\` inside a `#` comment does not continue the line.
+      continued = line.endsWith("\\") && !/(^|\s)#/.test(line);
+    }
+    return commands.join("\n");
   }
 
   /**

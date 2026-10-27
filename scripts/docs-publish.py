@@ -22,6 +22,12 @@ Two modes:
     without moving it) and that commit is tagged. An existing tag is never
     moved.
 
+Both modes date the generated API reference in ``last-updated.json``, which
+the build writes for the hand-written pages only: a generated page whose
+content is unchanged in the docs repository keeps the date the repository's
+current ``last-updated.json`` gives it, and a new or changed one gets the
+publish date (UTC).
+
 The token is read from ``DOCS_TOKEN`` and never printed. See docs/contributing/automation.md#docs-publishing.
 """
 
@@ -29,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import hashlib
 import json
 import os
@@ -38,6 +45,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +65,12 @@ TAG_SEGMENT = r"[A-Za-z0-9][A-Za-z0-9._+-]*"
 TAG_RE = re.compile(rf"^{TAG_SEGMENT}(?:/{TAG_SEGMENT})*$")
 TAG_MAX_LEN = 100
 TRAILER_RE = re.compile(r"^Source-Commit: ([0-9a-f]{40})$", re.MULTILINE)
+
+# The page dates `docs-markdown.py` writes at the root of the tree, and the
+# generated pages this script dates in it (`<key>.md` under GENERATED_PREFIX).
+LAST_UPDATED_FILE = "last-updated.json"
+GENERATED_PREFIX = "api/"
+DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 
 # Upper bound on the JSON payload of one create-tree call. Large trees are
 # written as a chain of trees, each based on the previous one.
@@ -384,6 +398,26 @@ class DocsRepo:
             if entry.get("type") == "blob"
         }
 
+    def blob(self, sha: str) -> bytes:
+        """Download a blob.
+
+        Args:
+            sha: Blob id.
+
+        Returns:
+            Its contents.
+
+        Raises:
+            PublishError: GitHub's answer is not a base64 blob.
+        """
+        data = self._call("GET", f"/git/blobs/{validate_sha(sha)}")
+        if not isinstance(data, dict) or data.get("encoding") != "base64" or not isinstance(data.get("content"), str):
+            raise PublishError(f"blob {sha}: not a base64 blob")
+        try:
+            return base64.b64decode(data["content"])
+        except (binascii.Error, ValueError) as err:
+            raise PublishError(f"blob {sha}: {err}") from err
+
     def create_blob(self, data: bytes) -> str:
         """Upload a binary file.
 
@@ -509,6 +543,121 @@ class DocsRepo:
         return None
 
 
+def is_date(text: object) -> bool:
+    """Tell whether a value is a real calendar date written ``YYYY-MM-DD``.
+
+    Args:
+        text: The value.
+
+    Returns:
+        True for a string such as ``2026-10-27``; False for ``2026-02-30``.
+    """
+    if not isinstance(text, str) or not DATE_RE.fullmatch(text):
+        return False
+    try:
+        date.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
+
+
+def is_dates_document(document: object) -> bool:
+    """Tell whether parsed JSON has the shape of ``last-updated.json``.
+
+    Args:
+        document: The parsed value.
+
+    Returns:
+        True for an object whose ``version`` is the number 1 (not ``true``)
+        and whose ``pages`` is an object.
+    """
+    if not isinstance(document, dict):
+        return False
+    version = document.get("version")
+    return not isinstance(version, bool) and version == 1 and isinstance(document.get("pages"), dict)
+
+
+def previous_dates(data: bytes | None) -> dict[str, str]:
+    """Read the page dates of the docs repository's current ``last-updated.json``.
+
+    The file was written by this script on an earlier run. Anything that is
+    not the expected document (or an entry that is not a real date) is left
+    out rather than refused: the page then gets the publish date, as a new
+    page would.
+
+    Args:
+        data: The file, or None when the docs repository has none.
+
+    Returns:
+        Date by page key.
+    """
+    if data is None:
+        return {}
+    try:
+        document = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return {}
+    if not is_dates_document(document):
+        return {}
+    return {key: value for key, value in document["pages"].items() if isinstance(key, str) and is_date(value)}
+
+
+def date_generated_pages(
+    files: list[LocalFile], remote: dict[str, tuple[str, str]], previous: dict[str, str], today: str
+) -> list[LocalFile]:
+    """Add the generated pages to the built tree's ``last-updated.json``.
+
+    A generated page (``api/<key>.md``) whose blob equals the one in the docs
+    repository keeps its previous date; a new or changed page, or one with no
+    previous date, gets ``today``. The build's dates for hand-written pages
+    are kept as they are. A tree without ``last-updated.json`` (built without
+    the git history) is returned unchanged.
+
+    Args:
+        files: The built tree.
+        remote: Path -> (mode, blob id) of the docs repository's current tree.
+        previous: Dates from its current ``last-updated.json``.
+        today: The publish date, ``YYYY-MM-DD``.
+
+    Returns:
+        The tree, with ``last-updated.json`` rewritten.
+
+    Raises:
+        PublishError: The built ``last-updated.json`` is not the document
+            ``docs-markdown.py`` writes.
+    """
+    built = next((f for f in files if f.path == LAST_UPDATED_FILE), None)
+    if built is None:
+        return files
+    try:
+        document = json.loads(built.data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as err:
+        raise PublishError(f"{LAST_UPDATED_FILE}: {err}") from err
+    if not is_dates_document(document):
+        raise PublishError(f"{LAST_UPDATED_FILE}: not a version 1 document")
+    pages: dict[str, str] = dict(document["pages"])
+    for f in files:
+        if not (f.path.startswith(GENERATED_PREFIX) and f.path.endswith(".md")):
+            continue
+        key = f.path.removesuffix(".md")
+        kept = previous.get(key)
+        unchanged = remote.get(f.path) == ("100644", f.sha)
+        pages[key] = kept if unchanged and kept is not None else today
+    document["pages"] = dict(sorted(pages.items()))
+    data = (json.dumps(document, indent=1) + "\n").encode("utf-8")
+    dated = LocalFile(path=LAST_UPDATED_FILE, data=data, sha=blob_sha(data))
+    return [dated if f.path == LAST_UPDATED_FILE else f for f in files]
+
+
+def today_utc() -> str:
+    """The publish date.
+
+    Returns:
+        Today in UTC, ``YYYY-MM-DD``.
+    """
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
 def tree_entries(files: list[LocalFile], remote: dict[str, tuple[str, str]], repo: DocsRepo) -> list[dict[str, Any]]:
     """Diff the built tree against the remote tree.
 
@@ -566,26 +715,38 @@ def chunks(entries: list[dict[str, Any]], limit: int = TREE_CHUNK_BYTES) -> Iter
         yield batch
 
 
-def write_tree(repo: DocsRepo, base_commit: str, files: list[LocalFile]) -> tuple[str, bool]:
+def write_tree(repo: DocsRepo, base_commit: str, files: list[LocalFile], today: str) -> tuple[str, bool]:
     """Write the built tree on top of ``base_commit``'s tree.
 
     Args:
         repo: The docs repository.
         base_commit: Commit whose tree is replaced.
         files: The built tree.
+        today: The publish date, for generated pages that changed
+            (:func:`date_generated_pages`).
 
     Returns:
         (new tree id, whether anything changed).
     """
     base_tree = repo.commit(base_commit)["tree"]["sha"]
-    entries = tree_entries(files, repo.tree_blobs(base_tree), repo)
+    remote = repo.tree_blobs(base_tree)
+    current = remote.get(LAST_UPDATED_FILE)
+    # Only a build that dated its pages needs the previous dates.
+    if current is not None and any(f.path == LAST_UPDATED_FILE for f in files):
+        previous = previous_dates(repo.blob(current[1]))
+    else:
+        previous = {}
+    files = date_generated_pages(files, remote, previous, today)
+    entries = tree_entries(files, remote, repo)
     tree = base_tree
     for batch in chunks(entries):
         tree = repo.create_tree(tree, batch)
     return tree, bool(entries)
 
 
-def publish_main(repo: DocsRepo, branch: str, files: list[LocalFile], source_repo: str, source_commit: str) -> str:
+def publish_main(
+    repo: DocsRepo, branch: str, files: list[LocalFile], source_repo: str, source_commit: str, today: str | None = None
+) -> str:
     """Commit the built tree onto the docs ``branch``.
 
     Args:
@@ -594,6 +755,7 @@ def publish_main(repo: DocsRepo, branch: str, files: list[LocalFile], source_rep
         files: The built tree.
         source_repo: Repository the docs were built from.
         source_commit: Commit they were built from.
+        today: The publish date (default: today in UTC).
 
     Returns:
         A one-line summary of what happened.
@@ -602,7 +764,7 @@ def publish_main(repo: DocsRepo, branch: str, files: list[LocalFile], source_rep
     head_commit = repo.commit(head)
     if source_commit_of(head_commit.get("message", "")) == source_commit:
         return f"{branch} already carries {source_commit}"
-    tree, changed = write_tree(repo, head, files)
+    tree, changed = write_tree(repo, head, files, today or today_utc())
     if not changed:
         return f"no changes for {source_commit}; {branch} stays at {head}"
     new = repo.create_commit(commit_message(source_repo, source_commit, None), tree, [head])
@@ -611,7 +773,13 @@ def publish_main(repo: DocsRepo, branch: str, files: list[LocalFile], source_rep
 
 
 def publish_release(
-    repo: DocsRepo, branch: str, files: list[LocalFile], source_repo: str, source_commit: str, tag: str
+    repo: DocsRepo,
+    branch: str,
+    files: list[LocalFile],
+    source_repo: str,
+    source_commit: str,
+    tag: str,
+    today: str | None = None,
 ) -> str:
     """Tag the docs commit for a release, creating it when ``branch`` has none.
 
@@ -622,6 +790,7 @@ def publish_release(
         source_repo: Repository the docs were built from.
         source_commit: The commit the release tag points at.
         tag: The release tag.
+        today: The publish date (default: today in UTC).
 
     Returns:
         A one-line summary of what happened.
@@ -644,7 +813,7 @@ def publish_release(
     head = repo.branch_head(branch) or repo.initialize(branch)
     found = repo.find_source_commit(branch, source_commit)
     if found is None:
-        tree, _changed = write_tree(repo, head, files)
+        tree, _changed = write_tree(repo, head, files, today or today_utc())
         found = repo.create_commit(commit_message(source_repo, source_commit, tag), tree, [head])
         how = "new commit beside main"
     else:
