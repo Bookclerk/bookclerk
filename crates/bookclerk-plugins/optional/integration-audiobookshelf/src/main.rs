@@ -21,7 +21,7 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 /// Audiobookshelf integration guest; state is created from the `open`
-/// [`Bindings`] (`CONFIG`).
+/// [`Bindings`] (`CONFIG`, plus the API key from `SECRETS`).
 struct AbsRoot {
     /// Shared guest state after the first `open()` call.
     state: Mutex<Option<Arc<Mutex<AbsGuestState>>>>,
@@ -44,7 +44,13 @@ impl AbsRoot {
                 .config
                 .json_value()
                 .unwrap_or_else(|_| Value::Object(Default::default()));
-            Arc::new(Mutex::new(AbsGuestState::from_config_json(&config)))
+            let secrets = bindings
+                .secrets
+                .json_value()
+                .unwrap_or_else(|_| Value::Object(Default::default()));
+            Arc::new(Mutex::new(AbsGuestState::from_bindings_json(
+                &config, &secrets,
+            )))
         });
         Ok(state.clone())
     }

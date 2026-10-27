@@ -1,83 +1,52 @@
 name: ABS Integration
 
-# Heavyweight Audiobookshelf ↔ Bookclerk smoke (Docker).
-# Not run on every PR — manual or on published release.
+# Audiobookshelf integration test: a real Audiobookshelf server and the
+# production image with the Audiobookshelf plugin, configured with the CLI
+# and exercised end to end (tests/abs-integration/smoke.sh). Heavyweight, so
+# it runs by hand, on a published release, and on pull requests that change
+# the test itself.
 
 on:
   workflow_dispatch:
   release:
     types: [published]
+  pull_request:
+    paths:
+      - ".github/workflows/abs-integration.yml"
+      - "tests/abs-integration/**"
 
-# Least privilege: checkout + local Docker smoke only.
+# Least privilege: checkout and a local Docker stack only.
 permissions:
   contents: read
 
-env:
-  CARGO_TERM_COLOR: always
-  ABS_ADMIN_USER: absadmin
-  ABS_ADMIN_PASS: AbsAdminPass1!
+concurrency:
+  group: abs-integration-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   abs-smoke:
-    name: Docker ABS + bookclerkd
+    name: Audiobookshelf + bookclerkd
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Build and start compose stack
+      # The production builder and image, then the plugin layer on top: the
+      # release build and three images need more than the runner's free
+      # space, and these preinstalled toolchains are never used here.
+      - name: Free disk space
         run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Build the images
+        run: |
+          set -euo pipefail
+          docker build -f packaging/docker/Dockerfile --target builder -t bookclerk-builder:abs-ci .
+          docker build -f packaging/docker/Dockerfile -t bookclerk:abs-ci .
           docker compose -f tests/abs-integration/docker-compose.yml build
-          docker compose -f tests/abs-integration/docker-compose.yml up -d audiobookshelf
-          # Wait for ABS before starting bookclerkd (needs API key from init).
-          for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:13378/ >/dev/null 2>&1; then break; fi
-            sleep 2
-          done
-          # Init admin + fetch token
-          curl -sS -X POST http://127.0.0.1:13378/init \
-            -H 'Content-Type: application/json' \
-            -d "{\"newRoot\":{\"username\":\"$ABS_ADMIN_USER\",\"password\":\"$ABS_ADMIN_PASS\"}}" || true
-          LOGIN=$(curl -fsS -X POST http://127.0.0.1:13378/login \
-            -H 'Content-Type: application/json' \
-            -d "{\"username\":\"$ABS_ADMIN_USER\",\"password\":\"$ABS_ADMIN_PASS\"}")
-          TOKEN=$(echo "$LOGIN" | python3 -c 'import json,sys; print(json.load(sys.stdin)["user"]["token"])')
-          # Ensure library
-          LIBS=$(curl -fsS http://127.0.0.1:13378/api/libraries -H "Authorization: Bearer $TOKEN")
-          LIB_ID=$(echo "$LIBS" | python3 -c '
-          import json,sys
-          libs=json.load(sys.stdin).get("libraries") or []
-          print(libs[0]["id"] if libs else "")
-          ')
-          if [ -z "$LIB_ID" ]; then
-            CREATE=$(curl -fsS -X POST http://127.0.0.1:13378/api/libraries \
-              -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-              -d '{"name":"Audiobooks","folders":[{"fullPath":"/audiobooks"}],"mediaType":"book"}')
-            LIB_ID=$(echo "$CREATE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
-          fi
-          echo "BOOKCLERK_ABS_API_KEY=$TOKEN" >> "$GITHUB_ENV"
-          echo "BOOKCLERK_ABS_LIBRARY_ID=$LIB_ID" >> "$GITHUB_ENV"
-          export BOOKCLERK_ABS_API_KEY="$TOKEN"
-          export BOOKCLERK_ABS_LIBRARY_ID="$LIB_ID"
-          docker compose -f tests/abs-integration/docker-compose.yml up -d bookclerkd
-          for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:8787/health >/dev/null 2>&1; then break; fi
-            sleep 2
-          done
 
-      - name: Run smoke script
-        env:
-          ABS_URL: http://127.0.0.1:13378
-          BOOKCLERK_URL: http://127.0.0.1:8787
-        run: |
-          chmod +x tests/abs-integration/smoke.sh
-          # Re-export keys for compose exec
-          export BOOKCLERK_ABS_API_KEY="${{ env.BOOKCLERK_ABS_API_KEY }}"
-          export BOOKCLERK_ABS_LIBRARY_ID="${{ env.BOOKCLERK_ABS_LIBRARY_ID }}"
-          # Patch running container env by recreating with keys
-          docker compose -f tests/abs-integration/docker-compose.yml up -d bookclerkd
-          sleep 5
-          tests/abs-integration/smoke.sh
-
-      - name: Dump logs on failure
-        if: failure()
-        run: docker compose -f tests/abs-integration/docker-compose.yml logs --no-color | tail -n 200
+      - name: Run the integration test
+        run: bash tests/abs-integration/smoke.sh
