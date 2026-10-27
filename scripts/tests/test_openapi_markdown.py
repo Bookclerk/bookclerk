@@ -165,7 +165,8 @@ class RenderTest(unittest.TestCase):
             get,
         )
         post = self.pages["books.md"].split("## `POST /books`")[1]
-        self.assertIn("    -X POST \\\n    -H 'Content-Type: application/json' \\\n    -d '{\n  \"title\": \"string\",", post)
+        # A request example sends only required fields; optional ones may be alternatives.
+        self.assertIn("    -X POST \\\n    -H 'Content-Type: application/json' \\\n    -d '{\"title\": \"string\"}'", post)
         # An open route sends no credential.
         shelf = self.pages["books.md"].split("## `GET /shelves/{shelf}`")[1]
         self.assertIn("$ curl 'http://127.0.0.1:8787/shelves/<shelf>'\n```", shelf)

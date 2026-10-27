@@ -504,7 +504,9 @@ Rust crates and the web UI library.
   committed OpenAPI document (`crates/bookclerkd/openapi.json`). It writes
   an index of routes and credentials, one page per route group (with each
   route's access rule, parameters, body, responses, an example `curl`
-  request and an example response built from the schemas), and a page of
+  request and an example response built from the schemas; the request
+  sends only required fields, since optional ones can be alternatives
+  that must not be sent together), and a page of
   schemas. A request body that names a schema lists that schema's fields
   in place, so a route reads without a trip to the schemas page. The website lays the route group pages out like an OpenAPI
   viewer (`tools/site/api-reference.ts`): a method badge beside each path,

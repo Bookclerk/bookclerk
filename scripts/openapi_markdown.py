@@ -473,7 +473,7 @@ class Document:
                     return self.schemas[name], name
         return schema, None
 
-    def example(self, schema: Any, depth: int = 0, seen: tuple[str, ...] = ()) -> Any:
+    def example(self, schema: Any, depth: int = 0, seen: tuple[str, ...] = (), minimal: bool = False) -> Any:
         """Build an example value for a schema.
 
         Uses the schema's own ``example`` / ``examples`` / ``default`` when it
@@ -487,6 +487,10 @@ class Document:
             schema: A schema object.
             depth: How many objects and arrays enclose this value.
             seen: Component names being expanded, to stop at a cycle.
+            minimal: Keep only required fields at every level. Request
+                examples use this: optional fields are often alternatives
+                (a callback's ``code`` or its ``error``) that a request
+                must not send together.
 
         Returns:
             A JSON-compatible value, or :data:`NO_EXAMPLE` when the schema
@@ -498,7 +502,7 @@ class Document:
         if name is not None:
             if name in seen:
                 return [] if target.get("type") == "array" or "items" in target else {}
-            return self.example(target, depth, (*seen, name))
+            return self.example(target, depth, (*seen, name), minimal)
         for key in ("example", "default"):
             if key in schema:
                 return schema[key]
@@ -514,7 +518,7 @@ class Document:
             if isinstance(branches, list):
                 for branch in branches:
                     if isinstance(branch, Mapping) and branch.get("type") != "null":
-                        return self.example(branch, depth, seen)
+                        return self.example(branch, depth, seen, minimal)
         types = schema.get("type")
         names = [t for t in types if t != "null"] if isinstance(types, list) else [types] if isinstance(types, str) else []
         kind = names[0] if names else None
@@ -527,27 +531,27 @@ class Document:
             # so the example still deserializes; a cycle stops at ``seen``.
             if depth >= 2 * MAX_EXAMPLE_DEPTH:
                 return {}
-            required_only = depth >= MAX_EXAMPLE_DEPTH
+            required_only = minimal or depth >= MAX_EXAMPLE_DEPTH
             out: dict[str, Any] = {}
             for part in schema.get("allOf", []) if isinstance(schema.get("allOf"), list) else []:
-                value = self.example(part, depth, seen)
+                value = self.example(part, depth, seen, minimal)
                 if isinstance(value, dict):
                     out.update(value)
             for prop_name, prop, required in self.fields(schema):
                 if required_only and not required:
                     continue
-                value = self.example(prop, depth + 1, seen)
+                value = self.example(prop, depth + 1, seen, minimal)
                 if value is not NO_EXAMPLE:
                     out[prop_name] = value
             extra = schema.get("additionalProperties")
             if not out and not required_only and isinstance(extra, Mapping):
-                value = self.example(extra, depth + 1, seen)
+                value = self.example(extra, depth + 1, seen, minimal)
                 out["key"] = {} if value is NO_EXAMPLE else value
             return out
         if kind == "array":
             if depth >= MAX_EXAMPLE_DEPTH:
                 return []
-            item = self.example(schema.get("items"), depth + 1, seen)
+            item = self.example(schema.get("items"), depth + 1, seen, minimal)
             return [] if item is NO_EXAMPLE else [item]
         if kind == "string":
             fmt = schema.get("format")
@@ -615,7 +619,7 @@ class Document:
         query: list[tuple[str, Any]] = []
         for param in spec_list(spec.get("parameters", []), "parameters"):
             if isinstance(param, Mapping) and param.get("in") == "query" and param.get("required"):
-                query.append((str(param.get("name", "")), self.example(param.get("schema", {}))))
+                query.append((str(param.get("name", "")), self.example(param.get("schema", {}), minimal=True)))
         url = EXAMPLE_ORIGIN + path + ("?" + form_encode(query) if query else "")
         flags = [] if op.method == "GET" else [f"-X {op.method}"]
         flags += self._credential_flags(spec.get("security"), op.method not in ("GET", "HEAD", "OPTIONS"))
@@ -624,7 +628,7 @@ class Document:
         if isinstance(content, Mapping) and content:
             media, entry = next(iter(content.items()))
             schema = entry.get("schema", {}) if isinstance(entry, Mapping) else {}
-            value = self.example(schema)
+            value = self.example(schema, minimal=True)
             if str(media).startswith("application/json"):
                 flags.append("-H " + shell_quote("Content-Type: application/json"))
                 data = json.dumps({} if value is NO_EXAMPLE else value, ensure_ascii=False)
@@ -632,14 +636,9 @@ class Document:
                     data = json.dumps(value, indent=2, ensure_ascii=False)
                 flags.append("-d " + shell_quote(data))
             elif media == "application/x-www-form-urlencoded" and isinstance(value, dict):
-                # Only the required fields: a form's optional fields are
-                # often alternatives (one grant's code or another's token,
-                # a callback's code or its error), so none is guessed at.
-                target, _ = self.resolve(schema)
-                required = {prop for prop, _schema, needed in self.fields(target) if needed}
-                pairs = [(k, v) for k, v in value.items() if k in required]
-                if pairs:
-                    flags.append("-d " + shell_quote(form_encode(pairs)))
+                # The value holds only required fields (see ``minimal``).
+                if value:
+                    flags.append("-d " + shell_quote(form_encode(list(value.items()))))
             else:
                 flags.append("-H " + shell_quote(f"Content-Type: {media}"))
                 flags.append("--data-binary @file")
