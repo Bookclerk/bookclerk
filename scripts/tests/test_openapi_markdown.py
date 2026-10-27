@@ -192,6 +192,14 @@ class RenderTest(unittest.TestCase):
         )
         self.assertEqual(doc.example({"$ref": "#/components/schemas/Node"}), {"next": {}, "at": "2026-01-01T12:00:00Z"})
         self.assertIs(doc.example({}), om.NO_EXAMPLE)
+        # Deep objects keep their required fields, not an empty placeholder.
+        deep: dict = {"type": "object", "required": ["id"], "properties": {"id": {"type": "string"}, "note": {"type": "string"}}}
+        for _ in range(om.MAX_EXAMPLE_DEPTH):
+            deep = {"type": "object", "properties": {"inner": deep}}
+        leaf = doc.example(deep)
+        for _ in range(om.MAX_EXAMPLE_DEPTH):
+            leaf = leaf["inner"]
+        self.assertEqual(leaf, {"id": "string"})
         trees = om.Document({**DOCUMENT, "components": {"schemas": {"Tree": {"type": "array", "items": {"$ref": "#/components/schemas/Tree"}}}}})
         self.assertEqual(trees.example({"$ref": "#/components/schemas/Tree"}), [[]])
         self.assertEqual(doc.example({"type": "string", "example": "x", "enum": ["y"]}), "x")
@@ -228,6 +236,18 @@ class RenderTest(unittest.TestCase):
                             "responses": {"200": {"description": "Token."}},
                         }
                     },
+                    "/callback": {
+                        "post": {
+                            "requestBody": {
+                                "content": {
+                                    "application/x-www-form-urlencoded": {
+                                        "schema": {"type": "object", "properties": {"code": {"type": "string"}, "error": {"type": "string"}}}
+                                    }
+                                }
+                            },
+                            "responses": {"303": {"description": "Redirect."}},
+                        }
+                    },
                 },
                 "components": {
                     "securitySchemes": {
@@ -246,7 +266,10 @@ class RenderTest(unittest.TestCase):
         post = page.split("## `POST /up`")[1].split("\n## ")[0]
         self.assertIn("-b 'sid=<cookie>' \\\n    -H 'Origin: http://127.0.0.1:8787'", post)
         token = page.split("## `POST /token`")[1]
-        self.assertIn("-d 'grant_type=a%2Fb%20c'", token)
+        self.assertIn("-d 'grant_type=a%2Fb%20c'", token.split("\n## ")[0])
+        # A form with no required field guesses none of its alternatives.
+        callback = page.split("## `POST /callback`")[1].split("\n## ")[0]
+        self.assertNotIn("-d ", callback)
 
     def test_shell_quote(self) -> None:
         self.assertEqual(om.shell_quote("it's"), "'it'\\''s'")

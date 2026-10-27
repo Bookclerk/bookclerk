@@ -479,7 +479,9 @@ class Document:
         Uses the schema's own ``example`` / ``examples`` / ``default`` when it
         has one, the first ``enum`` value, a format's typical value, and
         otherwise a placeholder of the right type. Arrays get one item and
-        nullable values their non-null form.
+        nullable values their non-null form. Below
+        :data:`MAX_EXAMPLE_DEPTH` levels an object keeps only its required
+        fields, so a deep example stays short but still deserializes.
 
         Args:
             schema: A schema object.
@@ -521,19 +523,24 @@ class Document:
         if kind is None and "items" in schema:
             kind = "array"
         if kind == "object":
-            if depth >= MAX_EXAMPLE_DEPTH:
+            # Past the depth limit an object keeps only its required fields,
+            # so the example still deserializes; a cycle stops at ``seen``.
+            if depth >= 2 * MAX_EXAMPLE_DEPTH:
                 return {}
+            required_only = depth >= MAX_EXAMPLE_DEPTH
             out: dict[str, Any] = {}
             for part in schema.get("allOf", []) if isinstance(schema.get("allOf"), list) else []:
                 value = self.example(part, depth, seen)
                 if isinstance(value, dict):
                     out.update(value)
-            for prop_name, prop, _required in self.fields(schema):
+            for prop_name, prop, required in self.fields(schema):
+                if required_only and not required:
+                    continue
                 value = self.example(prop, depth + 1, seen)
                 if value is not NO_EXAMPLE:
                     out[prop_name] = value
             extra = schema.get("additionalProperties")
-            if not out and isinstance(extra, Mapping):
+            if not out and not required_only and isinstance(extra, Mapping):
                 value = self.example(extra, depth + 1, seen)
                 out["key"] = {} if value is NO_EXAMPLE else value
             return out
@@ -626,11 +633,13 @@ class Document:
                 flags.append("-d " + shell_quote(data))
             elif media == "application/x-www-form-urlencoded" and isinstance(value, dict):
                 # Only the required fields: a form's optional fields are
-                # often alternatives (one grant's code or another's token).
+                # often alternatives (one grant's code or another's token,
+                # a callback's code or its error), so none is guessed at.
                 target, _ = self.resolve(schema)
                 required = {prop for prop, _schema, needed in self.fields(target) if needed}
-                pairs = [(k, v) for k, v in value.items() if k in required] if required else list(value.items())
-                flags.append("-d " + shell_quote(form_encode(pairs)))
+                pairs = [(k, v) for k, v in value.items() if k in required]
+                if pairs:
+                    flags.append("-d " + shell_quote(form_encode(pairs)))
             else:
                 flags.append("-H " + shell_quote(f"Content-Type: {media}"))
                 flags.append("--data-binary @file")
