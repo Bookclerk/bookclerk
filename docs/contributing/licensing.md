@@ -92,7 +92,8 @@ Who must sign:
   The pull request author's signature covers what they submit, and section
   4 of the CLA asks them to name work that is not their own.
 - A signature comment counts only from someone the pull request needs a
-  signature from.
+  signature from. Every run reads the whole comment history, so a
+  signature posted while another run was busy still counts.
 
 The result is the **CLA** commit status on the pull request's head commit,
 and one comment that lists who still has to sign, edited in place. Merge

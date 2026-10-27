@@ -745,16 +745,15 @@ class GitHub:
                 return out
         raise ApiError(f"pull request has more than {MAX_COMMITS} commits")
 
-    def own_comment(self, number: int) -> Comment | None:
-        """Finds the check's earlier comment on pull request ``number``."""
+    def comments(self, number: int) -> list[Comment]:
+        """Fetches every comment on pull request ``number``, oldest first."""
+        comments: list[Comment] = []
         page = 1
         while True:
             batch = parse_comment_page(self.call("GET", f"issues/{number}/comments?per_page={PAGE_SIZE}&page={page}"))
-            for comment in batch:
-                if comment.author.login == COMMENT_AUTHOR and comment.author.type is AccountType.BOT and comment.body.startswith(COMMENT_MARKER):
-                    return comment
+            comments += batch
             if len(batch) < PAGE_SIZE:
-                return None
+                return comments
             page += 1
 
     def signatures(self) -> tuple[SignatureBook, str]:
@@ -796,9 +795,9 @@ class GitHub:
         """Posts the ``CLA`` commit status on ``sha``."""
         self.call("POST", f"statuses/{sha}", {"state": state, "context": STATUS_CONTEXT, "description": description, "target_url": target_url})
 
-    def upsert_comment(self, number: int, body: str, create: bool) -> None:
-        """Edits the check's comment, or posts one when ``create`` is true."""
-        existing = self.own_comment(number)
+    def upsert_comment(self, number: int, comments: list[Comment], body: str, create: bool) -> None:
+        """Edits the check's comment among ``comments``, or posts one when ``create`` is true."""
+        existing = own_comment(comments)
         if existing is not None:
             if existing.body != body:
                 self.call("PATCH", f"issues/comments/{existing.id}", {"body": body})
@@ -832,12 +831,40 @@ def run(event: Event, api: GitHub, cla_url: str, run_url: str) -> None:
     commits = api.commits(pull)
     book, _ = api.signatures()
     verdict = evaluate(pull, commits, book)
-    comment = event.comment
-    if comment is not None and comment.body == SIGN_PHRASE and any(a.id == comment.author.id for a in verdict.unsigned):
+    comments = api.comments(pull.number)
+    if event.comment is not None and all(c.id != event.comment.id for c in comments):
+        # The listing can lag behind the event that started the run.
+        comments.append(event.comment)
+    for comment in signing_comments(comments, verdict):
         book = api.record(comment, event.repo_id, pull.number)
-        verdict = evaluate(pull, commits, book)
-    api.upsert_comment(pull.number, render_comment(verdict, cla_url), create=not verdict.passed)
+    verdict = evaluate(pull, commits, book)
+    api.upsert_comment(pull.number, comments, render_comment(verdict, cla_url), create=not verdict.passed)
     api.set_status(pull.head_sha, "success" if verdict.passed else "failure", status_description(verdict), run_url)
+
+
+def own_comment(comments: list[Comment]) -> Comment | None:
+    """Finds the check's earlier comment, which only the workflow's bot can post."""
+    for comment in comments:
+        if comment.author.login == COMMENT_AUTHOR and comment.author.type is AccountType.BOT and comment.body.startswith(COMMENT_MARKER):
+            return comment
+    return None
+
+
+def signing_comments(comments: list[Comment], verdict: Verdict) -> list[Comment]:
+    """Picks the comments that sign for someone who has not signed yet.
+
+    Each unsigned account's first comment that is exactly ``SIGN_PHRASE``
+    counts. Reading the whole history, not only the comment that started the
+    run, recovers signatures whose run was replaced in the concurrency queue.
+    A comment from anyone the pull request does not need a signature from is
+    ignored.
+    """
+    unsigned = {a.id for a in verdict.unsigned}
+    picked: dict[int, Comment] = {}
+    for comment in comments:
+        if comment.body == SIGN_PHRASE and comment.author.id in unsigned and comment.author.id not in picked:
+            picked[comment.author.id] = comment
+    return list(picked.values())
 
 
 def urllib_transport(token: str, api_url: str) -> Transport:

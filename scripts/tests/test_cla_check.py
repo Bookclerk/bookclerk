@@ -682,6 +682,17 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(fake.signed_ids(), set())
         self.assertEqual(fake.last_status(), "failure")
 
+    def test_lost_signing_events_are_recovered(self) -> None:
+        """A signature whose run was replaced in the queue counts on the next run."""
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE), commit(SHA_B, BOB)])
+        for i, user in enumerate((ALICE, BOB, ALICE)):
+            fake.comments.append({"id": 50 + i, "user": user, "body": cla.SIGN_PHRASE, "created_at": f"t{i}"})
+        drive(fake, comment_event(BOB, cla.RECHECK_PHRASE, comment_id=60))
+        self.assertEqual(fake.signed_ids(), {101, 102})
+        entries = json.loads(fake.file)["signedContributors"]
+        self.assertEqual([e["comment_id"] for e in entries], [50, 51])
+        self.assertEqual(fake.last_status(), "success")
+
     def test_signature_write_retries_after_conflict(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "carol", "id": 3}])
         fake.conflicts = 2
