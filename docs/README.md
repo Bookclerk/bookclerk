@@ -69,6 +69,7 @@ others go deeper.
 - [Repository automation](contributing/automation.md): dependency updates, advisories, docs publishing and Worker deploys
 - [Release packaging](contributing/packaging.md): platform bundles and release CI
 - [Code documentation](contributing/code-documentation.md): how to document Rust, TypeScript, Python and shell
+- [Writing docs](contributing/writing-docs.md): how to write a docs page people can read quickly
 - Research notes: [store candidates](contributing/research/source-candidates.md) and [Libation parity](contributing/research/libation-parity.md)
 
 Build and agent conventions for this repository live in

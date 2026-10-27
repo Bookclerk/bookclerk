@@ -48,6 +48,7 @@ from ci_plan.plan import (  # noqa: E402
     DEMO_TEST_INPUTS,
     E2E_PACKAGE,
     JOB_CHECKS,
+    SITE_TEST_INPUTS,
     STEP_GATED_JOBS,
     build_plan,
     discover_guests,
@@ -215,6 +216,12 @@ class ScenarioTests(unittest.TestCase):
             self.assertIn("demo_test", p.checks, path)
         for font in ("literata-v40-latin.woff2", "source-sans-3-v20-latin-ext.woff2", "OFL-literata.txt"):
             self.assertIn(f"tools/site/src/fonts/{font}", DEMO_TEST_INPUTS)
+
+    def test_cookie_sources_run_the_site_tests(self) -> None:
+        for path in sorted(SITE_TEST_INPUTS):
+            p = plan(path)
+            self.assertIn("site_test", p.checks, path)
+            self.assertNotIn("site_audit", p.checks, path)
 
     def test_summary_corpus_change_runs_the_collector_tests(self) -> None:
         p = plan("scripts/tests/summary_comment_corpus/normal.json", "scripts/tests/summary_comment_oracle.py")

@@ -151,6 +151,8 @@ p { margin: 0; }
 .demo-card a { color: var(--teal); }
 
 .demo-footer { border-top: 1px solid var(--hairline); padding-top: 20px; font-size: 12px; line-height: 18px; color: var(--ink-soft); }
+.demo-footer p + p { margin-top: 8px; }
+.demo-footer a { color: inherit; }
 
 @media (max-width: 560px) {
   .demo-page { gap: 28px; }

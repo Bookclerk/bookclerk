@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+{{> head}}
+</head>
+<body>
+{{> ribbon}}
+{{> header}}
+<main id="main" class="privacy">
+<div class="wrap">
+<article class="doc">
+<h1>Privacy</h1>
+<p class="doc-meta">Last changed 27 October 2026</p>
+
+<p>Bookclerk is free software you run on your own computer. This page explains what information reaches the Bookclerk project when you visit this website{{#demo}}, try the live demo{{/demo}} or choose to share problem reports from the app, what we do with it, and how long we keep it. We do not sell or share it for advertising, and nothing here tracks you from one site to another.</p>
+
+<h2 id="summary">The short version</h2>
+<ul>
+  <li>This website sets no cookies and stores nothing in your browser.</li>
+  <li>We count visits with Cloudflare Web Analytics, which uses no cookies and does not identify you.</li>
+  {{#demo}}<li>The live demo uses cookies only to keep your own private copy running, and deletes that copy when you leave.</li>
+  {{/demo}}<li>The Bookclerk app sends us nothing unless you turn on problem reports.</li>
+  <li>This website{{#demo}}, the demo{{/demo}} and the report collector run on Cloudflare; problem reports are stored with Backblaze.</li>
+</ul>
+
+<h2 id="website">This website</h2>
+<p>When you open a page, your browser connects to Cloudflare, which hosts the site. Like any web host, Cloudflare receives your IP address, the page you asked for and what your browser says about itself, so it can send the page back and keep the site safe from attacks. We do not keep logs of these requests ourselves.</p>
+<p>To see which pages people read and how fast they load, the site uses <a href="https://www.cloudflare.com/web-analytics/">Cloudflare Web Analytics</a>. Cloudflare adds a small script to each page that reports the page address, where you came from, your type of browser and device, your country and how long the page took to load. Cloudflare says it uses no cookies or browser storage for this and does not fingerprint visitors, so we see totals, not people.</p>
+<p>The site loads its fonts and images from itself, and makes no requests to anyone else apart from the analytics script above. It has no forms, accounts, comments or advertising.</p>
+
+<h2 id="cookies">Cookies, and why there is no cookie banner</h2>
+<p>Consent banners are for cookies that track or profile you. Cookies that a service needs to do what you asked for, such as keeping you signed in, do not need your consent, but you should still be told about them. These are all the cookies Bookclerk's services set:</p>
+<div class="table-scroll" tabindex="0"><table>
+  <thead><tr><th>Cookie</th><th>Where</th><th>Why</th><th>How long</th></tr></thead>
+  <tbody>
+    {{#demo}}<tr><td><code>__Host-demo</code></td><td>Live demo</td><td>Links your browser to your private copy of Bookclerk.</td><td>Until your demo ends, at most 30 minutes</td></tr>
+    <tr><td><code>bookclerk_portal_session</code></td><td>Live demo</td><td>Keeps you signed in to your copy, the same way the app does on your own computer.</td><td>Until your demo ends. A copy left behind no longer works and expires within 12 hours</td></tr>
+    {{/demo}}<tr><td><code>__Host-bc_oauth</code></td><td>Diagnostics dashboard</td><td>Protects the GitHub sign-in step from forgery.</td><td>10 minutes</td></tr>
+    <tr><td><code>__Host-bc_session</code></td><td>Diagnostics dashboard</td><td>Keeps a project member signed in.</td><td>8 hours, or until sign-out</td></tr>
+  </tbody>
+</table></div>
+<p>None of them is used for analytics or advertising, and none is readable by other sites. This website itself sets none. Because every cookie is strictly needed for the service you chose to use, we do not show a consent banner.</p>
+<p>Cloudflare may also set its own cookies on any of these sites when it needs to protect them from attacks or automated traffic, for example to remember that your browser passed a security check. Those are used only for that protection.</p>
+{{#demo}}
+<h2 id="demo">The live demo</h2>
+<p>The <a href="{{demoUrl}}">live demo</a> starts a private copy of Bookclerk just for you, on Cloudflare's servers. No account or email address is needed.</p>
+<ul>
+  <li><strong>Bot check.</strong> Before your copy starts, <a href="https://www.cloudflare.com/turnstile-privacy-policy/">Cloudflare Turnstile</a> checks that you are a person. It runs a few tests in your browser and sends the result to Cloudflare. It does not read what you type.</li>
+  <li><strong>Limits.</strong> To share the demo fairly, we count how many demos each visitor starts. We do not store your IP address: we store a scrambled code made from it that changes every day, so it cannot be turned back into your address or linked across days.</li>
+  <li><strong>Your copy.</strong> Your copy never learns your IP address. If you sign in to a store, your password or sign-in goes only to your copy and to that store. Your copy, your store sign-ins and anything you scanned are deleted when you press <strong>Start over</strong>, after 10 minutes without activity, or after 30 minutes. Before that, Bookclerk signs your store accounts out.</li>
+  <li><strong>In your browser.</strong> The app inside the demo remembers a few display choices in your browser's storage, such as light or dark mode and whether you closed the welcome message. These stay on your device and you can clear them in your browser's settings.</li>
+  <li><strong>What we keep.</strong> For each demo we keep a record of when it started and ended, why it ended, how many store sign-ins were started and signed out, and the daily code above. The records name no one. We delete them after 30 days, and the daily counts after two days.</li>
+</ul>
+{{/demo}}
+<h2 id="reports">Problem reports from the app</h2>
+<p>The Bookclerk app runs on your computer and talks only to the stores and services you connect it to. It does not send the Bookclerk project anything unless you turn on problem reports (<code class="inline">diagnostics.share_reports</code>), which is off unless you choose it.</p>
+<p>With reports turned on, when Bookclerk crashes, a command or job fails, or many errors or warnings happen in a short time, it sends a report to our collector. A report holds:</p>
+<ul>
+  <li>the Bookclerk version, your operating system, its processor type and Linux distribution, and the compiler version;</li>
+  <li>the last few hundred lines of Bookclerk's own log, such as which store or job was running and what went wrong;</li>
+  <li>the time it was made, and the name and version of the program that sent it.</li>
+</ul>
+<p>Before a report leaves your computer, Bookclerk removes passwords, sign-in tokens and keys it knows about, and anything that looks like one. It also hides book titles, folder paths and account IDs, and partly masks email addresses. The collector refuses reports that still look like they contain a secret, and it does not store the IP address a report came from.</p>
+<p>Reports are stored with <a href="https://www.backblaze.com/company/policy/privacy">Backblaze B2</a>, a storage service, and read by project members to find and fix bugs. Once a day a job on GitHub Actions collects new reports and asks an AI model on Cloudflare (Workers AI) to group them by problem. For each problem we open an issue on our public GitHub tracker. The issue describes the problem and may quote short parts of the log, with links and anything that looks like a secret removed, and it lists the reports' IDs. The full reports are never published.</p>
+<p>Reports are deleted automatically 6 months after they arrive, or sooner when you ask. A one-line summary of each (the version, system and type of error, without the log) stays in the dashboard's counts.</p>
+<p>You can turn reports off at any time. To have a report you sent deleted, email us the time it was sent and your Bookclerk version, or its report ID if you have it.</p>
+
+<h2 id="dashboard">The diagnostics dashboard</h2>
+<p>The diagnostics dashboard is only for members of the Bookclerk organization on GitHub. Signing in with GitHub tells us your GitHub user name and ID and whether you are a member. We keep that with your session for 8 hours, and keep a log of sign-ins and of which reports were opened for 90 days. We do not keep your GitHub token.</p>
+
+<h2 id="others">Who else handles your information</h2>
+<ul>
+  <li><strong>Cloudflare</strong> hosts this website{{#demo}}, the demo{{/demo}} and the report collector, runs the visit counter{{#demo}} and the demo's bot check{{/demo}}, and processes requests in many countries. See the <a href="https://www.cloudflare.com/privacypolicy/">Cloudflare privacy policy</a>.</li>
+  <li><strong>Backblaze</strong> stores problem reports.</li>
+  <li><strong>GitHub</strong> handles sign-in to the dashboard and hosts our code and public issues, and runs the job that groups problem reports. See the <a href="https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement">GitHub privacy statement</a>.</li>
+  <li>The <strong>stores</strong> you sign in to in the app{{#demo}} or the demo{{/demo}} see that sign-in under their own privacy policies. Bookclerk is not affiliated with them.</li>
+</ul>
+
+<h2 id="choices">Your choices</h2>
+<ul>
+  <li>Block or clear cookies and site data in your browser; this website works the same either way.</li>
+  <li>Use a content blocker to stop the visit counter; nothing on the site depends on it.</li>
+  <li>Leave problem reports off, or turn them off again in Bookclerk's settings.</li>
+  <li>Ask us what we hold about you, or to delete it, at the address below.</li>
+</ul>
+
+<h2 id="contact">Changes and contact</h2>
+<p>If what we collect changes, we update this page and the date at the top. The page's history is public in our <a href="{{repo}}">GitHub repository</a>. Questions or requests: <a href="mailto:{{contactEmail}}">{{contactEmail}}</a>.</p>
+</article>
+</div>
+</main>
+{{> footer}}
+</body>
+</html>

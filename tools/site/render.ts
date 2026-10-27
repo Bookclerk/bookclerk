@@ -145,6 +145,7 @@ export const NAV: NavSpec[] = [
       "contributing/automation",
       "contributing/packaging",
       "contributing/code-documentation",
+      "contributing/writing-docs",
       "contributing/research/source-candidates",
       "contributing/research/libation-parity",
     ],
@@ -309,6 +310,17 @@ function renderer(docKey: string, keys: ReadonlySet<string> | null, blobBase: st
       token.attrSet("id", n === 0 ? base : `${base}-${n}`);
     });
   });
+  md.core.ruler.after("block", "callouts", (state) => markCallouts(state.tokens));
+  for (const rule of ["blockquote_open", "blockquote_close"] as const) {
+    const base: RendererRule = md.renderer.rules[rule] ?? ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
+    md.renderer.rules[rule] = (tokens, idx, options, env, self) => {
+      const kind = calloutKind(tokens[idx]);
+      if (kind === null) return base(tokens, idx, options, env, self);
+      return rule === "blockquote_close"
+        ? "</div>\n"
+        : `<div class="callout callout-${kind}" role="note"><p class="callout-title">${CALLOUT_TITLES[kind]}</p>\n`;
+    };
+  }
   const linkOpen: RendererRule = md.renderer.rules["link_open"] ?? ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
   md.renderer.rules["link_open"] = (tokens, idx, options, env, self) => {
     const token = tokens[idx];
@@ -369,6 +381,72 @@ function drawDiagram(source: string, idx: number, env: RenderEnv): string | null
   const drawn = diagram(source, `Diagram${idx}`);
   if (drawn === null) return null;
   return `<figure class="diagram" tabindex="0" style="--w: ${Math.ceil(drawn.width)}px">${drawn.svg}</figure>\n`;
+}
+
+/** The callout kinds a doc can use, as GitHub's alert syntax names them. */
+type CalloutKind = "note" | "tip" | "important" | "warning" | "caution";
+
+/** The title each callout shows above its text. */
+const CALLOUT_TITLES: Readonly<Record<CalloutKind, string>> = {
+  note: "Note",
+  tip: "Tip",
+  important: "Important",
+  warning: "Warning",
+  caution: "Caution",
+};
+
+/**
+ * A callout marker alone on a blockquote's first line, as on GitHub:
+ * `> [!NOTE]`. The kind is matched without regard to case.
+ */
+const CALLOUT_MARKER_RE = /^\[!(note|tip|important|warning|caution)\][ \t]*(?:\n|$)/i;
+
+/**
+ * Turns blockquotes that open with a callout marker into callouts.
+ *
+ * Runs on block tokens, before inline parsing: the marker line is cut from
+ * the first paragraph (dropping the paragraph when nothing else is in it),
+ * and the blockquote's open and close tokens are tagged with the kind for
+ * the renderer. Any other blockquote is left alone.
+ *
+ * @param tokens - The doc's block tokens, changed in place.
+ */
+function markCallouts(tokens: Token[]): void {
+  for (let i = 0; i < tokens.length; i++) {
+    const open = tokens[i];
+    const inline = tokens[i + 2];
+    if (open?.type !== "blockquote_open" || tokens[i + 1]?.type !== "paragraph_open" || inline?.type !== "inline") continue;
+    const marker = CALLOUT_MARKER_RE.exec(inline.content);
+    const kind = marker?.[1]?.toLowerCase();
+    if (marker === null || !isCalloutKind(kind)) continue;
+    const close = tokens.findIndex((t, j) => j > i && t.type === "blockquote_close" && t.level === open.level);
+    if (close === -1) continue;
+    open.meta = { callout: kind };
+    (tokens[close] as Token).meta = { callout: kind };
+    inline.content = inline.content.slice(marker[0].length);
+    if (inline.content.trim() === "") tokens.splice(i + 1, 3);
+  }
+}
+
+/**
+ * Tells whether a string names a callout kind.
+ *
+ * @param kind - The candidate, lower case.
+ * @returns True for a kind in CALLOUT_TITLES.
+ */
+function isCalloutKind(kind: string | undefined): kind is CalloutKind {
+  return kind !== undefined && Object.hasOwn(CALLOUT_TITLES, kind);
+}
+
+/**
+ * The callout kind markCallouts tagged a blockquote token with.
+ *
+ * @param token - A `blockquote_open` or `blockquote_close` token.
+ * @returns The kind, or null for a plain blockquote.
+ */
+function calloutKind(token: Token | undefined): CalloutKind | null {
+  const kind: unknown = (token?.meta as { callout?: unknown } | null | undefined)?.callout;
+  return typeof kind === "string" && isCalloutKind(kind) ? kind : null;
 }
 
 /** Longest page description, in characters, before it is shortened. */

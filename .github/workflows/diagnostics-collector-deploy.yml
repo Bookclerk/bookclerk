@@ -125,6 +125,8 @@ jobs:
           printf '\n[[routes]]\npattern = "%s"\ncustom_domain = true\n' "$host" >> wrangler.toml
           echo "mode=custom_domain" >> "$GITHUB_OUTPUT"
           echo "url=https://${host}" >> "$GITHUB_OUTPUT"
+          # The website, whose privacy page the sign-in page links to.
+          echo "site=https://${DOMAIN}" >> "$GITHUB_OUTPUT"
 
       - name: Deploy Worker
         id: deploy
@@ -136,7 +138,7 @@ jobs:
           # Matches package-lock.json; 4.45+ creates the TRIAGE_BUDGET KV
           # namespace on first deploy.
           wranglerVersion: "4.151.0"
-          command: deploy
+          command: deploy${{ steps.route.outputs.site && format(' --var SITE_URL:{0}', steps.route.outputs.site) || '' }}
           secrets: |
             B2_KEY_ID
             B2_APPLICATION_KEY

@@ -318,6 +318,11 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
 .caveats li { display: flex; gap: 14px; padding-block: 14px; border-bottom: 1px solid color-mix(in srgb, var(--ink) 12%, transparent); }
 .caveats svg { flex: 0 0 20px; width: 20px; height: 20px; margin-top: 3px; stroke: var(--brick); fill: none; stroke-width: 2; stroke-linecap: round; }
 
+/* Privacy page: a docs-style reading column outside the docs layout (its
+   line and soft-text tokens are shared with .docs-page below). */
+.privacy { --docs-header: 0px; }
+.privacy .doc { padding-block: 40px 88px; }
+
 /* Footer */
 .site-footer { border-top: 1px solid color-mix(in srgb, var(--ink) 12%, transparent); background: color-mix(in srgb, var(--parchment) 40%, var(--paper)); }
 .site-footer .wrap { padding-block: 48px 32px; display: flex; flex-direction: column; gap: 32px; }
@@ -359,10 +364,12 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
    developers.cloudflare.com: a column of about 80 characters, line height
    1.7 and generous space above sections. Below 1200px the rail goes; below
    900px the sidebar and the rail become the two menus in .docs-menus. */
-.docs-page {
-  --docs-header: 57px;
+.docs-page, .privacy {
   --docs-line: color-mix(in srgb, var(--ink) 12%, transparent);
   --docs-soft: color-mix(in srgb, var(--ink) 72%, transparent);
+}
+.docs-page {
+  --docs-header: 57px;
   --code-card: var(--index-card);
   /* Syntax colors: distinct hues, each at least 4.5:1 on the code card. */
   --hl-c: color-mix(in srgb, var(--ink) 72%, transparent);
@@ -462,6 +469,18 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
 .doc a:not([class]):hover { text-decoration-color: currentColor; }
 .doc code { font-size: 0.84em; background: color-mix(in srgb, var(--ink) 5%, transparent); border: 1px solid var(--docs-line); padding: 1px 5px; border-radius: 5px; overflow-wrap: anywhere; }
 .doc blockquote { margin-inline: 0; padding: 4px 16px; border-left: 3px solid var(--fold); color: color-mix(in srgb, var(--ink) 80%, transparent); }
+/* Callouts (GitHub's `> [!NOTE]` alerts): a tinted card with its kind as a
+   title. Accents reuse the syntax hues, which already pass 4.5:1. */
+.doc .callout { --callout: var(--hl-v); margin-block: 1.5em; padding: 12px 16px; border-left: 4px solid var(--callout); border-radius: 0 10px 10px 0; background: color-mix(in srgb, var(--callout) 6%, transparent); }
+.doc .callout-tip { --callout: var(--hl-s); }
+.doc .callout-important { --callout: var(--hl-k); }
+.doc .callout-warning { --callout: var(--hl-n); }
+.doc .callout-caution { --callout: #b91c1c; }
+@media (prefers-color-scheme: dark) { .doc .callout-caution { --callout: #fca5a5; } }
+.doc .callout > :first-child { margin-top: 0; }
+.doc .callout > :last-child { margin-bottom: 0; }
+/* Mixed toward the body ink so the title keeps 4.5:1 on the tinted card. */
+.doc .callout-title { font-weight: 650; color: color-mix(in srgb, var(--callout) 70%, var(--ink)); margin-bottom: 0.25em; }
 .doc hr { border: 0; border-top: 1px solid var(--docs-line); }
 
 .doc .code { position: relative; margin-block: 1.5em; }

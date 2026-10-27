@@ -16,8 +16,6 @@ export interface Env {
   B2_ENDPOINT?: string;
   /** Key the ingest Action sends on every report and triage route (secret). */
   REPORT_API_KEY?: string;
-  /** Salt for the hashed client IP; without it no hash is kept (secret). */
-  CLIENT_IP_HASH_SALT?: string;
   /** Token for higher GitHub API rate limits (secret). */
   GITHUB_TOKEN?: string;
   /** The automation App's OAuth client ID (secret). */
@@ -28,6 +26,12 @@ export interface Env {
   GITHUB_APP_PRIVATE_KEY?: string;
   /** `owner/name` of the repository issues and releases live in. */
   GITHUB_REPOSITORY?: string;
+  /**
+   * The project website's https origin (`https://<DOMAIN>`), which the
+   * sign-in page links to for its privacy page; unset (a fork without a
+   * domain) means no link.
+   */
+  SITE_URL?: string;
   /** Workers AI model `/triage` runs. */
   TRIAGE_MODEL?: string;
   /** `/triage` neuron cap per UTC day, as decimal text. */

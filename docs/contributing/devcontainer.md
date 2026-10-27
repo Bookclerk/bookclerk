@@ -106,6 +106,53 @@ change and weekly, and checks each tool runs as the dev user
 configuration's shared keys verbatim and only add to them;
 `scripts/tests/test_dev_env.py` enforces that.
 
+## Hosted and disposable sessions
+
+A hosted cloud workspace, or any throwaway Debian or Ubuntu machine where you
+are root and rustup is installed, can use the Dev Container's toolchain without opening the
+container, in one of two ways.
+
+**Natively (default).** Run once per session, from the checkout:
+
+```bash
+scripts/dev-env/session-setup.sh
+```
+
+It copies Node.js and uv out of the same digest-pinned images the
+Dockerfile uses (starting `dockerd` if needed, see
+[`docker-up.sh`](../../scripts/dev-env/docker-up.sh)), then runs the
+provision script for everything else, and writes
+`/etc/profile.d/zz-bookclerk-dev.sh` so new shells find the tools first. A
+failed step is reported and the rest still run, so the session starts
+regardless. Only the packages the Node.js image bundles (npm, corepack) replace
+their host copies; other global npm packages stay. The host's own system packages stay its own: on Ubuntu 24.04,
+for example, `capnp` is 1.0.1 rather than the image's 1.1.0.
+
+**Inside the real image**, for exact parity (a toolchain-sensitive failure, a
+check before filing a bug):
+
+```bash
+scripts/dev-env/in-devcontainer.sh cargo test -p bookclerk-db-exec
+scripts/dev-env/in-devcontainer.sh bash
+```
+
+The image is built on first use and rebuilt only when the Dockerfile, the
+provision script or the test requirements change. The checkout is
+bind-mounted with the host's `target/devcontainer/` mounted over its `target/`
+(so `cargo dev` and the other helpers find their builds where they expect
+them, apart from the host's), and the command runs as your UID.
+
+Two variables adapt both to restricted networks, and the setup script records
+them in the profile for later shells:
+
+| Variable | Purpose |
+| --- | --- |
+| `BOOKCLERK_DEV_REGISTRY_MIRROR` | Registry mirror for a newly started `dockerd` (for example `https://mirror.gcr.io` when shared egress is rate-limited by Docker Hub). Images stay pinned by digest. |
+| `BOOKCLERK_DEV_CA_BUNDLE` | Complete PEM trust bundle (system roots plus the CA of a TLS-intercepting proxy): passed to the image build as the `extra_ca` secret and mounted into the container. It replaces the default trust store for cargo, rustup and pip, so a bundle holding only the proxy's CA breaks hosts the proxy does not intercept. The setup script also points `SSL_CERT_FILE`, `CARGO_HTTP_CAINFO`, `PIP_CERT` and `NODE_EXTRA_CA_CERTS` at it in the profile. |
+
+A hosted environment's setup script can call it directly, for example
+`cd bookclerk && BOOKCLERK_DEV_REGISTRY_MIRROR=https://mirror.gcr.io scripts/dev-env/session-setup.sh`.
+
 ## SSH commit signing (Dev Container)
 
 **Typical setup is ordinary host `git config`** — not environment variables.

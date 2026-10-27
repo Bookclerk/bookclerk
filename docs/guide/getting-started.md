@@ -1,17 +1,16 @@
 # Getting started
 
-Bookclerk runs on your own computer or server and gathers the audiobooks you
-bought from Audible, Libro.fm, Chirp and GraphicAudio into one library. You
-use it in a web browser. This page takes you from a fresh install to your
-first books.
+This page takes you from a fresh install to your first books. Bookclerk runs
+on your own computer or server, and you use it in a web browser.
 
-Bookclerk has no stable release yet. Until it does, you build the
-development version yourself, and things may change between updates.
+> [!NOTE]
+> Bookclerk has no stable release yet. Until it does, you build the
+> development version yourself, and things may change between updates.
 
 ## 1. Install and start Bookclerk
 
 You need [Rust](https://rustup.rs/), [Node.js](https://nodejs.org/) and git.
-Then, in a terminal:
+Then run these commands in a terminal:
 
 ```sh
 git clone https://github.com/Bookclerk/bookclerk
@@ -20,55 +19,64 @@ cargo dev --optional
 ```
 
 `cargo dev` builds Bookclerk and starts it. `--optional` adds the store
-plugins (Audible, Libro.fm, Chirp, GraphicAudio). The first build takes a
-while. When it is done, Bookclerk keeps running in that terminal and your
-library is at <http://localhost:8787>.
+plugins for Audible, Libro.fm, Chirp and GraphicAudio.
 
-Your library, settings and downloads live in a folder called
-`BookclerkFiles` inside the checkout. To run Bookclerk as a service, with
-Docker, or on another machine, see [Running Bookclerk](../server/operations.md).
+The first build takes a while. When it finishes, Bookclerk keeps running in
+that terminal, and your library is at <http://localhost:8787>.
 
-## 2. First start
+Your library, settings and downloads live in the `BookclerkFiles` folder
+inside the checkout. To run Bookclerk as a service, with Docker or on
+another machine, see [Running Bookclerk](../server/operations.md).
 
-The first time you open Bookclerk, it asks for the **operator token**: the
-key that proves you are the person who runs this install. Print it in a
-second terminal:
+## 2. Unlock the server
 
-```sh
-cargo dev-cli -- daemon token
-```
+The first time you open Bookclerk, it asks for the **operator token**. This
+is the key that proves you are the person who runs this install.
 
-Paste it in, and Bookclerk asks how this server should start:
+1. In a second terminal, print the token:
 
-- **Start a new library** is what you want the first time.
-- **Join a library** connects this install to a library someone already
-  runs. See [Join a library as a branch](branches.md).
+   ```sh
+   cargo dev-cli -- daemon token
+   ```
+
+2. Paste it into the page.
+3. Choose **Start a new library**.
+
+The other choice, **Join a library**, connects this install to a library
+someone already runs. See [Join a library as a branch](branches.md).
 
 ## 3. Create your own account
 
-The operator runs the server, but cannot connect stores or own books. In
-**Settings → User Management**, create the first **Owner**: that is you.
-Bookclerk gives you an invite link. Open it, choose a password or a
-passkey, and sign in as yourself from then on.
+The operator runs the server, but cannot connect stores or own books. So
+next you create an account for yourself, as the first **Owner**.
 
-On a computer with a desktop, the Bookclerk icon in the system tray can
-also open the library or copy a sign-in link for the operator.
+1. Open **Settings → User Management** and create the Owner.
+2. Open the invite link Bookclerk gives you.
+3. Choose a password or a passkey.
+
+From now on, you sign in as yourself.
+
+> [!TIP]
+> On a computer with a desktop, the Bookclerk icon in the system tray can
+> open the library, or copy a sign-in link for the operator.
 
 ## 4. Turn on your stores
 
-Each store is a plugin, and plugins run only once the operator allows them.
-Once an Owner exists, the operator token no longer signs in to the web app.
-Instead, as the Owner, open **Settings → Account** and use **Operator
-elevation** (your password or passkey) to unlock the operator settings for
-this session. Then open **Settings → Plugins** and enable each store you buy
-from. Bookclerk first shows what that plugin asks for,
-such as the store's web addresses it needs to reach; approve it to turn the
-store on.
+Each store is a plugin, and a plugin runs only once the operator allows it.
+Once an Owner exists, the operator token no longer signs in to the web app,
+so you unlock the operator settings from your own account:
+
+1. As the Owner, open **Settings → Account** and choose **Operator
+   elevation**. Confirm with your password or passkey.
+2. Open **Settings → Plugins**.
+3. Enable each store you buy from. Bookclerk first shows what the plugin
+   asks for, such as the store web addresses it needs to reach.
+4. Approve it to turn the store on.
 
 ## 5. Connect a store
 
-Sign in as yourself, open **Accounts** and choose **Connect** next to a
-store:
+Sign in as yourself, open **Accounts**, and choose **Connect** next to a
+store.
 
 - **Audible** sends you to Amazon to sign in. If your Amazon account uses
   two-step verification, enter the code there as usual.
@@ -76,21 +84,22 @@ store:
   that store. Bookclerk stores the password encrypted and never shows it
   again.
 
-More about each store: [Stores](stores.md).
+More about each store is on [Stores](stores.md).
 
 ## 6. Bring in your library
 
-On the **Library** page, choose **Scan**. Bookclerk reads the list of books
-each connected account owns. Nothing is downloaded yet.
+1. On the **Library** page, choose **Scan**. Bookclerk reads the list of
+   books each connected account owns. Nothing is downloaded yet.
+2. When you are ready, choose **Acquire pending** to download your books.
 
-When you are ready, choose **Acquire pending** to download your books.
-Bookclerk saves each one as an audiobook file in the `Audiobooks` folder
+Bookclerk saves each book as an audiobook file in the `Audiobooks` folder
 inside `BookclerkFiles`. To save them somewhere else, see
 [Where your books go](where-books-go.md).
 
-Bookclerk does not download anything on its own until you turn on
-**Auto acquire** in **Settings → Server Settings**. Leave it off until you
-are happy with where files land.
+> [!IMPORTANT]
+> Bookclerk downloads nothing on its own until you turn on **Auto acquire**
+> in **Settings → Server Settings**. Leave it off until you are happy with
+> where files land.
 
 ## Next steps
 

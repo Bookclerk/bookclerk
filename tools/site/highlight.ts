@@ -1,13 +1,31 @@
 // Syntax colors for the docs' fenced code blocks, rendered by the Worker so
-// pages need no client-side highlighter. It is a small one-pass scanner, not
-// a parser: it marks comments, strings, numbers, keywords and a few
-// language-specific names (shell commands and variables, TOML and YAML keys,
-// JSON property names), and leaves everything else as plain text.
+// pages need no client-side highlighter. Shiki tokenizes the code with the
+// same TextMate grammars editors use (core, the JavaScript regex engine, and
+// only the languages the docs use, so the Worker bundle stays small).
 //
-// The scanner reads doc text from the docs repository, so it is sans-IO and
-// its output is checked by fuzz.test.ts: every input comes back as escaped
-// text and `<span class="hl-…">` elements only, and removing the spans gives
-// back the input exactly.
+// Shiki's own HTML puts a color in a `style` attribute on every token, which
+// the site's Content-Security-Policy forbids. So the theme below gives each
+// kind of token a placeholder color, and this module turns those back into
+// the site's `hl-*` classes and writes the HTML itself.
+//
+// The highlighter reads doc text from the docs repository, so its output is
+// checked by fuzz.test.ts: every input comes back as escaped text and
+// `<span class="hl-…">` elements only, and removing the spans gives back the
+// input exactly.
+
+import { createHighlighterCoreSync, type HighlighterCore, type ThemeRegistration } from "@shikijs/core";
+import { createJavaScriptRegexEngine } from "@shikijs/engine-javascript";
+import http from "@shikijs/langs/http";
+import json from "@shikijs/langs/json";
+import jsonc from "@shikijs/langs/jsonc";
+import nginx from "@shikijs/langs/nginx";
+import python from "@shikijs/langs/python";
+import rust from "@shikijs/langs/rust";
+import shellscript from "@shikijs/langs/shellscript";
+import sql from "@shikijs/langs/sql";
+import toml from "@shikijs/langs/toml";
+import typescript from "@shikijs/langs/typescript";
+import yaml from "@shikijs/langs/yaml";
 
 /** What a marked span is; its class is `hl-<kind>`. */
 export type TokenKind =
@@ -21,104 +39,110 @@ export type TokenKind =
   | "k"
   /** A name the reader looks for: a key, a variable or a command-line flag. */
   | "v"
-  /** A command: the first word of a shell command. */
+  /** A command or function name. */
   | "f";
 
-/** How a language's source is scanned. */
-type Mode =
-  /** Shell sessions and scripts: commands, flags and `$VARIABLES`. */
-  | "shell"
-  /** TOML: table headers and keys. */
-  | "toml"
-  /** YAML: keys before `:`. */
-  | "yaml"
-  /** JSON: property names apart from string values. */
-  | "json"
-  /** A programming language: keywords only. */
-  | "code";
+/** Placeholder colors the theme gives each kind; never shown to readers. */
+const KIND_COLORS: Readonly<Record<TokenKind, string>> = { c: "#000001", s: "#000002", n: "#000003", k: "#000004", v: "#000005", f: "#000006" };
 
-/** The rules for one language. */
-interface Grammar {
-  /** How names at the start of a line or before `=` / `:` are treated. */
-  mode: Mode;
-  /** Prefixes that start a comment running to the end of the line. */
-  lineComments: readonly string[];
-  /** Opening and closing marks of a block comment, if the language has one. */
-  blockComment: readonly [string, string] | null;
-  /** Characters that open and close a string literal on one line. */
-  quotes: string;
-  /** Words shown as keywords; checked case-insensitively when `caseless`. */
-  keywords: ReadonlySet<string>;
-  /** Words shown as literals, like numbers. */
-  literals: ReadonlySet<string>;
-  /** Whether keywords match in any letter case (SQL). */
-  caseless: boolean;
-  /**
-   * Whether only lines after a `$ ` prompt (and their `\` continuations)
-   * hold commands, as in a terminal session; other lines are output.
-   */
-  promptOnly: boolean;
+/** The kind each placeholder color stands for. */
+const COLOR_KINDS: ReadonlyMap<string, TokenKind> = new Map(
+  (Object.keys(KIND_COLORS) as TokenKind[]).map((kind) => [KIND_COLORS[kind].toLowerCase(), kind]),
+);
+
+/** Name of the placeholder theme. */
+const THEME = "bookclerk";
+
+/**
+ * Which TextMate scopes get which kind (null: plain). A token takes the rule
+ * whose scope matches most specifically, so quotes inside a string stay part
+ * of the string, and `keyword.operator` (`|`, `=`) and a shell line's final
+ * `\` stay plain.
+ */
+const THEME_RULES: readonly [TokenKind | null, readonly string[]][] = [
+  ["c", ["comment"]],
+  ["s", ["string.quoted", "string.interpolated", "string.regexp", "string.template", "string.other"]],
+  ["n", ["constant.numeric", "constant.language", "constant.character"]],
+  ["k", ["keyword", "storage", "entity.name.section", "punctuation.definition.section", "support.type.primitive"]],
+  [null, ["keyword.operator", "constant.character.escape.line-continuation"]],
+  [
+    "v",
+    [
+      "variable.other.normal",
+      "variable.other.positional",
+      "variable.other.special",
+      "variable.other.assignment",
+      "variable.other.key",
+      "punctuation.definition.variable",
+      "constant.other.option",
+      "support.type.property-name",
+      "entity.name.tag",
+    ],
+  ],
+  ["f", ["entity.name.command", "entity.name.function", "support.function"]],
+];
+
+/** The placeholder theme: plain text is black, each kind its own color. */
+const THEME_REGISTRATION: ThemeRegistration = {
+  name: THEME,
+  type: "light",
+  fg: "#000000",
+  bg: "#ffffff",
+  settings: [
+    { settings: { foreground: "#000000" } },
+    ...THEME_RULES.map(([kind, scope]) => ({ scope: [...scope], settings: { foreground: kind === null ? "#000000" : KIND_COLORS[kind] } })),
+  ],
+};
+
+/**
+ * Grammar for each language name a fence may give, lower-cased. `console`
+ * is a terminal session: shell commands after `$ ` prompts, plain output.
+ */
+const LANGUAGE_NAMES: ReadonlyMap<string, string> = new Map([
+  ["bash", "shellscript"],
+  ["sh", "shellscript"],
+  ["shell", "shellscript"],
+  ["zsh", "shellscript"],
+  ["console", "shellscript"],
+  ["toml", "toml"],
+  ["yaml", "yaml"],
+  ["yml", "yaml"],
+  ["json", "json"],
+  ["jsonc", "jsonc"],
+  ["ts", "typescript"],
+  ["typescript", "typescript"],
+  ["tsx", "typescript"],
+  ["js", "typescript"],
+  ["javascript", "typescript"],
+  ["rust", "rust"],
+  ["rs", "rust"],
+  ["python", "python"],
+  ["py", "python"],
+  ["sql", "sql"],
+  ["nginx", "nginx"],
+  ["http", "http"],
+]);
+
+/** The highlighter, created on first use so Worker start-up stays quick. */
+let highlighter: HighlighterCore | null = null;
+
+/**
+ * Returns the highlighter, creating it on the first call.
+ *
+ * @returns The Shiki highlighter with the docs' languages and the placeholder theme.
+ */
+function getHighlighter(): HighlighterCore {
+  highlighter ??= createHighlighterCoreSync({
+    themes: [THEME_REGISTRATION],
+    langs: [http, json, jsonc, nginx, python, rust, shellscript, sql, toml, typescript, yaml],
+    // A grammar pattern the engine cannot translate matches nothing instead of throwing.
+    engine: createJavaScriptRegexEngine({ forgiving: true }),
+  });
+  return highlighter;
 }
 
-/** Literals most languages share. */
-const COMMON_LITERALS = new Set(["true", "false", "null"]);
-
-/** TypeScript and JavaScript keywords. */
-const TS_KEYWORDS = new Set(
-  "as async await break case catch class const continue default delete do else enum export extends finally for from function if implements import in instanceof interface let new of private protected public readonly return static super switch this throw try type typeof var void while yield".split(" "),
-);
-
-/** Rust keywords. */
-const RUST_KEYWORDS = new Set("as async await break const continue crate dyn else enum extern fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait type unsafe use where while".split(" "));
-
-/** Python keywords. */
-const PYTHON_KEYWORDS = new Set("and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield".split(" "));
-
-/** SQL keywords, matched in any case. */
-const SQL_KEYWORDS = new Set(
-  "add alter and as asc by create default delete desc distinct drop exists from group having if in index insert into is join key left limit not null on or order primary references select set table union unique update values where with".split(" "),
-);
-
-/** Shell words that are syntax, not commands. */
-const SHELL_KEYWORDS = new Set("if then else elif fi for in do done while until case esac function export local return".split(" "));
-
-/** Shell words after which the next word is a command again. */
-const COMMAND_PREFIXES = new Set(["then", "do", "else", "elif", "sudo", "time", "exec"]);
-
-/** Grammar for each language name a fence may give, lower-cased. */
-const GRAMMARS: ReadonlyMap<string, Grammar> = (() => {
-  const none: ReadonlySet<string> = new Set();
-  const shell: Grammar = { mode: "shell", lineComments: ["#"], blockComment: null, quotes: `"'`, keywords: SHELL_KEYWORDS, literals: none, caseless: false, promptOnly: false };
-  const toml: Grammar = { mode: "toml", lineComments: ["#"], blockComment: null, quotes: `"'`, keywords: none, literals: new Set(["true", "false"]), caseless: false, promptOnly: false };
-  const yaml: Grammar = { mode: "yaml", lineComments: ["#"], blockComment: null, quotes: `"'`, keywords: none, literals: new Set([...COMMON_LITERALS, "yes", "no", "on", "off"]), caseless: false, promptOnly: false };
-  const json: Grammar = { mode: "json", lineComments: ["//"], blockComment: ["/*", "*/"], quotes: `"`, keywords: none, literals: COMMON_LITERALS, caseless: false, promptOnly: false };
-  const ts: Grammar = { mode: "code", lineComments: ["//"], blockComment: ["/*", "*/"], quotes: "\"'`", keywords: TS_KEYWORDS, literals: new Set([...COMMON_LITERALS, "undefined"]), caseless: false, promptOnly: false };
-  const rust: Grammar = { mode: "code", lineComments: ["//"], blockComment: ["/*", "*/"], quotes: `"`, keywords: RUST_KEYWORDS, literals: new Set(["true", "false", "None", "Some", "Ok", "Err"]), caseless: false, promptOnly: false };
-  const python: Grammar = { mode: "code", lineComments: ["#"], blockComment: null, quotes: `"'`, keywords: PYTHON_KEYWORDS, literals: new Set(["True", "False", "None"]), caseless: false, promptOnly: false };
-  const sql: Grammar = { mode: "code", lineComments: ["--"], blockComment: ["/*", "*/"], quotes: `'"`, keywords: SQL_KEYWORDS, literals: none, caseless: true, promptOnly: false };
-  return new Map<string, Grammar>([
-    ["bash", shell],
-    ["sh", shell],
-    ["shell", shell],
-    ["console", { ...shell, promptOnly: true }],
-    ["zsh", shell],
-    ["toml", toml],
-    ["yaml", yaml],
-    ["yml", yaml],
-    ["json", json],
-    ["jsonc", json],
-    ["ts", ts],
-    ["typescript", ts],
-    ["tsx", ts],
-    ["js", ts],
-    ["javascript", ts],
-    ["rust", rust],
-    ["rs", rust],
-    ["python", python],
-    ["py", python],
-    ["sql", sql],
-  ]);
-})();
+/** Tokenizer state carried from one line to the next. */
+type GrammarState = ReturnType<HighlighterCore["getLastGrammarState"]>;
 
 /**
  * Escapes text for an HTML element body.
@@ -130,229 +154,122 @@ function escapeText(text: string): string {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 
-/**
- * Whether a character can be part of a name.
- *
- * @param c - One character, or undefined past either end.
- * @param dash - Whether `-` counts (shell, TOML and YAML names).
- * @returns True for ASCII letters, digits, `_`, and `-` when `dash`.
- */
-function isNameChar(c: string | undefined, dash: boolean): boolean {
-  if (c === undefined) return false;
-  return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c === "_" || (dash && c === "-");
+/** One line's colored HTML, and what the tokenizer needs for the next line. */
+interface Line {
+  /** The line as escaped text and `hl-*` spans. */
+  html: string;
+  /** Tokenizer state after the line, when the tokenizer reports one. */
+  state: GrammarState | undefined;
+  /** Whether the line ends inside a comment (so a final `\` is commentary). */
+  endsInComment: boolean;
 }
 
 /**
- * Whether a character is an ASCII digit.
+ * Colors one line, carrying the tokenizer state across lines so a string or
+ * block comment that spans lines stays colored.
  *
- * @param c - One character, or undefined.
- * @returns True for `0`–`9`.
+ * @param shiki - The highlighter.
+ * @param text - One line, without its newline.
+ * @param lang - The Shiki language id.
+ * @param state - Tokenizer state after the previous line, if any.
+ * @returns The line's HTML and state, or null when the tokens do not add up
+ *   to the line exactly (the block is then left plain).
  */
-function isDigit(c: string | undefined): boolean {
-  return c !== undefined && c >= "0" && c <= "9";
-}
-
-/**
- * Index just past a string literal that opens at `start`.
- *
- * Strings end at their closing quote or at the end of the line, so a stray
- * quote never colors the rest of a block.
- *
- * @param code - The block.
- * @param start - Index of the opening quote.
- * @param escapes - Whether a backslash escapes the next character.
- * @returns The end index (exclusive).
- */
-function stringEnd(code: string, start: number, escapes: boolean): number {
-  const quote = code[start];
-  let i = start + 1;
-  while (i < code.length && code[i] !== "\n") {
-    if (escapes && code[i] === "\\" && i + 1 < code.length && code[i + 1] !== "\n") i += 2;
-    else if (code[i] === quote) return i + 1;
-    else i += 1;
+function highlightLine(shiki: HighlighterCore, text: string, lang: string, state: GrammarState | undefined): Line | null {
+  const result = shiki.codeToTokens(text, { lang, theme: THEME, ...(state === undefined ? {} : { grammarState: state }) });
+  if (result.tokens.length > 1) return null;
+  let html = "";
+  let seen = "";
+  let open: TokenKind | null = null;
+  let last: TokenKind | null = null;
+  for (const token of result.tokens[0] ?? []) {
+    if (token.content === "") continue;
+    seen += token.content;
+    const kind = COLOR_KINDS.get((token.color ?? "").toLowerCase()) ?? null;
+    if (kind !== open) {
+      if (open !== null) html += "</span>";
+      if (kind !== null) html += `<span class="hl-${kind}">`;
+      open = kind;
+    }
+    html += escapeText(token.content);
+    last = kind;
   }
-  return i;
+  if (open !== null) html += "</span>";
+  if (seen !== text) return null;
+  return { html, state: result.grammarState ?? state, endsInComment: last === "c" };
+}
+
+/**
+ * Whether a shell line continues onto the next: it ends in an odd run of
+ * backslashes (an even run is escaped backslashes) outside a comment.
+ *
+ * @param text - The line.
+ * @param endsInComment - Whether the tokenizer ended the line in a comment.
+ * @returns True when the next line is part of the same command.
+ */
+function continues(text: string, endsInComment: boolean): boolean {
+  let run = 0;
+  while (text[text.length - 1 - run] === "\\") run++;
+  return run % 2 === 1 && !endsInComment;
+}
+
+/**
+ * Colors a terminal session: lines after a `$ ` prompt, and the lines they
+ * continue onto, are shell commands; every other line is output and stays
+ * plain.
+ *
+ * @param shiki - The highlighter.
+ * @param lines - The block's lines.
+ * @returns The HTML, or null when a command line cannot be colored exactly.
+ */
+function highlightSession(shiki: HighlighterCore, lines: readonly string[]): string | null {
+  const out: string[] = [];
+  let command = false;
+  let state: GrammarState | undefined;
+  for (const text of lines) {
+    if (!command && !text.startsWith("$ ")) {
+      out.push(escapeText(text));
+      state = undefined;
+      continue;
+    }
+    const prompt = command ? "" : "$ ";
+    const line = highlightLine(shiki, text.slice(prompt.length), "shellscript", state);
+    if (line === null) return null;
+    out.push(prompt + line.html);
+    command = continues(text, line.endsInComment);
+    state = command ? line.state : undefined;
+  }
+  return out.join("\n");
 }
 
 /**
  * Colors one code block.
  *
- * @param code - The block's text, as written in the doc.
- * @param lang - The first word of the fence's info string.
- * @returns HTML: the text escaped, with marked tokens wrapped in
- *   `<span class="hl-<kind>">`; null when the language has no grammar.
+ * @param code - The fence's contents.
+ * @param lang - The fence's language name, in any letter case.
+ * @returns HTML: the escaped code with `<span class="hl-…">` elements around
+ *   the parts the grammar recognizes; null when the language is not one the
+ *   site colors, or the code cannot be colored exactly, so the block stays
+ *   plain.
  */
 export function highlight(code: string, lang: string): string | null {
-  const g = GRAMMARS.get(lang.toLowerCase());
-  if (g === undefined) return null;
-  const dash = g.mode === "shell" || g.mode === "toml" || g.mode === "yaml";
-  const out: string[] = [];
-  let plain = "";
-  const flush = (): void => {
-    if (plain !== "") out.push(escapeText(plain));
-    plain = "";
-  };
-  const mark = (kind: TokenKind, text: string): void => {
-    flush();
-    out.push(`<span class="hl-${kind}">${escapeText(text)}</span>`);
-  };
-  /** Whether only spaces or tabs come before `i` on its line. */
-  const atLineStart = (i: number): boolean => {
-    let j = i - 1;
-    while (j >= 0 && (code[j] === " " || code[j] === "\t")) j--;
-    return j < 0 || code[j] === "\n";
-  };
-  /** Whether `i` starts a YAML key: at the start of a line or after a list item's `- `. */
-  const atKeyStart = (i: number): boolean => {
-    if (atLineStart(i)) return true;
-    let j = i - 1;
-    while (j >= 0 && (code[j] === " " || code[j] === "\t")) j--;
-    return j < i - 1 && code[j] === "-" && atLineStart(j);
-  };
-  /** The next character after `i` that is not a space or tab. */
-  const nextSolid = (i: number): string | undefined => {
-    let j = i;
-    while (code[j] === " " || code[j] === "\t") j++;
-    return code[j];
-  };
-  // In a terminal session, whether this line is a command after a `$ `
-  // prompt (or continues one).
-  let promptLine = false;
-  // Whether the current line ended in a line comment.
-  let commentEnded = false;
-  // In shell mode, whether the next word starts a command.
-  let commandNext = !g.promptOnly;
-  // Where the last search for a `${` closing brace stopped (see below).
-  let braceScanEnd = -1;
-  let i = 0;
-  while (i < code.length) {
-    const c = code[i] ?? "";
-    // In a terminal session, a line that is not a command is output: plain.
-    if (g.promptOnly && !promptLine && c !== "\n" && (i === 0 || code[i - 1] === "\n") && !code.startsWith("$ ", i)) {
-      const end = code.indexOf("\n", i);
-      const stop = end === -1 ? code.length : end;
-      plain += code.slice(i, stop);
-      i = stop;
-      continue;
+  const name = lang.toLowerCase();
+  const id = LANGUAGE_NAMES.get(name);
+  if (id === undefined) return null;
+  try {
+    const shiki = getHighlighter();
+    const lines = code.split("\n");
+    if (name === "console") return highlightSession(shiki, lines);
+    const out: string[] = [];
+    let state: GrammarState | undefined;
+    for (const text of lines) {
+      const line = highlightLine(shiki, text, id, state);
+      if (line === null) return null;
+      out.push(line.html);
+      state = line.state;
     }
-    if (c === "\n") {
-      // A shell line ending in an unescaped `\` (an odd run of them, outside
-      // a comment) continues the command, so the next line carries on where
-      // this one stopped. `\\` is a literal backslash and ends the line.
-      let run = 0;
-      while (g.mode === "shell" && code[i - 1 - run] === "\\") run++;
-      const continues = g.mode === "shell" && run % 2 === 1 && !commentEnded;
-      promptLine = promptLine && continues;
-      commentEnded = false;
-      plain += c;
-      if (!continues) commandNext = !g.promptOnly;
-      i += 1;
-      continue;
-    }
-    // Shell `#` starts a comment only at the start of a word.
-    const comment = g.lineComments.find((p) => code.startsWith(p, i) && (g.mode !== "shell" || i === 0 || /\s/.test(code[i - 1] ?? "")));
-    if (comment !== undefined) {
-      const end = code.indexOf("\n", i);
-      const stop = end === -1 ? code.length : end;
-      mark("c", code.slice(i, stop));
-      commentEnded = true;
-      i = stop;
-      continue;
-    }
-    if (g.blockComment !== null && code.startsWith(g.blockComment[0], i)) {
-      const end = code.indexOf(g.blockComment[1], i + g.blockComment[0].length);
-      const stop = end === -1 ? code.length : end + g.blockComment[1].length;
-      mark("c", code.slice(i, stop));
-      i = stop;
-      continue;
-    }
-    if (g.quotes.includes(c)) {
-      // Single-quoted shell, TOML and YAML strings and SQL strings take no
-      // backslash escapes.
-      const literal = (c === "'" && (g.mode === "shell" || g.mode === "toml" || g.mode === "yaml")) || g.caseless;
-      const stop = stringEnd(code, i, !literal);
-      const text = code.slice(i, stop);
-      const isKey = (g.mode === "json" || (g.mode === "yaml" && atKeyStart(i))) && nextSolid(stop) === ":";
-      mark(isKey ? "v" : "s", text);
-      i = stop;
-      commandNext = false;
-      continue;
-    }
-    if (g.mode === "toml" && c === "[" && atLineStart(i)) {
-      const end = code.indexOf("\n", i);
-      const line = code.slice(i, end === -1 ? code.length : end);
-      const closer = line.startsWith("[[") ? "]]" : "]";
-      const close = line.indexOf(closer, closer.length);
-      if (close !== -1) {
-        mark("k", line.slice(0, close + closer.length));
-        i += close + closer.length;
-        continue;
-      }
-    }
-    if (g.mode === "shell" && c === "$" && (code[i + 1] === "{" || isNameChar(code[i + 1], false))) {
-      let stop = i + 1;
-      if (code[stop] === "{") {
-        // The closing brace must be on this line. A scan stops at the first
-        // `}` or newline, and a later `${` before that point stops there too,
-        // so its result is reused: many unclosed `${` stay linear.
-        if (stop >= braceScanEnd) {
-          braceScanEnd = stop + 1;
-          while (braceScanEnd < code.length && code[braceScanEnd] !== "}" && code[braceScanEnd] !== "\n") braceScanEnd++;
-        }
-        stop = code[braceScanEnd] === "}" ? braceScanEnd + 1 : stop + 1;
-      } else {
-        while (isNameChar(code[stop], false)) stop++;
-      }
-      mark("v", code.slice(i, stop));
-      i = stop;
-      commandNext = false;
-      continue;
-    }
-    if (g.mode === "shell" && c === "-" && !isNameChar(code[i - 1], true) && (isNameChar(code[i + 1], false) || (code[i + 1] === "-" && isNameChar(code[i + 2], false)))) {
-      let stop = i + 1;
-      while (isNameChar(code[stop], true)) stop++;
-      mark("v", code.slice(i, stop));
-      i = stop;
-      continue;
-    }
-    if (isDigit(c) && !isNameChar(code[i - 1], dash)) {
-      let stop = i + 1;
-      while (isNameChar(code[stop], false) || (code[stop] === "." && isDigit(code[stop + 1]))) stop++;
-      mark("n", code.slice(i, stop));
-      i = stop;
-      commandNext = false;
-      continue;
-    }
-    if (isNameChar(c, false) && !isNameChar(code[i - 1], dash)) {
-      let stop = i + 1;
-      while (isNameChar(code[stop], dash) || (g.mode === "toml" && code[stop] === "." && isNameChar(code[stop + 1], true))) stop++;
-      const word = code.slice(i, stop);
-      const key = g.caseless ? word.toLowerCase() : word;
-      const after = nextSolid(stop);
-      if (g.mode === "toml" && atLineStart(i) && after === "=") mark("v", word);
-      else if (g.mode === "yaml" && atKeyStart(i) && after === ":") mark("v", word);
-      else if (g.keywords.has(key)) mark("k", word);
-      else if (g.literals.has(word)) mark("n", word);
-      else if (g.mode === "shell" && commandNext && after !== "=") mark("f", word);
-      else plain += word;
-      if (g.mode === "shell") commandNext = COMMAND_PREFIXES.has(word);
-      i = stop;
-      continue;
-    }
-    if (g.mode === "shell") {
-      // A pipe, `;`, `&&` or `||` starts the next command; a `$ ` prompt
-      // at the start of a line is not one, but starts a command line in a
-      // terminal session.
-      if (c === "$" && atLineStart(i) && code[i + 1] === " ") {
-        promptLine = true;
-        commandNext = true;
-      } else if (c === "|" || c === ";" || c === "&" || c === "(") commandNext = true;
-      // A `\` that ends the line keeps the state for the next line.
-      else if (!(c === " " || c === "\t" || (c === "\\" && code[i + 1] === "\n"))) commandNext = false;
-    }
-    plain += c;
-    i += 1;
+    return out.join("\n");
+  } catch {
+    return null;
   }
-  flush();
-  return out.join("");
 }

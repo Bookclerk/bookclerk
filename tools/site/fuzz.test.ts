@@ -161,7 +161,7 @@ test("pickEncoding agrees with the oracle on mutated inputs", () => {
 const CODE_FRAGMENTS = ['"', "'", "`", "\\", "#", "//", "/*", "*/", "--", "-", "$", "${", "}", "[", "]", "[[", "=", ":", "\n", " ", "\t", "<", ">", "&", "&amp;", "0x1", "1.5", "true", "fn", "SELECT", "sudo", "|", ";", "é", "\u0000", "<span class=\"hl-c\">"];
 
 /** Language names the highlight seeds name, plus names it does not know. */
-const LANGUAGES = ["bash", "sh", "console", "toml", "yaml", "json", "ts", "rust", "python", "sql", "text", "", "nginx", "TOML"];
+const LANGUAGES = ["bash", "sh", "console", "toml", "yaml", "json", "ts", "rust", "python", "sql", "nginx", "http", "text", "", "mermaid", "TOML"];
 
 /** The entities highlight.ts writes, and the characters they stand for. */
 const ENTITIES: readonly [string, string][] = [["&amp;", "&"], ["&lt;", "<"], ["&gt;", ">"], ["&quot;", '"'], ["&#39;", "'"]];
@@ -232,7 +232,7 @@ function splitSeed(seed: string): [string, string] {
 function checkHighlight(code: string, lang: string, context: string): void {
   const html = highlight(code, lang);
   if (html === null) {
-    assert.ok(["text", "", "nginx"].includes(lang), `${context}: no grammar for ${JSON.stringify(lang)}`);
+    assert.ok(["text", "", "mermaid"].includes(lang), `${context}: no grammar for ${JSON.stringify(lang)}`);
     return;
   }
   assert.equal(oracleText(html), code, `${context}: ${JSON.stringify(code)} -> ${JSON.stringify(html)}`);

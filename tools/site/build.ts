@@ -217,6 +217,14 @@ export const PAGES: readonly Page[] = [
     markdown: "/download.md",
   },
   {
+    file: "privacy.html",
+    path: "/privacy",
+    title: "Privacy · Bookclerk",
+    description: "What the Bookclerk website and services collect, which cookies they set and why, who else handles it, and how long it is kept.",
+    indexable: true,
+    markdown: "/privacy.md",
+  },
+  {
     file: "404.html",
     path: "/404",
     title: "Page not found · Bookclerk",
@@ -230,8 +238,11 @@ export const PAGES: readonly Page[] = [
 /** The Worker's page renderers, whose sources are part of the docs shell's id (see buildDocsShell). */
 const RENDER_SOURCES = ["render.ts", "diagram.ts", "highlight.ts", "last-updated.ts"];
 
-/** Libraries the renderers draw with, whose installed versions are part of the docs shell's id too. */
-const RENDER_LIBRARIES = ["beautiful-mermaid", "elkjs"];
+/**
+ * Libraries the renderers run, whose installed versions are part of the docs
+ * shell's id too: an update can change the markup of every page.
+ */
+const RENDER_LIBRARIES = ["markdown-it", "@shikijs/core", "@shikijs/engine-javascript", "@shikijs/langs", "beautiful-mermaid", "elkjs"];
 
 /** Files copied verbatim from src/ to dist/. */
 const STATIC_FILES = ["site.css", "docs.js", "_headers", "social-card.png"];
@@ -672,7 +683,7 @@ export function buildDocsShell(
   // shell change.
   const hash = createHash("sha256").update(JSON.stringify(shell));
   for (const file of RENDER_SOURCES) hash.update(readFileSync(join(HERE, file)));
-  for (const library of RENDER_LIBRARIES) hash.update(readFileSync(join(HERE, "node_modules", library, "package.json")));
+  for (const name of RENDER_LIBRARIES) hash.update(readFileSync(join(HERE, "node_modules", name, "package.json")));
   const id = hash.digest("hex").slice(0, 16);
   return { id, ...shell };
 }
@@ -707,7 +718,7 @@ function writeLlmsTxt(context: SiteContext, rendered: RenderedDocs, facts: HomeF
     "",
     `> ${SUMMARY} It is free, self-hosted software (GNU GPL v3 or later) with a command-line tool, a daemon with a web interface, and a plugin system for stores and destinations.`,
     "",
-    `${status} Each doc below is Markdown; the same page as HTML is at the URL without \`.md\`. Source code: ${repo}. Every doc in one file: ${origin}/llms-full.txt. Every page also answers a request with \`Accept: text/markdown\` in Markdown; the home and download pages are at ${origin}/index.md and ${origin}/download.md.`,
+    `${status} Each doc below is Markdown; the same page as HTML is at the URL without \`.md\`. Source code: ${repo}. Every doc in one file: ${origin}/llms-full.txt. Every page also answers a request with \`Accept: text/markdown\` in Markdown; the home, download and privacy pages are at ${origin}/index.md, ${origin}/download.md and ${origin}/privacy.md.`,
     "",
   ];
   if (context.flags.demo) {

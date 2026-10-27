@@ -108,6 +108,15 @@ DEMO_TEST_INPUTS = frozenset(
         "ui/public/bookclerk-mark.svg",
     }
 )
+# Files outside tools/site/ that its tests read: the privacy page must name
+# every cookie the demo and the diagnostics dashboard set.
+SITE_TEST_INPUTS = frozenset(
+    {
+        "tools/demo/src/inputs.ts",
+        "tools/diagnostics-collector/dashboard/auth.ts",
+        "tools/diagnostics-collector/dashboard/session.ts",
+    }
+)
 # Files outside tools/diagnostics-collector/ that its tests read: the summary
 # comment renderer's seed corpus and the Python oracle its TypeScript port is
 # fuzzed against (both also run in the plan job's Python tests).
@@ -668,6 +677,7 @@ class _Surfaces:
         self.python_sdk: list[str] = []
         self.abi: list[str] = []
         self.site: list[str] = []
+        self.site_inputs: list[str] = []
         self.collector: list[str] = []
         self.demo: list[str] = []
         self.docs: list[str] = []
@@ -788,6 +798,10 @@ def build_plan(
             # Also a bookclerkd, website or UI file, classified with its
             # owner above.
             surf.demo.append(path)
+        if path in SITE_TEST_INPUTS:
+            # Also a demo or collector file, classified with its owner above.
+            # Read only by the site's tests, so the audit does not run.
+            surf.site_inputs.append(path)
         if path.startswith(COLLECTOR_TEST_INPUT_PREFIXES):
             # Also plan-job test files, classified below.
             surf.collector.append(path)
@@ -934,8 +948,12 @@ def _select_checks(
         _select(plan, check, [f"shared fixture {p}" for p in paths])
 
     site_why = [f"path {p}" for p in surf.site]
-    if site_why or surf.docs:
-        _select(plan, "site_test", site_why + [f"site links into {p}" for p in surf.docs])
+    if site_why or surf.docs or surf.site_inputs:
+        _select(
+            plan,
+            "site_test",
+            site_why + [f"site links into {p}" for p in surf.docs] + [f"site test input {p}" for p in surf.site_inputs],
+        )
     if site_why:
         _select(plan, "site_audit", site_why)
     if surf.collector:

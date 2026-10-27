@@ -5,29 +5,40 @@ settings and your naming templates, so you do not start from scratch.
 
 ## What comes over
 
-- Your book list and what Libation knew about each book.
-- Your settings: file format, cover and chapter options, and folder and file
-  naming templates. If this Bookclerk has already been started, its
-  existing output settings stay as they are; when they differ from
-  Libation's, the import warns, so check **Settings → Output** afterward.
+- Your book list, and what Libation knew about each book.
+- Your settings: file format, cover and chapter options, and folder and
+  file naming templates.
 - The list of your accounts.
 
-Store sign-ins do **not** come over. After the import, connect each store
-again on **Accounts** (see [Stores](stores.md)).
+If this Bookclerk has already been started, its output settings stay as
+they are. When they differ from Libation's, the import warns you, so check
+**Settings → Output** afterward.
+
+> [!IMPORTANT]
+> Store sign-ins do **not** come over. After the import, connect each store
+> again on **Accounts** (see [Stores](stores.md)).
 
 ## Import
 
 The import needs the Audible plugin, so run it with `--optional` as below.
-Stop Bookclerk first. Then, from the Bookclerk checkout, point the import at
-your Libation files folder:
 
-```sh
-cargo dev-cli --optional -- import libation --from ~/LibationFiles --dry-run
-cargo dev-cli --optional -- import libation --from ~/LibationFiles --force
-```
+1. Stop Bookclerk.
+2. From the Bookclerk checkout, point the import at your Libation files
+   folder, first as a dry run. This only reports what it would do:
 
-The first command only reports what it would do. The second imports, and
-overwrites Bookclerk's `config.toml` with settings built from Libation's.
+   ```sh
+   cargo dev-cli --optional -- import libation --from ~/LibationFiles --dry-run
+   ```
+
+3. If the report looks right, run the import:
+
+   ```sh
+   cargo dev-cli --optional -- import libation --from ~/LibationFiles --force
+   ```
+
+> [!WARNING]
+> The real import overwrites Bookclerk's `config.toml` with settings built
+> from Libation's.
 
 ## After the import
 

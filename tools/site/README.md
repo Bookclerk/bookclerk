@@ -80,11 +80,15 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   rail goes; below 900px the sidebar and the rail become two menus over the
   page (`<details>`, so they work without a script).
 - `highlight.ts` – syntax colors for fenced code blocks in the languages the
-  docs use (shell, TOML, YAML, JSON, TypeScript, Rust, Python, SQL), as
-  `<span class="hl-…">` around escaped text; other fences stay plain. In a
-  `console` fence only `$ ` prompt lines (and their `\` continuations) are
-  colored, and the output lines stay plain. The
-  Worker runs it while rendering, so pages need no client-side highlighter.
+  docs use (shell, TOML, YAML, JSON, TypeScript, Rust, Python, SQL, nginx,
+  HTTP), as `<span class="hl-…">` around escaped text; other fences stay
+  plain. [Shiki](https://shiki.style/) tokenizes the code with the TextMate
+  grammars editors use; a placeholder theme marks each kind of token, and
+  `highlight.ts` turns those marks into classes and writes the HTML itself,
+  since Shiki's inline `style` colors would break the Content-Security-Policy.
+  In a `console` fence only `$ ` prompt lines (and their `\` continuations)
+  are colored, and the output lines stay plain. The Worker runs it while
+  rendering, so pages need no client-side highlighter.
   It reads doc text, so `fuzz.test.ts` replays `fuzz/highlight/` (first line
   the language, the rest the code) and fuzzes mutations against an oracle
   that the output is only escaped text and those spans and reads back to the
@@ -122,10 +126,14 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   (`/` focuses it). It makes no requests, and everything it enhances works
   without it; Chromium also marks the current section through CSS
   (`scroll-target-group`).
-- `src/index.md`, `src/download.md`, `src/404.md` – Markdown versions of
+- `src/index.md`, `src/download.md`, `src/privacy.md`, `src/404.md` – Markdown versions of
   those pages, rendered with the same template syntax. Keep them in step with
   the HTML: a test checks that every `<h2>` of the page is a `##` section of
   its Markdown version.
+- `src/privacy.html` – the privacy page. It lists every cookie the demo and
+  the diagnostics dashboard set; `build.test.ts` reads the cookie names from
+  those Workers' sources, so renaming one without updating the page fails.
+  Keep it in step when a Worker starts collecting or storing anything new.
 - `worker.ts` – the docs route and content negotiation (see below).
   `wrangler.toml` runs it only for page paths (`run_worker_first`). It
   compresses what it answers with (Brotli, else gzip) itself, because

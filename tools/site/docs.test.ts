@@ -8,6 +8,8 @@ import { test } from "node:test";
 import { fileURLToPath, URL } from "node:url";
 import { runInNewContext } from "node:vm";
 
+import MarkdownIt from "markdown-it";
+
 import { docUrl, GENERATED_TITLES, markdownFiles, renderDocs, rewriteLink, siteMarkdown, slugify } from "./docs.ts";
 import { highlight } from "./highlight.ts";
 import { formatDate, pageDate, parseIsoDate } from "./last-updated.ts";
@@ -116,7 +118,8 @@ test("every Mermaid fence in docs/ is drawn as a diagram", () => {
   const { docs } = renderDocs(DOCS, BLOB, GENERATED_TITLES);
   let fences = 0;
   for (const doc of docs) {
-    const count = (readFileSync(`${DOCS}${doc.key}.md`, "utf8").match(/^```mermaid$/gm) ?? []).length;
+    const source = readFileSync(`${DOCS}${doc.key}.md`, "utf8");
+    const count = new MarkdownIt().parse(source, {}).filter((t) => t.type === "fence" && t.info.trim() === "mermaid").length;
     fences += count;
     assert.equal((doc.html.match(/<figure class="diagram"[^>]*><svg /g) ?? []).length, count, doc.key);
     assert.ok(!doc.html.includes("language-mermaid"), `${doc.key} has a Mermaid fence the site could not draw`);
@@ -166,11 +169,11 @@ test("highlight colors each language's own names and leaves the rest plain", () 
     '$ <span class="hl-f">cargo</span> build \\\n  <span class="hl-v">--release</span> | <span class="hl-f">tee</span> log\n   Compiling foo v1\nok | done',
   );
   // `\\` at the end of a line is a literal backslash, so the next line is output.
-  assert.equal(highlight("$ printf '%s\\n' \\\\\ncargo --release", "console"), '$ <span class="hl-f">printf</span> <span class="hl-s">&#39;%s\\n&#39;</span> \\\\\ncargo --release');
+  assert.equal(highlight("$ printf '%s\\n' \\\\\ncargo --release", "console"), '$ <span class="hl-f">printf</span> <span class="hl-s">&#39;%s\\n&#39;</span> <span class="hl-n">\\\\</span>\ncargo --release');
   // A `\` inside a comment does not continue the command either.
   assert.equal(highlight("$ make # build \\\n  echo hi", "console"), '$ <span class="hl-f">make</span> <span class="hl-c"># build \\</span>\n  echo hi');
   assert.equal(highlight("Compiling foo\ncargo dev", "bash"), '<span class="hl-f">Compiling</span> foo\n<span class="hl-f">cargo</span> dev');
-  assert.equal(highlight("- name: x\n  key: y", "yaml"), '- <span class="hl-v">name</span>: x\n  <span class="hl-v">key</span>: y');
+  assert.equal(highlight("- name: x\n  key: value", "yaml"), '- <span class="hl-v">name</span>: x\n  <span class="hl-v">key</span>: value');
   assert.equal(highlight('{"a": "b", "n": 1}', "json"), '{<span class="hl-v">&quot;a&quot;</span>: <span class="hl-s">&quot;b&quot;</span>, <span class="hl-v">&quot;n&quot;</span>: <span class="hl-n">1</span>}');
   assert.equal(highlight("x", "text"), null);
 });
@@ -298,4 +301,21 @@ test("Copy takes a session's commands and the lines that continue them", async (
   assert.equal(await copied("$ echo ok;# note \\\noutput"), "echo ok;# note \\");
   assert.equal(await copied('$ echo "a # b" \\\n  more\nout'), 'echo "a # b" \\\n  more');
   assert.equal(await copied("$ echo 'a \\' x\nout"), "echo 'a \\' x");
+});
+
+test("GitHub alert blockquotes render as callouts, other blockquotes stay quotes", () => {
+  const html = (source: string): string => renderDoc(source, "cluster-hosts", { blobBase: BLOB }).html;
+  assert.equal(
+    html("> [!WARNING]\n> Leave **Auto acquire** off.\n"),
+    '<div class="callout callout-warning" role="note"><p class="callout-title">Warning</p>\n<p>Leave <strong>Auto acquire</strong> off.</p>\n</div>\n',
+  );
+  // The kind is read without regard to case, and a marker alone still renders.
+  assert.match(html("> [!tip]\n"), /^<div class="callout callout-tip" role="note"><p class="callout-title">Tip<\/p>\n<\/div>\n$/);
+  // A second paragraph and a nested quote stay inside the callout.
+  const nested = html("> [!NOTE]\n> One.\n>\n> > Quoted.\n\nAfter.\n");
+  assert.match(nested, /^<div class="callout callout-note"[^>]*><p class="callout-title">Note<\/p>\n<p>One.<\/p>\n<blockquote>\n<p>Quoted.<\/p>\n<\/blockquote>\n<\/div>\n<p>After.<\/p>\n$/);
+  // Not a marker: an unknown kind, text after the marker, or no marker at all.
+  for (const source of ["> [!DANGER]\n> x\n", "> [!NOTE] inline\n", "> plain\n"]) {
+    assert.match(html(source), /^<blockquote>/, source);
+  }
 });

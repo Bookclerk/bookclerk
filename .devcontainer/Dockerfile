@@ -38,10 +38,19 @@ COPY --from=uv /uv /uvx /usr/local/bin/
 # development environment needs, so add tools there, not here.
 COPY scripts/dev-env/provision.sh /tmp/bookclerk-dev/scripts/dev-env/provision.sh
 COPY scripts/tests/requirements.txt /tmp/bookclerk-dev/scripts/tests/requirements.txt
+#
+# An optional `extra_ca` build secret (a PEM bundle) is trusted for these
+# downloads, for builds behind a TLS-intercepting proxy:
+#   docker build --secret id=extra_ca,src=<bundle.pem> ...
+# It is mounted for this step only and never stored in the image. The mount
+# needs BuildKit, Docker's default builder since 23.0.
+#
 # The base image leaves RUSTUP_HOME and CARGO_HOME world-writable so the dev
 # user can add components and targets; provision runs as root, so restore
 # that for the toolchain it installs.
-RUN /tmp/bookclerk-dev/scripts/dev-env/provision.sh --repo /tmp/bookclerk-dev \
+RUN --mount=type=secret,id=extra_ca \
+    if [ -f /run/secrets/extra_ca ]; then export BOOKCLERK_DEV_CA_BUNDLE=/run/secrets/extra_ca; fi \
+    && /tmp/bookclerk-dev/scripts/dev-env/provision.sh --repo /tmp/bookclerk-dev \
     && rm -rf /tmp/bookclerk-dev /var/lib/apt/lists/* /usr/local/cargo/registry \
     && chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME"
 
