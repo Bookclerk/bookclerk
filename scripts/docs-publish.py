@@ -595,7 +595,7 @@ def previous_dates(data: bytes | None) -> dict[str, str]:
         return {}
     try:
         document = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
         return {}
     if not is_dates_document(document):
         return {}

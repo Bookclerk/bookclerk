@@ -8,9 +8,36 @@
   "use strict";
 
   /**
+   * Whether a shell line goes on to the next one: it ends in an unescaped
+   * `\` that is not inside single quotes or a `#` comment. Quotes and
+   * escapes are followed, so `echo "a # b" \` continues, `ls;# note \`
+   * does not, and `\\` at the end is a literal backslash.
+   *
+   * @param {string} line - One line of a command.
+   * @returns {boolean} True when the command continues on the next line.
+   */
+  function lineContinues(line) {
+    let quote = "";
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === "\\" && quote !== "'") {
+        if (i === line.length - 1) return true;
+        i += 1;
+      } else if (quote !== "") {
+        if (c === quote) quote = "";
+      } else if (c === "'" || c === '"') {
+        quote = c;
+      } else if (c === "#" && (i === 0 || /[\s;&|()<>]/.test(line[i - 1]))) {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  /**
    * The text a Copy button puts on the clipboard: for a terminal session
    * (lines starting with a `$ ` prompt), only the commands without their
-   * prompts, with the lines that continue a command ending in `\`;
+   * prompts, with the lines that continue a command (see lineContinues);
    * otherwise the whole block.
    *
    * @param {string} text - The code block's text.
@@ -25,9 +52,7 @@
       if (line.startsWith("$ ")) commands.push(line.slice(2));
       else if (continued) commands.push(line);
       else continue;
-      // Only an unescaped `\` (an odd run of them) continues the line, and
-      // not inside a `#` comment: `\\` is a literal backslash.
-      continued = /(^|[^\\])(\\\\)*\\$/.test(line) && !/(^|\s)#/.test(line);
+      continued = lineContinues(line);
     }
     return commands.join("\n");
   }

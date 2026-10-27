@@ -1,9 +1,12 @@
-// Tests for docs.ts, render.ts and last-updated.ts: URLs, link rewriting and every doc in
-// docs/ rendered the way the Worker renders it. Run with `npm test`.
+// Tests for docs.ts, render.ts, last-updated.ts and the Copy button in
+// src/docs.js: URLs, link rewriting, copied commands and every doc in docs/
+// rendered the way the Worker renders it. Run with `npm test`.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath, URL } from "node:url";
+import { runInNewContext } from "node:vm";
 
 import { docUrl, GENERATED_TITLES, markdownFiles, renderDocs, rewriteLink, siteMarkdown, slugify } from "./docs.ts";
 import { highlight } from "./highlight.ts";
@@ -124,7 +127,9 @@ test("highlight colors each language's own names and leaves the rest plain", () 
     '$ <span class="hl-f">cargo</span> build \\\n  <span class="hl-v">--release</span> | <span class="hl-f">tee</span> log\n   Compiling foo v1\nok | done',
   );
   // `\\` at the end of a line is a literal backslash, so the next line is output.
-  assert.equal(highlight("$ printf '%s\\n' \\\\\n\\", "console"), '$ <span class="hl-f">printf</span> <span class="hl-s">&#39;%s\\n&#39;</span> \\\\\n\\');
+  assert.equal(highlight("$ printf '%s\\n' \\\\\ncargo --release", "console"), '$ <span class="hl-f">printf</span> <span class="hl-s">&#39;%s\\n&#39;</span> \\\\\ncargo --release');
+  // A `\` inside a comment does not continue the command either.
+  assert.equal(highlight("$ make # build \\\n  echo hi", "console"), '$ <span class="hl-f">make</span> <span class="hl-c"># build \\</span>\n  echo hi');
   assert.equal(highlight("Compiling foo\ncargo dev", "bash"), '<span class="hl-f">Compiling</span> foo\n<span class="hl-f">cargo</span> dev');
   assert.equal(highlight("- name: x\n  key: y", "yaml"), '- <span class="hl-v">name</span>: x\n  <span class="hl-v">key</span>: y');
   assert.equal(highlight('{"a": "b", "n": 1}', "json"), '{<span class="hl-v">&quot;a&quot;</span>: <span class="hl-s">&quot;b&quot;</span>, <span class="hl-v">&quot;n&quot;</span>: <span class="hl-n">1</span>}');
@@ -213,4 +218,45 @@ test("pageDate reads one page's date and ignores anything malformed", () => {
     assert.equal(pageDate(bad, "README"), null, bad);
   }
   assert.equal(pageDate('{"version":1,"pages":{"__proto__":"2026-10-26"}}', "__proto__"), "2026-10-26");
+});
+
+/**
+ * Runs src/docs.js against a stub page holding one code block, clicks its
+ * Copy button and reports what reached the clipboard.
+ *
+ * @param text - The code block's text, as the browser reports it.
+ * @returns The copied text.
+ */
+async function copied(text: string): Promise<string> {
+  let clipboard = "";
+  let click: (() => void) | null = null;
+  const button = { setAttribute: () => {}, addEventListener: (_: string, f: () => void) => (click = f) };
+  const block = { querySelector: () => ({ innerText: text }), append: () => {} };
+  const context = {
+    navigator: { clipboard: { writeText: (value: string) => ((clipboard = value), Promise.resolve()) } },
+    document: {
+      querySelectorAll: (selector: string) => (selector === ".doc .code" ? [block] : []),
+      querySelector: () => null,
+      createElement: () => button,
+      addEventListener: () => {},
+    },
+    window: { addEventListener: () => {}, clearTimeout: () => {}, setTimeout: () => 0 },
+  };
+  runInNewContext(readFileSync(fileURLToPath(new URL("src/docs.js", import.meta.url)), "utf8"), context);
+  assert.ok(click !== null, "no Copy button");
+  (click as () => void)();
+  await Promise.resolve();
+  return clipboard;
+}
+
+test("Copy takes a session's commands and the lines that continue them", async () => {
+  assert.equal(await copied("cargo dev\nls\n"), "cargo dev\nls");
+  assert.equal(await copied("$ cargo build \\\n  --release\n   Compiling foo\n$ ls"), "cargo build \\\n  --release\nls");
+  // `\\` at the end is a literal backslash: the next line is output.
+  assert.equal(await copied("$ printf '%s\\n' \\\\\ncargo --release"), "printf '%s\\n' \\\\");
+  // A `\` in a comment does not continue, also after `;`; a quoted `#` is not a comment.
+  assert.equal(await copied("$ make # build \\\n  echo hi"), "make # build \\");
+  assert.equal(await copied("$ echo ok;# note \\\noutput"), "echo ok;# note \\");
+  assert.equal(await copied('$ echo "a # b" \\\n  more\nout'), 'echo "a # b" \\\n  more');
+  assert.equal(await copied("$ echo 'a \\' x\nout"), "echo 'a \\' x");
 });
