@@ -162,8 +162,10 @@ versions.
   page: the "docs could not be loaded" page in the site's look (Markdown for
   Markdown readers), linking to the same doc in the docs repository on
   GitHub, with `Retry-After: 60`, `no-store` and `noindex`. The version's
-  `last-updated.json` is fetched the same way (capped at 256 KB), but a
-  failure there only leaves out the page's date.
+  `last-updated.json` is fetched the same way (capped at 256 KB, and not
+  for the generated `api/` pages), but a failure there only leaves out the
+  page's date, and that page is kept out of the edge cache so the date
+  returns once the docs repository answers.
 - Each page is rendered into the shell `build.ts` bakes from `src/doc.html`
   (`%%name%%` holes take escaped values, `<!--name-->` markers take the
   rendered parts). Links between docs stay in the same version, links to

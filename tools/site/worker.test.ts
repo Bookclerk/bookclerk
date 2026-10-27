@@ -408,11 +408,26 @@ test("a page shows no date when the dates file leaves it out, is broken or canno
     async () => new Response("x", { headers: { "Content-Length": String(MAX_LAST_UPDATED_BYTES + 1) } }),
     async () => Promise.reject(new Error("network")),
   ];
-  for (const answer of answers) {
-    const res = await handle(new Request("https://bookclerk.app/docs/plugins/", { headers: { Accept: BROWSER } }), env, { shell, fetch: broken(answer) });
+  // Answers that are the file itself (however wrong) are cached like the page; failed reads are not.
+  const failed = new Set([0, 1, 6, 7]);
+  for (const [i, answer] of answers.entries()) {
+    const store = new Map<string, Response>();
+    const cache: PageCache = { match: async (req) => store.get(req.url)?.clone(), put: async (req, res) => void store.set(req.url, res) };
+    const pending: Promise<unknown>[] = [];
+    const deps = { shell, fetch: broken(answer), cache, waitUntil: (p: Promise<unknown>) => void pending.push(p) };
+    const res = await handle(new Request("https://bookclerk.app/docs/plugins/", { headers: { Accept: BROWSER } }), env, deps);
+    await Promise.all(pending);
     assert.equal(res.status, 200);
     assert.doesNotMatch(await res.text(), /Last updated|dateModified/);
+    assert.equal(store.size, failed.has(i) ? 0 : 1, `answer ${i}`);
+    assert.equal(res.headers.get("Cache-Control"), failed.has(i) ? "public, max-age=60, s-maxage=0" : "public, max-age=300, s-maxage=86400", `answer ${i}`);
   }
+});
+
+test("generated reference pages do not read the dates file", async () => {
+  fetched.length = 0;
+  assert.equal((await get("/docs/api/rust/demo/index", BROWSER)).status, 200);
+  assert.deepEqual(fetched, [`${DOCS_RAW_BASE}v0.2.0/api/rust/demo/index.md`]);
 });
 
 test("a Markdown request does not read the dates file", async () => {

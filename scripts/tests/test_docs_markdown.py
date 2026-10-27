@@ -276,7 +276,14 @@ class PageDatesTest(unittest.TestCase):
         self.assertEqual(dm.page_dates(log, {"docs/a.md"}), {})
 
     def test_rejects_lines_git_does_not_write(self) -> None:
-        for log in ("M\tdocs/a.md\n", f"{dm.COMMIT_MARK}soon\n", self.log((DAY1, ["X\tdocs/a.md"])), self.log((DAY1, ["M\ta\tb"]))):
+        for log in (
+            "M\tdocs/a.md\n",
+            f"{dm.COMMIT_MARK}soon\n",
+            self.log((DAY1, ["X\tdocs/a.md"])),
+            self.log((DAY1, ["M\ta\tb"])),
+            self.log((DAY1, ["C100\tdocs/a.md\tdocs/b.md"])),
+            self.log((DAY1, ['M\t"docs/tab\\there.md"'])),
+        ):
             with self.subTest(log=log), self.assertRaises(dm.BuildError):
                 dm.page_dates(log, {"docs/a.md"})
 

@@ -242,9 +242,12 @@ def page_dates(log: str, pages: set[str]) -> dict[str, str]:
     page is followed back to its old path instead. A partial rename is an
     update and is followed back too. An add ends the page's history, so a
     path that was deleted and later re-added is not dated by the old file.
+    The log must list every commit before its parents (``--topo-order``).
+    This repository's history is linear (pull requests are squashed), so
+    one rename map is enough; renames on parallel branches are not merged.
 
     Args:
-        log: The output of ``git log -M --name-status`` with
+        log: The output of ``git log --topo-order -M --name-status`` with
             ``--format=COMMIT_FORMAT`` and newest commits first, as
             :func:`git_docs_log` returns it.
         pages: Repository paths of the pages to date (``docs/x.md``).
@@ -254,7 +257,8 @@ def page_dates(log: str, pages: set[str]) -> dict[str, str]:
         each page some commit touched.
 
     Raises:
-        BuildError: A line is not one ``git log`` writes.
+        BuildError: A line is not one ``git log`` writes, or names a path
+            git had to quote (a page would be left undated without notice).
     """
     # Path in the commit being read -> the page it is now.
     names = {page: page for page in pages}
@@ -279,15 +283,16 @@ def page_dates(log: str, pages: set[str]) -> dict[str, str]:
         status = fields[0]
         if when is None or not status:
             raise BuildError(f"git log: status line outside a commit: {line!r}")
-        if status[0] in "RC" and len(fields) == 3:
+        if any(path.startswith('"') for path in fields[1:]):
+            raise BuildError(f"git log: quoted path, rename the file: {line!r}")
+        if status[0] == "R" and len(fields) == 3:
             old, new = fields[1], fields[2]
             page = names.get(new)
             if page is None:
                 continue
-            if status[0] == "R":
-                del names[new]
-                names[old] = page
-            if status != f"{status[0]}100":
+            del names[new]
+            names[old] = page
+            if status != "R100":
                 touch(page)
         elif status in ("A", "M", "D", "T") and len(fields) == 2:
             page = names.get(fields[1])
@@ -317,22 +322,32 @@ def git_docs_log(repo: Path) -> str:
     Raises:
         NoHistory: ``repo`` is not a git checkout or its history is shallow,
             so dates would be wrong.
-        BuildError: ``git log`` failed.
+        BuildError: ``git log`` failed (a subclass other than NoHistory, so
+            it fails the build with or without ``--require-history``).
     """
 
     def git(*args: str) -> str:
-        """Run git in ``repo`` and return its standard output."""
+        """Run git in ``repo`` and return its standard output.
+
+        Raises:
+            BuildError: git failed.
+        """
         result = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=False)
         if result.returncode != 0:
-            raise NoHistory(f"git {args[0]}: {result.stderr.strip() or f'exited {result.returncode}'}")
+            raise BuildError(f"git {args[0]}: {result.stderr.strip() or f'exited {result.returncode}'}")
         return result.stdout
 
-    if git("rev-parse", "--is-shallow-repository").strip() != "false":
+    try:
+        shallow = git("rev-parse", "--is-shallow-repository").strip()
+    except BuildError as err:
+        raise NoHistory(f"not a git checkout: {err}") from err
+    if shallow != "false":
         raise NoHistory("the checkout is shallow; fetch the full history (fetch-depth: 0)")
     return git(
         "-c",
         "core.quotePath=false",
         "log",
+        "--topo-order",
         "-M",
         "--name-status",
         f"--format={COMMIT_FORMAT}",

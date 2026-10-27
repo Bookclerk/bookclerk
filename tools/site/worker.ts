@@ -337,22 +337,32 @@ export async function fetchDoc(ref: string, key: string, fetcher: DocsFetch): Pr
   return fetchDocsFile(ref, `${key}.md`, fetcher, MAX_DOC_BYTES);
 }
 
+/** What reading a docs version's last-updated.json gave. */
+type DatesFile =
+  /** The file's text, not yet validated. */
+  | { kind: "file"; text: string }
+  /** The version has no such file (published before it existed). */
+  | { kind: "missing" }
+  /** The read failed for now; a page rendered without its date is not cached at the edge. */
+  | { kind: "failed" };
+
 /**
  * Reads a docs version's last-updated.json, which dates its pages.
  *
- * The date is a nicety: any failure is logged and gives no file, so a page
+ * The date is a nicety: any failure is logged and gives no date, so a page
  * never fails because its date could not be read.
  *
  * @param ref - The docs version's git ref.
  * @param fetcher - `fetch`, or a stand-in in tests.
- * @returns The file's text, or null when it is missing or unreadable.
+ * @returns The file, or whether it is missing or could not be read.
  */
-export async function fetchLastUpdated(ref: string, fetcher: DocsFetch): Promise<string | null> {
+async function fetchLastUpdated(ref: string, fetcher: DocsFetch): Promise<DatesFile> {
   try {
-    return await fetchDocsFile(ref, LAST_UPDATED_FILE, fetcher, MAX_LAST_UPDATED_BYTES);
+    const text = await fetchDocsFile(ref, LAST_UPDATED_FILE, fetcher, MAX_LAST_UPDATED_BYTES);
+    return text === null ? { kind: "missing" } : { kind: "file", text };
   } catch (err) {
     console.error(`docs dates unavailable: ${err instanceof Error ? err.message : String(err)}`);
-    return null;
+    return { kind: "failed" };
   }
 }
 
@@ -522,8 +532,10 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
   }
 
   const { version } = target;
-  // Fetched beside the page and only for HTML, which shows the date.
-  const dates = wantsMarkdown ? null : fetchLastUpdated(version.ref, deps.fetch);
+  // Fetched beside the page and only for HTML, which shows the date. The
+  // generated API reference is rebuilt on every publish and has no date.
+  const dated = !wantsMarkdown && !target.keys[0].startsWith("api/");
+  const dates = dated ? fetchLastUpdated(version.ref, deps.fetch) : null;
   let key: string | null = null;
   let source: string | null = null;
   // The last key asked for, so the unavailable page links on GitHub to the
@@ -560,11 +572,14 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
   const page = docUrl(key, version.base);
   if (target.kind === "page" && page !== url.pathname) return redirect(url, page);
 
-  // The generated API reference is rebuilt on every publish and has no date.
-  const datesFile = dates === null || key.startsWith("api/") ? null : await dates;
-  const updated = datesFile === null ? null : pageDate(datesFile, key);
+  const datesFile = dates === null ? null : await dates;
+  const updated = datesFile?.kind === "file" ? pageDate(datesFile.text, key) : null;
+  // A page whose date could not be read is shown, but kept out of the edge
+  // cache so the date comes back once the docs repository answers again.
+  const cacheable = datesFile?.kind !== "failed";
   const rendered = renderDocPage(deps.shell, source, key, { ref: version.ref, base: version.base, updated });
-  const common: Record<string, string> = { "Cache-Control": `public, max-age=${BROWSER_TTL}, s-maxage=${ttlFor(version.ref)}`, Vary: "Accept" };
+  const cacheControl = cacheable ? `public, max-age=${BROWSER_TTL}, s-maxage=${ttlFor(version.ref)}` : `public, max-age=${MISSING_TTL}, s-maxage=0`;
+  const common: Record<string, string> = { "Cache-Control": cacheControl, Vary: "Accept" };
   // Only the default version is for search engines; older releases and main
   // (once a release exists) are reachable but not indexed.
   if (version !== deps.shell.versions[0]) common["X-Robots-Tag"] = "noindex";
@@ -575,7 +590,7 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
         "Content-Type": "text/html; charset=utf-8",
         Link: `<${url.origin}${docMarkdownUrl(key, version.base)}>; rel="alternate"; type="text/markdown"`,
       });
-  if (deps.cache) deps.waitUntil(deps.cache.put(cacheKey, response.clone()));
+  if (deps.cache && cacheable) deps.waitUntil(deps.cache.put(cacheKey, response.clone()));
   return request.method === "HEAD" ? new Response(null, response) : response;
 }
 
