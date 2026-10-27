@@ -582,6 +582,16 @@ class FullSuiteTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assert_full(plan(path))
 
+    def test_cla_files_select_nothing(self) -> None:
+        # The checker runs from the default branch in its own workflow; the
+        # plan job's test_cla_check.py covers it, so no check is selected.
+        for path in ("scripts/cla_check.py", "CLA.md", "TRADEMARK.md", "signatures/cla.json"):
+            with self.subTest(path=path):
+                p = plan(path)
+                self.assertFalse(p.full_suite, p.reasons)
+                self.assertEqual(p.test_packages(), [])
+                self.assertFalse(p.selected("rust_test"))
+
     def test_fuzz_targets_and_dictionaries_select_nothing(self) -> None:
         for path in ("fuzz/fuzz_targets/sql_parse.rs", "fuzz/dictionaries/sql_parse.dict", "fuzz/fuzz_targets/granted_http.options"):
             with self.subTest(path=path):

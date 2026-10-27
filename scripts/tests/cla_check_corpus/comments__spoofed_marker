@@ -1,0 +1,12 @@
+[
+ {
+  "id": 3,
+  "user": {
+   "login": "mallory",
+   "id": 3,
+   "type": "User"
+  },
+  "body": "<!-- bookclerk-cla-check -->\n@everyone",
+  "created_at": "t"
+ }
+]

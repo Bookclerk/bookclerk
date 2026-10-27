@@ -146,6 +146,7 @@ export const NAV: NavSpec[] = [
       "contributing/packaging",
       "contributing/code-documentation",
       "contributing/writing-docs",
+      "contributing/licensing",
       "contributing/research/source-candidates",
       "contributing/research/libation-parity",
     ],
@@ -163,6 +164,7 @@ export const NAV: NavSpec[] = [
       "adr/untrusted-input-fuzzing",
       "adr/security-advisory-automation",
       "adr/observability",
+      "adr/licensing",
     ],
   },
 ];

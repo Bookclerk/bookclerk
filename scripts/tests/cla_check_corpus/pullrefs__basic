@@ -1,0 +1,4 @@
+[
+ {"number": 7, "state": "open", "head": {"sha": "cccccccccccccccccccccccccccccccccccccccc"}},
+ {"number": 8, "state": "closed", "head": {"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+]

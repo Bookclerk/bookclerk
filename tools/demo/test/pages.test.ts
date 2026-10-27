@@ -99,6 +99,7 @@ describe("footer", () => {
     for (const html of [launchPage(LAUNCH), waitPage({ estimateSeconds: null, siteUrl: "" }), endedPage({ siteUrl: "" })]) {
       assert.match(html, /<footer class="demo-footer"><p>Bookclerk is free software/);
       assert.ok(html.includes("their names are trademarks of their owners"));
+      assert.ok(html.includes("Bookclerk and the Bookclerk logo are trademarks of the Bookclerk project."));
     }
   });
 });

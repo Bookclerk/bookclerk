@@ -279,6 +279,17 @@ test("pages load fonts from the site itself, and every font they name is publish
   }
 });
 
+test("the home page's structured data names the project license", () => {
+  const site = built(PRE);
+  try {
+    const html = site.page("index.html");
+    const licenses = [...html.matchAll(/"license":"([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(licenses, ["https://www.gnu.org/licenses/agpl-3.0.html", "https://www.gnu.org/licenses/agpl-3.0.html"]);
+  } finally {
+    site.done();
+  }
+});
+
 test("readState defaults the origin and accepts another", () => {
   assert.equal(readState(PRE).origin, "https://bookclerk.app");
   assert.equal(readState({ ...PRE, SITE_ORIGIN: "https://staging.bookclerk.app" }).origin, "https://staging.bookclerk.app");

@@ -340,7 +340,10 @@ fn skip_sql_atom(sql: &str, start: usize) -> usize {
     {
         let start = i;
         if sql.as_bytes().get(i) == Some(&b'-') || sql.as_bytes().get(i) == Some(&b'+') {
-            i += 1;
+            // Trivia may sit between the sign and its digits (`- 1`); the
+            // number is still one atom, so the wrap must take the digits too
+            // (found by the guest_sql_authz fuzz target).
+            i = skip_trivia_idx(sql, i + 1);
         }
         while i < sql.len() && sql.as_bytes()[i].is_ascii_digit() {
             i += 1;
@@ -2909,6 +2912,7 @@ mod tests {
             ("SELECT 1 FROM t WHERE a LIKE -(?)", "((-(?)),"),
             ("SELECT 1 FROM t WHERE a LIKE - b || ?", "((- b || ?),"),
             ("SELECT 1 FROM t WHERE a LIKE -1", "((-1),"),
+            ("SELECT 1 FROM t WHERE a LIKE -\r\r 1", "((-\r\r 1),"),
         ] {
             let signed = lower_canonical_sql(DatabaseBackend::Sqlite, sql);
             assert!(signed.contains(wrapped), "{sql}: {signed}");

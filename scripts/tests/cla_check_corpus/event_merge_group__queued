@@ -1,0 +1,9 @@
+{
+ "repository": {
+  "id": 555
+ },
+ "merge_group": {
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "head_ref": "refs/heads/gh-readonly-queue/main/pr-7-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ }
+}

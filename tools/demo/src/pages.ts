@@ -32,7 +32,7 @@ export const SECURITY_HEADERS = Object.freeze({
 
 /** The footer note the website carries too (tools/site/src/partials/footer.html), word for word. */
 export const LEGAL =
-  "Bookclerk is free software under the GNU GPL, version 3 or later. It is not affiliated with or endorsed by Audible, Libro.fm, Chirp or GraphicAudio; their names are trademarks of their owners. Bookclerk is meant for books you have bought, for your own listening.";
+  "Bookclerk is free software under the GNU AGPL, version 3 or later. Bookclerk and the Bookclerk logo are trademarks of the Bookclerk project. It is not affiliated with or endorsed by Audible, Libro.fm, Chirp or GraphicAudio; their names are trademarks of their owners. Bookclerk is meant for books you have bought, for your own listening.";
 
 /**
  * Escapes text for HTML element content and quoted attributes.

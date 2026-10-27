@@ -4,7 +4,9 @@ description = "Guest Bookclerk plugin SDK (Workers RPC ABI + BookclerkEntrypoint
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+# Plugin authors build on this crate, so it is permissive (the Rust
+# ecosystem's usual dual license); see docs/contributing/licensing.md.
+license = "MIT OR Apache-2.0"
 repository.workspace = true
 authors.workspace = true
 # Intended for crates.io later; keep unpublished until the public SDK surface stabilizes.

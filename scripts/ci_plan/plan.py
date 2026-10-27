@@ -136,14 +136,21 @@ DOC_FILES = frozenset(
     {
         "AGENTS.md",
         "CHANGELOG.md",
+        "CLA.md",
         "CODE_OF_CONDUCT.md",
         "CONTRIBUTING.md",
+        "LICENSE",
         "README.md",
+        "TRADEMARK.md",
         "config/config.example.toml",
+        "signatures/cla.json",
     }
 )
 # Tests and fixtures the plan job runs on every event, before any check.
 PLAN_JOB_TEST_PREFIX = "scripts/tests/"
+# Scripts that only plan-job tests exercise (the CLA checker runs in its own
+# workflow, from the default branch, and builds nothing).
+PLAN_JOB_SCRIPT_FILES = frozenset({"scripts/cla_check.py"})
 
 KNOWN_TOP_LEVEL = frozenset(
     {
@@ -163,6 +170,7 @@ KNOWN_TOP_LEVEL = frozenset(
         "packages",
         "packaging",
         "scripts",
+        "signatures",
         "third_party",
         "tools",
         "ui",
@@ -170,6 +178,7 @@ KNOWN_TOP_LEVEL = frozenset(
         "Cargo.lock",
         "Cargo.toml",
         "CHANGELOG.md",
+        "CLA.md",
         "CODE_OF_CONDUCT.md",
         "CONTRIBUTING.md",
         "LICENSE",
@@ -177,6 +186,7 @@ KNOWN_TOP_LEVEL = frozenset(
         "LICENSE-MIT",
         "README.md",
         "SECURITY.md",
+        "TRADEMARK.md",
         "deny.toml",
         "osv-scanner.toml",
         "rust-toolchain.toml",
@@ -814,7 +824,7 @@ def build_plan(
         if path.startswith(DOCS_PREFIX):
             # The site's tests check the links in the docs it publishes.
             surf.docs.append(path)
-        if path.startswith(DOCS_PREFIX) or path in DOC_FILES or path.startswith(PLAN_JOB_TEST_PREFIX):
+        if path.startswith(DOCS_PREFIX) or path in DOC_FILES or path.startswith(PLAN_JOB_TEST_PREFIX) or path in PLAN_JOB_SCRIPT_FILES:
             classified = True
         if path.startswith(FUZZ_SELF_SELECTING_PREFIXES):
             classified = True

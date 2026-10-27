@@ -4,7 +4,9 @@ description = "plugin.toml parse, validate, and canonical format (no host deps)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+# Plugin authors build on this crate, so it is permissive (the Rust
+# ecosystem's usual dual license); see docs/contributing/licensing.md.
+license = "MIT OR Apache-2.0"
 repository.workspace = true
 authors.workspace = true
 publish = false

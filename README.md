@@ -18,7 +18,7 @@
 <div align="center">
 
 [![CI](https://github.com/Bookclerk/bookclerk/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Bookclerk/bookclerk/actions/workflows/ci.yml?query=branch%3Amain)
-[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-3D7F7A.svg)](LICENSE)
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-3D7F7A.svg)](LICENSE)
 [![Status: pre-release](https://img.shields.io/badge/status-pre--release-C84A34.svg)](https://bookclerk.app/download#pre-release)
 
 [Website](https://bookclerk.app) ·
@@ -201,6 +201,26 @@ Audible acquire surface is tracked in
 
 ## License
 
-GPL-3.0-or-later (aligned with upstream Libation). Dependencies such as
-[audible-rs](https://github.com/mkb79/audible-rs) remain under their own
-licenses (MIT).
+Bookclerk is licensed under the GNU Affero General Public License v3.0 or
+later (AGPL-3.0-or-later). Copyright (C) 2026 Bookclerk contributors.
+
+Bookclerk is free software: you can redistribute it and/or modify it under the
+terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version. It is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See the [GNU Affero General Public
+License](LICENSE) for more details.
+
+Some parts carry other licenses: the plugin SDKs and examples (so plugin
+authors can pick their own license), code ported from other projects, and
+vendored third-party code such as
+[audible-rs](https://github.com/mkb79/audible-rs). Each crate's `Cargo.toml`
+states its license, and
+[docs/contributing/licensing.md](docs/contributing/licensing.md) lists them.
+
+Additional term under section 7(e) of the license: it does not grant rights
+under trademark law to use the Bookclerk name or logo. See
+[TRADEMARK.md](TRADEMARK.md) for how you may use them.
+
+Contributions are accepted under the [Contributor License Agreement](CLA.md).

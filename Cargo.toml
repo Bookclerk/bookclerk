@@ -59,7 +59,7 @@ version = "0.1.0"
 edition = "2021"
 # SeaORM 2 / sqlx-sqlite require 1.94+.
 rust-version = "1.94"
-license = "GPL-3.0-or-later"
+license = "AGPL-3.0-or-later"
 repository = "https://github.com/Bookclerk/bookclerk"
 authors = ["fritz-fritz <contact@bookclerk.app>"]
 description = "Multi-storefront audiobook library manager with pluggable integrations"

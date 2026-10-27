@@ -4,7 +4,9 @@ description = "Source-agnostic Audible metadata enrichment (catalog + Audnexus +
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+# `match_score` ports audiobookshelf (GPL-3.0) and keeps that license; see
+# docs/contributing/licensing.md.
+license = "AGPL-3.0-or-later AND GPL-3.0-only"
 repository.workspace = true
 authors.workspace = true
 

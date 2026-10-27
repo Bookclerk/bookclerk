@@ -1,0 +1,32 @@
+{
+ "data": {
+  "repository": {
+   "pullRequest": {
+    "commits": {
+     "pageInfo": {
+      "hasNextPage": true,
+      "endCursor": "Y3Vyc29yOnYyOpHOAAAAAQ=="
+     },
+     "nodes": [
+      {
+       "commit": {
+        "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "authors": {
+         "totalCount": 1,
+         "nodes": [
+          {
+           "user": {
+            "databaseId": 101,
+            "login": "alice"
+           }
+          }
+         ]
+        }
+       }
+      }
+     ]
+    }
+   }
+  }
+ }
+}

@@ -170,6 +170,23 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     three dot-separated ASCII numbers of one to nine digits without
     leading zeros.
 
+### CLA check (Python)
+
+- **CLA checker** (`scripts/cla_check.py`). It reads the workflow event,
+  the pull request, its commit and comment pages, the co-author query
+  answer, the list of pull requests that contain the head commit, and the
+  signature file,
+  and decides who still has to sign. Logins, comment bodies and commit
+  metadata in them are chosen by contributors.
+  - Test and corpus: `scripts/tests/test_cla_check.py`,
+    `scripts/tests/cla_check_corpus/` (files named `<kind>__<case>`).
+  - Oracle: an independent field-by-field reading of each document, which
+    refuses any account whose login does not fit its type (`[bot]` logins
+    only for bot accounts). For fuzzed commit pages, the unsigned accounts
+    are exactly the pull request author and linked commit authors and
+    co-authors, minus the allowlisted bots, the assistant accounts and the
+    signed ids. The comment mentions only them and links only to the CLA.
+
 ### Diagnostics collector Worker
 
 The tests and corpora live in `tools/diagnostics-collector/`.

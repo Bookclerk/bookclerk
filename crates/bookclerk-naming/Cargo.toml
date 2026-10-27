@@ -4,7 +4,9 @@ description = "Port of Libation's NamingTemplate tag-template engine (Chardonnay
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+# A port of Libation (GPL-3.0), so it keeps that license; see
+# docs/contributing/licensing.md.
+license = "GPL-3.0-only"
 repository.workspace = true
 authors.workspace = true
 

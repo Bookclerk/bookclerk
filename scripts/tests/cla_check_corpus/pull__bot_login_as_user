@@ -1,0 +1,13 @@
+{
+ "number": 7,
+ "user": {
+  "login": "dependabot[bot]",
+  "id": 5,
+  "type": "User"
+ },
+ "head": {
+  "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ },
+ "state": "open",
+ "commits": 2
+}
