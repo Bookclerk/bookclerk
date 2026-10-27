@@ -58,9 +58,9 @@
   "devDependencies": {
     "@types/node": "^26.6.5",
     "esbuild": "0.28.2",
-    "oxlint": "^1.88.0",
+    "oxlint": "^1.89.0",
     "typedoc": "^0.28.20",
-    "typedoc-plugin-markdown": "^4.14.0",
+    "typedoc-plugin-markdown": "^4.14.1",
     "typescript": "^5.8.2"
   },
   "keywords": [
