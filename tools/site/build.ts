@@ -227,8 +227,11 @@ export const PAGES: readonly Page[] = [
   },
 ];
 
+/** The Worker's page renderers, whose sources are part of the docs shell's id (see buildDocsShell). */
+const RENDER_SOURCES = ["render.ts", "highlight.ts", "last-updated.ts"];
+
 /** Files copied verbatim from src/ to dist/. */
-const STATIC_FILES = ["site.css", "_headers", "social-card.png"];
+const STATIC_FILES = ["site.css", "docs.js", "_headers", "social-card.png"];
 
 /** Web fonts and their licenses copied from src/fonts/ to dist/fonts/ (see src/fonts/README.md). */
 const FONT_FILE = /^(?:[a-z0-9-]+\.woff2|OFL-[a-z0-9]+\.txt)$/;
@@ -661,7 +664,11 @@ export function buildDocsShell(
     if (html.split(`<!--${marker}-->`).length !== 2) throw new Error(`docs shell needs exactly one <!--${marker}-->`);
   }
   const shell = { html, origin: context.values.origin, repository: REPOSITORY_URL, versions, nav: rendered.nav };
-  const id = createHash("sha256").update(JSON.stringify(shell)).digest("hex").slice(0, 16);
+  // The renderers' sources go into the id too: a change to how pages are
+  // rendered must drop pages cached by an earlier deploy, like a shell change.
+  const hash = createHash("sha256").update(JSON.stringify(shell));
+  for (const file of RENDER_SOURCES) hash.update(readFileSync(join(HERE, file)));
+  const id = hash.digest("hex").slice(0, 16);
   return { id, ...shell };
 }
 

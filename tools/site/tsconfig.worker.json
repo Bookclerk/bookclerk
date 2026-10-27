@@ -7,5 +7,5 @@
   "compilerOptions": {
     "types": ["@cloudflare/workers-types"]
   },
-  "include": ["entry.ts", "worker.ts", "render.ts", "audit/entry.ts", "generated/docs-shell.d.json.ts"]
+  "include": ["entry.ts", "worker.ts", "render.ts", "highlight.ts", "last-updated.ts", "audit/entry.ts", "generated/docs-shell.d.json.ts"]
 }

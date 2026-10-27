@@ -1,0 +1,8 @@
+ts
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = `https://${env.HOST}/x`; // a
+    return new Response("<b>&</b>", { status: 200 });
+  },
+} satisfies ExportedHandler<Env>;
+/* unterminated

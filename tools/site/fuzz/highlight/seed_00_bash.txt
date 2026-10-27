@@ -1,0 +1,4 @@
+bash
+bookclerk config get <key>
+cargo dev --optional  # build and run
+export BOOKCLERK_LOG="debug" && echo ${HOME}/x $PATH | grep -v "a\"b"

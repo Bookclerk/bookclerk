@@ -26,6 +26,7 @@ import {
 import type { DocsFetch, Env, PageCache } from "./worker.ts";
 import type { BuildEnv } from "./build.ts";
 import type { DocsShell } from "./render.ts";
+import { MAX_LAST_UPDATED_BYTES } from "./last-updated.ts";
 
 /** This directory. */
 const HERE = new URL(".", import.meta.url).pathname;
@@ -45,6 +46,8 @@ const DOCS = join(HERE, "..", "..", "docs");
 /** Generated pages the stand-in docs repository adds to docs/. */
 const GENERATED: Readonly<Record<string, string>> = {
   "api/rust/demo/index.md": "# Crate `demo`\n\nA demo crate. See [the SDK](../../typescript/README.md) and [`Thing`](#thing).\n\n## Thing\n",
+  // The generated page is dated here only to check that its date is not shown.
+  "last-updated.json": JSON.stringify({ version: 1, pages: { "plugins/README": "2026-10-26", "api/rust/demo/index": "2026-10-01" } }),
 };
 
 /** What a browser sends. */
@@ -241,7 +244,7 @@ test("the Worker sends the same security headers as src/_headers", () => {
   assert.deepEqual(fromFile, SECURITY_HEADERS);
 });
 
-test("the CSP lets only Cloudflare's analytics beacon run and report", () => {
+test("the CSP lets only the site's own scripts and Cloudflare's analytics beacon run", () => {
   const directives: Record<string, string[]> = Object.fromEntries(
     (SECURITY_HEADERS["Content-Security-Policy"] ?? "").split(";").map((d) => {
       const [name, ...sources] = d.trim().split(/\s+/);
@@ -249,7 +252,7 @@ test("the CSP lets only Cloudflare's analytics beacon run and report", () => {
     }),
   );
   assert.deepEqual(directives["default-src"], ["'none'"]);
-  assert.deepEqual(directives["script-src"], ["https://static.cloudflareinsights.com"]);
+  assert.deepEqual(directives["script-src"], ["'self'", "https://static.cloudflareinsights.com"]);
   assert.deepEqual(directives["connect-src"], ["'self'", "https://cloudflareinsights.com"]);
   assert.equal(directives["script-src-attr"], undefined);
   for (const [name, sources] of Object.entries(directives)) {
@@ -335,7 +338,7 @@ test("only listed versions and plain paths reach the docs repository", async () 
   }
   assert.deepEqual(fetched, []);
   await get("/docs/v/v0.1.0/plugins/", BROWSER);
-  assert.deepEqual(fetched, [`${DOCS_RAW_BASE}v0.1.0/plugins/README.md`]);
+  assert.deepEqual(fetched, [`${DOCS_RAW_BASE}v0.1.0/last-updated.json`, `${DOCS_RAW_BASE}v0.1.0/plugins/README.md`]);
 });
 
 test("a browser gets the doc in the site's page, with its version and sidebar", async () => {
@@ -358,9 +361,16 @@ test("a browser gets the doc in the site's page, with its version and sidebar", 
   assert.match(html, /href="\/docs\/v\/main\/plugins\/"/);
   assert.match(html, /href="https:\/\/github.com\/Bookclerk\/bookclerk\/blob\/v0.2.0\/docs\/plugins\/README.md"/);
   assert.ok(!html.includes("doc-note"), "a release's docs carry no development note");
+  assert.match(html, /<nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="\/docs\/">Docs<\/a><\/li><li>Build plugins<\/li>/);
+  assert.match(html, /<aside class="toc" aria-label="On this page">/);
+  assert.match(html, /<div class="docs-menus"><details class="menu menu-nav"><summary>Menu<\/summary>/);
+  assert.match(html, /<details class="nav-group" open><summary>Build plugins<\/summary>/);
+  assert.match(html, /<script src="\/docs.js" defer><\/script>/);
   const ld: { "@graph": { "@type": string; url: string }[] } = JSON.parse(html.match(/<script type="application\/ld\+json">(.*?)<\/script>/)?.[1] ?? "{}");
   assert.equal(ld["@graph"][0]?.["@type"], "TechArticle");
   assert.equal(ld["@graph"][0]?.url, "https://bookclerk.app/docs/plugins/");
+  assert.match(html, /<span class="doc-updated">Last updated <time datetime="2026-10-26">Oct 26, 2026<\/time><\/span>/);
+  assert.equal((ld["@graph"][0] as { dateModified?: string } | undefined)?.dateModified, "2026-10-26");
 
   const home = await get("/", "*/*");
   assert.equal(home.headers.get("Link"), '<https://bookclerk.app/index.md>; rel="alternate"; type="text/markdown"');
@@ -382,6 +392,48 @@ test("generated pages render without a source link and keep links inside the tre
   assert.match(html, /Generated from the source at v0.2.0/);
   assert.match(html, /href="\/docs\/api\/typescript\/"/);
   assert.match(html, /<h2 id="thing">/);
+  assert.doesNotMatch(html, /Last updated|dateModified/, "the generated reference has no date");
+});
+
+test("a page shows no date when the dates file leaves it out, is broken or cannot be read", async () => {
+  assert.doesNotMatch(await (await get("/docs/server/cluster-hosts", BROWSER)).text(), /Last updated|dateModified/);
+  const broken = (answer: () => Promise<Response>): DocsFetch => async (url, init) => (url.endsWith("/last-updated.json") ? answer() : docsFetch(url, init));
+  const answers = [
+    async () => new Response("oops", { status: 502 }),
+    async () => new Response(null, { status: 302, headers: { Location: "https://example.com/" } }),
+    async () => new Response("{not json"),
+    async () => new Response(JSON.stringify({ version: 2, pages: { "plugins/README": "2026-10-26" } })),
+    async () => new Response(JSON.stringify({ version: 1, pages: { "plugins/README": "2026-02-30" } })),
+    async () => new Response(JSON.stringify({ version: 1, pages: { "plugins/README": "<b>x</b>" } })),
+    async () => new Response("x", { headers: { "Content-Length": String(MAX_LAST_UPDATED_BYTES + 1) } }),
+    async () => Promise.reject(new Error("network")),
+  ];
+  // Answers that are the file itself (however wrong) are cached like the page; failed reads are not.
+  const failed = new Set([0, 1, 6, 7]);
+  for (const [i, answer] of answers.entries()) {
+    const store = new Map<string, Response>();
+    const cache: PageCache = { match: async (req) => store.get(req.url)?.clone(), put: async (req, res) => void store.set(req.url, res) };
+    const pending: Promise<unknown>[] = [];
+    const deps = { shell, fetch: broken(answer), cache, waitUntil: (p: Promise<unknown>) => void pending.push(p) };
+    const res = await handle(new Request("https://bookclerk.app/docs/plugins/", { headers: { Accept: BROWSER } }), env, deps);
+    await Promise.all(pending);
+    assert.equal(res.status, 200);
+    assert.doesNotMatch(await res.text(), /Last updated|dateModified/);
+    assert.equal(store.size, failed.has(i) ? 0 : 1, `answer ${i}`);
+    assert.equal(res.headers.get("Cache-Control"), failed.has(i) ? "public, max-age=60, s-maxage=0" : "public, max-age=300, s-maxage=86400", `answer ${i}`);
+  }
+});
+
+test("generated reference pages do not read the dates file", async () => {
+  fetched.length = 0;
+  assert.equal((await get("/docs/api/rust/demo/index", BROWSER)).status, 200);
+  assert.deepEqual(fetched, [`${DOCS_RAW_BASE}v0.2.0/api/rust/demo/index.md`]);
+});
+
+test("a Markdown request does not read the dates file", async () => {
+  fetched.length = 0;
+  assert.equal((await get("/docs/plugins/", "text/markdown")).status, 200);
+  assert.deepEqual(fetched, [`${DOCS_RAW_BASE}v0.2.0/plugins/README.md`]);
 });
 
 test("a directory whose entry page is index serves it", async () => {
@@ -404,15 +456,18 @@ test("a failing or oversized docs repository answer is a 503, not a page", async
   // No Content-Length: the body is cut off once it passes the cap.
   const chunk = new Uint8Array(1024 * 1024);
   let sent = 0;
-  const endless = async () =>
-    new Response(
-      new ReadableStream({
-        pull(controller) {
-          sent += chunk.byteLength;
-          controller.enqueue(chunk);
-        },
-      }),
-    );
+  // The dates file is missing here, so only the page's body is counted.
+  const endless: DocsFetch = async (url) =>
+    url.endsWith("/last-updated.json")
+      ? new Response(null, { status: 404 })
+      : new Response(
+          new ReadableStream({
+            pull(controller) {
+              sent += chunk.byteLength;
+              controller.enqueue(chunk);
+            },
+          }),
+        );
   const moved: DocsFetch = async (_url, init) => {
     assertWorkersFetchInit(init);
     assert.equal(init.redirect, "manual");
@@ -475,7 +530,8 @@ test("rendered pages are cached per deploy, version, path and format", async () 
     assert.equal(res.status, 200);
     await Promise.all(pending);
   }
-  assert.equal(fetched.length, 1);
+  // The dates file is asked for first, beside the page.
+  assert.deepEqual(fetched, [`${DOCS_RAW_BASE}v0.2.0/last-updated.json`, `${DOCS_RAW_BASE}v0.2.0/plugins/README.md`]);
   assert.deepEqual([...store.keys()], [`https://bookclerk.app/docs/plugins/?format=html&ref=v0.2.0&shell=${shell.id}`]);
   assert.match(shell.id, /^[0-9a-f]{16}$/);
   const head = await handle(new Request("https://bookclerk.app/docs/plugins/", { method: "HEAD", headers: { Accept: BROWSER } }), env, deps);

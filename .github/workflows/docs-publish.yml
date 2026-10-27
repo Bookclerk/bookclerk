@@ -10,7 +10,8 @@
 # Two jobs, so the build never holds a credential:
 #   build    no secrets, read-only token: scripts/docs-markdown.py writes
 #            docs/ plus the TypeScript, Python, Rust and web API reference
-#            as Markdown, uploaded as an artifact.
+#            as Markdown, and last-updated.json (each page's date from the
+#            git history), uploaded as an artifact.
 #   publish  mints the automation App token for the docs repository only
 #            (contents: write) and runs scripts/docs-publish.py, which commits
 #            the artifact through the Git Data API, so commits are signed by
@@ -46,10 +47,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      # A release event checks out the release's commit.
+      # A release event checks out the release's commit. The full history
+      # dates each page for the site's "Last updated" line.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       # Pinned with RUST_NIGHTLY in scripts/docs-markdown.py: the nightly
       # whose rustdoc JSON format scripts/rustdoc_markdown.py reads.
@@ -85,7 +88,7 @@ jobs:
             packages/plugin-sdk/package-lock.json
 
       - name: Build the Markdown docs
-        run: python3 scripts/docs-markdown.py
+        run: python3 scripts/docs-markdown.py --require-history
 
       # The output marker is a dotfile and stays behind.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -14,7 +14,10 @@
 // fetched, responses over MAX_DOC_BYTES are refused, and rendered pages are
 // cached at the edge (tags for a day, main for five minutes). When the docs
 // repository cannot be read, the reader gets a 503 page in the site's look
-// that links to the same doc on GitHub.
+// that links to the same doc on GitHub. Beside each HTML page the Worker
+// reads the version's last-updated.json (parsed by last-updated.ts) for the
+// page's "Last updated" date; when that file cannot be read the page simply
+// has no date.
 //
 // Content negotiation: when the Accept header ranks `text/markdown` (or
 // `text/x-markdown`) at least as high as HTML, `/`, `/download` and
@@ -37,6 +40,7 @@
 // Accept-Encoding headers (and conditional headers it passes on), and
 // fetches only from its own assets and the docs repository.
 
+import { LAST_UPDATED_FILE, MAX_LAST_UPDATED_BYTES, pageDate } from "./last-updated.ts";
 import { docMarkdownUrl, docUrl, renderDocPage, renderUnavailablePage } from "./render.ts";
 import type { DocsShell, DocsVersion } from "./render.ts";
 
@@ -88,7 +92,7 @@ export interface DocsOptions {
  */
 export const SECURITY_HEADERS: Readonly<Record<string, string>> = {
   "Content-Security-Policy":
-    "default-src 'none'; style-src 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; img-src 'self'; manifest-src 'self'; script-src https://static.cloudflareinsights.com; connect-src 'self' https://cloudflareinsights.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "default-src 'none'; style-src 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; img-src 'self'; manifest-src 'self'; script-src 'self' https://static.cloudflareinsights.com; connect-src 'self' https://cloudflareinsights.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "strict-origin-when-cross-origin",
   "Permissions-Policy": "camera=(), microphone=(), geolocation=(), interest-cohort=()",
@@ -330,32 +334,78 @@ export function docsTarget(pathname: string, versions: readonly DocsVersion[]): 
  *   is over MAX_DOC_BYTES.
  */
 export async function fetchDoc(ref: string, key: string, fetcher: DocsFetch): Promise<string | null> {
+  return fetchDocsFile(ref, `${key}.md`, fetcher, MAX_DOC_BYTES);
+}
+
+/** What reading a docs version's last-updated.json gave. */
+type DatesFile =
+  /** The file's text, not yet validated. */
+  | { kind: "file"; text: string }
+  /** The version has no such file (published before it existed). */
+  | { kind: "missing" }
+  /** The read failed for now; a page rendered without its date is not cached at the edge. */
+  | { kind: "failed" };
+
+/**
+ * Reads a docs version's last-updated.json, which dates its pages.
+ *
+ * The date is a nicety: any failure is logged and gives no date, so a page
+ * never fails because its date could not be read.
+ *
+ * @param ref - The docs version's git ref.
+ * @param fetcher - `fetch`, or a stand-in in tests.
+ * @returns The file, or whether it is missing or could not be read.
+ */
+async function fetchLastUpdated(ref: string, fetcher: DocsFetch): Promise<DatesFile> {
+  try {
+    const text = await fetchDocsFile(ref, LAST_UPDATED_FILE, fetcher, MAX_LAST_UPDATED_BYTES);
+    return text === null ? { kind: "missing" } : { kind: "file", text };
+  } catch (err) {
+    console.error(`docs dates unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    return { kind: "failed" };
+  }
+}
+
+/**
+ * Reads one file of a docs version from the docs repository, through the
+ * edge cache.
+ *
+ * @param ref - The docs version's git ref.
+ * @param file - The file's path in the version.
+ * @param fetcher - `fetch`, or a stand-in in tests.
+ * @param limit - Largest body accepted, in bytes.
+ * @returns The text, or null when the file does not exist at that ref.
+ * @throws {Error} When the docs repository fails or redirects, or the file
+ *   is over `limit`.
+ */
+async function fetchDocsFile(ref: string, file: string, fetcher: DocsFetch, limit: number): Promise<string | null> {
   const ttl = ttlFor(ref);
-  const response = await fetcher(`${DOCS_RAW_BASE}${ref}/${key}.md`, {
+  const response = await fetcher(`${DOCS_RAW_BASE}${ref}/${file}`, {
     // The Workers runtime rejects `redirect: "error"` outright, so redirects
     // are taken as answers and refused below.
     redirect: "manual",
     cf: { cacheEverything: true, cacheTtlByStatus: { "200-299": ttl, 404: MISSING_TTL, "500-599": 0 } },
   });
   if (response.status === 404) return null;
-  if (response.status >= 300 && response.status < 400) throw new Error(`docs repository redirected ${ref}/${key}.md`);
-  if (!response.ok) throw new Error(`docs repository answered ${response.status} for ${ref}/${key}.md`);
+  if (response.status >= 300 && response.status < 400) throw new Error(`docs repository redirected ${ref}/${file}`);
+  if (!response.ok) throw new Error(`docs repository answered ${response.status} for ${ref}/${file}`);
   const declared = Number(response.headers.get("Content-Length") ?? "0");
-  if (declared > MAX_DOC_BYTES) throw new Error(`${ref}/${key}.md is ${declared} bytes`);
+  if (declared > limit) throw new Error(`${ref}/${file} is ${declared} bytes`);
   // UTF-8, with invalid bytes replaced rather than refused.
-  return new TextDecoder().decode(await readCapped(response, `${ref}/${key}.md`));
+  return new TextDecoder().decode(await readCapped(response, `${ref}/${file}`, limit));
 }
 
 /**
- * Reads a response body, giving up as soon as it passes MAX_DOC_BYTES, so a
- * body without Content-Length cannot make the Worker buffer it whole.
+ * Reads a response body, giving up as soon as it passes `limit`, so a body
+ * without Content-Length cannot make the Worker buffer it whole.
  *
  * @param response - The docs repository's answer.
  * @param name - The file, for the error message.
+ * @param limit - Largest body accepted, in bytes.
  * @returns The body.
- * @throws {Error} When the body is over MAX_DOC_BYTES.
+ * @throws {Error} When the body is over `limit`.
  */
-async function readCapped(response: Response, name: string): Promise<Uint8Array> {
+async function readCapped(response: Response, name: string, limit: number): Promise<Uint8Array> {
   if (response.body === null) return new Uint8Array(0);
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -364,9 +414,9 @@ async function readCapped(response: Response, name: string): Promise<Uint8Array>
     const { done, value } = await reader.read();
     if (done) break;
     size += value.byteLength;
-    if (size > MAX_DOC_BYTES) {
+    if (size > limit) {
       await reader.cancel();
-      throw new Error(`${name} is over ${MAX_DOC_BYTES} bytes`);
+      throw new Error(`${name} is over ${limit} bytes`);
     }
     chunks.push(value);
   }
@@ -482,6 +532,10 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
   }
 
   const { version } = target;
+  // Fetched beside the page and only for HTML, which shows the date. The
+  // generated API reference is rebuilt on every publish and has no date.
+  const dated = !wantsMarkdown && !target.keys[0].startsWith("api/");
+  const dates = dated ? fetchLastUpdated(version.ref, deps.fetch) : null;
   let key: string | null = null;
   let source: string | null = null;
   // The last key asked for, so the unavailable page links on GitHub to the
@@ -518,8 +572,14 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
   const page = docUrl(key, version.base);
   if (target.kind === "page" && page !== url.pathname) return redirect(url, page);
 
-  const rendered = renderDocPage(deps.shell, source, key, { ref: version.ref, base: version.base });
-  const common: Record<string, string> = { "Cache-Control": `public, max-age=${BROWSER_TTL}, s-maxage=${ttlFor(version.ref)}`, Vary: "Accept" };
+  const datesFile = dates === null ? null : await dates;
+  const updated = datesFile?.kind === "file" ? pageDate(datesFile.text, key) : null;
+  // A page whose date could not be read is shown, but kept out of the edge
+  // cache so the date comes back once the docs repository answers again.
+  const cacheable = datesFile?.kind !== "failed";
+  const rendered = renderDocPage(deps.shell, source, key, { ref: version.ref, base: version.base, updated });
+  const cacheControl = cacheable ? `public, max-age=${BROWSER_TTL}, s-maxage=${ttlFor(version.ref)}` : `public, max-age=${MISSING_TTL}, s-maxage=0`;
+  const common: Record<string, string> = { "Cache-Control": cacheControl, Vary: "Accept" };
   // Only the default version is for search engines; older releases and main
   // (once a release exists) are reachable but not indexed.
   if (version !== deps.shell.versions[0]) common["X-Robots-Tag"] = "noindex";
@@ -530,7 +590,7 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
         "Content-Type": "text/html; charset=utf-8",
         Link: `<${url.origin}${docMarkdownUrl(key, version.base)}>; rel="alternate"; type="text/markdown"`,
       });
-  if (deps.cache) deps.waitUntil(deps.cache.put(cacheKey, response.clone()));
+  if (deps.cache && cacheable) deps.waitUntil(deps.cache.put(cacheKey, response.clone()));
   return request.method === "HEAD" ? new Response(null, response) : response;
 }
 

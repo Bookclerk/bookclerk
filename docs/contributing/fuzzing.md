@@ -206,6 +206,21 @@ non-Rust tooling (decision 6):
   `npm test`, checking every choice against an independent oracle (RFC 9110
   qvalues, `*` for unlisted codings, Brotli before gzip on a tie, nothing at
   `q=0`).
+- The website Worker's code-block highlighter (`highlight` in
+  `tools/site/highlight.ts`), which colors fenced code from the docs
+  repository. `tools/site/fuzz.test.ts` replays its seed corpus
+  (`tools/site/fuzz/highlight/`) and runs seeded mutation fuzzing in
+  `npm test` across its languages, checking with an independent reader that
+  the output is only escaped text and `hl-` spans and gives back the input
+  exactly.
+- The website Worker's reader of the docs repository's `last-updated.json`
+  (`pageDate` in `tools/site/last-updated.ts`), which dates each docs page.
+  `tools/site/fuzz.test.ts` replays its seed corpus
+  (`tools/site/fuzz/last_updated/`) and runs seeded mutation fuzzing in
+  `npm test`, checking every answer against an independent oracle (the
+  document's shape read through property descriptors, the date digit by
+  digit against a days-in-month table) and that the date shown is only
+  `Mon D, YYYY`.
 - The hosted demo Worker's inputs (`tools/demo/src/routes.ts` and
   `src/inputs.ts`): the route check (`classify`), which decides whether a
   visitor's request may reach their container; the visitor's cookies

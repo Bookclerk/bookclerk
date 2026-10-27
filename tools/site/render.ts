@@ -15,6 +15,10 @@
 import MarkdownIt from "markdown-it";
 import type { MarkdownIt as Markdown, RendererRule, Token } from "markdown-it";
 
+import { highlight } from "./highlight.ts";
+import { formatDate } from "./last-updated.ts";
+import type { IsoDate } from "./last-updated.ts";
+
 /** One sidebar group: its heading and the docs it lists, by key. */
 export interface NavSpec {
   /** The heading readers see. */
@@ -41,6 +45,16 @@ export interface DocsVersion {
   base: string;
 }
 
+/** A section heading of a doc, as the "On this page" list shows it. */
+export interface DocHeading {
+  /** 2 for a section (`##`), 3 for a subsection (`###`). */
+  level: 2 | 3;
+  /** The heading's element id, the fragment that links to it. */
+  id: string;
+  /** Its plain text. */
+  text: string;
+}
+
 /** A rendered doc: what the build and the Worker take from one Markdown file. */
 export interface RenderedDoc {
   /** The doc's title (see docTitle). */
@@ -49,6 +63,8 @@ export interface RenderedDoc {
   description: string;
   /** The HTML body. */
   html: string;
+  /** Its `##` and `###` headings in order, for the "On this page" list. */
+  headings: DocHeading[];
   /** The Markdown copy with links rewritten for the site (see siteMarkdown). */
   markdown: string;
 }
@@ -300,11 +316,20 @@ function renderer(docKey: string, keys: ReadonlySet<string> | null, blobBase: st
     return linkOpen(tokens, idx, options, env, self);
   };
   // Code blocks and wide tables scroll sideways on narrow screens; tabindex
-  // lets keyboard users scroll them too.
+  // lets keyboard users scroll them too. Each code block sits in a
+  // `div.code`, which holds the copy button docs.js adds; a fence in a
+  // language highlight.ts knows gets syntax colors and a `data-lang` label.
   for (const rule of ["fence", "code_block"] as const) {
     const base = md.renderer.rules[rule];
     if (base === undefined) throw new Error(`markdown-it has no ${rule} rule`);
-    md.renderer.rules[rule] = (tokens, idx, options, env, self) => base(tokens, idx, options, env, self).replace(/^<pre/, '<pre tabindex="0"');
+    md.renderer.rules[rule] = (tokens, idx, options, env, self) => {
+      const token = tokens[idx];
+      const lang = rule === "fence" ? (token?.info.trim().split(/\s+/)[0] ?? "") : "";
+      const colored = token === undefined || lang === "" ? null : highlight(token.content, lang);
+      if (colored === null) return `<div class="code">${base(tokens, idx, options, env, self).replace(/^<pre/, '<pre tabindex="0"')}</div>\n`;
+      const name = escapeHtml(lang.toLowerCase());
+      return `<div class="code" data-lang="${name}"><pre tabindex="0"><code class="language-${name}">${colored}</code></pre></div>\n`;
+    };
   }
   md.renderer.rules["table_open"] = () => '<div class="table-scroll" tabindex="0"><table>\n';
   md.renderer.rules["table_close"] = () => "</table></div>\n";
@@ -423,8 +448,8 @@ export function docTitle(source: string, key: string): string {
  * @param key - The doc's key (path without `.md`).
  * @param options - Docs that exist (null: any `.md` in the tree), the GitHub prefix for
  *   repository files, and the URL prefix of the docs version.
- * @returns The title (see docTitle), summary (see describe), HTML body and Markdown
- *   copy (see siteMarkdown).
+ * @returns The title (see docTitle), summary (see describe), HTML body,
+ *   section headings and Markdown copy (see siteMarkdown).
  */
 export function renderDoc(
   source: string,
@@ -433,10 +458,15 @@ export function renderDoc(
 ): RenderedDoc {
   const md = renderer(key, keys, blobBase, (k) => docUrl(k, base));
   const tokens = md.parse(source, {});
+  const headings = tokens.flatMap((t, i): DocHeading[] => {
+    if (t.type !== "heading_open" || (t.tag !== "h2" && t.tag !== "h3")) return [];
+    return [{ level: t.tag === "h2" ? 2 : 3, id: String(t.attrGet("id") ?? ""), text: inlineText(tokens[i + 1]) }];
+  });
   return {
     title: docTitle(source, key),
     description: describe(tokens),
     html: md.renderer.render(tokens, md.options, {}),
+    headings,
     markdown: siteMarkdown(source, key, keys, blobBase, base),
   };
 }
@@ -473,11 +503,12 @@ export function jsonLd(data: object | null): string {
  *
  * @param origin - The site's origin.
  * @param base - URL prefix of the docs version, ending in `/`.
- * @param doc - The doc.
+ * @param doc - The doc, with the date it last changed when known
+ *   (`dateModified`).
  * @returns A JSON-LD `@graph` with the TechArticle and its
  *   breadcrumb trail (Docs › title).
  */
-export function docJsonLd(origin: string, base: string, doc: { key: string; title: string; description: string }): object {
+export function docJsonLd(origin: string, base: string, doc: { key: string; title: string; description: string; updated?: IsoDate | null }): object {
   const url = origin + docUrl(doc.key, base);
   const crumbs = [{ name: "Docs", item: origin + base }];
   if (doc.key !== "README") crumbs.push({ name: doc.title, item: url });
@@ -488,6 +519,7 @@ export function docJsonLd(origin: string, base: string, doc: { key: string; titl
         "@type": "TechArticle",
         headline: doc.title,
         ...(doc.description ? { description: doc.description } : {}),
+        ...(doc.updated ? { dateModified: doc.updated } : {}),
         url,
         inLanguage: "en",
         isPartOf: { "@id": `${origin}/#website` },
@@ -537,9 +569,139 @@ export function navHtml(nav: readonly NavGroup[], current: string, base: string)
           return `<li><a href="${escapeHtml(docUrl(p.key, base))}"${mark}>${escapeHtml(p.title)}</a></li>`;
         })
         .join("");
-      return `<h2>${escapeHtml(group.title)}</h2><ul>${links}</ul>`;
+      const open = group.pages.some((p) => p.key === current) ? " open" : "";
+      return `<details class="nav-group"${open}><summary>${escapeHtml(group.title)}</summary><ul>${links}</ul></details>`;
     })
     .join("\n");
+}
+
+/** Where a doc sits in the sidebar. */
+export interface NavPlace {
+  /** Title of the sidebar group that lists it, or null when none does. */
+  group: string | null;
+  /** The doc before it in sidebar order, if any. */
+  previous: { key: string; title: string } | null;
+  /** The doc after it in sidebar order, if any. */
+  next: { key: string; title: string } | null;
+}
+
+/**
+ * Finds a doc in the sidebar, for its breadcrumb and its previous and next links.
+ *
+ * @param nav - The sidebar.
+ * @param key - The doc's key.
+ * @returns Its group and neighbours, reading the groups as one list;
+ *   all null when the sidebar does not list it.
+ */
+export function navPlace(nav: readonly NavGroup[], key: string): NavPlace {
+  const flat = nav.flatMap((g) => g.pages.map((p) => ({ ...p, group: g.title })));
+  const at = flat.findIndex((p) => p.key === key);
+  if (at === -1) return { group: null, previous: null, next: null };
+  const pick = (i: number): { key: string; title: string } | null => {
+    const page = flat[i];
+    return page === undefined ? null : { key: page.key, title: page.title };
+  };
+  return { group: flat[at]?.group ?? null, previous: pick(at - 1), next: pick(at + 1) };
+}
+
+/**
+ * Renders a doc's breadcrumb trail.
+ *
+ * @param place - Where the doc sits in the sidebar (see navPlace).
+ * @param title - The doc's title.
+ * @param base - URL prefix of the docs version.
+ * @returns A `nav` with Docs, the sidebar group (when there is one) and the
+ *   page itself.
+ */
+export function crumbsHtml(place: NavPlace, title: string, base: string): string {
+  const items = [`<li><a href="${escapeHtml(base)}">Docs</a></li>`];
+  if (place.group !== null) items.push(`<li>${escapeHtml(place.group)}</li>`);
+  items.push(`<li aria-current="page">${escapeHtml(title)}</li>`);
+  return `<nav class="crumbs" aria-label="Breadcrumb"><ol>${items.join("")}</ol></nav>`;
+}
+
+/**
+ * Renders the previous and next links at the end of a doc.
+ *
+ * @param place - Where the doc sits in the sidebar (see navPlace).
+ * @param base - URL prefix of the docs version.
+ * @returns A `nav` with one link per neighbour; empty when it has none.
+ */
+export function pagerHtml(place: NavPlace, base: string): string {
+  const link = (page: { key: string; title: string } | null, rel: "prev" | "next", label: string): string =>
+    page === null ? "" : `<a class="pager-${rel}" rel="${rel}" href="${escapeHtml(docUrl(page.key, base))}"><span>${label}</span>${escapeHtml(page.title)}</a>`;
+  const links = link(place.previous, "prev", "Previous") + link(place.next, "next", "Next");
+  return links === "" ? "" : `<nav class="pager" aria-label="Previous and next">${links}</nav>`;
+}
+
+/**
+ * Renders the list of a doc's sections.
+ *
+ * @param headings - The doc's headings (see renderDoc).
+ * @returns A `ul` of links to each heading, subsections marked `sub`;
+ *   empty when the doc has no headings.
+ */
+export function tocListHtml(headings: readonly DocHeading[]): string {
+  if (headings.length === 0) return "";
+  const items = headings.map((h) => `<li${h.level === 3 ? ' class="sub"' : ""}><a href="#${escapeHtml(h.id)}">${escapeHtml(h.text)}</a></li>`);
+  return `<ul>${items.join("")}</ul>`;
+}
+
+/**
+ * Renders the "On this page" rail beside a doc.
+ *
+ * @param headings - The doc's headings (see renderDoc).
+ * @param links - The page's source on GitHub (null for generated pages) and
+ *   a link to report a problem with it.
+ * @returns An `aside` with the section list and the page's links.
+ */
+export function tocHtml(headings: readonly DocHeading[], links: { source: string | null; issue: string }): string {
+  const list = tocListHtml(headings);
+  const sections = list === "" ? "" : `<p class="toc-title">On this page</p>${list}`;
+  const source = links.source === null ? "" : `<a href="${escapeHtml(links.source)}">Source on GitHub</a>`;
+  const actions = `<p class="toc-actions">${source}<a href="${escapeHtml(links.issue)}">Report a problem</a></p>`;
+  return `<aside class="toc" aria-label="On this page">${sections}${actions}</aside>`;
+}
+
+/**
+ * Renders the phone and tablet menus that stand in for the sidebar and the
+ * "On this page" rail below their breakpoints (site.css shows one set or the
+ * other).
+ *
+ * @param sidebar - The sidebar's HTML (version picker, overview link, groups).
+ * @param headings - The doc's headings; no section menu when empty.
+ * @returns A bar of two `details` menus.
+ */
+export function mobileMenusHtml(sidebar: string, headings: readonly DocHeading[]): string {
+  const list = tocListHtml(headings);
+  const sections = list === "" ? "" : `<details class="menu menu-toc"><summary>On this page</summary><div class="menu-body">${list}</div></details>`;
+  return `<div class="docs-menus"><details class="menu menu-nav"><summary>Menu</summary><div class="menu-body">${sidebar}</div></details>${sections}</div>`;
+}
+
+/**
+ * Renders the sidebar's link to the docs home.
+ *
+ * @param base - URL prefix of the docs version.
+ * @param current - Whether the page shown is the docs home.
+ * @returns The link.
+ */
+function homeLink(base: string, current: boolean): string {
+  return `<a class="docs-home" href="${escapeHtml(base)}"${current ? ' aria-current="page"' : ""}>Overview</a>`;
+}
+
+/**
+ * Puts HTML right after a doc's title.
+ *
+ * @param body - The rendered doc.
+ * @param html - What to insert.
+ * @returns The body with `html` after its first `</h1>`, or in front
+ *   when the doc does not open with one.
+ */
+function afterTitle(body: string, html: string): string {
+  const end = body.indexOf("</h1>");
+  if (!body.startsWith("<h1") || end === -1) return html + body;
+  const at = end + "</h1>".length;
+  return body.slice(0, at) + html + body.slice(at);
 }
 
 /**
@@ -571,7 +733,7 @@ const SHELL_VALUE_RE = /%%([A-Za-z]+)%%/g;
 export const SHELL_VALUES = ["pageTitle", "pageDescription", "pagePath", "markdownUrl", "docsBase"];
 
 /** `<!--name-->` markers in the docs shell, filled with trusted HTML. */
-export const SHELL_MARKERS = ["jsonld", "doc-versions", "doc-nav", "doc-note", "doc-body", "doc-footer"];
+export const SHELL_MARKERS = ["jsonld", "doc-menus", "doc-versions", "doc-nav", "doc-crumbs", "doc-body", "doc-pager", "doc-footer", "doc-toc"];
 
 /**
  * Fills the docs page shell that build.ts writes.
@@ -624,22 +786,36 @@ export interface DocsShell {
  * @param source - The doc's Markdown.
  * @param key - The doc's key (path without `.md`).
  * @param at - The docs version: its ref, its URL prefix and the docs it
- *   holds (null when unknown).
+ *   holds (null when unknown), and the date the page last changed (null
+ *   when unknown, which leaves out the "Last updated" line).
  * @returns The full HTML page and the Markdown copy with links rewritten for
  *   the site.
  */
-export function renderDocPage(shell: DocsShell, source: string, key: string, at: { ref: string; base: string; keys?: ReadonlySet<string> | null }): RenderedPage {
+export function renderDocPage(
+  shell: DocsShell,
+  source: string,
+  key: string,
+  at: { ref: string; base: string; keys?: ReadonlySet<string> | null; updated?: IsoDate | null },
+): RenderedPage {
   const blobBase = `${shell.repository}/blob/${at.ref}/`;
   const doc = renderDoc(source, key, { keys: at.keys ?? null, blobBase, base: at.base });
   const markdownUrl = docMarkdownUrl(key, at.base);
   const generated = key.startsWith("api/");
-  const sourceLink = generated
-    ? `Generated from the source at ${escapeHtml(at.ref)}`
-    : `Source: <a href="${escapeHtml(`${blobBase}docs/${key}.md`)}">docs/${escapeHtml(key)}.md</a> at ${escapeHtml(at.ref)}`;
+  const sourceUrl = generated ? null : `${blobBase}docs/${key}.md`;
+  const sourceLink =
+    sourceUrl === null
+      ? `Generated from the source at ${escapeHtml(at.ref)}`
+      : `Source: <a href="${escapeHtml(sourceUrl)}">docs/${escapeHtml(key)}.md</a> at ${escapeHtml(at.ref)}`;
+  const issueUrl = `${shell.repository}/issues/new?title=${encodeURIComponent(`Docs: ${doc.title}`)}&body=${encodeURIComponent(`Page: ${shell.origin}${docUrl(key, at.base)}\n\n`)}`;
   const note =
     at.ref === "main"
-      ? '<p class="doc-note" role="note">These docs describe the development version. They change with every merge and may cover features that are not finished.</p>'
+      ? '<span class="doc-note" role="note"><span class="badge unstable-badge">Development</span> These docs follow the development version and change with every merge.</span>'
       : "";
+  const updated = at.updated ? `<span class="doc-updated">Last updated <time datetime="${at.updated}">${formatDate(at.updated)}</time></span>` : "";
+  const meta = `<p class="doc-meta">${note}${updated}<a href="${escapeHtml(markdownUrl)}" type="text/markdown">View as Markdown</a></p>`;
+  const place = navPlace(shell.nav, key);
+  const versions = versionsHtml(shell.versions, at.ref, key);
+  const nav = homeLink(at.base, key === "README") + navHtml(shell.nav, key, at.base);
   const html = fillShell(
     shell.html,
     {
@@ -650,12 +826,15 @@ export function renderDocPage(shell: DocsShell, source: string, key: string, at:
       docsBase: at.base,
     },
     {
-      jsonld: jsonLd(docJsonLd(shell.origin, at.base, { key, title: doc.title, description: doc.description })),
-      "doc-versions": versionsHtml(shell.versions, at.ref, key),
-      "doc-nav": navHtml(shell.nav, key, at.base),
-      "doc-note": note,
-      "doc-body": doc.html,
+      jsonld: jsonLd(docJsonLd(shell.origin, at.base, { key, title: doc.title, description: doc.description, updated: at.updated ?? null })),
+      "doc-menus": mobileMenusHtml(versions + nav, doc.headings),
+      "doc-versions": versions,
+      "doc-nav": nav,
+      "doc-crumbs": crumbsHtml(place, doc.title, at.base),
+      "doc-body": afterTitle(doc.html, meta),
+      "doc-pager": pagerHtml(place, at.base),
       "doc-footer": `<p class="doc-source faint">${sourceLink} · <a href="${escapeHtml(markdownUrl)}" type="text/markdown">View as Markdown</a></p>`,
+      "doc-toc": tocHtml(doc.headings, { source: sourceUrl, issue: issueUrl }),
     },
   );
   return { html, markdown: doc.markdown };
@@ -680,6 +859,8 @@ export const DOCS_REPOSITORY_URL = "https://github.com/Bookclerk/bookclerk-docs"
  * @returns The full HTML page and its Markdown version.
  */
 export function renderUnavailablePage(shell: DocsShell, key: string, at: { ref: string; base: string; githubKey?: string }): RenderedPage {
+  const versions = versionsHtml(shell.versions, at.ref, key);
+  const home = homeLink(at.base, false);
   const github = `${DOCS_REPOSITORY_URL}/blob/${at.ref}/${at.githubKey ?? key}.md`;
   const all = `${DOCS_REPOSITORY_URL}/tree/${at.ref}`;
   const body = [
@@ -703,11 +884,14 @@ export function renderUnavailablePage(shell: DocsShell, key: string, at: { ref: 
     },
     {
       jsonld: "",
-      "doc-versions": versionsHtml(shell.versions, at.ref, key),
-      "doc-nav": "",
-      "doc-note": "",
+      "doc-menus": mobileMenusHtml(versions + home, []),
+      "doc-versions": versions,
+      "doc-nav": home,
+      "doc-crumbs": "",
       "doc-body": body,
+      "doc-pager": "",
       "doc-footer": "",
+      "doc-toc": "",
     },
   );
   const markdown = [

@@ -1,0 +1,7 @@
+yaml
+name: CI
+on:
+  push:
+    branches: ["main"]
+"quoted key": yes # c
+- item: 3

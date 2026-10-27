@@ -1,4 +1,4 @@
-// Tests for docs.ts and render.ts: URLs, link rewriting and every doc in
+// Tests for docs.ts, render.ts and last-updated.ts: URLs, link rewriting and every doc in
 // docs/ rendered the way the Worker renders it. Run with `npm test`.
 
 import assert from "node:assert/strict";
@@ -6,7 +6,10 @@ import { test } from "node:test";
 import { fileURLToPath, URL } from "node:url";
 
 import { docUrl, GENERATED_TITLES, markdownFiles, renderDocs, rewriteLink, siteMarkdown, slugify } from "./docs.ts";
-import { docMarkdownUrl, fillShell, normalizePath, renderDoc } from "./render.ts";
+import { highlight } from "./highlight.ts";
+import { formatDate, pageDate, parseIsoDate } from "./last-updated.ts";
+import type { IsoDate } from "./last-updated.ts";
+import { crumbsHtml, docMarkdownUrl, fillShell, navHtml, navPlace, normalizePath, pagerHtml, renderDoc, SHELL_MARKERS, tocListHtml } from "./render.ts";
 
 /** The repository's docs/. */
 const DOCS = fileURLToPath(new URL("../../docs/", import.meta.url));
@@ -99,6 +102,55 @@ test("raw HTML in a doc is shown as text", () => {
   assert.ok(!out.html.includes("<script"));
 });
 
+test("code blocks get syntax colors and a language label when highlight.ts knows the language", () => {
+  const out = renderDoc("```toml\n[library]\nauto_acquire = false # off\n```\n\n```text\n<plain>\n```\n", "cluster-hosts", { blobBase: BLOB });
+  assert.match(out.html, /<div class="code" data-lang="toml"><pre tabindex="0"><code class="language-toml"><span class="hl-k">\[library\]<\/span>/);
+  assert.match(out.html, /<span class="hl-v">auto_acquire<\/span> = <span class="hl-n">false<\/span> <span class="hl-c"># off<\/span>/);
+  assert.match(out.html, /<div class="code"><pre tabindex="0"><code class="language-text">&lt;plain&gt;/);
+});
+
+test("highlight colors each language's own names and leaves the rest plain", () => {
+  assert.equal(highlight("[a] # see [b]", "toml"), '<span class="hl-k">[a]</span> <span class="hl-c"># see [b]</span>');
+  assert.equal(highlight("[[settings]]", "toml"), '<span class="hl-k">[[settings]]</span>');
+  assert.equal(highlight("k = 'C:\\' # path", "toml"), '<span class="hl-v">k</span> = <span class="hl-s">&#39;C:\\&#39;</span> <span class="hl-c"># path</span>');
+  assert.equal(
+    highlight("for x in a; do echo ${HOME}; done", "bash"),
+    '<span class="hl-k">for</span> x <span class="hl-k">in</span> a; <span class="hl-k">do</span> <span class="hl-f">echo</span> <span class="hl-v">${HOME}</span>; <span class="hl-k">done</span>',
+  );
+  assert.equal(highlight("$ cargo dev --optional", "console"), '$ <span class="hl-f">cargo</span> dev <span class="hl-v">--optional</span>');
+  assert.equal(highlight("- name: x\n  key: y", "yaml"), '- <span class="hl-v">name</span>: x\n  <span class="hl-v">key</span>: y');
+  assert.equal(highlight('{"a": "b", "n": 1}', "json"), '{<span class="hl-v">&quot;a&quot;</span>: <span class="hl-s">&quot;b&quot;</span>, <span class="hl-v">&quot;n&quot;</span>: <span class="hl-n">1</span>}');
+  assert.equal(highlight("x", "text"), null);
+});
+
+test("a doc's section headings are collected for the On this page list", () => {
+  const out = renderDoc("# Title\n\n## First `step`\n\n### Detail\n\n#### Deeper\n\n## First step\n", "cluster-hosts", { blobBase: BLOB });
+  assert.deepEqual(out.headings, [
+    { level: 2, id: "first-step", text: "First step" },
+    { level: 3, id: "detail", text: "Detail" },
+    { level: 2, id: "first-step-1", text: "First step" },
+  ]);
+  assert.equal(tocListHtml(out.headings), '<ul><li><a href="#first-step">First step</a></li><li class="sub"><a href="#detail">Detail</a></li><li><a href="#first-step-1">First step</a></li></ul>');
+  assert.equal(tocListHtml([]), "");
+});
+
+test("the sidebar opens only the current group and places a doc for its breadcrumb and neighbours", () => {
+  const nav = [
+    { title: "Use", pages: [{ key: "guide/a", title: "A" }, { key: "guide/b", title: "B <b>" }] },
+    { title: "Run", pages: [{ key: "server/c", title: "C" }] },
+  ];
+  const html = navHtml(nav, "guide/b", "/docs/");
+  assert.match(html, /<details class="nav-group" open><summary>Use<\/summary>/);
+  assert.match(html, /<details class="nav-group"><summary>Run<\/summary>/);
+  assert.match(html, /<a href="\/docs\/guide\/b" aria-current="page">B &lt;b&gt;<\/a>/);
+  assert.deepEqual(navPlace(nav, "guide/b"), { group: "Use", previous: { key: "guide/a", title: "A" }, next: { key: "server/c", title: "C" } });
+  assert.deepEqual(navPlace(nav, "guide/a").previous, null);
+  assert.deepEqual(navPlace(nav, "README"), { group: null, previous: null, next: null });
+  assert.equal(pagerHtml(navPlace(nav, "README"), "/docs/"), "");
+  assert.match(pagerHtml(navPlace(nav, "server/c"), "/docs/"), /<a class="pager-prev" rel="prev" href="\/docs\/guide\/b"><span>Previous<\/span>B &lt;b&gt;<\/a>/);
+  assert.match(crumbsHtml(navPlace(nav, "server/c"), "C & D", "/docs/"), /<li><a href="\/docs\/">Docs<\/a><\/li><li>Run<\/li><li aria-current="page">C &amp; D<\/li>/);
+});
+
 test("code blocks and tables can be scrolled from the keyboard", () => {
   const out = renderDoc("```sh\ncargo build\n```\n\n    indented\n\n| a | b |\n| - | - |\n| 1 | 2 |\n", "cluster-hosts", { blobBase: BLOB });
   assert.equal(out.html.match(/<pre tabindex="0">/g)?.length, 2);
@@ -107,7 +159,7 @@ test("code blocks and tables can be scrolled from the keyboard", () => {
 });
 
 test("fillShell escapes values, fills markers once and refuses gaps", () => {
-  const shell = "<title>%%pageTitle%%</title><!--jsonld--><!--doc-versions--><!--doc-nav--><!--doc-note--><!--doc-body--><!--doc-footer-->";
+  const shell = `<title>%%pageTitle%%</title>${SHELL_MARKERS.map((m) => `<!--${m}-->`).join("")}`;
   const markers = { "doc-body": "<p>%%pageTitle%% <!--doc-footer--></p>" };
   const out = fillShell(shell, { pageTitle: "<a> & b" }, markers);
   // Text inside a marker's HTML is never read as a hole or a marker.
@@ -133,4 +185,24 @@ test("Markdown copies rewrite whole link targets outside code", () => {
   assert.equal(out[1], "Inline `[x](media.md)` stays.");
   assert.equal(out[3], "[y](media.md)");
   assert.equal(out[5], "[ref]: /docs/plugins.md");
+});
+
+test("page dates are real calendar dates, shown as month, day and year", () => {
+  for (const ok of ["2026-10-26", "2024-02-29", "2000-02-29", "0001-01-01", "9999-12-31"]) assert.equal(parseIsoDate(ok), ok, ok);
+  for (const bad of ["2026-02-29", "1900-02-29", "2026-13-01", "2026-00-10", "2026-04-31", "2026-10-00", "0000-01-01", "2026-1-01", "26-10-26", " 2026-10-26", "2026-10-26T00:00Z", "２０２６-10-26", ""]) {
+    assert.equal(parseIsoDate(bad), null, bad);
+  }
+  assert.equal(formatDate("2026-10-26" as IsoDate), "Oct 26, 2026");
+  assert.equal(formatDate("2026-01-05" as IsoDate), "Jan 5, 2026");
+  assert.equal(formatDate("0099-12-31" as IsoDate), "Dec 31, 0099");
+});
+
+test("pageDate reads one page's date and ignores anything malformed", () => {
+  const file = JSON.stringify({ version: 1, pages: { README: "2026-10-26", "guide/x": "2026-02-30", "guide/y": 20261026 } });
+  assert.equal(pageDate(file, "README"), "2026-10-26");
+  for (const key of ["guide/x", "guide/y", "missing", "__proto__", "constructor", "toString"]) assert.equal(pageDate(file, key), null, key);
+  for (const bad of ["", "{", "null", "[]", '"x"', '{"version":2,"pages":{"README":"2026-10-26"}}', '{"version":"1","pages":{"README":"2026-10-26"}}', '{"version":1,"pages":[]}', '{"version":1}']) {
+    assert.equal(pageDate(bad, "README"), null, bad);
+  }
+  assert.equal(pageDate('{"version":1,"pages":{"__proto__":"2026-10-26"}}', "__proto__"), "2026-10-26");
 });
