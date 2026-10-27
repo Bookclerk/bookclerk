@@ -103,8 +103,8 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   date. It also lists every dated page (`datedPages`) for the sitemap. The
   file comes from outside the Worker, so `fuzz.test.ts` replays
   `fuzz/last_updated/` and fuzzes mutations against an independent oracle.
-- `sitemap.ts` – writes `sitemap.xml`, for the build's fallback copy and for
-  the Worker's full one (see "Search engines, link previews and agents").
+- `sitemap.ts` – writes sitemaps and sitemap indexes, for the build's
+  fallback copy and for the Worker's sectioned one (see "Search engines, link previews and agents").
 - `diagram.ts` – draws each ```` ```mermaid ```` fence as inline SVG with
   [beautiful-mermaid](https://github.com/lukilabs/beautiful-mermaid), which
   lays diagrams out without a DOM, so pages need no client-side script and
@@ -213,7 +213,7 @@ versions.
 - Caching: GitHub responses and rendered pages are cached at the edge, for
   a day for release tags (which never move), five minutes for `main` and a
   minute for missing files. Rendered pages are keyed by the version's ref
-  and a hash of the shell, so a deploy (a new release, sidebar or template)
+  and a hash of the shell, so a deploy (a new release, sidebar, template or Worker)
   starts fresh; browsers keep any docs page for five minutes, since each
   carries the version picker.
 - The sidebar, the fallback `sitemap.xml` and `llms.txt` come from the
@@ -236,15 +236,20 @@ versions.
   (`homeFacts` in `build.ts`), so structured data never says anything a
   visitor cannot see on the page. Search engines treat text shown only to
   crawlers as cloaking, so keep it that way.
-- `/sitemap.xml` lists every indexable page: the Worker writes it from the
-  default docs version's `last-updated.json`, so it holds the pages outside
-  `/docs/` and every page of that version, the generated API reference
-  included, each doc with its date as `<lastmod>`. It is cached like that
-  version's pages. When the file cannot be read the Worker serves the
-  sitemap `build.ts` wrote (the pages and the sidebar's docs, no dates) for
-  a minute. Keys that are not plain docs paths are left out, and only the
-  first 50,000 URLs are listed. `robots.txt` allows all crawlers and points
-  to it.
+- `/sitemap.xml` is a sitemap index with one sitemap per section, so
+  Search Console reports indexing per shelf: `/sitemaps/site.xml` holds the
+  pages outside `/docs/` and the docs home, and each top docs folder gets
+  its own (`/sitemaps/guide.xml`, `/sitemaps/server.xml`,
+  `/sitemaps/api.xml`, ...), dated by its newest page. The Worker writes
+  them from the default docs version's `last-updated.json`, so together
+  they list every page of that version, the generated API reference
+  included, each doc with its date as `<lastmod>`. They are cached like
+  that version's pages, and a deploy that changes the Worker starts them
+  fresh. When the file cannot be read, `/sitemap.xml` is the flat sitemap
+  `build.ts` wrote (the pages and the sidebar's docs, no dates) for a
+  minute and section sitemaps answer 503. Keys the docs route would not
+  serve at their URL are left out, and each sitemap lists at most 50,000
+  URLs. `robots.txt` allows all crawlers and points to `/sitemap.xml`.
 - For agents: each doc is also served as Markdown at `/docs/<path>.md` (and
   `/docs/v/<ref>/<path>.md`)
   (linked from the page with `rel="alternate"` and "View as Markdown"), with

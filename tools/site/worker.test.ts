@@ -22,6 +22,7 @@ import {
   pickEncoding,
   prefersMarkdown,
   SECURITY_HEADERS,
+  sitemapSection,
 } from "./worker.ts";
 import type { DocsFetch, Env, PageCache } from "./worker.ts";
 import type { BuildEnv } from "./build.ts";
@@ -533,8 +534,9 @@ test("rendered pages are cached per deploy, version, path and format", async () 
   assert.equal(await head.text(), "");
 });
 
-test("the sitemap lists the pages and every dated page of the default docs version", async () => {
-  assert.ok(JSON.parse(readFileSync(join(HERE, "wrangler.toml"), "utf8").match(/^run_worker_first = (\[.*\])$/m)?.[1] ?? "[]").includes("/sitemap.xml"));
+test("the sitemap is an index of one sitemap per section, listing every dated page of the default docs version", async () => {
+  const routes: string[] = JSON.parse(readFileSync(join(HERE, "wrangler.toml"), "utf8").match(/^run_worker_first = (\[.*\])$/m)?.[1] ?? "[]");
+  assert.ok(routes.includes("/sitemap.xml") && routes.includes("/sitemaps/*"));
   fetched.length = 0;
   const res = await get("/sitemap.xml", "*/*");
   assert.equal(res.status, 200);
@@ -542,18 +544,39 @@ test("the sitemap lists the pages and every dated page of the default docs versi
   assert.equal(res.headers.get("Cache-Control"), "public, max-age=300, s-maxage=86400");
   assert.equal(res.headers.get("X-Content-Type-Options"), "nosniff");
   assert.deepEqual(fetched, [`${DOCS_RAW_BASE}v0.2.0/last-updated.json`]);
-  const xml = await res.text();
-  assert.match(xml, /^<\?xml version="1.0" encoding="UTF-8"\?>\n<urlset xmlns="http:\/\/www.sitemaps.org\/schemas\/sitemap\/0.9">\n/);
-  const urls = [...xml.matchAll(/<url><loc>([^<]*)<\/loc>(?:<lastmod>([^<]*)<\/lastmod>)?<\/url>/g)].map((m) => [m[1], m[2] ?? null]);
-  const pages = PAGES.filter((p) => p.indexable).map((p): [string, null] => [`https://bookclerk.app${p.path}`, null]);
-  assert.deepEqual(urls, [
-    ...pages,
-    ["https://bookclerk.app/docs/plugins/", "2026-10-26"],
-    ["https://bookclerk.app/docs/api/rust/demo/index", "2026-10-01"],
+  const index = await res.text();
+  assert.match(index, /^<\?xml version="1.0" encoding="UTF-8"\?>\n<sitemapindex xmlns="http:\/\/www.sitemaps.org\/schemas\/sitemap\/0.9">\n/);
+  const sitemaps = [...index.matchAll(/<sitemap><loc>([^<]*)<\/loc>(?:<lastmod>([^<]*)<\/lastmod>)?<\/sitemap>/g)].map((m) => [m[1], m[2] ?? null]);
+  assert.deepEqual(sitemaps, [
+    ["https://bookclerk.app/sitemaps/site.xml", null],
+    ["https://bookclerk.app/sitemaps/plugins.xml", "2026-10-26"],
+    ["https://bookclerk.app/sitemaps/api.xml", "2026-10-01"],
   ]);
+  const urls = async (path: string): Promise<(string | null)[][]> => {
+    const section = await get(path, "*/*");
+    assert.equal(section.status, 200, path);
+    assert.equal(section.headers.get("Content-Type"), "application/xml; charset=utf-8", path);
+    const xml = await section.text();
+    assert.match(xml, /<urlset xmlns="http:\/\/www.sitemaps.org\/schemas\/sitemap\/0.9">/, path);
+    return [...xml.matchAll(/<url><loc>([^<]*)<\/loc>(?:<lastmod>([^<]*)<\/lastmod>)?<\/url>/g)].map((m) => [m[1] ?? "", m[2] ?? null]);
+  };
+  assert.deepEqual(await urls("/sitemaps/site.xml"), PAGES.filter((p) => p.indexable).map((p) => [`https://bookclerk.app${p.path}`, null]));
+  assert.deepEqual(await urls("/sitemaps/plugins.xml"), [["https://bookclerk.app/docs/plugins/", "2026-10-26"]]);
+  assert.deepEqual(await urls("/sitemaps/api.xml"), [["https://bookclerk.app/docs/api/rust/demo/index", "2026-10-01"]]);
+  for (const path of ["/sitemaps/guide.xml", "/sitemaps/x.xml"]) assert.equal((await get(path, "*/*")).status, 404, path);
   const head = await get("/sitemap.xml", "*/*", "HEAD");
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");
+});
+
+test("sitemapSection names a doc's top folder, site for the docs home, or docs", () => {
+  assert.equal(sitemapSection("guide/getting-started"), "guide");
+  assert.equal(sitemapSection("api/rust/demo/index"), "api");
+  assert.equal(sitemapSection("sql-contract/v1"), "sql-contract");
+  assert.equal(sitemapSection("README"), "site");
+  assert.equal(sitemapSection("Guide/x"), "docs");
+  assert.equal(sitemapSection("a.b/x"), "docs");
+  assert.equal(sitemapSection("site/x"), "docs");
 });
 
 test("the sitemap leaves out keys the docs route does not serve as themselves and dates that are not real", async () => {
@@ -573,7 +596,9 @@ test("the sitemap leaves out keys the docs route does not serve as themselves an
     },
   };
   const fetcher: DocsFetch = async (url, init) => (url.endsWith("/last-updated.json") ? new Response(JSON.stringify(dates)) : docsFetch(url, init));
-  const xml = await (await handle(new Request("https://bookclerk.app/sitemap.xml"), env, { shell, fetch: fetcher })).text();
+  const index = await (await handle(new Request("https://bookclerk.app/sitemap.xml"), env, { shell, fetch: fetcher })).text();
+  assert.deepEqual([...index.matchAll(/<loc>([^<]*)<\/loc>/g)].map((m) => m[1]), ["https://bookclerk.app/sitemaps/site.xml", "https://bookclerk.app/sitemaps/guide.xml"]);
+  const xml = await (await handle(new Request("https://bookclerk.app/sitemaps/guide.xml"), env, { shell, fetch: fetcher })).text();
   const docs = [...xml.matchAll(/<loc>https:\/\/bookclerk.app(\/docs\/[^<]*)<\/loc>/g)].map((m) => m[1]);
   assert.deepEqual(docs, ["/docs/guide/stores"]);
 });
@@ -607,6 +632,10 @@ test("the sitemap falls back to the built one when the dates file is missing, un
     assert.equal(res.headers.get("Cache-Control"), i === missing ? "public, max-age=60, s-maxage=86400" : "public, max-age=60, s-maxage=60", `answer ${i}`);
     assert.equal(await res.text(), built, `answer ${i}`);
     assert.equal(store.size, i === missing ? 1 : 0, `answer ${i}`);
+    // The flat fallback names no sections, and a section asked for anyway is not served.
+    const section = await handle(new Request("https://bookclerk.app/sitemaps/guide.xml"), env, { shell, fetch: fetcher });
+    assert.equal(section.status, i === missing ? 404 : 503, `answer ${i}`);
+    if (i !== missing) assert.equal(section.headers.get("Cache-Control"), "no-store", `answer ${i}`);
   }
 });
 
@@ -617,13 +646,17 @@ test("the sitemap is cached per deploy and docs version", async () => {
   const deps = { shell, fetch: docsFetch, cache, waitUntil: (p: Promise<unknown>) => void pending.push(p) };
   fetched.length = 0;
   const bodies: string[] = [];
-  for (let i = 0; i < 2; i += 1) {
-    bodies.push(await (await handle(new Request("https://bookclerk.app/sitemap.xml"), env, deps)).text());
+  for (const path of ["/sitemap.xml", "/sitemap.xml", "/sitemaps/api.xml", "/sitemaps/api.xml"]) {
+    bodies.push(await (await handle(new Request(`https://bookclerk.app${path}`), env, deps)).text());
     await Promise.all(pending);
   }
   assert.equal(bodies[0], bodies[1]);
-  assert.equal(fetched.length, 1);
-  assert.deepEqual([...store.keys()], [`https://bookclerk.app/sitemap.xml?ref=v0.2.0&shell=${shell.id}`]);
+  assert.equal(bodies[2], bodies[3]);
+  assert.equal(fetched.length, 2);
+  assert.deepEqual([...store.keys()], [
+    `https://bookclerk.app/sitemap.xml?ref=v0.2.0&shell=${shell.id}`,
+    `https://bookclerk.app/sitemaps/api.xml?ref=v0.2.0&shell=${shell.id}`,
+  ]);
 });
 
 test("Markdown files fetched by name point at their pages", async () => {

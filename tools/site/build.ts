@@ -251,8 +251,8 @@ export const PAGES: readonly Page[] = [
   },
 ];
 
-/** The Worker's page renderers, whose sources are part of the docs shell's id (see buildDocsShell). */
-const RENDER_SOURCES = ["render.ts", "diagram.ts", "highlight.ts", "last-updated.ts", "sitemap.ts"];
+/** The Worker and its page and sitemap renderers, whose sources are part of the docs shell's id (see buildDocsShell). */
+const RENDER_SOURCES = ["render.ts", "diagram.ts", "highlight.ts", "last-updated.ts", "sitemap.ts", "worker.ts"];
 
 /**
  * Libraries the renderers run, whose installed versions are part of the docs
