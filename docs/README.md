@@ -88,4 +88,4 @@ Build and agent conventions for this repository live in
 - [Untrusted-input fuzzing](adr/untrusted-input-fuzzing.md): every untrusted boundary ships a fuzz target
 - [Security advisory automation](adr/security-advisory-automation.md): draft advisories for shipped code
 - [Logging and tracing](adr/observability.md): trace everything, keep TRACE for diagnostics, show each output its own level
-- [Project licensing](adr/licensing.md): AGPL for the project, MIT for the plugin SDKs, a CLA and a trademark policy
+- [Project licensing](adr/licensing.md): AGPL for the project, MIT OR Apache-2.0 for the plugin SDKs, a CLA and a trademark policy

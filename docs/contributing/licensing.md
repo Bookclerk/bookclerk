@@ -83,10 +83,10 @@ Who must sign:
 - Only tools are exempt. The project's bots (`dependabot[bot]`,
   `bookclerk[bot]` and `github-actions[bot]`) are recognized by their
   account type and login, never by the name in a commit, which anyone can
-  set. The account of an AI coding assistant that a commit credits as a
-  co-author is recognized by its address (`ASSISTANT_EMAILS` in the
-  checker), which only that account can own. The pull request author still
-  signs for what they submit.
+  set. The account of an AI coding assistant, whether a commit names it as
+  the author or credits it as a co-author, is recognized by its address
+  (`ASSISTANT_EMAILS` in the checker), which only that account can own.
+  The pull request author still signs for what they submit.
 - People are matched by GitHub account id, so a signature survives a
   renamed account.
 - A commit whose author email belongs to no GitHub account fails the check,
@@ -99,8 +99,11 @@ Who must sign:
   checks that the co-author's rights were granted, or keeps the
   third-party license the work came under.
 - A signature comment counts only from someone the pull request needs a
-  signature from. Every run reads the whole comment history, so a
-  signature posted while another run was busy still counts.
+  signature from, and must be the sentence above exactly; spaces or line
+  breaks around it are ignored. Every run reads the whole comment history,
+  so a signature posted while another run was busy still counts.
+- Each signature records the version of the CLA it accepts (`claVersion`),
+  so a later edit to `CLA.md` does not blur what earlier signers agreed to.
 - The check runs again when a pull request moves to another base branch,
   because the new base can bring in commits from other authors without
   changing the head commit.
@@ -114,8 +117,15 @@ cannot be checked and fails closed.
 The status belongs to the commit, not to the pull request. When other open
 pull requests have the same head commit (from another author, or against
 another base), the status passes only when every one of them passes, so
-nobody can borrow a signed contributor's result. More than 10 such pull
-requests fail closed.
+nobody can borrow a signed contributor's result. When one of them is
+closed or pushed to, the others decide the status again. More than 10 such
+pull requests fail closed.
+
+> [!NOTE]
+> Anyone can open a pull request on the same head commit as yours and turn
+> your check red. The check's comment names that pull request. A maintainer
+> closes it, and the status is decided again without it; comment `recheck`
+> if it is not.
 
 Signatures are recorded in `signatures/cla.json` on the `cla-signatures`
 branch, so recording one needs no pull request and no bypass of the main
@@ -126,11 +136,13 @@ Setup, once, by a repository administrator:
 1. Create the `cla-signatures` branch from `main`, so it starts with
    `main`'s empty `signatures/cla.json`. The check fails until the file
    exists.
-2. Make sure no ruleset blocks the `github-actions[bot]` from pushing to
-   `cla-signatures`.
+2. Add a ruleset on `cla-signatures` that blocks force pushes and deletion,
+   so the signature history only grows. Make sure no rule blocks the
+   `github-actions[bot]` from adding commits there.
 3. After the check has run on a pull request, add the **CLA** status to the
-   required checks in the main branch ruleset. The `CLA check` job is only
-   the workflow that reports it.
+   required checks in the main branch ruleset, with **GitHub Actions** as
+   its expected source, so no other app that can post statuses can satisfy
+   it. The `CLA check` job is only the workflow that reports it.
 
 ## The Bookclerk name and logo
 

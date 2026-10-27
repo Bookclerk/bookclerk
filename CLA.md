@@ -8,8 +8,9 @@ licensed, now and later, without asking every contributor again. You keep
 the copyright in your work; you give the project a license to use it.
 
 You accept this agreement by posting the comment below on your pull request.
-The project's CLA check records your GitHub account, the pull request and the
-time, and you do not need to sign again for later pull requests.
+The project's CLA check records your GitHub account, the pull request, the
+time and the version of this agreement, and you do not need to sign again for
+later pull requests.
 
 > I have read the Bookclerk CLA and I agree to it.
 

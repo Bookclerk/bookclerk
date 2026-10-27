@@ -54,8 +54,8 @@ showed:
 5. Contributions are accepted under a **Contributor License Agreement**
    ([`CLA.md`](../../CLA.md)), checked on every pull request by the `CLA`
    workflow. Everyone signs it, maintainers and organization members
-   included; only bots and the accounts of AI coding assistants credited
-   as co-authors are exempt. It grants the project a license to relicense contributions
+   included; only bots and the accounts of AI coding assistants, as commit
+   author or co-author, are exempt. It grants the project a license to relicense contributions
    without asking each contributor again, and deliberately makes no
    promise to keep a contribution under the license it was submitted
    under, so the maintainers can change the project's licensing without

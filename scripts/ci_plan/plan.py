@@ -148,6 +148,9 @@ DOC_FILES = frozenset(
 )
 # Tests and fixtures the plan job runs on every event, before any check.
 PLAN_JOB_TEST_PREFIX = "scripts/tests/"
+# Scripts that only plan-job tests exercise (the CLA checker runs in its own
+# workflow, from the default branch, and builds nothing).
+PLAN_JOB_SCRIPT_FILES = frozenset({"scripts/cla_check.py"})
 
 KNOWN_TOP_LEVEL = frozenset(
     {
@@ -821,7 +824,7 @@ def build_plan(
         if path.startswith(DOCS_PREFIX):
             # The site's tests check the links in the docs it publishes.
             surf.docs.append(path)
-        if path.startswith(DOCS_PREFIX) or path in DOC_FILES or path.startswith(PLAN_JOB_TEST_PREFIX):
+        if path.startswith(DOCS_PREFIX) or path in DOC_FILES or path.startswith(PLAN_JOB_TEST_PREFIX) or path in PLAN_JOB_SCRIPT_FILES:
             classified = True
         if path.startswith(FUZZ_SELF_SELECTING_PREFIXES):
             classified = True

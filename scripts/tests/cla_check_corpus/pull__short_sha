@@ -8,5 +8,6 @@
  "head": {
   "sha": "abc"
  },
+ "state": "open",
  "commits": 2
 }

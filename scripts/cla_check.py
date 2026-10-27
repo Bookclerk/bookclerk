@@ -46,7 +46,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable
 
-#: The comment a contributor posts to accept the CLA, matched exactly.
+#: The comment a contributor posts to accept the CLA, matched exactly once
+#: surrounding whitespace is trimmed.
 SIGN_PHRASE = "I have read the Bookclerk CLA and I agree to it."
 
 #: The comment that re-runs the check without signing.
@@ -68,9 +69,10 @@ SIGNATURE_PATH = "signatures/cla.json"
 #: and ``[bot]`` logins cannot be registered by people.
 BOT_ALLOWLIST = frozenset({"dependabot[bot]", "bookclerk[bot]", "github-actions[bot]"})
 
-#: Commit author addresses of AI coding assistants. Commits often credit an
-#: assistant with a ``Co-authored-by:`` line; the account GitHub links to
-#: such an address is a tool, not a person, so like a bot it does not sign.
+#: Commit author addresses of AI coding assistants. A commit may be authored
+#: by an assistant or credit one with a ``Co-authored-by:`` line; the account
+#: GitHub links to such an address is a tool, not a person, so like a bot it
+#: does not sign (the pull request author still does).
 #: Matching on the address is safe because only the assistant's own account
 #: can own it, so no person's account is ever exempted this way.
 ASSISTANT_EMAILS = frozenset({"noreply@anthropic.com"})
@@ -114,6 +116,10 @@ MAX_SIGNATURE_BYTES = 1024 * 1024
 
 #: Times a signature write is retried after another run changed the file.
 SIGNATURE_WRITE_ATTEMPTS = 3
+
+#: The version of ``CLA.md`` a signature accepts, recorded with each entry.
+#: Bump it together with the version line in ``CLA.md``.
+CLA_VERSION = "1.0"
 
 #: Most open pull requests that may share one head commit. The ``CLA``
 #: status belongs to the commit, so each of them is checked before it passes;
@@ -218,6 +224,8 @@ class PullRequest:
     head_sha: str
     #: How many commits it has.
     commits: int
+    #: Whether it is open; a closed pull request gets no status of its own.
+    open: bool = True
 
 
 @dataclass(frozen=True)
@@ -274,6 +282,9 @@ class Event:
     comment: Comment | None
     #: The merge group's head commit from a ``merge_group`` payload.
     merge_group_sha: str | None
+    #: The head the pull request had before a push (``synchronize``), whose
+    #: status other pull requests may still share.
+    before_sha: str | None = None
 
 
 @dataclass(frozen=True)
@@ -405,11 +416,15 @@ def parse_pull_request(value: object) -> PullRequest:
     commits = obj.get("commits")
     if type(commits) is not int or commits < 0:
         raise ClaInputError("pull request commit count is not a count")
+    state = obj.get("state")
+    if state not in ("open", "closed"):
+        raise ClaInputError("pull request state is not open or closed")
     return PullRequest(
         number=_id(obj.get("number"), "pull request number"),
         author=parse_account(obj.get("user")),
         head_sha=_sha(head.get("sha"), "pull request head"),
         commits=commits,
+        open=state == "open",
     )
 
 
@@ -476,7 +491,9 @@ def parse_event(name: str, raw: bytes) -> Event:
     repo_id = _id(_object(payload.get("repository"), "repository").get("id"), "repository id")
     if kind is EventKind.PULL_REQUEST:
         pull = parse_pull_request(payload.get("pull_request"))
-        return Event(kind, repo_id, pull.number, pull, None, None)
+        before = payload.get("before")
+        before_sha = None if before is None else _sha(before, "previous head")
+        return Event(kind, repo_id, pull.number, pull, None, None, before_sha)
     if kind is EventKind.ISSUE_COMMENT:
         issue = _object(payload.get("issue"), "issue")
         number = _id(issue.get("number"), "issue number")
@@ -572,13 +589,27 @@ def parse_coauthor_page(raw: bytes) -> CoauthorPage:
 def parse_comment_page(raw: bytes) -> list[Comment]:
     """Reads one page of ``GET /issues/{n}/comments``.
 
+    A comment whose author is missing or is an account this check does not
+    model (a deleted user, an app login without ``[bot]``) is left out: it
+    can neither sign nor be the check's own comment, and one such comment
+    must not stop the check for good.
+
     # Errors
-    ``ClaInputError`` when the page or an entry has the wrong shape.
+    ``ClaInputError`` when the page or a comment's other fields have the
+    wrong shape.
     """
     page = _load_json(raw)
     if not isinstance(page, list):
         raise ClaInputError("comment page is not a list")
-    return [parse_comment(entry) for entry in page]
+    comments = []
+    for entry in page:
+        obj = _object(entry, "comment")
+        try:
+            parse_account(obj.get("user"))
+        except ClaInputError:
+            continue
+        comments.append(parse_comment(obj))
+    return comments
 
 
 def parse_signatures(raw: bytes) -> SignatureBook:
@@ -676,7 +707,8 @@ def add_signature(book: SignatureBook, comment: Comment, repo_id: int, pull_numb
     """Returns the signature file with the commenter's signature appended.
 
     The entry uses CLA Assistant Lite's fields, so the file stays readable by
-    either tool. Existing entries are written back unchanged.
+    either tool, plus ``claVersion``, the version of ``CLA.md`` accepted.
+    Existing entries are written back unchanged.
     """
     entry: dict[str, object] = {
         "name": comment.author.login,
@@ -685,12 +717,13 @@ def add_signature(book: SignatureBook, comment: Comment, repo_id: int, pull_numb
         "created_at": comment.created_at,
         "repoId": repo_id,
         "pullRequestNo": pull_number,
+        "claVersion": CLA_VERSION,
     }
     doc = {"signedContributors": [*book.entries, entry]}
     return (json.dumps(doc, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
-def render_comment(verdict: Verdict, cla_url: str) -> str:
+def render_comment(verdict: Verdict, cla_url: str, blocked_by: int | None = None) -> str:
     """Renders the check's comment on the pull request.
 
     Only validated logins, validated SHAs and ``cla_url`` reach the body; no
@@ -699,13 +732,25 @@ def render_comment(verdict: Verdict, cla_url: str) -> str:
     # Arguments
     * ``verdict``: the current verdict.
     * ``cla_url``: the link to the agreement.
+    * ``blocked_by``: another open pull request with the same head commit
+      that still fails, when this one passes.
 
     # Returns
     The Markdown body, starting with ``COMMENT_MARKER``.
     """
     lines = [COMMENT_MARKER]
-    if verdict.passed:
+    if verdict.passed and blocked_by is None:
         lines.append("Everyone on this pull request has accepted the Bookclerk CLA. Thank you!")
+        return "\n".join(lines) + "\n"
+    if verdict.passed:
+        lines += [
+            (
+                "Everyone on this pull request has accepted the Bookclerk CLA, but the check stays red:"
+                f" #{blocked_by} has the same head commit, and the check's status belongs to the commit."
+            ),
+            "",
+            f"Once #{blocked_by} is closed, pushed to, or signed, comment `{RECHECK_PHRASE}` here.",
+        ]
         return "\n".join(lines) + "\n"
     lines.append(
         "Thank you for your pull request. Before it can be merged, everyone who wrote"
@@ -754,6 +799,9 @@ class GitHub:
         self.base = f"repos/{repository}"
         #: The repository's owner and name, for GraphQL.
         self.owner, self.name = repository.split("/", 1)
+        #: The head commit of the pull request being checked, once known, so
+        #: a failed run can still report ``error`` there.
+        self.head_sha: str | None = None
 
     def call(self, method: str, path: str, body: dict[str, object] | None = None, ok: tuple[int, ...] = (200, 201)) -> bytes:
         """Sends a request and returns the body of a successful response.
@@ -826,16 +874,16 @@ class GitHub:
                 return out, frozenset(assistants)
         raise ApiError(f"pull request has more than {MAX_COMMITS} commits")
 
-    def shared_head(self, pull: PullRequest) -> list[int]:
-        """Lists the other open pull requests whose head is ``pull``'s head.
+    def open_pulls_on(self, sha: str) -> list[int]:
+        """Lists the open pull requests whose head commit is ``sha``.
 
         # Errors
-        ``ApiError`` when more than ``MAX_SHARED_PULLS`` share it.
+        ``ApiError`` when more than ``MAX_SHARED_PULLS`` have it.
         """
-        refs = parse_pull_refs(self.call("GET", f"commits/{pull.head_sha}/pulls?per_page={PAGE_SIZE}"))
+        refs = parse_pull_refs(self.call("GET", f"commits/{sha}/pulls?per_page={PAGE_SIZE}"))
         if len(refs) >= PAGE_SIZE:
-            raise ApiError("too many pull requests contain the head commit")
-        numbers = sorted({r.number for r in refs if r.open and r.head_sha == pull.head_sha and r.number != pull.number})
+            raise ApiError("too many pull requests contain the commit")
+        numbers = sorted({r.number for r in refs if r.open and r.head_sha == sha})
         if len(numbers) > MAX_SHARED_PULLS:
             raise ApiError(f"more than {MAX_SHARED_PULLS} pull requests share the head commit")
         return numbers
@@ -923,8 +971,19 @@ def run(event: Event, api: GitHub, cla_url: str, run_url: str) -> None:
     # Always re-read the pull request: a payload can predate a later push,
     # and its commit count must match the commit pages read next.
     pull = api.pull_request(event.pull_number)
-    commits = api.commits(pull)
+    if pull.open:
+        api.head_sha = pull.head_sha
     book, _ = api.signatures()
+    if event.before_sha is not None and event.before_sha != pull.head_sha:
+        # A push moved this pull request off a head other pull requests may
+        # still have; their shared status no longer has to wait for it.
+        settle(api, event.before_sha, book, run_url)
+    if not pull.open:
+        # A closed pull request no longer holds its head; the open ones that
+        # share it decide the status alone.
+        settle(api, pull.head_sha, book, run_url)
+        return
+    commits = api.commits(pull)
     verdict = evaluate(pull, commits, book)
     comments = api.comments(pull.number)
     if event.comment is not None and all(c.id != event.comment.id for c in comments):
@@ -933,20 +992,54 @@ def run(event: Event, api: GitHub, cla_url: str, run_url: str) -> None:
     for comment in signing_comments(comments, verdict):
         book = api.record(comment, event.repo_id, pull.number)
     verdict = evaluate(pull, commits, book)
-    api.upsert_comment(pull.number, comments, render_comment(verdict, cla_url), create=not verdict.passed)
-    if not verdict.passed:
-        api.set_status(pull.head_sha, "failure", status_description(verdict), run_url)
-        return
-    # The status belongs to the commit, which other pull requests (another
-    # author or base) can share; pass only when every one of them passes.
-    for number in api.shared_head(pull):
+    blocked_by = blocking_pull(api, pull, book) if verdict.passed else None
+    passed = verdict.passed and blocked_by is None
+    api.upsert_comment(pull.number, comments, render_comment(verdict, cla_url, blocked_by), create=not passed)
+    if blocked_by is not None:
+        description = f"CLA: #{blocked_by}, which shares this commit, still needs signatures."
+    else:
+        description = status_description(verdict)
+    api.set_status(pull.head_sha, "success" if passed else "failure", description, run_url)
+
+
+def blocking_pull(api: GitHub, pull: PullRequest, book: SignatureBook) -> int | None:
+    """Finds another open pull request on ``pull``'s head that fails.
+
+    The ``CLA`` status belongs to the commit, which other pull requests
+    (another author or base) can share, so it passes only when all of them
+    pass.
+
+    # Returns
+    The first failing pull request's number, or ``None``.
+    """
+    for number in api.open_pulls_on(pull.head_sha):
+        if number == pull.number:
+            continue
         other = api.pull_request(number)
-        if other.head_sha != pull.head_sha:
+        if not other.open or other.head_sha != pull.head_sha:
             continue
         if not evaluate(other, api.commits(other), book).passed:
-            api.set_status(pull.head_sha, "failure", f"CLA: #{number}, which shares this commit, still needs signatures.", run_url)
-            return
-    api.set_status(pull.head_sha, "success", status_description(verdict), run_url)
+            return number
+    return None
+
+
+def settle(api: GitHub, sha: str, book: SignatureBook, run_url: str) -> None:
+    """Re-decides the shared status of ``sha`` from the open pull requests on it.
+
+    Does nothing when no open pull request has ``sha`` as its head.
+    """
+    verdicts = []
+    for number in api.open_pulls_on(sha):
+        pull = api.pull_request(number)
+        if pull.open and pull.head_sha == sha:
+            verdicts.append((number, evaluate(pull, api.commits(pull), book)))
+    if not verdicts:
+        return
+    failing = [number for number, verdict in verdicts if not verdict.passed]
+    if failing:
+        api.set_status(sha, "failure", f"CLA: #{failing[0]}, which has this commit, still needs signatures.", run_url)
+    else:
+        api.set_status(sha, "success", status_description(verdicts[0][1]), run_url)
 
 
 def own_comment(comments: list[Comment]) -> Comment | None:
@@ -961,6 +1054,7 @@ def signing_comments(comments: list[Comment], verdict: Verdict) -> list[Comment]
     """Picks the comments that sign for someone who has not signed yet.
 
     Each unsigned account's first comment that is exactly ``SIGN_PHRASE``
+    (ignoring surrounding whitespace)
     counts. Reading the whole history, not only the comment that started the
     run, recovers signatures whose run was replaced in the concurrency queue.
     A comment from anyone the pull request does not need a signature from is
@@ -969,7 +1063,7 @@ def signing_comments(comments: list[Comment], verdict: Verdict) -> list[Comment]
     unsigned = {a.id for a in verdict.unsigned}
     picked: dict[int, Comment] = {}
     for comment in comments:
-        if comment.body == SIGN_PHRASE and comment.author.id in unsigned and comment.author.id not in picked:
+        if comment.body.strip() == SIGN_PHRASE and comment.author.id in unsigned and comment.author.id not in picked:
             picked[comment.author.id] = comment
     return list(picked.values())
 
@@ -1021,7 +1115,9 @@ def main(env: dict[str, str]) -> int:
         run(event, api, cla_url, run_url)
     except (ApiError, ClaInputError) as err:
         print(f"cla_check: {err}", file=sys.stderr)
-        sha = event.pull_request.head_sha if event.pull_request else None
+        sha = api.head_sha
+        if sha is None and event.pull_request is not None and event.pull_request.open:
+            sha = event.pull_request.head_sha
         if sha is not None:
             try:
                 api.set_status(sha, "error", "The CLA check could not decide; see the run.", run_url)

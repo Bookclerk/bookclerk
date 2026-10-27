@@ -1,0 +1,28 @@
+[
+ {
+  "id": 1,
+  "user": {
+   "login": "alice",
+   "id": 101,
+   "type": "User"
+  },
+  "body": "hi",
+  "created_at": "t"
+ },
+ {
+  "id": 2,
+  "user": null,
+  "body": "ghost",
+  "created_at": "t"
+ },
+ {
+  "id": 3,
+  "user": {
+   "login": "Copilot",
+   "id": 198982749,
+   "type": "Bot"
+  },
+  "body": "x",
+  "created_at": "t"
+ }
+]
