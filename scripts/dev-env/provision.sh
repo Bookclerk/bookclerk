@@ -20,9 +20,13 @@
 # the script and scripts/tests/requirements.txt into the same layout.
 #
 # Environment:
-#   BOOKCLERK_DEV_VENV  virtualenv for the script tests (default
-#                       /opt/bookclerk-dev/venv). Put its bin/ on PATH to use
-#                       it as the default python3.
+#   BOOKCLERK_DEV_VENV       virtualenv for the script tests (default
+#                            /opt/bookclerk-dev/venv). Put its bin/ on PATH to
+#                            use it as the default python3.
+#   BOOKCLERK_DEV_CA_BUNDLE  optional complete PEM trust bundle (system roots
+#                            plus a TLS-intercepting proxy's CA) for the
+#                            rustup, cargo and pip downloads; it replaces
+#                            their default trust store.
 #
 # Idempotent: re-running skips what is already installed at the right
 # version. Never touches anything under the checkout.
@@ -93,6 +97,15 @@ requirements="${repo}/scripts/tests/requirements.txt"
 if [[ ! -f "${requirements}" ]]; then
   log "missing ${requirements}; pass --repo <checkout>"
   exit 1
+fi
+
+ca="${BOOKCLERK_DEV_CA_BUNDLE:-}"
+if [[ -n "${ca}" ]]; then
+  if [[ ! -f "${ca}" ]]; then
+    log "BOOKCLERK_DEV_CA_BUNDLE ${ca} is not a file"
+    exit 1
+  fi
+  export SSL_CERT_FILE="${ca}" CARGO_HTTP_CAINFO="${ca}" PIP_CERT="${ca}"
 fi
 
 log "system packages"
