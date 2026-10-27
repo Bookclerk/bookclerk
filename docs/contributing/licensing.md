@@ -14,17 +14,16 @@ may be used. The reasons behind these choices are in
 | --- | --- |
 | Everything not listed below: the hosts, helpers, built-in plugins, web app, tools and docs | [AGPL-3.0-or-later](../../LICENSE) |
 | `bookclerk-plugin-sdk`, `bookclerk-plugin-abi` (including `plugin.capnp`) and `bookclerk-plugin-manifest` | MIT OR Apache-2.0 |
-| The TypeScript and Python SDKs under `packages/` | MIT |
+| The TypeScript and Python SDKs under `packages/` | MIT OR Apache-2.0 |
 | The example plugins under `examples/` | MIT |
 | `bookclerk-naming`, ported from Libation | GPL-3.0-only |
 | `match_score` in `bookclerk-enrich`, ported from audiobookshelf | GPL-3.0-only |
 | Vendored code under `third_party/` and fonts under `ui/public/fonts/` | Their own licenses, next to them |
 
 The plugin SDKs and everything a plugin links are permissive so plugin
-authors can license their plugins however they like. The Rust crates use
-the Rust ecosystem's usual MIT OR Apache-2.0 dual license (the user picks
-either; Apache-2.0 adds an explicit patent grant), with both texts next to
-each crate. A plugin runs as a separate,
+authors can license their plugins however they like. They use the MIT OR
+Apache-2.0 dual license (the user picks either; Apache-2.0 adds an explicit
+patent grant), with both texts next to each package. A plugin runs as a separate,
 jailed process and talks to the host only over the plugin ABI, so the
 project does not treat plugins as derivative works of the host.
 
@@ -76,7 +75,9 @@ request metadata only and never checks out pull request code.
 
 Signatures are recorded in `signatures/cla.json` on the `cla-signatures`
 branch, so recording one needs no pull request and no bypass of the main
-branch rules. The copy on `main` stays empty and only seeds the branch. The maintainers and the project's bots are on the allowlist.
+branch rules. The copy on `main` stays empty and only seeds the branch. Everyone signs, maintainers and organization members included; only the
+project's bots (`dependabot[bot]`, `bookclerk[bot]`, `github-actions[bot]`)
+are on the allowlist.
 
 Setup, once, by a repository administrator:
 

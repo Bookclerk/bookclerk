@@ -14,7 +14,9 @@
     "bridge",
     "workerd-pin.json",
     "src",
-    "README.md"
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
   ],
   "exports": {
     ".": {
@@ -69,5 +71,5 @@
     "workerd",
     "workers-rpc"
   ],
-  "license": "MIT"
+  "license": "MIT OR Apache-2.0"
 }

@@ -135,15 +135,14 @@ pull request as the behavior they describe:
   why it stays, then resolve it.
 - Never skip or disable a test, push an empty commit, or close and reopen a
   pull request to re-run CI.
-- Every author must have accepted the [CLA](CLA.md); the `CLA` check says
-  how.
+- Every author, maintainers included, must have accepted the
+  [CLA](CLA.md); the `CLA` check says how. Only bots are exempt.
 
 ### Licensing
 
-The project is AGPL-3.0-or-later; the Rust plugin crates
-(`bookclerk-plugin-sdk`, `bookclerk-plugin-abi`, `bookclerk-plugin-manifest`)
-are MIT OR Apache-2.0; the TS and Python SDKs and `examples/` are MIT; code
-ported from GPL-3.0 projects keeps
+The project is AGPL-3.0-or-later; the plugin SDKs (TS, Python and the Rust
+`bookclerk-plugin-sdk`, `bookclerk-plugin-abi`, `bookclerk-plugin-manifest`)
+are MIT OR Apache-2.0; `examples/` is MIT; code ported from GPL-3.0 projects keeps
 GPL-3.0-only. Keep `LICENSE` the verbatim AGPL text. A new crate inherits the
 workspace license unless plugins link it; a port of someone else's code sets
 the upstream license in `Cargo.toml` and names its source in the module docs.
