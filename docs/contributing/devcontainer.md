@@ -164,6 +164,11 @@ rm -rf "$d"
 exit 0
 ```
 
+The setup script appends everything it prints to
+`/var/log/bookclerk-session-setup.log`, so a session that starts without a
+tool can show why. It installs into root's toolchain whatever `HOME` the
+hook passes.
+
 ## SSH commit signing (Dev Container)
 
 **Typical setup is ordinary host `git config`** — not environment variables.

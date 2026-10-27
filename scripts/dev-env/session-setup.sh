@@ -29,6 +29,7 @@
 #
 # Each step reports its own failure and the rest still run, so a session
 # starts with whatever succeeded; the summary at the end names what failed.
+# The output is also appended to /var/log/bookclerk-session-setup.log.
 set -uo pipefail
 
 log() { printf 'session-setup: %s\n' "$*"; }
@@ -43,9 +44,18 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
-# A setup hook may run with a minimal PATH; find rustup where it is usually
-# installed before provision.sh looks for it.
-export PATH="/usr/local/cargo/bin:${HOME}/.cargo/bin:${PATH}"
+# Everything this script prints also goes to a log, because a hosted setup
+# hook may keep no output of its own.
+log_file="/var/log/bookclerk-session-setup.log"
+exec > >(tee -a "${log_file}") 2>&1
+log "$(date -u +%Y-%m-%dT%H:%M:%SZ) start (log: ${log_file})"
+
+# A setup hook may run with a minimal environment: HOME unset or not root's,
+# and PATH without cargo. The toolchain is root's, so use root's home, and
+# find rustup where it is usually installed before provision.sh looks for it.
+root_home="$(getent passwd root | cut -d: -f6)"
+export HOME="${root_home:-/root}"
+export PATH="/usr/local/cargo/bin:${HOME}/.cargo/bin:${PATH:-/usr/sbin:/usr/bin:/sbin:/bin}"
 if [[ -n "${BOOKCLERK_DEV_CA_BUNDLE:-}" && -f "${BOOKCLERK_DEV_CA_BUNDLE}" ]]; then
   BOOKCLERK_DEV_CA_BUNDLE="$(realpath "${BOOKCLERK_DEV_CA_BUNDLE}")"
   export BOOKCLERK_DEV_CA_BUNDLE
