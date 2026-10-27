@@ -69,26 +69,47 @@ until they do. Comment `recheck` to run it again.
 
 ## The CLA check
 
-The `CLA` workflow (`.github/workflows/cla.yml`) runs the CLA Assistant Lite
-action on every pull request and on signature comments. It reads pull
-request metadata only and never checks out pull request code.
+The `CLA` workflow (`.github/workflows/cla.yml`) runs
+`scripts/cla_check.py` on every pull request and on signature and
+`recheck` comments. It checks out only the default branch and reads the
+pull request through the API, so pull request code never runs with its
+token.
+
+Who must sign:
+
+- The pull request author, and the GitHub account linked to every commit.
+  Everyone signs, maintainers and organization members included.
+- Only the project's bots are exempt: `dependabot[bot]`, `bookclerk[bot]`
+  and `github-actions[bot]`. A bot is recognized by its account type and
+  login, never by the name in a commit, which anyone can set.
+- People are matched by GitHub account id, so a signature survives a
+  renamed account.
+- A commit whose author email belongs to no GitHub account fails the check,
+  because nobody can sign for it. Add the email to your account, or amend
+  the commit with an email it already has.
+- A signature comment counts only from someone the pull request needs a
+  signature from.
+
+The result is the **CLA** commit status on the pull request's head commit,
+and one comment that lists who still has to sign, edited in place. Merge
+queue runs report a passing **CLA** status, because each pull request
+passed it to enter the queue. A pull request with more than 250 commits
+cannot be checked and fails closed.
 
 Signatures are recorded in `signatures/cla.json` on the `cla-signatures`
 branch, so recording one needs no pull request and no bypass of the main
-branch rules. The copy on `main` stays empty and only seeds the branch. Everyone signs, maintainers and organization members included; only the
-project's bots (`dependabot[bot]`, `bookclerk[bot]`, `github-actions[bot]`)
-are on the allowlist.
+branch rules. The copy on `main` stays empty and only seeds the branch.
 
 Setup, once, by a repository administrator:
 
-1. Create the `cla-signatures` branch from `main`. It starts with `main`'s
-   empty `signatures/cla.json`, which the action needs: the pinned version
-   cannot create a missing file and fails the check instead.
+1. Create the `cla-signatures` branch from `main`, so it starts with
+   `main`'s empty `signatures/cla.json`. The check fails until the file
+   exists.
 2. Make sure no ruleset blocks the `github-actions[bot]` from pushing to
    `cla-signatures`.
-3. After the check has run on a pull request, add **CLA** to the required
-   checks in the main branch ruleset. The workflow also listens to
-   `merge_group`, so queued pull requests report it too.
+3. After the check has run on a pull request, add the **CLA** status to the
+   required checks in the main branch ruleset. The `CLA check` job is only
+   the workflow that reports it.
 
 ## The Bookclerk name and logo
 

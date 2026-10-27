@@ -1,0 +1,18 @@
+{
+ "repository": {
+  "id": 555
+ },
+ "issue": {
+  "number": 8
+ },
+ "comment": {
+  "id": 900,
+  "user": {
+   "login": "alice",
+   "id": 101,
+   "type": "User"
+  },
+  "body": "recheck",
+  "created_at": "2026-10-27T17:00:00Z"
+ }
+}

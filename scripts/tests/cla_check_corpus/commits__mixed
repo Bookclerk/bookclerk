@@ -1,0 +1,25 @@
+[
+ {
+  "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "author": {
+   "login": "alice",
+   "id": 101,
+   "type": "User"
+  },
+  "commit": {
+   "author": {
+    "name": "dependabot[bot]"
+   }
+  }
+ },
+ {
+  "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "author": null,
+  "commit": {
+   "author": {
+    "name": "dependabot[bot]",
+    "email": "x@example.com"
+   }
+  }
+ }
+]

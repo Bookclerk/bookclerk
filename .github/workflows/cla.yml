@@ -1,21 +1,22 @@
 # Contributor License Agreement check.
 #
 # Policy:
-# - Every pull request author and commit author must have accepted CLA.md,
-#   maintainers and organization members included. Only the bots in
-#   `allowlist` are exempt.
-# - A contributor accepts by commenting the exact sentence in
-#   `custom-pr-sign-comment` on their pull request. The action records the
-#   signature in `signatures/cla.json` on the `cla-signatures` branch (a
-#   GitHub-signed API commit), so main is never written. The branch starts
-#   from main's empty `signatures/cla.json`: the pinned action cannot create
-#   a missing file (it compares Octokit's numeric 404 with the string "404").
+# - The pull request author and the account linked to every commit must have
+#   accepted CLA.md, maintainers and organization members included. Only the
+#   bots in `BOT_ALLOWLIST` (scripts/cla_check.py) are exempt, matched by
+#   account type and login, never by git author name.
+# - A contributor accepts by commenting the exact sentence in `SIGN_PHRASE`
+#   on a pull request they are part of. The check records the signature in
+#   `signatures/cla.json` on the `cla-signatures` branch (a GitHub-signed API
+#   commit), so main is never written.
 # - `recheck` re-runs the check after a signature or allowlist change.
+# - The verdict is the `CLA` commit status on the pull request's head; that
+#   context is the one to require. Merge groups get a passing `CLA` status:
+#   each pull request in them already passed it to enter the queue.
 # - Runs on `pull_request_target` so fork pull requests get a token that can
-#   comment and record signatures. It never checks out or runs pull request
-#   code; the action only reads pull request metadata through the API.
-# - `merge_group` runs pass straight through: the pull request was already
-#   checked, and a required check has to report on queue runs too.
+#   comment and record signatures. It checks out the base branch only and
+#   never checks out or runs pull request code; the script reads pull request
+#   metadata through the API.
 #
 # Setup (signature branch, required check): docs/contributing/licensing.md#the-cla-check
 
@@ -36,7 +37,7 @@ concurrency:
 
 jobs:
   cla:
-    name: CLA
+    name: CLA check
     if: >-
       github.event_name != 'issue_comment' ||
       (github.event.issue.pull_request &&
@@ -44,36 +45,22 @@ jobs:
          github.event.comment.body == 'I have read the Bookclerk CLA and I agree to it.'))
     runs-on: ubuntu-latest
     permissions:
-      # Re-run the pull request's earlier CLA run after a signature comment.
-      actions: write
-      # Write signatures to the `cla-signatures` branch.
+      # Read the checker and write signatures to the `cla-signatures` branch.
       contents: write
-      # Comment on and read the pull request.
+      # Read the pull request and its commits, and keep the check's comment.
       pull-requests: write
+      # Report the `CLA` commit status.
       statuses: write
     steps:
-      - name: Queue runs were checked on their pull request
-        if: github.event_name == 'merge_group'
-        run: echo "The CLA was checked on the pull request."
+      # The default branch's checker, never the pull request's.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: scripts/cla_check.py
+          sparse-checkout-cone-mode: false
 
       - name: Check signatures
-        if: github.event_name != 'merge_group'
-        uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          path-to-document: https://github.com/${{ github.repository }}/blob/main/CLA.md
-          path-to-signatures: signatures/cla.json
-          branch: cla-signatures
-          allowlist: dependabot[bot],bookclerk[bot],github-actions[bot]
-          custom-pr-sign-comment: I have read the Bookclerk CLA and I agree to it.
-          custom-notsigned-prcomment: >-
-            Thank you for your pull request. Before it can be merged, each
-            author needs to accept the
-            [Bookclerk Contributor License Agreement](https://github.com/${{ github.repository }}/blob/main/CLA.md)
-            once, by posting the comment below on this pull request.
-          custom-allsigned-prcomment: All authors of this pull request have accepted the Bookclerk CLA.
-          signed-commit-message: "chore(cla): record $contributorName's signature from #$pullRequestNo"
-          create-file-commit-message: "chore(cla): create the signature file"
-          # Locking would also stop review discussion on merged pull requests.
-          lock-pullrequest-aftermerge: false
+        run: python3 scripts/cla_check.py

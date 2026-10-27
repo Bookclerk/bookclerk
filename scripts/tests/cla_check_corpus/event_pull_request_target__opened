@@ -1,0 +1,18 @@
+{
+ "action": "opened",
+ "repository": {
+  "id": 555
+ },
+ "pull_request": {
+  "number": 7,
+  "user": {
+   "login": "alice",
+   "id": 101,
+   "type": "User"
+  },
+  "head": {
+   "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "commits": 2
+ }
+}

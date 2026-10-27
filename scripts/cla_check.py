@@ -1,0 +1,786 @@
+#!/usr/bin/env python3
+"""Checks that everyone behind a pull request has accepted the Bookclerk CLA.
+
+The ``CLA`` workflow runs this on ``pull_request_target``, on signature and
+``recheck`` comments, and on ``merge_group``. It reads only pull request
+metadata through the REST API and never checks out pull request code.
+
+Who must sign: the pull request author and the GitHub account linked to every
+commit, maintainers and organization members included. People are matched by
+numeric account id, never by name. The only exemptions are the bot accounts
+in ``BOT_ALLOWLIST``, recognized by their API account type and login, which
+no human account can take. A commit not linked to any account fails the
+check, since nobody can sign for it. The pull request author is the one
+authenticated party, so their signature always counts for what they submit.
+
+The verdict is the ``CLA`` commit status on the pull request's head commit.
+Signatures live in ``signatures/cla.json`` on the ``cla-signatures`` branch,
+in the format CLA Assistant Lite used, and are written through the contents
+API. One comment, marked with ``COMMENT_MARKER``, says who still has to sign
+and is edited in place.
+
+Everything that parses bytes from GitHub (the event payload, pull requests,
+commit and comment pages, the signature file) is sans-IO and fuzzed by
+``scripts/tests/test_cla_check.py``. Any input outside the expected shape
+fails closed.
+
+Usage (inside the workflow): ``cla_check.py`` with ``GITHUB_TOKEN``,
+``GITHUB_REPOSITORY``, ``GITHUB_EVENT_NAME``, ``GITHUB_EVENT_PATH`` and
+``GITHUB_SERVER_URL`` set. It exits 0 once the status is posted, whatever the
+verdict, and 1 when it could not decide.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+from enum import Enum
+from typing import Callable
+
+#: The comment a contributor posts to accept the CLA, matched exactly.
+SIGN_PHRASE = "I have read the Bookclerk CLA and I agree to it."
+
+#: The comment that re-runs the check without signing.
+RECHECK_PHRASE = "recheck"
+
+#: First line of the check's own comment, used to find it again.
+COMMENT_MARKER = "<!-- bookclerk-cla-check -->"
+
+#: Commit status context the check reports; the one to require in rulesets.
+STATUS_CONTEXT = "CLA"
+
+#: The branch that holds the signature file.
+SIGNATURE_BRANCH = "cla-signatures"
+
+#: Path of the signature file on ``SIGNATURE_BRANCH``.
+SIGNATURE_PATH = "signatures/cla.json"
+
+#: Bot accounts exempt from signing. Only API accounts of type ``Bot`` match,
+#: and ``[bot]`` logins cannot be registered by people.
+BOT_ALLOWLIST = frozenset({"dependabot[bot]", "bookclerk[bot]", "github-actions[bot]"})
+
+#: The account the workflow's token comments as.
+COMMENT_AUTHOR = "github-actions[bot]"
+
+#: Most commits the pull request commits endpoint returns; larger pull
+#: requests fail closed rather than be checked in part.
+MAX_COMMITS = 250
+
+#: Page size for every paginated request.
+PAGE_SIZE = 100
+
+#: Largest JSON document read from the API or the event file, in bytes.
+MAX_DOCUMENT_BYTES = 4 * 1024 * 1024
+
+#: Largest signature file read, in bytes (the contents API inlines at most 1 MiB).
+MAX_SIGNATURE_BYTES = 1024 * 1024
+
+#: Times a signature write is retried after another run changed the file.
+SIGNATURE_WRITE_ATTEMPTS = 3
+
+#: A GitHub user or organization login. New logins cannot end in a hyphen
+#: or repeat one, but some older accounts do, so only the first character
+#: is restricted beyond the alphabet.
+USER_LOGIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", re.ASCII)
+
+#: A GitHub App's bot login.
+BOT_LOGIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}\[bot\]", re.ASCII)
+
+#: A full commit SHA-1.
+COMMIT_SHA = re.compile(r"[0-9a-f]{40}", re.ASCII)
+
+#: An ``owner/name`` repository.
+REPOSITORY = re.compile(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}", re.ASCII)
+
+#: Largest id GitHub could hand out that still round-trips through JSON numbers.
+MAX_ID = 2**53 - 1
+
+
+class ClaInputError(ValueError):
+    """A document from GitHub is not in the shape the check expects."""
+
+
+class ApiError(RuntimeError):
+    """A GitHub API request failed."""
+
+
+class AccountType(Enum):
+    """The kind of GitHub account, from the API's ``type`` field."""
+
+    #: A person's account.
+    USER = "User"
+    #: A GitHub App's bot account.
+    BOT = "Bot"
+    #: An organization, which can own repositories but not author commits.
+    ORGANIZATION = "Organization"
+    #: A placeholder for an account imported from elsewhere.
+    MANNEQUIN = "Mannequin"
+
+
+@dataclass(frozen=True)
+class Account:
+    """A GitHub account as the REST API describes it.
+
+    # Invariants
+    ``login`` matches ``BOT_LOGIN`` exactly when ``type`` is ``BOT``, and
+    ``USER_LOGIN`` otherwise; ``id`` is in ``1..=MAX_ID``.
+    """
+
+    #: The account's numeric id, which never changes.
+    id: int
+    #: The account's current login, safe to print and to mention.
+    login: str
+    #: The kind of account.
+    type: AccountType
+
+
+@dataclass(frozen=True)
+class Commit:
+    """One pull request commit and the account GitHub links its author to."""
+
+    #: The commit's full SHA-1.
+    sha: str
+    #: The linked author account, or ``None`` when the author email matches
+    #: no account. The git author name is never read.
+    author: Account | None
+
+
+@dataclass(frozen=True)
+class PullRequest:
+    """The pull request fields the check uses."""
+
+    #: The pull request number.
+    number: int
+    #: The account that opened it.
+    author: Account
+    #: The SHA-1 of its head commit, where the status goes.
+    head_sha: str
+    #: How many commits it has.
+    commits: int
+
+
+@dataclass(frozen=True)
+class Comment:
+    """An issue comment on the pull request."""
+
+    #: The comment's numeric id.
+    id: int
+    #: Who posted it.
+    author: Account
+    #: Its Markdown body.
+    body: str
+    #: When it was posted, as the API's ISO 8601 text.
+    created_at: str
+
+
+class EventKind(Enum):
+    """Which workflow event triggered the run."""
+
+    #: A pull request was opened, pushed to or reopened.
+    PULL_REQUEST = "pull_request_target"
+    #: A comment was posted on an issue or pull request.
+    ISSUE_COMMENT = "issue_comment"
+    #: A merge queue built a merge group.
+    MERGE_GROUP = "merge_group"
+
+
+@dataclass(frozen=True)
+class Event:
+    """The parts of a workflow event payload the check acts on."""
+
+    #: The event that triggered the run.
+    kind: EventKind
+    #: The id of the repository the workflow runs in.
+    repo_id: int
+    #: The pull request number; ``None`` for a merge group or for a comment
+    #: on a plain issue.
+    pull_number: int | None
+    #: The pull request from a ``pull_request_target`` payload.
+    pull_request: PullRequest | None
+    #: The new comment from an ``issue_comment`` payload.
+    comment: Comment | None
+    #: The merge group's head commit from a ``merge_group`` payload.
+    merge_group_sha: str | None
+
+
+@dataclass(frozen=True)
+class SignatureBook:
+    """The parsed signature file.
+
+    ``entries`` keeps every entry exactly as read, so writing it back changes
+    only what is appended.
+    """
+
+    #: The raw entries of ``signedContributors``, in file order.
+    entries: tuple[dict[str, object], ...]
+    #: The account ids that have signed.
+    signed_ids: frozenset[int]
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """Who still has to do something before the check passes."""
+
+    #: Accounts that must sign and have not, in first-seen order.
+    unsigned: tuple[Account, ...]
+    #: Commits linked to no account, by SHA-1.
+    unlinked: tuple[str, ...]
+
+    @property
+    def passed(self) -> bool:
+        """Whether everyone has signed and every commit is linked."""
+        return not self.unsigned and not self.unlinked
+
+
+def _load_json(raw: bytes, limit: int = MAX_DOCUMENT_BYTES) -> object:
+    """Decodes a JSON document no larger than ``limit`` bytes.
+
+    # Errors
+    ``ClaInputError`` when it is too large, not UTF-8, not JSON, or uses
+    constants JSON does not define (``NaN``, ``Infinity``).
+    """
+    if len(raw) > limit:
+        raise ClaInputError("document too large")
+
+    def no_constant(name: str) -> object:
+        raise ClaInputError(f"invalid JSON constant {name}")
+
+    try:
+        return json.loads(raw.decode("utf-8"), parse_constant=no_constant)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as err:
+        raise ClaInputError("not a JSON document") from err
+
+
+def _object(value: object, what: str) -> dict[str, object]:
+    """Returns ``value`` as a JSON object, or raises ``ClaInputError`` naming ``what``."""
+    if not isinstance(value, dict):
+        raise ClaInputError(f"{what} is not an object")
+    return value
+
+
+def _id(value: object, what: str) -> int:
+    """Returns ``value`` as a positive JSON integer id.
+
+    # Errors
+    ``ClaInputError`` when it is not an integer (booleans included) in
+    ``1..=MAX_ID``.
+    """
+    if type(value) is not int or not 1 <= value <= MAX_ID:
+        raise ClaInputError(f"{what} is not a valid id")
+    return value
+
+
+def _string(value: object, what: str) -> str:
+    """Returns ``value`` as a JSON string, or raises ``ClaInputError`` naming ``what``."""
+    if not isinstance(value, str):
+        raise ClaInputError(f"{what} is not a string")
+    return value
+
+
+def _sha(value: object, what: str) -> str:
+    """Returns ``value`` as a full lowercase commit SHA-1.
+
+    # Errors
+    ``ClaInputError`` when it is anything else.
+    """
+    sha = _string(value, what)
+    if COMMIT_SHA.fullmatch(sha) is None:
+        raise ClaInputError(f"{what} is not a commit SHA")
+    return sha
+
+
+def parse_account(value: object) -> Account:
+    """Reads a REST API account object (``user``, ``author``).
+
+    # Arguments
+    * ``value``: the decoded JSON value.
+
+    # Returns
+    The account, with its login checked against its type.
+
+    # Errors
+    ``ClaInputError`` when a field is missing or malformed, the type is
+    unknown, or the login does not fit the type.
+    """
+    obj = _object(value, "account")
+    account_id = _id(obj.get("id"), "account id")
+    login = _string(obj.get("login"), "account login")
+    try:
+        kind = AccountType(obj.get("type"))
+    except ValueError as err:
+        raise ClaInputError("unknown account type") from err
+    pattern = BOT_LOGIN if kind is AccountType.BOT else USER_LOGIN
+    if pattern.fullmatch(login) is None:
+        raise ClaInputError("account login does not fit its type")
+    return Account(id=account_id, login=login, type=kind)
+
+
+def parse_pull_request(value: object) -> PullRequest:
+    """Reads a REST API pull request object.
+
+    # Arguments
+    * ``value``: the decoded JSON value, from an event or ``GET /pulls/{n}``.
+
+    # Returns
+    The pull request's number, author, head commit and commit count.
+
+    # Errors
+    ``ClaInputError`` when a field is missing or malformed.
+    """
+    obj = _object(value, "pull request")
+    head = _object(obj.get("head"), "pull request head")
+    commits = obj.get("commits")
+    if type(commits) is not int or commits < 0:
+        raise ClaInputError("pull request commit count is not a count")
+    return PullRequest(
+        number=_id(obj.get("number"), "pull request number"),
+        author=parse_account(obj.get("user")),
+        head_sha=_sha(head.get("sha"), "pull request head"),
+        commits=commits,
+    )
+
+
+def parse_comment(value: object) -> Comment:
+    """Reads a REST API issue comment object.
+
+    # Errors
+    ``ClaInputError`` when a field is missing or malformed.
+    """
+    obj = _object(value, "comment")
+    return Comment(
+        id=_id(obj.get("id"), "comment id"),
+        author=parse_account(obj.get("user")),
+        body=_string(obj.get("body"), "comment body"),
+        created_at=_string(obj.get("created_at"), "comment time"),
+    )
+
+
+def parse_event(name: str, raw: bytes) -> Event:
+    """Reads the workflow event payload.
+
+    # Arguments
+    * ``name``: ``GITHUB_EVENT_NAME``.
+    * ``raw``: the contents of ``GITHUB_EVENT_PATH``.
+
+    # Returns
+    The event, with the pull request, comment or merge group it carries.
+
+    # Errors
+    ``ClaInputError`` for any other event name or a payload of the wrong
+    shape.
+    """
+    try:
+        kind = EventKind(name)
+    except ValueError as err:
+        raise ClaInputError("unsupported event") from err
+    payload = _object(_load_json(raw), "event")
+    repo_id = _id(_object(payload.get("repository"), "repository").get("id"), "repository id")
+    if kind is EventKind.PULL_REQUEST:
+        pull = parse_pull_request(payload.get("pull_request"))
+        return Event(kind, repo_id, pull.number, pull, None, None)
+    if kind is EventKind.ISSUE_COMMENT:
+        issue = _object(payload.get("issue"), "issue")
+        number = _id(issue.get("number"), "issue number")
+        is_pull = issue.get("pull_request") is not None
+        comment = parse_comment(payload.get("comment"))
+        return Event(kind, repo_id, number if is_pull else None, None, comment, None)
+    group = _object(payload.get("merge_group"), "merge group")
+    return Event(kind, repo_id, None, None, None, _sha(group.get("head_sha"), "merge group head"))
+
+
+def parse_commit_page(raw: bytes) -> list[Commit]:
+    """Reads one page of ``GET /pulls/{n}/commits``.
+
+    Only the top-level ``author``, the account GitHub linked the commit to,
+    is read; the git author name and email are ignored.
+
+    # Errors
+    ``ClaInputError`` when the page or an entry has the wrong shape.
+    """
+    page = _load_json(raw)
+    if not isinstance(page, list):
+        raise ClaInputError("commit page is not a list")
+    commits = []
+    for entry in page:
+        obj = _object(entry, "commit")
+        author = obj.get("author")
+        commits.append(Commit(sha=_sha(obj.get("sha"), "commit"), author=None if author is None else parse_account(author)))
+    return commits
+
+
+def parse_comment_page(raw: bytes) -> list[Comment]:
+    """Reads one page of ``GET /issues/{n}/comments``.
+
+    # Errors
+    ``ClaInputError`` when the page or an entry has the wrong shape.
+    """
+    page = _load_json(raw)
+    if not isinstance(page, list):
+        raise ClaInputError("comment page is not a list")
+    return [parse_comment(entry) for entry in page]
+
+
+def parse_signatures(raw: bytes) -> SignatureBook:
+    """Reads the signature file.
+
+    # Arguments
+    * ``raw``: the file's bytes.
+
+    # Returns
+    Its entries and the set of account ids that signed.
+
+    # Errors
+    ``ClaInputError`` when it is too large, is not an object whose
+    ``signedContributors`` is a list, or an entry lacks a string ``name`` or a
+    valid ``id``.
+    """
+    doc = _object(_load_json(raw, MAX_SIGNATURE_BYTES), "signature file")
+    entries = doc.get("signedContributors")
+    if not isinstance(entries, list):
+        raise ClaInputError("signedContributors is not a list")
+    ids = set()
+    for entry in entries:
+        obj = _object(entry, "signature")
+        _string(obj.get("name"), "signature name")
+        ids.add(_id(obj.get("id"), "signature id"))
+    return SignatureBook(entries=tuple(entries), signed_ids=frozenset(ids))
+
+
+def parse_contents(raw: bytes) -> tuple[bytes, str]:
+    """Reads ``GET /contents/{path}`` for a file.
+
+    # Returns
+    The file's bytes and its blob SHA, needed to replace it.
+
+    # Errors
+    ``ClaInputError`` when the response is not a base64 file of at most
+    ``MAX_SIGNATURE_BYTES``.
+    """
+    obj = _object(_load_json(raw), "contents")
+    if obj.get("type") != "file" or obj.get("encoding") != "base64":
+        raise ClaInputError("contents is not a base64 file")
+    blob = _sha(obj.get("sha"), "contents sha")
+    text = _string(obj.get("content"), "contents")
+    try:
+        data = base64.b64decode("".join(text.split()).encode("ascii"), validate=True)
+    except (UnicodeEncodeError, ValueError) as err:
+        raise ClaInputError("contents is not base64") from err
+    if len(data) > MAX_SIGNATURE_BYTES:
+        raise ClaInputError("signature file too large")
+    return data, blob
+
+
+def is_exempt(account: Account) -> bool:
+    """Whether ``account`` is one of the bots that need not sign."""
+    return account.type is AccountType.BOT and account.login in BOT_ALLOWLIST
+
+
+def required_signers(pull: PullRequest, commits: list[Commit]) -> list[Account]:
+    """Lists the accounts that must sign, once each, in first-seen order.
+
+    The pull request author comes first, then each commit's linked author.
+    Exempt bots are left out.
+    """
+    seen: set[int] = set()
+    signers = []
+    for account in [pull.author, *(c.author for c in commits if c.author is not None)]:
+        if account.id not in seen and not is_exempt(account):
+            seen.add(account.id)
+            signers.append(account)
+    return signers
+
+
+def evaluate(pull: PullRequest, commits: list[Commit], book: SignatureBook) -> Verdict:
+    """Decides whether the pull request passes the CLA check.
+
+    # Arguments
+    * ``pull``: the pull request.
+    * ``commits``: all of its commits.
+    * ``book``: the signatures recorded so far.
+
+    # Returns
+    The accounts that still have to sign and the commits linked to no
+    account; the check passes when both are empty.
+    """
+    unsigned = tuple(a for a in required_signers(pull, commits) if a.id not in book.signed_ids)
+    unlinked = tuple(dict.fromkeys(c.sha for c in commits if c.author is None))
+    return Verdict(unsigned=unsigned, unlinked=unlinked)
+
+
+def add_signature(book: SignatureBook, comment: Comment, repo_id: int, pull_number: int) -> bytes:
+    """Returns the signature file with the commenter's signature appended.
+
+    The entry uses CLA Assistant Lite's fields, so the file stays readable by
+    either tool. Existing entries are written back unchanged.
+    """
+    entry: dict[str, object] = {
+        "name": comment.author.login,
+        "id": comment.author.id,
+        "comment_id": comment.id,
+        "created_at": comment.created_at,
+        "repoId": repo_id,
+        "pullRequestNo": pull_number,
+    }
+    doc = {"signedContributors": [*book.entries, entry]}
+    return (json.dumps(doc, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def render_comment(verdict: Verdict, cla_url: str) -> str:
+    """Renders the check's comment on the pull request.
+
+    Only validated logins, validated SHAs and ``cla_url`` reach the body; no
+    git author name or other text from the pull request does.
+
+    # Arguments
+    * ``verdict``: the current verdict.
+    * ``cla_url``: the link to the agreement.
+
+    # Returns
+    The Markdown body, starting with ``COMMENT_MARKER``.
+    """
+    lines = [COMMENT_MARKER]
+    if verdict.passed:
+        lines.append("Everyone on this pull request has accepted the Bookclerk CLA. Thank you!")
+        return "\n".join(lines) + "\n"
+    lines.append(
+        "Thank you for your pull request. Before it can be merged, everyone who wrote"
+        f" it needs to accept the [Bookclerk Contributor License Agreement]({cla_url}) once."
+    )
+    if verdict.unsigned:
+        lines += ["", "Still to sign: " + ", ".join(f"@{a.login}" for a in verdict.unsigned) + "."]
+        lines += ["", "To sign, read the agreement and post this exact comment:", "", "```text", SIGN_PHRASE, "```"]
+    if verdict.unlinked:
+        lines += [
+            "",
+            "These commits are not linked to a GitHub account, so nobody can sign for them. Add the"
+            " author email to your GitHub account, or amend the commits with an email it already has:",
+            "",
+            *(f"- `{sha}`" for sha in verdict.unlinked),
+        ]
+    lines += ["", f"Comment `{RECHECK_PHRASE}` to run the check again."]
+    return "\n".join(lines) + "\n"
+
+
+def status_description(verdict: Verdict) -> str:
+    """Returns the commit status description, at most 140 characters."""
+    if verdict.passed:
+        return "Everyone has accepted the CLA."
+    parts = []
+    if verdict.unsigned:
+        parts.append(f"{len(verdict.unsigned)} still to sign")
+    if verdict.unlinked:
+        parts.append(f"{len(verdict.unlinked)} unlinked commit(s)")
+    return ("CLA: " + ", ".join(parts) + ".")[:140]
+
+
+#: Sends one API request: ``(method, path, JSON body or None)`` to
+#: ``(HTTP status, response bytes)``.
+Transport = Callable[[str, str, "dict[str, object] | None"], "tuple[int, bytes]"]
+
+
+class GitHub:
+    """The few REST calls the check makes, over a ``Transport``."""
+
+    def __init__(self, send: Transport, repository: str) -> None:
+        """Wraps ``send`` for ``repository`` (``owner/name``)."""
+        #: The function that performs requests.
+        self.send = send
+        #: ``repos/<owner>/<name>``, the prefix of every path.
+        self.base = f"repos/{repository}"
+
+    def call(self, method: str, path: str, body: dict[str, object] | None = None, ok: tuple[int, ...] = (200, 201)) -> bytes:
+        """Sends a request and returns the body of a successful response.
+
+        # Errors
+        ``ApiError`` when the status is not in ``ok``.
+        """
+        status, data = self.send(method, f"{self.base}/{path}", body)
+        if status not in ok:
+            raise ApiError(f"{method} {path}: HTTP {status}")
+        return data
+
+    def pull_request(self, number: int) -> PullRequest:
+        """Fetches a pull request."""
+        return parse_pull_request(_load_json(self.call("GET", f"pulls/{number}")))
+
+    def commits(self, pull: PullRequest) -> list[Commit]:
+        """Fetches every commit of ``pull``.
+
+        # Errors
+        ``ApiError`` when it has more than ``MAX_COMMITS`` commits or the
+        pages disagree with its commit count.
+        """
+        if pull.commits > MAX_COMMITS:
+            raise ApiError(f"pull request has more than {MAX_COMMITS} commits")
+        commits: list[Commit] = []
+        page = 1
+        while True:
+            batch = parse_commit_page(self.call("GET", f"pulls/{pull.number}/commits?per_page={PAGE_SIZE}&page={page}"))
+            commits += batch
+            if len(batch) < PAGE_SIZE or len(commits) >= MAX_COMMITS:
+                break
+            page += 1
+        if len(commits) != pull.commits:
+            raise ApiError("commit pages do not match the pull request's commit count")
+        return commits
+
+    def own_comment(self, number: int) -> Comment | None:
+        """Finds the check's earlier comment on pull request ``number``."""
+        page = 1
+        while True:
+            batch = parse_comment_page(self.call("GET", f"issues/{number}/comments?per_page={PAGE_SIZE}&page={page}"))
+            for comment in batch:
+                if comment.author.login == COMMENT_AUTHOR and comment.author.type is AccountType.BOT and comment.body.startswith(COMMENT_MARKER):
+                    return comment
+            if len(batch) < PAGE_SIZE:
+                return None
+            page += 1
+
+    def signatures(self) -> tuple[SignatureBook, str]:
+        """Reads the signature file and its blob SHA from ``SIGNATURE_BRANCH``."""
+        data, blob = parse_contents(self.call("GET", f"contents/{SIGNATURE_PATH}?ref={SIGNATURE_BRANCH}"))
+        return parse_signatures(data), blob
+
+    def record(self, comment: Comment, repo_id: int, pull_number: int) -> SignatureBook:
+        """Appends the commenter's signature unless it is already there.
+
+        Retries when another run replaced the file between the read and the
+        write.
+
+        # Returns
+        The signature book as written.
+        """
+        for _ in range(SIGNATURE_WRITE_ATTEMPTS):
+            book, blob = self.signatures()
+            if comment.author.id in book.signed_ids:
+                return book
+            data = add_signature(book, comment, repo_id, pull_number)
+            status, _ = self.send(
+                "PUT",
+                f"{self.base}/contents/{SIGNATURE_PATH}",
+                {
+                    "message": f"chore(cla): record @{comment.author.login}'s signature from #{pull_number}",
+                    "content": base64.b64encode(data).decode("ascii"),
+                    "sha": blob,
+                    "branch": SIGNATURE_BRANCH,
+                },
+            )
+            if status in (200, 201):
+                return parse_signatures(data)
+            if status not in (409, 422):
+                raise ApiError(f"PUT contents/{SIGNATURE_PATH}: HTTP {status}")
+        raise ApiError("the signature file kept changing; try recheck")
+
+    def set_status(self, sha: str, state: str, description: str, target_url: str) -> None:
+        """Posts the ``CLA`` commit status on ``sha``."""
+        self.call("POST", f"statuses/{sha}", {"state": state, "context": STATUS_CONTEXT, "description": description, "target_url": target_url})
+
+    def upsert_comment(self, number: int, body: str, create: bool) -> None:
+        """Edits the check's comment, or posts one when ``create`` is true."""
+        existing = self.own_comment(number)
+        if existing is not None:
+            if existing.body != body:
+                self.call("PATCH", f"issues/comments/{existing.id}", {"body": body})
+        elif create:
+            self.call("POST", f"issues/{number}/comments", {"body": body})
+
+
+def run(event: Event, api: GitHub, cla_url: str, run_url: str) -> None:
+    """Handles one workflow event.
+
+    # Arguments
+    * ``event``: the parsed event.
+    * ``api``: the GitHub client.
+    * ``cla_url``: the link to the agreement, for the comment.
+    * ``run_url``: the workflow run, for the status link.
+
+    # Errors
+    ``ApiError`` or ``ClaInputError`` when the check cannot decide; the
+    caller then reports an ``error`` status.
+    """
+    if event.merge_group_sha is not None:
+        # Every pull request in the group passed the required CLA status to
+        # enter the queue; the queue run needs the context reported too.
+        api.set_status(event.merge_group_sha, "success", "Checked on each pull request in the group.", run_url)
+        return
+    if event.pull_number is None:
+        return
+    # Always re-read the pull request: a payload can predate a later push,
+    # and its commit count must match the commit pages read next.
+    pull = api.pull_request(event.pull_number)
+    commits = api.commits(pull)
+    book, _ = api.signatures()
+    verdict = evaluate(pull, commits, book)
+    comment = event.comment
+    if comment is not None and comment.body == SIGN_PHRASE and any(a.id == comment.author.id for a in verdict.unsigned):
+        book = api.record(comment, event.repo_id, pull.number)
+        verdict = evaluate(pull, commits, book)
+    api.upsert_comment(pull.number, render_comment(verdict, cla_url), create=not verdict.passed)
+    api.set_status(pull.head_sha, "success" if verdict.passed else "failure", status_description(verdict), run_url)
+
+
+def urllib_transport(token: str, api_url: str) -> Transport:
+    """Returns a ``Transport`` that calls ``api_url`` with ``token``."""
+
+    def send(method: str, path: str, body: dict[str, object] | None) -> tuple[int, bytes]:
+        data = None if body is None else json.dumps(body).encode("utf-8")
+        request = urllib.request.Request(f"{api_url}/{path}", data=data, method=method)
+        request.add_header("Authorization", f"Bearer {token}")
+        request.add_header("Accept", "application/vnd.github+json")
+        request.add_header("X-GitHub-Api-Version", "2022-11-28")
+        if data is not None:
+            request.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return response.status, response.read(MAX_DOCUMENT_BYTES + 1)
+        except urllib.error.HTTPError as err:
+            return err.code, err.read(MAX_DOCUMENT_BYTES + 1)
+
+    return send
+
+
+def main(env: dict[str, str]) -> int:
+    """Runs the check from the workflow environment.
+
+    # Arguments
+    * ``env``: the process environment.
+
+    # Returns
+    0 when the status was posted, 1 when the check could not decide.
+    """
+    repository = env.get("GITHUB_REPOSITORY", "")
+    if REPOSITORY.fullmatch(repository) is None:
+        print("cla_check: GITHUB_REPOSITORY is not owner/name", file=sys.stderr)
+        return 1
+    server = env.get("GITHUB_SERVER_URL", "https://github.com")
+    api = GitHub(urllib_transport(env["GITHUB_TOKEN"], env.get("GITHUB_API_URL", "https://api.github.com")), repository)
+    run_url = f"{server}/{repository}/actions/runs/{env.get('GITHUB_RUN_ID', '')}"
+    cla_url = f"{server}/{repository}/blob/main/CLA.md"
+    try:
+        with open(env["GITHUB_EVENT_PATH"], "rb") as handle:
+            event = parse_event(env.get("GITHUB_EVENT_NAME", ""), handle.read(MAX_DOCUMENT_BYTES + 1))
+    except (OSError, ClaInputError) as err:
+        print(f"cla_check: cannot read the event: {err}", file=sys.stderr)
+        return 1
+    try:
+        run(event, api, cla_url, run_url)
+    except (ApiError, ClaInputError) as err:
+        print(f"cla_check: {err}", file=sys.stderr)
+        sha = event.pull_request.head_sha if event.pull_request else None
+        if sha is not None:
+            try:
+                api.set_status(sha, "error", "The CLA check could not decide; see the run.", run_url)
+            except ApiError:
+                pass
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(dict(os.environ)))

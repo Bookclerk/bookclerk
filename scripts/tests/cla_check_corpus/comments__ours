@@ -1,0 +1,22 @@
+[
+ {
+  "id": 1,
+  "user": {
+   "login": "bob",
+   "id": 2,
+   "type": "User"
+  },
+  "body": "hi",
+  "created_at": "t"
+ },
+ {
+  "id": 2,
+  "user": {
+   "login": "github-actions[bot]",
+   "id": 41898282,
+   "type": "Bot"
+  },
+  "body": "<!-- bookclerk-cla-check -->\nx",
+  "created_at": "t"
+ }
+]
