@@ -20,8 +20,8 @@
 // has no date.
 //
 // Sitemap: /sitemap.xml is a sitemap index with one sitemap per section:
-// /sitemaps/site.xml for the pages outside /docs/ and the docs home, and one per top docs
-// folder (/sitemaps/guide.xml, /sitemaps/api.xml). Together they list every
+// /sitemap-site.xml for the pages outside /docs/ and the docs home, and one per top docs
+// folder (/sitemap-guide.xml, /sitemap-api.xml). Together they list every
 // page of the default docs version, from that version's last-updated.json
 // (which names each page, the generated API reference included), with each
 // page's date as `<lastmod>`. They are cached at the edge like the version's
@@ -613,8 +613,12 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
   return request.method === "HEAD" ? new Response(null, response) : response;
 }
 
-/** Sitemap sections, as `/sitemaps/<name>.xml`. */
-const SECTION_PATH_RE = /^\/sitemaps\/([a-z0-9][a-z0-9-]*)\.xml$/;
+/**
+ * Sitemap sections, as `/sitemap-<name>.xml`. They sit at the site root
+ * because a sitemap may only list URLs under its own directory
+ * (https://www.sitemaps.org/protocol.html#location).
+ */
+const SECTION_PATH_RE = /^\/sitemap-([a-z0-9][a-z0-9-]*)\.xml$/;
 
 /** A docs folder name that can be a section name as it is. */
 const SECTION_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
@@ -644,14 +648,14 @@ export function sitemapSection(key: string): string {
  * Serves /sitemap.xml and its sections.
  *
  * `/sitemap.xml` is a sitemap index naming one sitemap per section:
- * `/sitemaps/site.xml` for the pages outside /docs/ and the docs home, then one per top docs
- * folder of the default version (`/sitemaps/guide.xml`, `/sitemaps/api.xml`),
+ * `/sitemap-site.xml` for the pages outside /docs/ and the docs home, then one per top docs
+ * folder of the default version (`/sitemap-guide.xml`, `/sitemap-api.xml`),
  * each with the newest date of its pages. The sections list every page that
  * version's last-updated.json dates and the docs route serves at its URL,
  * with its date.
  *
  * @param request - The incoming GET or HEAD request.
- * @param url - Its URL: `/sitemap.xml` or `/sitemaps/<name>.xml`.
+ * @param url - Its URL: `/sitemap.xml` or `/sitemap-<name>.xml`.
  * @param deps - The shell, assets and fetcher.
  * @returns The index or section. When the dates file is missing, cannot be
  *   read or lists no page the docs route serves, `/sitemap.xml` is the flat
@@ -696,7 +700,7 @@ async function serveSitemap(request: Request, url: URL, deps: DocsDeps): Promise
     if (file.kind !== "missing" || !response.ok) return response;
   } else if (isIndex) {
     const index = [...sections].map(([name, entries]) => ({
-      path: `/sitemaps/${name}.xml`,
+      path: `/sitemap-${name}.xml`,
       lastmod: entries.reduce<SitemapEntry["lastmod"]>((newest, e) => (e.lastmod !== null && (newest === null || e.lastmod > newest) ? e.lastmod : newest), null),
     }));
     response = withHeaders(new Response(sitemapIndexXml(deps.shell.origin, index)), { "Content-Type": XML_CONTENT_TYPE, "Cache-Control": cached });

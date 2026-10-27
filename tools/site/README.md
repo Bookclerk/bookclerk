@@ -237,10 +237,10 @@ versions.
   visitor cannot see on the page. Search engines treat text shown only to
   crawlers as cloaking, so keep it that way.
 - `/sitemap.xml` is a sitemap index with one sitemap per section, so
-  Search Console reports indexing per shelf: `/sitemaps/site.xml` holds the
+  Search Console reports indexing per shelf: `/sitemap-site.xml` holds the
   pages outside `/docs/` and the docs home, and each top docs folder gets
-  its own (`/sitemaps/guide.xml`, `/sitemaps/server.xml`,
-  `/sitemaps/api.xml`, ...), dated by its newest page. The Worker writes
+  its own (`/sitemap-guide.xml`, `/sitemap-server.xml`,
+  `/sitemap-api.xml`, ...), dated by its newest page. The Worker writes
   them from the default docs version's `last-updated.json`, so together
   they list every page of that version, the generated API reference
   included, each doc with its date as `<lastmod>`. They are cached like

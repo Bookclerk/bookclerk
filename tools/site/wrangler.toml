@@ -21,4 +21,4 @@ directory = "./dist"
 binding = "ASSETS"
 html_handling = "auto-trailing-slash"
 not_found_handling = "404-page"
-run_worker_first = ["/", "/index.html", "/index.md", "/download", "/download.html", "/download.md", "/privacy", "/privacy.html", "/privacy.md", "/security", "/security.html", "/security.md", "/404.md", "/sitemap.xml", "/sitemaps/*", "/docs", "/docs/*"]
+run_worker_first = ["/", "/index.html", "/index.md", "/download", "/download.html", "/download.md", "/privacy", "/privacy.html", "/privacy.md", "/security", "/security.html", "/security.md", "/404.md", "/sitemap.xml", "/sitemap-*", "/docs", "/docs/*"]
