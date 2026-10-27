@@ -213,8 +213,10 @@ In `dashboard/report-ids.ts`, `dashboard/signature.ts`,
   row. Corpus `corpus/signature/`. Oracle: level counts recounted, a
   signature exactly when an error or warning exists, bounded control-free
   fields.
-- **Event log** (`eventLog`) renders a report page's stored events. Oracle:
-  one escaped row per event, without throwing.
+- **Event log** (`eventLog`) renders a report page's stored events. Corpus
+  `corpus/signature/` (shared with the signature reader). Oracle: one row
+  per event up to 500, level counts that add up to the rows, no event text
+  left as markup, and no throw.
 - **Session check** (`sessionToken` and `memberFromRow`) decides whether a
   request is signed in, and as whom. Corpus `corpus/session/`. Oracle: a
   session token found exactly when a separate cookie walk finds a
@@ -266,7 +268,8 @@ In `dashboard/github.ts`:
   `diagnostics`.
 - **Summary receipt** (`parseSummaryDone`), from the ingest Action, decides
   which issue stops being handed out for a summary comment. Corpus
-  `corpus/summary_done/`.
+  `corpus/summary_done/`. Oracle: a separate walk over the parsed value,
+  with the fingerprint checked character by character.
 - **Attach body** (`parseAttachRequest`), from the ingest Action, decides
   which reports the ledger links to which open issues as triage's. Corpus
   `corpus/triage_attach/`. Oracle: accepted only as a `links` list of at
@@ -276,9 +279,15 @@ In `dashboard/github.ts`:
   all, re-derived by a separate walk.
 - **Issue comments decoder** (`decodeComments`) names the comment the
   owner's "Update GitHub now" button edits in place, or decides that one is
-  posted. Corpus `corpus/issue_comments/`.
+  posted. Corpus `corpus/issue_comments/`. Oracle: a hand walk of the
+  first hundred entries that takes the first with a positive safe integer
+  `id`, a `user` whose `type` is exactly `Bot`, and a `body` that begins
+  with the marker.
 - **Locked-issue reader** (`isLockedMessage`) decides whether GitHub's
   refusal of that write is final. Corpus `corpus/locked_message/`.
+  Oracle: true only for an object whose `message` is a string of at most
+  1000 characters containing "issue is locked" in any ASCII letter case,
+  single-spaced, with no word character touching either end.
 
 The same test also checks the release and fix-tracking readers against
 these oracles:
@@ -424,9 +433,10 @@ The batch run's triage is private, and its corpus and coverage report are
 kept as Actions artifacts.
 
 > [!IMPORTANT]
-> A crash found by the scheduled run is handled as a security report. Fix
-> it first, then land the minimized input as
-> `fuzz/corpus/<target>/regression_*` in the fixing pull request.
+> A crash found by the scheduled run is handled as a security report,
+> unless it is a failed oracle, which is filed as an issue. Either way, fix
+> it first, then land its reproducer as `fuzz/corpus/<target>/regression_*`
+> in the fixing pull request.
 
 The build config lives in `.clusterfuzzlite/` (`Dockerfile`, `build.sh`,
 `project.yaml`). `build.sh` packages every target `cargo fuzz list`
@@ -478,10 +488,12 @@ Instead:
    commit and runs `fuzz-crash-triage.py reproduce` in the same image. Each
    crash is:
    - re-run, and dropped unless it reproduces;
-   - minimized with `-minimize_crash`;
+   - minimized with `-minimize_crash`, except a timeout, out of memory or
+     leak, which keeps its original input;
    - classified as a sanitizer error, panic, stack overflow, out of memory,
-     timeout, leak, or a failed oracle (a panic raised from code under
-     `fuzz/`);
+     timeout, leak, fatal signal, or unknown;
+   - marked as a failed oracle when the panic is raised from code under
+     `fuzz/`, which decides how it is filed;
    - deduplicated by target, kind and the top three frames of the code
      under test. A crash with no usable frames, such as a wall-clock
      timeout, is keyed by its input instead, so unrelated ones stay apart.
@@ -490,8 +502,9 @@ Instead:
 4. **File.** `fuzz-crash-triage.py file`, with the
    [automation App](automation.md#automation-app) token, files each
    signature not already on record. A signature is on record when a hidden
-   `<!-- fuzz-crash-signature: … -->` marker is in an open `fuzz-crash`
-   issue or in any repository advisory. See [What gets filed](#what-gets-filed).
+   `<!-- fuzz-crash-signature: … -->` marker is in any repository
+   advisory, or in a `fuzz-crash` issue that is open or was closed as not
+   planned or duplicate. See [What gets filed](#what-gets-filed).
 
 ### What gets filed
 
@@ -513,9 +526,10 @@ The draft advisory carries the stack, the reproducer (base64, up to
   release.
 - **Before the first release** no range is proposed. Prereleases count as
   releases; drafts don't.
-- **Default severity** is high for memory-safety errors, and for anything
-  unrecognized. Medium is for a denial of service in host code, and low is
-  for a crash inside a guest or a leak.
+- **Default severity** is high for memory-safety errors on either side, a
+  fatal signal, and anything unrecognized. A denial of service (panic,
+  stack overflow, out of memory, timeout) is medium in host code and low
+  inside a guest. A leak is low.
 
 > [!NOTE]
 > A high-severity advisory asks for the fix in a temporary private fork.

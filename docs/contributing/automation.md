@@ -35,8 +35,8 @@ Version updates (`.github/dependabot.yml`, weekly, with a 7-day cooldown)
 cover every lockfile of a shipped artifact or its build:
 
 - Cargo at the workspace root;
-- npm in `ui/`, `packages/plugin-sdk`, `tools/diagnostics-collector` and
-  `tools/site`;
+- npm in `ui/`, `packages/plugin-sdk`, `tools/diagnostics-collector`,
+  `tools/demo` and `tools/site`;
 - uv in `packages/plugin-sdk-python`;
 - GitHub Actions;
 - the digest-pinned base images of `packaging/docker/Dockerfile`.
@@ -77,9 +77,9 @@ The knobs live in the workflow's `with:` block:
 1. In **Settings → General → Pull Requests**, enable **Allow auto-merge**.
 2. Create a GitHub App with repository permissions **Contents: read and
    write** and **Pull requests: read and write**, and no webhook. Install
-   it on this repository only. The organization owns it once the
-   repository is transferred; an App owned by a user can be transferred
-   later.
+   it on this repository only. Transferring the repository doesn't
+   transfer the App: if the organization should own it, transfer the App
+   separately.
 3. Add two **Dependabot** secrets (**Settings → Secrets and variables →
    Dependabot**), because Dependabot-triggered runs don't receive Actions
    secrets:
@@ -189,8 +189,9 @@ too, and its intermediate evidence with `OSV_REMEDIATION_BUNDLE_KEY`.
 
 ## OSV remediation
 
-`osv-remediate.yml` runs after every full OSV scan of `main` (push,
-schedule or manual run), and on demand. It reads the open OSV-Scanner
+`osv-remediate.yml` runs after every successful full OSV scan of `main`
+(push, schedule or manual run). It also runs on demand from `main`,
+without a preceding scan. It reads the open OSV-Scanner
 alerts in **Security → Code scanning** and looks each advisory up on
 api.osv.dev, with its aliases.
 
@@ -201,10 +202,14 @@ with a new CVE that OSV-Scanner chose to name a group of advisories.
 `scripts/osv-remediate.py` then tries lockfile-only updates until no locked
 version of the package is inside the advisory's affected ranges:
 
-- **Cargo**: `cargo update --precise`, then the newest compatible release.
-- **npm**: `npm update --package-lock-only --ignore-scripts`.
+- **Cargo**: `cargo update --package <name>@<locked> --precise <fix>`,
+  then the newest compatible release.
+- **npm**: `npm update <name> --package-lock-only --ignore-scripts`.
 - **uv**: `uv lock --no-build --upgrade-package <name>==<fix>`, then the
   newest allowed release.
+
+`<name>` is the package, `<locked>` its locked version and `<fix>` the
+smallest fixed version above it.
 
 An attempt that doesn't clear the advisory is rolled back. Manifests are
 never edited, so a fix that needs a new major version, or a change
@@ -265,8 +270,8 @@ transitive-only crates.
 
 ## OSV advisories
 
-`osv-advisories.yml` runs after every full OSV scan of `main`, next to the
-remediation. It answers a different question: does an open dependency
+`osv-advisories.yml` runs after every successful full OSV scan of `main`,
+next to the remediation, and on demand from `main`. It answers a different question: does an open dependency
 alert affect something Bookclerk ships?
 
 A draft repository security advisory is filed only when it does (see the
@@ -292,7 +297,8 @@ overlap. It gives every artifact of that lockfile a verdict:
 | `ui/package-lock.json` | The web UI, served by `bookclerkd` |
 | `packages/plugin-sdk/package-lock.json` | `@bookclerk/plugin-sdk` |
 | `tools/diagnostics-collector/package-lock.json` | The diagnostics collector Worker |
-| `packages/plugin-sdk-python/` | `bookclerk-plugin-sdk` (PyPI) |
+| `tools/demo/package-lock.json` | The hosted demo |
+| `packages/plugin-sdk-python/uv.lock` | `bookclerk-plugin-sdk` (PyPI) |
 | Anything else | None |
 
 An artifact is affected when:
@@ -415,8 +421,7 @@ Three jobs keep secrets away from third-party build code:
 3. **`file`** builds nothing. It mints an advisory-write token, files the
    drafts and writes the verdict report.
 
-The verdict report is the record for everything that didn't become a
-draft:
+The verdict report records every decision:
 
 - one row per advisory and shipped artifact, with its verdict, packages
   and outcome (filed, already on record, capped, failed);

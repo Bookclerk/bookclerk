@@ -20,8 +20,9 @@ compiled from crates.io on the operator's machine.
 
 - `bookclerk plugins search` works today.
 - `bookclerk plugins install` resolves a **prebuilt HTTPS archive** from
-  the package's artifact URLs, verifies it once, and records it as an
-  installed version that every host materializes by digest (see
+  the package's artifact URLs, verifies it, and records it as an installed
+  version. Each host then fetches the archive for its own target, verifies
+  its payload digest, and materializes it (see
   [Installing plugins](../server/plugins.md#installing-plugins)).
 
 ## What a platform release contains
@@ -135,8 +136,8 @@ cargo package-platform     # hosts + helpers + pinned workerd + sqlite + local â
 Archive names follow the [Plugin registry](../plugins/registry.md):
 
 ```text
-bookclerk-plugin-source-audible-0.1.0-x86_64-unknown-linux-gnu.tar.gz
-bookclerk-platform-0.1.0-x86_64-unknown-linux-gnu.tar.gz
+bookclerk-plugin-source-audible-0.1.0-linux-x64-gnu.tar.gz
+bookclerk-platform-0.1.0-linux-x64-gnu.tar.gz
 ```
 
 Each output folder includes `SHA256SUMS*` files for verification.
@@ -184,9 +185,9 @@ The workflow runs:
 - on `main` pushes that change the Dev Container's inputs;
 - by hand (a run on any branch but `main` is a dry run).
 
-A pull request that changes the workflow or
+A pull request that changes the workflow,
 [`.github/actions/image-build`](../../.github/actions/image-build/action.yml)
-builds and checks every image with a read-only token, and pushes nothing.
+or `scripts/image_release_tags.py` builds and checks every image with a read-only token, and pushes nothing.
 Both paths run the same build steps from that action.
 
 ### Provenance and permissions

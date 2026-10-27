@@ -82,8 +82,9 @@ fails, so `CI Gate` reports at once and the queue ejects the group without
 waiting for the slowest job.
 
 That job runs no repository code and is the only one with
-`actions: write`. Pull requests run every test and every job
-(`--no-fail-fast`), so one round shows every failure to fix.
+`actions: write`. Pull requests run every selected test and job to the
+end (nextest's `--no-fail-fast`, and no cancelling job), so one round shows
+every failure among them.
 
 Test targets with `harness = false` whose `main` doesn't answer libtest's
 `--list` protocol would list zero tests under nextest. So they are excluded
@@ -194,7 +195,8 @@ paths):
 | `tests/**`, `benches/**`, `examples/**` in a package | The owner only, by target type |
 | A **dev** edge to a compiled package | The consumer's tests, bench and example builds and doctests |
 | A declared `embed` (such as the TS or Python SDK runtime in `bookclerk-workerd`) | The package is compiled-affected |
-| A declared `test_input` or `fixture` | The consumer's tests |
+| A declared `test_input` | The consumer's tests |
+| A declared `fixture` | The checks declared for that fixture |
 | A declared `test_guests` executable | The launching package's tests re-run, with no propagation |
 | `ui/`, `packages/plugin-sdk*/`, ABI scripts | The UI, SDK ABI and API-doc checks |
 | `docs/**` | The website tests (`site_test`) |
@@ -339,7 +341,7 @@ when a step matches no test. Name such tests `postgres_*`.
 | `tray` (3 OS) | `bookclerk-tray` is affected | Clippy and tests |
 | `postgres 16/17/18` | An owning package's unit tests are affected | Only the owners' steps, on every supported major |
 | `windows cluster startup + identity` | A `[windows_cluster].paths` input changed, or the full suite | See [Windows cluster](#windows-cluster-startup-and-identity) |
-| `small-VPS envelope` | An `[envelope].paths` input changed, or the full suite | See [Small-VPS envelope](#small-vps-envelope) |
+| `small-VPS envelope` | An `[envelope].paths` input changed, an `[envelope].packages` member is compiled-affected, or the full suite | See [Small-VPS envelope](#small-vps-envelope) |
 | `website + collector Workers` | See [Workers](#website-and-collector-workers) | `site_test`, `site_audit`, `collector_test`, `demo_test`; no Rust toolchain |
 | `CI Gate` | Always | The stable required check (see the [contract](#plan--execution-contract)) |
 
@@ -505,7 +507,8 @@ The Dev Container image job builds `.devcontainer/Dockerfile` and runs the
 contributor toolchain inside it as the dev user (cargo, rustfmt, Clippy,
 cargo-nextest, `capnp`, Node.js, npm, uv, PyYAML, git, ssh). It runs
 weekly, on demand, and on pull requests that touch `.devcontainer/**`,
-`scripts/dev-env/**`, `scripts/tests/requirements.txt` or the workflow.
+`scripts/dev-env/**`, `scripts/tests/requirements.txt`,
+`rust-toolchain.toml`, `.dockerignore` or the workflow.
 
 `scripts/tests/test_dev_env.py` (in the plan job) checks on every run that
 the image's tool pins match CI, and that every Dockerfile's base images are

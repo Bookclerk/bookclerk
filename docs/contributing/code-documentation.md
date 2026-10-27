@@ -16,8 +16,8 @@ CI runs the same script, and the docs must build cleanly.
 
 - Product docs stay in this `docs/` tree.
 - API reference HTML is generated into
-  `docs/api/{rust,typescript,python,ui}/`. It is gitignored, so always
-  regenerate it locally or take it from the CI artifacts.
+  `docs/api/{rust,typescript,python,ui}/`. It is gitignored, and CI
+  doesn't keep it, so regenerate it locally.
 
 ## Why
 
@@ -178,8 +178,10 @@ Some of these need more than a cell:
 
 Pull requests use a dependency-aware planner
 ([`scripts/ci-plan.py`](../../scripts/ci-plan.py)), so only the affected
-languages and packages run these checks. `merge_group` and `main` always
-run the full suite. See [Continuous integration](ci.md).
+languages and packages run these checks. `merge_group` always runs the
+full suite. Pushes to `main` only build and save caches, because the merge
+group already tested the commit. See
+[Continuous integration](ci.md#build-only-main-pushes).
 
 The planner emits these `generate-api-docs.sh` selectors; the script
 doesn't diff again itself:

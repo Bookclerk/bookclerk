@@ -138,7 +138,7 @@ for everything else.
 
 The provision script installs the `stable` toolchain that
 `rust-toolchain.toml` names (with rustfmt and clippy) on top of the base
-image, so the first cargo command downloads nothing.
+image, so the first cargo command doesn't download a toolchain.
 
 The **Dev Container image** CI workflow builds the image whenever these
 files change, and weekly. It checks that each tool runs as the dev user
