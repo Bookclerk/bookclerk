@@ -1,11 +1,11 @@
-<p align="center">
+<h1 align="center">
   <a href="https://bookclerk.app">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="assets/brand/svg/bookclerk-logo-dark.svg">
       <img src="assets/brand/svg/bookclerk-logo.svg" alt="Bookclerk" width="420">
     </picture>
   </a>
-</p>
+</h1>
 
 <p align="center">
   <strong>Every purchase, properly placed.</strong>
