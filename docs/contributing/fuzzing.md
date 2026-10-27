@@ -99,6 +99,14 @@ non-Rust tooling (decision 6):
   on every PR, checking each result against an independent oracle (a refusal,
   an empty tag for a draft or prerelease, or exactly the body's own
   `tag_name` when it is 1–64 characters of `[A-Za-z0-9._-]`).
+- The image release-tag reader (`scripts/image_release_tags.py`), which
+  turns a published release's `tag_name` into the registry tags
+  `images-publish.yml` pushes. `scripts/tests/test_image_release_tags.py`
+  replays its seed corpus (`scripts/tests/image_release_tags_corpus/`) and
+  runs seeded mutation fuzzing on every PR, checking each result against an
+  independent oracle (a refusal, or exactly `<major>.<minor>.<patch>`,
+  `<major>.<minor>`, `<major>` and `latest` when the tag is `v` and three
+  dot-separated ASCII numbers of one to nine digits without leading zeros).
 - The collector's `/triage` admission (`admitBatch` in
   `tools/diagnostics-collector/triage.ts`), which parses the report-derived
   batch and prices it against the daily neuron budget.

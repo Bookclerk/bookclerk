@@ -113,6 +113,47 @@ bookclerk-platform-0.1.0-x86_64-unknown-linux-gnu.tar.gz
 
 Each output directory includes `SHA256SUMS*` files for verification.
 
+## Container images
+
+[`.github/workflows/images-publish.yml`](../../.github/workflows/images-publish.yml)
+publishes three images to `ghcr.io/<owner>/` (a fork publishes to its own
+namespace with its own `GITHUB_TOKEN`):
+
+| Image | Built from | Architectures |
+| --- | --- | --- |
+| `bookclerk` | `packaging/docker/Dockerfile` | `amd64`, `arm64` |
+| `bookclerk-dev` | `.devcontainer/Dockerfile` (with inline cache metadata, so the Dev Container's `build.cacheFrom` reuses its layers) | `amd64`, `arm64` |
+| `bookclerk-demo` | `packaging/demo/Dockerfile` on the production builder and runtime | `amd64` |
+
+Each architecture builds on a native runner and is checked before it is
+pushed (the production image boots twice through `packaging/docker/smoke.sh`,
+the Dev Container's tools run as the dev user), then the architectures are
+joined into one index.
+
+| Tag | Meaning |
+| --- | --- |
+| `sha-<12 hex>` | Built from that `main` commit; never moved. Per-architecture `sha-<12 hex>-<arch>` tags are the index's inputs. |
+| `edge` | Newest build from `main`. |
+| `<version>`, `<major>.<minor>`, `<major>`, `latest` | Added when a `v<major>.<minor>.<patch>` release is published (no leading zeros or suffixes; `scripts/image_release_tags.py` refuses any other tag), by retagging that commit's images (built then if missing). |
+
+It runs nightly when `main` has moved (an image whose `sha-` tag exists is not
+rebuilt), on a published release, on `main` pushes that change the Dev
+Container's inputs, and by hand (a run on any branch but `main` is a dry run).
+A pull request that changes the workflow or
+[`.github/actions/image-build`](../../.github/actions/image-build/action.yml)
+builds and checks every image with a read-only token and pushes nothing; both
+paths run the same build steps from that action. Every published index gets a
+GitHub build-provenance attestation, signed through Sigstore with the
+workflow's OIDC identity and stored in the registry
+(`gh attestation verify oci://ghcr.io/<owner>/bookclerk:edge --owner <owner>`).
+If the attest job fails, re-running the workflow attests the published index
+without rebuilding it.
+Only the push jobs hold `packages: write`, and only the attest job holds
+`id-token: write` and `attestations: write`.
+
+A package created by the first publish is private; make each one public once
+in the organization's package settings.
+
 ## GitHub Actions (signing sketch — not a contract)
 
 The workflow below is an **illustrative sketch** for publisher-side packaging.

@@ -24,6 +24,7 @@ DEVCONTAINER_DEFAULT = ROOT / ".devcontainer" / "devcontainer.json"
 DEVCONTAINER_DESKTOP = ROOT / ".devcontainer" / "devcontainer.linux-desktop.json"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 DEPENDABOT = ROOT / ".github" / "dependabot.yml"
+PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "images-publish.yml"
 
 # Keys the Linux desktop configuration must share verbatim with the default
 # one; it only adds mounts, runArgs and desktop environment variables.
@@ -229,6 +230,91 @@ class DevcontainerConfigTests(unittest.TestCase):
             for name, value in default.get(section, {}).items():
                 with self.subTest(section=section, name=name):
                     self.assertEqual(desktop.get(section, {}).get(name), value)
+
+
+class ImagePublishWorkflowTests(unittest.TestCase):
+    """Registry write and signing rights stay in the jobs that need them."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        """Load the publish workflow once (PyYAML from scripts/tests/requirements.txt)."""
+        import yaml
+
+        cls.workflow = yaml.safe_load(PUBLISH_WORKFLOW.read_text(encoding="utf-8"))
+        cls.jobs = cls.workflow["jobs"]
+
+    def test_permissions_are_per_job(self) -> None:
+        """Only push jobs write packages; only the attest job mints OIDC tokens."""
+        self.assertEqual(self.workflow["permissions"], {"contents": "read"})
+        for name, job in self.jobs.items():
+            perms = job.get("permissions", {})
+            with self.subTest(job=name):
+                self.assertEqual(perms.get("contents"), "read")
+                if name in ("build", "publish", "attest"):
+                    self.assertEqual(perms.get("packages"), "write")
+                else:
+                    self.assertNotEqual(perms.get("packages"), "write")
+                if name == "attest":
+                    self.assertEqual(perms.get("id-token"), "write")
+                    self.assertEqual(perms.get("attestations"), "write")
+                else:
+                    self.assertNotIn("id-token", perms)
+                    self.assertNotIn("attestations", perms)
+
+    def test_release_tag_goes_through_the_parser(self) -> None:
+        """The release tag reaches the registry only through the fuzzed parser."""
+        plan = next(step for step in self.jobs["plan"]["steps"] if step.get("id") == "plan")
+        self.assertIn("python3 scripts/image_release_tags.py", plan["run"])
+        self.assertNotIn("BASH_REMATCH", plan["run"])
+        self.assertFalse(self.jobs["plan"]["steps"][0]["with"]["persist-credentials"])
+        self.assertIn("scripts/image_release_tags.py", self.workflow[True]["pull_request"]["paths"])
+
+    def test_pull_requests_never_push(self) -> None:
+        """A pull request run builds and checks but cannot publish."""
+        plan = next(step for step in self.jobs["plan"]["steps"] if step.get("id") == "plan")["run"]
+        self.assertIn("pull_request) push=false", plan)
+        # A run by hand from another branch must not publish unreviewed code.
+        self.assertIn('if [[ "$EVENT" != release && "$REF" != refs/heads/main ]]; then\n  push=false', plan)
+        gate = "needs.plan.outputs.push == 'true'"
+        self.assertIn(gate, self.jobs["publish"]["if"])
+        self.assertIn(gate, self.jobs["attest"]["if"])
+        self.assertIn(gate, self.jobs["build"]["if"])
+        dry_run = self.jobs["dry-run"]
+        self.assertIn("needs.plan.outputs.push == 'false'", dry_run["if"])
+        self.assertEqual(dry_run["permissions"], {"contents": "read"})
+        for name in ("dry-run", "build"):
+            with self.subTest(job=name):
+                pushes = [s for s in self.jobs[name]["steps"] if "docker push" in s.get("run", "")]
+                self.assertEqual(len(pushes), 1 if name == "build" else 0)
+
+    def test_dry_run_builds_what_publishes(self) -> None:
+        """The pull request dry run covers every image and architecture the build job pushes."""
+        for name in ("dry-run", "build"):
+            with self.subTest(job=name):
+                uses = [s.get("uses") for s in self.jobs[name]["steps"]]
+                self.assertIn("./.github/actions/image-build", uses)
+        self.assertEqual(
+            self.jobs["dry-run"]["strategy"]["matrix"],
+            self.jobs["build"]["strategy"]["matrix"],
+        )
+
+    def test_rerun_repairs_missing_attestation(self) -> None:
+        """A re-run attests an index an earlier run published but failed to attest."""
+        digest = self.jobs["attest"]["steps"][0]["run"]
+        self.assertIn('gh api "repos/$GH_REPO/attestations/$digest"', digest)
+        self.assertIn("has no attestation, attesting it", digest)
+
+    def test_architectures(self) -> None:
+        """Production and the Dev Container ship arm64 as well as amd64, each built natively."""
+        built = {(e["image"], e["arch"]): e["runner"] for e in self.jobs["build"]["strategy"]["matrix"]["include"]}
+        for image in ("bookclerk", "bookclerk-dev"):
+            with self.subTest(image=image):
+                self.assertEqual(built.get((image, "amd64")), "ubuntu-latest")
+                self.assertTrue(built.get((image, "arm64"), "").endswith("-arm"))
+        joined = {e["image"]: set(e["arches"].split()) for e in self.jobs["publish"]["strategy"]["matrix"]["include"]}
+        for image, arches in joined.items():
+            with self.subTest(image=image):
+                self.assertEqual(arches, {a for (i, a) in built if i == image})
 
 
 if __name__ == "__main__":

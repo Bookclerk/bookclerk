@@ -346,6 +346,25 @@ The image holds the same bundle as a platform release
 `bookclerk-workerd`, the pinned `workerd`, the web app, and the `sqlite`
 and `local` platform plugins in `/opt/bookclerk/plugins/`.
 
+### Published images
+
+Prebuilt images are published to the GitHub Container Registry for `amd64`
+and `arm64`:
+
+```sh
+docker pull ghcr.io/bookclerk/bookclerk:edge
+```
+
+Until the first release, only `edge` (the newest build from `main`) and
+`sha-<commit>` tags exist. Releases add `<version>`, `<major>.<minor>`,
+`<major>` and `latest`. Pin the digest in production
+(`ghcr.io/bookclerk/bookclerk@sha256:…`), and check where an image was
+built before running it:
+
+```sh
+gh attestation verify oci://ghcr.io/bookclerk/bookclerk:edge --owner bookclerk
+```
+
 ### Run it
 
 ```sh
