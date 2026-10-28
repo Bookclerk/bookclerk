@@ -476,7 +476,7 @@ jobs:
         if: env.CI_BUILD_ONLY != 'true'
         run: |
           set -euo pipefail
-          cargo llvm-cov show-env --export-prefix | sed -e 's/^export //' -e "s/='\(.*\)'$/=\1/" >> "$GITHUB_ENV"
+          cargo llvm-cov show-env --sh | sed -e 's/^export //' -e "s/='\(.*\)'$/=\1/" >> "$GITHUB_ENV"
           echo "CI_COVERAGE_DIR=$RUNNER_TEMP/coverage" >> "$GITHUB_ENV"
 
       - name: Test

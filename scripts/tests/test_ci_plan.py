@@ -784,7 +784,16 @@ class CoverageCommandTests(unittest.TestCase):
         with self.env(CARGO_LLVM_COV="1"):
             cmds = commands(p, "rust_test")
         self.assertEqual(
-            cmds[-1], ["cargo", "llvm-cov", "report", "--lcov", "--output-path", str(self.dir / "rust" / "lcov.info")]
+            cmds[-1], [
+                "cargo",
+                "llvm-cov",
+                "report",
+                "--lcov",
+                "--failure-mode",
+                "all",
+                "--output-path",
+                str(self.dir / "rust" / "lcov.info"),
+            ]
         )
         with self.env():
             os.environ.pop("CARGO_LLVM_COV", None)

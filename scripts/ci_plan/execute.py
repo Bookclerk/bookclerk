@@ -707,7 +707,11 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             # a report without it would fail on missing profiles.
             if not os.environ.get("CARGO_LLVM_COV"):
                 raise ExecError(f"{COVERAGE_DIR_ENV} is set but the build is not instrumented (cargo llvm-cov show-env)")
-            cmds.append(Command("coverage report", ["cargo", "llvm-cov", "report", "--lcov", "--output-path", str(report)]))
+            # `--failure-mode all`: a helper killed mid-write (a timeout, a
+            # test that kills its child) leaves a corrupt profile; skip it
+            # with a warning instead of losing the whole report.
+            report_args = ["--lcov", "--failure-mode", "all", "--output-path", str(report)]
+            cmds.append(Command("coverage report", ["cargo", "llvm-cov", "report", *report_args]))
         if params.get("benches"):
             cmds.append(Command("bench targets build", ["cargo", "bench", *_pkg_args(params["benches"]), "--benches", "--no-run"]))
         if params.get("examples"):
