@@ -146,8 +146,10 @@ GitHub lists it under the App's own heading, with the App's name and logo,
 like any other App's checks. While a check runs, it is in progress with
 "Checking signatures…"; it then says who is left ("1 still to sign.") or
 "Everyone has signed.", and **Details** opens the workflow run. To run it
-again, comment `@bookclerk recheck`: the App has no webhook, so a **Re-run**
-button on the check reaches nothing. Merge
+again, press **Re-run** on the check or comment `@bookclerk recheck`. The
+button needs no webhook: GitHub starts the `CLA` workflow for a re-run of a
+check run that another App created. The comment also names who signed on
+the pull request ("Signed on this pull request: @alice."). Merge
 queue runs report a passing **Bookclerk CLA** check, because each pull request
 passed it to enter the queue.
 

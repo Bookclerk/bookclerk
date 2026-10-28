@@ -23,6 +23,8 @@
 # - `@<App slug> recheck` (`@bookclerk recheck` here, `@github-actions
 #   recheck` without the App) re-runs the check after a signature or
 #   allowlist change. Other comments that mention `recheck` are ignored.
+#   So does **Re-run** on the App's `Bookclerk CLA` check (`check_run`
+#   `rerequested`), for every open pull request on that commit.
 # - The verdict is the `Bookclerk CLA` check run on the pull request's head;
 #   that name is the one to require. It passes only when every open pull
 #   request with that head passes, since they share the check, and is
@@ -50,6 +52,11 @@ on:
   issue_comment:
     types: [created]
   merge_group:
+  # **Re-run** on the `Bookclerk CLA` check. GitHub runs a workflow for a
+  # check run's events only when another App (here the automation App)
+  # created it, so this needs no webhook.
+  check_run:
+    types: [rerequested]
 
 permissions: {}
 
@@ -64,6 +71,8 @@ jobs:
         github.event.workflow_run.event == 'pull_request' &&
         github.event.workflow_run.conclusion != 'skipped') ||
       github.event_name == 'merge_group' ||
+      (github.event_name == 'check_run' &&
+        github.event.check_run.name == 'Bookclerk CLA') ||
       (github.event.issue.pull_request &&
         (contains(github.event.comment.body, 'recheck') ||
          contains(github.event.comment.body, 'I have read the Bookclerk CLA')))

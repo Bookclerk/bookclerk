@@ -3,7 +3,8 @@
 
 The ``CLA`` workflow runs this on ``workflow_run`` after the unprivileged
 ``CLA trigger`` workflow ran for a pull request, on signature and ``recheck``
-comments, and on ``merge_group``. It reads only pull request metadata through
+comments, on **Re-run** of the ``Bookclerk CLA`` check run (``check_run``),
+and on ``merge_group``. It reads only pull request metadata through
 the REST API and never checks out pull request code.
 
 Who must sign: the pull request author, the GitHub account linked to every
@@ -350,6 +351,8 @@ class EventKind(Enum):
     ISSUE_COMMENT = "issue_comment"
     #: A merge queue built a merge group.
     MERGE_GROUP = "merge_group"
+    #: Someone pressed **Re-run** on a check run.
+    CHECK_RUN = "check_run"
 
 
 @dataclass(frozen=True)
@@ -369,6 +372,11 @@ class Event:
     merge_group_sha: str | None
     #: The head the ``CLA trigger`` run was for, from a ``workflow_run`` payload.
     run_head: RunHead | None = None
+    #: The commit of a ``Bookclerk CLA`` check run someone asked to re-run,
+    #: from a ``check_run`` payload; ``None`` for another check's re-run.
+    rerun_sha: str | None = None
+    #: The slug of the App that owns that check run.
+    rerun_app: str | None = None
 
 
 @dataclass(frozen=True)
@@ -383,6 +391,9 @@ class SignatureBook:
     entries: tuple[dict[str, object], ...]
     #: The account ids that have signed.
     signed_ids: frozenset[int]
+    #: ``(account id, repository id, pull request number)`` of each entry
+    #: that names where it was signed; older entries may not.
+    signed_on: frozenset[tuple[int, int, int]] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -393,6 +404,9 @@ class Verdict:
     unsigned: tuple[Account, ...]
     #: Commits linked to no account, by SHA-1.
     unlinked: tuple[str, ...]
+    #: Accounts that must sign and signed on this pull request, in
+    #: first-seen order.
+    signed_here: tuple[Account, ...] = ()
 
     @property
     def passed(self) -> bool:
@@ -583,6 +597,13 @@ def parse_event(name: str, raw: bytes) -> Event:
         is_pull = issue.get("pull_request") is not None
         comment = parse_comment(payload.get("comment"))
         return Event(kind, repo_id, number if is_pull else None, comment, None)
+    if kind is EventKind.CHECK_RUN:
+        run = _object(payload.get("check_run"), "check run")
+        sha = _sha(run.get("head_sha"), "check run head")
+        app = _string(_object(run.get("app"), "check run app").get("slug"), "check run app slug")
+        if _string(run.get("name"), "check run name") != CHECK_NAME:
+            return Event(kind, repo_id, None, None, None)
+        return Event(kind, repo_id, None, None, None, rerun_sha=sha, rerun_app=app)
     group = _object(payload.get("merge_group"), "merge group")
     return Event(kind, repo_id, None, None, _sha(group.get("head_sha"), "merge group head"))
 
@@ -750,11 +771,16 @@ def parse_signatures(raw: bytes) -> SignatureBook:
     if not isinstance(entries, list):
         raise ClaInputError("signedContributors is not a list")
     ids = set()
+    places = set()
     for entry in entries:
         obj = _object(entry, "signature")
         _string(obj.get("name"), "signature name")
-        ids.add(_id(obj.get("id"), "signature id"))
-    return SignatureBook(entries=tuple(entries), signed_ids=frozenset(ids))
+        account = _id(obj.get("id"), "signature id")
+        ids.add(account)
+        repo, number = obj.get("repoId"), obj.get("pullRequestNo")
+        if type(repo) is int and type(number) is int:
+            places.add((account, repo, number))
+    return SignatureBook(entries=tuple(entries), signed_ids=frozenset(ids), signed_on=frozenset(places))
 
 
 def parse_contents(raw: bytes) -> tuple[bytes, str]:
@@ -880,21 +906,25 @@ def required_signers(pull: PullRequest, commits: list[Commit]) -> list[Account]:
     return signers
 
 
-def evaluate(pull: PullRequest, commits: list[Commit], book: SignatureBook) -> Verdict:
+def evaluate(pull: PullRequest, commits: list[Commit], book: SignatureBook, repo_id: int | None = None) -> Verdict:
     """Decides whether the pull request passes the CLA check.
 
     # Arguments
     * ``pull``: the pull request.
     * ``commits``: all of its commits.
     * ``book``: the signatures recorded so far.
+    * ``repo_id``: the repository's id, to find who signed on this pull
+      request; ``None`` leaves ``signed_here`` empty.
 
     # Returns
-    The accounts that still have to sign and the commits linked to no
-    account; the check passes when both are empty.
+    The accounts that still have to sign, the commits linked to no account
+    and who signed here; the check passes when the first two are empty.
     """
-    unsigned = tuple(a for a in required_signers(pull, commits) if a.id not in book.signed_ids)
+    required = required_signers(pull, commits)
+    unsigned = tuple(a for a in required if a.id not in book.signed_ids)
     unlinked = tuple(dict.fromkeys(c.sha for c in commits if c.author is None))
-    return Verdict(unsigned=unsigned, unlinked=unlinked)
+    signed_here = () if repo_id is None else tuple(a for a in required if (a.id, repo_id, pull.number) in book.signed_on)
+    return Verdict(unsigned=unsigned, unlinked=unlinked, signed_here=signed_here)
 
 
 def render_signatures(entries: list[dict[str, object]]) -> bytes:
@@ -959,8 +989,10 @@ def render_comment(verdict: Verdict, cla_url: str, blocked_by: int | None = None
     The Markdown body, starting with ``COMMENT_MARKER``.
     """
     lines = [COMMENT_MARKER]
+    signed = ["", "Signed on this pull request: " + ", ".join(f"@{a.login}" for a in verdict.signed_here) + "."] if verdict.signed_here else []
     if verdict.passed and blocked_by is None:
         lines.append("Everyone on this pull request has accepted the Bookclerk CLA. Thank you!")
+        lines += signed
         return "\n".join(lines) + "\n"
     if verdict.passed:
         lines += [
@@ -970,12 +1002,14 @@ def render_comment(verdict: Verdict, cla_url: str, blocked_by: int | None = None
             ),
             "",
             f"Once #{blocked_by} is closed, pushed to, or signed, comment `{recheck}` here.",
+            *signed,
         ]
         return "\n".join(lines) + "\n"
     lines.append(
         "Thank you for your pull request. Before it can be merged, everyone who wrote"
         f" it needs to accept the [Bookclerk Contributor License Agreement]({cla_url}) once."
     )
+    lines += signed
     if verdict.unsigned:
         lines += ["", "Still to sign: " + ", ".join(f"@{a.login}" for a in verdict.unsigned) + "."]
         lines += ["", "To sign, read the agreement and post this exact comment:", "", "```text", SIGN_PHRASE, "```"]
@@ -1486,6 +1520,15 @@ def run(event: Event, api: GitHub, cla_url: str, run_url: str) -> None:
         # enter the queue; the queue run needs the context reported too.
         api.set_check(event.merge_group_sha, CheckState.SUCCESS, "Checked on each pull request in the group.", run_url)
         return
+    if event.kind is EventKind.CHECK_RUN:
+        # **Re-run** on the App's own ``Bookclerk CLA`` check runs the check
+        # again for the open pull requests on that commit. A check run of
+        # the same name from anyone else is not ours to answer.
+        if event.rerun_sha is None or f"{event.rerun_app}[bot]" != api.reporter.login:
+            return
+        for number in api.open_pulls_on(event.rerun_sha):
+            check_pull(event, api, number, cla_url, run_url)
+        return
     if event.run_head is not None:
         numbers = api.pulls_from(event.run_head)
         if not numbers:
@@ -1525,7 +1568,7 @@ def check_pull(event: Event, api: GitHub, number: int, cla_url: str, run_url: st
         settle(api, pull.head_sha, book, run_url)
         return
     commits = api.commits(pull)
-    verdict = evaluate(pull, commits, book)
+    verdict = evaluate(pull, commits, book, event.repo_id)
     comments = api.comments(pull.number)
     if event.comment is not None and all(c.id != event.comment.id for c in comments):
         # The listing can lag behind the event that started the run.
@@ -1538,7 +1581,7 @@ def check_pull(event: Event, api: GitHub, number: int, cla_url: str, run_url: st
         if seen is not None:
             api.unreact(comment.id, seen)
     for _ in range(CHECK_ATTEMPTS):
-        verdict = evaluate(pull, commits, book)
+        verdict = evaluate(pull, commits, book, event.repo_id)
         blocked_by = blocking_pull(api, pull, book) if verdict.passed else None
         passed = verdict.passed and blocked_by is None
         api.upsert_comment(pull.number, comments, render_comment(verdict, cla_url, blocked_by, recheck_command(api.reporter.login)), create=not passed)
@@ -1724,6 +1767,8 @@ def main(env: dict[str, str]) -> int:
         sha = api.head_sha or event.merge_group_sha
         if sha is None and event.run_head is not None:
             sha = event.run_head.sha
+        if sha is None:
+            sha = event.rerun_sha
         if sha is not None:
             try:
                 api.set_check(sha, CheckState.FAILURE, ERROR_DESCRIPTION, run_url)

@@ -176,7 +176,8 @@ The tests live in `scripts/tests/`, and each corpus beside them.
 ### CLA check (Python)
 
 - **CLA checker** (`scripts/cla_check.py`). It reads the workflow event
-  (including the head a `workflow_run` names), the pull request, its commit
+  (including the head a `workflow_run` names and the check a `check_run`
+  re-run names), the pull request, its commit
   and comment pages, the co-author query answer, the lists of pull requests
   that contain the head commit or come from the head branch, the
   signature file, the git objects it creates when the first signature

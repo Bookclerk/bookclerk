@@ -167,6 +167,13 @@ def oracle(kind: str, raw: bytes) -> object:
             number = o_id(issue.get("number"))
             comment = o_comment(payload.get("comment"))
             return ("comment", repo, number if issue.get("pull_request") is not None else None, comment)
+        if name == "check_run":
+            run = o_obj(payload.get("check_run"))
+            sha = o_sha(run.get("head_sha"))
+            app = o_str(o_obj(run.get("app")).get("slug"))
+            if o_str(run.get("name")) != "Bookclerk CLA":
+                return ("rerun", repo, None, None)
+            return ("rerun", repo, sha, app)
         return ("merge", repo, o_sha(o_obj(payload.get("merge_group")).get("head_sha")))
     if kind == "commits":
         page = o_json(raw)
@@ -258,11 +265,15 @@ def oracle(kind: str, raw: bytes) -> object:
         if type(entries) is not list:
             raise Refused
         ids = set()
+        places = set()
         for entry in entries:
             obj = o_obj(entry)
             o_str(obj.get("name"))
-            ids.add(o_id(obj.get("id")))
-        return (len(entries), frozenset(ids))
+            account = o_id(obj.get("id"))
+            ids.add(account)
+            if type(obj.get("repoId")) is int and type(obj.get("pullRequestNo")) is int:
+                places.add((account, obj["repoId"], obj["pullRequestNo"]))
+        return (len(entries), frozenset(ids), frozenset(places))
     if kind == "contents":
         obj = o_obj(o_json(raw))
         if obj.get("type") != "file" or obj.get("encoding") != "base64":
@@ -327,6 +338,9 @@ def module(kind: str, raw: bytes) -> object:
             return ("run", ev.repo_id, (h.sha, h.branch, h.repo_id, h.owner))
         if ev.kind is cla.EventKind.ISSUE_COMMENT:
             return ("comment", ev.repo_id, ev.pull_number, comment(ev.comment))
+        if ev.kind is cla.EventKind.CHECK_RUN:
+            assert ev.pull_number is None and ev.comment is None and ev.merge_group_sha is None
+            return ("rerun", ev.repo_id, ev.rerun_sha, ev.rerun_app)
         return ("merge", ev.repo_id, ev.merge_group_sha)
     if kind == "commits":
         return [(c.sha, None if c.author is None else acc(c.author)) for c in cla.parse_commit_page(raw)]
@@ -342,7 +356,7 @@ def module(kind: str, raw: bytes) -> object:
         return (commits, page.next_cursor, page.assistant_ids)
     if kind == "signatures":
         book = cla.parse_signatures(raw)
-        return (len(book.entries), book.signed_ids)
+        return (len(book.entries), book.signed_ids, book.signed_on)
     if kind == "contents":
         return cla.parse_contents(raw)
     if kind == "gitobject":
@@ -411,6 +425,7 @@ class CorpusTests(unittest.TestCase):
             "reaction__no_id", "reaction__string_id", "reaction__not_object",
             "checkrun__no_id", "checkrun__string_id", "checkrun__not_object", "checkrun__negative_id",
             "combined__no_statuses", "combined__context_not_string", "combined__not_object",
+            "event_check_run__no_app", "event_check_run__bad_sha",
             "branchrules__not_list", "branchrules__upper_type", "branchrules__no_type",
         ):
             kind = name.partition("__")[0]
@@ -418,11 +433,11 @@ class CorpusTests(unittest.TestCase):
 
     def test_expected_reads(self) -> None:
         self.assertEqual(module("commits", load("commits__mixed")), [(SHA_A, (101, "alice", "User")), (SHA_B, None)])
-        self.assertEqual(module("signatures", load("signatures__seed")), (0, frozenset()))
+        self.assertEqual(module("signatures", load("signatures__seed")), (0, frozenset(), frozenset()))
         # Some older accounts have logins new accounts cannot take.
         self.assertEqual(module("pull", load("pull__login_double_dash"))[1], (1, "al--ice", "User"))
         self.assertEqual(module("pull", load("pull__login_trailing_dash"))[1], (1, "alice-", "User"))
-        self.assertEqual(module("signatures", load("signatures__two")), (2, frozenset({101, 2})))
+        self.assertEqual(module("signatures", load("signatures__two")), (2, frozenset({101, 2}), frozenset({(101, 555, 1)})))
         self.assertEqual(module("gitobject", load("gitobject__commit")), SHA_B)
         self.assertEqual(module("reaction", load("reaction__eyes")), 31)
         self.assertEqual(module("checkrun", load("checkrun__created")), 4242)
@@ -968,7 +983,8 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(fake.signed_ids(), {101})
         self.assertEqual(fake.last_status(), "success")
         self.assertEqual(len(fake.comments), 1)
-        self.assertNotIn("@alice", fake.comments[0]["body"])
+        self.assertNotIn("Still to sign", fake.comments[0]["body"])
+        self.assertIn("Signed on this pull request: @alice.", fake.comments[0]["body"])
         entry = json.loads(fake.file)["signedContributors"][0]
         self.assertEqual(entry, {"name": "alice", "id": 101, "comment_id": 900, "created_at": "2026-10-27T17:00:00Z", "repoId": 555, "pullRequestNo": 7, "claUrl": f"https://github.com/bookclerk/bookclerk/blob/{SHA_D}/CLA.md"})
         # The agreement's history is read once per run, not per signature.
@@ -1104,7 +1120,8 @@ class EndToEndTests(unittest.TestCase):
         drive(fake, run_event(fake))
         self.assertEqual([b["state"] for _, b in fake.final_statuses()], ["success", "failure", "success"])
         self.assertEqual(len(fake.comments), 1)
-        self.assertNotIn("@alice", fake.comments[0]["body"])
+        self.assertNotIn("Still to sign", fake.comments[0]["body"])
+        self.assertIn("Signed on this pull request: @alice.", fake.comments[0]["body"])
 
     def test_a_stale_run_re_decides_its_old_head(self) -> None:
         # #7 was pushed to a new head before its run started; the old head,
@@ -1448,6 +1465,28 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual({status for _, status, _ in fake.check_runs.values()}, {"completed"})
         self.assertEqual(fake.last_status(), "success")
 
+    def test_the_comment_names_only_who_signed_on_this_pull_request(self) -> None:
+        elsewhere = {"name": "bob", "id": 102, "repoId": 555, "pullRequestNo": 3}
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE), commit(SHA_B, BOB)], [elsewhere])
+        drive(fake, pr_event(fake))
+        self.assertNotIn("Signed on this pull request", fake.comments[0]["body"])
+        drive(fake, comment_event(ALICE, cla.SIGN_PHRASE))
+        body = fake.comments[0]["body"]
+        self.assertIn("Signed on this pull request: @alice.", body)
+        self.assertNotIn("@bob", body)
+
+    def test_re_run_checks_the_pull_requests_on_that_commit(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}])
+        drive(fake, cla.parse_event("check_run", load("event_check_run__rerequested")))
+        self.assertEqual(fake.last_status(), "success")
+
+    def test_re_run_of_another_check_or_app_does_nothing(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        drive(fake, cla.parse_event("check_run", load("event_check_run__other_check")))
+        raw = load("event_check_run__rerequested").replace(b'"slug": "bookclerk"', b'"slug": "impostor"')
+        drive(fake, cla.parse_event("check_run", raw))
+        self.assertEqual(fake.requests, [])
+
     def test_a_status_left_from_before_the_check_run_gets_the_same_verdict(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
         fake.legacy.add(SHA_C)
@@ -1524,6 +1563,8 @@ class EndToEndTests(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "cla.yml").read_text(encoding="utf-8")
         self.assertIn(f"contains(github.event.comment.body, '{cla.SIGN_TRIGGER}')", workflow)
         self.assertIn(f"contains(github.event.comment.body, '{cla.RECHECK_WORD}')", workflow)
+        self.assertIn(f"github.event.check_run.name == '{cla.CHECK_NAME}'", workflow)
+        self.assertIn("types: [rerequested]", workflow)
         self.assertTrue(cla.SIGN_PHRASE.startswith(cla.SIGN_TRIGGER))
 
     def test_the_comment_names_the_recheck_command(self) -> None:
