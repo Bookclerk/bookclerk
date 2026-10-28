@@ -84,8 +84,9 @@ MAX_FAILURE_CHARS = 16 * 1024
 #: The longest test duration kept, in seconds; longer ones are clamped.
 MAX_TEST_SECONDS = 1_000_000.0
 #: Characters a kept name or failure text never contains: C0 controls other
-#: than tab and newline, DEL to U+009F, and the non-characters XML 1.0 forbids.
-UNSAFE_CHARS_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\ufffe\uffff]")
+#: than tab and newline (carriage return spelled out), DEL to U+009F, and the
+#: non-characters XML 1.0 forbids.
+UNSAFE_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\r\x0e-\x1f\x7f-\x9f\ufffe\uffff]")
 #: Markup a JUnit report never needs and the parser refuses: a document type
 #: declaration (and with it every entity declaration).
 DTD_RE = re.compile(r"<!DOCTYPE|<!ENTITY", re.IGNORECASE)
