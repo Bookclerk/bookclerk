@@ -485,3 +485,64 @@ test("a route group's routes nest by path in the rail", () => {
     ["/me", "/me"],
   );
 });
+
+test("example responses become one panel per status with a status mark", () => {
+  const page = `# Books
+
+## \`GET /api/books/{id}\`
+
+Returns a book.
+
+### Example response
+
+Status \`200\`: The book.
+
+\`\`\`json
+{}
+\`\`\`
+
+Status \`404\`: No such book. No body.
+
+Status \`404\`: Again.
+`;
+  const out = renderDoc(page, "api/web/books", { blobBase: BLOB });
+  const id = "get-apibooksid";
+  assert.match(
+    out.html,
+    /<div class="api-responses">\n<div class="heading-wrapper level-h3"><h3 id="example-response"/,
+  );
+  assert.ok(
+    out.html.includes(
+      `<div class="api-response" id="${id}-response-200" data-status="200">\n<p class="api-response-status"><span class="api-response-code"><span class="visually-hidden">Status </span><span class="api-status api-status-2xx">200</span>:</span> The book.</p>\n<div class="code`,
+    ),
+  );
+  assert.ok(out.html.includes(`id="${id}-response-404" data-status="404"`));
+  assert.match(
+    out.html,
+    new RegExp(`id="${id}-response-404-\\d+" data-status="404"`),
+    "a repeated status gets its own id",
+  );
+  assert.equal(out.html.split('<div class="api-response"').length, 4);
+  const examples = out.html.slice(out.html.indexOf('<div class="api-op-examples">'));
+  assert.ok(
+    examples.includes('<div class="api-responses">'),
+    "the responses sit in the examples column",
+  );
+});
+
+test("paragraphs that are not status lines stay outside the panels", () => {
+  const page = `# Books
+
+## \`GET /api/books\`
+
+### Example response
+
+Some note.
+
+Status \`abc\`: not a status.
+`;
+  const out = renderDoc(page, "api/web/books", { blobBase: BLOB });
+  assert.ok(out.html.includes('<div class="api-responses">'));
+  assert.ok(!out.html.includes('<div class="api-response"'));
+  assert.ok(out.html.includes("<p>Status <code>abc</code>: not a status.</p>"));
+});

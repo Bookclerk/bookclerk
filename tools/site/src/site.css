@@ -2281,6 +2281,66 @@ code.inline {
 .api-status-5xx::before {
   background: var(--brick);
 }
+/* Example responses (layoutResponses): one panel per status. docs.js turns
+   two or more into tabs inside a card; without it the panels stack. */
+.doc .api-response > * + * {
+  margin-top: 0.5em;
+}
+.doc .api-response + .api-response {
+  margin-top: 1.15em;
+}
+.doc .api-response-status {
+  color: var(--docs-soft);
+}
+.doc .api-response-code {
+  color: var(--ink);
+  margin-right: 4px;
+}
+.doc .api-responses.has-tabs .api-response-group {
+  border: 1px solid var(--docs-line);
+  border-radius: 8px;
+  background: var(--code-card);
+  margin-top: 0.6em;
+}
+.doc .api-responses.has-tabs .api-response {
+  margin: 0;
+  padding: 10px 12px 12px;
+}
+.doc .api-responses.has-tabs .api-response-code {
+  display: none;
+}
+.doc .api-responses.has-tabs .api-response .code {
+  margin-top: 0.5em;
+}
+.api-response-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 4px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--docs-line);
+}
+.api-response-tabs button {
+  min-height: 36px;
+  padding: 0 8px;
+  margin-bottom: -1px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--docs-soft);
+  cursor: pointer;
+}
+.api-response-tabs button:hover {
+  color: var(--ink);
+}
+.api-response-tabs button[aria-selected="true"] {
+  color: var(--ink);
+  border-bottom-color: var(--teal);
+}
+.api-response-tabs button:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
 .docs-nav .nav-sub,
 .docs-menus .nav-sub {
   margin: 2px 0 4px 12px;

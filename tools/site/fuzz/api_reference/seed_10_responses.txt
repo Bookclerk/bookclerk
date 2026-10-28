@@ -1,0 +1,33 @@
+# Books
+
+## `GET /api/books/{id}`
+
+### Example request
+
+```console
+$ curl 'http://127.0.0.1:8787/api/books/1'
+```
+
+### Example response
+
+Status `200`: The book.
+
+```json
+{ "id": "1" }
+```
+
+Status `404`: No such book. No body.
+
+Status `4XX`:
+
+```json
+{ "error": "x" }
+```
+
+Status `default`: Anything else.
+
+## `DELETE /api/books/{id}`
+
+### Example response
+
+Status `204`: Deleted. No body.
