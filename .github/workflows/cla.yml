@@ -14,6 +14,10 @@
 #   automation App, which GitHub signs for the App; the branch's ruleset lets
 #   only that App update it. The first signature creates the branch as a
 #   commit with no history.
+# - The check's comment is posted as the same App, so it carries the
+#   project's name; without the App's secrets the workflow posts it. The
+#   `CLA` status always comes from the workflow (GitHub Actions), the source
+#   the default branch's ruleset expects.
 # - Runs when a pull request is opened, pushed to, reopened, closed or
 #   retargeted (a new base can add commits without changing the head).
 # - `recheck` re-runs the check after a signature or allowlist change.
@@ -80,7 +84,7 @@ jobs:
       # automation App's token instead (below).
       contents: read
       # Read the pull request and its commits (REST and GraphQL), and keep
-      # the check's comment.
+      # the check's comment when the App is not configured.
       pull-requests: write
       # Report the `CLA` commit status.
       statuses: write
@@ -95,10 +99,11 @@ jobs:
             scripts/cla_branch/
           sparse-checkout-cone-mode: false
 
-      # Only signature writes use it, narrowed to Contents on this
-      # repository and revoked when the job ends. Without the App's secrets
-      # the token is empty and recording a signature fails closed.
-      - name: Mint signature-write token
+      # Only signature writes and the check's comment use it, narrowed to
+      # Contents and Pull requests on this repository and revoked when the
+      # job ends. Without the App's secrets the token is empty: recording a
+      # signature fails closed and the workflow comments instead.
+      - name: Mint the App token
         id: app-token
         if: github.event_name != 'merge_group' && env.HAS_APP == 'true'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -106,9 +111,11 @@ jobs:
           client-id: ${{ secrets.AUTOMATION_APP_CLIENT_ID }}
           private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
           permission-contents: write
+          permission-pull-requests: write
 
       - name: Check signatures
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CLA_SIGNATURE_TOKEN: ${{ steps.app-token.outputs.token }}
+          CLA_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
         run: python3 scripts/cla_check.py

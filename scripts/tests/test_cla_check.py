@@ -584,6 +584,7 @@ ALICE = account("alice", 101)
 BOB = account("bob", 102)
 DEPENDABOT = account("dependabot[bot]", 49699333, "Bot")
 ACTIONS = account("github-actions[bot]", 41898282, "Bot")
+APP = account("bookclerk[bot]", 900, "Bot")
 
 
 class FakeGitHub:
@@ -610,6 +611,9 @@ class FakeGitHub:
         #: True while a request comes through ``write``, the signature
         #: token's transport; only those may change the signature file.
         self.writing = False
+        #: True while a request comes through ``comment``, the App's comment
+        #: transport; comments made then are the App's.
+        self.commenting = False
         #: Whether ``cla-signatures`` exists, and holds the signature file.
         self.branch = True
         self.has_file = True
@@ -677,6 +681,16 @@ class FakeGitHub:
             return self.send(method, path, body)
         finally:
             self.writing = False
+
+    def comment(self, method: str, path: str, body: dict | None) -> tuple[int, bytes]:
+        self.commenting = True
+        try:
+            return self.send(method, path, body)
+        finally:
+            self.commenting = False
+
+    def commenter_account(self) -> dict:
+        return APP if self.commenting else ACTIONS
 
     def send(self, method: str, path: str, body: dict | None) -> tuple[int, bytes]:
         self.requests.append((method, path))
@@ -767,16 +781,17 @@ class FakeGitHub:
             self.blob += 1
             return 200, b"{}"
         if method == "POST" and route == "issues/7/comments":
-            self.comments.append({"id": 1000 + len(self.comments), "user": ACTIONS, "body": body["body"], "created_at": "t"})
+            self.comments.append({"id": 1000 + len(self.comments), "user": self.commenter_account(), "body": body["body"], "created_at": "t"})
             return 201, b"{}"
         if method == "POST" and len(parts) == 3 and parts[0] == "issues" and int(parts[1]) in self.others:
             thread = self.others[int(parts[1])].setdefault("comments", [])
-            thread.append({"id": 2000 + len(thread), "user": ACTIONS, "body": body["body"], "created_at": "t"})
+            thread.append({"id": 2000 + len(thread), "user": self.commenter_account(), "body": body["body"], "created_at": "t"})
             return 201, b"{}"
         if method == "PATCH" and route.startswith("issues/comments/"):
             target = int(route.rsplit("/", 1)[1])
             for c in self.comments:
                 if c["id"] == target:
+                    assert c["user"] == self.commenter_account(), "only a comment's author may edit it"
                     c["body"] = body["body"]
             return 200, b"{}"
         if method == "POST" and route.startswith("statuses/"):
@@ -841,7 +856,8 @@ BRANCH_FILES = cla.load_branch_files(str(Path(cla.__file__).resolve().parent / "
 
 
 def drive(fake: FakeGitHub, event: object) -> None:
-    cla.run(event, cla.GitHub(fake.send, "bookclerk/bookclerk", fake.write, BRANCH_FILES), CLA_URL, RUN_URL)
+    commenter = cla.Commenter(fake.comment, APP["login"])
+    cla.run(event, cla.GitHub(fake.send, "bookclerk/bookclerk", fake.write, BRANCH_FILES, commenter), CLA_URL, RUN_URL)
 
 
 class EndToEndTests(unittest.TestCase):
@@ -1245,8 +1261,29 @@ class EndToEndTests(unittest.TestCase):
         fake.comments = [{"id": i, "user": BOB, "body": "hi", "created_at": "t"} for i in range(1, 151)]
         drive(fake, pr_event(fake))
         drive(fake, pr_event(fake))
-        ours = [c for c in fake.comments if c["user"] == ACTIONS]
+        ours = [c for c in fake.comments if c["user"] == APP]
         self.assertEqual(len(ours), 1)
+
+    def test_the_comment_is_posted_as_the_app(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        drive(fake, pr_event(fake))
+        self.assertEqual([c["user"] for c in fake.comments], [APP])
+        self.assertTrue(fake.comments[0]["body"].startswith(cla.COMMENT_MARKER))
+
+    def test_without_an_app_the_workflow_comments(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        api = cla.GitHub(fake.send, "bookclerk/bookclerk", fake.write, BRANCH_FILES)
+        cla.run(pr_event(fake), api, CLA_URL, RUN_URL)
+        cla.run(pr_event(fake), api, CLA_URL, RUN_URL)
+        self.assertEqual([c["user"] for c in fake.comments], [ACTIONS])
+
+    def test_the_workflows_old_comment_is_left_for_the_apps(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        old = cla.COMMENT_MARKER + "\nold"
+        fake.comments = [{"id": 1, "user": ACTIONS, "body": old, "created_at": "t"}]
+        drive(fake, pr_event(fake))
+        self.assertEqual(fake.comments[0]["body"], old)
+        self.assertEqual([c["user"] for c in fake.comments], [ACTIONS, APP])
 
     def test_spoofed_marker_comment_is_not_edited(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
@@ -1281,6 +1318,11 @@ class MainTests(unittest.TestCase):
     def test_unreadable_event(self) -> None:
         env = {"GITHUB_REPOSITORY": "bookclerk/bookclerk", "GITHUB_TOKEN": "t", "GITHUB_EVENT_NAME": "push",
                "GITHUB_EVENT_PATH": str(CORPUS / "pull__basic")}
+        self.assertEqual(cla.main(env), 1)
+
+    def test_bad_app_slug(self) -> None:
+        env = {"GITHUB_REPOSITORY": "bookclerk/bookclerk", "GITHUB_TOKEN": "t", "CLA_SIGNATURE_TOKEN": "s",
+               "CLA_APP_SLUG": "evil/../x"}
         self.assertEqual(cla.main(env), 1)
 
 
