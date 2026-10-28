@@ -489,6 +489,131 @@ class MainTest(unittest.TestCase):
         self.assertEqual(status, 1 if config.enforce else 0)
 
 
+
+class ExportTest(unittest.TestCase):
+    """The upload's reports are the parsed ones, repository-relative."""
+
+    def test_write_lcov_round_trips(self) -> None:
+        hits = {"tools/site/b.ts": {3: 0, 1: 2}, "crates/a.rs": {7: 1}}
+        text = cg.write_lcov(hits)
+        self.assertEqual(text.splitlines()[0], "SF:crates/a.rs")
+        self.assertEqual(cg.parse_lcov(text, ".", "/w"), hits)
+
+    def test_mutated_reports_round_trip(self) -> None:
+        rng = random.Random(41)
+        seeds = [t for k, _, t in corpus() if k == "lcov"]
+        for n in range(500):
+            text = MutationFuzzTest().mutate(rng, rng.choice(seeds))
+            hits = cg.parse_lcov(text, CORPUS_ROOT, CORPUS_WORKSPACE)
+            self.assertEqual(cg.parse_lcov(cg.write_lcov(hits), ".", CORPUS_WORKSPACE), hits, f"iteration {n}: {text!r}")
+
+    def test_export_writes_measured_areas(self) -> None:
+        config = cg.parse_config(CONFIG)
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "in" / "site").mkdir(parents=True)
+            (base / "in" / "site" / "lcov.info").write_text("SF:a.ts\nDA:1,1\nend_of_record\nSF:../x.rs\nDA:1,1\n", encoding="utf-8")
+            cwd = Path.cwd()
+            os.chdir(base)
+            try:
+                written = cg.export(config, base / "in", base / "out", frozenset())
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(written, ["site"])
+            self.assertEqual((base / "out" / "site.lcov").read_text(encoding="utf-8"), "SF:tools/site/a.ts\nDA:1,1\nend_of_record\n")
+            self.assertFalse((base / "out" / "rust.lcov").exists())
+
+    def test_export_keeps_a_selective_run_off_the_area_flag(self) -> None:
+        config = cg.parse_config((ROOT / cg.AREAS_FILE).read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "in" / "rust").mkdir(parents=True)
+            (base / "in" / "rust" / "lcov.info").write_text("SF:crates/a/src/lib.rs\nDA:1,1\nend_of_record\n", encoding="utf-8")
+            cwd = Path.cwd()
+            os.chdir(base)
+            try:
+                selective = cg.export(config, base / "in", base / "partial", frozenset())
+                full = cg.export(config, base / "in", base / "full", frozenset({"rust_test"}))
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(selective, ["rust-partial"])
+            self.assertEqual(full, ["rust"])
+
+
+
+class UploadWorkflowTest(unittest.TestCase):
+    """The Codecov upload stays unprivileged and matches the areas file."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import yaml
+
+        cls.areas = cg.parse_config((ROOT / cg.AREAS_FILE).read_text(encoding="utf-8")).areas
+        cls.workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "coverage-upload.yml").read_text(encoding="utf-8"))
+        cls.codecov = yaml.safe_load((ROOT / ".github" / "codecov.yml").read_text(encoding="utf-8"))
+
+    def upload_names(self) -> list[str]:
+        """Name every file the export can write, in upload order."""
+        names = []
+        for area in self.areas:
+            names.append(area.name)
+            if area.workspace_check is not None:
+                names.append(f"{area.name}-partial")
+        return names
+
+    def test_flags_match_areas(self) -> None:
+        individual = self.codecov["flag_management"]["individual_flags"]
+        flags = {f["name"]: f["paths"] for f in individual}
+        expected = {a.name: list(a.paths) for a in self.areas}
+        expected |= {f"{a.name}-partial": list(a.paths) for a in self.areas if a.workspace_check is not None}
+        self.assertEqual(flags, expected)
+        self.assertTrue(self.codecov["flag_management"]["default_rules"]["carryforward"])
+        # A partial report counts only on the commit it measured.
+        for flag in individual:
+            self.assertEqual(flag.get("carryforward", True), not flag["name"].endswith("-partial"), flag["name"])
+
+    def test_patch_target_matches_the_gate(self) -> None:
+        config = cg.parse_config((ROOT / cg.AREAS_FILE).read_text(encoding="utf-8"))
+        self.assertEqual(self.codecov["coverage"]["status"]["patch"]["default"]["target"], f"{config.patch_target:g}%")
+
+    def test_one_upload_per_area_from_the_export(self) -> None:
+        steps = self.workflow["jobs"]["upload"]["steps"]
+        uploads = [s for s in steps if str(s.get("uses", "")).startswith("codecov/codecov-action@")]
+        self.assertEqual([u["with"]["flags"] for u in uploads], self.upload_names())
+        for upload in uploads:
+            area = upload["with"]["flags"]
+            self.assertEqual(upload["with"]["files"], f"coverage-upload/{area}.lcov")
+            self.assertEqual(upload["if"], f"steps.target.outputs.upload == 'true' && hashFiles('coverage-upload/{area}.lcov') != ''")
+            # Never empty: Codecov would take the default branch instead.
+            self.assertEqual(upload["with"]["override_branch"], "${{ steps.target.outputs.branch }}")
+            self.assertIs(upload["with"]["disable_search"], True)
+            # The checkout is not the measured commit (see the workflow).
+            self.assertIs(upload["with"]["disable_file_fixes"], True)
+            self.assertFalse((ROOT / upload["with"]["network_filter"]).exists())
+            self.assertIs(upload["with"]["use_oidc"], True)
+            self.assertRegex(upload["uses"], r"@[0-9a-f]{40}$")
+            self.assertEqual(upload["with"]["override_commit"], "${{ github.event.workflow_run.head_sha }}")
+        export = next(s for s in steps if "--export coverage-upload" in s.get("run", ""))
+        self.assertIn('--plan "$RUNNER_TEMP/plan/ci-plan/ci-plan.json"', export["run"])
+        self.assertLess(steps.index(export), steps.index(uploads[0]))
+
+    def test_runs_unprivileged_from_the_default_branch(self) -> None:
+        triggers = self.workflow.get("on", self.workflow.get(True))
+        self.assertEqual(triggers, {"workflow_run": {"workflows": ["CI"], "types": ["completed"]}})
+        self.assertEqual(self.workflow["permissions"], {})
+        job = self.workflow["jobs"]["upload"]
+        self.assertEqual(job["permissions"], {"actions": "read", "id-token": "write"})
+        checkout = job["steps"][0]
+        self.assertTrue(checkout["uses"].startswith("actions/checkout@"))
+        # The default branch only, without a token left in .git/config.
+        self.assertEqual(checkout["with"], {"persist-credentials": False})
+        for step in job["steps"]:
+            # Event text reaches shell steps through env only.
+            self.assertNotIn("${{", step.get("run", ""), step.get("name"))
+        self.assertIn("'cancelled'", job["if"])
+        self.assertIn('["pull_request", "merge_group"]', job["if"])
+
+
 if __name__ == "__main__":
     os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     unittest.main()

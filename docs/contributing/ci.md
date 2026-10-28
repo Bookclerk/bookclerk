@@ -690,6 +690,57 @@ pytest with `--cov=packages/plugin-sdk-python/src`. For Rust,
 `cargo llvm-cov nextest -p <crate>` covers one crate; the whole workspace
 needs a lot of disk.
 
+### Codecov
+
+The same reports also go to [Codecov](https://about.codecov.io/), which
+comments on pull requests and posts `codecov/project` and `codecov/patch`
+statuses. For now both statuses are informational, so they never fail a
+commit.
+
+The upload runs in its own workflow,
+[`coverage-upload.yml`](../../.github/workflows/coverage-upload.yml), after
+each CI run of a pull request or merge group finishes:
+
+1. It runs from the default branch through `workflow_run`. CI keeps its
+   read-only token, and fork pull requests upload too.
+2. It downloads the run's `coverage-*` artifacts and plan, and runs
+   `scripts/coverage_gate.py --export`. That rewrites each report through
+   the gate's parser, keeping only repository-relative paths, line numbers
+   and hit counts.
+3. It uploads each area under its own flag, signing in to Codecov with
+   OIDC, so there is no Codecov token secret. The commit, branch and pull
+   request come from the CI run GitHub recorded, never from an artifact.
+
+The upload never checks out the pull request. Its checkout is the default
+branch, so it sends Codecov no file list and no line fixes from it. The
+reports' paths are already repository-relative. A head branch name outside
+a conservative character set skips the upload, because Codecov must never
+file it under the default branch.
+
+The settings live in [`.github/codecov.yml`](../../.github/codecov.yml).
+Each area is a flag with carryforward, so a selective run that skips an
+area keeps that area's last figure. A selective run that tests only some
+Rust packages uploads under `rust-partial` instead of `rust`. That flag is
+never carried forward, so the whole-workspace `rust` figure stays as it
+was while the change's own lines are still measured. The patch target
+matches CI Gate's.
+A test checks that the flags, their paths and the target agree with
+`scripts/coverage_areas.toml`.
+
+Merge groups upload too. Their commit is the one that lands on `main`, so it
+gives later pull requests their base.
+
+> [!IMPORTANT]
+> Uploads need the [Codecov GitHub App](https://github.com/apps/codecov)
+> installed on the repository. Without it, the upload steps warn and the
+> workflow still passes.
+
+To make `codecov/patch` required later:
+
+1. Remove its `informational: true` line in `.github/codecov.yml`.
+2. Add `codecov/patch` to the default branch's ruleset, with the Codecov
+   App as its source.
+
 ## Branch protection and the merge queue
 
 Configure repository rulesets or branch protection so the **required** CI check is

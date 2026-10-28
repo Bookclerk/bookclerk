@@ -1,0 +1,254 @@
+# Codecov upload of the coverage CI measured.
+#
+# - CI (ci.yml) measures coverage in its test jobs and uploads one
+#   `coverage-*` artifact per job; CI Gate reports it in the run itself
+#   (docs/contributing/ci.md#coverage). This workflow sends the same reports
+#   to Codecov once the CI run completes, for pull requests, forks included,
+#   and merge groups. A merge group's commit is the one that lands on main,
+#   so its upload is the base later pull requests compare against.
+# - It runs from the default branch through `workflow_run`, so ci.yml keeps
+#   its read-only token and fork pull requests upload too. Codecov accepts
+#   the upload through OIDC: there is no Codecov token secret.
+# - The pull request's own run produced the artifacts, so they are untrusted
+#   input. The job checks out the default branch only and runs no pull
+#   request code. `scripts/coverage_gate.py --export` reads each report with
+#   the fuzzed parser CI Gate uses and writes back only repository-relative
+#   paths, line numbers and hit counts; only those files are uploaded. The
+#   commit, branch and pull request come from the event GitHub records for
+#   the run, never from an artifact.
+# - Uploads are one per area, each with the area's Codecov flag. Selective
+#   runs measure only some areas; `codecov.yml` carries the others forward.
+#   A selective Rust run tests only the affected packages, so its report
+#   goes up under `rust-partial`, which is never carried forward, and the
+#   whole-workspace `rust` figure stays as it was.
+#
+# Setup: install the Codecov GitHub App on the repository
+# (docs/contributing/ci.md#codecov).
+
+name: Coverage upload
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  upload:
+    name: Codecov upload
+    # Pull request and merge group runs only: a main push only builds, and an
+    # unpublished OSV remediation run is a workflow_call that never starts
+    # this workflow. A cancelled run (a superseded push) has nothing to add.
+    if: >-
+      contains(fromJSON('["pull_request", "merge_group"]'), github.event.workflow_run.event) &&
+      github.event.workflow_run.conclusion != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # Download the CI run's artifacts.
+      actions: read
+      # Codecov's OIDC upload.
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the coverage reports
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: coverage-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/coverage
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      # The plan says whether `rust_test` ran the whole workspace; a run
+      # without one exports every workspace-gated area as partial.
+      - name: Download the CI plan
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: ci-plan
+          path: ${{ runner.temp }}/plan
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Export the reports
+        run: >-
+          python3 scripts/coverage_gate.py --reports "$RUNNER_TEMP/coverage"
+          --plan "$RUNNER_TEMP/plan/ci-plan/ci-plan.json" --export coverage-upload
+
+      # Fork branches go to Codecov as `<owner>:<branch>`, so they never
+      # land on a branch of this repository with the same name. A branch
+      # name is the contributor's text: one outside a conservative character
+      # set skips the upload. It is never left empty, because Codecov would
+      # then take this run's own branch, the default one. The pull request
+      # number is only known for same-repository pull requests; Codecov finds
+      # a fork's from the commit.
+      - name: Resolve the upload target
+        id: target
+        env:
+          EVENT: ${{ github.event.workflow_run.event }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_OWNER: ${{ github.event.workflow_run.head_repository.owner.login }}
+          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+        run: |
+          set -euo pipefail
+          branch="$HEAD_BRANCH"
+          if [ "$EVENT" = "pull_request" ] && [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then
+            # A deleted fork leaves no owner, so no branch to give.
+            branch="${HEAD_OWNER:+$HEAD_OWNER:$HEAD_BRANCH}"
+          fi
+          # A merge group's commit becomes its base branch's next commit, so
+          # it is filed under that branch, not `gh-readonly-queue/<base>/…`.
+          if [ "$EVENT" = "merge_group" ]; then
+            queued="${HEAD_BRANCH#gh-readonly-queue/}"
+            branch="${queued%%/pr-*}"
+          fi
+          upload=true
+          if ! [[ "$branch" =~ ^[A-Za-z0-9._/:-]{1,200}$ ]]; then
+            echo "::warning title=Coverage upload::Skipped: the head branch name is not one Codecov is given."
+            upload=false
+          fi
+          if ! [[ "${PR:-}" =~ ^[0-9]{1,10}$ ]]; then
+            PR=""
+          fi
+          {
+            echo "upload=$upload"
+            echo "branch=$branch"
+            echo "pr=$PR"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload rust
+        if: steps.target.outputs.upload == 'true' && hashFiles('coverage-upload/rust.lcov') != ''
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          files: coverage-upload/rust.lcov
+          flags: rust
+          disable_search: true
+          # This checkout is the default branch, not the commit measured:
+          # its file list and contents would make Codecov drop new files
+          # and mark the wrong lines as non-code. Send no file list (the
+          # reports are already repository-relative) and no line fixes.
+          network_filter: coverage-upload-sends-no-file-list/
+          disable_file_fixes: true
+          use_oidc: true
+          version: v11.3.1
+          fail_ci_if_error: false
+          override_commit: ${{ github.event.workflow_run.head_sha }}
+          override_branch: ${{ steps.target.outputs.branch }}
+          override_pr: ${{ steps.target.outputs.pr }}
+          override_build: ${{ github.event.workflow_run.id }}
+          override_build_url: ${{ github.event.workflow_run.html_url }}
+
+      - name: Upload rust-partial
+        if: steps.target.outputs.upload == 'true' && hashFiles('coverage-upload/rust-partial.lcov') != ''
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          files: coverage-upload/rust-partial.lcov
+          flags: rust-partial
+          disable_search: true
+          # This checkout is the default branch, not the commit measured:
+          # its file list and contents would make Codecov drop new files
+          # and mark the wrong lines as non-code. Send no file list (the
+          # reports are already repository-relative) and no line fixes.
+          network_filter: coverage-upload-sends-no-file-list/
+          disable_file_fixes: true
+          use_oidc: true
+          version: v11.3.1
+          fail_ci_if_error: false
+          override_commit: ${{ github.event.workflow_run.head_sha }}
+          override_branch: ${{ steps.target.outputs.branch }}
+          override_pr: ${{ steps.target.outputs.pr }}
+          override_build: ${{ github.event.workflow_run.id }}
+          override_build_url: ${{ github.event.workflow_run.html_url }}
+
+      - name: Upload site
+        if: steps.target.outputs.upload == 'true' && hashFiles('coverage-upload/site.lcov') != ''
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          files: coverage-upload/site.lcov
+          flags: site
+          disable_search: true
+          # This checkout is the default branch, not the commit measured:
+          # its file list and contents would make Codecov drop new files
+          # and mark the wrong lines as non-code. Send no file list (the
+          # reports are already repository-relative) and no line fixes.
+          network_filter: coverage-upload-sends-no-file-list/
+          disable_file_fixes: true
+          use_oidc: true
+          version: v11.3.1
+          fail_ci_if_error: false
+          override_commit: ${{ github.event.workflow_run.head_sha }}
+          override_branch: ${{ steps.target.outputs.branch }}
+          override_pr: ${{ steps.target.outputs.pr }}
+          override_build: ${{ github.event.workflow_run.id }}
+          override_build_url: ${{ github.event.workflow_run.html_url }}
+
+      - name: Upload demo
+        if: steps.target.outputs.upload == 'true' && hashFiles('coverage-upload/demo.lcov') != ''
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          files: coverage-upload/demo.lcov
+          flags: demo
+          disable_search: true
+          # This checkout is the default branch, not the commit measured:
+          # its file list and contents would make Codecov drop new files
+          # and mark the wrong lines as non-code. Send no file list (the
+          # reports are already repository-relative) and no line fixes.
+          network_filter: coverage-upload-sends-no-file-list/
+          disable_file_fixes: true
+          use_oidc: true
+          version: v11.3.1
+          fail_ci_if_error: false
+          override_commit: ${{ github.event.workflow_run.head_sha }}
+          override_branch: ${{ steps.target.outputs.branch }}
+          override_pr: ${{ steps.target.outputs.pr }}
+          override_build: ${{ github.event.workflow_run.id }}
+          override_build_url: ${{ github.event.workflow_run.html_url }}
+
+      - name: Upload collector
+        if: steps.target.outputs.upload == 'true' && hashFiles('coverage-upload/collector.lcov') != ''
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          files: coverage-upload/collector.lcov
+          flags: collector
+          disable_search: true
+          # This checkout is the default branch, not the commit measured:
+          # its file list and contents would make Codecov drop new files
+          # and mark the wrong lines as non-code. Send no file list (the
+          # reports are already repository-relative) and no line fixes.
+          network_filter: coverage-upload-sends-no-file-list/
+          disable_file_fixes: true
+          use_oidc: true
+          version: v11.3.1
+          fail_ci_if_error: false
+          override_commit: ${{ github.event.workflow_run.head_sha }}
+          override_branch: ${{ steps.target.outputs.branch }}
+          override_pr: ${{ steps.target.outputs.pr }}
+          override_build: ${{ github.event.workflow_run.id }}
+          override_build_url: ${{ github.event.workflow_run.html_url }}
+
+      - name: Upload python-sdk
+        if: steps.target.outputs.upload == 'true' && hashFiles('coverage-upload/python-sdk.lcov') != ''
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          files: coverage-upload/python-sdk.lcov
+          flags: python-sdk
+          disable_search: true
+          # This checkout is the default branch, not the commit measured:
+          # its file list and contents would make Codecov drop new files
+          # and mark the wrong lines as non-code. Send no file list (the
+          # reports are already repository-relative) and no line fixes.
+          network_filter: coverage-upload-sends-no-file-list/
+          disable_file_fixes: true
+          use_oidc: true
+          version: v11.3.1
+          fail_ci_if_error: false
+          override_commit: ${{ github.event.workflow_run.head_sha }}
+          override_branch: ${{ steps.target.outputs.branch }}
+          override_pr: ${{ steps.target.outputs.pr }}
+          override_build: ${{ github.event.workflow_run.id }}
+          override_build_url: ${{ github.event.workflow_run.html_url }}
