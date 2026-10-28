@@ -214,6 +214,18 @@
       active.style.strokeDasharray = `${span.length} ${total + 1}`;
       active.style.strokeDashoffset = String(-span.start);
     };
+    // The rail scrolls on its own when its routes outgrow the window; keep
+    // the current one in view without moving the page.
+    const pane = box.closest(".toc");
+    const reveal = () => {
+      const row = rows.find((r) => r.getAttribute("href") === `#${current}`);
+      if (!pane || !row || pane.scrollHeight <= pane.clientHeight) return;
+      const view = pane.getBoundingClientRect();
+      const rect = row.getBoundingClientRect();
+      const margin = 48;
+      if (rect.top < view.top + margin) pane.scrollTop -= view.top + margin - rect.top;
+      else if (rect.bottom > view.bottom - margin) pane.scrollTop += rect.bottom - (view.bottom - margin);
+    };
     const draw = () => {
       const top = list.getBoundingClientRect().top;
       const items = rows.map((row) => {
@@ -246,20 +258,10 @@
       active.setAttribute("d", d);
       total = base.getTotalLength();
       highlight();
+      // Also runs when the rail comes back into view after a resize.
+      reveal();
     };
     new ResizeObserver(draw).observe(list);
-    // The rail scrolls on its own when its routes outgrow the window; keep
-    // the current one in view without moving the page.
-    const pane = box.closest(".toc");
-    const reveal = () => {
-      const row = rows.find((r) => r.getAttribute("href") === `#${current}`);
-      if (!pane || !row || pane.scrollHeight <= pane.clientHeight) return;
-      const view = pane.getBoundingClientRect();
-      const rect = row.getBoundingClientRect();
-      const margin = 48;
-      if (rect.top < view.top + margin) pane.scrollTop -= view.top + margin - rect.top;
-      else if (rect.bottom > view.bottom - margin) pane.scrollTop += rect.bottom - (view.bottom - margin);
-    };
     sectionListeners.push((id) => {
       current = id;
       highlight();
