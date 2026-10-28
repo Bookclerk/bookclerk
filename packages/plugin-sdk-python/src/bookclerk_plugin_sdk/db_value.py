@@ -13,11 +13,14 @@ import hashlib
 import math
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Any, Literal, TypedDict, Union
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
-from ._abi import DB_TYPES, DB_RESULT_SELECTIONS, DB_STATEMENT_KINDS
+from ._abi import DB_RESULT_SELECTIONS, DB_STATEMENT_KINDS, DB_TYPES
 from ._capnp import _CapnpMessage, _CapnpReader, _CapnpStruct, _StructReader
 from .guest_sql import guest_statement_kind, split_exec_queries
+
+if TYPE_CHECKING:
+    from .abi import DbType
 
 KINDS = frozenset({"null", "boolean", "int64", "float64", "text", "bytes"})
 TYPES = frozenset(DB_TYPES)
@@ -88,7 +91,7 @@ class BytesValue(TypedDict):
     value: bytes
 
 
-DbValue = Union[NullValue, BoolValue, Int64Value, Float64Value, TextValue, BytesValue]
+DbValue = NullValue | BoolValue | Int64Value | Float64Value | TextValue | BytesValue
 
 DbStatementKind = Literal["execute", "select", "returning"]
 DbResultSelection = Literal["discard", "affectedRows", "rows"]

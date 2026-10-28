@@ -78,6 +78,15 @@ updates:
     cooldown:
       default-days: 7
 
+  # Prettier and markdownlint for the repository-wide `lint` CI check.
+  - package-ecosystem: npm
+    directory: "/tools/lint"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+
   # Web UI bundled into ui/dist and served by bookclerkd.
   - package-ecosystem: npm
     directory: "/ui"

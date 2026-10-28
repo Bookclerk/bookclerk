@@ -55,7 +55,12 @@ Types:
   Worker's own sources, Workers types only); its CI check and its deploy
   workflow both run it first. Browser scripts a Worker serves are not Worker
   code and may stay JavaScript.
-- Run `cargo fmt` before committing rather than formatting by hand.
+- Run the formatters before committing rather than formatting by hand:
+  `cargo fmt` for Rust, Prettier for TypeScript, JavaScript, JSON, YAML, CSS
+  and HTML, and `ruff format` for the Python SDK. Markdown passes
+  markdownlint with the repository's relaxed settings; a line that must
+  break a rule disables it in place, never for the whole file (see
+  [`docs/contributing/writing-docs.md`](docs/contributing/writing-docs.md#markdown-lint)).
 
 Untrusted input ([ADR](docs/adr/untrusted-input-fuzzing.md)):
 
@@ -112,6 +117,10 @@ pull request as the behavior they describe:
 
 - `cargo fmt --all -- --check` and
   `cargo clippy --workspace --all-targets -- -D warnings`.
+- Prettier and markdownlint when non-Rust files changed: `npm ci --prefix
+  tools/lint`, then `node tools/lint/node_modules/prettier/bin/prettier.cjs
+  --check .` and `node tools/lint/node_modules/markdownlint-cli2/markdownlint-cli2-bin.mjs`
+  (the `lint` check; see [`docs/contributing/ci.md`](docs/contributing/ci.md#formatting-and-markdown-lint)).
 - Tests for what changed (`<base>` is the pull request's target branch,
   usually `origin/main`): `python3 scripts/ci-plan.py --base <base> --head HEAD
   --format summary` shows the plan; `python3 scripts/ci-exec.py resolve

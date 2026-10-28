@@ -1,0 +1,44 @@
+# Formatting is checked by `prettier --check .` from the repository root
+# (the `lint` CI check). Prettier already skips what .gitignore ignores.
+
+# Markdown belongs to markdownlint (.markdownlint-cli2.jsonc): docs are
+# written for GitHub's renderer, and reflowing them would churn every page.
+*.md
+
+# HTML is mostly page templates whose whitespace reaches the output and
+# whose text the tests match exactly (the site's partials, the demo's pages).
+*.html
+
+# Lockfiles and recorded third-party documents.
+**/package-lock.json
+third_party/
+signatures/
+crates/bookclerk-plugins/optional/integration-audiobookshelf/openapi/
+
+# Generated: regenerate these with their generator, never reformat them.
+crates/bookclerkd/openapi.json
+crates/bookclerkd/openapi-3.0.json
+crates/bookclerk-plugin-abi/schema/
+crates/bookclerk-plugin-manifest/schema/
+examples/plugins-echo-workerd-rust/modules/pkg/
+packages/plugin-sdk/src/generated.ts
+packages/plugin-sdk/src/generated-wire.ts
+packages/plugin-sdk/src/abi.ts
+
+# Byte-identical mirrors, kept in step by scripts/gen-plugin-abi.py and
+# scripts/sync-workerd-pin.py.
+packages/plugin-sdk/embed/
+packages/plugin-sdk/bridge/
+crates/bookclerk-plugin-sdk/embed/
+crates/bookclerk-workerd/bridge/
+packages/plugin-sdk-python/src/bookclerk_plugin_sdk/bridge/
+
+# Fuzz seeds, test fixtures and corpora: their exact bytes are the input
+# (some are malformed on purpose).
+fuzz/
+**/corpus/
+**/*_corpus/
+**/testdata/
+**/tests/fixtures/
+scripts/tests/ci_plan_fixtures/
+tools/site/fuzz/*/

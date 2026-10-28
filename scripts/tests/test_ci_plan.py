@@ -169,43 +169,50 @@ class ScenarioTests(unittest.TestCase):
     def test_docs_only_runs_only_the_site_link_check(self) -> None:
         p = plan("docs/internals/architecture.md", "docs/README.md")
         self.assertFalse(p.full_suite)
-        self.assertEqual(sorted(p.checks), ["site_test"])
-        self.assertEqual({j for j, on in p.jobs.items() if on}, {"site"})
+        self.assertEqual(sorted(p.checks), ["lint", "site_test"])
+        self.assertEqual({j for j, on in p.jobs.items() if on}, {"check", "site"})
 
     def test_site_only_runs_the_site_checks(self) -> None:
         p = plan("tools/site/worker.ts", "tools/site/src/site.css")
         self.assertFalse(p.full_suite, p.reasons)
-        self.assertEqual(sorted(p.checks), ["site_audit", "site_test"])
-        self.assertEqual({j for j, on in p.jobs.items() if on}, {"site"})
+        self.assertEqual(sorted(p.checks), ["lint", "site_audit", "site_test"])
+        self.assertEqual({j for j, on in p.jobs.items() if on}, {"check", "site"})
 
     def test_brand_assets_run_the_site_checks(self) -> None:
         p = plan("assets/brand/README.md")
         self.assertFalse(p.full_suite, p.reasons)
-        self.assertEqual(sorted(p.checks), ["site_audit", "site_test"])
+        self.assertEqual(sorted(p.checks), ["lint", "site_audit", "site_test"])
 
     def test_collector_only_runs_its_tests(self) -> None:
         p = plan("tools/diagnostics-collector/worker.ts")
         self.assertFalse(p.full_suite, p.reasons)
-        self.assertEqual(sorted(p.checks), ["collector_test"])
+        self.assertEqual(sorted(p.checks), ["collector_test", "lint"])
 
     def test_collector_test_type_checks_before_testing(self) -> None:
         art = artifact(plan("tools/diagnostics-collector/worker.ts"))
         labels = [c.label for _, c in planned_commands(art, "collector_test", CTX)]
         self.assertEqual(
             labels,
-            ["npm ci (tools/diagnostics-collector)", "tsc (tools/diagnostics-collector)", "npm test (tools/diagnostics-collector)"],
+            [
+                "npm ci (tools/diagnostics-collector)",
+                "tsc (tools/diagnostics-collector)",
+                "oxlint (tools/diagnostics-collector)",
+                "npm test (tools/diagnostics-collector)",
+            ],
         )
 
     def test_demo_only_runs_its_tests(self) -> None:
         p = plan("tools/demo/src/app.ts", "tools/demo/corpus/route/acquire")
         self.assertFalse(p.full_suite, p.reasons)
-        self.assertEqual(sorted(p.checks), ["demo_test"])
-        self.assertEqual({j for j, on in p.jobs.items() if on}, {"site"})
+        self.assertEqual(sorted(p.checks), ["demo_test", "lint"])
+        self.assertEqual({j for j, on in p.jobs.items() if on}, {"check", "site"})
 
     def test_demo_test_type_checks_before_testing(self) -> None:
         art = artifact(plan("tools/demo/src/app.ts"))
         labels = [c.label for _, c in planned_commands(art, "demo_test", CTX)]
-        self.assertEqual(labels, ["npm ci (tools/demo)", "tsc (tools/demo)", "npm test (tools/demo)"])
+        self.assertEqual(
+            labels, ["npm ci (tools/demo)", "tsc (tools/demo)", "oxlint (tools/demo)", "npm test (tools/demo)"]
+        )
 
     def test_openapi_change_runs_the_demo_tests(self) -> None:
         p = plan("crates/bookclerkd/openapi.json")
@@ -262,11 +269,13 @@ class ScenarioTests(unittest.TestCase):
     def test_site_test_type_checks_before_testing(self) -> None:
         art = artifact(plan("tools/site/worker.ts"))
         labels = [c.label for _, c in planned_commands(art, "site_test", CTX)]
-        self.assertEqual(labels, ["npm ci (tools/site)", "tsc (tools/site)", "npm test (tools/site)"])
+        self.assertEqual(
+            labels, ["npm ci (tools/site)", "tsc (tools/site)", "oxlint (tools/site)", "npm test (tools/site)"]
+        )
 
     def test_ui_only(self) -> None:
         p = plan("ui/src/App.tsx")
-        self.assertEqual(sorted(p.checks), ["api_docs", "ui"])
+        self.assertEqual(sorted(p.checks), ["api_docs", "lint", "ui"])
         self.assertEqual(p.params("api_docs"), {"rust_packages": [], "typescript": False, "ui": True, "python": False})
         self.assertEqual({j for j, on in p.jobs.items() if on}, {"check"})
 
@@ -1595,7 +1604,25 @@ class RunnerLayoutTests(unittest.TestCase):
             "scripts/tests/ci_plan_fixtures/workspace_metadata.json",
         )
         self.assertFalse(p.full_suite, p.reasons)
-        self.assertEqual(p.checks, {})
+        # Only markdownlint and Prettier read them.
+        self.assertEqual(sorted(p.checks), ["lint"])
+        self.assertEqual(
+            p.checks["lint"]["why"],
+            ["path AGENTS.md", "path README.md", "path scripts/tests/ci_plan_fixtures/workspace_metadata.json"],
+        )
+
+    def test_lint_configuration_runs_only_lint(self) -> None:
+        p = plan(".prettierrc.json", ".prettierignore", ".markdownlint-cli2.jsonc", "tools/lint/package.json")
+        self.assertFalse(p.full_suite, p.reasons)
+        self.assertEqual(sorted(p.checks), ["lint"])
+        self.assertEqual({j for j, on in p.jobs.items() if on}, {"check"})
+
+    def test_lint_runs_prettier_and_markdownlint_without_cargo(self) -> None:
+        art = artifact(plan("tools/lint/package.json"))
+        labels = [c.label for _, c in planned_commands(art, "lint", CTX)]
+        self.assertEqual(labels, ["npm ci (tools/lint)", "prettier --check", "markdownlint"])
+        self.assertEqual(job_outputs(art)["check_needs_cargo"], "false")
+        self.assertEqual(job_outputs(art)["check_needs_node"], "true")
 
 
 if __name__ == "__main__":

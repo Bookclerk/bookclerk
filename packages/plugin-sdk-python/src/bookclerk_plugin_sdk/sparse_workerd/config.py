@@ -10,18 +10,16 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import secrets
 import sys
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from .ensure import package_root
 from ..path_guard import (
-    resolve_under,
-    refuse_symlink_path,
-    ensure_dir_under,
-    write_file_under,
     copy_file_under,
+    ensure_dir_under,
+    refuse_symlink_path,
+    resolve_under,
+    write_file_under,
 )
 from ..tools import (
     apply_author_compatibility_date,
@@ -31,6 +29,7 @@ from ..tools import (
     validate_author_compatibility_flags,
     workerd_module_is_embedded,
 )
+from .ensure import package_root
 
 SDK_JS_MODULE_NAMES = ("@bookclerk/plugin-sdk/workerd", "@bookclerk/plugin-sdk")
 """Module names used when embedding the TypeScript workerd SDK."""
@@ -78,9 +77,9 @@ def manifest_capabilities(m: dict[str, Any]) -> dict[str, Any]:
     bindings: list[str] = []
     if m.get("vars") is not None:
         bindings.append("CONFIG")
-    secrets = m.get("secrets")
-    if isinstance(secrets, dict):
-        bindings.append(str(secrets.get("binding") or "SECRETS"))
+    secrets_grant = m.get("secrets")
+    if isinstance(secrets_grant, dict):
+        bindings.append(str(secrets_grant.get("binding") or "SECRETS"))
     work_fs = m.get("work_fs")
     if isinstance(work_fs, dict):
         bindings.append(str(work_fs.get("binding") or "WORK_FS"))

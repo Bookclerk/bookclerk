@@ -1714,7 +1714,7 @@ def granted_databases(
     Returns:
         Binding name → :class:`DatabaseBinding`.
     """
-    from bookclerk_plugin_sdk.db_value import ExecuteReply, ExecuteRequest, create_database_binding
+    from bookclerk_plugin_sdk.db_value import create_database_binding
 
     databases: dict[str, Any] = {}
     for name, token in (database_tokens or {}).items():

@@ -439,7 +439,6 @@ def test_package_python_vendors_sdk_package(tmp_path: Path):
 
 
 def test_package_refuses_module_symlink_without_outside_bytes(tmp_path: Path):
-    import tarfile
 
     from bookclerk_plugin_sdk.path_guard import copy_tree_no_symlinks
 
@@ -588,8 +587,9 @@ def test_refuse_symlink_blocks_bookclerk_dir_link(tmp_path: Path):
 
 
 def test_refuse_symlink_blocks_main_module_link(tmp_path: Path):
-    from bookclerk_plugin_sdk.sparse_workerd.config import materialize_config
     import tomllib
+
+    from bookclerk_plugin_sdk.sparse_workerd.config import materialize_config
 
     plugin = tmp_path / "plugin"
     modules = plugin / "modules"

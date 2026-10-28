@@ -18,7 +18,7 @@ Source Sans 3 and Literata files are the same as the website's
 
 SHA-256:
 
-```
+```text
 44fb8927aa12c4be6cf4ac884cc6b8d2f1a284d363274c648060d0a49b51cd78  google-sans-v71-500-latin-ext.woff2
 7ee2b232de66f7530be28964818bc8a813e62553138e48bffd917e95b19bd7fa  google-sans-v71-500-latin.woff2
 334990a82ce173e5169f5f0946c679f7d8c1ee8608eb29b56f85284802c712c9  literata-v40-latin-ext.woff2

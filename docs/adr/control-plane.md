@@ -1790,7 +1790,7 @@ owner node and host node.
   loopback only when both ends are on one machine).
 - **The code is bound to the type.** A clerk code is stored with scope
   `node:enroll node:clerk`, a branch code with `node:enroll`, each followed
-  by the consented branch name (` name:` and the name in base64url), as for
+  by the consented branch name (` name:` and the name in base64url), as for <!-- markdownlint-disable-line MD038 -->
   a branch. The redeem names the type it expects (`connection`) and must
   match the stored scope's type, so a branch-approved code never redeems as
   a clerk, and the node is labelled with the consented name. The owner

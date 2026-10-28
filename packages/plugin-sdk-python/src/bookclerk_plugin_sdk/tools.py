@@ -23,14 +23,14 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from .path_guard import (
-    resolve_under,
     cli_user_path,
-    copy_tree_no_symlinks,
-    refuse_symlink_path,
-    refuse_symlink_existing_components,
-    write_file_under,
     copy_file_under,
+    copy_tree_no_symlinks,
     ensure_dir_under,
+    refuse_symlink_existing_components,
+    refuse_symlink_path,
+    resolve_under,
+    write_file_under,
 )
 
 # Required for local bookclerk-workerd / Pyodide without pywrangler.
@@ -648,7 +648,7 @@ def _validate_surface(m: dict[str, Any]) -> None:
         seen.add(entrypoint)
     events = m.get("events") or {}
     consumers = list(events.get("consumers") or [])
-    queue_consumers = list(((m.get("queues") or {}).get("consumers") or []))
+    queue_consumers = list((m.get("queues") or {}).get("consumers") or [])
     jobs = list((m.get("triggers") or {}).get("jobs") or [])
     if not entrypoints and not consumers and not queue_consumers and not jobs:
         raise ValueError(

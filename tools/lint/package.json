@@ -1,0 +1,14 @@
+{
+  "name": "bookclerk-lint",
+  "private": true,
+  "description": "Repository-wide formatting and Markdown lint tooling (Prettier, markdownlint-cli2); CI only, never shipped.",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "devDependencies": {
+    "markdownlint-cli2": "0.24.0",
+    "prettier": "3.9.10"
+  }
+}

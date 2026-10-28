@@ -324,7 +324,8 @@ def job_outputs(artifact: Mapping[str, Any]) -> dict[str, str]:
     out["check_needs_cargo"] = _b(any(c not in NON_CARGO_CHECKS for c in check_job))
     docs = plan.params("api_docs")
     out["check_needs_node"] = _b(
-        plan.selected("ui")
+        plan.selected("lint")
+        or plan.selected("ui")
         or plan.selected("plugin_sdk_abi")
         or (plan.selected("api_docs") and (docs.get("all") or docs.get("typescript") or docs.get("ui")))
     )
@@ -536,6 +537,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
                 env={"UV_PROJECT_ENVIRONMENT": str(venv)},
             ),
             Command("ruff", [py, "-m", "ruff", "check", "packages/plugin-sdk-python"]),
+            Command("ruff format", [py, "-m", "ruff", "format", "--check", "packages/plugin-sdk-python"]),
             Command("pytest", [py, "-m", "pytest", "packages/plugin-sdk-python/tests", "-q"], env=src),
         ]
     if check == "site_test":
@@ -543,6 +545,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         return [
             Command("npm ci (tools/site)", ["npm", "ci"], cwd=site),
             Command("tsc (tools/site)", ["npm", "run", "typecheck"], cwd=site),
+            Command("oxlint (tools/site)", ["npm", "run", "lint"], cwd=site),
             Command("npm test (tools/site)", ["npm", "test"], cwd=site),
         ]
     if check == "site_audit":
@@ -564,6 +567,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         return [
             Command("npm ci (tools/diagnostics-collector)", ["npm", "ci"], cwd=collector),
             Command("tsc (tools/diagnostics-collector)", ["npm", "run", "typecheck"], cwd=collector),
+            Command("oxlint (tools/diagnostics-collector)", ["npm", "run", "lint"], cwd=collector),
             Command("npm test (tools/diagnostics-collector)", ["npm", "test"], cwd=collector),
         ]
     if check == "demo_test":
@@ -571,7 +575,17 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         return [
             Command("npm ci (tools/demo)", ["npm", "ci"], cwd=demo),
             Command("tsc (tools/demo)", ["npm", "run", "typecheck"], cwd=demo),
+            Command("oxlint (tools/demo)", ["npm", "run", "lint"], cwd=demo),
             Command("npm test (tools/demo)", ["npm", "test"], cwd=demo),
+        ]
+    if check == "lint":
+        # Repository-wide: Prettier formatting and markdownlint, both run from
+        # the root so their root configuration and ignore files apply.
+        lint = ctx.workspace / "tools" / "lint" / "node_modules"
+        return [
+            Command("npm ci (tools/lint)", ["npm", "ci"], cwd=str(ctx.workspace / "tools" / "lint")),
+            Command("prettier --check", ["node", str(lint / "prettier" / "bin" / "prettier.cjs"), "--check", "."]),
+            Command("markdownlint", ["node", str(lint / "markdownlint-cli2" / "markdownlint-cli2-bin.mjs")]),
         ]
     if check == "ui":
         ui = str(ctx.workspace / "ui")

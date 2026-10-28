@@ -128,6 +128,24 @@ DOCKER_IMAGE_PREFIX = "packaging/docker/"
 # builds it; the path-filtered `demo-deploy.yml` workflow does.
 DEMO_IMAGE_PREFIX = "packaging/demo/"
 DOCKER_IMAGE_FILES = frozenset({".dockerignore"})
+# Repository-wide formatting and Markdown lint (the ``lint`` check): its
+# tooling package, its configuration, and the file types it reads.
+LINT_PREFIX = "tools/lint/"
+LINT_CONFIG_FILES = frozenset({".prettierrc.json", ".prettierignore", ".markdownlint-cli2.jsonc"})
+LINT_SUFFIXES = (
+    ".md",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".mjs",
+    ".cjs",
+    ".json",
+    ".jsonc",
+    ".yml",
+    ".yaml",
+    ".css",
+    ".html",
+)
 # Repository files the website renders as pages of their own
 # (tools/site/build.ts `PAGES`, `source`).
 SITE_SOURCE_FILES = frozenset({"SECURITY.md"})
@@ -195,6 +213,7 @@ KNOWN_TOP_LEVEL = frozenset(
         ".gitattributes",
         ".gitignore",
         ".gitmodules",
+        *LINT_CONFIG_FILES,
     }
 )
 
@@ -205,6 +224,7 @@ TEST_INPUT_DIRS = {"tests": "tests", "benches": "benches", "examples": "examples
 # Jobs in ``.github/workflows/ci.yml`` and the checks each job executes.
 JOB_CHECKS: dict[str, tuple[str, ...]] = {
     "check": (
+        "lint",
         "ui",
         "plugin_sdk_abi",
         "python_sdk",
@@ -244,7 +264,7 @@ ALL_CHECKS = tuple(CHECK_JOB)
 STEP_GATED_JOBS = ("check", "site")
 
 # Checks in the ``check`` (lint and docs) job that need no Cargo toolchain.
-NON_CARGO_CHECKS = frozenset({"ui", "python_sdk"})
+NON_CARGO_CHECKS = frozenset({"lint", "ui", "python_sdk"})
 
 PREREQ_ORDER = ("build", "ensure_workerd", "install_platform", "stage_plugins")
 
@@ -693,6 +713,7 @@ class _Surfaces:
         self.collector: list[str] = []
         self.demo: list[str] = []
         self.docs: list[str] = []
+        self.lint: list[str] = []
         self.e2e_full: list[str] = []
         self.e2e_ids: dict[str, str] = {}
         self.release_full: list[str] = []
@@ -828,6 +849,12 @@ def build_plan(
             classified = True
         if path.startswith(FUZZ_SELF_SELECTING_PREFIXES):
             classified = True
+        if path in LINT_CONFIG_FILES or path.startswith(LINT_PREFIX):
+            surf.lint.append(path)
+            classified = True
+        elif path.endswith(LINT_SUFFIXES):
+            # Also classified with its owner; Prettier or markdownlint reads it.
+            surf.lint.append(path)
         if pkg is None and path.startswith("examples/plugins-"):
             guest_dir = "/".join(path.split("/")[:2])
             guest = guest_by_dir.get(guest_dir)
@@ -958,6 +985,8 @@ def _select_checks(
         _select(plan, "python_sdk", abi_why)
     for check, paths in surf.fixture_checks.items():
         _select(plan, check, [f"shared fixture {p}" for p in paths])
+    if surf.lint:
+        _select(plan, "lint", [f"path {p}" for p in surf.lint])
 
     site_why = [f"path {p}" for p in surf.site]
     if site_why or surf.docs or surf.site_inputs:

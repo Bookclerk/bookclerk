@@ -8,6 +8,7 @@
 <!-- Related work deliberately left for later, with issue links. -->
 
 ## Before / After
+
 **Before:**
 
 **After:**
@@ -19,7 +20,9 @@
 <!-- The docs/ pages this pull request updates, or why none need to change. -->
 
 ## Checks run
+
 - [ ] `cargo fmt` / `cargo clippy`
+- [ ] Prettier / markdownlint (`lint`) for non-Rust files
 - [ ] Tests (planned checks or the full suite)
 - [ ] Platform, dependency-vulnerability and static-analysis checks, where applicable
 - [ ] Docs under `docs/` updated, generated references regenerated, or the Docs section says why not

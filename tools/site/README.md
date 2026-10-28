@@ -88,7 +88,7 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   grammars editors use; a placeholder theme marks each kind of token, and
   `highlight.ts` turns those marks into classes and writes the HTML itself,
   since Shiki's inline `style` colors would break the Content-Security-Policy.
-  In a `console` fence only `$ ` prompt lines (and their `\` continuations)
+  In a `console` fence only `$ ` prompt lines (and their `\` continuations) <!-- markdownlint-disable-line MD038 -->
   are colored, and the output lines stay plain. The Worker runs it while
   rendering, so pages need no client-side highlighter.
   It reads doc text, so `fuzz.test.ts` replays `fuzz/highlight/` (first line
