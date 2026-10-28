@@ -2318,7 +2318,7 @@ const USER_LIST_LISTENING_WITHIN: ChronoDuration = ChronoDuration::minutes(30);
     path = "/api/users",
     security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
-        (status = 200, description = "The library's users.", body = serde_json::Value),
+        (status = 200, description = "The library's users.", body = UserListResponse),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
     ),
@@ -2326,7 +2326,7 @@ const USER_LIST_LISTENING_WITHIN: ChronoDuration = ChronoDuration::minutes(30);
 pub async fn list_users(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<UserListResponse>, StatusCode> {
     let auth = state.auth_snapshot().await;
     let library = state.library_snapshot().await;
     authorize_provisioner(&state, &auth, &headers, &library).await?;
@@ -2350,36 +2350,33 @@ pub async fn list_users(
             .await
             .unwrap_or_default();
         let extra = extras.get(&u.id);
-        rows.push(serde_json::json!({
-            "id": u.id,
-            "role": u.role.as_str(),
-            "status": u.status.as_str(),
-            "display_name": u.display_name,
-            "login_name": u.login_name,
-            "email": u.email,
-            "has_password": u.has_password,
-            "online": extra.map(|e| e.online).unwrap_or(false),
-            "last_active_at": extra.and_then(|e| e.last_active_at).map(|t| t.to_rfc3339()),
-            "last_seen_at": u.last_seen_at.map(|t| t.to_rfc3339()),
-            "has_avatar": files_dir.as_ref().is_some_and(|d| crate::profile::avatar_exists(d, u.id)),
-            "avatar_source": crate::profile::avatar_source_wire(u.avatar_source.as_deref()),
-            "gravatar_hash": crate::profile::gravatar_hash_for(u.email.as_deref()),
-            "sso_pictures": crate::profile::sso_pictures_json(&sso_pictures),
-            "listening": extra.and_then(|e| e.listening.clone()),
-            "integrations": extra.map(|e| e.integrations.clone()).unwrap_or_default(),
-            "identities": identities
+        rows.push(UserListEntry {
+            summary: UserSummary::from_record(&u),
+            online: extra.map(|e| e.online).unwrap_or(false),
+            last_active_at: extra.and_then(|e| e.last_active_at).map(|t| t.to_rfc3339()),
+            last_seen_at: u.last_seen_at.map(|t| t.to_rfc3339()),
+            has_avatar: files_dir
+                .as_ref()
+                .is_some_and(|d| crate::profile::avatar_exists(d, u.id)),
+            avatar_source: crate::profile::avatar_source_wire(u.avatar_source.as_deref()),
+            gravatar_hash: crate::profile::gravatar_hash_for(u.email.as_deref()),
+            sso_pictures: sso_pictures
                 .iter()
-                .map(|p| {
-                    serde_json::json!({
-                        "provider": p.provider,
-                        "external_user_id": p.external_user_id,
-                        "label": p.label,
-                    })
+                .map(UserSsoPictureSummary::from_record)
+                .collect(),
+            listening: extra.and_then(|e| e.listening.clone()),
+            integrations: extra.map(|e| e.integrations.clone()).unwrap_or_default(),
+            identities: identities
+                .iter()
+                .map(|p| UserIdentitySummary {
+                    provider: p.provider.clone(),
+                    external_user_id: p.external_user_id.clone(),
+                    label: p.label.clone(),
                 })
-                .collect::<Vec<_>>(),
-        }));
+                .collect(),
+        });
     }
-    Ok(Json(serde_json::json!({ "users": rows })))
+    Ok(Json(UserListResponse { users: rows }))
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -2406,7 +2403,9 @@ pub struct PatchUserRequest {
 fn last_administrator_response() -> Response {
     (
         StatusCode::CONFLICT,
-        Json(serde_json::json!({ "error": "last_administrator" })),
+        Json(UserChangeConflict {
+            error: "last_administrator",
+        }),
     )
         .into_response()
 }
@@ -2415,7 +2414,9 @@ fn last_administrator_response() -> Response {
 fn last_owner_response() -> Response {
     (
         StatusCode::CONFLICT,
-        Json(serde_json::json!({ "error": "last_owner" })),
+        Json(UserChangeConflict {
+            error: "last_owner",
+        }),
     )
         .into_response()
 }
@@ -2428,12 +2429,12 @@ fn last_owner_response() -> Response {
     request_body = PatchUserRequest,
     security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
-        (status = 200, description = "The user after the change.", body = serde_json::Value),
+        (status = 200, description = "The user after the change.", body = UserChangeResponse),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
-        (status = 400, description = "A value is invalid."),
+        (status = 400, description = "A value is invalid. An invalid email names itself; any other invalid value gets the standard error body.", body = UserChangeInvalid),
         (status = 404, description = "No such user."),
-        (status = 409, description = "The login name or email is taken by another user."),
+        (status = 409, description = "The change would leave the library without an owner or administrator (`error` names which), or the login name or email is taken by another user (the standard error body).", body = UserChangeConflict),
     ),
 )]
 pub async fn patch_user(
@@ -2518,10 +2519,10 @@ pub async fn patch_user(
             Err(LibraryError::InvalidEmail) => {
                 return Ok((
                     StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": "invalid_email",
-                        "message": "Enter a valid email address."
-                    })),
+                    Json(UserChangeInvalid {
+                        error: "invalid_email",
+                        message: "Enter a valid email address.",
+                    }),
                 )
                     .into_response());
             }
@@ -2542,10 +2543,10 @@ pub async fn patch_user(
         )
         .await;
 
-    Ok(Json(serde_json::json!({
-        "ok": true,
-        "user": user_json(&user),
-    }))
+    Ok(Json(UserChangeResponse {
+        ok: true,
+        user: UserSummary::from_record(&user),
+    })
     .into_response())
 }
 
@@ -2556,7 +2557,7 @@ pub async fn patch_user(
     params(("id" = i64, Path, description = "User id.")),
     security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
-        (status = 200, description = "A fresh claim ticket.", body = serde_json::Value),
+        (status = 200, description = "A fresh claim ticket.", body = UserClaimTicketResponse),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
         (status = 404, description = "No such user."),
@@ -2566,7 +2567,7 @@ pub async fn create_user_claim_ticket(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     axum::extract::Path(user_id): axum::extract::Path<i64>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<UserClaimTicketResponse>, StatusCode> {
     let auth = state.auth_snapshot().await;
     let library = state.library_snapshot().await;
     let actor = authorize_provisioner(&state, &auth, &headers, &library).await?;
@@ -2595,11 +2596,11 @@ pub async fn create_user_claim_ticket(
         )
         .await;
     let invite_url = invite_magic_link(&state, &headers, &claim);
-    Ok(Json(serde_json::json!({
-        "ok": true,
-        "claim_ticket": claim,
-        "invite_url": invite_url,
-    })))
+    Ok(Json(UserClaimTicketResponse {
+        ok: true,
+        claim_ticket: claim,
+        invite_url,
+    }))
 }
 
 /// Invalidate a user's password, revoke sessions, and mint a claim ticket for reset.
@@ -2609,7 +2610,7 @@ pub async fn create_user_claim_ticket(
     params(("id" = i64, Path, description = "User id.")),
     security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
-        (status = 200, description = "The password was cleared; a claim ticket for the reset.", body = serde_json::Value),
+        (status = 200, description = "The password was cleared; a claim ticket for the reset.", body = UserPasswordResetResponse),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
         (status = 404, description = "No such user."),
@@ -2619,7 +2620,7 @@ pub async fn reset_user_password(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     axum::extract::Path(user_id): axum::extract::Path<i64>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<UserPasswordResetResponse>, StatusCode> {
     let auth = state.auth_snapshot().await;
     let library = state.library_snapshot().await;
     let actor = authorize_provisioner(&state, &auth, &headers, &library).await?;
@@ -2657,11 +2658,11 @@ pub async fn reset_user_password(
             )),
         )
         .await;
-    Ok(Json(serde_json::json!({
-        "ok": true,
-        "claim_ticket": claim,
-        "revoked_sessions": revoked,
-    })))
+    Ok(Json(UserPasswordResetResponse {
+        ok: true,
+        claim_ticket: claim,
+        revoked_sessions: revoked,
+    }))
 }
 
 /// Delete a user and their personal data (wishlist / links / sessions); keep acquired books.
@@ -2674,7 +2675,7 @@ pub async fn reset_user_password(
     params(("id" = i64, Path, description = "User id.")),
     security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
-        (status = 200, description = "The user and their personal data were deleted.", body = serde_json::Value),
+        (status = 200, description = "The user and their personal data were deleted.", body = UserDeletedResponse),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
         (status = 404, description = "No such user."),
@@ -2726,7 +2727,7 @@ pub async fn delete_user(
                 crate::profile::remove_avatar(&dir, user_id);
             }
             let mut response =
-                (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response();
+                (StatusCode::OK, Json(UserDeletedResponse { ok: true })).into_response();
             if is_self {
                 let flags = {
                     let cfg = state.config.read().await;
@@ -2897,7 +2898,7 @@ fn default_true() -> bool {
     request_body = CreateUserRequest,
     security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
-        (status = 200, description = "The new user, with an invite link when one was asked for.", body = serde_json::Value),
+        (status = 200, description = "The new user, with an invite link when one was asked for.", body = UserCreatedResponse),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
         (status = 400, description = "The request is invalid."),
@@ -2908,7 +2909,7 @@ pub async fn create_user(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<CreateUserRequest>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<UserCreatedResponse>, StatusCode> {
     let auth = state.auth_snapshot().await;
     let library = state.library_snapshot().await;
     let actor = authorize_provisioner(&state, &auth, &headers, &library).await?;
@@ -2976,12 +2977,12 @@ pub async fn create_user(
             )),
         )
         .await;
-    Ok(Json(serde_json::json!({
-        "ok": true,
-        "user": user_json(&user),
-        "claim_ticket": claim,
-        "invite_url": invite_url,
-    })))
+    Ok(Json(UserCreatedResponse {
+        ok: true,
+        user: UserSummary::from_record(&user),
+        claim_ticket: claim,
+        invite_url,
+    }))
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -3326,17 +3327,225 @@ fn invite_magic_link(state: &AppState, headers: &HeaderMap, ticket: &str) -> Str
     format!("{origin}/invite?ticket={ticket}")
 }
 
-/// Serializes a user row for API responses without the password hash.
-fn user_json(user: &bookclerk_library::UserRecord) -> serde_json::Value {
-    serde_json::json!({
-        "id": user.id,
-        "role": user.role.as_str(),
-        "status": user.status.as_str(),
-        "display_name": user.display_name,
-        "login_name": user.login_name,
-        "email": user.email,
-        "has_password": user.has_password,
-    })
+/// A first-party user as the Users routes return one: profile, role and
+/// status, never the password hash.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct UserSummary {
+    /// Surrogate primary key assigned by the database.
+    #[schema(example = 7)]
+    pub id: i64,
+    /// First-party role.
+    #[schema(example = "member")]
+    pub role: UserRole,
+    /// Whether the account may sign in.
+    #[schema(example = "active")]
+    pub status: UserStatus,
+    /// Human-readable name shown in the UI, when set.
+    #[schema(example = "Sam Reader")]
+    pub display_name: Option<String>,
+    /// Local username for password login, when set.
+    #[schema(example = "sam")]
+    pub login_name: Option<String>,
+    /// Contact email, when set.
+    #[schema(example = "sam@example.com")]
+    pub email: Option<String>,
+    /// Whether a local password is stored for the user.
+    #[schema(example = true)]
+    pub has_password: bool,
+}
+
+impl UserSummary {
+    /// Summarizes a stored user row.
+    ///
+    /// # Arguments
+    ///
+    /// * `user` - The row to summarize.
+    fn from_record(user: &bookclerk_library::UserRecord) -> Self {
+        Self {
+            id: user.id,
+            role: user.role,
+            status: user.status,
+            display_name: user.display_name.clone(),
+            login_name: user.login_name.clone(),
+            email: user.email.clone(),
+            has_password: user.has_password,
+        }
+    }
+}
+
+/// An external sign-in identity linked to a user.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct UserIdentitySummary {
+    /// Identity-broker id (`oidc:google`, `oidc:github`, …).
+    #[schema(example = "oidc:github")]
+    pub provider: String,
+    /// The user's id at the provider.
+    #[schema(example = "8675309")]
+    pub external_user_id: String,
+    /// Operator-facing label for the identity, when one was set.
+    #[schema(example = "sam-reader")]
+    pub label: Option<String>,
+}
+
+/// A profile picture an identity provider supplied for a user.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct UserSsoPictureSummary {
+    /// The linked identity the picture came from.
+    #[schema(example = 12)]
+    pub identity_id: i64,
+    /// Identity-broker id (`oidc:google`, `oidc:github`, …).
+    #[schema(example = "oidc:github")]
+    pub provider: String,
+    /// HTTPS URL of the picture at the provider or its CDN.
+    #[schema(example = "https://avatars.githubusercontent.com/u/8675309")]
+    pub picture_url: String,
+    /// RFC 3339 time the identity last signed in, when it has.
+    #[schema(example = "2026-10-27T18:40:02+00:00")]
+    pub last_used_at: Option<String>,
+}
+
+impl UserSsoPictureSummary {
+    /// Restates a stored picture row for the wire.
+    ///
+    /// # Arguments
+    ///
+    /// * `picture` - The row to restate.
+    fn from_record(picture: &bookclerk_library::UserSsoPicture) -> Self {
+        Self {
+            identity_id: picture.identity_id,
+            provider: picture.provider.clone(),
+            picture_url: picture.picture_url.clone(),
+            last_used_at: picture.last_used_at.map(|t| t.to_rfc3339()),
+        }
+    }
+}
+
+/// One user in the list `GET /api/users` returns: the summary plus
+/// presence, avatar and connection details for administration.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct UserListEntry {
+    /// The user's profile, role and status.
+    #[serde(flatten)]
+    pub summary: UserSummary,
+    /// Whether the user has a portal session that has not expired.
+    #[schema(example = true)]
+    pub online: bool,
+    /// RFC 3339 time of the most recent activity on an unexpired portal
+    /// session, when the user is online.
+    #[schema(example = "2026-10-28T09:15:10+00:00")]
+    pub last_active_at: Option<String>,
+    /// RFC 3339 time of the last authenticated portal activity; kept
+    /// after the session ends.
+    #[schema(example = "2026-10-28T09:15:10+00:00")]
+    pub last_seen_at: Option<String>,
+    /// Whether an uploaded avatar is stored for the user.
+    #[schema(example = false)]
+    pub has_avatar: bool,
+    /// Which avatar the user shows: `auto`, `upload`, `gravatar`, or an
+    /// identity's picture.
+    #[schema(example = "auto")]
+    pub avatar_source: String,
+    /// SHA-256 digest of the user's email for Gravatar, when they have one.
+    #[schema(example = "c5e3d8f1a9b24e7b6f0c2a1d4e8b9f3a7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f")]
+    pub gravatar_hash: Option<String>,
+    /// Pictures the user's identity providers supplied.
+    pub sso_pictures: Vec<UserSsoPictureSummary>,
+    /// The most recent unfinished listen within the last 30 minutes, if any.
+    pub listening: Option<bookclerk_library::UserListeningHint>,
+    /// Storefront and integration accounts linked to the user.
+    pub integrations: Vec<bookclerk_library::UserIntegrationHint>,
+    /// External sign-in identities linked to the user.
+    pub identities: Vec<UserIdentitySummary>,
+}
+
+/// Body of `GET /api/users`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct UserListResponse {
+    /// Every first-party user.
+    pub users: Vec<UserListEntry>,
+}
+
+/// Body of a user change that succeeded: the user as stored afterwards.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct UserChangeResponse {
+    /// Always true; the status code says the change was applied.
+    #[schema(example = true)]
+    pub ok: bool,
+    /// The user after the change.
+    pub user: UserSummary,
+}
+
+/// Body of a `409 Conflict` from a user change that would leave the
+/// library without an owner or administrator.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct UserChangeConflict {
+    /// Why the change was refused: `last_owner` or `last_administrator`.
+    #[schema(example = "last_owner")]
+    pub error: &'static str,
+}
+
+/// Body of a `400 Bad Request` from a user change with an invalid email.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct UserChangeInvalid {
+    /// Machine slug for the rejected value.
+    #[schema(example = "invalid_email")]
+    pub error: &'static str,
+    /// A sentence to show the person who made the request.
+    #[schema(example = "Enter a valid email address.")]
+    pub message: &'static str,
+}
+
+/// Body of `POST /api/users`: the new user and, when one was asked for,
+/// the invite that lets them claim it.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct UserCreatedResponse {
+    /// Always true; the status code says the user was created.
+    #[schema(example = true)]
+    pub ok: bool,
+    /// The user as created.
+    pub user: UserSummary,
+    /// Opaque single-use claim ticket, when `mint_invite` was true.
+    #[schema(example = "7Qf3kZp0wL2mN9xT1cRb8vHd")]
+    pub claim_ticket: Option<String>,
+    /// Invite link that redeems the claim ticket, when one was minted.
+    #[schema(example = "https://books.example.com/invite?ticket=7Qf3kZp0wL2mN9xT1cRb8vHd")]
+    pub invite_url: Option<String>,
+}
+
+/// Body of `POST /api/users/{id}/claim-ticket`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct UserClaimTicketResponse {
+    /// Always true; the status code says the ticket was minted.
+    #[schema(example = true)]
+    pub ok: bool,
+    /// Opaque single-use claim ticket for the user.
+    #[schema(example = "7Qf3kZp0wL2mN9xT1cRb8vHd")]
+    pub claim_ticket: String,
+    /// Invite link that redeems the claim ticket.
+    #[schema(example = "https://books.example.com/invite?ticket=7Qf3kZp0wL2mN9xT1cRb8vHd")]
+    pub invite_url: String,
+}
+
+/// Body of `POST /api/users/{id}/reset-password`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct UserPasswordResetResponse {
+    /// Always true; the status code says the password was cleared.
+    #[schema(example = true)]
+    pub ok: bool,
+    /// Opaque single-use claim ticket that lets the user set a new password.
+    #[schema(example = "7Qf3kZp0wL2mN9xT1cRb8vHd")]
+    pub claim_ticket: String,
+    /// How many of the user's portal sessions were signed out.
+    #[schema(example = 2)]
+    pub revoked_sessions: u64,
+}
+
+/// Body of `DELETE /api/users/{id}`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct UserDeletedResponse {
+    /// Always true; the status code says the user was deleted.
+    #[schema(example = true)]
+    pub ok: bool,
 }
 
 /// List sessions for the current principal only (not every operator session).

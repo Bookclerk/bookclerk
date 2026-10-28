@@ -177,7 +177,7 @@ pub struct UserSsoPicture {
 }
 
 /// First-party user role (`owner` | `administrator` | `host` | `member`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum UserRole {
     /// Cluster super-user: may elevate to Operator after password re-auth.
@@ -244,7 +244,7 @@ impl std::fmt::Display for UserRole {
 }
 
 /// First-party user status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum UserStatus {
     /// Account may sign in and use the portal.
@@ -366,24 +366,30 @@ pub struct StoredPasskey {
 }
 
 /// Storefront / integration connection summary for admin user lists.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct UserIntegrationHint {
     /// Content-source or integration plugin id (`audible`, `libro`, …).
+    #[schema(example = "audible")]
     pub source: String,
     /// Store or operator account id this row belongs to.
+    #[schema(example = "sam@example.com")]
     pub account_id: String,
     /// Optional operator-facing account label.
+    #[schema(example = "Sam's Audible")]
     pub label: Option<String>,
 }
 
 /// Recent unfinished listening hint for admin user lists.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct UserListeningHint {
     /// Display title when the provider reported one.
+    #[schema(example = "The Left Hand of Darkness")]
     pub title: Option<String>,
     /// Integration / storefront provider id.
+    #[schema(example = "audiobookshelf")]
     pub provider: String,
     /// RFC 3339 time of the last playback update.
+    #[schema(example = "2026-10-28T09:12:44Z")]
     pub last_listened_at: DateTime<Utc>,
 }
 
