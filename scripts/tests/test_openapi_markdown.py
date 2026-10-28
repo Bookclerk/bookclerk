@@ -331,6 +331,36 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn("Cookie = ", post)
         token = page.split("## `POST /token`")[1]
         self.assertIn("-d 'grant_type=a%2Fb%20c'", token.split("\n## ")[0])
+        # Every language sends the same form: a boolean as `true`, an array as repeated fields.
+        doc = json.loads(json.dumps(DOCUMENT))
+        doc["paths"]["/flags"] = {
+            "post": {
+                "tags": ["Books"],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "type": "object",
+                                "required": ["on", "tags"],
+                                "properties": {"on": {"type": "boolean"}, "tags": {"type": "array", "items": {"type": "string"}}},
+                            }
+                        }
+                    },
+                },
+                "responses": {"204": {"description": "Done."}},
+            }
+        }
+        flags = om.Document(doc).render_all()["books.md"].split("## `POST /flags`")[1].split("\n## ")[0]
+        self.assertIn("-d 'on=true&tags=string'", flags)
+        self.assertIn("-Body 'on=true&tags=string'", flags)
+        self.assertIn('data={"on": "true", "tags": "string"},', flags)
+        self.assertIn('body: new URLSearchParams("on=true&tags=string"),', flags)
+        self.assertIn('.form(&[("on", "true"), ("tags", "string")])', flags)
+        self.assertEqual(
+            om.form_pairs([("a", [True, 1]), ("b", {"k": "v"}), ("c", om.NO_EXAMPLE)]),
+            [("a", "true"), ("a", "1"), ("b", '{"k": "v"}'), ("c", "")],
+        )
         # A form with no required field guesses none of its alternatives.
         callback = page.split("## `POST /callback`")[1].split("\n## ")[0]
         self.assertNotIn("-d ", callback)

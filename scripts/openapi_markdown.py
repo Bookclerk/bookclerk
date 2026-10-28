@@ -1136,9 +1136,13 @@ def sample_python(example: RequestExample) -> list[str]:
     if body is not None and body.kind == "json":
         args.append("json=" + python_literal(body.value))
     elif body is not None and body.kind == "form":
+        # ``requests`` sends a list value as repeated fields, like curl does.
         form: dict[str, Any] = {}
-        for name, value in body.value:
-            form[name] = "" if value is NO_EXAMPLE else value
+        for name, text in form_pairs(body.value):
+            if name in form:
+                form[name] = [*(form[name] if isinstance(form[name], list) else [form[name]]), text]
+            else:
+                form[name] = text
         args.append("data=" + python_literal(form))
     elif body is not None:
         args.append('data=open("file", "rb")')
@@ -1194,7 +1198,7 @@ def sample_rust(example: RequestExample) -> list[str]:
     if body is not None and body.kind == "json":
         calls.append(f".json(&serde_json::json!({json.dumps(body.value, ensure_ascii=False)}))")
     elif body is not None and body.kind == "form":
-        pairs = ", ".join(f"({json.dumps(name)}, {json.dumps('' if value is NO_EXAMPLE else value if isinstance(value, str) else json.dumps(value), ensure_ascii=False)})" for name, value in body.value)
+        pairs = ", ".join(f"({json.dumps(name)}, {json.dumps(text, ensure_ascii=False)})" for name, text in form_pairs(body.value))
         calls.append(f".form(&[{pairs}])")
     elif body is not None:
         calls.append('.body(std::fs::read("file")?)')
@@ -1218,16 +1222,19 @@ SAMPLE_LANGUAGES = {
 }
 
 
-def form_encode(pairs: Sequence[tuple[str, Any]]) -> str:
-    """Encode example values as a query string or form body.
+def form_pairs(pairs: Sequence[tuple[str, Any]]) -> list[tuple[str, str]]:
+    """Flatten example values into the fields of a form, as text.
+
+    Every sample language sends a form through this, so they all send the
+    same body: an array repeats its name once per item, an object is sent as
+    JSON text, a boolean or number as its JSON text, and a value with no
+    example as empty.
 
     Args:
-        pairs: Names and example values; an array repeats its name once per
-            item, an object is sent as JSON, a value with no example as
-            empty.
+        pairs: Names and example values.
 
     Returns:
-        ``name=value`` pairs joined by ``&``, percent-encoded.
+        ``(name, text)`` fields in order.
     """
     flat: list[tuple[str, str]] = []
     for name, value in pairs:
@@ -1239,7 +1246,19 @@ def form_encode(pairs: Sequence[tuple[str, Any]]) -> str:
             else:
                 text = json.dumps(item, ensure_ascii=False)
             flat.append((name, text))
-    return urlencode(flat, quote_via=quote)
+    return flat
+
+
+def form_encode(pairs: Sequence[tuple[str, Any]]) -> str:
+    """Encode example values as a query string or form body.
+
+    Args:
+        pairs: Names and example values, flattened by :func:`form_pairs`.
+
+    Returns:
+        ``name=value`` pairs joined by ``&``, percent-encoded.
+    """
+    return urlencode(form_pairs(pairs), quote_via=quote)
 
 
 def shell_quote(text: str) -> str:
