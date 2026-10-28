@@ -4,7 +4,7 @@
 // tests stop at the hub's refusals and check the accepted path's arguments.
 
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import { all, linkFingerprint, run } from "./dashboard/db.ts";
 import { indexSubmitted } from "./dashboard/sync.ts";
 import { CHANGED, LiveHub, MAX_SOCKETS } from "./dashboard/live.ts";
@@ -395,7 +395,7 @@ describe("live route", () => {
       env.DASHBOARD_DB,
       { report_id: id, received_at_unix_ms: NOW, payload: { events: [] } },
       "diagnostics/0.9.0/a.json",
-      Infinity,
+      Number.MAX_SAFE_INTEGER,
     );
     const cookie = await signedIn(env);
     const views = async () =>

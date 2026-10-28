@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import {
   MARKER,
   MAX_SUMMARIES,

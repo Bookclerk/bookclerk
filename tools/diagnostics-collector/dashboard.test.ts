@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { generateKeyPairSync, verify as rsaVerify } from "node:crypto";
-import { afterEach, beforeEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "vitest";
 import { OAUTH_COOKIE, pkceChallenge } from "./dashboard/auth.ts";
 import {
   type IssueSummary,
@@ -322,7 +322,7 @@ async function seed(
       receivedAt,
       summary: await summarizeReport(s),
     },
-    Infinity,
+    Number.MAX_SAFE_INTEGER,
   );
   return s;
 }
@@ -2398,7 +2398,7 @@ describe("issue paging and filtered trends", () => {
           receivedAt: NOW - 1000,
           summary,
         },
-        Infinity,
+        Number.MAX_SAFE_INTEGER,
       );
     }
     const [sig] = await topSignatures(db, NOW - 86_400_000, { version: "1.0.0" }, 5);

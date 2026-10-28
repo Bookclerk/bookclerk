@@ -5,18 +5,13 @@
 // written without the module's helpers.
 
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
-import { describe, it } from "node:test";
-import { URL } from "node:url";
+import { describe, it } from "vitest";
 import { MAX_AFTER_CHARS, MAX_CURSOR_CHARS, parseCursor } from "./ingest-cursor.ts";
-import { mutate, rng } from "./test-support/fuzz.ts";
+import { mutate, rng, seed, seeds as corpus } from "./test-support/fuzz.ts";
 
 /** Seed inputs, keyed by file name. */
 function seeds(): [string, string][] {
-  const url = new URL("./corpus/ingest_cursor/", import.meta.url);
-  return readdirSync(url)
-    .sort()
-    .map((name): [string, string] => [name, readFileSync(new URL(name, url), "utf8")]);
+  return corpus("ingest_cursor");
 }
 
 /**
@@ -83,15 +78,10 @@ describe("ingest cursor parser", () => {
     const all = seeds();
     assert.ok(all.length > 0);
     for (const [name, text] of all) check(text, name);
-    assert.deepEqual(
-      parseCursor(
-        readFileSync(new URL("./corpus/ingest_cursor/normal.json", import.meta.url), "utf8"),
-      ),
-      {
-        since: 1792831701483,
-        after: "diagnostics/0.0.0-synthetic/0a3df5f0-f339-49b7-b81f-df217a50797f.json",
-      },
-    );
+    assert.deepEqual(parseCursor(seed("ingest_cursor", "normal.json")), {
+      since: 1792831701483,
+      after: "diagnostics/0.0.0-synthetic/0a3df5f0-f339-49b7-b81f-df217a50797f.json",
+    });
   });
 
   it("holds the oracle under seeded mutation", () => {

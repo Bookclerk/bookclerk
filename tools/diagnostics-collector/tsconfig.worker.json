@@ -8,5 +8,5 @@
     "types": ["@cloudflare/workers-types"]
   },
   "include": ["*.ts", "dashboard/*.ts"],
-  "exclude": ["*.test.ts"]
+  "exclude": ["*.test.ts", "vitest.config.ts"]
 }

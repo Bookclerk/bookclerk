@@ -7,20 +7,15 @@
 // own `code`, as an independent check recomputes it.
 
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
-import { describe, it } from "node:test";
-import { URL } from "node:url";
-import { mutate, rng } from "./test-support/fuzz.ts";
+import { describe, it } from "vitest";
+import { mutate, rng, seed, seeds as corpus } from "./test-support/fuzz.ts";
 import { UpstreamError, b2ErrorCode } from "./worker.ts";
 
-const CORPUS = new URL("./corpus/b2_error/", import.meta.url);
 const LIMIT = 4096;
 
 /** Seed inputs, keyed by file name. */
 function seeds(): [string, string][] {
-  return readdirSync(CORPUS)
-    .sort()
-    .map((name): [string, string] => [name, readFileSync(new URL(name, CORPUS), "utf8")]);
+  return corpus("b2_error");
 }
 
 /** True when every character is a-z or underscore and there are 1 to 40. */
@@ -93,11 +88,8 @@ describe("b2ErrorCode", () => {
     const all = seeds();
     assert.ok(all.length > 0);
     for (const [name, text] of all) check(text, name);
-    assert.equal(
-      b2ErrorCode(readFileSync(new URL("unauthorized.json", CORPUS), "utf8")),
-      "unauthorized",
-    );
-    assert.equal(b2ErrorCode(readFileSync(new URL("markup_code.json", CORPUS), "utf8")), undefined);
+    assert.equal(b2ErrorCode(seed("b2_error", "unauthorized.json")), "unauthorized");
+    assert.equal(b2ErrorCode(seed("b2_error", "markup_code.json")), undefined);
   });
 
   it("holds the oracle under seeded mutation", () => {
