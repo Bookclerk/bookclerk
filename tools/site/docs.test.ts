@@ -26,12 +26,25 @@ const BLOB = "https://github.com/Bookclerk/bookclerk/blob/main/";
 const KEYS = new Set(["README", "plugins", "media", "adr/control-plane", "api/README"]);
 
 test("doc URLs, in the default version and under a version prefix", () => {
-  assert.equal(docUrl("README"), "/docs/");
-  assert.equal(docUrl("api/README"), "/docs/api/");
+  assert.equal(docUrl("README"), "/docs");
+  assert.equal(docUrl("api/README"), "/docs/api");
   assert.equal(docUrl("adr/control-plane"), "/docs/adr/control-plane");
   assert.equal(docUrl("plugins", "/docs/v/main/"), "/docs/v/main/plugins");
-  assert.equal(docUrl("README", "/docs/v/main/"), "/docs/v/main/");
+  assert.equal(docUrl("README", "/docs/v/main/"), "/docs/v/main");
   assert.equal(docMarkdownUrl("README", "/docs/v/v0.1.0/"), "/docs/v/v0.1.0/README.md");
+});
+
+test("every doc has its own slash-free URL", () => {
+  // `x.md` and `x/README.md` would both be /docs/x.
+  const seen = new Map<string, string>();
+  for (const file of markdownFiles(DOCS)) {
+    const key = file.slice(0, -".md".length);
+    const url = docUrl(key);
+    assert.doesNotMatch(url, /.\/$/, url);
+    assert.equal(seen.get(url), undefined, `${key} and ${seen.get(url)} share ${url}`);
+    seen.set(url, key);
+  }
+  assert.ok(seen.size > 20);
 });
 
 test("normalizePath matches path.posix.normalize", () => {
@@ -52,7 +65,7 @@ test("links between docs stay on the site", () => {
   assert.equal(rewriteLink("plugins.md#the-guest-jail", "media", KEYS, BLOB), "/docs/plugins#the-guest-jail");
   assert.equal(rewriteLink("../plugins.md", "adr/control-plane", KEYS, BLOB), "/docs/plugins");
   assert.equal(rewriteLink("adr/control-plane.md", "README", KEYS, BLOB), "/docs/adr/control-plane");
-  assert.equal(rewriteLink("api/README.md", "README", KEYS, BLOB), "/docs/api/");
+  assert.equal(rewriteLink("api/README.md", "README", KEYS, BLOB), "/docs/api");
   // Repository files the site renders as pages link to those pages.
   assert.equal(rewriteLink("../../SECURITY.md", "server/security", KEYS, BLOB), "/security");
   assert.equal(rewriteLink("../../SECURITY.md#scope", "server/security", KEYS, BLOB, docMarkdownUrl), "/security.md#scope");
@@ -219,7 +232,7 @@ test("the sidebar opens only the current group and places a doc for its breadcru
   assert.match(pagerHtml(navPlace(nav, "server/c"), "/docs/"), /<a class="pager-prev" rel="prev" href="\/docs\/guide\/b"><span>Previous<\/span>B &lt;b&gt;<\/a>/);
   assert.equal(
     crumbsHtml(crumbTrail(nav, "guide/b", "B & C"), "/docs/"),
-    '<nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/docs/">Docs</a></li><li><a href="/docs/guide/a">Use</a></li>' +
+    '<nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/docs">Docs</a></li><li><a href="/docs/guide/a">Use</a></li>' +
       '<li><a href="/docs/guide/b" aria-current="page">B &amp; C</a></li></ol></nav>',
   );
 });

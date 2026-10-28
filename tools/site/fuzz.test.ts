@@ -18,7 +18,7 @@ import { HTTP_METHODS } from "./api-reference.ts";
 import { highlight } from "./highlight.ts";
 import { datedPages, formatDate, MAX_DOC_KEY_LENGTH, pageDate } from "./last-updated.ts";
 import { renderDoc } from "./render.ts";
-import { pickEncoding } from "./worker.ts";
+import { docsTarget, pickEncoding, sitePageLocation } from "./worker.ts";
 import type { Encoding } from "./worker.ts";
 
 /** This directory. */
@@ -681,5 +681,78 @@ test("the Web API index layout keeps mutated pages well formed and complete", ()
   for (let i = 0; i < API_ITERATIONS; i++) {
     const source = mutate(seeds[Math.floor(rand() * seeds.length)] ?? "", seeds, rand, INDEX_FRAGMENTS);
     checkApiIndex(source, `FUZZ_SEED=${SEED} iteration ${i}: ${JSON.stringify(source)}`);
+  }
+});
+
+/** Fragments path mutations splice in: separators, extensions, version prefixes and characters a URL path should not carry. */
+const PATH_FRAGMENTS = ["/", "//", ".", "..", "/..", ".html", "index.html", ".md", "/docs", "/docs/", "v/", "/v/main/", "/v/v0.2.0/", "main", "v0.2.0", "README", "download", "%2F", "?", "#", "\\", " ", "\u0000", "é"];
+
+/** The website pages the redirect fuzzing serves, as the shell lists them. */
+const FUZZ_PAGES = ["/", "/download", "/privacy", "/security", "/sitemap"];
+
+/** Docs versions the redirect fuzzing serves, the default first. */
+const FUZZ_VERSIONS = [
+  { ref: "v0.2.0", label: "v0.2.0 (latest)", base: "/docs/" },
+  { ref: "main", label: "Development (main)", base: "/docs/v/main/" },
+];
+
+/**
+ * Where a website path should move, computed independently of worker.ts by
+ * spelling out every alternate form of every page: `/index.html` for the
+ * home page, and the slash and `.html` forms of each other page.
+ *
+ * @param path - The request path.
+ * @param pages - The website's pages.
+ * @returns The page the path moves to, or null.
+ */
+function oracleSiteLocation(path: string, pages: readonly string[]): string | null {
+  for (const page of pages) {
+    const spellings = page === "/" ? ["/index.html"] : [`${page}/`, `${page}.html`];
+    if (spellings.includes(path)) return page;
+  }
+  return null;
+}
+
+/**
+ * Checks one path against both redirect parsers: the website's against its
+ * oracle, the docs' for canonical, same-origin, single-hop targets and keys
+ * that cannot leave the docs tree.
+ *
+ * @param path - The request path.
+ * @param context - What to print on a failure.
+ */
+function checkRedirects(path: string, context: string): void {
+  const site = sitePageLocation(path, FUZZ_PAGES);
+  assert.equal(site, oracleSiteLocation(path, FUZZ_PAGES), context);
+  assert.notEqual(site, path, context);
+  if (path !== "/docs" && !path.startsWith("/docs/")) return;
+  const target = docsTarget(path, FUZZ_VERSIONS);
+  if (target.kind === "redirect") {
+    const { location } = target;
+    assert.ok(location === "/docs" || location.startsWith("/docs/"), `${context}: ${location}`);
+    assert.ok(!location.endsWith("/") && !location.includes("//") && !/[?#\\\s]/.test(location), `${context}: ${location}`);
+    assert.notEqual(location, path, context);
+    assert.notEqual(docsTarget(location, FUZZ_VERSIONS).kind, "redirect", `${context}: ${location} redirects again`);
+  } else if (target.kind !== "missing") {
+    for (const key of target.keys) {
+      for (const segment of key.split("/")) {
+        assert.ok(!segment.startsWith(".") && /^[A-Za-z0-9._-]*$/.test(segment), `${context}: key ${key}`);
+      }
+    }
+  }
+}
+
+test("the site and docs redirects keep their seed corpus canonical", () => {
+  const seeds = corpus("site_redirects");
+  assert.ok(seeds.length >= 10);
+  for (const seed of seeds) checkRedirects(seed, JSON.stringify(seed));
+});
+
+test("the site and docs redirects keep mutated paths canonical", () => {
+  const seeds = corpus("site_redirects");
+  const rand = prng(SEED);
+  for (let i = 0; i < ITERATIONS; i++) {
+    const path = mutate(seeds[Math.floor(rand() * seeds.length)] ?? "", seeds, rand, PATH_FRAGMENTS);
+    checkRedirects(path, `FUZZ_SEED=${SEED} iteration ${i}: ${JSON.stringify(path)}`);
   }
 });

@@ -343,6 +343,12 @@ fuzzing in `npm test`.
   picks the response's content coding. Corpus
   `tools/site/fuzz/accept_encoding/`. Oracle: RFC 9110 qvalues, `*` for
   unlisted codings, Brotli before gzip on a tie, nothing at `q=0`.
+- **Page redirects** (`sitePageLocation` and `docsTarget` in
+  `tools/site/worker.ts`) turn a request path into the page's one
+  slash-free URL. Corpus `tools/site/fuzz/site_redirects/`. Oracle: the
+  website moves exactly the slash and `.html` spellings of a listed page;
+  a docs redirect stays under `/docs`, is slash-free, never repeats the
+  request path and takes one hop, and docs keys never leave the tree.
 - **Code-block highlighter** (`highlight` in `tools/site/highlight.ts`)
   colors fenced code from the docs repository. Corpus
   `tools/site/fuzz/highlight/`, fuzzed across its languages. Oracle: an

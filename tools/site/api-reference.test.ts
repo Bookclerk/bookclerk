@@ -106,7 +106,7 @@ test("the sidebar lists the page and its operations under Web API", () => {
   assert.equal(nested?.under, "api/web/README");
   const nav = navHtml([{ title: "API reference", pages: [{ key: "api/web/README", title: "Web API" }] }], "api/web/jobs", "/docs/", nested);
   assert.ok(nav.startsWith('<details class="nav-group" open>'), "the group opens");
-  assert.ok(nav.includes('<a href="/docs/api/web/">Web API</a><ul class="nav-sub"><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a>'));
+  assert.ok(nav.includes('<a href="/docs/api/web">Web API</a><ul class="nav-sub"><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a>'));
   assert.ok(nav.includes('<a class="nav-op" href="#get-apijobs"><span class="api-method api-method-get">GET</span> <code>/<wbr>api/<wbr>jobs</code></a>'));
   assert.equal(apiNavNested("server/operations", "Running", [], "/docs/"), null);
 });
@@ -117,13 +117,13 @@ test("the breadcrumb of an operations page runs through Web API", () => {
   assert.deepEqual(parent, { key: "api/web/README", title: "Web API" });
   assert.equal(
     crumbsHtml(crumbTrail(nav, "api/web/jobs", "Jobs"), "/docs/"),
-    '<nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/docs/">Docs</a></li><li><a href="/docs/api/">API reference</a></li>' +
-      '<li><a href="/docs/api/web/">Web API</a></li><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a></li></ol></nav>',
+    '<nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/docs">Docs</a></li><li><a href="/docs/api">API reference</a></li>' +
+      '<li><a href="/docs/api/web">Web API</a></li><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a></li></ol></nav>',
   );
   // The structured data lists the same four crumbs.
   const graph = JSON.stringify(docJsonLd("https://x", "/docs/", { key: "api/web/jobs", title: "Jobs", description: "" }, crumbTrail(nav, "api/web/jobs", "Jobs")));
-  assert.ok(graph.includes('{"@type":"ListItem","position":2,"name":"API reference","item":"https://x/docs/api/"}'));
-  assert.ok(graph.includes('{"@type":"ListItem","position":3,"name":"Web API","item":"https://x/docs/api/web/"}'));
+  assert.ok(graph.includes('{"@type":"ListItem","position":2,"name":"API reference","item":"https://x/docs/api"}'));
+  assert.ok(graph.includes('{"@type":"ListItem","position":3,"name":"Web API","item":"https://x/docs/api/web"}'));
   assert.ok(graph.includes('{"@type":"ListItem","position":4,"name":"Jobs","item":"https://x/docs/api/web/jobs"}'));
   assert.equal(navParent(nav, "api/web/README"), null);
   assert.deepEqual(navParent(nav, "api/web/schemas"), parent);
@@ -237,7 +237,7 @@ test("the index's sidebar lists every route group with its routes", () => {
   // On the index every group is collapsed, and the schemas page follows them.
   assert.ok(
     nav.includes(
-      '<a href="/docs/api/web/" aria-current="page">Web API</a><ul class="nav-sub"><li><a href="/docs/api/web/jobs">Jobs</a></li>' +
+      '<a href="/docs/api/web" aria-current="page">Web API</a><ul class="nav-sub"><li><a href="/docs/api/web/jobs">Jobs</a></li>' +
         '<li><a href="/docs/api/web/health">Health</a></li><li><a href="/docs/api/web/schemas">Schemas</a></li></ul>',
     ),
   );
