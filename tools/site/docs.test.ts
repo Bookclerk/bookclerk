@@ -182,7 +182,7 @@ test("raw HTML in a doc is shown as text", () => {
   assert.ok(!out.html.includes("<script"));
 });
 
-test("markdownlint overrides are hidden in prose, as on GitHub, and kept in code", () => {
+test("markdownlint overrides are hidden in prose, in the page and its Markdown copy, and kept in code", () => {
   const source = [
     "# Title <!-- markdownlint-disable-line MD026 -->",
     "",
@@ -204,7 +204,10 @@ test("markdownlint overrides are hidden in prose, as on GitHub, and kept in code
   assert.ok(!out.html.includes("MD001"));
   assert.match(out.html, /<code>&lt;!-- markdownlint-disable-line MDxxx --&gt;<\/code>/);
   assert.match(out.html, /Text\. &lt;!-- markdownlint-disable-line MD038 --&gt;/);
-  assert.ok(out.markdown.includes("<!-- markdownlint-disable-line MD038 -->"));
+  // The Markdown copy drops them from prose too, and keeps them in code.
+  assert.ok(out.markdown.startsWith("# Title\n\nOnly `$ ` lines run.\n\nUse `<!-- markdownlint"));
+  assert.ok(!out.markdown.includes("MD026") && !out.markdown.includes("MD001"));
+  assert.ok(out.markdown.includes("Text. <!-- markdownlint-disable-line MD038 -->\n```"));
 });
 
 test("code blocks get syntax colors and a language label when highlight.ts knows the language", () => {

@@ -761,24 +761,37 @@ export function siteMarkdown(
         REFERENCE_DEF_RE,
         (_, head: string, href: string) => head + rewriteLink(href, docKey, keys, blobBase, urlFor),
       );
-  // Odd-numbered pieces of a split on backtick runs are inline code.
+  // Odd-numbered pieces of a split on backtick runs are inline code. Prose
+  // loses its markdownlint overrides, which GitHub hides and readers of the
+  // Markdown copy have no use for (see dropLintComments).
   const outsideCode = (line: string): string =>
     line
       .split(/(`+[^`]*`+)/)
-      .map((piece, i) => (i % 2 === 1 ? piece : rewrite(piece)))
+      .map((piece, i) => (i % 2 === 1 ? piece : rewrite(piece.replace(LINT_COMMENT, ""))))
       .join("");
   let fence: string | null = null;
-  return source
-    .split("\n")
-    .map((line) => {
-      const run = line.match(/^ {0,3}(`{3,}|~{3,})/)?.[1];
-      if (run !== undefined && (fence === null || run.startsWith(fence))) {
-        fence = fence === null ? run : null;
-        return line;
+  const out: string[] = [];
+  // Set after a line that held nothing but an override was dropped, so the
+  // blank line after it goes too when one came before it.
+  let dropped = false;
+  for (const line of source.split("\n")) {
+    const run = line.match(/^ {0,3}(`{3,}|~{3,})/)?.[1];
+    if (run !== undefined && (fence === null || run.startsWith(fence))) {
+      fence = fence === null ? run : null;
+      out.push(line);
+    } else if (fence !== null) {
+      out.push(line);
+    } else {
+      const text = outsideCode(line);
+      if (text.trim() === "" && line.trim() !== "") {
+        dropped = true;
+        continue;
       }
-      return fence === null ? outsideCode(line) : line;
-    })
-    .join("\n");
+      if (!(dropped && text === "" && out.at(-1) === "")) out.push(text);
+    }
+    dropped = false;
+  }
+  return out.join("\n");
 }
 
 /**
