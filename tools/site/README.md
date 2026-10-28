@@ -83,8 +83,11 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   breadcrumb and previous and next links taken from `NAV`. Every crumb is a
   link: a sidebar group links to its first page, and a Web API route page
   runs through the Web API entry it sits under. Below 1200px the
-  rail goes; below 900px the sidebar and the rail become two menus over the
-  page (`<details>`, so they work without a script).
+  rail becomes an "On this page" menu over the page, and below 900px the
+  sidebar becomes a second menu beside it (`<details>`, so they work
+  without a script). They share a `name`,
+  so opening one closes the other, and `docs.js` also closes the open one
+  on a tap outside it, Escape or a followed link.
 - `highlight.ts` – syntax colors for fenced code blocks in the languages the
   docs use (shell, TOML, YAML, JSON, TypeScript, Rust, Python, SQL, nginx,
   HTTP), as `<span class="hl-…">` around escaped text; other fences stay
@@ -135,8 +138,9 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   button on code blocks, heading self-links that copy their URL, the Copy
   as Markdown button (hidden without the script; its fetch of the page's
   `.md` copy is the script's only request), the "On this page" link of the
-  section being read (`aria-current="location"`) and the stepped line
-  beside the rail that follows it, and a filter box above the sidebar
+  section being read (`aria-current="location"`), kept in view when the
+  rail scrolls, and the stepped line beside the rail that follows it,
+  curving in and out with the nested routes of an API page, and a filter box above the sidebar
   groups (`/` focuses it). Everything it enhances works without it; Chromium also marks the current section through CSS
   (`scroll-target-group`).
 - `src/index.md`, `src/download.md`, `src/privacy.md`, `src/404.md` – Markdown versions of

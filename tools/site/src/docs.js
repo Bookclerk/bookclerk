@@ -2,7 +2,8 @@
 // allows scripts from 'self' and Cloudflare's analytics beacon only). Pages
 // work without it: it adds copy buttons to code blocks, copies a heading's
 // link when it is clicked, offers Copy as Markdown, draws and follows the
-// "On this page" rail, and adds a filter box to the sidebar. Its only
+// "On this page" rail, closes the phone menus like menus, and adds a
+// filter box to the sidebar. Its only
 // network request is Copy as Markdown reading the page's own Markdown.
 
 (() => {
@@ -202,13 +203,14 @@
     box.prepend(svg);
     box.classList.add("has-rail");
 
-    const links = [...list.querySelectorAll("li > a")];
+    // Links and the path labels between nested routes, each one row of the rail.
+    const rows = [...list.querySelectorAll("li > a, li > .toc-label")];
     // Where each link's stretch of the rail starts along the path, and how long it is.
     let spans = [];
     let total = 0;
     let current = "";
     const highlight = () => {
-      const at = links.findIndex((link) => link.getAttribute("href") === `#${current}`);
+      const at = rows.findIndex((row) => row.getAttribute("href") === `#${current}`);
       const span = spans[at];
       if (!span) {
         active.style.strokeDasharray = `0 ${total + 1}`;
@@ -217,15 +219,25 @@
       active.style.strokeDasharray = `${span.length} ${total + 1}`;
       active.style.strokeDashoffset = String(-span.start);
     };
+    // The rail scrolls on its own when its routes outgrow the window; keep
+    // the current one in view without moving the page.
+    const pane = box.closest(".toc");
+    const reveal = () => {
+      const row = rows.find((r) => r.getAttribute("href") === `#${current}`);
+      if (!pane || !row || pane.scrollHeight <= pane.clientHeight) return;
+      const view = pane.getBoundingClientRect();
+      const rect = row.getBoundingClientRect();
+      const margin = 48;
+      if (rect.top < view.top + margin) pane.scrollTop -= view.top + margin - rect.top;
+      else if (rect.bottom > view.bottom - margin)
+        pane.scrollTop += rect.bottom - (view.bottom - margin);
+    };
     const draw = () => {
       const top = list.getBoundingClientRect().top;
-      const items = links.map((link) => {
-        const rect = link.getBoundingClientRect();
-        return {
-          x: link.parentElement.classList.contains("sub") ? 15 : 1,
-          top: rect.top - top,
-          bottom: rect.bottom - top,
-        };
+      const items = rows.map((row) => {
+        const rect = row.getBoundingClientRect();
+        const depth = Number((/\bdepth-(\d)\b/.exec(row.parentElement.className) || [])[1] || 0);
+        return { x: 1 + 14 * depth, top: rect.top - top, bottom: rect.bottom - top };
       });
       if (items.length === 0) return;
       // Each stretch ends 4px before its link does when the next one steps
@@ -259,11 +271,14 @@
       active.setAttribute("d", d);
       total = base.getTotalLength();
       highlight();
+      // Also runs when the rail comes back into view after a resize.
+      reveal();
     };
     new ResizeObserver(draw).observe(list);
     sectionListeners.push((id) => {
       current = id;
       highlight();
+      reveal();
     });
   }
 
@@ -274,7 +289,12 @@
   function trackSection() {
     const links = [...document.querySelectorAll('.toc a[href^="#"], .menu-toc a[href^="#"]')];
     if (links.length === 0) return;
-    const headings = [...document.querySelectorAll(".doc h2[id], .doc h3[id]")];
+    // Only headings the rail lists: API pages leave their per-route
+    // subsections (Responses, Request body) out of it.
+    const listed = new Set(links.map((link) => link.getAttribute("href").slice(1)));
+    const headings = [...document.querySelectorAll(".doc h2[id], .doc h3[id]")].filter((h) =>
+      listed.has(h.id),
+    );
     let current = "";
     const mark = (id) => {
       if (id === current) return;
@@ -377,7 +397,40 @@
     });
   }
 
+  /**
+   * Makes the phone menus behave like menus: opening one closes the other
+   * (also done by their shared `name` where browsers support it), and a tap
+   * outside, Escape or following a link closes the open one.
+   */
+  function dismissMenus() {
+    const menus = [...document.querySelectorAll(".docs-menus details.menu")];
+    if (menus.length === 0) return;
+    for (const menu of menus) {
+      menu.addEventListener("toggle", () => {
+        if (!menu.open) return;
+        for (const other of menus) if (other !== menu) other.open = false;
+      });
+      // A link in the menu, such as an "On this page" anchor, has done its job.
+      menu.querySelector(".menu-body")?.addEventListener("click", (event) => {
+        if (event.target instanceof Element && event.target.closest("a")) menu.open = false;
+      });
+    }
+    document.addEventListener("click", (event) => {
+      for (const menu of menus)
+        if (menu.open && !(event.target instanceof Node && menu.contains(event.target)))
+          menu.open = false;
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      const open = menus.find((menu) => menu.open);
+      if (!open) return;
+      open.open = false;
+      open.querySelector("summary")?.focus();
+    });
+  }
+
   addCopyButtons();
+  dismissMenus();
   copyHeadingLinks();
   addCopyMarkdown();
   drawTocRail();

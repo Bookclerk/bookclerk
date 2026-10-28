@@ -24,6 +24,7 @@ import {
   layoutOperations,
   methodClass,
   operationMeta,
+  routeTree,
 } from "./api-reference.ts";
 import type { ApiRouteGroup, HttpMethod } from "./api-reference.ts";
 import { diagram, drawable, PAGE_DIAGRAM_COUNT_MAX, PAGE_DIAGRAM_MAX } from "./diagram.ts";
@@ -981,13 +982,12 @@ export interface NavNested {
 
 /**
  * The sidebar list for a Web API page, shown beneath the Web API entry:
- * every route group (from the index), then the schemas page. Only the group
- * being read is expanded, with its operations under it; on the index every
- * group stays collapsed.
+ * every route group (from the index), then the schemas page, with the page
+ * being read marked. The routes themselves are listed in the page's "On
+ * this page" rail, not here.
  *
  * @param key - The page's key.
  * @param title - Its title.
- * @param headings - Its headings (see renderDoc).
  * @param base - URL prefix of the docs version.
  * @param groups - The index's route groups (see renderDoc and
  *   apiRouteGroups); when empty, the list holds only this page.
@@ -997,20 +997,13 @@ export interface NavNested {
 export function apiNavNested(
   key: string,
   title: string,
-  headings: readonly DocHeading[],
   base: string,
   groups: readonly ApiRouteGroup[] = [],
 ): NavNested | null {
   if (!key.startsWith("api/web/") || (key === API_INDEX && groups.length === 0)) return null;
   const here = docUrl(key, base);
-  const ops = headings
-    .filter((h) => h.method !== undefined)
-    .map((h) => `<li><a class="nav-op" href="#${escapeHtml(h.id)}">${headingLabel(h)}</a></li>`)
-    .join("");
-  const item = (href: string, text: string): string => {
-    if (href !== here) return `<li><a href="${escapeHtml(href)}">${escapeHtml(text)}</a></li>`;
-    return `<li><a href="${escapeHtml(href)}" aria-current="page">${escapeHtml(text)}</a>${ops === "" ? "" : `<ul class="nav-ops">${ops}</ul>`}</li>`;
-  };
+  const item = (href: string, text: string): string =>
+    `<li><a href="${escapeHtml(href)}"${href === here ? ' aria-current="page"' : ""}>${escapeHtml(text)}</a></li>`;
   const schemas = docUrl(API_SCHEMAS, base);
   const listed =
     groups.length === 0
@@ -1194,10 +1187,23 @@ export function pagerHtml(place: NavPlace, base: string): string {
  */
 export function tocListHtml(headings: readonly DocHeading[]): string {
   if (headings.length === 0) return "";
-  const items = headings.map(
-    (h) =>
-      `<li${h.level === 3 ? ' class="sub"' : ""}><a href="#${escapeHtml(h.id)}">${headingLabel(h)}</a></li>`,
+  const ops = headings.flatMap((h) =>
+    h.method === undefined ? [] : [{ method: h.method, path: h.text, id: h.id }],
   );
+  // A route group's page lists its routes nested by path; other docs list
+  // their sections and subsections.
+  const items =
+    ops.length === headings.length
+      ? routeTree(ops).map((e) => {
+          const path = `<code>${escapeHtml(e.label).replaceAll("/", "/<wbr>")}</code>`;
+          if (e.kind === "path")
+            return `<li class="toc-path depth-${e.depth}"><span class="toc-label">${path}</span></li>`;
+          return `<li class="depth-${e.depth}"><a class="toc-op" href="#${escapeHtml(e.id)}"><span class="${methodClass(e.method)}">${e.method}</span> ${path}</a></li>`;
+        })
+      : headings.map(
+          (h) =>
+            `<li class="${h.level === 3 ? "sub depth-1" : "depth-0"}"><a href="#${escapeHtml(h.id)}">${headingLabel(h)}</a></li>`,
+        );
   return `<ul>${items.join("")}</ul>`;
 }
 
@@ -1293,9 +1299,9 @@ export function metaHtml(note: string, updated: IsoDate | null, markdownUrl: str
 }
 
 /**
- * Renders the phone and tablet menus that stand in for the sidebar and the
- * "On this page" rail below their breakpoints (site.css shows one set or the
- * other).
+ * Renders the menus that stand in for the sidebar and the "On this page"
+ * rail below their breakpoints: the section menu alone below 1200px, where
+ * the rail goes, and both below 900px, where the sidebar goes too.
  *
  * @param sidebar - The sidebar's HTML (version picker, overview link, groups).
  * @param headings - The doc's headings; no section menu when empty.
@@ -1306,8 +1312,8 @@ export function mobileMenusHtml(sidebar: string, headings: readonly DocHeading[]
   const sections =
     list === ""
       ? ""
-      : `<details class="menu menu-toc"><summary>On this page</summary><div class="menu-body">${list}</div></details>`;
-  return `<div class="docs-menus"><details class="menu menu-nav"><summary>Menu</summary><div class="menu-body">${sidebar}</div></details>${sections}</div>`;
+      : `<details class="menu menu-toc" name="docs-menu"><summary>On this page</summary><div class="menu-body">${list}</div></details>`;
+  return `<div class="docs-menus"><details class="menu menu-nav" name="docs-menu"><summary>Menu</summary><div class="menu-body">${sidebar}</div></details>${sections}</div>`;
 }
 
 /**
@@ -1487,7 +1493,7 @@ export function renderDocPage(
   const versions = versionsHtml(shell.versions, at.ref, key);
   const nav =
     homeLink(at.base, key === "README") +
-    navHtml(shell.nav, key, at.base, apiNavNested(key, doc.title, doc.headings, at.base, groups));
+    navHtml(shell.nav, key, at.base, apiNavNested(key, doc.title, at.base, groups));
   const html = fillShell(
     shell.html,
     {

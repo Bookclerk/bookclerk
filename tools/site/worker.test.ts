@@ -542,7 +542,7 @@ test("a browser gets the doc in the site's page, with its version and sidebar", 
   assert.match(html, /<aside class="toc" aria-label="On this page">/);
   assert.match(
     html,
-    /<div class="docs-menus"><details class="menu menu-nav"><summary>Menu<\/summary>/,
+    /<div class="docs-menus"><details class="menu menu-nav" name="docs-menu"><summary>Menu<\/summary>/,
   );
   assert.match(html, /<details class="nav-group" open><summary>Build plugins<\/summary>/);
   assert.match(html, /<script src="\/docs.js" defer><\/script>/);
@@ -1322,13 +1322,13 @@ test("docPageTitle names the site when it fits and otherwise keeps what identifi
   );
 });
 
-test("a Web API page's sidebar lists every route group from the index, with only its own open", async () => {
+test("a Web API page's sidebar lists every route group from the index, marking its own", async () => {
   const res = await get("/docs/api/web/jobs", BROWSER);
   assert.equal(res.status, 200);
   const html = await res.text();
   assert.ok(
     html.includes(
-      '<ul class="nav-sub"><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a><ul class="nav-ops"><li><a class="nav-op" href="#get-apijobs">',
+      '<ul class="nav-sub"><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a></li>',
     ),
   );
   assert.ok(

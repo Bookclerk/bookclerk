@@ -423,3 +423,88 @@ function markStatuses(tokens: Token[], make: MakeToken): void {
     inline.children = [mark, text, end];
   });
 }
+
+/** How many levels deep {@link routeTree} nests routes (0 is the top). */
+export const ROUTE_TREE_MAX_DEPTH = 2;
+
+/** One line of a route group's "On this page" list (see {@link routeTree}). */
+export type RouteTreeEntry =
+  /** An operation: its badge, its section and the path below its parent line. */
+  | { kind: "op"; method: HttpMethod; id: string; label: string; depth: number }
+  /** A path several routes share that is not a route itself: a label only. */
+  | { kind: "path"; label: string; depth: number };
+
+/** A path segment's place in {@link routeTree}'s trie. */
+interface RouteNode {
+  /** The operations whose path ends here, in page order. */
+  ops: { method: HttpMethod; id: string }[];
+  /** Longer paths, by their next segment, in order of first appearance. */
+  children: Map<string, RouteNode>;
+}
+
+/**
+ * Nests a route group's operations by path, the way the docs nest
+ * subsections: a route sits under the nearest shorter route (or shared
+ * path) it extends, and shows only the part of its path past that line.
+ *
+ * The prefix every route shares stays on the top lines, so they read as
+ * full paths. A shared path that is not a route becomes a label line only
+ * when two or more routes branch from it; a single chain of segments is
+ * kept on one line. Nesting stops at {@link ROUTE_TREE_MAX_DEPTH}: deeper
+ * routes stay on that level with their longer remainder.
+ *
+ * @param ops - The page's operations, in page order, with their section ids.
+ * @returns The lines, in list order: each node's routes, then what extends them.
+ */
+export function routeTree(
+  ops: readonly { method: HttpMethod; path: string; id: string }[],
+): RouteTreeEntry[] {
+  const segments = (path: string): string[] => path.split("/").filter((s) => s !== "");
+  const paths = ops.map((op) => segments(op.path));
+  // The shared prefix, kept short of every full path so each route keeps a segment.
+  let shared = 0;
+  const shortest = Math.min(...paths.map((p) => p.length));
+  while (shared < shortest - 1 && paths.every((p) => p[shared] === paths[0]?.[shared])) shared += 1;
+  const root: RouteNode = { ops: [], children: new Map() };
+  ops.forEach((op, i) => {
+    let node = root;
+    for (const segment of (paths[i] ?? []).slice(shared)) {
+      let next = node.children.get(segment);
+      if (next === undefined) {
+        next = { ops: [], children: new Map() };
+        node.children.set(segment, next);
+      }
+      node = next;
+    }
+    node.ops.push({ method: op.method, id: op.id });
+  });
+  const prefix = (paths[0] ?? []).slice(0, shared);
+  const entries: RouteTreeEntry[] = [];
+  /**
+   * Lists the lines for one node and what extends it.
+   *
+   * @param node - The node.
+   * @param label - Its path past the last line above it.
+   * @param depth - The level its own lines go on.
+   */
+  const visit = (node: RouteNode, label: string[], depth: number): void => {
+    const branches = node.children.size + (node.ops.length > 0 ? 1 : 0);
+    const shown = node.ops.length > 0 || (branches > 1 && depth < ROUTE_TREE_MAX_DEPTH);
+    if (!shown) {
+      for (const [segment, child] of node.children) visit(child, [...label, segment], depth);
+      return;
+    }
+    const text = `/${label.join("/")}`;
+    if (node.ops.length > 0)
+      for (const op of node.ops) entries.push({ kind: "op", ...op, label: text, depth });
+    else entries.push({ kind: "path", label: text, depth });
+    const below = Math.min(depth + 1, ROUTE_TREE_MAX_DEPTH);
+    // At the deepest level, what extends a line keeps that line's path.
+    const carried = depth + 1 > ROUTE_TREE_MAX_DEPTH ? label : [];
+    for (const [segment, child] of node.children) visit(child, [...carried, segment], below);
+  };
+  // Only `/` itself ends at the root: every other path keeps a segment past the prefix.
+  for (const op of root.ops) entries.push({ kind: "op", ...op, label: "/", depth: 0 });
+  for (const [segment, child] of root.children) visit(child, [...prefix, segment], 0);
+  return entries;
+}

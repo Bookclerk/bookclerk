@@ -367,7 +367,7 @@ test("a doc's section headings are collected for the On this page list", () => {
   ]);
   assert.equal(
     tocListHtml(out.headings),
-    '<ul><li><a href="#first-step">First step</a></li><li class="sub"><a href="#detail">Detail</a></li><li><a href="#first-step-1">First step</a></li></ul>',
+    '<ul><li class="depth-0"><a href="#first-step">First step</a></li><li class="sub depth-1"><a href="#detail">Detail</a></li><li class="depth-0"><a href="#first-step-1">First step</a></li></ul>',
   );
   assert.equal(tocListHtml([]), "");
 });

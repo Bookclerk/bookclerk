@@ -1864,6 +1864,40 @@ code.inline {
   padding-left: 28px;
   font-size: 13.5px;
 }
+/* A route group's routes, nested by path (render.ts tocListHtml): every
+   badge is one width so the paths line up, and a shared path that is not
+   a route is a plain label. */
+.toc li.depth-1 > :is(a, span),
+.menu-toc li.depth-1 > :is(a, span) {
+  padding-left: 28px;
+}
+.toc li.depth-2 > :is(a, span),
+.menu-toc li.depth-2 > :is(a, span) {
+  padding-left: 42px;
+}
+.toc-label {
+  display: block;
+  padding: 5px 0 5px 14px;
+  color: var(--docs-soft);
+}
+.toc a.toc-op,
+.menu-toc a.toc-op {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  column-gap: 6px;
+  align-items: baseline;
+}
+.toc-op .api-method {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+  text-align: center;
+  margin: 0;
+}
+.toc-op code,
+.toc-label code {
+  overflow-wrap: anywhere;
+}
 .toc li a:hover,
 .menu-toc li a:hover {
   color: var(--ink);
@@ -1934,8 +1968,14 @@ code.inline {
   border-left: 0;
   padding-left: 20px;
 }
-.toc-list.has-rail li.sub a {
+.toc-list.has-rail li > .toc-label {
+  padding-left: 20px;
+}
+.toc-list.has-rail li.depth-1 > :is(a, span) {
   padding-left: 34px;
+}
+.toc-list.has-rail li.depth-2 > :is(a, span) {
+  padding-left: 48px;
 }
 .toc-list.has-rail a[aria-current="location"] {
   font-weight: 500;
@@ -1962,34 +2002,11 @@ code.inline {
   .toc {
     display: none;
   }
-}
-
-@media (max-width: 900px) {
-  .docs-page {
-    --docs-header: 53px;
-  }
-  .docs-page .ribbon .wrap > span:not(.badge) {
-    display: none;
-  }
-  .docs-header-row {
-    padding-left: max(16px, env(safe-area-inset-left, 0px));
-    padding-right: max(16px, env(safe-area-inset-right, 0px));
-  }
-  .docs-header .logo {
-    height: 30px;
-  }
-  .docs-header .site-nav a:not(.btn) {
-    display: none;
-  }
-  .docs-layout {
-    display: block;
-    padding: 0;
-  }
-  .docs-nav {
-    display: none;
-  }
+  /* The rail becomes the "On this page" menu, alone beside the sidebar
+     until 900px, where the sidebar's menu joins it. */
   .docs-menus {
     display: flex;
+    justify-content: flex-end;
     gap: 8px;
     position: sticky;
     top: calc(env(safe-area-inset-top, 0px) + var(--docs-header));
@@ -1999,8 +2016,12 @@ code.inline {
     background: var(--paper);
     border-bottom: 1px solid var(--docs-line);
   }
+  .docs-menus:not(:has(.menu-toc)),
+  .docs-menus .menu-nav {
+    display: none;
+  }
   .menu {
-    flex: 1 1 0;
+    flex: 0 1 22rem;
     min-width: 0;
     position: relative;
   }
@@ -2048,14 +2069,57 @@ code.inline {
     font-size: 15px;
     line-height: 20px;
   }
+  .menu-toc .menu-body {
+    width: min(28rem, calc(100vw - 32px));
+    left: auto;
+    right: 0;
+  }
+  .doc :is(h1, h2, h3, h4) {
+    scroll-margin-top: calc(var(--docs-header) + 76px);
+  }
+}
+
+@media (max-width: 900px) {
+  .docs-page {
+    --docs-header: 53px;
+  }
+  .docs-page .ribbon .wrap > span:not(.badge) {
+    display: none;
+  }
+  .docs-header-row {
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .docs-header .logo {
+    height: 30px;
+  }
+  .docs-header .site-nav a:not(.btn) {
+    display: none;
+  }
+  .docs-layout {
+    display: block;
+    padding: 0;
+  }
+  .docs-nav {
+    display: none;
+  }
+  .docs-menus,
+  .docs-menus:not(:has(.menu-toc)) {
+    display: flex;
+    justify-content: flex-start;
+  }
+  .docs-menus .menu-nav {
+    display: block;
+  }
+  .menu {
+    flex: 1 1 0;
+  }
   .menu-nav .menu-body {
     width: calc(100vw - 32px);
     right: auto;
   }
   .menu-toc .menu-body {
     width: calc(100vw - 32px);
-    left: auto;
-    right: 0;
   }
   .doc {
     padding: 20px max(16px, env(safe-area-inset-right, 0px)) 64px
@@ -2069,9 +2133,6 @@ code.inline {
   .doc h2 {
     font-size: 23px;
     line-height: 30px;
-  }
-  .doc :is(h1, h2, h3, h4) {
-    scroll-margin-top: calc(var(--docs-header) + 76px);
   }
   .pager {
     grid-template-columns: minmax(0, 1fr);
@@ -2215,33 +2276,6 @@ code.inline {
 .docs-menus .nav-sub {
   margin: 2px 0 4px 12px;
   border-left: 1px solid var(--docs-line);
-}
-.docs-nav .nav-ops,
-.docs-menus .nav-ops {
-  margin: 2px 0 6px 8px;
-}
-.docs-nav .nav-op,
-.docs-menus .nav-op {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  padding: 4px 8px;
-  font-size: 13px;
-  line-height: 18px;
-}
-.nav-op .api-method {
-  min-width: 3.4em;
-  font-size: 10px;
-  line-height: 15px;
-  padding: 0 4px;
-  flex: none;
-}
-.nav-op code {
-  font: 13px/18px var(--font-mono);
-  overflow-wrap: anywhere;
-  background: none;
-  border: 0;
-  padding: 0;
 }
 /* The index (layoutIndex): the introduction with the Quick start beside it,
    then one card per route group listing its routes with method badges. */

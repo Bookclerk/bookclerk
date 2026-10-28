@@ -377,6 +377,21 @@ test("pages load fonts from the site itself, and every font they name is publish
   }
 });
 
+test("the docs keep a way to the page's sections at every width", () => {
+  const site = built(PRE);
+  try {
+    // Where the rail goes, its menu takes over, before the sidebar's joins it.
+    const css = site.page("site.css");
+    const start = css.indexOf("@media (max-width: 1200px) {");
+    const block = css.slice(start, css.indexOf("\n}\n", start));
+    assert.ok(start >= 0);
+    assert.match(block, /\.toc \{\s*display: none;\s*\}/);
+    assert.match(block, /\.docs-menus \{\s*display: flex;/);
+  } finally {
+    site.done();
+  }
+});
+
 test("the home page's structured data names the project license", () => {
   const site = built(PRE);
   try {
