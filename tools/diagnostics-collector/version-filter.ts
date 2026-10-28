@@ -71,7 +71,9 @@ export function isPackagingDerivative(candidate: string, baseline: string): bool
  * @param raw - Version text.
  * @returns The parts, or null when it does not parse.
  */
-export function parseSemver(raw: string | null | undefined): { major: number; minor: number; patch: number; prerelease: string | null; } | null {
+export function parseSemver(
+  raw: string | null | undefined,
+): { major: number; minor: number; patch: number; prerelease: string | null } | null {
   const s = normalizeVersion(raw);
   if (!s) return null;
   const core = s.split("+", 1)[0] ?? "";
@@ -92,7 +94,10 @@ export function parseSemver(raw: string | null | undefined): { major: number; mi
  * @param b - Another.
  * @returns -1, 0 or 1, or null if either side is not parseable.
  */
-export function compareSemver(a: string | null | undefined, b: string | null | undefined): -1 | 0 | 1 | null {
+export function compareSemver(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): -1 | 0 | 1 | null {
   const pa = parseSemver(a);
   const pb = parseSemver(b);
   if (!pa || !pb) return null;
@@ -142,7 +147,10 @@ function comparePrerelease(a: string, b: string): -1 | 0 | 1 {
  * @param baseline - latest stable; null/empty = accept all
  * @returns True for the baseline, a repackaging of it, or a later version.
  */
-export function versionAcceptable(candidate: string | null | undefined, baseline: string | null | undefined): boolean {
+export function versionAcceptable(
+  candidate: string | null | undefined,
+  baseline: string | null | undefined,
+): boolean {
   const b = normalizeVersion(baseline);
   if (!b) return true;
   const c = normalizeVersion(candidate);

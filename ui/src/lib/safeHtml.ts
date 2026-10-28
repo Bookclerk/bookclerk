@@ -87,26 +87,23 @@ const NAMED_ENTITIES: Record<string, string> = {
  */
 export function decodeHtmlEntities(raw: string): string {
   if (!raw.includes("&")) return raw;
-  return raw.replace(
-    /&(#x[0-9a-fA-F]+|#\d+|[a-zA-Z][a-zA-Z0-9]+);/g,
-    (entity, body: string) => {
-      if (body.startsWith("#")) {
-        const code =
-          body[1] === "x" || body[1] === "X"
-            ? Number.parseInt(body.slice(2), 16)
-            : Number.parseInt(body.slice(1), 10);
-        if (!Number.isFinite(code) || code < 0 || code > 0x10ffff) {
-          return entity;
-        }
-        try {
-          return String.fromCodePoint(code);
-        } catch {
-          return entity;
-        }
+  return raw.replace(/&(#x[0-9a-fA-F]+|#\d+|[a-zA-Z][a-zA-Z0-9]+);/g, (entity, body: string) => {
+    if (body.startsWith("#")) {
+      const code =
+        body[1] === "x" || body[1] === "X"
+          ? Number.parseInt(body.slice(2), 16)
+          : Number.parseInt(body.slice(1), 10);
+      if (!Number.isFinite(code) || code < 0 || code > 0x10ffff) {
+        return entity;
       }
-      return NAMED_ENTITIES[body.toLowerCase()] ?? entity;
-    },
-  );
+      try {
+        return String.fromCodePoint(code);
+      } catch {
+        return entity;
+      }
+    }
+    return NAMED_ENTITIES[body.toLowerCase()] ?? entity;
+  });
 }
 
 /**
@@ -144,17 +141,11 @@ export function parseGuidedReviewBody(raw: string): GuidedReviewSection[] | null
     const hasPrompt = "question" in obj || "type" in obj;
     if (!(hasAnswer && hasPrompt)) continue;
     guidedHits += 1;
-    const answer =
-      typeof obj.answer === "string"
-        ? decodeHtmlEntities(obj.answer).trim()
-        : "";
+    const answer = typeof obj.answer === "string" ? decodeHtmlEntities(obj.answer).trim() : "";
     if (!answer) continue;
-    const type =
-      typeof obj.type === "string" ? decodeHtmlEntities(obj.type).trim() : "";
+    const type = typeof obj.type === "string" ? decodeHtmlEntities(obj.type).trim() : "";
     const question =
-      typeof obj.question === "string"
-        ? decodeHtmlEntities(obj.question).trim()
-        : undefined;
+      typeof obj.question === "string" ? decodeHtmlEntities(obj.question).trim() : undefined;
     sections.push({ type, question: question || undefined, answer });
   }
 
@@ -277,11 +268,7 @@ function stripTagsFallback(raw: string): string {
  * @param replacement - Replacement string.
  * @returns Stable result after repeated replacement.
  */
-function replaceToFixedPoint(
-  input: string,
-  pattern: RegExp,
-  replacement: string,
-): string {
+function replaceToFixedPoint(input: string, pattern: RegExp, replacement: string): string {
   let previous: string;
   let current = input;
   do {

@@ -1,10 +1,4 @@
-import {
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Bookmark, Download, ExternalLink, Trash2, X } from "lucide-react";
 import { StarRating } from "@/components/StarRating";
 import { Badge } from "@/components/ui/badge";
@@ -38,11 +32,7 @@ import { titleDetailFromCatalog, type TitleDetail } from "@/lib/titleDetail";
 import { formatDate, formatDuration } from "@/lib/libraryFilters";
 import { StoreLogo } from "@/components/StoreLogo";
 import { WisherAvatars } from "@/components/WisherAvatars";
-import {
-  decodeHtmlEntities,
-  parseGuidedReviewBody,
-  prepareDescriptionHtml,
-} from "@/lib/safeHtml";
+import { decodeHtmlEntities, parseGuidedReviewBody, prepareDescriptionHtml } from "@/lib/safeHtml";
 import { cn, titleDetailDialogClass } from "@/lib/utils";
 
 const FALLBACK_COVER = "/bookclerk-mark.svg";
@@ -64,11 +54,7 @@ function absoluteCoverUrl(raw: string): string {
 /**
  * Browse/search target for linked metadata in the detail dialog.
  */
-export type TitleMetaSearchKind =
-  | "authors"
-  | "narrators"
-  | "series"
-  | "genres";
+export type TitleMetaSearchKind = "authors" | "narrators" | "series" | "genres";
 
 function MetaRow({ label, value }: { label: string; value: ReactNode }) {
   if (value == null || value === "" || value === "—") return null;
@@ -290,13 +276,7 @@ function formatCount(n: number): string {
 }
 
 function detailIdentityKey(d: TitleDetail): string {
-  return [
-    d.work_key ?? "",
-    d.library_uuid ?? "",
-    d.asin ?? "",
-    d.isbn ?? "",
-    d.title,
-  ].join("|");
+  return [d.work_key ?? "", d.library_uuid ?? "", d.asin ?? "", d.isbn ?? "", d.title].join("|");
 }
 
 function ReviewBlock({ review }: { review: TitleReview }) {
@@ -305,12 +285,8 @@ function ReviewBlock({ review }: { review: TitleReview }) {
   const [needsTruncate, setNeedsTruncate] = useState(false);
   const guided = parseGuidedReviewBody(review.body);
   const html = guided ? "" : prepareDescriptionHtml(review.body);
-  const title = review.title?.trim()
-    ? decodeHtmlEntities(review.title.trim())
-    : null;
-  const author = review.author_name?.trim()
-    ? decodeHtmlEntities(review.author_name.trim())
-    : null;
+  const title = review.title?.trim() ? decodeHtmlEntities(review.title.trim()) : null;
+  const author = review.author_name?.trim() ? decodeHtmlEntities(review.author_name.trim()) : null;
 
   const clampClass = guided ? "line-clamp-6" : "line-clamp-4";
 
@@ -327,14 +303,10 @@ function ReviewBlock({ review }: { review: TitleReview }) {
 
   return (
     <div className="space-y-1">
-      {title ? (
-        <p className="text-sm font-semibold text-ink">{title}</p>
-      ) : null}
+      {title ? <p className="text-sm font-semibold text-ink">{title}</p> : null}
       {review.overall_rating != null || author || submitted ? (
         <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-ink/50">
-          {review.overall_rating != null ? (
-            <StarRating value={review.overall_rating} />
-          ) : null}
+          {review.overall_rating != null ? <StarRating value={review.overall_rating} /> : null}
           {author ? <span>· {author}</span> : null}
           {submitted ? <span>· {submitted}</span> : null}
         </p>
@@ -356,9 +328,7 @@ function ReviewBlock({ review }: { review: TitleReview }) {
                     {section.question}
                   </p>
                 ) : section.type ? (
-                  <p className="text-[13px] font-medium leading-snug text-teal">
-                    {section.type}
-                  </p>
+                  <p className="text-[13px] font-medium leading-snug text-teal">{section.type}</p>
                 ) : null}
                 {answerHtml ? (
                   <div
@@ -473,8 +443,7 @@ export function TitleDetailModal({
   const [descExpanded, setDescExpanded] = useState(false);
   const [reviews, setReviews] = useState<TitleReview[]>([]);
   const [reviewsPage, setReviewsPage] = useState(0);
-  const [reviewsSort, setReviewsSort] =
-    useState<TitleReviewsSort>("MostHelpful");
+  const [reviewsSort, setReviewsSort] = useState<TitleReviewsSort>("MostHelpful");
   const [reviewsHasMore, setReviewsHasMore] = useState(false);
   const [reviewsLoading, setReviewsLoading] = useState(false);
   const scrollBodyRef = useRef<HTMLDivElement | null>(null);
@@ -509,7 +478,9 @@ export function TitleDetailModal({
   // Wishlist add/remove (and household wisher stacks) update the parent prop
   // without changing identityKey. Fingerprint avoids re-copying on every
   // parent render of a new `detail` object.
-  const wishlistSyncKey = `${initial.wishlist_uuid ?? ""}:${initial.wish_count ?? ""}:${(initial.wishers ?? [])
+  const wishlistSyncKey = `${initial.wishlist_uuid ?? ""}:${initial.wish_count ?? ""}:${(
+    initial.wishers ?? []
+  )
     .map((wisher) => wisher.user_id ?? wisher.identity_id ?? "")
     .join(",")}`;
   useEffect(() => {
@@ -549,12 +520,10 @@ export function TitleDetailModal({
           res.books.find(
             (b) =>
               (needleAsin && b.asin?.toUpperCase() === needleAsin) ||
-              (needleIsbn &&
-                b.isbn?.replace(/[^0-9Xx]/g, "").toUpperCase() === needleIsbn),
+              (needleIsbn && b.isbn?.replace(/[^0-9Xx]/g, "").toUpperCase() === needleIsbn),
           ) ??
           res.books.find(
-            (b) =>
-              b.title.trim().toLowerCase() === initial.title.trim().toLowerCase(),
+            (b) => b.title.trim().toLowerCase() === initial.title.trim().toLowerCase(),
           );
         if (match) setDetail((d) => mergeLibraryBook(d, match));
       } catch {
@@ -687,18 +656,13 @@ export function TitleDetailModal({
             });
             setReviews((prev) => {
               const seen = new Set(
-                prev.map(
-                  (r) =>
-                    r.id?.trim() ||
-                    `${r.author_name}|${r.title}|${r.body}`,
-                ),
+                prev.map((r) => r.id?.trim() || `${r.author_name}|${r.title}|${r.body}`),
               );
               const merged = [...prev];
               let added = 0;
               for (const review of page.reviews) {
                 const key =
-                  review.id?.trim() ||
-                  `${review.author_name}|${review.title}|${review.body}`;
+                  review.id?.trim() || `${review.author_name}|${review.title}|${review.body}`;
                 if (seen.has(key)) continue;
                 seen.add(key);
                 merged.push(review);
@@ -741,9 +705,8 @@ export function TitleDetailModal({
     void (async () => {
       try {
         const primaryEdition =
-          editions.find((e) =>
-            sources.some((s) => s.toLowerCase() === e.source.toLowerCase()),
-          ) ?? editions[0];
+          editions.find((e) => sources.some((s) => s.toLowerCase() === e.source.toLowerCase())) ??
+          editions[0];
         const res = await fetchPurchaseHints({
           title: initial.title,
           authors: initial.authors ?? detail.authors,
@@ -866,9 +829,7 @@ export function TitleDetailModal({
             >
               {detail.title}
             </h2>
-            {detail.subtitle ? (
-              <p className="mt-1 text-sm text-ink/65">{detail.subtitle}</p>
-            ) : null}
+            {detail.subtitle ? <p className="mt-1 text-sm text-ink/65">{detail.subtitle}</p> : null}
           </div>
           <button
             type="button"
@@ -880,10 +841,7 @@ export function TitleDetailModal({
           </button>
         </div>
 
-        <div
-          ref={scrollBodyRef}
-          className="overflow-y-auto px-4 py-4 sm:px-6 sm:py-5 lg:px-8"
-        >
+        <div ref={scrollBodyRef} className="overflow-y-auto px-4 py-4 sm:px-6 sm:py-5 lg:px-8">
           <div className="flex flex-col gap-5 sm:flex-row sm:gap-6 lg:gap-8">
             <div className="mx-auto aspect-square h-44 w-44 shrink-0 overflow-hidden rounded-md bg-fold shadow-md sm:mx-0 sm:h-52 sm:w-52 lg:h-60 lg:w-60">
               <img
@@ -905,9 +863,7 @@ export function TitleDetailModal({
                     {detail.acquire_status.replaceAll("_", " ")}
                   </Badge>
                 ) : null}
-                {wishlisted ? (
-                  <Badge className="bg-teal/15 text-teal">On wishlist</Badge>
-                ) : null}
+                {wishlisted ? <Badge className="bg-teal/15 text-teal">On wishlist</Badge> : null}
                 {detail.source ? (
                   <Badge className="bg-ink/8 text-ink/70">{detail.source}</Badge>
                 ) : null}
@@ -955,10 +911,7 @@ export function TitleDetailModal({
                   onSearch={onMetaSearch}
                 />
                 <MetaRow label="Publisher" value={detail.publisher} />
-                <MetaRow
-                  label="Duration"
-                  value={formatDuration(detail.length_minutes ?? null)}
-                />
+                <MetaRow label="Duration" value={formatDuration(detail.length_minutes ?? null)} />
                 <MetaRow label="Published" value={formatDate(detail.published_at ?? null)} />
                 <MetaRow
                   label="Format"
@@ -987,9 +940,7 @@ export function TitleDetailModal({
               {(() => {
                 const reason = displayReasons(detail.reasons)[0];
                 return reason ? (
-                  <p className="rounded-md bg-ink/5 px-3 py-2 text-sm text-ink/70">
-                    {reason}
-                  </p>
+                  <p className="rounded-md bg-ink/5 px-3 py-2 text-sm text-ink/70">{reason}</p>
                 ) : null;
               })()}
               {detail.error_message ? (
@@ -1027,9 +978,7 @@ export function TitleDetailModal({
                             {(() => {
                               const price = formatPurchasePrices(h);
                               return price ? (
-                                <span className="ml-2 tabular-nums text-teal">
-                                  {price}
-                                </span>
+                                <span className="ml-2 tabular-nums text-teal">{price}</span>
                               ) : null;
                             })()}
                           </p>
@@ -1077,9 +1026,7 @@ export function TitleDetailModal({
             <div
               className={cn(
                 "space-y-3",
-                detail.description
-                  ? "mt-4"
-                  : "mt-5 border-t border-ink/10 pt-4",
+                detail.description ? "mt-4" : "mt-5 border-t border-ink/10 pt-4",
               )}
             >
               <div className="space-y-1.5">
@@ -1164,11 +1111,7 @@ export function TitleDetailModal({
             Close
           </Button>
           {wishlisted && onRemoveWishlist ? (
-            <Button
-              variant="secondary"
-              disabled={busy}
-              onClick={() => onRemoveWishlist(detail)}
-            >
+            <Button variant="secondary" disabled={busy} onClick={() => onRemoveWishlist(detail)}>
               <Trash2 className="h-4 w-4" />
               Remove
             </Button>

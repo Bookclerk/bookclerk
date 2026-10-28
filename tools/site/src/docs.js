@@ -188,7 +188,9 @@
     }
     document.addEventListener("keydown", (event) => {
       const target = event.target;
-      const typing = target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
+      const typing =
+        target instanceof HTMLElement &&
+        (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
       if (event.key !== "/" || typing || event.ctrlKey || event.metaKey || event.altKey) return;
       if (input.offsetParent === null) return;
       event.preventDefault();

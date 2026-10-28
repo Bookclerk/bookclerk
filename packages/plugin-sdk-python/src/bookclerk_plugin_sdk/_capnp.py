@@ -209,9 +209,7 @@ class _CapnpMessage:
 class _CapnpStruct:
     """Struct cursor on a :class:`_CapnpMessage`."""
 
-    def __init__(
-        self, msg: _CapnpMessage, word: int, data_words: int, pointer_words: int
-    ) -> None:
+    def __init__(self, msg: _CapnpMessage, word: int, data_words: int, pointer_words: int) -> None:
         self.msg = msg
         self.word = word
         self.data_words = data_words
@@ -277,9 +275,7 @@ class _CapnpStruct:
             self.pointer_word(pointer_index), count, data_words, pointer_words
         )
 
-    def init_struct(
-        self, pointer_index: int, data_words: int, pointer_words: int
-    ) -> _CapnpStruct:
+    def init_struct(self, pointer_index: int, data_words: int, pointer_words: int) -> _CapnpStruct:
         ptr = self.pointer_word(pointer_index)
         off = self.msg.alloc(data_words + pointer_words)
         self.msg.write_struct_pointer(ptr, off, data_words, pointer_words)
@@ -474,9 +470,7 @@ class _CapnpReader:
         if count > _MAX_TRAVERSAL_WORDS:
             raise ValueError("composite list count exceeds traversal budget")
         self._check_range(tag_word, 1 + count * elem_words)
-        return [
-            _StructReader(self, tag_word + 1 + i * elem_words, dw, pw) for i in range(count)
-        ]
+        return [_StructReader(self, tag_word + 1 + i * elem_words, dw, pw) for i in range(count)]
 
 
 class _StructReader:
@@ -519,10 +513,14 @@ class _StructReader:
         return self.reader.get_u64(self.word, field_index) if self._has_data(field_index, 8) else 0
 
     def get_f32(self, field_index: int) -> float:
-        return self.reader.get_f32(self.word, field_index) if self._has_data(field_index, 4) else 0.0
+        return (
+            self.reader.get_f32(self.word, field_index) if self._has_data(field_index, 4) else 0.0
+        )
 
     def get_f64(self, field_index: int) -> float:
-        return self.reader.get_f64(self.word, field_index) if self._has_data(field_index, 8) else 0.0
+        return (
+            self.reader.get_f64(self.word, field_index) if self._has_data(field_index, 8) else 0.0
+        )
 
     def get_bool(self, bit_index: int) -> bool:
         if bit_index >= self.data_words * 64:
@@ -569,9 +567,7 @@ class _StructReader:
             return []
         return self.reader.read_struct_list(ptr, data_words, pointer_words)
 
-    def get_struct(
-        self, pointer_index: int, data_words: int, pointer_words: int
-    ) -> _StructReader:
+    def get_struct(self, pointer_index: int, data_words: int, pointer_words: int) -> _StructReader:
         ptr = self.pointer_word(pointer_index)
         if ptr is None:
             return _StructReader(self.reader, 0, 0, 0)

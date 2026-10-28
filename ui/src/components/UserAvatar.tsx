@@ -15,10 +15,7 @@ export function userDisplayLabel(user: {
   email?: string | null;
 }): string {
   return (
-    user.display_name?.trim() ||
-    user.login_name?.trim() ||
-    user.email?.trim() ||
-    "Unnamed user"
+    user.display_name?.trim() || user.login_name?.trim() || user.email?.trim() || "Unnamed user"
   );
 }
 
@@ -58,14 +55,7 @@ export function UserAvatar({
   const [broken, setBroken] = useState(false);
   useEffect(() => {
     setBroken(false);
-  }, [
-    userId,
-    cacheKey,
-    hasAvatar,
-    avatarSource,
-    gravatarHash,
-    resolved.kind,
-  ]);
+  }, [userId, cacheKey, hasAvatar, avatarSource, gravatarHash, resolved.kind]);
   const initial = (label.trim() || "?").charAt(0).toUpperCase();
   let src: string | null = null;
   if (!broken) {

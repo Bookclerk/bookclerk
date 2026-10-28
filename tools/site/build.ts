@@ -42,7 +42,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { docMarkdownUrl, docUrl, GENERATED_TITLES, NAV, renderDocs } from "./docs.ts";
-import { escapeHtml, jsonLd, renderDoc, SHELL_MARKERS, SHELL_VALUES, SITEMAP_MARKER } from "./render.ts";
+import {
+  escapeHtml,
+  jsonLd,
+  renderDoc,
+  SHELL_MARKERS,
+  SHELL_VALUES,
+  SITEMAP_MARKER,
+} from "./render.ts";
 import { sitemapXml } from "./sitemap.ts";
 import type { DocsShell, DocsVersion } from "./render.ts";
 import type { RenderedDocs } from "./docs.ts";
@@ -72,7 +79,10 @@ export interface ReleaseState {
  * @typeParam V - The values; SiteValues for the site-wide context.
  * @typeParam F - The flags; SiteFlags for the site-wide context.
  */
-export interface TemplateContext<V extends Readonly<Record<string, string>> = Readonly<Record<string, string>>, F extends Readonly<Record<string, boolean>> = Readonly<Record<string, boolean>>> {
+export interface TemplateContext<
+  V extends Readonly<Record<string, string>> = Readonly<Record<string, string>>,
+  F extends Readonly<Record<string, boolean>> = Readonly<Record<string, boolean>>,
+> {
   /** Values that fill `{{name}}` holes, unescaped. */
   values: V;
   /** Flags that drive `{{#name}}` and `{{^name}}` sections. */
@@ -219,7 +229,8 @@ export const PAGES: readonly Page[] = [
     file: "download.html",
     path: "/download",
     title: "Download Bookclerk",
-    description: "Get Bookclerk, the self-hosted audiobook library manager for your Audible, Libro.fm, Chirp and GraphicAudio purchases.",
+    description:
+      "Get Bookclerk, the self-hosted audiobook library manager for your Audible, Libro.fm, Chirp and GraphicAudio purchases.",
     indexable: true,
     markdown: "/download.md",
   },
@@ -227,7 +238,8 @@ export const PAGES: readonly Page[] = [
     file: "privacy.html",
     path: "/privacy",
     title: "Privacy · Bookclerk",
-    description: "What the Bookclerk website and services collect, which cookies they set and why, who else handles it, and how long it is kept.",
+    description:
+      "What the Bookclerk website and services collect, which cookies they set and why, who else handles it, and how long it is kept.",
     indexable: true,
     markdown: "/privacy.md",
   },
@@ -235,7 +247,8 @@ export const PAGES: readonly Page[] = [
     file: "security.html",
     path: "/security",
     title: "Security policy · Bookclerk",
-    description: "How to report a security problem in Bookclerk privately, which versions are supported, and how fixes are published.",
+    description:
+      "How to report a security problem in Bookclerk privately, which versions are supported, and how fixes are published.",
     indexable: true,
     markdown: "/security.md",
     source: "SECURITY.md",
@@ -265,7 +278,14 @@ const SITEMAP_PAGE: Omit<Page, "file"> = {
 };
 
 /** The Worker and its page and sitemap renderers, whose sources are part of the docs shell's id (see buildDocsShell). */
-const RENDER_SOURCES = ["render.ts", "diagram.ts", "highlight.ts", "last-updated.ts", "sitemap.ts", "worker.ts"];
+const RENDER_SOURCES = [
+  "render.ts",
+  "diagram.ts",
+  "highlight.ts",
+  "last-updated.ts",
+  "sitemap.ts",
+  "worker.ts",
+];
 
 /**
  * Libraries the renderers run, whose installed versions are part of the docs
@@ -273,7 +293,15 @@ const RENDER_SOURCES = ["render.ts", "diagram.ts", "highlight.ts", "last-updated
  */
 // beautiful-mermaid's own copy of entities escapes diagram labels; markdown-it
 // has another, so it is named by its nested path.
-const RENDER_LIBRARIES = ["markdown-it", "@shikijs/core", "@shikijs/engine-javascript", "@shikijs/langs", "beautiful-mermaid", "beautiful-mermaid/node_modules/entities", "elkjs"];
+const RENDER_LIBRARIES = [
+  "markdown-it",
+  "@shikijs/core",
+  "@shikijs/engine-javascript",
+  "@shikijs/langs",
+  "beautiful-mermaid",
+  "beautiful-mermaid/node_modules/entities",
+  "elkjs",
+];
 
 /** Files copied verbatim from src/ to dist/. */
 const STATIC_FILES = ["site.css", "sitemap.css", "docs.js", "_headers", "social-card.png"];
@@ -355,13 +383,18 @@ export function readState(env: BuildEnv): ReleaseState {
     throw new Error(`SITE_BUILT_ON must be YYYY-MM-DD, got ${JSON.stringify(builtOn)}`);
   }
   if (!ORIGIN_RE.test(origin)) {
-    throw new Error(`SITE_ORIGIN must be https://<lowercase hostname>, got ${JSON.stringify(origin)}`);
+    throw new Error(
+      `SITE_ORIGIN must be https://<lowercase hostname>, got ${JSON.stringify(origin)}`,
+    );
   }
   if (demoUrl !== null && !ORIGIN_RE.test(demoUrl)) {
-    throw new Error(`SITE_DEMO_URL must be https://<lowercase hostname>, got ${JSON.stringify(demoUrl)}`);
+    throw new Error(
+      `SITE_DEMO_URL must be https://<lowercase hostname>, got ${JSON.stringify(demoUrl)}`,
+    );
   }
   for (const t of listed) {
-    if (!TAG_RE.test(t)) throw new Error(`SITE_DOCS_VERSIONS must hold tags like v1.2.3, got ${JSON.stringify(t)}`);
+    if (!TAG_RE.test(t))
+      throw new Error(`SITE_DOCS_VERSIONS must hold tags like v1.2.3, got ${JSON.stringify(t)}`);
   }
   if (tag === "") {
     if (listed.length > 0) throw new Error("SITE_DOCS_VERSIONS is set but SITE_RELEASE_TAG is not");
@@ -371,7 +404,9 @@ export function readState(env: BuildEnv): ReleaseState {
     throw new Error(`SITE_RELEASE_TAG must look like v1.2.3, got ${JSON.stringify(tag)}`);
   }
   if (!DATE_RE.test(date)) {
-    throw new Error(`SITE_RELEASE_DATE must be YYYY-MM-DD when a release tag is set, got ${JSON.stringify(date)}`);
+    throw new Error(
+      `SITE_RELEASE_DATE must be YYYY-MM-DD when a release tag is set, got ${JSON.stringify(date)}`,
+    );
   }
   // The picker keeps the newest MAX_DOCS_VERSIONS tags; older ones drop off.
   const docsTags = [...new Set(listed)].slice(0, MAX_DOCS_VERSIONS);
@@ -462,7 +497,11 @@ export function templateContext(state: ReleaseState): SiteContext {
  * @throws {Error} On an unknown partial, flag or value, so a typo fails the
  *   build instead of shipping an empty hole.
  */
-export function render(template: string, context: TemplateContext, partials: Readonly<Record<string, string>>): string {
+export function render(
+  template: string,
+  context: TemplateContext,
+  partials: Readonly<Record<string, string>>,
+): string {
   let out = template;
   for (let depth = 0; depth < MAX_PARTIAL_DEPTH && out.includes("{{>"); depth += 1) {
     out = out.replace(/\{\{>\s*([a-z-]+)\s*\}\}/g, (_, name: string) => {
@@ -471,18 +510,23 @@ export function render(template: string, context: TemplateContext, partials: Rea
       return partial;
     });
   }
-  out = out.replace(/\{\{([#^])([a-z]+)\}\}([\s\S]*?)\{\{\/\2\}\}/g, (_, kind: string, name: string, body: string) => {
-    const flag = Object.hasOwn(context.flags, name) ? context.flags[name] : undefined;
-    if (flag === undefined) throw new Error(`unknown flag ${name}`);
-    return flag === (kind === "#") ? body : "";
-  });
+  out = out.replace(
+    /\{\{([#^])([a-z]+)\}\}([\s\S]*?)\{\{\/\2\}\}/g,
+    (_, kind: string, name: string, body: string) => {
+      const flag = Object.hasOwn(context.flags, name) ? context.flags[name] : undefined;
+      if (flag === undefined) throw new Error(`unknown flag ${name}`);
+      return flag === (kind === "#") ? body : "";
+    },
+  );
   out = out.replace(/\{\{([A-Za-z]+)\}\}/g, (_, name: string) => {
     const value = Object.hasOwn(context.values, name) ? context.values[name] : undefined;
     if (value === undefined) throw new Error(`unknown value ${name}`);
     return escapeHtml(value);
   });
   if (out.includes("{{")) {
-    throw new Error(`unrendered template syntax near ${JSON.stringify(out.slice(out.indexOf("{{"), out.indexOf("{{") + 40))}`);
+    throw new Error(
+      `unrendered template syntax near ${JSON.stringify(out.slice(out.indexOf("{{"), out.indexOf("{{") + 40))}`,
+    );
   }
   return out;
 }
@@ -541,7 +585,11 @@ function pageContext(
       pageType: page.type ?? "website",
       markdownUrl: page.markdown ?? "",
     },
-    flags: { ...context.flags, indexable: page.indexable, markdown: page.markdown !== undefined && page.alternate !== false },
+    flags: {
+      ...context.flags,
+      indexable: page.indexable,
+      markdown: page.markdown !== undefined && page.alternate !== false,
+    },
   };
 }
 
@@ -584,15 +632,22 @@ export function plainText(html: string): string {
 export function homeFacts(html: string): HomeFacts {
   // Each card is read up to its own closing tag, so a card that loses its
   // heading fails the build instead of borrowing the next card's.
-  const features = [...html.matchAll(/<div class="feature">((?:(?!<\/div>)[\s\S])*)<\/div>/g)].map(([, card = ""]) => {
-    const [, name, text] = card.match(/<h3>([\s\S]*?)<\/h3>\s*<p[^>]*>([\s\S]*?)<\/p>/) ?? [];
-    if (name === undefined || text === undefined) throw new Error(`a feature card has no heading and text: ${card.slice(0, 80)}`);
-    return { name: plainText(name), text: plainText(text) };
-  });
-  const faq = [...html.matchAll(/<details[^>]*>\s*<summary>([\s\S]*?)<\/summary>([\s\S]*?)<\/details>/g)].map(
-    ([, question = "", answer = ""]) => ({ question: plainText(question), answer: plainText(answer) }),
+  const features = [...html.matchAll(/<div class="feature">((?:(?!<\/div>)[\s\S])*)<\/div>/g)].map(
+    ([, card = ""]) => {
+      const [, name, text] = card.match(/<h3>([\s\S]*?)<\/h3>\s*<p[^>]*>([\s\S]*?)<\/p>/) ?? [];
+      if (name === undefined || text === undefined)
+        throw new Error(`a feature card has no heading and text: ${card.slice(0, 80)}`);
+      return { name: plainText(name), text: plainText(text) };
+    },
   );
-  if (features.length === 0 || faq.length === 0) throw new Error("the home page lost its feature cards or FAQ");
+  const faq = [
+    ...html.matchAll(/<details[^>]*>\s*<summary>([\s\S]*?)<\/summary>([\s\S]*?)<\/details>/g),
+  ].map(([, question = "", answer = ""]) => ({
+    question: plainText(question),
+    answer: plainText(answer),
+  }));
+  if (features.length === 0 || faq.length === 0)
+    throw new Error("the home page lost its feature cards or FAQ");
   return { features, faq };
 }
 
@@ -706,26 +761,46 @@ export function buildDocsShell(
   const holes = new Set([...html.matchAll(/%%([A-Za-z]+)%%/g)].map((m) => m[1] ?? ""));
   const unknown = [...holes].filter((h) => !SHELL_VALUES.includes(h));
   if (unknown.length > 0 || html.replace(/%%[A-Za-z]+%%/g, "").includes("%%")) {
-    throw new Error(`docs shell has holes render.ts does not fill: ${unknown.join(", ") || "stray %%"}`);
+    throw new Error(
+      `docs shell has holes render.ts does not fill: ${unknown.join(", ") || "stray %%"}`,
+    );
   }
   for (const marker of SHELL_MARKERS) {
-    if (html.split(`<!--${marker}-->`).length !== 2) throw new Error(`docs shell needs exactly one <!--${marker}-->`);
+    if (html.split(`<!--${marker}-->`).length !== 2)
+      throw new Error(`docs shell needs exactly one <!--${marker}-->`);
   }
   // The human-readable sitemap is a website page whose list the Worker
   // fills in at request time, so its shell is baked here, not written to dist/.
-  const sitemapHtml = render(readFileSync(join(HERE, "src", "sitemap.html"), "utf8"), pageContext(context, SITEMAP_PAGE), partials);
-  if (sitemapHtml.split(SITEMAP_MARKER).length !== 2) throw new Error(`src/sitemap.html needs exactly one ${SITEMAP_MARKER}`);
+  const sitemapHtml = render(
+    readFileSync(join(HERE, "src", "sitemap.html"), "utf8"),
+    pageContext(context, SITEMAP_PAGE),
+    partials,
+  );
+  if (sitemapHtml.split(SITEMAP_MARKER).length !== 2)
+    throw new Error(`src/sitemap.html needs exactly one ${SITEMAP_MARKER}`);
   const indexable = PAGES.filter((p) => p.indexable);
   const pages = indexable.map((p) => p.path);
   // Titles without the site name, as a list of pages shows them.
-  const pageTitles = indexable.map((p) => (p.path === "/" ? "Home" : p.title.replace(/ · Bookclerk$/, "")));
-  const shell = { html, origin: context.values.origin, repository: REPOSITORY_URL, versions, nav: rendered.nav, pages, pageTitles, sitemapHtml };
+  const pageTitles = indexable.map((p) =>
+    p.path === "/" ? "Home" : p.title.replace(/ · Bookclerk$/, ""),
+  );
+  const shell = {
+    html,
+    origin: context.values.origin,
+    repository: REPOSITORY_URL,
+    versions,
+    nav: rendered.nav,
+    pages,
+    pageTitles,
+    sitemapHtml,
+  };
   // The renderers' sources and libraries go into the id too: a change to how
   // pages are rendered must drop pages cached by an earlier deploy, like a
   // shell change.
   const hash = createHash("sha256").update(JSON.stringify(shell));
   for (const file of RENDER_SOURCES) hash.update(readFileSync(join(HERE, file)));
-  for (const name of RENDER_LIBRARIES) hash.update(readFileSync(join(HERE, "node_modules", name, "package.json")));
+  for (const name of RENDER_LIBRARIES)
+    hash.update(readFileSync(join(HERE, "node_modules", name, "package.json")));
   const id = hash.digest("hex").slice(0, 16);
   return { id, ...shell };
 }
@@ -749,7 +824,12 @@ function markdownLinkText(text: string): string {
  * @param facts - What the home page shows, so llms.txt states the same facts in the same words.
  * @param outDir - Output directory.
  */
-function writeLlmsTxt(context: SiteContext, rendered: RenderedDocs, facts: HomeFacts, outDir: string): void {
+function writeLlmsTxt(
+  context: SiteContext,
+  rendered: RenderedDocs,
+  facts: HomeFacts,
+  outDir: string,
+): void {
   const { origin, docsVersion, repo } = context.values;
   const byKey = new Map(rendered.docs.map((d) => [d.key, d]));
   const status = context.flags.prerelease
@@ -771,17 +851,32 @@ function writeLlmsTxt(context: SiteContext, rendered: RenderedDocs, facts: HomeF
   }
   // llms.txt allows no headings before the first link section, so the home
   // page's features and questions go in as lists.
-  lines.push("What Bookclerk does:", "", ...facts.features.map(({ name, text }) => `- **${name}.** ${text}`), "");
-  lines.push("Common questions:", "", ...facts.faq.map(({ question, answer }) => `- **${question}** ${answer}`), "");
+  lines.push(
+    "What Bookclerk does:",
+    "",
+    ...facts.features.map(({ name, text }) => `- **${name}.** ${text}`),
+    "",
+  );
+  lines.push(
+    "Common questions:",
+    "",
+    ...facts.faq.map(({ question, answer }) => `- **${question}** ${answer}`),
+    "",
+  );
   const groups = rendered.nav;
   const designAt = groups.findIndex((g) => g.title === NAV.at(-1)?.title);
   for (const [i, group] of groups.entries()) {
     // llms.txt reserves "Optional" for links a reader can skip.
     lines.push(`## ${i === designAt ? "Optional" : group.title}`, "");
-    if (i === 0) lines.push(`- [Overview](${origin}${docMarkdownUrl("README")}): How the documentation is organized`);
+    if (i === 0)
+      lines.push(
+        `- [Overview](${origin}${docMarkdownUrl("README")}): How the documentation is organized`,
+      );
     for (const { key, title } of group.pages) {
       const description = byKey.get(key)?.description ?? "";
-      lines.push(`- [${markdownLinkText(title)}](${origin}${docMarkdownUrl(key)})${description ? `: ${description}` : ""}`);
+      lines.push(
+        `- [${markdownLinkText(title)}](${origin}${docMarkdownUrl(key)})${description ? `: ${description}` : ""}`,
+      );
     }
     lines.push("");
   }
@@ -789,7 +884,10 @@ function writeLlmsTxt(context: SiteContext, rendered: RenderedDocs, facts: HomeF
 
   // The generated API reference is too large for one file; llms.txt links it.
   const full = [`# Bookclerk documentation (${docsVersion})`, "", `> ${SUMMARY}`, ""];
-  for (const key of ["README", ...groups.flatMap((g) => g.pages.map((p) => p.key)).filter((k) => byKey.has(k))]) {
+  for (const key of [
+    "README",
+    ...groups.flatMap((g) => g.pages.map((p) => p.key)).filter((k) => byKey.has(k)),
+  ]) {
     const doc = byKey.get(key);
     if (doc === undefined) continue;
     full.push("---", "", `Source: ${origin}${docMarkdownUrl(key)}`, "", doc.markdown.trim(), "");
@@ -808,8 +906,17 @@ function writeCrawlerFiles(context: SiteContext, paths: readonly string[], outDi
   const { origin } = context.values;
   // The Worker answers /sitemap.xml with every docs page and its date; this
   // copy is what it falls back to when the docs repository cannot be read.
-  writeFileSync(join(outDir, "sitemap.xml"), sitemapXml(origin, paths.map((path) => ({ path, lastmod: null }))));
-  writeFileSync(join(outDir, "robots.txt"), `User-agent: *\nAllow: /\n\nSitemap: ${origin}/sitemap.xml\n`);
+  writeFileSync(
+    join(outDir, "sitemap.xml"),
+    sitemapXml(
+      origin,
+      paths.map((path) => ({ path, lastmod: null })),
+    ),
+  );
+  writeFileSync(
+    join(outDir, "robots.txt"),
+    `User-agent: *\nAllow: /\n\nSitemap: ${origin}/sitemap.xml\n`,
+  );
 }
 
 /**
@@ -820,15 +927,22 @@ function writeCrawlerFiles(context: SiteContext, paths: readonly string[], outDi
  * @param shellFile - Where to write the docs shell (JSON).
  * @returns Published top-level file names, sorted.
  */
-export function build(env: BuildEnv, outDir: string, shellFile: string = DOCS_SHELL_FILE): string[] {
+export function build(
+  env: BuildEnv,
+  outDir: string,
+  shellFile: string = DOCS_SHELL_FILE,
+): string[] {
   const state = readState(env);
   const context = templateContext(state);
   const src = join(HERE, "src");
   const partials: Record<string, string> = {};
   for (const file of readdirSync(join(src, "partials"))) {
-    if (file.endsWith(".html")) partials[file.slice(0, -5)] = readFileSync(join(src, "partials", file), "utf8");
+    if (file.endsWith(".html"))
+      partials[file.slice(0, -5)] = readFileSync(join(src, "partials", file), "utf8");
   }
-  partials["logo"] = inlineLogo(readFileSync(join(REPO_ROOT, "assets/brand/svg/bookclerk-logo.svg"), "utf8"));
+  partials["logo"] = inlineLogo(
+    readFileSync(join(REPO_ROOT, "assets/brand/svg/bookclerk-logo.svg"), "utf8"),
+  );
 
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
@@ -837,20 +951,31 @@ export function build(env: BuildEnv, outDir: string, shellFile: string = DOCS_SH
   const rendered = renderDocs(join(REPO_ROOT, "docs"), context.values.blobBase, GENERATED_TITLES);
   const docKeys = new Set(rendered.docs.map((d) => d.key));
   for (const page of PAGES) {
-    let html = render(readFileSync(join(src, page.file), "utf8"), pageContext(context, page), partials);
+    let html = render(
+      readFileSync(join(src, page.file), "utf8"),
+      pageContext(context, page),
+      partials,
+    );
     const pageFacts = page.path === "/" ? homeFacts(html) : null;
     if (pageFacts !== null) facts = pageFacts;
-    html = html.replace(JSONLD_MARKER, () => jsonLd(pageFacts === null ? null : homeJsonLd(context, pageFacts)));
+    html = html.replace(JSONLD_MARKER, () =>
+      jsonLd(pageFacts === null ? null : homeJsonLd(context, pageFacts)),
+    );
     if (page.source) {
-      if (html.split(SOURCE_MARKER).length !== 2) throw new Error(`${page.file} needs exactly one ${SOURCE_MARKER}`);
+      if (html.split(SOURCE_MARKER).length !== 2)
+        throw new Error(`${page.file} needs exactly one ${SOURCE_MARKER}`);
       // The key places the file at the repository root, so its relative
       // links resolve from there (`docs/…` becomes a docs page). Once a
       // release's docs are published they come from its tag, so a link to a
       // newer doc falls back to GitHub; build.test.ts fails the deploy then.
-      const doc = renderDoc(readFileSync(join(REPO_ROOT, page.source), "utf8"), `../${page.source.replace(/\.md$/, "")}`, {
-        keys: docKeys,
-        blobBase: context.values.blobBase,
-      });
+      const doc = renderDoc(
+        readFileSync(join(REPO_ROOT, page.source), "utf8"),
+        `../${page.source.replace(/\.md$/, "")}`,
+        {
+          keys: docKeys,
+          blobBase: context.values.blobBase,
+        },
+      );
       html = html.replace(SOURCE_MARKER, () => doc.html);
       if (page.markdown) writeFileSync(join(outDir, page.markdown.slice(1)), doc.markdown);
     }
@@ -858,14 +983,24 @@ export function build(env: BuildEnv, outDir: string, shellFile: string = DOCS_SH
     if (page.markdown && !page.source) {
       // Template values are validated tags, dates, commit ids and URLs, so
       // HTML escaping leaves them unchanged in Markdown too.
-      const md = render(readFileSync(join(src, page.markdown.slice(1)), "utf8"), pageContext(context, page), partials);
+      const md = render(
+        readFileSync(join(src, page.markdown.slice(1)), "utf8"),
+        pageContext(context, page),
+        partials,
+      );
       writeFileSync(join(outDir, page.markdown.slice(1)), md);
     }
     if (page.indexable) indexable.push(page.path);
   }
-  indexable.push(docUrl("README"), ...rendered.nav.flatMap((g) => g.pages.map((p) => docUrl(p.key))));
+  indexable.push(
+    docUrl("README"),
+    ...rendered.nav.flatMap((g) => g.pages.map((p) => docUrl(p.key))),
+  );
   mkdirSync(dirname(shellFile), { recursive: true });
-  writeFileSync(shellFile, JSON.stringify(buildDocsShell(context, partials, rendered, docsVersions(state))));
+  writeFileSync(
+    shellFile,
+    JSON.stringify(buildDocsShell(context, partials, rendered, docsVersions(state))),
+  );
   writeCrawlerFiles(context, indexable, outDir);
   if (facts === null) throw new Error("PAGES has no home page");
   writeLlmsTxt(context, rendered, facts, outDir);
@@ -874,7 +1009,8 @@ export function build(env: BuildEnv, outDir: string, shellFile: string = DOCS_SH
   for (const file of readdirSync(join(src, "fonts"))) {
     if (FONT_FILE.test(file)) cpSync(join(src, "fonts", file), join(outDir, "fonts", file));
   }
-  for (const [from, to] of BRAND_FILES) cpSync(join(REPO_ROOT, "assets/brand", from), join(outDir, to));
+  for (const [from, to] of BRAND_FILES)
+    cpSync(join(REPO_ROOT, "assets/brand", from), join(outDir, to));
   return readdirSync(outDir).sort();
 }
 

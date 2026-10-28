@@ -1076,7 +1076,19 @@ jobs:
 
   ci-gate:
     name: CI Gate
-    needs: [plan, check, test, e2e, release, confinement, native-gateway, tray, postgres, windows-cluster, envelope, site]
+    needs:
+      - plan
+      - check
+      - test
+      - e2e
+      - release
+      - confinement
+      - native-gateway
+      - tray
+      - postgres
+      - windows-cluster
+      - envelope
+      - site
     if: always()
     runs-on: ubuntu-latest
     steps:

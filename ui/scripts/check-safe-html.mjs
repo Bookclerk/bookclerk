@@ -133,21 +133,12 @@ assert.equal(decodeHtmlEntities("&amp;lt;"), "&lt;");
 
 assert.equal(prepareDescriptionHtml("hello\nworld"), "hello<br>world");
 assert.equal(prepareDescriptionHtml("<p>Hi</p>"), "<p>Hi</p>");
-assert.equal(
-  prepareDescriptionHtml('<p class="x" onclick="alert(1)">Hi</p>'),
-  "<p>Hi</p>",
-);
+assert.equal(prepareDescriptionHtml('<p class="x" onclick="alert(1)">Hi</p>'), "<p>Hi</p>");
 assert.equal(prepareDescriptionHtml("<b>Bold</b> & plain"), "<b>Bold</b> &amp; plain");
 assert.equal(prepareDescriptionHtml("<script>alert(1)</script>"), "");
-assert.equal(
-  prepareDescriptionHtml("<p>ok<script>bad</script>end</p>"),
-  "<p>okend</p>",
-);
+assert.equal(prepareDescriptionHtml("<p>ok<script>bad</script>end</p>"), "<p>okend</p>");
 assert.equal(prepareDescriptionHtml('<a href="x">link</a>'), "link");
-assert.equal(
-  prepareDescriptionHtml("<p>A</p><ul><li>B</li></ul>"),
-  "<p>A</p><ul><li>B</li></ul>",
-);
+assert.equal(prepareDescriptionHtml("<p>A</p><ul><li>B</li></ul>"), "<p>A</p><ul><li>B</li></ul>");
 
 // Nested residue must not leave a script opener
 assert.equal(stripTagsFallback("<<script>alert(1)</script>"), "alert(1)");

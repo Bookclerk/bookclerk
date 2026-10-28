@@ -49,9 +49,9 @@ Native guests use Rust serve() / PluginWorker instead.
 '''
 """Source text embedded as ``bookclerk_plugin_sdk/__init__.py`` in the isolate."""
 
-ADAPTER_JS = '''import { wrapPluginFromBinding } from "@bookclerk/plugin-sdk/workerd";
+ADAPTER_JS = """import { wrapPluginFromBinding } from "@bookclerk/plugin-sdk/workerd";
 export default wrapPluginFromBinding();
-'''
+"""
 """First-party adapter isolate module (mirrors ``ADAPTER_JS`` in ``config.rs``)."""
 
 ENTRYPOINT_SERVICE_BINDINGS: dict[str, tuple[str, str]] = {
@@ -234,9 +234,7 @@ def collect_modules(directory: Path, *, plugin_root: Path | None = None) -> list
     def walk(d: Path) -> None:
         for entry in sorted(d.iterdir(), key=lambda p: p.name):
             if entry.is_symlink():
-                raise ValueError(
-                    f"refusing symlink in workerd modules tree: {entry}"
-                )
+                raise ValueError(f"refusing symlink in workerd modules tree: {entry}")
             p = resolve_under(root, entry.relative_to(root))
             if entry.is_dir():
                 walk(p)
@@ -318,13 +316,7 @@ def _relative_manifest_path(value: str, label: str) -> str:
 
 
 def _single_file_name(value: str, label: str) -> str:
-    if (
-        not value
-        or "\0" in value
-        or "/" in value
-        or "\\" in value
-        or value in {".", ".."}
-    ):
+    if not value or "\0" in value or "/" in value or "\\" in value or value in {".", ".."}:
         raise ValueError(f"{label} must be a single path component: {value}")
     return value
 
@@ -404,9 +396,7 @@ def materialize_config(
     workerd = manifest.get("workerd")
     if not isinstance(workerd, dict):
         raise ValueError("missing [workerd] table")
-    applied_date = apply_author_compatibility_date(
-        str(workerd.get("compatibility_date") or "")
-    )
+    applied_date = apply_author_compatibility_date(str(workerd.get("compatibility_date") or ""))
     if applied_date.warning:
         print(applied_date.warning, file=sys.stderr)
 
@@ -552,9 +542,7 @@ def materialize_config(
         listed = ", ".join(f'"{escape_capnp(f)}"' for f in flags)
         flags_line = f"compatibilityFlags = [{listed}],"
 
-    domains = egress_domains_for(
-        declares_python(manifest), network_mode, network_domains
-    )
+    domains = egress_domains_for(declares_python(manifest), network_mode, network_domains)
     policy_json = json.dumps(
         {
             "mode": "outbound" if network_mode == "outbound" else "deny",
@@ -586,9 +574,7 @@ def materialize_config(
     plugin_outbound = plugin_global_outbound(network_mode)
     if not bridge_token:
         raise ValueError("bridge_token is required")
-    bridge_token_binding = (
-        f'(name = "BRIDGE_TOKEN", text = "{escape_capnp(bridge_token)}")'
-    )
+    bridge_token_binding = f'(name = "BRIDGE_TOKEN", text = "{escape_capnp(bridge_token)}")'
 
     compat_date = escape_capnp(applied_date.applied)
     modules_joined = ",\n    ".join(module_embeds)

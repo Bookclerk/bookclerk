@@ -724,9 +724,7 @@ class QueueMessage:
 class QueueBatch:
     """One ``queue(batch)`` delivery (``QueueBatch`` struct), Workers ``MessageBatch``-shaped."""
 
-    def __init__(
-        self, queue: Any, messages: Any, invocation: dict[str, Any] | None = None
-    ) -> None:
+    def __init__(self, queue: Any, messages: Any, invocation: dict[str, Any] | None = None) -> None:
         self.queue: str = str(queue or "")
         raw = py(messages) or []
         self.messages: tuple[QueueMessage, ...] = tuple(QueueMessage(m) for m in raw)
@@ -818,7 +816,9 @@ class QueueBinding:
             entries.append(
                 {
                     "body": _get(message, "body"),
-                    "contentType": str(_get(message, "content_type") or _get(message, "contentType") or "json"),
+                    "contentType": str(
+                        _get(message, "content_type") or _get(message, "contentType") or "json"
+                    ),
                     "delaySeconds": int(
                         _get(message, "delay_seconds") or _get(message, "delaySeconds") or 0
                     ),
@@ -918,9 +918,7 @@ class KvNamespace:
         """Delete one key; a missing key is not an error."""
         await self._stub.delete(key)
 
-    async def list(
-        self, *, prefix: str = "", cursor: str = "", limit: int = 0
-    ) -> dict[str, Any]:
+    async def list(self, *, prefix: str = "", cursor: str = "", limit: int = 0) -> dict[str, Any]:
         """List keys in lexical order, one page at a time.
 
         Args:
@@ -1064,7 +1062,11 @@ class JobController:
             reason: Short operator-facing reason.
         """
         self._record(
-            {"kind": "retryable", "message": str(reason or ""), "retryAfterUnixMs": _unix_ms(retry_at)}
+            {
+                "kind": "retryable",
+                "message": str(reason or ""),
+                "retryAfterUnixMs": _unix_ms(retry_at),
+            }
         )
 
     def cancel(self) -> None:
@@ -1072,7 +1074,9 @@ class JobController:
         self.cancelled = True
 
 
-def job_outcome_for(job: JobController, returned: Any, failed: BaseException | None) -> dict[str, Any]:
+def job_outcome_for(
+    job: JobController, returned: Any, failed: BaseException | None
+) -> dict[str, Any]:
     """Translate a ``job()`` return / raise into the wire ``JobOutcome``.
 
     Args:
@@ -1533,7 +1537,9 @@ class DatabaseAdapterEntrypoint(NamedEntrypoint):
             session_id = py(args[0])
             session = _ADAPTER_SESSIONS.get(session_id) if isinstance(session_id, str) else None
             if session is None:
-                raise PluginError.from_wire("invalid_params", f"unknown adapter session {session_id!r}")
+                raise PluginError.from_wire(
+                    "invalid_params", f"unknown adapter session {session_id!r}"
+                )
             name = str(py(args[1])) if len(args) > 1 else ""
             target = getattr(session, name, None)
             if name not in _ADAPTER_SESSION_METHODS or not callable(target):

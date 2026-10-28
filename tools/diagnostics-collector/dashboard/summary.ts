@@ -54,7 +54,10 @@ const ASCII_WS_ENDS = /^[ \t\n\r\x0b\x0c]+|[ \t\n\r\x0b\x0c]+$/g;
  */
 export function defang(text: string): string {
   text = text.replace(/\](?=[(:])/g, "]​");
-  text = text.replace(/[a-z0-9+.-]*:\/\/[^ \t\n\r\x0b\x0c]*|\bwww\.[^ \t\n\r\x0b\x0c]*/gi, "[link removed]");
+  text = text.replace(
+    /[a-z0-9+.-]*:\/\/[^ \t\n\r\x0b\x0c]*|\bwww\.[^ \t\n\r\x0b\x0c]*/gi,
+    "[link removed]",
+  );
   text = text.replace(/&(?=#|[A-Za-z][A-Za-z0-9]*;)/g, "&amp;");
   text = text.replace(/<(?=[A-Za-z/!?])/g, "&lt;");
   text = text.replace(/@(?=[A-Za-z0-9])/g, "@​");
@@ -98,7 +101,8 @@ const get = (o: JsonObject, k: string): unknown => (Object.hasOwn(o, k) ? o[k] :
  * @returns The integer from 0 to `MAX_NUMBER`, else null.
  */
 function count(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > MAX_NUMBER) return null;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > MAX_NUMBER)
+    return null;
   return value;
 }
 
@@ -109,7 +113,8 @@ function count(value: unknown): number | null {
  * @returns `YYYY-MM-DD`, or null.
  */
 function day(value: unknown): string | null {
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > MAX_TIME_MS) return null;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > MAX_TIME_MS)
+    return null;
   return new Date(value).toISOString().slice(0, 10);
 }
 
@@ -135,7 +140,10 @@ function version(value: unknown): string {
  */
 function platform(value: unknown): string {
   if (typeof value === "string") {
-    const text = value.split(ASCII_WS).filter((part) => part !== "").join(" ");
+    const text = value
+      .split(ASCII_WS)
+      .filter((part) => part !== "")
+      .join(" ");
     if (text === "others" || PLATFORM_RE.test(text)) return defang(text);
   }
   return "unknown";
@@ -155,7 +163,8 @@ function breakdown(value: unknown, name: "version" | "platform"): Array<[string,
     if (!isObject(entry)) continue;
     const n = count(get(entry, "n"));
     if (n === null) continue;
-    const label = name === "version" ? version(get(entry, "version")) : platform(get(entry, "platform"));
+    const label =
+      name === "version" ? version(get(entry, "version")) : platform(get(entry, "platform"));
     out.push([label, n]);
   }
   return out;
@@ -194,7 +203,13 @@ export function renderSummary(entry: unknown, dashboard: string | null): Rendere
   const issue = count(get(entry, "issue"));
   const fingerprint = get(entry, "fingerprint");
   const reports = count(get(entry, "reports"));
-  if (!issue || reports === null || typeof fingerprint !== "string" || !FINGERPRINT_RE.test(fingerprint)) return null;
+  if (
+    !issue ||
+    reports === null ||
+    typeof fingerprint !== "string" ||
+    !FINGERPRINT_RE.test(fingerprint)
+  )
+    return null;
   const installs = count(get(entry, "installs")) || 0;
   const first = day(get(entry, "first_seen"));
   const last = day(get(entry, "last_seen"));
@@ -216,13 +231,15 @@ export function renderSummary(entry: unknown, dashboard: string | null): Rendere
     lines.push(head);
     lines.push("");
     lines.push(
-      `- Linked: ${counts.filed} listed in this issue, ${counts.signature} matched by error signature, `
-        + `${counts.triage} added by triage, ${counts.manual} attached by members`,
+      `- Linked: ${counts.filed} listed in this issue, ${counts.signature} matched by error signature, ` +
+        `${counts.triage} added by triage, ${counts.manual} attached by members`,
     );
     const versions = breakdown(get(entry, "versions"), "version");
-    if (versions.length) lines.push("- Versions: " + versions.map(([v, n]) => `${v} (${n})`).join(", "));
+    if (versions.length)
+      lines.push("- Versions: " + versions.map(([v, n]) => `${v} (${n})`).join(", "));
     const platforms = breakdown(get(entry, "platforms"), "platform");
-    if (platforms.length) lines.push("- Platforms: " + platforms.map(([p, n]) => `${p} (${n})`).join(", "));
+    if (platforms.length)
+      lines.push("- Platforms: " + platforms.map(([p, n]) => `${p} (${n})`).join(", "));
     const newest = get(entry, "newest");
     const rows: string[] = [];
     for (const r of (Array.isArray(newest) ? newest : []).slice(0, MAX_NEWEST)) {
@@ -237,12 +254,16 @@ export function renderSummary(entry: unknown, dashboard: string | null): Rendere
     }
     if (rows.length) {
       lines.push("");
-      lines.push("Newest reports (dashboard pages are for organization members; the full list is there):");
+      lines.push(
+        "Newest reports (dashboard pages are for organization members; the full list is there):",
+      );
       lines.push(...rows);
     }
   }
   lines.push("");
-  lines.push("_Kept up to date by the diagnostics ingest run and edited in place; report contents are never posted here._");
+  lines.push(
+    "_Kept up to date by the diagnostics ingest run and edited in place; report contents are never posted here._",
+  );
   const body = lines.join("\n") + "\n";
   if ([...body].length > MAX_BODY_CHARS) return null;
   return { issue, fingerprint, body };

@@ -2,11 +2,7 @@ import { useState } from "react";
 import { Download } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  coverUrl,
-  type AcquireStatus,
-  type BookRecord,
-} from "@/lib/api";
+import { coverUrl, type AcquireStatus, type BookRecord } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const statusStyles: Record<AcquireStatus, string> = {
@@ -94,13 +90,9 @@ export function BookRow({
           </Badge>
           <Badge className="bg-ink/8 text-ink/70">{book.source}</Badge>
         </div>
-        {meta ? (
-          <p className="mt-0.5 truncate text-sm text-ink/70">{meta}</p>
-        ) : null}
+        {meta ? <p className="mt-0.5 truncate text-sm text-ink/70">{meta}</p> : null}
         <p className="mt-0.5 truncate text-xs text-ink/50">
-          {[series, book.asin || book.isbn || book.product_id]
-            .filter(Boolean)
-            .join(" · ")}
+          {[series, book.asin || book.isbn || book.product_id].filter(Boolean).join(" · ")}
         </p>
         {book.error_message ? (
           <p className="mt-1 truncate text-xs text-brick">{book.error_message}</p>

@@ -33,11 +33,7 @@ export function StarRating({
       {Array.from({ length: max }, (_, i) => {
         const fill = Math.max(0, Math.min(1, clamped - i));
         return (
-          <span
-            key={i}
-            className={cn("relative inline-block shrink-0", starClassName)}
-            aria-hidden
-          >
+          <span key={i} className={cn("relative inline-block shrink-0", starClassName)} aria-hidden>
             <Star
               className={cn(
                 "absolute inset-0 fill-transparent text-ink/55 stroke-[2.25]",

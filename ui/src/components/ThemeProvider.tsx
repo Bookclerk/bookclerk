@@ -44,10 +44,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return () => mq.removeEventListener("change", onChange);
   }, []);
 
-  const resolved = useMemo(
-    () => resolveTheme(preference, osDark),
-    [preference, osDark],
-  );
+  const resolved = useMemo(() => resolveTheme(preference, osDark), [preference, osDark]);
 
   useEffect(() => {
     applyResolvedTheme(resolved);
@@ -114,12 +111,7 @@ export function ThemePreferenceControl({
   id?: string;
 }) {
   return (
-    <div
-      id={id}
-      role="radiogroup"
-      aria-label="Appearance"
-      className="flex flex-wrap gap-2"
-    >
+    <div id={id} role="radiogroup" aria-label="Appearance" className="flex flex-wrap gap-2">
       {THEME_OPTIONS.map((opt) => (
         <Button
           key={opt.id}

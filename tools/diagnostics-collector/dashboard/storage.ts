@@ -38,8 +38,12 @@ export const MAX_STORED_REPORT_CHARS = 1024 * 1024;
  * @param opts - Listing window.
  * @returns Names in order and where the next page starts.
  */
-export async function listPage(b2: B2Access, auth: B2Auth, opts: { prefix: string; startFileName?: string | null; maxFileCount: number; }): Promise<{
-  files: { fileName: string; fileId: string; uploadTimestamp: number; }[];
+export async function listPage(
+  b2: B2Access,
+  auth: B2Auth,
+  opts: { prefix: string; startFileName?: string | null; maxFileCount: number },
+): Promise<{
+  files: { fileName: string; fileId: string; uploadTimestamp: number }[];
   nextFileName: string | null;
 }> {
   const body: { bucketId: string; prefix: string; maxFileCount: number; startFileName?: string } = {
@@ -67,20 +71,33 @@ export async function listPage(b2: B2Access, auth: B2Auth, opts: { prefix: strin
  *   page's start when it is a non-empty string.
  */
 export function decodeListPage(data: unknown): {
-  files: { fileName: string; fileId: string; uploadTimestamp: number; }[];
+  files: { fileName: string; fileId: string; uploadTimestamp: number }[];
   nextFileName: string | null;
 } {
   const d = asObject(data);
-  const files: { fileName: string; fileId: string; uploadTimestamp: number; }[] = [];
+  const files: { fileName: string; fileId: string; uploadTimestamp: number }[] = [];
   for (const f of Array.isArray(d.files) ? d.files : []) {
-    if (!isObject(f) || f.action !== "upload" || typeof f.fileName !== "string" || typeof f.fileId !== "string") continue;
+    if (
+      !isObject(f) ||
+      f.action !== "upload" ||
+      typeof f.fileName !== "string" ||
+      typeof f.fileId !== "string"
+    )
+      continue;
     files.push({
       fileName: f.fileName,
       fileId: f.fileId,
-      uploadTimestamp: typeof f.uploadTimestamp === "number" && Number.isFinite(f.uploadTimestamp) ? f.uploadTimestamp : 0,
+      uploadTimestamp:
+        typeof f.uploadTimestamp === "number" && Number.isFinite(f.uploadTimestamp)
+          ? f.uploadTimestamp
+          : 0,
     });
   }
-  return { files, nextFileName: typeof d.nextFileName === "string" && d.nextFileName !== "" ? d.nextFileName : null };
+  return {
+    files,
+    nextFileName:
+      typeof d.nextFileName === "string" && d.nextFileName !== "" ? d.nextFileName : null,
+  };
 }
 
 /**
@@ -91,7 +108,10 @@ export function decodeListPage(data: unknown): {
  * @returns The stored object, or null when it is
  *   missing, too large or not JSON.
  */
-export async function readStoredReport(b2: B2Access, objectKey: string): Promise<JsonObject | null> {
+export async function readStoredReport(
+  b2: B2Access,
+  objectKey: string,
+): Promise<JsonObject | null> {
   const auth = await b2.authorize();
   const page = await listPage(b2, auth, { prefix: objectKey, maxFileCount: 1 });
   const file = page.files.find((f) => f.fileName === objectKey);

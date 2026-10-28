@@ -124,7 +124,9 @@ class BookclerkEntrypointTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(done, {"kind": "completed", "message": "done 7", "bytesCopied": 3})
         retry = await plugin.bookclerkJob({}, {"invocationId": "j2", "commandType": "fail"})
-        self.assertEqual(retry, {"kind": "retryable", "message": "try later", "retryAfterUnixMs": 0})
+        self.assertEqual(
+            retry, {"kind": "retryable", "message": "try later", "retryAfterUnixMs": 0}
+        )
 
     async def test_job_suspend_and_retry_later(self) -> None:
         class Default(BookclerkEntrypoint):
@@ -189,7 +191,12 @@ class NamedEntrypointTests(unittest.IsolatedAsyncioTestCase):
         class Cli(CliEntrypoint):
             async def invoke(self, params):
                 args = cli_args(params)
-                return {"exitCode": 0, "stdout": args["message"], "stderr": "", "payload": json_payload(args)}
+                return {
+                    "exitCode": 0,
+                    "stdout": args["message"],
+                    "stderr": "",
+                    "payload": json_payload(args),
+                }
 
         result = await Cli().bookclerkInvoke(
             {}, "invoke", {"command": "ping", "args": [{"name": "message", "value": "hi"}]}
@@ -266,7 +273,9 @@ class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
                 dropped.append(unit_ref)
 
         adapter = DatabaseAdapter()
-        self.assertIsNone(await adapter.bookclerkInvoke({"invocation": {"id": "inv-drop"}}, "dropUnit", "unit-a"))
+        self.assertIsNone(
+            await adapter.bookclerkInvoke({"invocation": {"id": "inv-drop"}}, "dropUnit", "unit-a")
+        )
         self.assertEqual(dropped, ["unit-a"])
         self.assertEqual(adapter.invocation["id"], "inv-drop")
 
@@ -365,7 +374,9 @@ class QueueDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(stub.calls), 1)
         messages, options = stub.calls[0]
         self.assertEqual(options, {"delaySeconds": 3})
-        self.assertEqual(messages, [{"body": {"seen": "jobs"}, "contentType": "json", "delaySeconds": 0}])
+        self.assertEqual(
+            messages, [{"body": {"seen": "jobs"}, "contentType": "json", "delaySeconds": 0}]
+        )
 
     async def test_kv_binding_wraps_the_granted_stub(self) -> None:
         from bookclerk_plugin_sdk.workerd import KvNamespace, QueueBatch

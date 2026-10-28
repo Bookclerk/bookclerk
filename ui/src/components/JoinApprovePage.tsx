@@ -169,8 +169,8 @@ export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
           </p>
           <ul className="list-disc space-y-1 pl-5">
             <li>
-              It receives this library's database settings and keys, and serves the same library
-              as this server, for every user.
+              It receives this library's database settings and keys, and serves the same library as
+              this server, for every user.
             </li>
             <li>Whatever it held before is replaced.</li>
             <li>It shows under Settings → Clerks here, where it can be removed once stopped.</li>
@@ -200,8 +200,7 @@ export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
           </p>
           <ul className="list-disc space-y-1 pl-5">
             <li>
-              This library can send that branch work for your accounts, such as scans and
-              downloads.
+              This library can send that branch work for your accounts, such as scans and downloads.
             </li>
             <li>
               The branch's operator approves each of this library's plugins before it runs there,
@@ -253,7 +252,12 @@ export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
             Allow
           </Button>
         )}
-        <Button type="button" variant="secondary" disabled={busy} onClick={() => void answer(false)}>
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={busy}
+          onClick={() => void answer(false)}
+        >
           Deny
         </Button>
         <Button type="button" variant="ghost" disabled={busy} onClick={() => void onSignOut()}>

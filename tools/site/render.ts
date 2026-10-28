@@ -15,7 +15,15 @@
 import MarkdownIt from "markdown-it";
 import type { MarkdownIt as Markdown, RendererRule, Token } from "markdown-it";
 
-import { API_INDEX, indexRoutes, isApiOperationsPage, layoutIndex, layoutOperations, methodClass, operationMeta } from "./api-reference.ts";
+import {
+  API_INDEX,
+  indexRoutes,
+  isApiOperationsPage,
+  layoutIndex,
+  layoutOperations,
+  methodClass,
+  operationMeta,
+} from "./api-reference.ts";
 import type { ApiRouteGroup, HttpMethod } from "./api-reference.ts";
 import { diagram, drawable, PAGE_DIAGRAM_COUNT_MAX, PAGE_DIAGRAM_MAX } from "./diagram.ts";
 import { highlight } from "./highlight.ts";
@@ -130,15 +138,38 @@ export const NAV: NavSpec[] = [
   },
   {
     title: "Build plugins",
-    pages: ["plugins/README", "plugins/manifest", "plugins/capabilities", "plugins/abi", "plugins/registry", "sql-contract/v1"],
+    pages: [
+      "plugins/README",
+      "plugins/manifest",
+      "plugins/capabilities",
+      "plugins/abi",
+      "plugins/registry",
+      "sql-contract/v1",
+    ],
   },
   {
     title: "API reference",
-    pages: ["api/README", "api/typescript/README", "api/python/README", "api/rust/bookclerk_plugin_sdk/index", "api/web/README", "api/rust/README"],
+    pages: [
+      "api/README",
+      "api/typescript/README",
+      "api/python/README",
+      "api/rust/bookclerk_plugin_sdk/index",
+      "api/web/README",
+      "api/rust/README",
+    ],
   },
   {
     title: "How it works",
-    pages: ["internals/architecture", "internals/discovery", "internals/jobs", "internals/storage-bounds", "internals/guest-jail", "internals/workerd-bridge", "internals/node-api", "internals/windows-appcontainer"],
+    pages: [
+      "internals/architecture",
+      "internals/discovery",
+      "internals/jobs",
+      "internals/storage-bounds",
+      "internals/guest-jail",
+      "internals/workerd-bridge",
+      "internals/node-api",
+      "internals/windows-appcontainer",
+    ],
   },
   {
     title: "Contribute",
@@ -275,8 +306,19 @@ export function slugify(text: string): string {
  *   renders (see {@link SITE_PAGES}), a GitHub URL for any other repository
  *   file, or the link unchanged when it is absolute or an anchor.
  */
-export function rewriteLink(href: string, docKey: string, keys: ReadonlySet<string> | null, blobBase: string, urlFor: UrlFor = docUrl): string {
-  if (href === "" || href.startsWith("#") || /^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("//")) {
+export function rewriteLink(
+  href: string,
+  docKey: string,
+  keys: ReadonlySet<string> | null,
+  blobBase: string,
+  urlFor: UrlFor = docUrl,
+): string {
+  if (
+    href === "" ||
+    href.startsWith("#") ||
+    /^[a-z][a-z0-9+.-]*:/i.test(href) ||
+    href.startsWith("//")
+  ) {
     return href;
   }
   const hashAt = href.indexOf("#");
@@ -315,7 +357,12 @@ export function rewriteLink(href: string, docKey: string, keys: ReadonlySet<stri
  *   ids, rewritten links, and code blocks and tables that keyboard users
  *   can scroll sideways.
  */
-function renderer(docKey: string, keys: ReadonlySet<string> | null, blobBase: string, urlFor: UrlFor): Markdown {
+function renderer(
+  docKey: string,
+  keys: ReadonlySet<string> | null,
+  blobBase: string,
+  urlFor: UrlFor,
+): Markdown {
   const md = new MarkdownIt({ html: false, linkify: false, typographer: false });
   const seen = new Map<string, number>();
   md.core.ruler.push("heading_ids", (state) => {
@@ -323,7 +370,10 @@ function renderer(docKey: string, keys: ReadonlySet<string> | null, blobBase: st
     tokens.forEach((token, i) => {
       if (token.type !== "heading_open") return;
       const children = tokens[i + 1]?.children ?? [];
-      const text = children.filter((t) => t.type === "text" || t.type === "code_inline").map((t) => t.content).join("");
+      const text = children
+        .filter((t) => t.type === "text" || t.type === "code_inline")
+        .map((t) => t.content)
+        .join("");
       const base = slugify(text);
       const n = seen.get(base) ?? 0;
       seen.set(base, n + 1);
@@ -333,16 +383,24 @@ function renderer(docKey: string, keys: ReadonlySet<string> | null, blobBase: st
   md.core.ruler.after("block", "callouts", (state) => markCallouts(state.tokens));
   if (isApiOperationsPage(docKey)) {
     md.core.ruler.after("heading_ids", "api_operations", (state) => {
-      state.tokens = layoutOperations(state.tokens, (type, tag, nesting) => new state.Token(type, tag, nesting));
+      state.tokens = layoutOperations(
+        state.tokens,
+        (type, tag, nesting) => new state.Token(type, tag, nesting),
+      );
     });
   }
   if (docKey === API_INDEX) {
     md.core.ruler.after("heading_ids", "api_index", (state) => {
-      state.tokens = layoutIndex(state.tokens, (type, tag, nesting) => new state.Token(type, tag, nesting));
+      state.tokens = layoutIndex(
+        state.tokens,
+        (type, tag, nesting) => new state.Token(type, tag, nesting),
+      );
     });
   }
   for (const rule of ["blockquote_open", "blockquote_close"] as const) {
-    const base: RendererRule = md.renderer.rules[rule] ?? ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
+    const base: RendererRule =
+      md.renderer.rules[rule] ??
+      ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
     md.renderer.rules[rule] = (tokens, idx, options, env, self) => {
       const kind = calloutKind(tokens[idx]);
       if (kind === null) return base(tokens, idx, options, env, self);
@@ -351,11 +409,16 @@ function renderer(docKey: string, keys: ReadonlySet<string> | null, blobBase: st
         : `<div class="callout callout-${kind}" role="note"><p class="callout-title">${CALLOUT_TITLES[kind]}</p>\n`;
     };
   }
-  const linkOpen: RendererRule = md.renderer.rules["link_open"] ?? ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
+  const linkOpen: RendererRule =
+    md.renderer.rules["link_open"] ??
+    ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
   md.renderer.rules["link_open"] = (tokens, idx, options, env, self) => {
     const token = tokens[idx];
     if (token === undefined) return linkOpen(tokens, idx, options, env, self);
-    token.attrSet("href", rewriteLink(String(token.attrGet("href") ?? ""), docKey, keys, blobBase, urlFor));
+    token.attrSet(
+      "href",
+      rewriteLink(String(token.attrGet("href") ?? ""), docKey, keys, blobBase, urlFor),
+    );
     return linkOpen(tokens, idx, options, env, self);
   };
   // Code blocks and wide tables scroll sideways on narrow screens; tabindex
@@ -375,7 +438,8 @@ function renderer(docKey: string, keys: ReadonlySet<string> | null, blobBase: st
         if (drawn !== null) return drawn;
       }
       const colored = token === undefined || lang === "" ? null : highlight(token.content, lang);
-      if (colored === null) return `<div class="code">${base(tokens, idx, options, env, self).replace(/^<pre/, '<pre tabindex="0"')}</div>\n`;
+      if (colored === null)
+        return `<div class="code">${base(tokens, idx, options, env, self).replace(/^<pre/, '<pre tabindex="0"')}</div>\n`;
       const name = escapeHtml(lang.toLowerCase());
       return `<div class="code" data-lang="${name}"><pre tabindex="0"><code class="language-${name}">${colored}</code></pre></div>\n`;
     };
@@ -455,11 +519,18 @@ function markCallouts(tokens: Token[]): void {
   for (let i = 0; i < tokens.length; i++) {
     const open = tokens[i];
     const inline = tokens[i + 2];
-    if (open?.type !== "blockquote_open" || tokens[i + 1]?.type !== "paragraph_open" || inline?.type !== "inline") continue;
+    if (
+      open?.type !== "blockquote_open" ||
+      tokens[i + 1]?.type !== "paragraph_open" ||
+      inline?.type !== "inline"
+    )
+      continue;
     const marker = CALLOUT_MARKER_RE.exec(inline.content);
     const kind = marker?.[1]?.toLowerCase();
     if (marker === null || !isCalloutKind(kind)) continue;
-    const close = tokens.findIndex((t, j) => j > i && t.type === "blockquote_close" && t.level === open.level);
+    const close = tokens.findIndex(
+      (t, j) => j > i && t.type === "blockquote_close" && t.level === open.level,
+    );
     if (close === -1) continue;
     open.meta = { callout: kind };
     (tokens[close] as Token).meta = { callout: kind };
@@ -565,8 +636,11 @@ export function docPageTitle(title: string): string {
 function describe(tokens: Token[]): string {
   const firstSection = tokens.findIndex((t) => t.type === "heading_open" && t.tag !== "h1");
   const intro = tokens.findIndex((t) => t.type === "paragraph_open" && t.level === 0);
-  if (intro !== -1 && (firstSection === -1 || intro < firstSection)) return shorten(inlineText(tokens[intro + 1]));
-  const sections = tokens.flatMap((t, i) => (t.type === "heading_open" && t.tag === "h2" ? [inlineText(tokens[i + 1])] : []));
+  if (intro !== -1 && (firstSection === -1 || intro < firstSection))
+    return shorten(inlineText(tokens[intro + 1]));
+  const sections = tokens.flatMap((t, i) =>
+    t.type === "heading_open" && t.tag === "h2" ? [inlineText(tokens[i + 1])] : [],
+  );
   return sections.length === 0 ? "" : shorten(`Covers ${sections.join(", ")}.`);
 }
 
@@ -590,12 +664,25 @@ const REFERENCE_DEF_RE = /^( {0,3}\[[^\]]+\]:[ \t]*)(\S+)/gm;
  * @returns The Markdown with doc links pointing at the other
  *   Markdown copies and repository links pointing at GitHub.
  */
-export function siteMarkdown(source: string, docKey: string, keys: ReadonlySet<string> | null, blobBase: string, base = "/docs/"): string {
+export function siteMarkdown(
+  source: string,
+  docKey: string,
+  keys: ReadonlySet<string> | null,
+  blobBase: string,
+  base = "/docs/",
+): string {
   const urlFor: UrlFor = (key) => docMarkdownUrl(key, base);
   const rewrite = (text: string): string =>
     text
-      .replace(INLINE_LINK_RE, (_, href: string, title: string) => `](${rewriteLink(href, docKey, keys, blobBase, urlFor)}${title})`)
-      .replace(REFERENCE_DEF_RE, (_, head: string, href: string) => head + rewriteLink(href, docKey, keys, blobBase, urlFor));
+      .replace(
+        INLINE_LINK_RE,
+        (_, href: string, title: string) =>
+          `](${rewriteLink(href, docKey, keys, blobBase, urlFor)}${title})`,
+      )
+      .replace(
+        REFERENCE_DEF_RE,
+        (_, head: string, href: string) => head + rewriteLink(href, docKey, keys, blobBase, urlFor),
+      );
   // Odd-numbered pieces of a split on backtick runs are inline code.
   const outsideCode = (line: string): string =>
     line
@@ -641,7 +728,11 @@ export function docTitle(source: string, key: string): string {
 export function renderDoc(
   source: string,
   key: string,
-  { keys = null, blobBase, base = "/docs/" }: { keys?: ReadonlySet<string> | null; blobBase: string; base?: string },
+  {
+    keys = null,
+    blobBase,
+    base = "/docs/",
+  }: { keys?: ReadonlySet<string> | null; blobBase: string; base?: string },
 ): RenderedDoc {
   const md = renderer(key, keys, blobBase, (k) => docUrl(k, base));
   const tokens = md.parse(source, {});
@@ -658,7 +749,8 @@ export function renderDoc(
     return [{ level: t.tag === "h2" ? 2 : 3, id, text: inlineText(tokens[i + 1]) }];
   });
   // Read before rendering, which rewrites the links in place.
-  const link = (href: string): string => rewriteLink(href, key, keys, blobBase, (k) => docUrl(k, base));
+  const link = (href: string): string =>
+    rewriteLink(href, key, keys, blobBase, (k) => docUrl(k, base));
   const routes = indexRoutes(tokens).map((group) => ({
     ...group,
     href: link(group.href),
@@ -717,7 +809,10 @@ export function docJsonLd(
   origin: string,
   base: string,
   doc: { key: string; title: string; description: string; updated?: IsoDate | null },
-  trail: readonly Crumb[] = [{ title: "Docs", key: null }, { title: doc.title, key: doc.key }],
+  trail: readonly Crumb[] = [
+    { title: "Docs", key: null },
+    { title: doc.title, key: doc.key },
+  ],
 ): object {
   const url = origin + docUrl(doc.key, base);
   const crumbs = (doc.key === "README" ? trail.slice(0, 1) : trail).map((c) => ({
@@ -738,7 +833,12 @@ export function docJsonLd(
       },
       {
         "@type": "BreadcrumbList",
-        itemListElement: crumbs.map((c, i) => ({ "@type": "ListItem", position: i + 1, name: c.name, item: c.item })),
+        itemListElement: crumbs.map((c, i) => ({
+          "@type": "ListItem",
+          position: i + 1,
+          name: c.name,
+          item: c.item,
+        })),
       },
     ],
   };
@@ -758,8 +858,12 @@ export function buildNav(titles: ReadonlyMap<string, string>): NavGroup[] {
       const title = titles.get(key);
       return title === undefined ? [] : [{ key, title }];
     });
-  const nav = NAV.map((g) => ({ title: g.title, pages: pages(g.pages) })).filter((g) => g.pages.length > 0);
-  const extra = [...titles.keys()].filter((k) => k !== "README" && !listed.has(k) && !k.startsWith("api/"));
+  const nav = NAV.map((g) => ({ title: g.title, pages: pages(g.pages) })).filter(
+    (g) => g.pages.length > 0,
+  );
+  const extra = [...titles.keys()].filter(
+    (k) => k !== "README" && !listed.has(k) && !k.startsWith("api/"),
+  );
   if (extra.length > 0) nav.push({ title: "More", pages: pages(extra) });
   return nav;
 }
@@ -772,7 +876,12 @@ export function buildNav(titles: ReadonlyMap<string, string>): NavGroup[] {
  * @param base - URL prefix of the docs version, ending in `/`.
  * @returns One heading and list per group.
  */
-export function navHtml(nav: readonly NavGroup[], current: string, base: string, nested: NavNested | null = null): string {
+export function navHtml(
+  nav: readonly NavGroup[],
+  current: string,
+  base: string,
+  nested: NavNested | null = null,
+): string {
   return nav
     .map((group) => {
       const links = group.pages
@@ -782,7 +891,9 @@ export function navHtml(nav: readonly NavGroup[], current: string, base: string,
           return `<li><a href="${escapeHtml(docUrl(p.key, base))}"${mark}>${escapeHtml(p.title)}</a>${inner}</li>`;
         })
         .join("");
-      const open = group.pages.some((p) => p.key === current || p.key === nested?.under) ? " open" : "";
+      const open = group.pages.some((p) => p.key === current || p.key === nested?.under)
+        ? " open"
+        : "";
       return `<details class="nav-group"${open}><summary>${escapeHtml(group.title)}</summary><ul>${links}</ul></details>`;
     })
     .join("\n");
@@ -809,12 +920,21 @@ export interface NavNested {
  * @returns The list, or null for a page outside `api/web/` and for an
  *   index that lists no group.
  */
-export function apiNavNested(key: string, title: string, headings: readonly DocHeading[], base: string, routes: readonly ApiRouteGroup[] = []): NavNested | null {
+export function apiNavNested(
+  key: string,
+  title: string,
+  headings: readonly DocHeading[],
+  base: string,
+  routes: readonly ApiRouteGroup[] = [],
+): NavNested | null {
   if (key === API_INDEX) {
     const groups = routes
       .map((group) => {
         const ops = group.routes
-          .map((r) => `<li><a class="nav-op" href="${escapeHtml(r.href)}">${headingLabel({ level: 2, id: "", text: r.path, method: r.method })}</a></li>`)
+          .map(
+            (r) =>
+              `<li><a class="nav-op" href="${escapeHtml(r.href)}">${headingLabel({ level: 2, id: "", text: r.path, method: r.method })}</a></li>`,
+          )
           .join("");
         return `<li><a href="${escapeHtml(group.href)}">${escapeHtml(group.title)}</a>${ops === "" ? "" : `<ul class="nav-ops">${ops}</ul>`}</li>`;
       })
@@ -912,7 +1032,8 @@ export function crumbTrail(nav: readonly NavGroup[], key: string, title: string)
   const parent = navParent(nav, key);
   const place = navPlace(nav, parent?.key ?? key);
   const trail: Crumb[] = [{ title: "Docs", key: null }];
-  if (place.group !== null && place.groupFirst !== null) trail.push({ title: place.group, key: place.groupFirst });
+  if (place.group !== null && place.groupFirst !== null)
+    trail.push({ title: place.group, key: place.groupFirst });
   if (parent !== null) trail.push(parent);
   trail.push({ title, key });
   return trail;
@@ -941,8 +1062,14 @@ export function crumbsHtml(trail: readonly Crumb[], base: string): string {
  * @returns A `nav` with one link per neighbour; empty when it has none.
  */
 export function pagerHtml(place: NavPlace, base: string): string {
-  const link = (page: { key: string; title: string } | null, rel: "prev" | "next", label: string): string =>
-    page === null ? "" : `<a class="pager-${rel}" rel="${rel}" href="${escapeHtml(docUrl(page.key, base))}"><span>${label}</span>${escapeHtml(page.title)}</a>`;
+  const link = (
+    page: { key: string; title: string } | null,
+    rel: "prev" | "next",
+    label: string,
+  ): string =>
+    page === null
+      ? ""
+      : `<a class="pager-${rel}" rel="${rel}" href="${escapeHtml(docUrl(page.key, base))}"><span>${label}</span>${escapeHtml(page.title)}</a>`;
   const links = link(place.previous, "prev", "Previous") + link(place.next, "next", "Next");
   return links === "" ? "" : `<nav class="pager" aria-label="Previous and next">${links}</nav>`;
 }
@@ -956,7 +1083,10 @@ export function pagerHtml(place: NavPlace, base: string): string {
  */
 export function tocListHtml(headings: readonly DocHeading[]): string {
   if (headings.length === 0) return "";
-  const items = headings.map((h) => `<li${h.level === 3 ? ' class="sub"' : ""}><a href="#${escapeHtml(h.id)}">${headingLabel(h)}</a></li>`);
+  const items = headings.map(
+    (h) =>
+      `<li${h.level === 3 ? ' class="sub"' : ""}><a href="#${escapeHtml(h.id)}">${headingLabel(h)}</a></li>`,
+  );
   return `<ul>${items.join("")}</ul>`;
 }
 
@@ -982,10 +1112,14 @@ function headingLabel(heading: DocHeading): string {
  *   a link to report a problem with it.
  * @returns An `aside` with the section list and the page's links.
  */
-export function tocHtml(headings: readonly DocHeading[], links: { source: string | null; issue: string }): string {
+export function tocHtml(
+  headings: readonly DocHeading[],
+  links: { source: string | null; issue: string },
+): string {
   const list = tocListHtml(headings);
   const sections = list === "" ? "" : `<p class="toc-title">On this page</p>${list}`;
-  const source = links.source === null ? "" : `<a href="${escapeHtml(links.source)}">Source on GitHub</a>`;
+  const source =
+    links.source === null ? "" : `<a href="${escapeHtml(links.source)}">Source on GitHub</a>`;
   const actions = `<p class="toc-actions">${source}<a href="${escapeHtml(links.issue)}">Report a problem</a></p>`;
   return `<aside class="toc" aria-label="On this page">${sections}${actions}</aside>`;
 }
@@ -1001,7 +1135,10 @@ export function tocHtml(headings: readonly DocHeading[], links: { source: string
  */
 export function mobileMenusHtml(sidebar: string, headings: readonly DocHeading[]): string {
   const list = tocListHtml(headings);
-  const sections = list === "" ? "" : `<details class="menu menu-toc"><summary>On this page</summary><div class="menu-body">${list}</div></details>`;
+  const sections =
+    list === ""
+      ? ""
+      : `<details class="menu menu-toc"><summary>On this page</summary><div class="menu-body">${list}</div></details>`;
   return `<div class="docs-menus"><details class="menu menu-nav"><summary>Menu</summary><div class="menu-body">${sidebar}</div></details>${sections}</div>`;
 }
 
@@ -1040,7 +1177,11 @@ function afterTitle(body: string, html: string): string {
  *   same page in each version.
  * @returns A `<details>` element listing the versions.
  */
-export function versionsHtml(versions: readonly DocsVersion[], current: string, key: string): string {
+export function versionsHtml(
+  versions: readonly DocsVersion[],
+  current: string,
+  key: string,
+): string {
   const shown = versions.find((v) => v.ref === current) ?? versions[0];
   if (shown === undefined) return "";
   const badge = shown.ref === "main" ? ' <span class="badge unstable-badge">unstable</span>' : "";
@@ -1060,7 +1201,17 @@ const SHELL_VALUE_RE = /%%([A-Za-z]+)%%/g;
 export const SHELL_VALUES = ["pageTitle", "pageDescription", "pagePath", "markdownUrl", "docsBase"];
 
 /** `<!--name-->` markers in the docs shell, filled with trusted HTML. */
-export const SHELL_MARKERS = ["jsonld", "doc-menus", "doc-versions", "doc-nav", "doc-crumbs", "doc-body", "doc-pager", "doc-footer", "doc-toc"];
+export const SHELL_MARKERS = [
+  "jsonld",
+  "doc-menus",
+  "doc-versions",
+  "doc-nav",
+  "doc-crumbs",
+  "doc-body",
+  "doc-pager",
+  "doc-footer",
+  "doc-toc",
+];
 
 /**
  * Fills the docs page shell that build.ts writes.
@@ -1076,7 +1227,11 @@ export const SHELL_MARKERS = ["jsonld", "doc-menus", "doc-versions", "doc-nav", 
  * @returns The page.
  * @throws {Error} When a hole has no value or a marker is missing.
  */
-export function fillShell(shell: string, values: Readonly<Record<string, string>>, markers: Readonly<Record<string, string>>): string {
+export function fillShell(
+  shell: string,
+  values: Readonly<Record<string, string>>,
+  markers: Readonly<Record<string, string>>,
+): string {
   const out = shell.replace(SHELL_VALUE_RE, (_, name: string) => {
     const value = Object.hasOwn(values, name) ? values[name] : undefined;
     if (value === undefined) throw new Error(`docs shell hole ${name} has no value`);
@@ -1144,12 +1299,21 @@ export function renderDocPage(
     at.ref === "main"
       ? '<span class="doc-note" role="note"><span class="badge unstable-badge">Development</span> These docs follow the development version and change with every merge.</span>'
       : "";
-  const updated = at.updated ? `<span class="doc-updated">Last updated <time datetime="${at.updated}">${formatDate(at.updated)}</time></span>` : "";
+  const updated = at.updated
+    ? `<span class="doc-updated">Last updated <time datetime="${at.updated}">${formatDate(at.updated)}</time></span>`
+    : "";
   const meta = `<p class="doc-meta">${note}${updated}<a href="${escapeHtml(markdownUrl)}" type="text/markdown">View as Markdown</a></p>`;
   const place = navPlace(shell.nav, key);
   const trail = crumbTrail(shell.nav, key, doc.title);
   const versions = versionsHtml(shell.versions, at.ref, key);
-  const nav = homeLink(at.base, key === "README") + navHtml(shell.nav, key, at.base, apiNavNested(key, doc.title, doc.headings, at.base, doc.routes));
+  const nav =
+    homeLink(at.base, key === "README") +
+    navHtml(
+      shell.nav,
+      key,
+      at.base,
+      apiNavNested(key, doc.title, doc.headings, at.base, doc.routes),
+    );
   const html = fillShell(
     shell.html,
     {
@@ -1160,7 +1324,14 @@ export function renderDocPage(
       docsBase: at.base,
     },
     {
-      jsonld: jsonLd(docJsonLd(shell.origin, at.base, { key, title: doc.title, description: doc.description, updated: at.updated ?? null }, trail)),
+      jsonld: jsonLd(
+        docJsonLd(
+          shell.origin,
+          at.base,
+          { key, title: doc.title, description: doc.description, updated: at.updated ?? null },
+          trail,
+        ),
+      ),
       "doc-menus": mobileMenusHtml(versions + nav, doc.headings),
       "doc-versions": versions,
       "doc-nav": nav,
@@ -1192,7 +1363,11 @@ export const DOCS_REPOSITORY_URL = "https://github.com/Bookclerk/bookclerk-docs"
  *   GitHub link names (default: `key`).
  * @returns The full HTML page and its Markdown version.
  */
-export function renderUnavailablePage(shell: DocsShell, key: string, at: { ref: string; base: string; githubKey?: string }): RenderedPage {
+export function renderUnavailablePage(
+  shell: DocsShell,
+  key: string,
+  at: { ref: string; base: string; githubKey?: string },
+): RenderedPage {
   const versions = versionsHtml(shell.versions, at.ref, key);
   const home = homeLink(at.base, false);
   const github = `${DOCS_REPOSITORY_URL}/blob/${at.ref}/${at.githubKey ?? key}.md`;
@@ -1302,9 +1477,16 @@ function sitemapLabel(key: string, prefix: string): string {
  * @param links - The pages, site pages first, then docs in key order.
  * @returns The full HTML page and its Markdown version.
  */
-export function renderSitemapPage(shell: DocsShell, links: readonly SitemapPageLink[]): RenderedPage {
+export function renderSitemapPage(
+  shell: DocsShell,
+  links: readonly SitemapPageLink[],
+): RenderedPage {
   const site: SitemapGroup = { title: "Website", links: [], parts: new Map() };
-  const groups = shell.nav.map((g): SitemapGroup => ({ title: g.title, links: [], parts: new Map() }));
+  const groups = shell.nav.map((g): SitemapGroup => ({
+    title: g.title,
+    links: [],
+    parts: new Map(),
+  }));
   const more: SitemapGroup = { title: "More", links: [], parts: new Map() };
   const byKey = new Map<string, { group: number; title: string }>();
   const byFolder = new Map<string, number>();
@@ -1334,18 +1516,26 @@ export function renderSitemapPage(shell: DocsShell, links: readonly SitemapPageL
       if (list.length === 0) group.parts.set(part, list);
       list.push({ ...link, title: label });
     } else {
-      group.links.push({ ...link, title: placed?.title ?? link.title ?? sitemapLabel(link.key, "") });
+      group.links.push({
+        ...link,
+        title: placed?.title ?? link.title ?? sitemapLabel(link.key, ""),
+      });
     }
   }
   // Docs the sidebar lists keep its order; the rest follow in key order.
-  const order = new Map(shell.nav.flatMap((g) => g.pages.map((p) => p.key)).map((key, i) => [key, i] as const));
-  const rank = (l: SitemapPageLink): number => (l.key === null ? -1 : (order.get(l.key) ?? Number.MAX_SAFE_INTEGER));
+  const order = new Map(
+    shell.nav.flatMap((g) => g.pages.map((p) => p.key)).map((key, i) => [key, i] as const),
+  );
+  const rank = (l: SitemapPageLink): number =>
+    l.key === null ? -1 : (order.get(l.key) ?? Number.MAX_SAFE_INTEGER);
   for (const g of [...groups, more]) g.links.sort((a, b) => rank(a) - rank(b));
   const all = [site, ...groups, more].filter((g) => g.links.length > 0 || g.parts.size > 0);
   const total = links.length;
 
   const itemHtml = (l: SitemapPageLink): string => {
-    const date = l.updated ? ` <span class="faint">· <time datetime="${l.updated}">${formatDate(l.updated)}</time></span>` : "";
+    const date = l.updated
+      ? ` <span class="faint">· <time datetime="${l.updated}">${formatDate(l.updated)}</time></span>`
+      : "";
     return `<li><a href="${escapeHtml(l.path)}">${escapeHtml(l.title ?? l.path)}</a>${date}</li>`;
   };
   const itemMd = (l: SitemapPageLink): string => {
@@ -1358,7 +1548,12 @@ export function renderSitemapPage(shell: DocsShell, links: readonly SitemapPageL
     `<p class="muted">Every page on this site, ${total} in all. Search engines read the same list from <a href="/sitemap.xml">sitemap.xml</a>.</p>`,
     `<nav aria-label="Sections"><p>${all.map((g, i) => `<a href="#${escapeHtml(ids[i] ?? "")}">${escapeHtml(g.title)}</a>`).join(" · ")}</p></nav>`,
   ];
-  const md: string[] = ["# Sitemap", "", `Every page on this site, ${total} in all. Search engines read the same list from ${shell.origin}/sitemap.xml.`, ""];
+  const md: string[] = [
+    "# Sitemap",
+    "",
+    `Every page on this site, ${total} in all. Search engines read the same list from ${shell.origin}/sitemap.xml.`,
+    "",
+  ];
   for (const [i, g] of all.entries()) {
     html.push(`<h2 id="${escapeHtml(ids[i] ?? "")}">${escapeHtml(g.title)}</h2>`);
     md.push(`## ${g.title}`, "");
@@ -1375,6 +1570,9 @@ export function renderSitemapPage(shell: DocsShell, links: readonly SitemapPageL
   }
   const at = shell.sitemapHtml.indexOf(SITEMAP_MARKER);
   if (at === -1) throw new Error(`the sitemap shell has no ${SITEMAP_MARKER}`);
-  const page = shell.sitemapHtml.slice(0, at) + html.join("\n") + shell.sitemapHtml.slice(at + SITEMAP_MARKER.length);
+  const page =
+    shell.sitemapHtml.slice(0, at) +
+    html.join("\n") +
+    shell.sitemapHtml.slice(at + SITEMAP_MARKER.length);
   return { html: page, markdown: md.join("\n") };
 }

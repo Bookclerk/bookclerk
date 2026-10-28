@@ -32,10 +32,9 @@ I64_MAX = 2**63 - 1
 def _require_portable_text(text: str) -> str:
     """Reject U+0000 in BookclerkSQL TEXT (allowed only in BYTES)."""
     if "\x00" in text:
-        raise ValueError(
-            "BookclerkSQL TEXT cannot contain U+0000 (use BYTES/BLOB for binary)"
-        )
+        raise ValueError("BookclerkSQL TEXT cannot contain U+0000 (use BYTES/BLOB for binary)")
     return text
+
 
 # Ordinal tables come from the generated ``_abi`` projection of
 # ``schema/plugin.capnp`` (index = Cap'n Proto ordinal).
@@ -46,7 +45,6 @@ _KIND_FROM = DB_STATEMENT_KINDS
 _KIND_ORD = {name: ord_ for ord_, name in enumerate(DB_STATEMENT_KINDS)}
 _SELECT_FROM = DB_RESULT_SELECTIONS
 _SELECT_ORD = {name: ord_ for ord_, name in enumerate(DB_RESULT_SELECTIONS)}
-
 
 
 class NullValue(TypedDict):
@@ -386,9 +384,7 @@ def statement_result_to_d1_result(stmt: StatementResult, timing: DbTiming) -> D1
         mapped: list[dict[str, Any]] = []
         for row in rows:
             cells = row["values"] if isinstance(row, dict) else []
-            mapped.append(
-                {col["name"]: cell for col, cell in zip(columns, cells, strict=False)}
-            )
+            mapped.append({col["name"]: cell for col, cell in zip(columns, cells, strict=False)})
         results = mapped
     else:
         results = None

@@ -13,7 +13,11 @@
 // `<span class="hl-…">` elements only, and removing the spans gives back the
 // input exactly.
 
-import { createHighlighterCoreSync, type HighlighterCore, type ThemeRegistration } from "@shikijs/core";
+import {
+  createHighlighterCoreSync,
+  type HighlighterCore,
+  type ThemeRegistration,
+} from "@shikijs/core";
 import { createJavaScriptRegexEngine } from "@shikijs/engine-javascript";
 import http from "@shikijs/langs/http";
 import json from "@shikijs/langs/json";
@@ -43,7 +47,14 @@ export type TokenKind =
   | "f";
 
 /** Placeholder colors the theme gives each kind; never shown to readers. */
-const KIND_COLORS: Readonly<Record<TokenKind, string>> = { c: "#000001", s: "#000002", n: "#000003", k: "#000004", v: "#000005", f: "#000006" };
+const KIND_COLORS: Readonly<Record<TokenKind, string>> = {
+  c: "#000001",
+  s: "#000002",
+  n: "#000003",
+  k: "#000004",
+  v: "#000005",
+  f: "#000006",
+};
 
 /** The kind each placeholder color stands for. */
 const COLOR_KINDS: ReadonlyMap<string, TokenKind> = new Map(
@@ -61,9 +72,21 @@ const THEME = "bookclerk";
  */
 const THEME_RULES: readonly [TokenKind | null, readonly string[]][] = [
   ["c", ["comment"]],
-  ["s", ["string.quoted", "string.interpolated", "string.regexp", "string.template", "string.other"]],
+  [
+    "s",
+    ["string.quoted", "string.interpolated", "string.regexp", "string.template", "string.other"],
+  ],
   ["n", ["constant.numeric", "constant.language", "constant.character"]],
-  ["k", ["keyword", "storage", "entity.name.section", "punctuation.definition.section", "support.type.primitive"]],
+  [
+    "k",
+    [
+      "keyword",
+      "storage",
+      "entity.name.section",
+      "punctuation.definition.section",
+      "support.type.primitive",
+    ],
+  ],
   [null, ["keyword.operator", "constant.character.escape.line-continuation"]],
   [
     "v",
@@ -90,7 +113,10 @@ const THEME_REGISTRATION: ThemeRegistration = {
   bg: "#ffffff",
   settings: [
     { settings: { foreground: "#000000" } },
-    ...THEME_RULES.map(([kind, scope]) => ({ scope: [...scope], settings: { foreground: kind === null ? "#000000" : KIND_COLORS[kind] } })),
+    ...THEME_RULES.map(([kind, scope]) => ({
+      scope: [...scope],
+      settings: { foreground: kind === null ? "#000000" : KIND_COLORS[kind] },
+    })),
   ],
 };
 
@@ -151,7 +177,12 @@ type GrammarState = ReturnType<HighlighterCore["getLastGrammarState"]>;
  * @returns The text with `& < > " '` replaced by entities.
  */
 function escapeText(text: string): string {
-  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 /** One line's colored HTML, and what the tokenizer needs for the next line. */
@@ -175,8 +206,17 @@ interface Line {
  * @returns The line's HTML and state, or null when the tokens do not add up
  *   to the line exactly (the block is then left plain).
  */
-function highlightLine(shiki: HighlighterCore, text: string, lang: string, state: GrammarState | undefined): Line | null {
-  const result = shiki.codeToTokens(text, { lang, theme: THEME, ...(state === undefined ? {} : { grammarState: state }) });
+function highlightLine(
+  shiki: HighlighterCore,
+  text: string,
+  lang: string,
+  state: GrammarState | undefined,
+): Line | null {
+  const result = shiki.codeToTokens(text, {
+    lang,
+    theme: THEME,
+    ...(state === undefined ? {} : { grammarState: state }),
+  });
   if (result.tokens.length > 1) return null;
   let html = "";
   let seen = "";

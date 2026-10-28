@@ -19,13 +19,18 @@ function scripted(routes: Record<string, unknown>) {
   const fetchFn = async (url: string, init: RequestInit = {}): Promise<Response> => {
     const key = `${init.method ?? "GET"} ${url}`;
     seen.push(sent(key, init));
-    if (!(key in routes)) return Response.json({ success: false, errors: [{ code: 10000 }] }, { status: 404 });
+    if (!(key in routes))
+      return Response.json({ success: false, errors: [{ code: 10000 }] }, { status: 404 });
     return Response.json({ success: true, result: routes[key] });
   };
   return { fetchFn, seen };
 }
 
-const ENV = { CLOUDFLARE_API_TOKEN: "tok", CLOUDFLARE_ACCOUNT_ID: "acct", DEMO_HOST: "demo.example.test" };
+const ENV = {
+  CLOUDFLARE_API_TOKEN: "tok",
+  CLOUDFLARE_ACCOUNT_ID: "acct",
+  DEMO_HOST: "demo.example.test",
+};
 const KEYS = { sitekey: "0x4AAA", secret: "0x4BBB" };
 
 describe("workerSecrets", () => {
@@ -34,7 +39,10 @@ describe("workerSecrets", () => {
       [`GET ${BASE}?per_page=100`]: [{ name: "other", sitekey: "x" }],
       [`POST ${BASE}`]: { name: WIDGET_NAME, ...KEYS },
     });
-    assert.deepEqual(await workerSecrets(ENV, fetchFn), { TURNSTILE_SITE_KEY: "0x4AAA", TURNSTILE_SECRET: "0x4BBB" });
+    assert.deepEqual(await workerSecrets(ENV, fetchFn), {
+      TURNSTILE_SITE_KEY: "0x4AAA",
+      TURNSTILE_SECRET: "0x4BBB",
+    });
     const body = JSON.parse(seen[1]!.init.body);
     assert.deepEqual(body, { name: WIDGET_NAME, domains: ["demo.example.test"], mode: "managed" });
     for (const s of seen) assert.equal(s.init.headers.Authorization, "Bearer tok");
@@ -42,19 +50,26 @@ describe("workerSecrets", () => {
 
   it("adds a new host to the existing widget and keeps the old ones", async () => {
     const { fetchFn, seen } = scripted({
-      [`GET ${BASE}?per_page=100`]: [{ name: WIDGET_NAME, sitekey: "0x4AAA", domains: ["old.example.test"], mode: "managed" }],
+      [`GET ${BASE}?per_page=100`]: [
+        { name: WIDGET_NAME, sitekey: "0x4AAA", domains: ["old.example.test"], mode: "managed" },
+      ],
       [`PUT ${BASE}/0x4AAA`]: {},
       [`GET ${BASE}/0x4AAA`]: KEYS,
     });
     const out = await workerSecrets({ ...ENV, NEED_SESSION_KEY: "true" }, fetchFn);
     assert.equal(out.TURNSTILE_SECRET, "0x4BBB");
     assert.match(out.SESSION_KEY ?? "", /^[0-9a-f]{64}$/);
-    assert.deepEqual(JSON.parse(seen[1]!.init.body).domains, ["old.example.test", "demo.example.test"]);
+    assert.deepEqual(JSON.parse(seen[1]!.init.body).domains, [
+      "old.example.test",
+      "demo.example.test",
+    ]);
   });
 
   it("leaves a widget that already allows the host untouched", async () => {
     const { fetchFn, seen } = scripted({
-      [`GET ${BASE}?per_page=100`]: [{ name: WIDGET_NAME, sitekey: "0x4AAA", domains: ["demo.example.test"] }],
+      [`GET ${BASE}?per_page=100`]: [
+        { name: WIDGET_NAME, sitekey: "0x4AAA", domains: ["demo.example.test"] },
+      ],
       [`GET ${BASE}/0x4AAA`]: KEYS,
     });
     await workerSecrets(ENV, fetchFn);
@@ -76,7 +91,10 @@ describe("workerSecrets", () => {
       ),
       /no site key or secret/,
     );
-    await assert.rejects(workerSecrets({ ...ENV, DEMO_HOST: "" }, scripted({}).fetchFn), /DEMO_HOST is not set/);
+    await assert.rejects(
+      workerSecrets({ ...ENV, DEMO_HOST: "" }, scripted({}).fetchFn),
+      /DEMO_HOST is not set/,
+    );
   });
 
   it("refuses to add a host to a widget that allows the most already", async () => {

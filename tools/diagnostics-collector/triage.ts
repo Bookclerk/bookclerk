@@ -149,7 +149,11 @@ export function inputTokenBound(text: string): number {
  * @param outputTokens - Generated tokens.
  * @returns Whole neurons.
  */
-export function neuronsFor(rates: { input: number; output: number; }, inputTokens: number, outputTokens: number): number {
+export function neuronsFor(
+  rates: { input: number; output: number },
+  inputTokens: number,
+  outputTokens: number,
+): number {
   return Math.ceil((inputTokens * rates.input + outputTokens * rates.output) / 1_000_000);
 }
 
@@ -225,7 +229,11 @@ export class BudgetLedger {
    * @returns Whether it was reserved,
    *   and the day's total afterwards.
    */
-  async reserve(day: string, neurons: number, cap: number): Promise<{ ok: boolean; spent: number; }> {
+  async reserve(
+    day: string,
+    neurons: number,
+    cap: number,
+  ): Promise<{ ok: boolean; spent: number }> {
     const spent = await this.spent(day);
     if (spent + neurons > cap) {
       return { ok: false, spent };
@@ -261,7 +269,10 @@ export class BudgetLedger {
  * @returns The body text, or null when it is longer
  *   than `limit` bytes (the rest of the stream is cancelled).
  */
-export async function readCapped(request: Request | Response, limit: number): Promise<string | null> {
+export async function readCapped(
+  request: Request | Response,
+  limit: number,
+): Promise<string | null> {
   if (!request.body) return "";
   const reader = request.body.getReader();
   const chunks = [];
@@ -313,7 +324,8 @@ export function offerOpenIssues(issues: readonly IssueOption[]): OpenIssueOffer 
   const numbers: number[] = [];
   for (const issue of issues) {
     if (lines.length >= MAX_OPEN_ISSUES) break;
-    if (!Number.isSafeInteger(issue.number) || issue.number < 1 || numbers.includes(issue.number)) continue;
+    if (!Number.isSafeInteger(issue.number) || issue.number < 1 || numbers.includes(issue.number))
+      continue;
     numbers.push(issue.number);
     const title = String(issue.title)
       .replace(/\p{Cf}+/gu, "")
@@ -340,8 +352,13 @@ export function offerOpenIssues(issues: readonly IssueOption[]): OpenIssueOffer 
  * @returns The prompt and its
  *   worst-case cost, or the HTTP status and reason it is refused.
  */
-export function admitBatch(raw: string, rates: ModelRates, openIssues: string | null = null): { ok: true; userMessage: string; inputBound: number; reserved: number; } |
-{ ok: false; status: number; error: string; } {
+export function admitBatch(
+  raw: string,
+  rates: ModelRates,
+  openIssues: string | null = null,
+):
+  | { ok: true; userMessage: string; inputBound: number; reserved: number }
+  | { ok: false; status: number; error: string } {
   if (new TextEncoder().encode(raw).byteLength > MAX_TRIAGE_BODY_BYTES) {
     return { ok: false, status: 413, error: "batch too large" };
   }
@@ -418,7 +435,11 @@ export type TriageRefusal = {
  *   open_issues}`, 429 when the budget would be passed, 4xx on a bad
  *   batch, 503 when triage is not configured.
  */
-export async function handleTriage(request: Request, env: Env, opts: { now?: () => number; } = {}): Promise<Response> {
+export async function handleTriage(
+  request: Request,
+  env: Env,
+  opts: { now?: () => number } = {},
+): Promise<Response> {
   const now = opts.now || Date.now;
   if (!env.AI || !env.TRIAGE_BUDGET) {
     return json({ error: "triage not configured" }, 503);
@@ -460,7 +481,12 @@ export async function handleTriage(request: Request, env: Env, opts: { now?: () 
   const reservation = await budget.reserve(day, reserved, cap);
   if (!reservation.ok) {
     return json(
-      { error: "daily triage budget reached", spent_today: reservation.spent, cap, needed: reserved } satisfies TriageRefusal,
+      {
+        error: "daily triage budget reached",
+        spent_today: reservation.spent,
+        cap,
+        needed: reserved,
+      } satisfies TriageRefusal,
       429,
     );
   }
@@ -482,7 +508,8 @@ export async function handleTriage(request: Request, env: Env, opts: { now?: () 
 
   const answer = asObject(result);
   const usage = asObject(answer.usage);
-  const count = (v: unknown): number | null => (typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null);
+  const count = (v: unknown): number | null =>
+    typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null;
   const promptTokens = count(usage.prompt_tokens);
   const completionTokens = count(usage.completion_tokens);
   // Without trustworthy usage figures, keep the worst-case reservation. A
@@ -528,7 +555,9 @@ async function openIssuesFor(env: Env): Promise<IssueOption[]> {
   try {
     return await openIssueOptions(metered(env.DASHBOARD_DB), MAX_OPEN_ISSUES);
   } catch (err) {
-    console.error(`open issues unavailable to triage: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(
+      `open issues unavailable to triage: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return [];
   }
 }

@@ -192,12 +192,7 @@ export function SessionsPanel({
                   This will not sign out your current session.
                 </p>
               </div>
-              <Button
-                type="button"
-                variant="danger"
-                disabled={busy}
-                onClick={onRevokeOthers}
-              >
+              <Button type="button" variant="danger" disabled={busy} onClick={onRevokeOthers}>
                 Log out of all other sessions
               </Button>
               <ul className="divide-y divide-ink/10 bg-card">

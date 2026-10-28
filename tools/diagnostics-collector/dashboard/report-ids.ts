@@ -30,7 +30,8 @@ export const FALLBACK_MARKER = "<!-- bookclerk-diagnostics: triage fallback -->"
  * the closed issue whose fixed error came back: at most nine digits, no
  * leading zero.
  */
-export const REGRESSION_MARKER_RE = /^<!-- bookclerk-diagnostics: regression of #([1-9]\d{0,8}) -->$/;
+export const REGRESSION_MARKER_RE =
+  /^<!-- bookclerk-diagnostics: regression of #([1-9]\d{0,8}) -->$/;
 
 /** Most report IDs read from one issue. */
 export const MAX_IDS_PER_ISSUE = 500;
@@ -68,7 +69,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * A list line under the legacy heading: `` - `id` ``, optionally with a trailing
  * `` · [dashboard](<url>) ``. Only the ID is read; the link is ignored.
  */
-const LINE_RE = /^[-*] `([A-Za-z0-9._:/+-]{1,160})`(?: \u00b7 \[dashboard\]\([^\s()]{1,300}\))?\s*$/;
+const LINE_RE =
+  /^[-*] `([A-Za-z0-9._:/+-]{1,160})`(?: \u00b7 \[dashboard\]\([^\s()]{1,300}\))?\s*$/;
 
 /**
  * Turns one listed ID into a report UUID: either the UUID itself or a
@@ -95,14 +97,22 @@ export function reportIdOf(id: string): string | null {
  */
 export function parseIssueReportIds(body: unknown): {
   kind: "triage" | "fallback" | "regression" | "other";
-  ids: string[]; regressionOf: number | null;
+  ids: string[];
+  regressionOf: number | null;
 } {
   if (typeof body !== "string") return { kind: "other", ids: [], regressionOf: null };
   const text = body.slice(0, MAX_BODY_CHARS);
   const lines = text.split(/\r?\n/);
   const first = (lines[0] ?? "").trim();
   const regression = REGRESSION_MARKER_RE.exec(first);
-  const kind = first === TRIAGE_MARKER ? "triage" : first === FALLBACK_MARKER ? "fallback" : regression ? "regression" : "other";
+  const kind =
+    first === TRIAGE_MARKER
+      ? "triage"
+      : first === FALLBACK_MARKER
+        ? "fallback"
+        : regression
+          ? "regression"
+          : "other";
   const regressionOf = regression ? Number(regression[1]) : null;
   const block = lastIndex(lines, (line) => unpadded(line) === REPORT_BLOCK_OPEN);
   if (block >= 0) return { kind, ids: listed(lines, block + 1, BLOCK_LINE_RE, true), regressionOf };
@@ -134,7 +144,12 @@ function lastIndex(lines: readonly string[], test: (line: string) => boolean): n
  * @returns Distinct lowercase UUIDs in listed order, at most
  *   `MAX_IDS_PER_ISSUE`.
  */
-function listed(lines: readonly string[], start: number, lineRe: RegExp, closed: boolean): string[] {
+function listed(
+  lines: readonly string[],
+  start: number,
+  lineRe: RegExp,
+  closed: boolean,
+): string[] {
   const seen = new Set<string>();
   let i = start;
   for (; i < lines.length; i++) {

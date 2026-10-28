@@ -97,8 +97,8 @@ function SharingSettings({ link, onSaved }: { link: ClusterLinkView; onSaved: ()
           </span>
           <span className="block text-xs text-ink/55">
             The library gets each book&apos;s details and files, as its owner&apos;s. No store
-            account or user of this server is sent. When off, nothing new is sent; books the
-            library already has stay there.
+            account or user of this server is sent. When off, nothing new is sent; books the library
+            already has stay there.
           </span>
         </span>
       </label>
@@ -178,7 +178,9 @@ function LinkRow({
         {link.state === "active" ? "Active" : link.state === "left" ? "Left" : "Revoked"}
       </Badge>
       {link.pinned ? (
-        <Badge className="bg-ink/5 text-ink/60 normal-case tracking-normal">Pinned certificate</Badge>
+        <Badge className="bg-ink/5 text-ink/60 normal-case tracking-normal">
+          Pinned certificate
+        </Badge>
       ) : null}
       <span className="text-xs text-ink/55">
         node <span className="font-mono">{link.node_id}</span> · joined{" "}
@@ -415,7 +417,9 @@ function ConsentRow({
               )
             }
           >
-            {row.state === "awaiting_host_reapproval" ? `Approve ${row.requested_version}` : "Approve"}
+            {row.state === "awaiting_host_reapproval"
+              ? `Approve ${row.requested_version}`
+              : "Approve"}
           </Button>
         ) : null}
         {approved ? (
@@ -533,8 +537,8 @@ export function ClusterConsentsPanel({
         <h2 className="text-lg font-semibold text-ink">Library</h2>
         {sharingOnly ? (
           <p className="text-sm text-ink/55">
-            Libraries this server is a branch of, and what it shares with each. Joining, leaving
-            and approving a library's plugins are done by the server's operator.
+            Libraries this server is a branch of, and what it shares with each. Joining, leaving and
+            approving a library's plugins are done by the server's operator.
           </p>
         ) : (
           <p className="text-sm text-ink/55">
@@ -592,25 +596,25 @@ export function ClusterConsentsPanel({
             </ul>
           )}
           {sharingOnly ? null : (
-          <div className="space-y-2">
-            <h3 className="text-sm font-semibold text-ink">
-              Waiting for you{pending.length ? ` (${pending.length})` : ""}
-            </h3>
-            {pending.length === 0 ? (
-              <p className="text-sm text-ink/50">No requests waiting.</p>
-            ) : (
-              <ul className="divide-y divide-ink/10 bg-card">
-                {pending.map((row) => (
-                  <ConsentRow
-                    key={`${row.cluster_id}|${row.plugin_key}`}
-                    row={row}
-                    onChanged={refresh}
-                    onSessionExpired={onSessionExpired}
-                  />
-                ))}
-              </ul>
-            )}
-          </div>
+            <div className="space-y-2">
+              <h3 className="text-sm font-semibold text-ink">
+                Waiting for you{pending.length ? ` (${pending.length})` : ""}
+              </h3>
+              {pending.length === 0 ? (
+                <p className="text-sm text-ink/50">No requests waiting.</p>
+              ) : (
+                <ul className="divide-y divide-ink/10 bg-card">
+                  {pending.map((row) => (
+                    <ConsentRow
+                      key={`${row.cluster_id}|${row.plugin_key}`}
+                      row={row}
+                      onChanged={refresh}
+                      onSessionExpired={onSessionExpired}
+                    />
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
           {approved.length ? (
             <div className="space-y-2">

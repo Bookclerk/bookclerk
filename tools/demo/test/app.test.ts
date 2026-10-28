@@ -26,7 +26,8 @@ class FakeStub implements SessionApi {
   /** Live status sockets the Worker asked to open. */
   live: Request[] = [];
   /** The container's next answer. */
-  reply: (request: Request) => Response = () => new Response("ok", { headers: { "Content-Type": "text/plain" } });
+  reply: (request: Request) => Response = () =>
+    new Response("ok", { headers: { "Content-Type": "text/plain" } });
 
   /** @param p - Session id, hard stop, version and origin. */
   async open(p: Parameters<SessionApi["open"]>[0]): Promise<void> {
@@ -36,7 +37,12 @@ class FakeStub implements SessionApi {
 
   /** @returns State, hard stop, seconds left (a fixed 600) and version. */
   async status(): Promise<LiveStatus> {
-    return { state: this.state, endsAt: this.opened?.endsAt ?? 0, remaining: 600, version: this.opened?.version ?? "" };
+    return {
+      state: this.state,
+      endsAt: this.opened?.endsAt ?? 0,
+      remaining: 600,
+      version: this.opened?.version ?? "",
+    };
   }
 
   /** @returns A portal session once ready. */
@@ -140,7 +146,12 @@ function makeDeps(overrides: object = {}): TestDeps {
     now: () => now,
     fetch: async (url, init) => {
       calls.push({ url, body: JSON.parse(String(init.body)) as Record<string, unknown> });
-      return Response.json({ success: true, hostname: "demo.example.test", action: "demo_start", ...overrides });
+      return Response.json({
+        success: true,
+        hostname: "demo.example.test",
+        action: "demo_start",
+        ...overrides,
+      });
     },
   };
 }
@@ -151,7 +162,11 @@ function makeDeps(overrides: object = {}): TestDeps {
  * @returns The response and the
  *   `Cookie` header the browser would send next.
  */
-async function startSession(env: TestEnv, deps: TestDeps, ip = "203.0.113.7"): Promise<{ res: Response; cookie: string; }> {
+async function startSession(
+  env: TestEnv,
+  deps: TestDeps,
+  ip = "203.0.113.7",
+): Promise<{ res: Response; cookie: string }> {
   const res = await handle(
     new Request(`${ORIGIN}/_demo/start`, {
       method: "POST",
@@ -185,12 +200,19 @@ beforeEach(() => resetEstimateCache());
 
 describe("launch and admission", () => {
   it("shows the launch page with the Turnstile widget and a strict CSP", async () => {
-    const res = await handle(new Request(`${ORIGIN}/`, { headers: { Accept: "text/html" } }), makeEnv(), makeDeps());
+    const res = await handle(
+      new Request(`${ORIGIN}/`, { headers: { Accept: "text/html" } }),
+      makeEnv(),
+      makeDeps(),
+    );
     assert.equal(res.status, 200);
     const html = await res.text();
     assert.match(html, /data-sitekey="0x4AAAAAAA-site"/);
     assert.match(html, /data-action="demo_start"/);
-    assert.match(res.headers.get("Content-Security-Policy") ?? "", /script-src 'self' https:\/\/challenges\.cloudflare\.com/);
+    assert.match(
+      res.headers.get("Content-Security-Policy") ?? "",
+      /script-src 'self' https:\/\/challenges\.cloudflare\.com/,
+    );
   });
 
   it("refuses to start when the Worker is not set up", async () => {
@@ -207,7 +229,10 @@ describe("launch and admission", () => {
     assert.equal(res.status, 303);
     assert.equal(res.headers.get("Location"), "/_demo/wait");
     const set = res.headers.getSetCookie()[0] ?? "";
-    assert.match(set, /^__Host-demo=[A-Za-z0-9_-]{22}; Path=\/; HttpOnly; Secure; SameSite=Lax; Max-Age=1800$/);
+    assert.match(
+      set,
+      /^__Host-demo=[A-Za-z0-9_-]{22}; Path=\/; HttpOnly; Secure; SameSite=Lax; Max-Age=1800$/,
+    );
     assert.equal(deps.calls[0]!.body.response, "token123");
     assert.equal(deps.calls[0]!.body.remoteip, "203.0.113.7");
     const stub = onlyStub(env);
@@ -231,7 +256,10 @@ describe("launch and admission", () => {
     const res = await handle(
       new Request(`${ORIGIN}/_demo/start`, {
         method: "POST",
-        headers: { Origin: "https://evil.test", "Content-Type": "application/x-www-form-urlencoded" },
+        headers: {
+          Origin: "https://evil.test",
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
         body: "cf-turnstile-response=t",
       }),
       env,
@@ -270,17 +298,38 @@ describe("launch and admission", () => {
     // Ten minutes in, twenty come back: still short of a new half hour.
     deps.advance(600_000);
     const end = await handle(
-      new Request(`${ORIGIN}/_demo/end`, { method: "POST", headers: { Origin: ORIGIN, Cookie: first.cookie } }),
+      new Request(`${ORIGIN}/_demo/end`, {
+        method: "POST",
+        headers: { Origin: ORIGIN, Cookie: first.cookie },
+      }),
       env,
       deps,
     );
     assert.equal(end.status, 303);
     const id = [...env.stubs.keys()][0]!;
-    assert.equal(await finish(env.DB, { id, now: Math.floor(deps.now() / 1000), reason: "visitor", revoked: 0, failed: 0 }), true);
+    assert.equal(
+      await finish(env.DB, {
+        id,
+        now: Math.floor(deps.now() / 1000),
+        reason: "visitor",
+        revoked: 0,
+        failed: 0,
+      }),
+      true,
+    );
     assert.equal((await startSession(env, deps, "198.51.100.4")).res.status, 429);
     // The second leaves at once: its whole half hour comes back.
     const second = [...env.stubs.keys()][1]!;
-    assert.equal(await finish(env.DB, { id: second, now: Math.floor(deps.now() / 1000) - 600, reason: "visitor", revoked: 0, failed: 0 }), true);
+    assert.equal(
+      await finish(env.DB, {
+        id: second,
+        now: Math.floor(deps.now() / 1000) - 600,
+        reason: "visitor",
+        revoked: 0,
+        failed: 0,
+      }),
+      true,
+    );
     assert.equal((await startSession(env, deps, "198.51.100.5")).res.status, 303);
   });
 });
@@ -298,10 +347,17 @@ describe("a running session", () => {
 
   it("enters the app with the visitor's portal session", async () => {
     const { env, deps, cookie } = await ready();
-    const res = await handle(new Request(`${ORIGIN}/_demo/enter`, { headers: { Cookie: cookie } }), env, deps);
+    const res = await handle(
+      new Request(`${ORIGIN}/_demo/enter`, { headers: { Cookie: cookie } }),
+      env,
+      deps,
+    );
     assert.equal(res.status, 303);
     assert.equal(res.headers.get("Location"), "/");
-    assert.match(res.headers.getSetCookie()[0] ?? "", /^bookclerk_portal_session=p{64}; Path=\/; HttpOnly; Secure; SameSite=Lax$/);
+    assert.match(
+      res.headers.getSetCookie()[0] ?? "",
+      /^bookclerk_portal_session=p{64}; Path=\/; HttpOnly; Secure; SameSite=Lax$/,
+    );
   });
 
   it("refuses acquire without contacting the container", async () => {
@@ -351,7 +407,11 @@ describe("a running session", () => {
   it("refuses cross-site writes the browser would carry cookies for", async () => {
     const { env, deps, cookie, stub } = await ready();
     const res = await handle(
-      new Request(`${ORIGIN}/api/library/scan`, { method: "POST", headers: { Cookie: cookie }, body: "{}" }),
+      new Request(`${ORIGIN}/api/library/scan`, {
+        method: "POST",
+        headers: { Cookie: cookie },
+        body: "{}",
+      }),
       env,
       deps,
     );
@@ -367,8 +427,14 @@ describe("a running session", () => {
       h.append("Set-Cookie", "__Host-demo=stolen; Path=/");
       return new Response("{}", { headers: h });
     };
-    const res = await handle(new Request(`${ORIGIN}/api/status`, { headers: { Cookie: cookie } }), env, deps);
-    assert.deepEqual(res.headers.getSetCookie(), ["bookclerk_session=abc; Path=/; HttpOnly; Secure"]);
+    const res = await handle(
+      new Request(`${ORIGIN}/api/status`, { headers: { Cookie: cookie } }),
+      env,
+      deps,
+    );
+    assert.deepEqual(res.headers.getSetCookie(), [
+      "bookclerk_session=abc; Path=/; HttpOnly; Secure",
+    ]);
   });
 
   it("adds the banner to the app's HTML", async () => {
@@ -377,9 +443,16 @@ describe("a running session", () => {
       new Response("<html><head><title>Bookclerk</title></head><body></body></html>", {
         headers: { "Content-Type": "text/html; charset=utf-8" },
       });
-    const res = await handle(new Request(`${ORIGIN}/library`, { headers: { Cookie: cookie, Accept: "text/html" } }), env, deps);
+    const res = await handle(
+      new Request(`${ORIGIN}/library`, { headers: { Cookie: cookie, Accept: "text/html" } }),
+      env,
+      deps,
+    );
     const html = await res.text();
-    assert.match(html, /<script src="\/_demo\/live\.js" defer><\/script><script src="\/_demo\/banner\.js" defer><\/script><\/head>/);
+    assert.match(
+      html,
+      /<script src="\/_demo\/live\.js" defer><\/script><script src="\/_demo\/banner\.js" defer><\/script><\/head>/,
+    );
   });
 
   it("limits store sign-in attempts per session", async () => {
@@ -402,7 +475,11 @@ describe("a running session", () => {
   it("sends a browser to the waiting page while the copy starts", async () => {
     const { env, deps, cookie, stub } = await ready();
     stub.state = "starting";
-    const res = await handle(new Request(`${ORIGIN}/`, { headers: { Cookie: cookie, Accept: "text/html" } }), env, deps);
+    const res = await handle(
+      new Request(`${ORIGIN}/`, { headers: { Cookie: cookie, Accept: "text/html" } }),
+      env,
+      deps,
+    );
     assert.equal(res.status, 303);
     assert.equal(res.headers.get("Location"), "/_demo/wait");
   });
@@ -410,14 +487,21 @@ describe("a running session", () => {
   it("ends on Start over and clears the cookies", async () => {
     const { env, deps, cookie, stub } = await ready();
     const res = await handle(
-      new Request(`${ORIGIN}/_demo/end`, { method: "POST", headers: { Cookie: cookie, Origin: ORIGIN } }),
+      new Request(`${ORIGIN}/_demo/end`, {
+        method: "POST",
+        headers: { Cookie: cookie, Origin: ORIGIN },
+      }),
       env,
       deps,
     );
     assert.equal(res.status, 303);
     assert.deepEqual(stub.ended, ["visitor"]);
     assert.ok(res.headers.getSetCookie().every((c) => c.includes("Max-Age=0")));
-    const after = await handle(new Request(`${ORIGIN}/library`, { headers: { Cookie: cookie, Accept: "text/html" } }), env, deps);
+    const after = await handle(
+      new Request(`${ORIGIN}/library`, { headers: { Cookie: cookie, Accept: "text/html" } }),
+      env,
+      deps,
+    );
     assert.equal(after.status, 410);
     assert.ok(after.headers.getSetCookie().some((c) => c.startsWith("__Host-demo=;")));
     assert.match(await after.text(), /Your demo has ended/);
@@ -426,7 +510,11 @@ describe("a running session", () => {
   it("keeps the session when bookclerkd itself answers 410", async () => {
     const { env, deps, cookie, stub } = await ready();
     stub.reply = () => Response.json({ error: "invite expired" }, { status: 410 });
-    const res = await handle(new Request(`${ORIGIN}/invite`, { headers: { Cookie: cookie } }), env, deps);
+    const res = await handle(
+      new Request(`${ORIGIN}/invite`, { headers: { Cookie: cookie } }),
+      env,
+      deps,
+    );
     assert.equal(res.status, 410);
     assert.deepEqual(res.headers.getSetCookie(), []);
   });
@@ -480,8 +568,15 @@ describe("a running session", () => {
   it("streams HTML too big for the banner unchanged", async () => {
     const { env, deps, cookie, stub } = await ready();
     const big = "<html><head></head><body>" + "x".repeat(1024 * 1024 + 10) + "</body></html>";
-    stub.reply = () => new Response(big, { headers: { "Content-Type": "text/html", "Content-Length": String(big.length) } });
-    const res = await handle(new Request(`${ORIGIN}/library`, { headers: { Cookie: cookie, Accept: "text/html" } }), env, deps);
+    stub.reply = () =>
+      new Response(big, {
+        headers: { "Content-Type": "text/html", "Content-Length": String(big.length) },
+      });
+    const res = await handle(
+      new Request(`${ORIGIN}/library`, { headers: { Cookie: cookie, Accept: "text/html" } }),
+      env,
+      deps,
+    );
     assert.equal(res.headers.get("Content-Length"), null);
     assert.equal(await res.text(), big);
   });
@@ -489,7 +584,10 @@ describe("a running session", () => {
   it("refuses Start over from another site", async () => {
     const { env, deps, cookie, stub } = await ready();
     const res = await handle(
-      new Request(`${ORIGIN}/_demo/end`, { method: "POST", headers: { Cookie: cookie, Origin: "https://evil.test" } }),
+      new Request(`${ORIGIN}/_demo/end`, {
+        method: "POST",
+        headers: { Cookie: cookie, Origin: "https://evil.test" },
+      }),
       env,
       deps,
     );
@@ -537,7 +635,10 @@ describe("sweep", () => {
 
 describe("withBanner", () => {
   it("inserts before </head>, or at the start without one", () => {
-    assert.match(withBanner("<HEAD></HEAD >x"), /^<HEAD><link[^>]+>(<script[^>]+><\/script>){2}<\/HEAD >x$/);
+    assert.match(
+      withBanner("<HEAD></HEAD >x"),
+      /^<HEAD><link[^>]+>(<script[^>]+><\/script>){2}<\/HEAD >x$/,
+    );
     assert.match(withBanner("plain"), /^<link[^>]+>(<script[^>]+><\/script>){2}plain$/);
   });
 });
@@ -550,7 +651,9 @@ describe("live status", () => {
    * @returns The request.
    */
   const upgrade = (headers: Record<string, string>): Request =>
-    new Request(`${ORIGIN}/_demo/live`, { headers: { Upgrade: "websocket", Origin: ORIGIN, ...headers } });
+    new Request(`${ORIGIN}/_demo/live`, {
+      headers: { Upgrade: "websocket", Origin: ORIGIN, ...headers },
+    });
 
   it("hands a page's socket to its session object, without the browser's headers", async () => {
     const env = makeEnv();
@@ -569,11 +672,21 @@ describe("live status", () => {
     const env = makeEnv();
     const deps = makeDeps();
     const { cookie } = await startSession(env, deps);
-    const plain = await handle(new Request(`${ORIGIN}/_demo/live`, { headers: { Cookie: cookie } }), env, deps);
+    const plain = await handle(
+      new Request(`${ORIGIN}/_demo/live`, { headers: { Cookie: cookie } }),
+      env,
+      deps,
+    );
     assert.equal(plain.status, 426);
-    const foreign = await handle(upgrade({ Cookie: cookie, Origin: "https://evil.example.test" }), env, deps);
+    const foreign = await handle(
+      upgrade({ Cookie: cookie, Origin: "https://evil.example.test" }),
+      env,
+      deps,
+    );
     assert.equal(foreign.status, 403);
-    const noOrigin = new Request(`${ORIGIN}/_demo/live`, { headers: { Upgrade: "websocket", Cookie: cookie } });
+    const noOrigin = new Request(`${ORIGIN}/_demo/live`, {
+      headers: { Upgrade: "websocket", Cookie: cookie },
+    });
     assert.equal((await handle(noOrigin, env, deps)).status, 403);
     assert.equal((await handle(upgrade({}), env, deps)).status, 401);
     assert.equal(onlyStub(env).live.length, 0);
@@ -583,13 +696,23 @@ describe("live status", () => {
     const env = makeEnv();
     const deps = makeDeps();
     const { cookie } = await startSession(env, deps);
-    const res = await handle(new Request(`${ORIGIN}/_demo/session`, { headers: { Cookie: cookie } }), env, deps);
+    const res = await handle(
+      new Request(`${ORIGIN}/_demo/session`, { headers: { Cookie: cookie } }),
+      env,
+      deps,
+    );
     const body = (await res.json()) as Record<string, unknown>;
     assert.equal(body.state, "starting");
     assert.equal(body.remaining, 600);
     assert.equal(body.siteUrl, "https://bookclerk.example.test");
     const none = await handle(new Request(`${ORIGIN}/_demo/session`), env, deps);
-    assert.deepEqual(await none.json(), { state: "none", endsAt: 0, remaining: 0, version: "", siteUrl: "https://bookclerk.example.test" });
+    assert.deepEqual(await none.json(), {
+      state: "none",
+      endsAt: 0,
+      remaining: 0,
+      version: "",
+      siteUrl: "https://bookclerk.example.test",
+    });
   });
 });
 
@@ -614,7 +737,9 @@ describe("startup estimate", () => {
     const env = makeEnv();
     const deps = makeDeps();
     const page = async (): Promise<string> =>
-      (await handle(new Request(`${ORIGIN}/`, { headers: { Accept: "text/html" } }), env, deps)).text();
+      (
+        await handle(new Request(`${ORIGIN}/`, { headers: { Accept: "text/html" } }), env, deps)
+      ).text();
     await starts(env, deps, [12, 40]);
     assert.doesNotMatch(await page(), /Usually ready/);
     await starts(env, deps, [14]);
@@ -630,8 +755,13 @@ describe("startup estimate", () => {
     const deps = makeDeps();
     await starts(env, deps, [100, 130, 125]);
     const { cookie } = await startSession(env, deps, "198.51.100.99");
-    const html = await (await handle(new Request(`${ORIGIN}/_demo/wait`, { headers: { Cookie: cookie } }), env, deps)).text();
+    const html = await (
+      await handle(new Request(`${ORIGIN}/_demo/wait`, { headers: { Cookie: cookie } }), env, deps)
+    ).text();
     assert.match(html, /This usually takes about 2 minutes\./);
-    assert.match(html, /<script src="\/_demo\/live\.js" defer><\/script><script src="\/_demo\/wait\.js" defer><\/script>/);
+    assert.match(
+      html,
+      /<script src="\/_demo\/live\.js" defer><\/script><script src="\/_demo\/wait\.js" defer><\/script>/,
+    );
   });
 });

@@ -44,7 +44,10 @@ run(["check", path.join(fixtures, "invalid-logo-parent")], false);
     fs.cpSync(path.join(fixtures, "valid-compat-date-future"), dir, { recursive: true });
     const manifestPath = path.join(dir, "plugin.toml");
     const manifest = fs.readFileSync(manifestPath, "utf8");
-    const rewritten = manifest.replace(/^compatibility_date = ".*"$/m, `compatibility_date = "${newer}"`);
+    const rewritten = manifest.replace(
+      /^compatibility_date = ".*"$/m,
+      `compatibility_date = "${newer}"`,
+    );
     if (!rewritten.includes(newer)) {
       console.error("FAIL valid-compat-date-future has no compatibility_date");
       process.exit(1);
@@ -157,7 +160,10 @@ mode = "deny"
     err instanceof Error && err.message.includes("compatibility_date is required");
 }
 if (!unquotedDateRejected) {
-  console.error("FAIL unquoted compatibility_date was not rejected as a non-string", Number(unquotedDateRejected));
+  console.error(
+    "FAIL unquoted compatibility_date was not rejected as a non-string",
+    Number(unquotedDateRejected),
+  );
   process.exit(1);
 }
 const bindingBase = {

@@ -63,11 +63,7 @@ function loginFailureMessage(err: unknown, fallback: string): string {
  *
  * @param props - Called with the new session after successful sign-in.
  */
-export function LoginPage({
-  onSuccess,
-}: {
-  onSuccess: (session: AuthSession) => void;
-}) {
+export function LoginPage({ onSuccess }: { onSuccess: (session: AuthSession) => void }) {
   const [ticket] = useState(() => {
     dropTicketUnlessInvitePath();
     return inviteTicket();
@@ -89,9 +85,7 @@ export function LoginPage({
   const [busy, setBusy] = useState(false);
   const [operatorToken, setOperatorToken] = useState(false);
   const [oidc, setOidc] = useState<OidcProvider[]>([]);
-  const [integrations, setIntegrations] = useState<{ id: string; name: string }[]>(
-    [],
-  );
+  const [integrations, setIntegrations] = useState<{ id: string; name: string }[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -179,9 +173,7 @@ export function LoginPage({
       setError(
         loginFailureMessage(
           err,
-          totpChallengeId
-            ? "Invalid authenticator code."
-            : "Invalid login or password.",
+          totpChallengeId ? "Invalid authenticator code." : "Invalid login or password.",
         ),
       );
     } finally {
@@ -261,10 +253,7 @@ export function LoginPage({
               className="mt-1.5"
               autoComplete="new-password"
             />
-            <label
-              className="mt-4 block text-sm font-semibold"
-              htmlFor="claim-password-confirm"
-            >
+            <label className="mt-4 block text-sm font-semibold" htmlFor="claim-password-confirm">
               Confirm password
             </label>
             <Input
@@ -275,11 +264,7 @@ export function LoginPage({
               className="mt-1.5"
               autoComplete="new-password"
             />
-            <Button
-              type="submit"
-              className="mt-5 w-full"
-              disabled={busy || !ticket.trim()}
-            >
+            <Button type="submit" className="mt-5 w-full" disabled={busy || !ticket.trim()}>
               {busy ? "Redeeming…" : "Continue"}
             </Button>
           </form>
@@ -300,11 +285,7 @@ export function LoginPage({
                   placeholder="64-character hex token"
                   required
                 />
-                <Button
-                  type="submit"
-                  className="mt-5 w-full"
-                  disabled={busy || !token}
-                >
+                <Button type="submit" className="mt-5 w-full" disabled={busy || !token}>
                   {busy ? "Signing in…" : "Open library"}
                 </Button>
               </form>
@@ -362,10 +343,7 @@ export function LoginPage({
                 type="submit"
                 className="mt-5 w-full"
                 disabled={
-                  busy ||
-                  (totpChallengeId
-                    ? totpCode.trim().length < 6
-                    : !username || !password)
+                  busy || (totpChallengeId ? totpCode.trim().length < 6 : !username || !password)
                 }
               >
                 {busy
@@ -429,10 +407,7 @@ export function LoginPage({
                 </div>
                 {integrationId ? (
                   <form onSubmit={onIntegrationSubmit} className="mt-4">
-                    <label
-                      className="block text-sm font-semibold"
-                      htmlFor="integration-username"
-                    >
+                    <label className="block text-sm font-semibold" htmlFor="integration-username">
                       Username
                     </label>
                     <Input
@@ -461,9 +436,7 @@ export function LoginPage({
                     <Button
                       type="submit"
                       className="mt-4 w-full"
-                      disabled={
-                        busy || !integrationUser.trim() || !integrationPassword
-                      }
+                      disabled={busy || !integrationUser.trim() || !integrationPassword}
                     >
                       {busy ? "Signing in…" : "Sign in"}
                     </Button>
@@ -477,11 +450,7 @@ export function LoginPage({
           <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink/45">
             Appearance
           </p>
-          <ThemePreferenceControl
-            compact
-            value={themePref}
-            onChange={setThemePreference}
-          />
+          <ThemePreferenceControl compact value={themePref} onChange={setThemePreference} />
         </div>
       </div>
       <style>{`

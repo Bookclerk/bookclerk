@@ -24,7 +24,20 @@ export type IsoDate = string & { readonly __isoDate: unique symbol };
 const ISO_DATE_RE = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/;
 
 /** Month abbreviations, January first, as the page shows them. */
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
+const MONTHS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+] as const;
 
 /**
  * Checks that a string is a real calendar date written as `YYYY-MM-DD`.
@@ -42,7 +55,8 @@ export function parseIsoDate(text: string): IsoDate | null {
   // Date.UTC treats years 0-99 as 1900-1999, so set the year separately.
   const at = new Date(Date.UTC(2000, month - 1, day));
   at.setUTCFullYear(year);
-  if (at.getUTCFullYear() !== year || at.getUTCMonth() !== month - 1 || at.getUTCDate() !== day) return null;
+  if (at.getUTCFullYear() !== year || at.getUTCMonth() !== month - 1 || at.getUTCDate() !== day)
+    return null;
   return text as IsoDate;
 }
 
@@ -100,7 +114,8 @@ export function datedPages(json: string): DatedPage[] | null {
   if (pages === null) return null;
   const out: DatedPage[] = [];
   for (const [key, value] of Object.entries(pages)) {
-    if (key.length > MAX_DOC_KEY_LENGTH || !DOC_KEY_RE.test(key) || typeof value !== "string") continue;
+    if (key.length > MAX_DOC_KEY_LENGTH || !DOC_KEY_RE.test(key) || typeof value !== "string")
+      continue;
     const date = parseIsoDate(value);
     if (date !== null) out.push({ key, date });
   }

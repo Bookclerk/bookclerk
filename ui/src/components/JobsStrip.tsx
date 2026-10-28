@@ -1,8 +1,4 @@
-import type {
-  EventDeliveryInfo,
-  JobInfo,
-  StatusResponse,
-} from "@/lib/api";
+import type { EventDeliveryInfo, JobInfo, StatusResponse } from "@/lib/api";
 import {
   ackEventDelivery,
   cancelEventDelivery,
@@ -49,8 +45,7 @@ export function JobsStrip({
               <strong className="text-ink">{status.pending}</strong> pending
             </span>
             <span>
-              <strong className="text-ink">{status.in_progress}</strong> in
-              progress
+              <strong className="text-ink">{status.in_progress}</strong> in progress
             </span>
             <span>
               <strong className="text-brick">{status.error}</strong> errors
@@ -58,16 +53,13 @@ export function JobsStrip({
             <span className="text-ink/45">{status.storage_backend}</span>
             {events ? (
               <span>
-                events{" "}
-                <strong className="text-ink">{events.pending}</strong> pending
+                events <strong className="text-ink">{events.pending}</strong> pending
                 {" / "}
                 <strong className="text-ink">{events.running}</strong> running
                 {" / "}
-                <strong className="text-ink">{events.suspended}</strong>{" "}
-                suspended
+                <strong className="text-ink">{events.suspended}</strong> suspended
                 {" / "}
-                <strong className="text-brick">{events.dead_letter}</strong>{" "}
-                dead
+                <strong className="text-brick">{events.dead_letter}</strong> dead
                 {events.oldest_pending_age_secs != null
                   ? ` · oldest ${events.oldest_pending_age_secs}s`
                   : ""}
@@ -77,12 +69,8 @@ export function JobsStrip({
                 {events.handler_latency_ms_avg != null
                   ? ` · handler ${events.handler_latency_ms_avg}ms`
                   : ""}
-                {events.retries_total
-                  ? ` · retries ${events.retries_total}`
-                  : ""}
-                {events.suspensions_total
-                  ? ` · suspends ${events.suspensions_total}`
-                  : ""}
+                {events.retries_total ? ` · retries ${events.retries_total}` : ""}
+                {events.suspensions_total ? ` · suspends ${events.suspensions_total}` : ""}
               </span>
             ) : null}
           </>
@@ -99,14 +87,8 @@ export function JobsStrip({
             >
               <span className="truncate">
                 {job.id} · {job.kind} · {job.status}
-                {job.progress
-                  ? ` · ${job.progress}`
-                  : job.detail
-                    ? ` · ${job.detail}`
-                    : ""}
-                {job.attempt_count
-                  ? ` · try ${job.attempt_count}/${job.max_attempts ?? "?"}`
-                  : ""}
+                {job.progress ? ` · ${job.progress}` : job.detail ? ` · ${job.detail}` : ""}
+                {job.attempt_count ? ` · try ${job.attempt_count}/${job.max_attempts ?? "?"}` : ""}
               </span>
               {job.status === "pending" || job.status === "running" ? (
                 <button
@@ -142,9 +124,7 @@ export function JobsStrip({
                       type="button"
                       className="text-ink hover:underline"
                       onClick={() => {
-                        void retryEventDelivery(row.id).then(() =>
-                          onChanged?.(),
-                        );
+                        void retryEventDelivery(row.id).then(() => onChanged?.());
                       }}
                     >
                       retry
@@ -153,24 +133,19 @@ export function JobsStrip({
                       type="button"
                       className="text-brick hover:underline"
                       onClick={() => {
-                        void ackEventDelivery(row.id).then(() =>
-                          onChanged?.(),
-                        );
+                        void ackEventDelivery(row.id).then(() => onChanged?.());
                       }}
                     >
                       ack
                     </button>
                   </>
                 ) : null}
-                {row.state === "running" ||
-                (row.state === "pending" && !row.hasCheckpoint) ? (
+                {row.state === "running" || (row.state === "pending" && !row.hasCheckpoint) ? (
                   <button
                     type="button"
                     className="text-brick hover:underline"
                     onClick={() => {
-                      void cancelEventDelivery(row.id).then(() =>
-                        onChanged?.(),
-                      );
+                      void cancelEventDelivery(row.id).then(() => onChanged?.());
                     }}
                   >
                     cancel
@@ -182,9 +157,7 @@ export function JobsStrip({
                       type="button"
                       className="text-ink hover:underline"
                       onClick={() => {
-                        void resumeEventDelivery(row.id).then(() =>
-                          onChanged?.(),
-                        );
+                        void resumeEventDelivery(row.id).then(() => onChanged?.());
                       }}
                     >
                       resume
@@ -193,9 +166,7 @@ export function JobsStrip({
                       type="button"
                       className="text-brick hover:underline"
                       onClick={() => {
-                        void cancelEventDelivery(row.id).then(() =>
-                          onChanged?.(),
-                        );
+                        void cancelEventDelivery(row.id).then(() => onChanged?.());
                       }}
                     >
                       cancel

@@ -3,12 +3,7 @@ import { normalizeThemePreference, type ThemePreference } from "@/lib/theme";
 /**
  * Pipeline acquire state for a library book row.
  */
-export type AcquireStatus =
-  | "not_acquired"
-  | "queued"
-  | "downloading"
-  | "acquired"
-  | "error";
+export type AcquireStatus = "not_acquired" | "queued" | "downloading" | "acquired" | "error";
 
 /**
  * Primary authenticated SPA views mirrored in the URL path.
@@ -871,10 +866,7 @@ export async function updateOidcClient(
  * @param currentPassword - Owner re-auth when the session is older than 15 minutes.
  * @returns Resolves when the client is removed.
  */
-export async function deleteOidcClient(
-  clientId: string,
-  currentPassword?: string,
-): Promise<void> {
+export async function deleteOidcClient(clientId: string, currentPassword?: string): Promise<void> {
   const res = await fetch(`/api/auth/oidc/clients/${encodeURIComponent(clientId)}`, {
     method: "DELETE",
     credentials: "include",
@@ -897,15 +889,12 @@ export async function rotateOidcClientSecret(
   clientId: string,
   currentPassword?: string,
 ): Promise<OidcAsClient> {
-  const res = await fetch(
-    `/api/auth/oidc/clients/${encodeURIComponent(clientId)}/rotate-secret`,
-    {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ current_password: currentPassword }),
-    },
-  );
+  const res = await fetch(`/api/auth/oidc/clients/${encodeURIComponent(clientId)}/rotate-secret`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ current_password: currentPassword }),
+  });
   return parseJson(res);
 }
 
@@ -945,9 +934,7 @@ export async function passkeyRegisterBegin(currentPassword?: string): Promise<{
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(
-      currentPassword ? { current_password: currentPassword } : {},
-    ),
+    body: JSON.stringify(currentPassword ? { current_password: currentPassword } : {}),
   });
   return parseJson(res);
 }
@@ -979,17 +966,12 @@ export async function passkeyRegisterFinish(body: {
  * @param currentPassword
  * @returns
  */
-export async function deletePasskey(
-  id: number,
-  currentPassword?: string,
-): Promise<void> {
+export async function deletePasskey(id: number, currentPassword?: string): Promise<void> {
   const res = await fetch(`/api/auth/passkeys/${id}`, {
     method: "DELETE",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(
-      currentPassword ? { current_password: currentPassword } : {},
-    ),
+    body: JSON.stringify(currentPassword ? { current_password: currentPassword } : {}),
   });
   await parseJson(res);
 }
@@ -1297,23 +1279,18 @@ export async function mintUserClaimTicket(id: number): Promise<{
  * @param id - User id.
  * @returns Reset ticket plus count of revoked sessions.
  */
-export async function resetUserPassword(
-  id: number,
-): Promise<{
+export async function resetUserPassword(id: number): Promise<{
   ok: boolean;
   claim_ticket: string;
   invite_url?: string | null;
   revoked_sessions: number;
 }> {
-  const res = await fetch(
-    `/api/users/${encodeURIComponent(String(id))}/reset-password`,
-    {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    },
-  );
+  const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/reset-password`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
   return parseJson(res);
 }
 
@@ -1496,9 +1473,7 @@ export async function totpEnrollBegin(currentPassword?: string): Promise<{
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(
-      currentPassword ? { current_password: currentPassword } : {},
-    ),
+    body: JSON.stringify(currentPassword ? { current_password: currentPassword } : {}),
   });
   return parseJson(res);
 }
@@ -1530,9 +1505,7 @@ export async function disableTotp(currentPassword?: string): Promise<void> {
     method: "DELETE",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(
-      currentPassword ? { current_password: currentPassword } : {},
-    ),
+    body: JSON.stringify(currentPassword ? { current_password: currentPassword } : {}),
   });
   await parseJson(res);
 }
@@ -1924,9 +1897,7 @@ function normalizeCatalogSort(raw: unknown): CatalogSearchSort {
 }
 
 function normalizeCatalogSortDir(raw: unknown): "asc" | "desc" {
-  return typeof raw === "string" && raw.trim().toLowerCase() === "asc"
-    ? "asc"
-    : "desc";
+  return typeof raw === "string" && raw.trim().toLowerCase() === "asc" ? "asc" : "desc";
 }
 
 function parsePreferencesBody(body: {
@@ -1950,9 +1921,7 @@ function parsePreferencesBody(body: {
         ? body.discover_language.trim()
         : null,
     discover_excluded_sources: Array.isArray(body.discover_excluded_sources)
-      ? body.discover_excluded_sources.filter(
-          (x): x is string => typeof x === "string",
-        )
+      ? body.discover_excluded_sources.filter((x): x is string => typeof x === "string")
       : [],
     theme: normalizeThemePreference(body.theme),
   };
@@ -2031,10 +2000,9 @@ export async function fetchSettings(): Promise<SettingsResponse> {
  * @returns Stored settings, secret refs, and the document revision.
  */
 export async function fetchPluginInstanceConfig(instanceId: string): Promise<PluginInstanceConfig> {
-  const res = await fetch(
-    `/api/config/plugin-instances/${encodeURIComponent(instanceId)}/config`,
-    { credentials: "include" },
-  );
+  const res = await fetch(`/api/config/plugin-instances/${encodeURIComponent(instanceId)}/config`, {
+    credentials: "include",
+  });
   return parseJson<PluginInstanceConfig>(res);
 }
 
@@ -2052,15 +2020,12 @@ export async function putPluginInstanceConfig(
   instanceId: string,
   body: PluginInstanceConfigWrite,
 ): Promise<{ plugin_instance_id: string; revision: number }> {
-  const res = await fetch(
-    `/api/config/plugin-instances/${encodeURIComponent(instanceId)}/config`,
-    {
-      method: "PUT",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    },
-  );
+  const res = await fetch(`/api/config/plugin-instances/${encodeURIComponent(instanceId)}/config`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
   return parseJson(res);
 }
 
@@ -2380,10 +2345,7 @@ export interface RemoteGrantView {
 
 /** Where an owner plugin's request to run here stands. */
 export type RemoteConsentState =
-  | "consented"
-  | "awaiting_host_consent"
-  | "awaiting_host_reapproval"
-  | "invalid_grant";
+  "consented" | "awaiting_host_consent" | "awaiting_host_reapproval" | "invalid_grant";
 
 /** One owner plugin's request to run on this host, and this host's answer. */
 export interface RemoteConsentView {
@@ -2692,15 +2654,12 @@ export async function portalSourceLogin(
  * @returns Object with browser `url` to open.
  */
 export async function portalSourceOauthStart(id: string): Promise<{ url: string }> {
-  const res = await fetch(
-    `/api/portal/sources/${encodeURIComponent(id)}/oauth/start`,
-    {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    },
-  );
+  const res = await fetch(`/api/portal/sources/${encodeURIComponent(id)}/oauth/start`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
   return parseJson(res);
 }
 
@@ -2862,9 +2821,7 @@ export async function cancelJob(id: string): Promise<ActionResponse> {
  * @param state - Optional lifecycle filter (`dead_letter`, `running`, …).
  * @returns Delivery rows from `/api/events/deliveries`.
  */
-export async function fetchEventDeliveries(
-  state?: string,
-): Promise<EventDeliveryInfo[]> {
+export async function fetchEventDeliveries(state?: string): Promise<EventDeliveryInfo[]> {
   const sp = new URLSearchParams();
   if (state) sp.set("state", state);
   const res = await fetch(`/api/events/deliveries?${sp}`, {
@@ -2877,15 +2834,12 @@ async function postEventDeliveryAction(
   id: string,
   action: "retry" | "acknowledge" | "cancel" | "resume",
 ): Promise<ActionResponse> {
-  const res = await fetch(
-    `/api/events/deliveries/${encodeURIComponent(id)}/${action}`,
-    {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    },
-  );
+  const res = await fetch(`/api/events/deliveries/${encodeURIComponent(id)}/${action}`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
   return parseJson(res);
 }
 
@@ -3178,13 +3132,7 @@ export interface CatalogSearchHit {
  * Server-supported Discover catalog sort keys.
  */
 export type CatalogSearchSort =
-  | "relevance"
-  | "popularity"
-  | "rating"
-  | "title"
-  | "author"
-  | "price"
-  | "length";
+  "relevance" | "popularity" | "rating" | "title" | "author" | "price" | "length";
 
 /**
  * Ascending or descending catalog sort direction.
@@ -3403,12 +3351,7 @@ function clientCacheGet<T>(map: Map<string, CacheEntry<T>>, key: string): T | un
   return hit.value;
 }
 
-function clientCacheSet<T>(
-  map: Map<string, CacheEntry<T>>,
-  key: string,
-  value: T,
-  ttlMs: number,
-) {
+function clientCacheSet<T>(map: Map<string, CacheEntry<T>>, key: string, value: T, ttlMs: number) {
   map.set(key, { value, expires: Date.now() + ttlMs });
 }
 
@@ -3435,9 +3378,7 @@ function purchaseHintsClientKey(q: PurchaseHintsQuery): string {
  * @param body - Title identity and optional candidate edition.
  * @returns Hints list plus optional best pick (client-cached).
  */
-export function fetchPurchaseHints(
-  body: PurchaseHintsQuery,
-): Promise<PurchaseHintsResponse> {
+export function fetchPurchaseHints(body: PurchaseHintsQuery): Promise<PurchaseHintsResponse> {
   const key = purchaseHintsClientKey(body);
   const cached = clientCacheGet(purchaseHintsClientCache, key);
   if (cached) return Promise.resolve(cached);
@@ -3565,9 +3506,7 @@ export function fetchTitleMeta(body: TitleMetaQuery): Promise<TitleMeta | null> 
  * @param body - ASIN, region, page, and sort.
  * @returns Reviews page payload.
  */
-export async function fetchTitleReviews(
-  body: TitleReviewsQuery,
-): Promise<TitleReviewsPage> {
+export async function fetchTitleReviews(body: TitleReviewsQuery): Promise<TitleReviewsPage> {
   const asin = body.asin.trim();
   const page = Math.max(1, body.page ?? 1);
   const page_size = Math.min(20, Math.max(1, body.page_size ?? 5));
@@ -3645,8 +3584,7 @@ export async function fetchTitleMetaBatch(
 function browserCatalogLanguage(): string {
   try {
     const raw =
-      (typeof navigator !== "undefined" &&
-        (navigator.languages?.[0] || navigator.language)) ||
+      (typeof navigator !== "undefined" && (navigator.languages?.[0] || navigator.language)) ||
       "en";
     const primary = String(raw).trim().toLowerCase().split(/[-_]/)[0];
     if (primary && /^[a-z]{2,3}$/.test(primary)) return primary;
@@ -3810,4 +3748,3 @@ export async function removeWishlistItem(uuid: string): Promise<TitleRequest> {
   });
   return parseJson(res);
 }
-

@@ -104,9 +104,7 @@ mode = "deny"
   fs.writeFileSync(path.join(syncEscape, "modules", "main.js"), "export default class X {}");
   fs.symlinkSync(outsideBookclerk, path.join(syncEscape, "modules", "@bookclerk"));
   const outsideBefore = fs.readdirSync(outsideBookclerk);
-  mustThrow("syncEmbed refuses @bookclerk symlink before mkdir", () =>
-    syncEmbed(syncEscape),
-  );
+  mustThrow("syncEmbed refuses @bookclerk symlink before mkdir", () => syncEmbed(syncEscape));
   const outsideAfter = fs.readdirSync(outsideBookclerk);
   if (JSON.stringify(outsideBefore) !== JSON.stringify(outsideAfter)) {
     console.error("FAIL: outside-bookclerk was mutated by syncEmbed", outsideAfter);
@@ -131,11 +129,7 @@ mode = "deny"
     console.error("FAIL: syncEmbed absent modules", syncedAbsent);
     process.exit(1);
   }
-  if (
-    !fs.existsSync(
-      path.join(syncAbsent, "modules", "@bookclerk", "plugin-sdk", "workerd.js"),
-    )
-  ) {
+  if (!fs.existsSync(path.join(syncAbsent, "modules", "@bookclerk", "plugin-sdk", "workerd.js"))) {
     console.error("FAIL: syncEmbed did not create modules/@bookclerk/plugin-sdk/workerd.js");
     process.exit(1);
   }
@@ -298,10 +292,7 @@ entrypoint = "default"
 mode = "deny"
 `,
   );
-  fs.writeFileSync(
-    path.join(travPlugin, "modules", "main.js"),
-    "export default class X {}",
-  );
+  fs.writeFileSync(path.join(travPlugin, "modules", "main.js"), "export default class X {}");
   const travOut = path.join(tmp, "trav_out");
   fs.mkdirSync(travOut);
   const victim = path.join(tmp, "victim-workerd.tar.gz");
@@ -383,9 +374,8 @@ mode = "deny"
   console.log("ok materializeConfig allows nested modules and edition..2.js");
   fs.rmSync(nestedGenerated.stateDir, { recursive: true, force: true });
 
-  const { writeFileUnder, defaultCacheDir, binaryMatchesPin, loadPin } = await import(
-    "../dist/sparse-workerd/ensure.js"
-  );
+  const { writeFileUnder, defaultCacheDir, binaryMatchesPin, loadPin } =
+    await import("../dist/sparse-workerd/ensure.js");
   const writeRoot = path.join(tmp, "write-root");
   fs.mkdirSync(writeRoot);
   const written = writeFileUnder(writeRoot, "edition..2.js", "ok");

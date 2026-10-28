@@ -94,13 +94,7 @@ def write_file_under(root: Path | str, name: str, contents: str | bytes) -> Path
     Filenames may contain ``..`` (``edition..2.js``); ``.`` and ``..`` components
     are rejected.
     """
-    if (
-        not name
-        or "\0" in name
-        or "/" in name
-        or "\\" in name
-        or name in {".", ".."}
-    ):
+    if not name or "\0" in name or "/" in name or "\\" in name or name in {".", ".."}:
         raise ValueError(f"file name must be a single path component: {name}")
     root_s = os.path.abspath(os.path.normpath(os.fspath(root)))
     resolved_s = os.path.abspath(os.path.join(root_s, name))
@@ -126,13 +120,7 @@ def copy_file_under(root: Path | str, name: str, src: Path | str) -> Path:
     """Copy ``src`` to ``root`` / ``name`` after resolve + ``startswith`` on dest."""
     import shutil
 
-    if (
-        not name
-        or "\0" in name
-        or "/" in name
-        or "\\" in name
-        or name in {".", ".."}
-    ):
+    if not name or "\0" in name or "/" in name or "\\" in name or name in {".", ".."}:
         raise ValueError(f"file name must be a single path component: {name}")
     root_s = os.path.abspath(os.path.normpath(os.fspath(root)))
     resolved_s = os.path.abspath(os.path.join(root_s, name))

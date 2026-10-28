@@ -66,7 +66,10 @@ async function shortHash(text: string): Promise<string> {
  */
 function field(value: unknown, max: number): string {
   if (typeof value !== "string") return "";
-  return value.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, max);
+  return value
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .trim()
+    .slice(0, max);
 }
 
 /**
@@ -79,9 +82,16 @@ function field(value: unknown, max: number): string {
  * @returns The fields the index keeps; counts are non-negative integers.
  */
 export async function summarizeReport(stored: unknown): Promise<{
-  version: string; os: string; arch: string; distro: string;
-  trigger: string; events: number; errors: number; warnings: number;
-  signature: string | null; signatureLabel: string | null;
+  version: string;
+  os: string;
+  arch: string;
+  distro: string;
+  trigger: string;
+  events: number;
+  errors: number;
+  warnings: number;
+  signature: string | null;
+  signatureLabel: string | null;
   installHash: string;
 }> {
   const s = asObject(stored);
@@ -123,6 +133,8 @@ export async function summarizeReport(stored: unknown): Promise<{
     signature,
     signatureLabel,
     installHash:
-      typeof s.client_ip_hash === "string" && /^[0-9a-f]{1,64}$/.test(s.client_ip_hash) ? s.client_ip_hash : "",
+      typeof s.client_ip_hash === "string" && /^[0-9a-f]{1,64}$/.test(s.client_ip_hash)
+        ? s.client_ip_hash
+        : "",
   };
 }

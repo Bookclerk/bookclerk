@@ -28,9 +28,7 @@ export function showSettingsNav(_role?: AuthRole): boolean {
  * @returns True when Status appears in the nav and may be opened.
  */
 export function showStatusNav(role?: AuthRole): boolean {
-  return (
-    role === "operator" || role === "owner" || role === "administrator" || role === "host"
-  );
+  return role === "operator" || role === "owner" || role === "administrator" || role === "host";
 }
 
 /**

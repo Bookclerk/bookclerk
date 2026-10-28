@@ -38,8 +38,7 @@ const CLI: CliSchema = {
     },
     {
       name: "fetch-example",
-      about:
-        "GET https://www.example.com/ (succeeds if allowlisted; HTTP status ignored)",
+      about: "GET https://www.example.com/ (succeeds if allowlisted; HTTP status ignored)",
       args: [],
     },
   ],

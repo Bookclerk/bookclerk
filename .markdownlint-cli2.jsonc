@@ -21,7 +21,7 @@
     // Two GitHub alerts (`> [!NOTE]`) in a row need a blank line between them.
     "MD028": false,
     // Table pipe spacing is cosmetic and GitHub renders every style alike.
-    "MD060": false
+    "MD060": false,
   },
   "globs": ["**/*.md"],
   "gitignore": true,
@@ -42,6 +42,6 @@
     "tools/site/src/*.md",
     // Legal texts kept verbatim.
     "LICENSE*",
-    "**/LICENSE*"
-  ]
+    "**/LICENSE*",
+  ],
 }

@@ -48,9 +48,7 @@ export function gravatarUrl(hash: string, size = 128): string {
  * @param pictures - IdP pictures for the user.
  * @returns Last-used picture, or undefined when none exist.
  */
-export function lastUsedSso(
-  pictures: SsoPicture[] | undefined,
-): SsoPicture | undefined {
+export function lastUsedSso(pictures: SsoPicture[] | undefined): SsoPicture | undefined {
   const pics = (pictures ?? []).filter((p) => p.picture_url.trim());
   if (pics.length === 0) return undefined;
   return [...pics].sort((a, b) => {
@@ -132,10 +130,7 @@ function autoChoice(fields: AvatarFields): ResolvedAvatar {
   return { kind: "monogram" };
 }
 
-function choiceFor(
-  source: string,
-  fields: AvatarFields,
-): ResolvedAvatar | null {
+function choiceFor(source: string, fields: AvatarFields): ResolvedAvatar | null {
   if (source === "monogram") return { kind: "monogram" };
   if (source === "upload") {
     return fields.has_avatar ? { kind: "upload" } : null;

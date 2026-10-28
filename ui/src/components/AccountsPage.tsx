@@ -118,7 +118,10 @@ export function AccountsPage({
     setBusy(true);
     setError(null);
     try {
-      await portalRevokeConnection(connection.plugin_key || connection.source, connection.account_id);
+      await portalRevokeConnection(
+        connection.plugin_key || connection.source,
+        connection.account_id,
+      );
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Revoke failed");
@@ -139,11 +142,7 @@ export function AccountsPage({
             nav={nav}
             onSignOut={onSignOut}
             actions={
-              <Button
-                variant="secondary"
-                onClick={() => void refresh()}
-                disabled={busy}
-              >
+              <Button variant="secondary" onClick={() => void refresh()} disabled={busy}>
                 <RefreshCw className="h-4 w-4" />
                 Refresh
               </Button>
@@ -153,160 +152,154 @@ export function AccountsPage({
       </header>
 
       <div className="min-h-0 flex-1 overflow-auto">
-      <main className={cn("flex w-full flex-col gap-8 px-4 py-6 sm:px-5", pageWidthClass)}>
-        <div className="space-y-1">
-          <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">
-            Accounts
-          </h1>
-          <p className="text-sm text-ink/60">
-            Link bookstore accounts. Acquired books stay when you revoke.
-          </p>
-        </div>
+        <main className={cn("flex w-full flex-col gap-8 px-4 py-6 sm:px-5", pageWidthClass)}>
+          <div className="space-y-1">
+            <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">
+              Accounts
+            </h1>
+            <p className="text-sm text-ink/60">
+              Link bookstore accounts. Acquired books stay when you revoke.
+            </p>
+          </div>
 
-        {error ? (
-          <p className="text-sm font-medium text-brick" role="alert">
-            {error}
-          </p>
-        ) : null}
+          {error ? (
+            <p className="text-sm font-medium text-brick" role="alert">
+              {error}
+            </p>
+          ) : null}
 
-        <section className="space-y-3">
-          <h2 className="text-lg font-semibold text-ink">Bookstore sources</h2>
-          {sources.length === 0 ? (
-            <p className="text-sm text-ink/50">No storefront plugin is deployed on this node.</p>
-          ) : (
-            <ul className="divide-y divide-ink/10 bg-card">
-              {sources.map((s) => {
-                const open = openSource === s.id;
-                return (
-                  <li key={s.id} className="px-3 py-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-3">
-                        {s.brand.logo ? (
-                          <img
-                            src={s.brand.logo}
-                            alt=""
-                            className="h-8 w-8 rounded bg-white object-contain p-0.5"
-                          />
-                        ) : (
-                          <div className="flex h-8 w-8 items-center justify-center rounded bg-fold text-xs font-semibold">
-                            {s.name.slice(0, 2)}
+          <section className="space-y-3">
+            <h2 className="text-lg font-semibold text-ink">Bookstore sources</h2>
+            {sources.length === 0 ? (
+              <p className="text-sm text-ink/50">No storefront plugin is deployed on this node.</p>
+            ) : (
+              <ul className="divide-y divide-ink/10 bg-card">
+                {sources.map((s) => {
+                  const open = openSource === s.id;
+                  return (
+                    <li key={s.id} className="px-3 py-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-3">
+                          {s.brand.logo ? (
+                            <img
+                              src={s.brand.logo}
+                              alt=""
+                              className="h-8 w-8 rounded bg-white object-contain p-0.5"
+                            />
+                          ) : (
+                            <div className="flex h-8 w-8 items-center justify-center rounded bg-fold text-xs font-semibold">
+                              {s.name.slice(0, 2)}
+                            </div>
+                          )}
+                          <div>
+                            <p className="font-medium text-ink">{s.name}</p>
+                            <p className="text-xs text-ink/50">
+                              {s.auth === "oauth" ? "OAuth" : "Email & password"} · {s.id}
+                            </p>
                           </div>
-                        )}
-                        <div>
-                          <p className="font-medium text-ink">{s.name}</p>
-                          <p className="text-xs text-ink/50">
-                            {s.auth === "oauth" ? "OAuth" : "Email & password"} · {s.id}
-                          </p>
                         </div>
-                      </div>
-                      <Button
-                        variant="secondary"
-                        disabled={busy || !canConnect}
-                        onClick={() => {
-                          if (s.auth === "oauth") {
-                            void onOauthStart(s.id);
-                          } else {
-                            setOauthUrl(null);
-                            setOpenSource(open ? null : s.id);
-                          }
-                        }}
-                      >
-                        <Link2 className="h-4 w-4" />
-                        Connect
-                      </Button>
-                    </div>
-                    {open && s.auth === "password" ? (
-                      <form
-                        className="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto]"
-                        onSubmit={(e) => void onPasswordLogin(e, s.id)}
-                      >
-                        <Input
-                          type="email"
-                          placeholder="Email"
-                          value={email}
-                          onChange={(e) => setEmail(e.target.value)}
-                          autoComplete="username"
-                          required
-                        />
-                        <Input
-                          type="password"
-                          placeholder="Password"
-                          value={password}
-                          onChange={(e) => setPassword(e.target.value)}
-                          autoComplete="current-password"
-                          required
-                        />
-                        <Button type="submit" disabled={busy}>
-                          Save login
-                        </Button>
-                      </form>
-                    ) : null}
-                    {open && s.auth === "oauth" && oauthUrl ? (
-                      <p className="mt-2 text-sm text-ink/60">
-                        Complete sign-in in the new tab, or{" "}
-                        <a
-                          href={oauthUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-teal underline"
+                        <Button
+                          variant="secondary"
+                          disabled={busy || !canConnect}
+                          onClick={() => {
+                            if (s.auth === "oauth") {
+                              void onOauthStart(s.id);
+                            } else {
+                              setOauthUrl(null);
+                              setOpenSource(open ? null : s.id);
+                            }
+                          }}
                         >
-                          open {s.name} login
-                        </a>
-                        .
-                      </p>
+                          <Link2 className="h-4 w-4" />
+                          Connect
+                        </Button>
+                      </div>
+                      {open && s.auth === "password" ? (
+                        <form
+                          className="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto]"
+                          onSubmit={(e) => void onPasswordLogin(e, s.id)}
+                        >
+                          <Input
+                            type="email"
+                            placeholder="Email"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            autoComplete="username"
+                            required
+                          />
+                          <Input
+                            type="password"
+                            placeholder="Password"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            autoComplete="current-password"
+                            required
+                          />
+                          <Button type="submit" disabled={busy}>
+                            Save login
+                          </Button>
+                        </form>
+                      ) : null}
+                      {open && s.auth === "oauth" && oauthUrl ? (
+                        <p className="mt-2 text-sm text-ink/60">
+                          Complete sign-in in the new tab, or{" "}
+                          <a
+                            href={oauthUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-teal underline"
+                          >
+                            open {s.name} login
+                          </a>
+                          .
+                        </p>
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+
+          <section className="space-y-3">
+            <h2 className="text-lg font-semibold text-ink">Connections</h2>
+            {connections.length === 0 ? (
+              <p className="text-sm text-ink/50">No store connections yet.</p>
+            ) : (
+              <ul className="divide-y divide-ink/10 bg-card">
+                {connections.map((c) => (
+                  <li
+                    key={`${c.plugin_key}:${c.account_id}`}
+                    className="flex flex-wrap items-center justify-between gap-2 px-3 py-3"
+                  >
+                    <div className="flex items-center gap-3">
+                      {c.brand?.logo ? (
+                        <img
+                          src={c.brand.logo}
+                          alt=""
+                          className="h-7 w-7 rounded bg-white object-contain p-0.5"
+                        />
+                      ) : null}
+                      <div>
+                        <p className="font-medium text-ink">{c.label || c.account_id}</p>
+                        <p className="text-xs text-ink/50">
+                          {c.source} · {c.connection_status}
+                          {!c.source_enabled ? " · source not deployed on this node" : ""}
+                        </p>
+                      </div>
+                    </div>
+                    {c.connection_status !== "revoked" ? (
+                      <Button variant="ghost" disabled={busy} onClick={() => void onRevoke(c)}>
+                        <Unlink className="h-4 w-4" />
+                        Revoke
+                      </Button>
                     ) : null}
                   </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
-
-        <section className="space-y-3">
-          <h2 className="text-lg font-semibold text-ink">Connections</h2>
-          {connections.length === 0 ? (
-            <p className="text-sm text-ink/50">No store connections yet.</p>
-          ) : (
-            <ul className="divide-y divide-ink/10 bg-card">
-              {connections.map((c) => (
-                <li
-                  key={`${c.plugin_key}:${c.account_id}`}
-                  className="flex flex-wrap items-center justify-between gap-2 px-3 py-3"
-                >
-                  <div className="flex items-center gap-3">
-                    {c.brand?.logo ? (
-                      <img
-                        src={c.brand.logo}
-                        alt=""
-                        className="h-7 w-7 rounded bg-white object-contain p-0.5"
-                      />
-                    ) : null}
-                    <div>
-                      <p className="font-medium text-ink">
-                        {c.label || c.account_id}
-                      </p>
-                      <p className="text-xs text-ink/50">
-                        {c.source} · {c.connection_status}
-                        {!c.source_enabled ? " · source not deployed on this node" : ""}
-                      </p>
-                    </div>
-                  </div>
-                  {c.connection_status !== "revoked" ? (
-                    <Button
-                      variant="ghost"
-                      disabled={busy}
-                      onClick={() => void onRevoke(c)}
-                    >
-                      <Unlink className="h-4 w-4" />
-                      Revoke
-                    </Button>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      </main>
+                ))}
+              </ul>
+            )}
+          </section>
+        </main>
       </div>
     </div>
   );

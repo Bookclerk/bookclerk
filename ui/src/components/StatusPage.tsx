@@ -191,9 +191,7 @@ export function StatusPage({
                 />
               </section>
               <section className="space-y-3">
-                <h2 className="text-lg font-semibold text-ink">
-                  {owned ? "Your nodes" : "Nodes"}
-                </h2>
+                <h2 className="text-lg font-semibold text-ink">{owned ? "Your nodes" : "Nodes"}</h2>
                 {status.nodes.length === 0 ? (
                   <p className="text-sm text-ink/50">
                     {owned ? "You do not own any nodes yet." : "No nodes registered."}

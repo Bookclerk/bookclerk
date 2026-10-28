@@ -602,9 +602,7 @@ export function mintBranchInvite(body: {
  * @param mine - Only the caller's own, even for an Owner who may see all.
  * @returns The invites.
  */
-export function listBranchInvites(
-  mine = false,
-): Promise<{ links: BranchInviteView[] }> {
+export function listBranchInvites(mine = false): Promise<{ links: BranchInviteView[] }> {
   return request(mine ? "/api/config/node-invites?mine=true" : "/api/config/node-invites");
 }
 
@@ -852,5 +850,7 @@ export function dismissWelcome(): void {
 export function clerkNodes(nodes: ConfigNodeView[]): ConfigNodeView[] {
   return nodes
     .filter((node) => node.kind === "owner")
-    .sort((a, b) => Number(b.this_node) - Number(a.this_node) || a.node_id.localeCompare(b.node_id));
+    .sort(
+      (a, b) => Number(b.this_node) - Number(a.this_node) || a.node_id.localeCompare(b.node_id),
+    );
 }

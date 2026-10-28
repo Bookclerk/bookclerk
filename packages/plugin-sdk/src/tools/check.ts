@@ -6,7 +6,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseToml } from "smol-toml";
-import { assertPathInside, copyFileUnder, ensureDirUnder, refuseSymlinkExistingComponents, refuseSymlinkPath } from "../sparse-workerd/ensure.js";
+import {
+  assertPathInside,
+  copyFileUnder,
+  ensureDirUnder,
+  refuseSymlinkExistingComponents,
+  refuseSymlinkPath,
+} from "../sparse-workerd/ensure.js";
 import {
   declaresPython,
   moduleLoadKey,
@@ -173,13 +179,8 @@ export function checkPlugin(pluginDir: string): string {
     enforceWorkerdLoadSet(m, modulesDir);
   } else if (runtime === "native") {
     const cmd = m.command!;
-    const resolved = path.isAbsolute(cmd)
-      ? path.resolve(cmd)
-      : assertPathInside(root, cmd);
-    if (
-      !fs.existsSync(resolved) &&
-      fs.existsSync(assertPathInside(root, ".require-binary"))
-    ) {
+    const resolved = path.isAbsolute(cmd) ? path.resolve(cmd) : assertPathInside(root, cmd);
+    if (!fs.existsSync(resolved) && fs.existsSync(assertPathInside(root, ".require-binary"))) {
       throw new Error(`native command not found: ${resolved}`);
     }
   }
@@ -207,23 +208,16 @@ function enforceWorkerdLoadSet(m: Manifest, modulesDir: string): void {
     const loaded = Boolean(key && loadSet.has(key));
     if (!loaded) {
       if (workerdModuleIsEmbedded(filePath)) {
-        throw new Error(
-          `plugin.toml: [[modules]] \`${filePath}\` is not in the workerd load set`,
-        );
+        throw new Error(`plugin.toml: [[modules]] \`${filePath}\` is not in the workerd load set`);
       }
       throw new Error(`plugin.toml: [[modules]] \`${filePath}\` is not implemented yet`);
     }
   }
   const diskPython = [...loadSet].some((name) => name.toLowerCase().endsWith(".py"));
   if (m.workerd) {
-    validateAuthorCompatibilityFlags(
-      m.workerd.compatibility_flags ?? [],
-      declaresPython(m),
-    );
+    validateAuthorCompatibilityFlags(m.workerd.compatibility_flags ?? [], declaresPython(m));
     if (diskPython && !declaresPython(m)) {
-      throw new Error(
-        "plugin.toml: undeclared Python file in the workerd modules tree",
-      );
+      throw new Error("plugin.toml: undeclared Python file in the workerd modules tree");
     }
   }
 }

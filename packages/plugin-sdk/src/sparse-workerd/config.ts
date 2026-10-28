@@ -20,7 +20,14 @@ import {
   workerdModuleIsEmbedded,
   type Manifest,
 } from "../tools/validate.js";
-import { assertPathInside, refuseSymlinkPath, packageRoot, ensureDirUnder, writeFileUnder, copyFileUnder } from "./ensure.js";
+import {
+  assertPathInside,
+  refuseSymlinkPath,
+  packageRoot,
+  ensureDirUnder,
+  writeFileUnder,
+  copyFileUnder,
+} from "./ensure.js";
 
 /**
  * Require a relative manifest path (`modules_dir`, `main_module`).
@@ -76,17 +83,10 @@ function singleFileName(value: string, label: string): string {
   }
   return value;
 }
-const SDK_JS_MODULE_NAMES = [
-  "@bookclerk/plugin-sdk/workerd",
-  "@bookclerk/plugin-sdk",
-] as const;
+const SDK_JS_MODULE_NAMES = ["@bookclerk/plugin-sdk/workerd", "@bookclerk/plugin-sdk"] as const;
 const SDK_PY_WORKERD_MODULE = "bookclerk_plugin_sdk/workerd.py";
 const SDK_PY_INIT_MODULE = "bookclerk_plugin_sdk/__init__.py";
-const PYODIDE_EGRESS_HOSTS = [
-  "cdn.jsdelivr.net",
-  "pypi.org",
-  "files.pythonhosted.org",
-] as const;
+const PYODIDE_EGRESS_HOSTS = ["cdn.jsdelivr.net", "pypi.org", "files.pythonhosted.org"] as const;
 
 const SDK_PY_INIT = `"""Bookclerk plugin SDK (workerd isolate).
 
@@ -175,9 +175,7 @@ export function manifestCapabilities(m: Manifest): {
  */
 export function manifestDescribeJson(m: Manifest): string {
   const cli =
-    m.cli && typeof m.cli === "object"
-      ? (m.cli as { commands?: unknown[] })
-      : { commands: [] };
+    m.cli && typeof m.cli === "object" ? (m.cli as { commands?: unknown[] }) : { commands: [] };
   return JSON.stringify({
     apiVersion: m.api_version,
     id: m.id,
@@ -240,10 +238,7 @@ export type GeneratedConfig = {
  * @returns Canonical absolute session directory.
  */
 export function allocateWorkerdStateDir(pluginRoot: string): string {
-  const rootKey = createHash("sha256")
-    .update(path.resolve(pluginRoot))
-    .digest("hex")
-    .slice(0, 8);
+  const rootKey = createHash("sha256").update(path.resolve(pluginRoot)).digest("hex").slice(0, 8);
   // Allocate via mkdtemp under the OS temp dir with a literal prefix so we never
   // mkdir a raw operator TMPDIR/plugin join (local threat-model path sink).
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `bc-w${rootKey}-`));
@@ -339,11 +334,7 @@ export function pluginGlobalOutbound(mode: string): "blocked" | "egress" {
  * @param base - Domains declared in `capabilities.network.domains`.
  * @returns Deduplicated domain list for the egress policy JSON.
  */
-export function egressDomainsFor(
-  needsPython: boolean,
-  mode: string,
-  base: string[],
-): string[] {
+export function egressDomainsFor(needsPython: boolean, mode: string, base: string[]): string[] {
   const domains = [...base];
   if (needsPython && mode === "outbound") {
     for (const host of PYODIDE_EGRESS_HOSTS) {
@@ -379,7 +370,7 @@ export function materializeConfig(
   if (blocked) throw new Error(blocked);
   const workerd = manifest.workerd;
   if (!workerd) {
-    throw new Error('missing [workerd] table');
+    throw new Error("missing [workerd] table");
   }
   const appliedDate = applyAuthorCompatibilityDate(workerd.compatibility_date);
   if (appliedDate.warning) console.warn(appliedDate.warning);
@@ -388,10 +379,7 @@ export function materializeConfig(
   const stateDir = options.stateDir
     ? fs.realpathSync(path.resolve(options.stateDir))
     : allocateWorkerdStateDir(root);
-  const modulesDirName = relativeManifestPath(
-    workerd.modules_dir ?? "modules",
-    "modules_dir",
-  );
+  const modulesDirName = relativeManifestPath(workerd.modules_dir ?? "modules", "modules_dir");
   const mainModuleName = relativeManifestPath(workerd.main_module, "main_module");
   const entrypoint = workerd.entrypoint ?? "default";
   const networkMode = manifest.capabilities?.network?.mode ?? "deny";
@@ -434,10 +422,7 @@ export function materializeConfig(
   const seenNames = new Set<string>();
 
   for (const filePath of ordered) {
-    const name = path
-      .relative(modulesDir, filePath)
-      .split(path.sep)
-      .join("/");
+    const name = path.relative(modulesDir, filePath).split(path.sep).join("/");
     // Cap'n Proto `/…` = import-path relative (same as Rust materialize).
     const embed = `/${modulesDirName}/${name}`;
     if (isLegacySdkEmbed(name)) continue;
@@ -445,9 +430,7 @@ export function materializeConfig(
     if (python) needsPython = true;
     else if (name.endsWith(".js") || name.endsWith(".mjs")) needsJs = true;
     seenNames.add(name);
-    moduleEmbeds.push(
-      `(name = "${escapeCapnp(name)}", ${field} = embed "${escapeCapnp(embed)}")`,
-    );
+    moduleEmbeds.push(`(name = "${escapeCapnp(name)}", ${field} = embed "${escapeCapnp(embed)}")`);
   }
   const authorNames = new Set(seenNames);
 
@@ -486,12 +469,7 @@ export function materializeConfig(
     const pyCandidates = [
       assertPathInside(
         packagesRoot,
-        path.join(
-          "plugin-sdk-python",
-          "src",
-          "bookclerk_plugin_sdk",
-          "workerd.py",
-        ),
+        path.join("plugin-sdk-python", "src", "bookclerk_plugin_sdk", "workerd.py"),
       ),
       assertPathInside(sdkRoot, "python-workerd.py"),
     ];
@@ -545,9 +523,7 @@ export function materializeConfig(
     const key = moduleLoadKey(modulesDirName, filePath);
     if (!key || !authorNames.has(key)) {
       if (workerdModuleIsEmbedded(filePath)) {
-        throw new Error(
-          `plugin.toml: [[modules]] \`${filePath}\` is not in the workerd load set`,
-        );
+        throw new Error(`plugin.toml: [[modules]] \`${filePath}\` is not in the workerd load set`);
       }
       throw new Error(`plugin.toml: [[modules]] \`${filePath}\` is not implemented yet`);
     }
@@ -662,10 +638,7 @@ const bridgeWorker :Workerd.Worker = (
 );
 `;
 
-  const configName = singleFileName(
-    options.configName ?? "workerd-config.capnp",
-    "configName",
-  );
+  const configName = singleFileName(options.configName ?? "workerd-config.capnp", "configName");
   const configPath = writeFileUnder(stateDir, configName, config);
   return {
     configPath,

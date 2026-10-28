@@ -40,7 +40,8 @@ function check(text: string, label: string) {
   if (ok && v !== null && typeof v === "object" && !Array.isArray(v)) {
     const s = v.since;
     const a = v.after === undefined || v.after === null ? "" : v.after;
-    const sinceOk = typeof s === "number" && Number.isInteger(s) && s >= 0 && s <= Number.MAX_SAFE_INTEGER;
+    const sinceOk =
+      typeof s === "number" && Number.isInteger(s) && s >= 0 && s <= Number.MAX_SAFE_INTEGER;
     const afterOk =
       typeof a === "string" &&
       a.length <= MAX_AFTER_CHARS &&
@@ -52,8 +53,29 @@ function check(text: string, label: string) {
 
 /** Fragments mutations splice in: JSON syntax, numbers, controls and Unicode. */
 const FRAGMENTS = [
-  "{", "}", "[", "]", ",", ":", '"', "\\", "\\n", "\\u0000", "\\u007f", "1e3", "-1", "0.5",
-  "9007199254740993", "null", "true", '"since"', '"after"', "é", "😀", " ", "\u0001",
+  "{",
+  "}",
+  "[",
+  "]",
+  ",",
+  ":",
+  '"',
+  "\\",
+  "\\n",
+  "\\u0000",
+  "\\u007f",
+  "1e3",
+  "-1",
+  "0.5",
+  "9007199254740993",
+  "null",
+  "true",
+  '"since"',
+  '"after"',
+  "é",
+  "😀",
+  " ",
+  "\u0001",
 ];
 
 describe("ingest cursor parser", () => {
@@ -61,10 +83,15 @@ describe("ingest cursor parser", () => {
     const all = seeds();
     assert.ok(all.length > 0);
     for (const [name, text] of all) check(text, name);
-    assert.deepEqual(parseCursor(readFileSync(new URL("./corpus/ingest_cursor/normal.json", import.meta.url), "utf8")), {
-      since: 1792831701483,
-      after: "diagnostics/0.0.0-synthetic/0a3df5f0-f339-49b7-b81f-df217a50797f.json",
-    });
+    assert.deepEqual(
+      parseCursor(
+        readFileSync(new URL("./corpus/ingest_cursor/normal.json", import.meta.url), "utf8"),
+      ),
+      {
+        since: 1792831701483,
+        after: "diagnostics/0.0.0-synthetic/0a3df5f0-f339-49b7-b81f-df217a50797f.json",
+      },
+    );
   });
 
   it("holds the oracle under seeded mutation", () => {
