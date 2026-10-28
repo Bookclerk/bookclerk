@@ -193,12 +193,19 @@ versions.
   that finishes. `/docs/v/<ref>/<path>` is any other version
   the site was built with (`main` and every release tag); the default
   version's prefixed URLs redirect to `/docs/<path>`.
-- `<path>` is the file's path without `.md`; a directory's `README.md` is
-  `<dir>/`. The other spelling and old `.html` URLs redirect, and `<dir>/`
-  without a README goes to `<dir>/index` (rustdoc's crate pages).
+- Every URL is slash-free: `<path>` is the file's path without `.md`, a
+  directory's `README.md` is `<dir>` and the docs home is `/docs` (or
+  `/docs/v/<ref>`). The slash spelling (`<dir>/`) and old `.html` URLs
+  redirect permanently (301), and `<dir>` without a README goes to
+  `<dir>/index` (rustdoc's crate pages). Because `x.md` and `x/README.md`
+  would share `/docs/x`, `docs.test.ts` checks no two docs do; the
+  lookup tries the spelling the sidebar lists first. Website pages follow
+  the same rule: `/download/` and `/download.html` move to `/download`
+  with a 301 from the Worker, and the assets binding drops trailing slashes
+  (`html_handling = "drop-trailing-slash"`) for anything else.
 - A docs path that names no doc (an old or mistyped link, or a version the
   site does not serve) is a temporary redirect, `no-store`, to that
-  version's docs home page, or `/docs/` (its Markdown copy for a `.md`
+  version's docs home page, or `/docs` (its Markdown copy for a `.md`
   path). Only a missing home page itself is a 404.
 - Only refs in the version list and paths of plain segments (letters,
   digits, `.`, `_`, `-`, none starting with `.`) are fetched, from

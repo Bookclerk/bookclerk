@@ -132,7 +132,7 @@ test("the sidebar lists the page and its operations under Web API", () => {
   assert.ok(nav.startsWith('<details class="nav-group" open>'), "the group opens");
   assert.ok(
     nav.includes(
-      '<a href="/docs/api/web/">Web API</a><ul class="nav-sub"><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a>',
+      '<a href="/docs/api/web">Web API</a><ul class="nav-sub"><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a>',
     ),
   );
   assert.ok(
@@ -157,8 +157,8 @@ test("the breadcrumb of an operations page runs through Web API", () => {
   assert.deepEqual(parent, { key: "api/web/README", title: "Web API" });
   assert.equal(
     crumbsHtml(crumbTrail(nav, "api/web/jobs", "Jobs"), "/docs/"),
-    '<nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/docs/">Docs</a></li><li><a href="/docs/api/">API reference</a></li>' +
-      '<li><a href="/docs/api/web/">Web API</a></li><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a></li></ol></nav>',
+    '<nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/docs">Docs</a></li><li><a href="/docs/api">API reference</a></li>' +
+      '<li><a href="/docs/api/web">Web API</a></li><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a></li></ol></nav>',
   );
   // The structured data lists the same four crumbs.
   const graph = JSON.stringify(
@@ -171,12 +171,12 @@ test("the breadcrumb of an operations page runs through Web API", () => {
   );
   assert.ok(
     graph.includes(
-      '{"@type":"ListItem","position":2,"name":"API reference","item":"https://x/docs/api/"}',
+      '{"@type":"ListItem","position":2,"name":"API reference","item":"https://x/docs/api"}',
     ),
   );
   assert.ok(
     graph.includes(
-      '{"@type":"ListItem","position":3,"name":"Web API","item":"https://x/docs/api/web/"}',
+      '{"@type":"ListItem","position":3,"name":"Web API","item":"https://x/docs/api/web"}',
     ),
   );
   assert.ok(
@@ -353,7 +353,7 @@ test("the index's sidebar lists every route group with its routes", () => {
   // On the index every group is collapsed, and the schemas page follows them.
   assert.ok(
     nav.includes(
-      '<a href="/docs/api/web/" aria-current="page">Web API</a><ul class="nav-sub"><li><a href="/docs/api/web/jobs">Jobs</a></li>' +
+      '<a href="/docs/api/web" aria-current="page">Web API</a><ul class="nav-sub"><li><a href="/docs/api/web/jobs">Jobs</a></li>' +
         '<li><a href="/docs/api/web/health">Health</a></li><li><a href="/docs/api/web/schemas">Schemas</a></li></ul>',
     ),
   );

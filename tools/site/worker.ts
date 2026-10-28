@@ -313,11 +313,11 @@ export type DocsTarget =
 /**
  * Parses a /docs/ request path.
  *
- * `/docs/v/<ref>/` selects a version from `versions`; the default version
+ * `/docs/v/<ref>` selects a version from `versions`; the default version
  * (the first) is served without the prefix, so its prefixed URLs redirect.
- * A directory path names its README (`api/` → `api/README`), a path without
- * a slash may also name a directory (`api` → `api/README`), and `.html` paths
- * left from the static site redirect to the page. Other dots are part of the
+ * A path may name a directory (`api` → `api/README`); the slash form
+ * (`api/`) is looked up too, and the caller redirects it to the page's
+ * slash-free URL. `.html` paths left from the static site redirect to the page. Other dots are part of the
  * name (`api/python/bookclerk_plugin_sdk.workerd`); the docs publish only
  * Markdown, so a path like `x.svg` is looked up as `x.svg.md` and not found.
  *
@@ -326,18 +326,22 @@ export type DocsTarget =
  * @returns What to serve.
  */
 export function docsTarget(pathname: string, versions: readonly DocsVersion[]): DocsTarget {
-  if (pathname === "/docs") return { kind: "redirect", location: "/docs/" };
   let version = versions[0];
   if (version === undefined) return { kind: "missing" };
-  let rest = pathname.slice("/docs/".length);
+  let rest = pathname === "/docs" ? "" : pathname.slice("/docs/".length);
   if (rest === "v" || rest.startsWith("v/")) {
     const [, ref = "", ...tail] = rest.split("/");
     const found = versions.find((v) => v.ref === ref);
     if (found === undefined) return { kind: "missing" };
-    if (tail.length === 0) return { kind: "redirect", location: `${found.base}` };
     rest = tail.join("/");
     if (!DOC_REST_RE.test(rest)) return { kind: "missing" };
-    if (found === versions[0]) return { kind: "redirect", location: `/docs/${rest}` };
+    if (found === versions[0]) {
+      // Straight to the final URL: the unprefixed path may itself redirect
+      // (`x.html`), and a redirect should take one hop.
+      const location = `/docs/${rest}`.replace(/\/$/, "");
+      const next = docsTarget(location, versions);
+      return next.kind === "redirect" ? next : { kind: "redirect", location };
+    }
     version = found;
   }
   if (!DOC_REST_RE.test(rest)) return { kind: "missing" };
@@ -347,14 +351,17 @@ export function docsTarget(pathname: string, versions: readonly DocsVersion[]): 
   if (last.endsWith(".html")) {
     const page =
       last === "index.html" ? rest.slice(0, -"index.html".length) : rest.slice(0, -".html".length);
-    return { kind: "redirect", location: version.base + page };
+    const location = (version.base + page).replace(/\/$/, "");
+    // `a.html/index.html` lands on `a.html`, which would redirect again.
+    const next = docsTarget(location, versions);
+    return next.kind === "redirect" ? next : { kind: "redirect", location };
   }
   if (rest === "" || rest.endsWith("/")) {
     const keys: [string, ...string[]] = [`${rest}README`, `${rest}index`];
     if (rest !== "") keys.push(rest.slice(0, -1));
     return { kind: "page", version, keys };
   }
-  return { kind: "page", version, keys: [rest, `${rest}/README`] };
+  return { kind: "page", version, keys: [rest, `${rest}/README`, `${rest}/index`] };
 }
 
 /**
@@ -565,7 +572,7 @@ function redirect(url: URL, location: string): Response {
  * @returns A 302 to the docs home page, without the query string.
  */
 function toDocsHome(url: URL, base: string, markdown: boolean): Response {
-  const location = markdown ? docMarkdownUrl("README", base) : base;
+  const location = markdown ? docMarkdownUrl("README", base) : docUrl("README", base);
   return withHeaders(new Response(null, { status: 302 }), {
     Location: `${url.origin}${location}`,
     "Cache-Control": "no-store",
@@ -641,9 +648,16 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
   let source: string | null = null;
   // The last key asked for, so the unavailable page links on GitHub to the
   // file that could not be read rather than one already known to be missing.
-  let attempted = target.keys[0];
+  // A slash-free path can name a page or a directory; trying the spelling
+  // the sidebar lists first saves a docs repository miss for directories.
+  const listed = new Set(deps.shell.nav.flatMap((group) => group.pages.map((p) => p.key)));
+  const keys = [
+    ...target.keys.filter((k) => listed.has(k)),
+    ...target.keys.filter((k) => !listed.has(k)),
+  ];
+  let attempted = keys[0] ?? target.keys[0];
   try {
-    for (const candidate of target.keys) {
+    for (const candidate of keys) {
       attempted = candidate;
       source = await fetchDoc(version.ref, candidate, deps.fetch);
       if (source !== null) {
@@ -653,7 +667,7 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
     }
   } catch (err) {
     console.error(`docs fetch failed: ${err instanceof Error ? err.message : String(err)}`);
-    const page = renderUnavailablePage(deps.shell, target.keys[0], {
+    const page = renderUnavailablePage(deps.shell, keys[0] ?? target.keys[0], {
       ref: version.ref,
       base: version.base,
       githubKey: attempted,
@@ -674,7 +688,10 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
   }
   if (key === null || source === null) {
     // The home page itself missing would send the reader in a loop.
-    const home = target.kind === "markdown" ? docMarkdownUrl("README", version.base) : version.base;
+    const home =
+      target.kind === "markdown"
+        ? docMarkdownUrl("README", version.base)
+        : docUrl("README", version.base);
     if (url.pathname === home) return notFound(url, request.method, wantsMarkdown, deps.assets);
     return toDocsHome(url, version.base, target.kind === "markdown");
   }
@@ -865,7 +882,7 @@ async function listDocs(
   for (const { key, date } of file.kind === "file" ? (datedPages(file.text) ?? []) : []) {
     const path = docUrl(key, version.base);
     const target = docsTarget(path, deps.shell.versions);
-    if (target.kind === "page" && target.version === version && target.keys[0] === key)
+    if (target.kind === "page" && target.version === version && target.keys.includes(key))
       docs.push({ key, path, date });
   }
   return { file, docs };
@@ -924,7 +941,7 @@ async function serveSitemapPage(
     for (const d of docs)
       links.push({ key: d.key, path: d.path, title: titles.get(d.key) ?? null, updated: d.date });
   } else {
-    links.push({ key: "README", path: version.base, title: null, updated: null });
+    links.push({ key: "README", path: docUrl("README", version.base), title: null, updated: null });
     for (const [key, title] of titles)
       links.push({ key, path: docUrl(key, version.base), title, updated: null });
   }
@@ -1096,6 +1113,26 @@ export async function handle(request: Request, env: Env, docs: DocsOptions): Pro
 }
 
 /**
+ * Finds the slash-free URL of a website page asked for by another spelling:
+ * `/download/` and `/download.html` for `/download`, `/index.html` for `/`.
+ * The assets binding would redirect these too, but temporarily (307); a
+ * permanent redirect tells search engines which URL to keep.
+ *
+ * @param pathname - The request path.
+ * @param pages - The website's page paths (build.ts `PAGES`).
+ * @returns The page's path, or null when the path is not another spelling of one.
+ */
+export function sitePageLocation(pathname: string, pages: readonly string[]): string | null {
+  if (pathname === "/index.html") return "/";
+  const stem = pathname.endsWith("/")
+    ? pathname.slice(0, -1)
+    : pathname.endsWith(".html")
+      ? pathname.slice(0, -".html".length)
+      : null;
+  return stem !== null && stem.length > 1 && pages.includes(stem) ? stem : null;
+}
+
+/**
  * Answers one request, before compression.
  *
  * @param request - The incoming request.
@@ -1117,6 +1154,8 @@ async function route(request: Request, env: Env, docs: DocsOptions): Promise<Res
   };
   if (isRead && (url.pathname === "/docs" || url.pathname.startsWith("/docs/")))
     return serveDocs(request, url, deps);
+  const canonical = isRead ? sitePageLocation(url.pathname, deps.shell.pages) : null;
+  if (canonical !== null) return redirect(url, canonical);
   if (isRead && (url.pathname === SITEMAP_PATH || SECTION_PATH_RE.test(url.pathname)))
     return serveSitemap(request, url, deps);
   if (isRead && (url.pathname === SITEMAP_PAGE_PATH || url.pathname === `${SITEMAP_PAGE_PATH}/`)) {

@@ -468,7 +468,7 @@ test("crawler and agent files list the site", () => {
   try {
     const sitemap = site.page("sitemap.xml");
     assert.ok(sitemap.includes("<loc>https://bookclerk.app/</loc>"));
-    assert.ok(sitemap.includes("<loc>https://bookclerk.app/docs/plugins/</loc>"));
+    assert.ok(sitemap.includes("<loc>https://bookclerk.app/docs/plugins</loc>"));
     assert.ok(!sitemap.includes("/404"));
     assert.match(site.page("robots.txt"), /^Sitemap: https:\/\/bookclerk.app\/sitemap.xml$/m);
 

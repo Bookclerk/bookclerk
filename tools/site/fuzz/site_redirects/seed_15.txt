@@ -1,0 +1,1 @@
+/docs/v/v0.2.0/guide/install.html

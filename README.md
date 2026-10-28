@@ -22,7 +22,7 @@
 [![Status: pre-release](https://img.shields.io/badge/status-pre--release-C84A34.svg)](https://bookclerk.app/download#pre-release)
 
 [Website](https://bookclerk.app) ·
-[Docs](https://bookclerk.app/docs/) ·
+[Docs](https://bookclerk.app/docs) ·
 [Get started](https://bookclerk.app/docs/guide/getting-started) ·
 [Live demo](https://demo.bookclerk.app) ·
 [Privacy](https://bookclerk.app/privacy) ·
