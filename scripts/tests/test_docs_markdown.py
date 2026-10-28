@@ -313,6 +313,13 @@ class TreeTest(unittest.TestCase):
             "````markdown\n- ````\n> ````\n<!-- markdownlint-disable -->\n````\nText.\n",
         )
 
+    def test_strip_lint_comments_closes_fences_only_within_three_spaces(self) -> None:
+        source = "```markdown\n    ```\n<!-- markdownlint-disable MD013 -->\n```\n- ```\n  <!-- markdownlint-disable -->\n      ```\n  ```\nText. <!-- markdownlint-disable-line MD001 -->\n"
+        self.assertEqual(
+            dm.strip_lint_comments(source),
+            "```markdown\n    ```\n<!-- markdownlint-disable MD013 -->\n```\n- ```\n  <!-- markdownlint-disable -->\n      ```\n  ```\nText.\n",
+        )
+
     def test_python_modules_skip_private_and_templates(self) -> None:
         pkg = self.base / "src" / "pkg"
         for rel in ("__init__.py", "__main__.py", "_abi.py", "abi.py", "sub/__init__.py", "sub/x.py", "a_template/t.py"):

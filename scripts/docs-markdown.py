@@ -118,9 +118,12 @@ LINT_COMMENT_RE = re.compile(r"[ \t]*<!--[ \t]*markdownlint-[^\n]*?-->")
 # The container markers and indentation that open a line: block quotes
 # (`> `), list items (`- `, `1. `) and their continuation indent.
 CONTAINER_RE = re.compile(r"(?:[ \t]*(?:>|[-*+](?=[ \t])|\d{1,9}[.)](?=[ \t])) ?)*[ \t]*")
-# The block-quote markers and indentation that open a line inside a fence.
-# List markers there are code, so a closing fence cannot follow one.
-QUOTE_PREFIX_RE = re.compile(r"(?:[ \t]*> ?)*[ \t]*")
+# The block-quote markers that open a line. Inside a fence, list markers are
+# code, so a closing fence can follow only these and up to three spaces more
+# than the opening fence's container indent.
+QUOTE_PREFIX_RE = re.compile(r"(?:[ \t]*> ?)*")
+# The spaces at the start of what follows a line's block-quote markers.
+INDENT_RE = re.compile(r"[ \t]*")
 # A code fence line after its container markers: its backtick or tilde run,
 # then the rest of the line.
 FENCE_RUN_RE = re.compile(r"(`{3,}|~{3,})(.*)$")
@@ -255,48 +258,72 @@ def strip_outside_code_spans(paragraph: str) -> str:
     return "".join(kept)
 
 
-def opening_fence(line: str) -> tuple[str, int] | None:
+@dataclass(frozen=True)
+class Fence:
+    """An open fenced code block, as far as finding its closing line needs.
+
+    Attributes:
+        run: The opening backtick or tilde run; a closing run starts with it.
+        depth: How many block quotes hold the fence.
+        indent: Columns between the fence's quote markers and its run (list
+            markers and indentation); a closing run may sit at most three
+            columns further in.
+    """
+
+    run: str
+    depth: int
+    indent: int
+
+
+def opening_fence(line: str) -> Fence | None:
     """Say whether a line opens a fenced code block.
 
     Args:
         line: One line of the page.
 
     Returns:
-        The fence's run and its block-quote depth, or ``None`` when the line
-        does not open a fence (a backtick fence's info string cannot hold a
-        backtick).
+        The fence, or ``None`` when the line does not open one (a backtick
+        fence's info string cannot hold a backtick).
     """
     prefix = CONTAINER_RE.match(line)
-    depth = prefix.group(0).count(">") if prefix else 0
-    run = FENCE_RUN_RE.match(line, prefix.end() if prefix else 0)
+    start = prefix.end() if prefix else 0
+    run = FENCE_RUN_RE.match(line, start)
     if run is None or (run.group(1)[0] == "`" and "`" in run.group(2)):
         return None
-    return run.group(1), depth
+    quote = QUOTE_PREFIX_RE.match(line)
+    quote_end = quote.end() if quote else 0
+    return Fence(run.group(1), line[:quote_end].count(">"), start - quote_end)
 
 
-def closes_fence(line: str, fence: tuple[str, int]) -> bool | None:
+def closes_fence(line: str, fence: Fence) -> bool | None:
     """Say how a line inside a fenced code block relates to the fence.
 
     Args:
         line: One line after the fence opened.
-        fence: The fence's run and block-quote depth.
+        fence: The open fence.
 
     Returns:
         ``True`` when the line is the closing fence, ``None`` when it leaves
         the fence's block quote (which ends the fence before the line), and
         ``False`` when it is code.
     """
-    prefix = QUOTE_PREFIX_RE.match(line)
-    depth = prefix.group(0).count(">") if prefix else 0
-    if depth < fence[1]:
+    quote = QUOTE_PREFIX_RE.match(line)
+    quote_end = quote.end() if quote else 0
+    depth = line[:quote_end].count(">")
+    if depth < fence.depth:
         return None
     # A closing fence sits at the fence's own quote depth (deeper markers are
-    # code) and is a run of the opening character at least as long as the
-    # opening run, with nothing but spaces after it.
-    if depth > fence[1]:
+    # code), indented at most three columns past the fence's container, and
+    # is a run of the opening character at least as long as the opening run
+    # with nothing but spaces after it.
+    if depth > fence.depth:
         return False
-    run = FENCE_RUN_RE.match(line, prefix.end() if prefix else 0)
-    return bool(run and run.group(1).startswith(fence[0]) and run.group(2).strip() == "")
+    indent = INDENT_RE.match(line, quote_end)
+    start = indent.end() if indent else quote_end
+    if start - quote_end > fence.indent + 3:
+        return False
+    run = FENCE_RUN_RE.match(line, start)
+    return bool(run and run.group(1).startswith(fence.run) and run.group(2).strip() == "")
 
 
 def strip_lint_comments(text: str) -> str:
@@ -317,7 +344,7 @@ def strip_lint_comments(text: str) -> str:
     Returns:
         The page without the directives.
     """
-    fence: tuple[str, int] | None = None
+    fence: Fence | None = None
     out: list[str] = []
     paragraph: list[str] = []
     dropped = False
