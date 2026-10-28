@@ -585,6 +585,9 @@ class FakeGitHub:
         #: Runs once, just before the next status is recorded, to stand in
         #: for a concurrent run.
         self.before_status = None
+        #: True while a request comes through ``write``, the signature
+        #: token's transport; only those may change the signature file.
+        self.writing = False
 
     def pull(self) -> dict:
         head = {"sha": self.head, "label": "alice:feature", "repo": {"id": 700}}
@@ -634,6 +637,13 @@ class FakeGitHub:
         page = {"data": {"repository": {"pullRequest": {"commits": {"pageInfo": info, "nodes": nodes}}}}}
         return 200, json.dumps(page).encode()
 
+    def write(self, method: str, path: str, body: dict | None) -> tuple[int, bytes]:
+        self.writing = True
+        try:
+            return self.send(method, path, body)
+        finally:
+            self.writing = False
+
     def send(self, method: str, path: str, body: dict | None) -> tuple[int, bytes]:
         self.requests.append((method, path))
         if (method, path) == ("POST", "graphql"):
@@ -674,6 +684,7 @@ class FakeGitHub:
             content = base64.encodebytes(self.file).decode()
             return 200, json.dumps({"type": "file", "encoding": "base64", "sha": self.blob_sha(), "content": content}).encode()
         if method == "PUT" and route == "contents/signatures/cla.json":
+            assert self.writing, "the signature file must be written with the signature token"
             assert body is not None and body["branch"] == "cla-signatures"
             if self.conflicts:
                 self.conflicts -= 1
@@ -755,7 +766,7 @@ def pr_event_for(fake: FakeGitHub, number: int) -> object:
 
 
 def drive(fake: FakeGitHub, event: object) -> None:
-    cla.run(event, cla.GitHub(fake.send, "bookclerk/bookclerk"), CLA_URL, RUN_URL)
+    cla.run(event, cla.GitHub(fake.send, "bookclerk/bookclerk", fake.write), CLA_URL, RUN_URL)
 
 
 class EndToEndTests(unittest.TestCase):
@@ -774,6 +785,15 @@ class EndToEndTests(unittest.TestCase):
         self.assertNotIn("@alice", fake.comments[0]["body"])
         entry = json.loads(fake.file)["signedContributors"][0]
         self.assertEqual(entry, {"name": "alice", "id": 101, "comment_id": 900, "created_at": "2026-10-27T17:00:00Z", "repoId": 555, "pullRequestNo": 7, "claVersion": "1.0"})
+
+    def test_without_a_signature_token_a_signature_fails_closed(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        api = cla.GitHub(fake.send, "bookclerk/bookclerk")
+        with self.assertRaises(cla.ApiError):
+            cla.run(comment_event(ALICE, cla.SIGN_PHRASE), api, CLA_URL, RUN_URL)
+        self.assertEqual(fake.signed_ids(), set())
+        self.assertNotIn(("PUT", "repos/bookclerk/bookclerk/contents/signatures/cla.json"), fake.requests)
+        self.assertEqual(fake.statuses, [])
 
     def test_a_shared_head_passes_only_when_every_pull_request_passes(self) -> None:
         # Bob opens #8 on alice's signed head; a recheck on #7 must not

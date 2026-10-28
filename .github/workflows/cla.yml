@@ -9,8 +9,10 @@
 #   as commit author or co-author, are exempt.
 # - A contributor accepts by commenting the sentence in `SIGN_PHRASE` on a
 #   pull request they are part of. The check records the signature in
-#   `signatures/cla.json` on the `cla-signatures` branch (a GitHub-signed API
-#   commit), so main is never written.
+#   `signatures/cla.json` on the `cla-signatures` branch, so main is never
+#   written. The write is a contents API commit made with a token from the
+#   automation App, which GitHub signs for the App; the branch's ruleset lets
+#   only that App update it.
 # - Runs when a pull request is opened, pushed to, reopened, closed or
 #   retargeted (a new base can add commits without changing the head).
 # - `recheck` re-runs the check after a signature or allowlist change.
@@ -23,7 +25,7 @@
 # - Pull request events reach this workflow through `workflow_run`: the
 #   unprivileged `CLA trigger` workflow (cla-trigger.yml) runs on
 #   `pull_request`, and its completion starts this one from the default
-#   branch with a token that can comment and record signatures, fork pull
+#   branch with tokens that can comment and record signatures, fork pull
 #   requests included. This avoids `pull_request_target`, which GitHub blocks
 #   by default on public repositories. The check takes nothing from the
 #   trigger run but the head commit, branch and repository GitHub records
@@ -69,9 +71,13 @@ jobs:
     concurrency:
       group: cla-${{ github.event_name }}-${{ github.event.issue.number || github.event.workflow_run.head_repository.id || github.ref }}-${{ github.event.workflow_run.head_branch }}
       cancel-in-progress: false
+    env:
+      # Whether the automation App is configured (a fork may not have it).
+      HAS_APP: ${{ secrets.AUTOMATION_APP_CLIENT_ID != '' && secrets.AUTOMATION_APP_PRIVATE_KEY != '' }}
     permissions:
-      # Read the checker and write signatures to the `cla-signatures` branch.
-      contents: write
+      # Read the checker and the signatures. Signatures are written with the
+      # automation App's token instead (below).
+      contents: read
       # Read the pull request and its commits (REST and GraphQL), and keep
       # the check's comment.
       pull-requests: write
@@ -86,7 +92,20 @@ jobs:
           sparse-checkout: scripts/cla_check.py
           sparse-checkout-cone-mode: false
 
+      # Only signature writes use it, narrowed to Contents on this
+      # repository and revoked when the job ends. Without the App's secrets
+      # the token is empty and recording a signature fails closed.
+      - name: Mint signature-write token
+        id: app-token
+        if: github.event_name != 'merge_group' && env.HAS_APP == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          permission-contents: write
+
       - name: Check signatures
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLA_SIGNATURE_TOKEN: ${{ steps.app-token.outputs.token }}
         run: python3 scripts/cla_check.py

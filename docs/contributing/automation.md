@@ -129,6 +129,7 @@ GitHub App as [Dependabot auto-merge](#dependabot-auto-merge), not
 | `cflite-batch.yml` | `fuzz-crash` issues for oracle failures; draft security advisories for crashes ([triage](fuzzing.md#fuzz-crash-triage)) |
 | `osv-advisories.yml` | Reads OSV code-scanning and Dependabot alerts; draft security advisories ([verdicts](#osv-advisories)) |
 | `docs-publish.yml` | Commits and release tags on the `bookclerk-docs` repository ([docs publishing](#docs-publishing)) |
+| `cla.yml` | Signature commits on the `cla-signatures` branch, the only writer its ruleset allows ([CLA check](licensing.md#the-cla-check)) |
 
 The probes share `.github/actions/api-drift-report`:
 

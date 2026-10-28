@@ -83,7 +83,7 @@ repositories:
    `pull_request`. It does nothing and gets a read-only token, like any
    other check on a fork pull request.
 2. When it completes, the `CLA` workflow runs on `workflow_run` from the
-   default branch, with the token it needs to comment and record
+   default branch, with the tokens it needs to comment and record
    signatures. It finds the pull request from the head commit, branch and
    repository that GitHub records for the trigger run, and takes nothing
    else from it.
@@ -156,16 +156,30 @@ closed.
 Signatures are recorded in `signatures/cla.json` on the `cla-signatures`
 branch, so recording one needs no pull request and no bypass of the main
 branch rules. The copy on `main` stays empty and only seeds the branch.
+Each signature is one commit made through the API by the
+[automation App](automation.md#automation-app), so GitHub signs it
+for the App and nothing else needs to push there.
 
 Setup, once, by a repository administrator:
 
 1. Create the `cla-signatures` branch from `main`, so it starts with
    `main`'s empty `signatures/cla.json`. The check fails until the file
    exists.
-2. Add a ruleset on `cla-signatures` that blocks force pushes and deletion,
-   so the signature history only grows. Make sure no rule blocks the
-   `github-actions[bot]` from adding commits there.
-3. After the check has run on a pull request, add the **CLA** status to the
+2. Make sure the automation App's secrets are set (see
+   [the automation App](automation.md#automation-app)). Without them
+   the check still decides, but it cannot record a new signature and
+   reports an error instead.
+3. Add two branch rulesets targeting `cla-signatures`. A bypass exempts
+   an actor only from the ruleset that lists it, so splitting the rules
+   lets the App add commits while nobody, the App included, can rewrite
+   them:
+   - **Restrict creations** and **Restrict updates**, with only the
+     automation App on the bypass list, so only the App can add commits.
+   - **Restrict deletions**, **Block force pushes**, **Require linear
+     history** and **Require signed commits**, with an empty bypass list.
+     The App's commits already meet these, because each is one
+     GitHub-signed commit on top of the branch.
+4. After the check has run on a pull request, add the **CLA** status to the
    required checks in the main branch ruleset, with **GitHub Actions** as
    its expected source, so no other app that can post statuses can satisfy
    it. The `CLA check` job is only the workflow that reports it.
