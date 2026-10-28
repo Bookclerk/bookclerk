@@ -658,7 +658,7 @@ test("each docs version has its own search index, linked at that version", async
   assert.equal(await head.text(), "");
 });
 
-test("a search index missing a doc lists it by title and is not cached", async () => {
+test("a search index missing a doc lists it by title and is cached only briefly", async () => {
   const flaky: DocsFetch = async (url, init) =>
     url.endsWith("/server/configuration.md")
       ? new Response("oops", { status: 502 })
@@ -668,7 +668,7 @@ test("a search index missing a doc lists it by title and is not cached", async (
     fetch: flaky,
   });
   assert.equal(response.status, 200);
-  assert.match(response.headers.get("Cache-Control") ?? "", /s-maxage=0/);
+  assert.equal(response.headers.get("Cache-Control"), "public, max-age=60, s-maxage=60");
   const { pages } = (await response.json()) as { pages: SearchPage[] };
   const config = pages.find((p) => p.url === "/docs/server/configuration");
   assert.deepEqual(config?.headings, []);

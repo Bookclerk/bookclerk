@@ -271,9 +271,15 @@ export function layoutResponses(tokens: readonly Token[], make: MakeToken, id: s
   if (start < 0) return [...tokens];
   const nextH3 = tokens.findIndex((t, i) => i > start && isH3(t));
   const end = nextH3 < 0 ? tokens.length : nextH3;
+  // A status line is a top-level paragraph: one in a list or quote stays
+  // where it is, since a panel opened there would close outside it.
+  const statusAt = (i: number): string | null =>
+    tokens[i]?.type === "paragraph_open" && tokens[i]?.level === 0
+      ? responseStatusOf(tokens[i + 1])
+      : null;
   // The heading and anything before the first status line stay as they are.
   let first = start + 3;
-  while (first < end && responseStatusOf(tokens[first + 1]) === null) first += 1;
+  while (first < end && statusAt(first) === null) first += 1;
   const out: Token[] = [...tokens.slice(0, start), html('<div class="api-responses">\n')];
   out.push(...tokens.slice(start, first));
   let open = false;
@@ -281,7 +287,7 @@ export function layoutResponses(tokens: readonly Token[], make: MakeToken, id: s
   for (let i = first; i < end; i++) {
     const token = tokens[i];
     if (token === undefined) continue;
-    const found = token.type === "paragraph_open" ? responseStatusOf(tokens[i + 1]) : null;
+    const found = statusAt(i);
     if (found !== null) {
       if (open) out.push(html("</div>\n"));
       const slug = found.toLowerCase();

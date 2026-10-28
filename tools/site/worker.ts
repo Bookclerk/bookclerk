@@ -755,7 +755,7 @@ const SEARCH_FETCHES = 6;
  *
  * Built from the docs repository at request time, like the pages, and
  * cached at the edge by version and deploy. A doc that cannot be read is
- * listed by its title alone, and the index is then kept out of the cache.
+ * listed by its title alone, and the index is then cached only briefly.
  *
  * @param request - The request (GET or HEAD).
  * @param url - Its URL.
@@ -810,14 +810,17 @@ async function serveSearchIndex(
     }
   };
   await Promise.all(Array.from({ length: SEARCH_FETCHES }, work));
+  // A partial index is kept only briefly, so the missing headings come back
+  // once the docs repository answers again without every request in the
+  // meantime repeating the whole fan-out.
   const response = withHeaders(new Response(JSON.stringify({ pages: pages.flat() })), {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": failed
-      ? `public, max-age=${MISSING_TTL}, s-maxage=0`
+      ? `public, max-age=${MISSING_TTL}, s-maxage=${MISSING_TTL}`
       : `public, max-age=${BROWSER_TTL}, s-maxage=${ttlFor(version.ref)}`,
     "X-Robots-Tag": "noindex",
   });
-  if (deps.cache && !failed) deps.waitUntil(deps.cache.put(cacheKey, response.clone()));
+  if (deps.cache) deps.waitUntil(deps.cache.put(cacheKey, response.clone()));
   return request.method === "HEAD" ? new Response(null, response) : response;
 }
 

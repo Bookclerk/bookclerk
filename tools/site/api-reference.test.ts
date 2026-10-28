@@ -531,6 +531,26 @@ Status \`404\`: Again.
   );
 });
 
+test("a status line in a list or quote opens no panel", () => {
+  const page = `# Books
+
+## \`GET /api/books\`
+
+### Example response
+
+- Status \`200\`: In a list.
+
+> Status \`404\`: In a quote.
+
+Status \`500\`: On its own.
+`;
+  const out = renderDoc(page, "api/web/books", { blobBase: BLOB });
+  assert.equal(out.html.split('<div class="api-response"').length, 2);
+  assert.ok(out.html.includes('id="get-apibooks-response-500"'));
+  assert.ok(out.html.includes("<li>Status <code>200</code>: In a list.</li>"));
+  assert.ok(out.html.includes("<p>Status <code>404</code>: In a quote.</p>\n</blockquote>"));
+});
+
 test("paragraphs that are not status lines stay outside the panels", () => {
   const page = `# Books
 
