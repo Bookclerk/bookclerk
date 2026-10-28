@@ -1,3 +1,13 @@
 {
-  "signedContributors": []
+  "signedContributors": [
+    {
+      "name": "fritz-fritz",
+      "id": 5253894,
+      "comment_id": 6462092082,
+      "created_at": "2026-10-28T06:11:39Z",
+      "repoId": 1306165442,
+      "pullRequestNo": 516,
+      "claUrl": "https://github.com/Bookclerk/bookclerk/blob/1af6fa27c301c09cfd4a96e6697fa84e74a27b02/CLA.md"
+    }
+  ]
 }
