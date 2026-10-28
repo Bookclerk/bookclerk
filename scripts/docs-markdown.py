@@ -110,14 +110,17 @@ FENCE_RE = re.compile(r"^\s*(```|~~~)")
 # A link to TypeDoc's modules.md, at any depth, with an optional anchor.
 MODULES_LINK_RE = re.compile(r"\]\(((?:\.\./)*)modules\.md(#[^)\s]*)?\)")
 LINK_RE = re.compile(r"(?<!!)\[(?:[^\[\]]|\[[^\]]*\])*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
-# A markdownlint directive comment (`<!-- markdownlint-disable-line MD038 -->`)
-# with the spaces before it on its line. The published tree leaves these out.
-LINT_COMMENT_RE = re.compile(r"[ \t]*<!--\s*markdownlint-.*?-->")
-# The block-quote markers that open a line (`> > `).
-QUOTE_RE = re.compile(r"(?: {0,3}> ?)*")
-# A code fence line after its quote markers: its backtick or tilde run, then
-# the rest of the line.
-FENCE_RUN_RE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)$")
+# A markdownlint directive comment on one line
+# (`<!-- markdownlint-disable-line MD038 -->`) with the spaces before it. The
+# published tree leaves these out; one that spans lines stays, so stripping
+# never removes a line break.
+LINT_COMMENT_RE = re.compile(r"[ \t]*<!--[ \t]*markdownlint-[^\n]*?-->")
+# The container markers and indentation that open a line: block quotes
+# (`> `), list items (`- `, `1. `) and their continuation indent.
+CONTAINER_RE = re.compile(r"(?:[ \t]*(?:>|[-*+](?=[ \t])|\d{1,9}[.)](?=[ \t])) ?)*[ \t]*")
+# A code fence line after its container markers: its backtick or tilde run,
+# then the rest of the line.
+FENCE_RUN_RE = re.compile(r"(`{3,}|~{3,})(.*)$")
 # A code span: a backtick run, its content (which may cross lines within a
 # paragraph) and a closing run of the same length.
 CODE_SPAN_RE = re.compile(r"(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)", re.DOTALL)
@@ -260,9 +263,9 @@ def opening_fence(line: str) -> tuple[str, int] | None:
         does not open a fence (a backtick fence's info string cannot hold a
         backtick).
     """
-    quote = QUOTE_RE.match(line)
-    depth = quote.group(0).count(">") if quote else 0
-    run = FENCE_RUN_RE.match(line, quote.end() if quote else 0)
+    prefix = CONTAINER_RE.match(line)
+    depth = prefix.group(0).count(">") if prefix else 0
+    run = FENCE_RUN_RE.match(line, prefix.end() if prefix else 0)
     if run is None or (run.group(1)[0] == "`" and "`" in run.group(2)):
         return None
     return run.group(1), depth
@@ -280,13 +283,13 @@ def closes_fence(line: str, fence: tuple[str, int]) -> bool | None:
         the fence's block quote (which ends the fence before the line), and
         ``False`` when it is code.
     """
-    quote = QUOTE_RE.match(line)
-    depth = quote.group(0).count(">") if quote else 0
+    prefix = CONTAINER_RE.match(line)
+    depth = prefix.group(0).count(">") if prefix else 0
     if depth < fence[1]:
         return None
     # A closing fence is a run of the opening character at least as long as
     # the opening run, with nothing but spaces after it.
-    run = FENCE_RUN_RE.match(line, quote.end() if quote else 0)
+    run = FENCE_RUN_RE.match(line, prefix.end() if prefix else 0)
     return bool(run and run.group(1).startswith(fence[0]) and run.group(2).strip() == "")
 
 
@@ -296,9 +299,11 @@ def strip_lint_comments(text: str) -> str:
     The directives are for the ``lint`` check only. GitHub hides them, but
     the site renders the published tree with raw HTML off and serves it as
     Markdown, so they leave the tree here. Code spans and fenced code
-    (block-quoted fences included) keep them, so a page can still show one
-    as an example. A line that held nothing but a directive goes, and so
-    does the blank line after it when one came before it.
+    (fences in block quotes and list items included) keep them, so a page
+    can still show one as an example; where the page's structure is unclear,
+    the filter keeps a directive rather than risk cutting code. A line that
+    held nothing but a directive goes, and so does the blank line after it
+    when one came before it.
 
     Args:
         text: The page's Markdown.
