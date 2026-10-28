@@ -59,8 +59,14 @@ from typing import Callable
 #: surrounding whitespace is trimmed.
 SIGN_PHRASE = "I have read the Bookclerk CLA and I agree to it."
 
-#: The comment that re-runs the check without signing.
-RECHECK_PHRASE = "recheck"
+#: The start of ``SIGN_PHRASE``. A comment containing it runs the check (and
+#: gets the verdict) even when it is not an exact signature; the workflow's
+#: ``if:`` filters on the same text.
+SIGN_TRIGGER = "I have read the Bookclerk CLA"
+
+#: The word that, after a mention of the reporting bot, re-runs the check
+#: without signing (see ``recheck_command``).
+RECHECK_WORD = "recheck"
 
 #: First line of the check's own comment, used to find it again.
 COMMENT_MARKER = "<!-- bookclerk-cla-check -->"
@@ -878,7 +884,26 @@ def add_signature(book: SignatureBook, comment: Comment, repo_id: int, pull_numb
     return render_signatures([*book.entries, entry])
 
 
-def render_comment(verdict: Verdict, cla_url: str, blocked_by: int | None = None) -> str:
+def recheck_command(login: str) -> str:
+    """Returns the comment that re-runs the check, such as ``@bookclerk recheck``.
+
+    The bot that reports the check is mentioned, so the command cannot be
+    mistaken for another tool's. ``login`` is a bot login (``<slug>[bot]``),
+    which is mentioned by its slug.
+    """
+    return f"@{login.removesuffix('[bot]')} {RECHECK_WORD}"
+
+
+def is_recheck(body: str, login: str) -> bool:
+    """Whether a comment body is the recheck command for bot ``login``.
+
+    Matched exactly once surrounding whitespace is trimmed, ignoring case,
+    like a mention.
+    """
+    return body.strip().casefold() == recheck_command(login).casefold()
+
+
+def render_comment(verdict: Verdict, cla_url: str, blocked_by: int | None = None, recheck: str = "") -> str:
     """Renders the check's comment on the pull request.
 
     Only validated logins, validated SHAs and ``cla_url`` reach the body; no
@@ -889,6 +914,7 @@ def render_comment(verdict: Verdict, cla_url: str, blocked_by: int | None = None
     * ``cla_url``: the link to the agreement.
     * ``blocked_by``: another open pull request with the same head commit
       that still fails, when this one passes.
+    * ``recheck``: the command that re-runs the check (``recheck_command``).
 
     # Returns
     The Markdown body, starting with ``COMMENT_MARKER``.
@@ -904,7 +930,7 @@ def render_comment(verdict: Verdict, cla_url: str, blocked_by: int | None = None
                 f" #{blocked_by} has the same head commit, and the check's status belongs to the commit."
             ),
             "",
-            f"Once #{blocked_by} is closed, pushed to, or signed, comment `{RECHECK_PHRASE}` here.",
+            f"Once #{blocked_by} is closed, pushed to, or signed, comment `{recheck}` here.",
         ]
         return "\n".join(lines) + "\n"
     lines.append(
@@ -922,7 +948,7 @@ def render_comment(verdict: Verdict, cla_url: str, blocked_by: int | None = None
             "",
             *(f"- `{sha}`" for sha in verdict.unlinked),
         ]
-    lines += ["", f"Comment `{RECHECK_PHRASE}` to run the check again."]
+    lines += ["", f"Comment `{recheck}` to run the check again."]
     return "\n".join(lines) + "\n"
 
 
@@ -1243,7 +1269,7 @@ class GitHub:
                 return parse_signatures(data)
             if status not in (409, 422):
                 raise ApiError(f"PUT contents/{SIGNATURE_PATH}: HTTP {status}")
-        raise ApiError("the signature file kept changing; try recheck")
+        raise ApiError("the signature file kept changing; try the recheck command")
 
     def react(self, comment_id: int, content: str) -> int | None:
         """Adds reaction ``content`` to a comment, as the reporter.
@@ -1327,6 +1353,11 @@ def run(event: Event, api: GitHub, cla_url: str, run_url: str) -> None:
             check_pull(event, api, number, cla_url, run_url)
         return
     if event.pull_number is not None:
+        comment = event.comment
+        if comment is not None and SIGN_TRIGGER not in comment.body and not is_recheck(comment.body, api.reporter.login):
+            # Only a signing attempt or the recheck command runs the check;
+            # another comment that merely contains the word is ignored.
+            return
         check_pull(event, api, event.pull_number, cla_url, run_url)
 
 
@@ -1364,7 +1395,7 @@ def check_pull(event: Event, api: GitHub, number: int, cla_url: str, run_url: st
         verdict = evaluate(pull, commits, book)
         blocked_by = blocking_pull(api, pull, book) if verdict.passed else None
         passed = verdict.passed and blocked_by is None
-        api.upsert_comment(pull.number, comments, render_comment(verdict, cla_url, blocked_by), create=not passed)
+        api.upsert_comment(pull.number, comments, render_comment(verdict, cla_url, blocked_by, recheck_command(api.reporter.login)), create=not passed)
         if blocked_by is not None:
             description = f"CLA: #{blocked_by}, which shares this commit, still needs signatures."
         else:

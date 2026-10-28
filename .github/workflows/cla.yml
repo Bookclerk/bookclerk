@@ -19,7 +19,9 @@
 #   status from that App. Without the App's secrets the workflow posts both.
 # - Runs when a pull request is opened, pushed to, reopened, closed or
 #   retargeted (a new base can add commits without changing the head).
-# - `recheck` re-runs the check after a signature or allowlist change.
+# - `@<App slug> recheck` (`@bookclerk recheck` here, `@github-actions
+#   recheck` without the App) re-runs the check after a signature or
+#   allowlist change. Other comments that mention `recheck` are ignored.
 # - The verdict is the `CLA` commit status on the pull request's head; that
 #   context is the one to require. It passes only when every open pull
 #   request with that head passes, since they share the status, and is

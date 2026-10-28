@@ -65,13 +65,15 @@ To sign:
    signature is recorded, then passes. You never need to sign again.
 
 If someone else in the pull request has not signed, the check stays red
-until they do. Comment `recheck` to run it again.
+until they do. Comment `@bookclerk recheck` to run it again. The mention
+names the bot that reports the check, so the command can't be confused with
+another tool's; any other comment containing "recheck" is ignored.
 
 ## The CLA check
 
 The `CLA` workflow (`.github/workflows/cla.yml`) runs
 `scripts/cla_check.py` on every pull request and on signature and
-`recheck` comments. It checks out only the default branch and reads the
+`@bookclerk recheck` comments. It checks out only the default branch and reads the
 pull request through the API, so pull request code never runs with its
 token.
 
@@ -149,14 +151,14 @@ another base), the status passes only when every one of them passes, so
 nobody can borrow a signed contributor's result. When one of them is
 closed, the others decide the status again. When one is pushed to, the
 commit it left keeps its last status until one of the others is checked
-again; comment `recheck` there. More than 10 such pull requests fail
+again; comment `@bookclerk recheck` there. More than 10 such pull requests fail
 closed.
 
 > [!NOTE]
 > Anyone can open a pull request on the same head commit as yours and turn
 > your check red. The check's comment names that pull request. A maintainer
-> closes it, and the status is decided again without it; comment `recheck`
-> if it is not.
+> closes it, and the status is decided again without it; comment
+> `@bookclerk recheck` if it is not.
 
 Signatures are recorded in `signatures/cla.json` on the `cla-signatures`
 branch, so recording one needs no pull request and no bypass of the main

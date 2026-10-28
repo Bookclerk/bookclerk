@@ -45,6 +45,8 @@ SHA_A = "a" * 40
 SHA_B = "b" * 40
 SHA_C = "c" * 40
 SHA_D = "d" * 40
+#: The recheck command for the App the tests report as.
+RECHECK = "@bookclerk recheck"
 CLA_URL = "https://github.com/bookclerk/bookclerk/blob/main/CLA.md"
 RUN_URL = "https://github.com/bookclerk/bookclerk/actions/runs/1"
 
@@ -1017,7 +1019,7 @@ class EndToEndTests(unittest.TestCase):
         # turn the shared status green while bob has not signed.
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}])
         fake.others[8] = {"author": BOB, "commits": [commit(SHA_A, ALICE)]}
-        drive(fake, comment_event(ALICE, cla.RECHECK_PHRASE))
+        drive(fake, comment_event(ALICE, RECHECK))
         self.assertEqual(fake.last_status(), "failure")
         self.assertIn("#8", fake.statuses[-1][1]["description"])
         self.assertLessEqual(len(fake.statuses[-1][1]["description"]), 140)
@@ -1025,7 +1027,8 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(len(fake.comments), 1)
         body = fake.comments[0]["body"]
         self.assertIn("#8", body)
-        self.assertNotIn("@", body)
+        self.assertNotIn("@alice", body)
+        self.assertNotIn("@bob", body)
         # Once #8 is closed, its closing run lets #7 decide alone.
         fake.others[8]["state"] = "closed"
         drive(fake, pr_event_for(fake, 8))
@@ -1087,7 +1090,7 @@ class EndToEndTests(unittest.TestCase):
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}])
         fake.state = "closed"
         fake.others[8] = {"author": BOB, "commits": [commit(SHA_A, ALICE)]}
-        drive(fake, comment_event(ALICE, cla.RECHECK_PHRASE))
+        drive(fake, comment_event(ALICE, RECHECK))
         self.assertEqual(fake.last_status(), "failure")
         self.assertEqual(fake.comments, [])
 
@@ -1134,7 +1137,7 @@ class EndToEndTests(unittest.TestCase):
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
         fake.comments += [{"id": n, "user": None, "body": "ghost", "created_at": "t"} for n in range(1, 101)]
         fake.comments.append({"id": 500, "user": ALICE, "body": cla.SIGN_PHRASE, "created_at": "t"})
-        drive(fake, comment_event(BOB, cla.RECHECK_PHRASE))
+        drive(fake, comment_event(BOB, RECHECK))
         self.assertEqual(fake.signed_ids(), {101})
         self.assertEqual(fake.last_status(), "success")
 
@@ -1267,7 +1270,7 @@ class EndToEndTests(unittest.TestCase):
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE), commit(SHA_B, BOB)])
         for i, user in enumerate((ALICE, BOB, ALICE)):
             fake.comments.append({"id": 50 + i, "user": user, "body": cla.SIGN_PHRASE, "created_at": f"t{i}"})
-        drive(fake, comment_event(BOB, cla.RECHECK_PHRASE, comment_id=60))
+        drive(fake, comment_event(BOB, RECHECK, comment_id=60))
         self.assertEqual(fake.signed_ids(), {101, 102})
         entries = json.loads(fake.file)["signedContributors"]
         self.assertEqual([e["comment_id"] for e in entries], [50, 51])
@@ -1377,6 +1380,26 @@ class EndToEndTests(unittest.TestCase):
         fake = FakeGitHub(ALICE, [])
         drive(fake, cla.parse_event("merge_group", load("event_merge_group__queued")))
         self.assertEqual(fake.statuses, [(SHA_B, {"state": "success", "context": "CLA", "description": "Checked on each pull request in the group.", "target_url": RUN_URL})])
+
+    def test_only_the_bots_recheck_command_runs_the_check(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}])
+        for body in ("recheck", "please recheck this", "@someone-else recheck", "@bookclerk recheck now"):
+            drive(fake, comment_event(BOB, body))
+        self.assertEqual(fake.requests, [])
+        drive(fake, comment_event(BOB, "  @Bookclerk RECHECK\n"))
+        self.assertEqual(fake.last_status(), "success")
+
+    def test_the_workflow_filter_matches_the_checker(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "cla.yml").read_text(encoding="utf-8")
+        self.assertIn(f"contains(github.event.comment.body, '{cla.SIGN_TRIGGER}')", workflow)
+        self.assertIn(f"contains(github.event.comment.body, '{cla.RECHECK_WORD}')", workflow)
+        self.assertTrue(cla.SIGN_PHRASE.startswith(cla.SIGN_TRIGGER))
+
+    def test_the_comment_names_the_recheck_command(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        drive(fake, pr_event(fake))
+        self.assertIn("Comment `@bookclerk recheck` to run the check again.", fake.comments[0]["body"])
+        self.assertEqual(cla.recheck_command("github-actions[bot]"), "@github-actions recheck")
 
     def test_plain_issue_comment_does_nothing(self) -> None:
         fake = FakeGitHub(ALICE, [])
