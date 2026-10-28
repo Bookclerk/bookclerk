@@ -178,6 +178,65 @@ class TreeTest(unittest.TestCase):
         dm.copy_docs(src, out)
         self.assertEqual(sorted(p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file()), ["README.md", "adr/one.md"])
 
+    def test_copy_docs_strips_markdownlint_overrides_from_pages_only(self) -> None:
+        src = self.base / "docs"
+        src.mkdir()
+        page = "# Title <!-- markdownlint-disable-line MD026 -->\n\nText. <!-- markdownlint-disable-line MD038 -->\n"
+        (src / "page.md").write_text(page)
+        (src / "data.json").write_text('{"note": "<!-- markdownlint-disable -->"}')
+        out = self.base / "out"
+        out.mkdir()
+        dm.copy_docs(src, out)
+        self.assertEqual((out / "page.md").read_text(), "# Title\n\nText.\n")
+        self.assertEqual((out / "data.json").read_text(), '{"note": "<!-- markdownlint-disable -->"}')
+
+    def test_strip_lint_comments_keeps_code_and_other_comments(self) -> None:
+        source = "\n".join(
+            [
+                "Intro.",
+                "",
+                "<!-- markdownlint-disable-next-line MD001 -->",
+                "",
+                "### Deep",
+                "",
+                "Use `<!-- markdownlint-disable-line MDxxx -->` on the line.",
+                "<!-- a note for editors -->",
+                "",
+                "```markdown",
+                "Text. <!-- markdownlint-disable-line MD038 -->",
+                "```",
+                "",
+                "~~~~",
+                "```",
+                "<!-- markdownlint-disable -->",
+                "~~~~",
+                "",
+            ]
+        )
+        self.assertEqual(
+            dm.strip_lint_comments(source),
+            "\n".join(
+                [
+                    "Intro.",
+                    "",
+                    "### Deep",
+                    "",
+                    "Use `<!-- markdownlint-disable-line MDxxx -->` on the line.",
+                    "<!-- a note for editors -->",
+                    "",
+                    "```markdown",
+                    "Text. <!-- markdownlint-disable-line MD038 -->",
+                    "```",
+                    "",
+                    "~~~~",
+                    "```",
+                    "<!-- markdownlint-disable -->",
+                    "~~~~",
+                    "",
+                ]
+            ),
+        )
+
     def test_python_modules_skip_private_and_templates(self) -> None:
         pkg = self.base / "src" / "pkg"
         for rel in ("__init__.py", "__main__.py", "_abi.py", "abi.py", "sub/__init__.py", "sub/x.py", "a_template/t.py"):

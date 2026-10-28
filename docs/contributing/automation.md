@@ -484,7 +484,10 @@ in step with this one, as Markdown that the website and agents read.
 
 ### The tree
 
-The tree is `docs/` as it is, plus `api/`. The `api/` index lists the
+The tree is `docs/` as it is, plus `api/`. Only the markdownlint inline
+overrides (`<!-- markdownlint-disable-line … -->`) are left out of its
+pages' prose, since they matter to the `lint` check alone; code spans and
+fences keep them. The `api/` index lists the
 plugin SDKs first (TypeScript, Python, Rust), then the web API, then the
 Rust crates and the web UI library.
 

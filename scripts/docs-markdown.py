@@ -110,6 +110,13 @@ FENCE_RE = re.compile(r"^\s*(```|~~~)")
 # A link to TypeDoc's modules.md, at any depth, with an optional anchor.
 MODULES_LINK_RE = re.compile(r"\]\(((?:\.\./)*)modules\.md(#[^)\s]*)?\)")
 LINK_RE = re.compile(r"(?<!!)\[(?:[^\[\]]|\[[^\]]*\])*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+# A markdownlint inline override (`<!-- markdownlint-disable-line MD038 -->`)
+# with the whitespace before it. The published tree leaves these out.
+LINT_COMMENT_RE = re.compile(r"\s*<!--\s*markdownlint-.*?-->")
+# An opening or closing code fence: its backtick or tilde run.
+FENCE_RUN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+# A code span: a backtick run, its content and the closing run.
+CODE_SPAN_RE = re.compile(r"(`+[^`]*`+)")
 
 
 class BuildError(RuntimeError):
@@ -215,11 +222,52 @@ def run(cmd: list[str], cwd: Path, env: dict[str, str] | None = None) -> None:
         raise BuildError(f"{cmd[0]} exited {result.returncode}")
 
 
+def strip_lint_comments(text: str) -> str:
+    """Remove markdownlint inline overrides from a page's prose.
+
+    The overrides are for the ``lint`` check only. GitHub hides them, but the
+    site renders the published tree with raw HTML off and serves it as
+    Markdown, so they leave the tree here. Code spans and fenced code keep
+    them, so a page can still show one as an example. A line that held
+    nothing but an override goes, and so does the blank line after it when
+    one came before it.
+
+    Args:
+        text: The page's Markdown.
+
+    Returns:
+        The page without the overrides.
+    """
+    fence: str | None = None
+    out: list[str] = []
+    dropped = False
+    for line in text.split("\n"):
+        run = FENCE_RUN_RE.match(line)
+        if run and (fence is None or run.group(1).startswith(fence)):
+            fence = run.group(1) if fence is None else None
+            out.append(line)
+        elif fence is not None:
+            out.append(line)
+        else:
+            # Odd-numbered pieces of the split are code spans.
+            pieces = CODE_SPAN_RE.split(line)
+            kept = "".join(p if i % 2 else LINT_COMMENT_RE.sub("", p) for i, p in enumerate(pieces))
+            if kept.strip() == "" and line.strip() != "":
+                dropped = True
+                continue
+            if not (dropped and kept == "" and out and out[-1] == ""):
+                out.append(kept)
+        dropped = False
+    return "\n".join(out)
+
+
 def copy_docs(src: Path, out: Path) -> None:
     """Copy ``docs/`` into the output root, leaving out the local ``docs/api/``.
 
     ``docs/api/`` holds the generated HTML when someone runs
     ``generate-api-docs.sh`` locally; the published tree has its own ``api/``.
+    Markdown pages lose their markdownlint overrides (see
+    :func:`strip_lint_comments`).
 
     Args:
         src: The repository's ``docs/`` directory.
@@ -231,7 +279,10 @@ def copy_docs(src: Path, out: Path) -> None:
             continue
         dest = out / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(path, dest)
+        if path.suffix == ".md":
+            dest.write_text(strip_lint_comments(path.read_text(encoding="utf-8")), encoding="utf-8")
+        else:
+            shutil.copyfile(path, dest)
 
 
 def page_dates(log: str, pages: set[str]) -> dict[str, str]:
