@@ -177,7 +177,8 @@ The tests live in `scripts/tests/`, and each corpus beside them.
   and comment pages, the co-author query answer, the lists of pull requests
   that contain the head commit or come from the head branch, the
   signature file, the git objects it creates when the first signature
-  starts the signature branch, and the rules that apply to that branch,
+  starts the signature branch, the reactions it adds to signing
+  comments, and the rules that apply to that branch,
   and decides who still has to sign. Logins, comment bodies and commit
   metadata in them are chosen by contributors.
   - Test and corpus: `scripts/tests/test_cla_check.py`,

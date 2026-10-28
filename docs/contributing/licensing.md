@@ -61,8 +61,8 @@ To sign:
    I have read the Bookclerk CLA and I agree to it.
    ```
 
-4. The check records your signature and passes. You never need to sign
-   again.
+4. The check reacts with 👀 when it sees your comment and 👍 once your
+   signature is recorded, then passes. You never need to sign again.
 
 If someone else in the pull request has not signed, the check stays red
 until they do. Comment `recheck` to run it again.

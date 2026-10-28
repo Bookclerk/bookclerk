@@ -145,6 +145,15 @@ MAX_SIGNATURE_BYTES = 1024 * 1024
 #: Times a signature write is retried after another run changed the file.
 SIGNATURE_WRITE_ATTEMPTS = 3
 
+#: The reaction the check adds to a signing comment as soon as it reads it.
+#: GitHub allows only its fixed set of reactions, so neither this nor
+#: ``SIGNED_REACTION`` can be a check mark.
+SEEN_REACTION = "eyes"
+
+#: The reaction that replaces ``SEEN_REACTION`` once the signature is
+#: recorded.
+SIGNED_REACTION = "+1"
+
 #: The message of the commit that starts ``SIGNATURE_BRANCH``. It names no
 #: signer, since it stays the last commit to touch ``BRANCH_FILES``.
 BRANCH_START_MESSAGE = "chore(cla): start the signature branch"
@@ -768,6 +777,18 @@ def parse_git_object(raw: bytes) -> str:
     return _sha(_object(_load_json(raw), "git object").get("sha"), "git object sha")
 
 
+def parse_reaction(raw: bytes) -> int:
+    """Reads the response to adding a reaction to a comment.
+
+    # Returns
+    The reaction's id, which removing it later needs.
+
+    # Errors
+    ``ClaInputError`` when the response is not an object with an ``id``.
+    """
+    return _id(_object(_load_json(raw), "reaction").get("id"), "reaction id")
+
+
 def parse_branch_rules(raw: bytes) -> frozenset[str]:
     """Reads ``GET /rules/branches/{branch}``: the active rules for a branch.
 
@@ -1201,6 +1222,30 @@ class GitHub:
                 raise ApiError(f"PUT contents/{SIGNATURE_PATH}: HTTP {status}")
         raise ApiError("the signature file kept changing; try recheck")
 
+    def react(self, comment_id: int, content: str) -> int | None:
+        """Adds reaction ``content`` to a comment, as the reporter.
+
+        Reactions only show progress, so a refusal is printed as a warning
+        and never fails the check.
+
+        # Returns
+        The reaction's id, or ``None`` when it could not be added.
+        """
+        status, raw = self.reporter.send("POST", f"{self.base}/issues/comments/{comment_id}/reactions", {"content": content})
+        if status in (200, 201):
+            try:
+                return parse_reaction(raw)
+            except ClaInputError:
+                pass
+        print(f"::warning::cannot add the {content} reaction to comment {comment_id} (HTTP {status})")
+        return None
+
+    def unreact(self, comment_id: int, reaction_id: int) -> None:
+        """Removes the reporter's reaction ``reaction_id`` from a comment, warning on a refusal."""
+        status, _ = self.reporter.send("DELETE", f"{self.base}/issues/comments/{comment_id}/reactions/{reaction_id}", None)
+        if status != 204:
+            print(f"::warning::cannot remove reaction {reaction_id} from comment {comment_id} (HTTP {status})")
+
     def branch_rules(self) -> frozenset[str]:
         """Reads the rule types that apply to ``SIGNATURE_BRANCH``."""
         return parse_branch_rules(self.call("GET", f"rules/branches/{SIGNATURE_BRANCH}?per_page={PAGE_SIZE}"))
@@ -1286,7 +1331,12 @@ def check_pull(event: Event, api: GitHub, number: int, cla_url: str, run_url: st
         # The listing can lag behind the event that started the run.
         comments.append(event.comment)
     for comment in signing_comments(comments, verdict):
+        # 👀 while the signature is being recorded, then 👍 once it is.
+        seen = api.react(comment.id, SEEN_REACTION)
         book = api.record(comment, event.repo_id, pull.number)
+        api.react(comment.id, SIGNED_REACTION)
+        if seen is not None:
+            api.unreact(comment.id, seen)
     for _ in range(STATUS_ATTEMPTS):
         verdict = evaluate(pull, commits, book)
         blocked_by = blocking_pull(api, pull, book) if verdict.passed else None

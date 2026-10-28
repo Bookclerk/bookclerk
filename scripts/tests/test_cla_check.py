@@ -275,6 +275,8 @@ def oracle(kind: str, raw: bytes) -> object:
         return (data, sha)
     if kind == "gitobject":
         return o_sha(o_obj(o_json(raw)).get("sha"))
+    if kind == "reaction":
+        return o_id(o_obj(o_json(raw)).get("id"))
     if kind == "branchrules":
         rules = o_json(raw)
         if not isinstance(rules, list) or len(rules) > 200:
@@ -332,6 +334,8 @@ def module(kind: str, raw: bytes) -> object:
         return cla.parse_contents(raw)
     if kind == "gitobject":
         return cla.parse_git_object(raw)
+    if kind == "reaction":
+        return cla.parse_reaction(raw)
     if kind == "branchrules":
         return cla.parse_branch_rules(raw)
     raise AssertionError(kind)
@@ -387,6 +391,7 @@ class CorpusTests(unittest.TestCase):
             "coauthors__errors", "coauthors__too_many", "coauthors__count_mismatch", "coauthors__repeat",
             "coauthors__no_cursor", "coauthors__bad_bot_login", "coauthors__null_pull",
             "coauthors__email_not_string", "gitobject__no_sha", "gitobject__upper_sha", "gitobject__not_object",
+            "reaction__no_id", "reaction__string_id", "reaction__not_object",
             "branchrules__not_list", "branchrules__upper_type", "branchrules__no_type",
         ):
             kind = name.partition("__")[0]
@@ -400,6 +405,7 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(module("pull", load("pull__login_trailing_dash"))[1], (1, "alice-", "User"))
         self.assertEqual(module("signatures", load("signatures__two")), (2, frozenset({101, 2})))
         self.assertEqual(module("gitobject", load("gitobject__commit")), SHA_B)
+        self.assertEqual(module("reaction", load("reaction__eyes")), 31)
         self.assertEqual(module("branchrules", load("branchrules__all")), cla.SIGNATURE_BRANCH_RULES)
         data, blob = cla.parse_contents(load("contents__seed"))
         self.assertEqual(data, load("signatures__seed"))
@@ -627,6 +633,10 @@ class FakeGitHub:
         #: signature written through the contents API.
         self.branch_message: str | None = None
         self.put_messages: list[str] = []
+        #: Reactions on comments by id: ``(comment id, content, login)``, and
+        #: the ones removed, in order.
+        self.reactions: dict[int, tuple[int, str, str]] = {}
+        self.removed_reactions: list[tuple[int, str, str]] = []
         #: The ruleset rule types that apply to ``cla-signatures``.
         self.rules: set[str] = set(cla.SIGNATURE_BRANCH_RULES)
         #: Runs once, just before the branch is created, to stand in for a
@@ -795,6 +805,18 @@ class FakeGitHub:
             thread = self.others[int(parts[1])].setdefault("comments", [])
             thread.append({"id": 2000 + len(thread), "user": self.commenter_account(), "body": body["body"], "created_at": "t"})
             return 201, b"{}"
+        if len(parts) >= 4 and parts[:2] == ["issues", "comments"] and parts[3] == "reactions":
+            comment_id = int(parts[2])
+            if method == "POST":
+                assert body is not None
+                reaction_id = 5000 + len(self.reactions) + len(self.removed_reactions)
+                self.reactions[reaction_id] = (comment_id, body["content"], self.commenter_account()["login"])
+                return 201, json.dumps({"id": reaction_id, "content": body["content"]}).encode()
+            if method == "DELETE" and len(parts) == 5:
+                reaction_id = int(parts[4])
+                assert self.reactions[reaction_id][2] == self.commenter_account()["login"]
+                self.removed_reactions.append(self.reactions.pop(reaction_id))
+                return 204, b""
         if method == "PATCH" and route.startswith("issues/comments/"):
             target = int(route.rsplit("/", 1)[1])
             for c in self.comments:
@@ -1283,6 +1305,33 @@ class EndToEndTests(unittest.TestCase):
         drive(fake, pr_event(fake))
         self.assertEqual([c["user"] for c in fake.comments], [APP])
         self.assertTrue(fake.comments[0]["body"].startswith(cla.COMMENT_MARKER))
+
+    def test_a_signature_comment_is_reacted_to_as_it_is_recorded(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        event = comment_event(ALICE, cla.SIGN_PHRASE)
+        drive(fake, event)
+        self.assertEqual(fake.signed_ids(), {101})
+        self.assertEqual(list(fake.reactions.values()), [(event.comment.id, "+1", "bookclerk[bot]")])
+        self.assertEqual(fake.removed_reactions, [(event.comment.id, "eyes", "bookclerk[bot]")])
+        # An already recorded signature is not reacted to again.
+        drive(fake, event)
+        self.assertEqual(len(fake.reactions), 1)
+
+    def test_refused_reactions_do_not_stop_the_signature(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        real_send = fake.send
+
+        def refuse_reactions(method: str, path: str, body: dict | None) -> tuple[int, bytes]:
+            if "/reactions" in path:
+                return 403, b"{}"
+            return real_send(method, path, body)
+
+        fake.send = refuse_reactions  # type: ignore[method-assign]
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            drive(fake, comment_event(ALICE, cla.SIGN_PHRASE))
+        self.assertEqual(fake.signed_ids(), {101})
+        self.assertEqual(fake.last_status(), "success")
+        self.assertIn("::warning::cannot add the eyes reaction", out.getvalue())
 
     def test_the_status_is_posted_as_the_app(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
