@@ -159,7 +159,10 @@ In a `console` fence only `$ ` prompt lines run. <!-- markdownlint-disable-line 
 ```
 
 Use `<!-- markdownlint-disable-next-line MDxxx -->` above a block instead.
-GitHub and the site both hide these comments; any other HTML comment
-shows as text on the site.
+GitHub hides these comments, and the docs publish step leaves them out of
+the published tree's prose (see [Docs publishing](automation.md#the-tree)),
+so the site never shows them there; inside a code span or fence, like the
+example above, they stay as code. Any other HTML comment shows as text on
+the site.
 Run it locally with `--fix` to repair spacing and list markers (see
 [Formatting and Markdown lint](ci.md#formatting-and-markdown-lint)).

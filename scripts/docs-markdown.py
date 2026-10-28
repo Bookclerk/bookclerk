@@ -110,6 +110,26 @@ FENCE_RE = re.compile(r"^\s*(```|~~~)")
 # A link to TypeDoc's modules.md, at any depth, with an optional anchor.
 MODULES_LINK_RE = re.compile(r"\]\(((?:\.\./)*)modules\.md(#[^)\s]*)?\)")
 LINK_RE = re.compile(r"(?<!!)\[(?:[^\[\]]|\[[^\]]*\])*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+# A markdownlint directive comment on one line
+# (`<!-- markdownlint-disable-line MD038 -->`) with the spaces before it. The
+# published tree leaves these out; one that spans lines stays, so stripping
+# never removes a line break.
+LINT_COMMENT_RE = re.compile(r"[ \t]*<!--[ \t]*markdownlint-[^\n]*?-->")
+# The container markers and indentation that open a line: block quotes
+# (`> `), list items (`- `, `1. `) and their continuation indent.
+CONTAINER_RE = re.compile(r"(?:[ \t]*(?:>|[-*+](?=[ \t])|\d{1,9}[.)](?=[ \t])) ?)*[ \t]*")
+# The block-quote markers that open a line. Inside a fence, list markers are
+# code, so a closing fence can follow only these and up to three spaces more
+# than the opening fence's container indent.
+QUOTE_PREFIX_RE = re.compile(r"(?:[ \t]*> ?)*")
+# The spaces at the start of what follows a line's block-quote markers.
+INDENT_RE = re.compile(r"[ \t]*")
+# A code fence line after its container markers: its backtick or tilde run,
+# then the rest of the line.
+FENCE_RUN_RE = re.compile(r"(`{3,}|~{3,})(.*)$")
+# A code span: a backtick run, its content (which may cross lines within a
+# paragraph) and a closing run of the same length.
+CODE_SPAN_RE = re.compile(r"(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)", re.DOTALL)
 
 
 class BuildError(RuntimeError):
@@ -215,11 +235,166 @@ def run(cmd: list[str], cwd: Path, env: dict[str, str] | None = None) -> None:
         raise BuildError(f"{cmd[0]} exited {result.returncode}")
 
 
+def strip_outside_code_spans(paragraph: str) -> str:
+    """Remove markdownlint directives from a paragraph, sparing code spans.
+
+    A code span opens and closes with backtick runs of the same length, so
+    a double-backtick span can hold a single backtick, and it may run over
+    several lines of the paragraph. Line breaks are never removed.
+
+    Args:
+        paragraph: Lines of prose outside fenced code, joined by newlines.
+
+    Returns:
+        The paragraph without directives outside its code spans.
+    """
+    kept: list[str] = []
+    start = 0
+    for span in CODE_SPAN_RE.finditer(paragraph):
+        kept.append(LINT_COMMENT_RE.sub("", paragraph[start : span.start()]))
+        kept.append(span.group(0))
+        start = span.end()
+    kept.append(LINT_COMMENT_RE.sub("", paragraph[start:]))
+    return "".join(kept)
+
+
+@dataclass(frozen=True)
+class Fence:
+    """An open fenced code block, as far as finding its closing line needs.
+
+    Attributes:
+        run: The opening backtick or tilde run; a closing run starts with it.
+        depth: How many block quotes hold the fence.
+        indent: Columns between the fence's quote markers and its run (list
+            markers and indentation); a closing run may sit at most three
+            columns further in.
+    """
+
+    run: str
+    depth: int
+    indent: int
+
+
+def opening_fence(line: str) -> Fence | None:
+    """Say whether a line opens a fenced code block.
+
+    Args:
+        line: One line of the page.
+
+    Returns:
+        The fence, or ``None`` when the line does not open one (a backtick
+        fence's info string cannot hold a backtick).
+    """
+    prefix = CONTAINER_RE.match(line)
+    start = prefix.end() if prefix else 0
+    run = FENCE_RUN_RE.match(line, start)
+    if run is None or (run.group(1)[0] == "`" and "`" in run.group(2)):
+        return None
+    quote = QUOTE_PREFIX_RE.match(line)
+    quote_end = quote.end() if quote else 0
+    return Fence(run.group(1), line[:quote_end].count(">"), start - quote_end)
+
+
+def closes_fence(line: str, fence: Fence) -> bool | None:
+    """Say how a line inside a fenced code block relates to the fence.
+
+    Args:
+        line: One line after the fence opened.
+        fence: The open fence.
+
+    Returns:
+        ``True`` when the line is the closing fence, ``None`` when it leaves
+        the fence's block quote (which ends the fence before the line), and
+        ``False`` when it is code.
+    """
+    quote = QUOTE_PREFIX_RE.match(line)
+    quote_end = quote.end() if quote else 0
+    depth = line[:quote_end].count(">")
+    if depth < fence.depth:
+        return None
+    # A closing fence sits at the fence's own quote depth (deeper markers are
+    # code), indented at most three columns past the fence's container, and
+    # is a run of the opening character at least as long as the opening run
+    # with nothing but spaces after it.
+    if depth > fence.depth:
+        return False
+    indent = INDENT_RE.match(line, quote_end)
+    start = indent.end() if indent else quote_end
+    if start - quote_end > fence.indent + 3:
+        return False
+    run = FENCE_RUN_RE.match(line, start)
+    return bool(run and run.group(1).startswith(fence.run) and run.group(2).strip() == "")
+
+
+def strip_lint_comments(text: str) -> str:
+    """Remove markdownlint directives from a page's prose.
+
+    The directives are for the ``lint`` check only. GitHub hides them, but
+    the site renders the published tree with raw HTML off and serves it as
+    Markdown, so they leave the tree here. Code spans and fenced code
+    (fences in block quotes and list items included) keep them, so a page
+    can still show one as an example; where the page's structure is unclear,
+    the filter keeps a directive rather than risk cutting code. A line that
+    held nothing but a directive goes, and so does the blank line after it
+    when one came before it.
+
+    Args:
+        text: The page's Markdown.
+
+    Returns:
+        The page without the directives.
+    """
+    fence: Fence | None = None
+    out: list[str] = []
+    paragraph: list[str] = []
+    dropped = False
+
+    def flush() -> None:
+        nonlocal dropped
+        if not paragraph:
+            return
+        kept_lines = strip_outside_code_spans("\n".join(paragraph)).split("\n")
+        for line, kept in zip(paragraph, kept_lines, strict=True):
+            if kept.strip() == "" and line.strip() != "":
+                dropped = True
+                continue
+            if not (dropped and kept == "" and out and out[-1] == ""):
+                out.append(kept)
+            dropped = False
+        paragraph.clear()
+
+    for line in text.split("\n"):
+        if fence is not None:
+            closing = closes_fence(line, fence)
+            if closing is not None:
+                if closing:
+                    fence = None
+                out.append(line)
+                continue
+            fence = None
+        opened = opening_fence(line)
+        if opened is not None:
+            flush()
+            fence = opened
+            dropped = False
+            out.append(line)
+        elif line.strip() == "":
+            # A blank line ends the paragraph, so no code span crosses it.
+            paragraph.append(line)
+            flush()
+        else:
+            paragraph.append(line)
+    flush()
+    return "\n".join(out)
+
+
 def copy_docs(src: Path, out: Path) -> None:
     """Copy ``docs/`` into the output root, leaving out the local ``docs/api/``.
 
     ``docs/api/`` holds the generated HTML when someone runs
     ``generate-api-docs.sh`` locally; the published tree has its own ``api/``.
+    Markdown pages lose their markdownlint overrides (see
+    :func:`strip_lint_comments`).
 
     Args:
         src: The repository's ``docs/`` directory.
@@ -231,7 +406,10 @@ def copy_docs(src: Path, out: Path) -> None:
             continue
         dest = out / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(path, dest)
+        if path.suffix == ".md":
+            dest.write_text(strip_lint_comments(path.read_text(encoding="utf-8")), encoding="utf-8")
+        else:
+            shutil.copyfile(path, dest)
 
 
 def page_dates(log: str, pages: set[str]) -> dict[str, str]:

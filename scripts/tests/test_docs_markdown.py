@@ -178,6 +178,148 @@ class TreeTest(unittest.TestCase):
         dm.copy_docs(src, out)
         self.assertEqual(sorted(p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file()), ["README.md", "adr/one.md"])
 
+    def test_copy_docs_strips_markdownlint_overrides_from_pages_only(self) -> None:
+        src = self.base / "docs"
+        src.mkdir()
+        page = "# Title <!-- markdownlint-disable-line MD026 -->\n\nText. <!-- markdownlint-disable-line MD038 -->\n"
+        (src / "page.md").write_text(page)
+        (src / "data.json").write_text('{"note": "<!-- markdownlint-disable -->"}')
+        out = self.base / "out"
+        out.mkdir()
+        dm.copy_docs(src, out)
+        self.assertEqual((out / "page.md").read_text(), "# Title\n\nText.\n")
+        self.assertEqual((out / "data.json").read_text(), '{"note": "<!-- markdownlint-disable -->"}')
+
+    def test_strip_lint_comments_keeps_code_and_other_comments(self) -> None:
+        source = "\n".join(
+            [
+                "Intro.",
+                "",
+                "<!-- markdownlint-disable-next-line MD001 -->",
+                "",
+                "### Deep",
+                "",
+                "Use `<!-- markdownlint-disable-line MDxxx -->` on the line.",
+                "<!-- a note for editors -->",
+                "",
+                "```markdown",
+                "Text. <!-- markdownlint-disable-line MD038 -->",
+                "```",
+                "",
+                "~~~~",
+                "```",
+                "<!-- markdownlint-disable -->",
+                "~~~~",
+                "",
+            ]
+        )
+        self.assertEqual(
+            dm.strip_lint_comments(source),
+            "\n".join(
+                [
+                    "Intro.",
+                    "",
+                    "### Deep",
+                    "",
+                    "Use `<!-- markdownlint-disable-line MDxxx -->` on the line.",
+                    "<!-- a note for editors -->",
+                    "",
+                    "```markdown",
+                    "Text. <!-- markdownlint-disable-line MD038 -->",
+                    "```",
+                    "",
+                    "~~~~",
+                    "```",
+                    "<!-- markdownlint-disable -->",
+                    "~~~~",
+                    "",
+                ]
+            ),
+        )
+
+    def test_strip_lint_comments_needs_a_bare_closing_fence(self) -> None:
+        source = "\n".join(
+            [
+                "```markdown",
+                "```not-a-closing-fence",
+                "<!-- markdownlint-disable -->",
+                "```",
+                "Text. <!-- markdownlint-disable-line MD001 -->",
+            ]
+        )
+        self.assertEqual(
+            dm.strip_lint_comments(source),
+            "\n".join(["```markdown", "```not-a-closing-fence", "<!-- markdownlint-disable -->", "```", "Text."]),
+        )
+
+    def test_strip_lint_comments_matches_code_span_runs_by_length(self) -> None:
+        line = "Use `` ` <!-- markdownlint-disable MD038 --> `` here. <!-- markdownlint-disable-line MD001 -->"
+        self.assertEqual(dm.strip_lint_comments(line), "Use `` ` <!-- markdownlint-disable MD038 --> `` here.")
+
+    def test_strip_lint_comments_keeps_code_spans_across_lines(self) -> None:
+        source = "Use `a\n<!-- markdownlint-disable -->\nb` here.\n\n`x\n\n<!-- markdownlint-disable -->\n"
+        self.assertEqual(
+            dm.strip_lint_comments(source), "Use `a\n<!-- markdownlint-disable -->\nb` here.\n\n`x\n"
+        )
+
+    def test_strip_lint_comments_ignores_backtick_fences_with_backticks_in_the_info_string(self) -> None:
+        source = "```foo`bar\nText. <!-- markdownlint-disable-line MD001 -->\n"
+        self.assertEqual(dm.strip_lint_comments(source), "```foo`bar\nText.\n")
+
+    def test_strip_lint_comments_keeps_block_quoted_fences(self) -> None:
+        source = "\n".join(
+            [
+                "> ```markdown",
+                "> <!-- markdownlint-disable -->",
+                "> ```",
+                "",
+                "> ~~~",
+                "> <!-- markdownlint-disable -->",
+                "Text. <!-- markdownlint-disable-line MD001 -->",
+            ]
+        )
+        self.assertEqual(
+            dm.strip_lint_comments(source),
+            "\n".join(
+                [
+                    "> ```markdown",
+                    "> <!-- markdownlint-disable -->",
+                    "> ```",
+                    "",
+                    "> ~~~",
+                    "> <!-- markdownlint-disable -->",
+                    "Text.",
+                ]
+            ),
+        )
+
+    def test_strip_lint_comments_keeps_line_breaks(self) -> None:
+        source = "Text.\n<!--\nmarkdownlint-disable MD013 -->\nMore. <!-- markdownlint-disable-line MD001 -->\n"
+        self.assertEqual(
+            dm.strip_lint_comments(source), "Text.\n<!--\nmarkdownlint-disable MD013 -->\nMore.\n"
+        )
+
+    def test_strip_lint_comments_keeps_list_item_fences(self) -> None:
+        source = "- ```markdown\n  <!-- markdownlint-disable MD013 -->\n  ```\n\nText. <!-- markdownlint-disable-line MD001 -->\n"
+        self.assertEqual(
+            dm.strip_lint_comments(source),
+            "- ```markdown\n  <!-- markdownlint-disable MD013 -->\n  ```\n\nText.\n",
+        )
+
+    def test_strip_lint_comments_keeps_container_markers_inside_fences(self) -> None:
+        source = "````markdown\n- ````\n> ````\n<!-- markdownlint-disable -->\n````\nText. <!-- markdownlint-disable-line MD001 -->\n"
+        self.assertEqual(
+            dm.strip_lint_comments(source),
+            "````markdown\n- ````\n> ````\n<!-- markdownlint-disable -->\n````\nText.\n",
+        )
+
+    def test_strip_lint_comments_closes_fences_only_within_three_spaces(self) -> None:
+        source = "```markdown\n    ```\n<!-- markdownlint-disable MD013 -->\n```\n- ```\n  <!-- markdownlint-disable -->\n      ```\n  ```\nText. <!-- markdownlint-disable-line MD001 -->\n"
+        self.assertEqual(
+            dm.strip_lint_comments(source),
+            "```markdown\n    ```\n<!-- markdownlint-disable MD013 -->\n```\n- ```\n  <!-- markdownlint-disable -->\n      ```\n  ```\nText.\n",
+        )
+
     def test_python_modules_skip_private_and_templates(self) -> None:
         pkg = self.base / "src" / "pkg"
         for rel in ("__init__.py", "__main__.py", "_abi.py", "abi.py", "sub/__init__.py", "sub/x.py", "a_template/t.py"):

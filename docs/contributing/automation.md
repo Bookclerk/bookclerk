@@ -486,7 +486,11 @@ in step with this one, as Markdown that the website and agents read.
 
 ### The tree
 
-The tree is `docs/` as it is, plus `api/`. The `api/` index lists the
+The tree is `docs/` as it is, plus `api/`. Only markdownlint's directive
+comments (`<!-- markdownlint-disable-line … -->`,
+`<!-- markdownlint-disable-next-line … -->`, `<!-- markdownlint-disable … -->`
+and the rest) are left out of its pages' prose, since they matter to the
+`lint` check alone; code spans and fenced code keep them. The `api/` index lists the
 plugin SDKs first (TypeScript, Python, Rust), then the web API, then the
 Rust crates and the web UI library.
 
