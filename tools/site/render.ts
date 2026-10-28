@@ -225,12 +225,13 @@ function keyDir(key: string): string {
  *
  * @param key - Docs path without `.md` (`plugins`, `adr/control-plane`).
  * @param base - URL prefix of the docs version, ending in `/`.
- * @returns `<base>` for the index, else `<base><key>`; a nested
- *   README or index maps to its directory (`api/README` → `<base>api/`).
+ * @returns `<base><key>`, with no trailing slash: the index is `<base>`
+ *   without its slash (`/docs`), and a nested README maps to its directory
+ *   (`api/README` → `<base>api`).
  */
 export function docUrl(key: string, base = "/docs/"): string {
-  if (key === "README") return base;
-  if (key.endsWith("/README")) return base + key.slice(0, -"README".length);
+  if (key === "README") return base.slice(0, -1);
+  if (key.endsWith("/README")) return base + key.slice(0, -"/README".length);
   return base + key;
 }
 
@@ -750,7 +751,7 @@ export function docJsonLd(
   const url = origin + docUrl(doc.key, base);
   const crumbs = (doc.key === "README" ? trail.slice(0, 1) : trail).map((c) => ({
     name: c.title,
-    item: origin + (c.key === null ? base : docUrl(c.key, base)),
+    item: origin + docUrl(c.key ?? "README", base),
   }));
   return {
     "@context": "https://schema.org",
@@ -978,7 +979,7 @@ export function crumbTrail(nav: readonly NavGroup[], key: string, title: string)
 export function crumbsHtml(trail: readonly Crumb[], base: string): string {
   const items = trail.map((c, i) => {
     const current = i === trail.length - 1 ? ' aria-current="page"' : "";
-    return `<li><a href="${escapeHtml(c.key === null ? base : docUrl(c.key, base))}"${current}>${escapeHtml(c.title)}</a></li>`;
+    return `<li><a href="${escapeHtml(docUrl(c.key ?? "README", base))}"${current}>${escapeHtml(c.title)}</a></li>`;
   });
   return `<nav class="crumbs" aria-label="Breadcrumb"><ol>${items.join("")}</ol></nav>`;
 }
@@ -1111,7 +1112,7 @@ export function mobileMenusHtml(sidebar: string, headings: readonly DocHeading[]
  * @returns The link.
  */
 function homeLink(base: string, current: boolean): string {
-  return `<a class="docs-home" href="${escapeHtml(base)}"${current ? ' aria-current="page"' : ""}>Overview</a>`;
+  return `<a class="docs-home" href="${escapeHtml(docUrl("README", base))}"${current ? ' aria-current="page"' : ""}>Overview</a>`;
 }
 
 /**
@@ -1258,7 +1259,7 @@ export function renderDocPage(
       pageDescription: doc.description || `${doc.title}: Bookclerk documentation.`,
       pagePath: docUrl(key, at.base),
       markdownUrl,
-      docsBase: at.base,
+      docsBase: docUrl("README", at.base),
     },
     {
       jsonld: jsonLd(docJsonLd(shell.origin, at.base, { key, title: doc.title, description: doc.description, updated: at.updated ?? null }, trail)),
@@ -1315,7 +1316,7 @@ export function renderUnavailablePage(shell: DocsShell, key: string, at: { ref: 
       pageDescription: "The Bookclerk documentation could not be loaded right now.",
       pagePath: docUrl(key, at.base),
       markdownUrl: docMarkdownUrl(key, at.base),
-      docsBase: at.base,
+      docsBase: docUrl("README", at.base),
     },
     {
       jsonld: "",

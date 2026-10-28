@@ -9,7 +9,7 @@ Free and open source. Runs on Linux, macOS and Windows. Works with Audible, Libr
 {{#demo}}- [Try the live demo]({{demoUrl}}): your own copy of Bookclerk in the browser for 30 minutes
 {{/demo}}{{#prerelease}}- [Try the preview]({{origin}}/download)
 {{/prerelease}}{{#released}}- [Download {{releaseTag}}]({{origin}}/download)
-{{/released}}- [Documentation]({{origin}}/docs/) ([as Markdown]({{origin}}/docs/README.md), [llms.txt]({{origin}}/llms.txt))
+{{/released}}- [Documentation]({{origin}}/docs) ([as Markdown]({{origin}}/docs/README.md), [llms.txt]({{origin}}/llms.txt))
 - [Source code on GitHub]({{repo}})
 
 ## Three steps from store to shelf
@@ -35,7 +35,7 @@ Bookclerk's web interface lists every book in one library with its store and sta
 
 ## Add a store, a destination or an integration
 
-Plugins are written in TypeScript, Python or Rust against a Workers-style API, and each one runs in its own sandbox with only the access it declares. The [docs]({{origin}}/docs/) cover the architecture, the plugin SDKs and the HTTP API.
+Plugins are written in TypeScript, Python or Rust against a Workers-style API, and each one runs in its own sandbox with only the access it declares. The [docs]({{origin}}/docs) cover the architecture, the plugin SDKs and the HTTP API.
 
 ```sh
 # build and run the development version
