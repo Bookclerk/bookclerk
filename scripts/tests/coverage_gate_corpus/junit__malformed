@@ -1,0 +1,2 @@
+<testsuites><testsuite name="x"><testcase classname="a" name="b" time="1">
+<failure>unterminated

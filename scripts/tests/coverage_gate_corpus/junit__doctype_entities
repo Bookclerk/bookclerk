@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<!DOCTYPE lolz [
+ <!ENTITY lol "lol">
+ <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
+ <!ENTITY xxe SYSTEM "file:///etc/passwd">
+]>
+<testsuites><testsuite name="x"><testcase classname="a" name="&lol2;&xxe;" time="1"/></testsuite></testsuites>

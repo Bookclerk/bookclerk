@@ -1,0 +1,11 @@
+# cargo-nextest settings (docs/contributing/ci.md#test-results).
+#
+# The `ci` profile is the default one plus a JUnit report at
+# target/nextest/ci/junit.xml. CI runs the instrumented `rust_test` check
+# with it and uploads the report to Codecov Test Analytics.
+
+[profile.ci.junit]
+path = "junit.xml"
+# Codecov shows a failed test's output in its pull request comment.
+store-failure-output = true
+store-success-output = false

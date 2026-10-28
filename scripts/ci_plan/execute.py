@@ -439,8 +439,19 @@ def _pkg_args(pkgs: Sequence[str]) -> list[str]:
 
 # Set by the workflow on the jobs that measure coverage: each measured check
 # writes `<dir>/<area>/lcov.info` for CI Gate (scripts/coverage_gate.py and
-# docs/contributing/ci.md#coverage). Unset, checks run without coverage.
+# docs/contributing/ci.md#coverage), and its JUnit report as
+# `<dir>/<area>/junit.xml` for Codecov Test Analytics. Unset, checks run
+# without either.
 COVERAGE_DIR_ENV = "CI_COVERAGE_DIR"
+# Set by the workflow on the jobs that build the web UI and the Workers: each
+# writes its built bundle to `<dir>/<bundle>/` for Codecov Bundle Analysis
+# (docs/contributing/ci.md#bundle-sizes). Unset, nothing is kept.
+BUNDLE_DIR_ENV = "CI_BUNDLE_DIR"
+# The nextest profile (.config/nextest.toml) that writes a JUnit report, and
+# where it writes it, relative to the workspace. The workflow copies the
+# report into the coverage directory even when tests fail.
+NEXTEST_JUNIT_PROFILE = "ci"
+NEXTEST_JUNIT_DIR = "target/nextest/ci"
 
 
 def _coverage_report(area: str) -> Path | None:
@@ -453,19 +464,46 @@ def _coverage_report(area: str) -> Path | None:
     return report
 
 
+def _bundle_dir(bundle: str) -> Path | None:
+    """Where ``bundle``'s built files go, or ``None`` when bundles are not kept."""
+    root = os.environ.get(BUNDLE_DIR_ENV)
+    return Path(root) / bundle if root else None
+
+
+def _worker_bundle(bundle: str, path: str, cwd: str, *extra: str) -> list[Command]:
+    """Bundle the Worker at ``path`` the way a deploy would, without deploying.
+
+    ``wrangler deploy --dry-run`` writes the bundled script to the bundle's
+    directory; it needs no Cloudflare account. Empty when bundles are not kept.
+    """
+    out = _bundle_dir(bundle)
+    if out is None:
+        return []
+    argv = ["npx", "--no-install", "wrangler", "deploy", "--dry-run", *extra, "--outdir", str(out)]
+    return [Command(f"bundle ({path})", argv, cwd=cwd, env={"WRANGLER_SEND_METRICS": "false"})]
+
+
+def _copy_bundle(bundle: str, built: Path) -> list[Command]:
+    """Keep an already built bundle, or nothing when bundles are not kept."""
+    out = _bundle_dir(bundle)
+    return [] if out is None else [Command(f"keep the {bundle} bundle", ["<copytree>", str(built), str(out)])]
+
+
 def _worker_test(area: str, path: str, cwd: str) -> Command:
     """``npm test`` for the Worker at ``path``, as ``npm run coverage`` when measuring.
 
     The coverage run is the same Vitest suite with V8 coverage; only the LCOV
-    reporter is kept, writing into the Worker's coverage area.
+    reporter is kept, writing into the Worker's coverage area, and a JUnit
+    report goes beside it.
     """
     report = _coverage_report(area)
     if report is None:
         return Command(f"npm test ({path})", ["npm", "test"], cwd=cwd)
     reporters = ["--coverage.reporter=text-summary", "--coverage.reporter=lcovonly"]
+    junit = ["--reporter=default", "--reporter=junit", f"--outputFile.junit={report.parent / 'junit.xml'}"]
     return Command(
         f"npm run coverage ({path})",
-        ["npm", "run", "coverage", "--", *reporters, f"--coverage.reportsDirectory={report.parent}"],
+        ["npm", "run", "coverage", "--", *reporters, f"--coverage.reportsDirectory={report.parent}", *junit],
         cwd=cwd,
     )
 
@@ -546,7 +584,15 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         # Tests import the SDK from its source tree.
         src = {"PYTHONPATH": str(ctx.workspace / "packages" / "plugin-sdk-python" / "src")}
         report = _coverage_report("python-sdk")
-        cov = ["--cov=packages/plugin-sdk-python/src", f"--cov-report=lcov:{report}"] if report else []
+        cov = []
+        if report:
+            cov = [
+                "--cov=packages/plugin-sdk-python/src",
+                f"--cov-report=lcov:{report}",
+                f"--junitxml={report.parent / 'junit.xml'}",
+                "-o",
+                "junit_family=legacy",
+            ]
         return [
             # Installs the dev/docs extras at the versions in uv.lock (the
             # lockfile OSV scans); `--locked` fails when the lockfile no longer
@@ -596,6 +642,8 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
                 ["node", "audit.ts", "--out", str(ctx.tmp / "site-audit")],
                 cwd=str(site / "audit"),
             ),
+            # After the build: the Worker imports what it generates.
+            *_worker_bundle("site", "tools/site", str(site)),
         ]
     if check == "collector_test":
         collector = str(ctx.workspace / "tools" / "diagnostics-collector")
@@ -604,6 +652,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             Command("tsc (tools/diagnostics-collector)", ["npm", "run", "typecheck"], cwd=collector),
             Command("oxlint (tools/diagnostics-collector)", ["npm", "run", "lint"], cwd=collector),
             _worker_test("collector", "tools/diagnostics-collector", collector),
+            *_worker_bundle("collector", "tools/diagnostics-collector", collector),
         ]
     if check == "demo_test":
         demo = str(ctx.workspace / "tools" / "demo")
@@ -612,6 +661,8 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             Command("tsc (tools/demo)", ["npm", "run", "typecheck"], cwd=demo),
             Command("oxlint (tools/demo)", ["npm", "run", "lint"], cwd=demo),
             _worker_test("demo", "tools/demo", demo),
+            # The container image is not built: only the Worker's script counts.
+            *_worker_bundle("demo", "tools/demo", demo, "--containers-rollout=none"),
         ]
     if check == "lint":
         # Repository-wide: Prettier formatting and markdownlint, both run from
@@ -630,6 +681,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             Command("npm run test:safe-html (ui)", ["npm", "run", "test:safe-html"], cwd=ui),
             Command("npm test (ui)", ["npm", "test"], cwd=ui),
             Command("npm run build (ui)", ["npm", "run", "build"], cwd=ui),
+            *_copy_bundle("ui", ctx.workspace / "ui" / "dist"),
         ]
     if check == "api_docs":
         if params.get("all"):
@@ -663,20 +715,26 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         env = {**runtime_env, "BOOKCLERK_REQUIRE_TEST_GUESTS": "1"}
         failure_mode = _nextest_mode(event)
         cmds: list[Command] = []
+        # When measuring, the main run also writes a JUnit report; a stale
+        # one from an earlier run in the same checkout is cleared first.
+        main_mode = failure_mode
+        if _coverage_report("rust") is not None:
+            cmds.append(Command("clear the JUnit report", ["<mkdir>", str(ctx.workspace / NEXTEST_JUNIT_DIR)]))
+            main_mode = [*failure_mode, "--profile", NEXTEST_JUNIT_PROFILE]
         if params.get("workspace"):
             scope = ["--workspace"]
             for ex in params.get("exclude", []):
                 scope += ["--exclude", ex]
             custom = [t for t in CUSTOM_HARNESS_TESTS if t[0] not in params.get("exclude", [])]
             cmds.append(
-                Command("unit + integration tests (workspace)", [*NEXTEST_RUN, *failure_mode, *scope, *_nextest_filter(custom)], env=env)
+                Command("unit + integration tests (workspace)", [*NEXTEST_RUN, *main_mode, *scope, *_nextest_filter(custom)], env=env)
             )
         elif params.get("packages"):
             custom = [t for t in CUSTOM_HARNESS_TESTS if t[0] in params["packages"]]
             cmds.append(
                 Command(
                     "unit + integration tests",
-                    [*NEXTEST_RUN, *failure_mode, *_pkg_args(params["packages"]), *_nextest_filter(custom)],
+                    [*NEXTEST_RUN, *main_mode, *_pkg_args(params["packages"]), *_nextest_filter(custom)],
                     env=env,
                 )
             )
@@ -968,7 +1026,7 @@ def build_only_command(cmd: Command) -> Command | None:
         scope: list[str] = []
         i = 3
         while i < len(argv):
-            if argv[i] in ("--failure-output", "--no-tests", "--retries", "-E"):
+            if argv[i] in ("--failure-output", "--no-tests", "--retries", "--profile", "-E"):
                 i += 2
                 continue
             if argv[i] not in ("--no-fail-fast", "--fail-fast"):
@@ -995,6 +1053,12 @@ def _run_one(cmd: Command, ctx: Context) -> None:
         if target.exists():
             shutil.rmtree(target)
         target.mkdir(parents=True)
+        return
+    if head == "<copytree>":
+        target = Path(cmd.argv[2])
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(cmd.argv[1], target)
         return
     if head in ("<assert-exec>", "<assert-file>"):
         target = Path(cmd.argv[1])

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="192" failures="0" errors="0" time="10.642857867">
+    <testsuite name="b2-error.fuzz.test.ts" timestamp="2026-10-28T21:44:12.010Z" hostname="vm" tests="3" failures="0" errors="0" skipped="0" time="0.106">
+        <testcase classname="b2-error.fuzz.test.ts" name="b2ErrorCode &gt; replays the seed corpus" time="0.006">
+        </testcase>
+        <testcase classname="b2-error.fuzz.test.ts" name="b2ErrorCode &gt; holds the oracle under seeded mutation" time="0.095">
+        </testcase>
+        <testcase classname="b2-error.fuzz.test.ts" name="b2ErrorCode &gt; ignores bodies past the size limit" time="0.003">
+        </testcase>
+        </testsuite>
+</testsuites>

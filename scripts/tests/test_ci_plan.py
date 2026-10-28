@@ -771,6 +771,8 @@ class CoverageCommandTests(unittest.TestCase):
                 run = next(c for c in cmds if c[:3] == ["npm", "run", "coverage"])
                 self.assertIn("--coverage.reporter=lcovonly", run)
                 self.assertIn(f"--coverage.reportsDirectory={self.dir / area}", run)
+                self.assertIn(f"--outputFile.junit={self.dir / area / 'junit.xml'}", run)
+                self.assertIn("--reporter=junit", run)
                 self.assertTrue((self.dir / area).is_dir())
 
     def test_python_sdk_writes_lcov(self) -> None:
@@ -778,6 +780,7 @@ class CoverageCommandTests(unittest.TestCase):
             cmds = commands(plan("packages/plugin-sdk-python/src/bookclerk_plugin_sdk/tools.py"), "python_sdk")
         pytest = next(c for c in cmds if "pytest" in c)
         self.assertIn(f"--cov-report=lcov:{self.dir / 'python-sdk' / 'lcov.info'}", pytest)
+        self.assertIn(f"--junitxml={self.dir / 'python-sdk' / 'junit.xml'}", pytest)
 
     def test_rust_report_needs_instrumentation(self) -> None:
         p = plan("crates/bookclerk-config/src/lib.rs")
@@ -799,6 +802,47 @@ class CoverageCommandTests(unittest.TestCase):
             os.environ.pop("CARGO_LLVM_COV", None)
             with self.assertRaises(ExecError):
                 commands(p, "rust_test")
+
+    def test_rust_main_run_writes_junit(self) -> None:
+        p = plan("crates/bookclerk-config/src/lib.rs")
+        with self.env(CARGO_LLVM_COV="1"):
+            cmds = commands(p, "rust_test")
+        clear = next(i for i, c in enumerate(cmds) if c[0] == "<mkdir>")
+        self.assertTrue(cmds[clear][1].endswith("target/nextest/ci"))
+        runs = [c for c in cmds if c[:3] == ["cargo", "nextest", "run"]]
+        self.assertLess(clear, cmds.index(runs[0]))
+        self.assertIn(["--profile", "ci"], [r[i : i + 2] for r in runs[:1] for i in range(len(r))])
+        # Only the main run writes the report; feature runs would overwrite it.
+        for run in runs[1:]:
+            self.assertNotIn("--profile", run)
+        with mock.patch.dict(os.environ):
+            os.environ.pop("CI_COVERAGE_DIR", None)
+            self.assertFalse(any("--profile" in c for c in commands(p, "rust_test")))
+
+
+class BundleCommandTests(unittest.TestCase):
+    """With CI_BUNDLE_DIR set, the UI and Worker checks keep `<dir>/<bundle>/`."""
+
+    def test_checks_keep_their_bundles(self) -> None:
+        with mock.patch.dict(os.environ, {"CI_BUNDLE_DIR": "/b"}):
+            for path, check, bundle in (
+                ("tools/site/build.ts", "site_audit", "site"),
+                ("tools/demo/src/app.ts", "demo_test", "demo"),
+                ("tools/diagnostics-collector/index.ts", "collector_test", "collector"),
+            ):
+                with self.subTest(check=check):
+                    cmds = commands(plan(path), check)
+                    dry = next(c for c in cmds if "--dry-run" in c)
+                    self.assertEqual(dry[:5], ["npx", "--no-install", "wrangler", "deploy", "--dry-run"])
+                    self.assertEqual(dry[-2:], ["--outdir", f"/b/{bundle}"])
+                    # Bundled after the checks, never instead of them.
+                    self.assertEqual(cmds[-1], dry)
+            ui = commands(plan("ui/src/main.tsx"), "ui")
+            self.assertEqual(ui[-1], ["<copytree>", "/ws/ui/dist", "/b/ui"])
+        with mock.patch.dict(os.environ):
+            os.environ.pop("CI_BUNDLE_DIR", None)
+            self.assertFalse(any("--dry-run" in c for c in commands(plan("tools/demo/src/app.ts"), "demo_test")))
+            self.assertNotIn("<copytree>", [c[0] for c in commands(plan("ui/src/main.tsx"), "ui")])
 
 
 class NativeGatewayTests(unittest.TestCase):

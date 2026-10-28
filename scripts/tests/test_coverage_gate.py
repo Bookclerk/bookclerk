@@ -17,9 +17,11 @@ import importlib.util
 import os
 import random
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from types import ModuleType
 
@@ -125,6 +127,44 @@ def oracle_diff(text: str) -> dict[str, set[int]]:
     return {path: lines for path, lines in added.items() if lines}
 
 
+def listing_entries(text: str) -> list[tuple[str, int]]:
+    """Read a ``bundle`` corpus file: one ``<size>\\t<path>`` line per file."""
+    entries = []
+    for line in text.split("\n"):
+        size, tab, path = line.partition("\t")
+        if tab and re.fullmatch("-?[0-9]{1,12}", size):
+            entries.append((path, int(size)))
+    return entries
+
+
+#: Characters a kept bundle path segment may hold.
+BUNDLE_SEGMENT_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+
+
+def oracle_bundle(entries: list[tuple[str, int]]) -> list[str]:
+    """Keep bundle files by splitting paths into segments rather than one pattern."""
+
+    def safe(path: str) -> bool:
+        segments = path.split("/")
+        if not 1 <= len(segments) <= 8:
+            return False
+        for segment in segments:
+            if not 1 <= len(segment) <= 128 or segment[0] in ".-" or not set(segment) <= BUNDLE_SEGMENT_CHARS:
+                return False
+        name = segments[-1]
+        return "." in name and name.rsplit(".", 1)[1].lower() in cg.BUNDLE_EXTENSIONS
+
+    kept: list[str] = []
+    total = 0
+    for path, size in sorted(set(entries)):
+        if safe(path) and 0 <= size <= cg.MAX_BUNDLE_FILE_BYTES:
+            if len(kept) >= cg.MAX_BUNDLE_FILES or total + size > cg.MAX_BUNDLE_BYTES:
+                break
+            kept.append(path)
+            total += size
+    return kept
+
+
 def assert_reads_like_oracle(case: unittest.TestCase, kind: str, text: str, label: str) -> None:
     """The module reads ``text`` as the oracle does, and keeps paths inside."""
     if kind == "lcov":
@@ -134,8 +174,50 @@ def assert_reads_like_oracle(case: unittest.TestCase, kind: str, text: str, labe
             parts = path.split("/")
             case.assertFalse(path.startswith("/") or "" in parts or "." in parts or ".." in parts, f"{label}: {path!r}")
             case.assertTrue(all(n > 0 and hits >= 0 for n, hits in lines.items()), label)
+    elif kind == "junit":
+        assert_junit_invariants(case, text, label)
+    elif kind == "bundle":
+        entries = listing_entries(text)
+        kept = cg.select_bundle_files(entries)
+        case.assertEqual(kept, oracle_bundle(entries), label)
+        sizes = dict(entries)
+        case.assertLessEqual(sum(sizes[path] for path in kept), cg.MAX_BUNDLE_BYTES, label)
+        for path in kept:
+            case.assertFalse(path.startswith("/") or ".." in path.split("/") or "\\" in path, f"{label}: {path!r}")
     else:
         case.assertEqual(cg.parse_diff(text), oracle_diff(text), label)
+
+
+#: Characters no kept JUnit name contains.
+NAME_FORBIDDEN = re.compile("[\x00-\x1f\x7f-\x9f\ufffe\uffff]")
+
+
+def assert_junit_invariants(case: unittest.TestCase, text: str, label: str) -> None:
+    """``parse_junit`` keeps its limits and reads back what it writes.
+
+    The standard library has no second XML parser to serve as an oracle, so
+    the oracle is the boundary's contract: a document type declaration
+    reads as empty; every kept name is one line of safe characters within
+    its limit; durations are finite and in range; failure text appears only
+    on a failed or errored case; and the written report reads back to the
+    same cases.
+    """
+    cases = cg.parse_junit(text)
+    if cg.DTD_RE.search(text):
+        case.assertEqual(cases, [], label)
+    for test in cases:
+        for value in (test.classname, test.name):
+            case.assertLessEqual(len(value), cg.MAX_NAME_CHARS, label)
+            case.assertIsNone(NAME_FORBIDDEN.search(value), f"{label}: {value!r}")
+        case.assertTrue(0 <= test.seconds <= cg.MAX_TEST_SECONDS, label)
+        case.assertLessEqual(len(test.failure), cg.MAX_FAILURE_CHARS, label)
+        case.assertIsNone(cg.UNSAFE_CHARS_RE.search(test.failure), label)
+        case.assertNotIn("\r", test.failure, label)
+        if test.outcome not in (cg.Outcome.FAILED, cg.Outcome.ERROR):
+            case.assertEqual(test.failure, "", label)
+    written = cg.write_junit("area", cases)
+    case.assertNotRegex(written, cg.DTD_RE, label)
+    case.assertEqual(cg.parse_junit(written), cases, label)
 
 
 def corpus() -> list[tuple[str, str, str]]:
@@ -364,7 +446,7 @@ class CorpusTest(unittest.TestCase):
     def test_corpus_kinds(self) -> None:
         cases = corpus()
         self.assertGreaterEqual(len(cases), 10)
-        self.assertEqual({kind for kind, _, _ in cases}, {"lcov", "diff"})
+        self.assertEqual({kind for kind, _, _ in cases}, {"lcov", "diff", "junit", "bundle"})
 
     def test_corpus_matches_oracle(self) -> None:
         for kind, name, text in corpus():
@@ -379,6 +461,29 @@ class CorpusTest(unittest.TestCase):
         self.assertEqual(set(lcov("lcov__odd_absolute")), {"a.ts", "c.ts", "d.ts"})
         self.assertEqual(lcov("lcov__malformed_da"), {"tools/site/a.ts": {6: 1, 7: 2, 99999999999999999999: 1}})
         self.assertEqual(cg.parse_diff(read["diff__huge_hunk"]), {"x.ts": {5, 6}})
+        junit = lambda name: cg.parse_junit(read[name])  # noqa: E731
+        self.assertEqual(junit("junit__doctype_entities"), [])
+        self.assertEqual(junit("junit__malformed"), [])
+        outcomes = [t.outcome for t in junit("junit__pytest_legacy")]
+        self.assertEqual(outcomes, [cg.Outcome.PASSED, cg.Outcome.FAILED, cg.Outcome.SKIPPED, cg.Outcome.ERROR])
+        nextest = junit("junit__nextest")
+        self.assertIn("panicked at crates/bookclerk-naming/src/lib.rs", nextest[2].failure)
+        self.assertNotIn("captured stdout", nextest[2].failure)
+        # A retry that passed in the end is a pass.
+        self.assertEqual(nextest[3].outcome, cg.Outcome.PASSED)
+        odd = junit("junit__odd_values")
+        self.assertEqual([t.seconds for t in odd], [0.0, 0.0, cg.MAX_TEST_SECONDS, 0.0, 0.1, 0.0])
+        self.assertEqual(odd[0].classname, "a b c")
+        self.assertEqual(odd[4].failure, "m\nline\nbody\ntext")
+        nested = junit("junit__nested_suites")
+        self.assertEqual([(t.name, t.outcome) for t in nested], [("deep", cg.Outcome.SKIPPED), ("both", cg.Outcome.ERROR)])
+        bundle = lambda name: cg.select_bundle_files(listing_entries(read[name]))  # noqa: E731
+        self.assertEqual(
+            bundle("bundle__vite_ui"),
+            ["assets/index-BkQ2x9.js", "assets/index-Cz81.css", "assets/inter-latin.woff2", "favicon.svg", "index.html"],
+        )
+        self.assertEqual(bundle("bundle__wrangler"), ["worker.js"])
+        self.assertEqual(bundle("bundle__hostile"), ["a/b/c/d/e/f/g/h.js", "at-limit.js", "dup.js", "ok.JS"])
 
 
 #: Fragments the mutator splices in: record keys, path tricks, digits.
@@ -403,6 +508,24 @@ FRAGMENTS = (
     "@@ -1 +2,3 @@",
     "@@ -0,0 +1 @@",
     " ",
+    "<testcase ",
+    "</testcase>",
+    "<failure>",
+    "<error message='",
+    "<skipped/>",
+    ' time="',
+    "<!DOCTYPE x>",
+    "&amp;",
+    "&#x85;",
+    "&#13;",
+    '"',
+    "<",
+    ">",
+    "\t",
+    ".js",
+    ".map",
+    "/.",
+    "assets/",
 )
 
 
@@ -433,8 +556,8 @@ class MutationFuzzTest(unittest.TestCase):
         for n in range(self.ITERATIONS):
             kind, _, text = rng.choice(seeds)
             mutated = self.mutate(rng, text)
-            # Either parser may be fed the other's input.
-            kind = kind if rng.random() < 0.9 else ("diff" if kind == "lcov" else "lcov")
+            # Any parser may be fed another's input.
+            kind = kind if rng.random() < 0.9 else rng.choice(("lcov", "diff", "junit", "bundle"))
             assert_reads_like_oracle(self, kind, mutated, f"iteration {n}: {kind} {mutated!r}")
 
     def test_generated_paths_match_oracle(self) -> None:
@@ -523,6 +646,77 @@ class ExportTest(unittest.TestCase):
             self.assertEqual((base / "out" / "site.lcov").read_text(encoding="utf-8"), "SF:tools/site/a.ts\nDA:1,1\nend_of_record\n")
             self.assertFalse((base / "out" / "rust.lcov").exists())
 
+    def test_junit_limits(self) -> None:
+        long_name = "n" * (cg.MAX_NAME_CHARS + 50)
+        failure = "f" * (cg.MAX_FAILURE_CHARS + 50)
+        text = f'<testsuites><testcase classname="c" name="{long_name}"><failure>{failure}</failure></testcase></testsuites>'
+        (test,) = cg.parse_junit(text)
+        self.assertEqual(len(test.name), cg.MAX_NAME_CHARS)
+        self.assertEqual(len(test.failure), cg.MAX_FAILURE_CHARS)
+        many = "<testsuites>" + '<testcase name="t"/>' * 5 + "</testsuites>"
+        with mock.patch.object(cg, "MAX_TEST_CASES", 3):
+            self.assertEqual(len(cg.parse_junit(many)), 3)
+        with mock.patch.object(cg, "MAX_JUNIT_CHARS", len(many) - 1):
+            self.assertEqual(cg.parse_junit(many), [])
+
+    def test_export_writes_test_results(self) -> None:
+        config = cg.parse_config(CONFIG.replace('report = "site/lcov.info"\n', 'report = "site/lcov.info"\ntest_results = "site/junit.xml"\n'))
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "in" / "site").mkdir(parents=True)
+            junit = (CORPUS / "junit__pytest_legacy").read_text(encoding="utf-8")
+            (base / "in" / "site" / "junit.xml").write_text(junit, encoding="utf-8")
+            written = cg.export(config, base / "in", base / "out", frozenset())
+            self.assertEqual(written, ["site test results"])
+            self.assertEqual(cg.parse_junit((base / "out" / "site.junit.xml").read_text(encoding="utf-8")), cg.parse_junit(junit))
+
+    def test_bundle_limits(self) -> None:
+        many = [(f"f{n:05}.js", 1) for n in range(cg.MAX_BUNDLE_FILES + 5)]
+        self.assertEqual(len(cg.select_bundle_files(many)), cg.MAX_BUNDLE_FILES)
+        big = [(f"f{n}.js", cg.MAX_BUNDLE_FILE_BYTES) for n in range(6)]
+        self.assertEqual(cg.select_bundle_files(big), ["f0.js", "f1.js", "f2.js", "f3.js"])
+
+    def test_export_bundles_skips_links_and_unknown_bundles(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            secret = base / "secret.js"
+            secret.write_text("secret", encoding="utf-8")
+            ui = base / "in" / "ui"
+            (ui / "assets").mkdir(parents=True)
+            (ui / "assets" / "index.js").write_text("app", encoding="utf-8")
+            (ui / "assets" / "index.js.map").write_text("map", encoding="utf-8")
+            (ui / "linked.js").symlink_to(secret)
+            (ui / "hard.js").hardlink_to(secret)
+            (ui / "linked-dir").symlink_to(base, target_is_directory=True)
+            (base / "in" / "other").mkdir()
+            (base / "in" / "other" / "x.js").write_text("x", encoding="utf-8")
+            (base / "in" / "site").symlink_to(ui, target_is_directory=True)
+            written = cg.export_bundles(base / "in", base / "out")
+            self.assertEqual(written, ["ui"])
+            files = sorted(p.relative_to(base / "out").as_posix() for p in (base / "out").rglob("*") if p.is_file())
+            self.assertEqual(files, ["ui/assets/index.js"])
+            self.assertEqual((base / "out" / "ui" / "assets" / "index.js").read_text(encoding="utf-8"), "app")
+
+    def test_generated_files_are_left_out(self) -> None:
+        config = cg.parse_config(CONFIG.replace("patch_target = 80\n", 'patch_target = 80\ngenerated = ["tools/site/gen.ts", "crates/a/src/gen.rs"]\n', 1))
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "in" / "site").mkdir(parents=True)
+            report = "SF:a.ts\nDA:1,1\nend_of_record\nSF:gen.ts\nDA:1,0\nend_of_record\n"
+            (base / "in" / "site" / "lcov.info").write_text(report, encoding="utf-8")
+            cwd = Path.cwd()
+            os.chdir(base)
+            try:
+                results = cg.read_reports(config, base / "in", frozenset())
+            finally:
+                os.chdir(cwd)
+        site = next(r for r in results if r.area.name == "site")
+        self.assertEqual(set(site.hits), {"tools/site/a.ts"})
+        # The rust area has no report: its generated file is not listed as unmeasured.
+        verdict = cg.judge(config, results, {"tools/site/gen.ts": {1}, "crates/a/src/gen.rs": {1}})
+        self.assertIsNone(verdict.patch_percent)
+        self.assertEqual(verdict.unmeasured, ())
+
     def test_export_keeps_a_selective_run_off_the_area_flag(self) -> None:
         config = cg.parse_config((ROOT / cg.AREAS_FILE).read_text(encoding="utf-8"))
         with tempfile.TemporaryDirectory() as tmp:
@@ -572,13 +766,33 @@ class UploadWorkflowTest(unittest.TestCase):
         for flag in individual:
             self.assertEqual(flag.get("carryforward", True), not flag["name"].endswith("-partial"), flag["name"])
 
+    def test_generated_files_match_the_gate(self) -> None:
+        config = cg.parse_config((ROOT / cg.AREAS_FILE).read_text(encoding="utf-8"))
+        self.assertEqual(sorted(self.codecov["ignore"]), sorted(config.generated))
+        marker = re.compile(r"GENERATED FILE|do not edit this file by hand", re.IGNORECASE)
+        for path in config.generated:
+            head = (ROOT / path).read_text(encoding="utf-8").splitlines()[:6]
+            self.assertTrue(any(marker.search(line) for line in head), f"{path} has no generated-file header")
+        tracked = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.splitlines()
+        for path in tracked:
+            if not any(a.owns(path) for a in config.areas) or path in config.generated:
+                continue
+            head = (ROOT / path).read_text(encoding="utf-8", errors="replace").splitlines()[:6]
+            self.assertFalse(any(marker.search(line) for line in head), f"{path} is generated: list it in `generated`")
+
+    def test_components_cover_known_paths(self) -> None:
+        for component in self.codecov["component_management"]["individual_components"]:
+            for path in component["paths"]:
+                self.assertTrue((ROOT / path).is_dir(), f"{component['component_id']}: {path}")
+
     def test_patch_target_matches_the_gate(self) -> None:
         config = cg.parse_config((ROOT / cg.AREAS_FILE).read_text(encoding="utf-8"))
         self.assertEqual(self.codecov["coverage"]["status"]["patch"]["default"]["target"], f"{config.patch_target:g}%")
 
     def test_one_upload_per_area_from_the_export(self) -> None:
         steps = self.workflow["jobs"]["upload"]["steps"]
-        uploads = [s for s in steps if str(s.get("uses", "")).startswith("codecov/codecov-action@")]
+        actions = [s for s in steps if str(s.get("uses", "")).startswith("codecov/codecov-action@")]
+        uploads = [s for s in actions if "report_type" not in s["with"]]
         self.assertEqual([u["with"]["flags"] for u in uploads], self.upload_names())
         for upload in uploads:
             area = upload["with"]["flags"]
@@ -601,6 +815,38 @@ class UploadWorkflowTest(unittest.TestCase):
         self.assertEqual(plan["with"]["path"], "${{ runner.temp }}/plan")
         self.assertIn('--plan "$RUNNER_TEMP/plan/ci-plan.json"', export["run"])
         self.assertLess(steps.index(export), steps.index(uploads[0]))
+
+    def test_one_test_results_upload_per_area(self) -> None:
+        steps = self.workflow["jobs"]["upload"]["steps"]
+        results = [s for s in steps if s.get("with", {}).get("report_type") == "test_results"]
+        self.assertEqual([r["with"]["flags"] for r in results], [a.name for a in self.areas if a.test_results])
+        for upload in results:
+            area = upload["with"]["flags"]
+            self.assertEqual(upload["with"]["files"], f"coverage-upload/{area}.junit.xml")
+            self.assertEqual(upload["if"], f"steps.target.outputs.upload == 'true' && hashFiles('coverage-upload/{area}.junit.xml') != ''")
+            self.assertEqual(upload["with"]["override_branch"], "${{ steps.target.outputs.branch }}")
+            self.assertEqual(upload["with"]["override_commit"], "${{ github.event.workflow_run.head_sha }}")
+            self.assertIs(upload["with"]["disable_search"], True)
+            self.assertIs(upload["with"]["use_oidc"], True)
+            self.assertRegex(upload["uses"], r"@[0-9a-f]{40}$")
+
+    def test_bundles_upload_only_what_the_export_kept(self) -> None:
+        steps = {s.get("name"): s for s in self.workflow["jobs"]["upload"]["steps"]}
+        download = steps["Download the bundles"]["with"]
+        self.assertEqual(download["pattern"], "bundle-*")
+        self.assertEqual(download["path"], "${{ runner.temp }}/bundles")
+        self.assertIn('--bundles "$RUNNER_TEMP/bundles"', steps["Export the reports"]["run"])
+        upload = steps["Upload the bundle sizes"]
+        self.assertIn("steps.target.outputs.upload == 'true'", upload["if"])
+        run = upload["run"]
+        self.assertIn("npm ci --ignore-scripts", run)
+        self.assertIn(f"for bundle in {' '.join(cg.BUNDLES)}; do", run)
+        self.assertIn('"coverage-upload/bundles/$bundle"', run)
+        self.assertNotIn("$RUNNER_TEMP/bundles", run)
+        # Event values reach the script through env only.
+        self.assertNotIn("${{", run)
+        self.assertEqual(upload["env"]["BRANCH"], "${{ steps.target.outputs.branch }}")
+        self.assertEqual(self.codecov["bundle_analysis"]["status"], "informational")
 
     def test_runs_unprivileged_from_the_default_branch(self) -> None:
         triggers = self.workflow.get("on", self.workflow.get(True))
