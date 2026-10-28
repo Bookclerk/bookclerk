@@ -2488,25 +2488,21 @@ code.inline {
   outline: 2px solid var(--teal);
   outline-offset: -2px;
 }
-/* One view shows at a time; the schema view is the Responses item's
-   description, body and fields. */
-.doc .api-responses .api-response-schema,
-.doc .api-responses.shows-schema .api-response-example {
+/* With the switch (docs.js adds `api-views`), one view shows at a time and
+   the "Schema:" line goes; without it both views stack under the caption.
+   A panel with no schema (a status without a body) keeps its sentence. */
+.doc .api-responses.api-views .api-response-schema,
+.doc .api-responses.api-views.shows-schema .api-response-with-schema > .api-response-example,
+.doc .api-responses.api-views .api-response-view-label {
   display: none;
 }
-.doc .api-responses.shows-schema .api-response-schema {
+.doc .api-responses.api-views.shows-schema .api-response-schema {
   display: block;
 }
-.doc .api-response-schema > .api-prop-desc {
-  margin-top: 0;
+.doc .api-response-view-label {
+  margin: 0.75em 0 0.25em;
+  font-weight: 600;
   color: var(--docs-soft);
-}
-.doc .api-response-schema > .api-prop-nested > summary {
-  display: none;
-}
-.doc .api-response-schema > .api-prop-nested > ul.api-props {
-  margin-top: 0.5em;
-  background: var(--paper);
 }
 /* Example requests (layoutRequests): one panel per language. docs.js turns
    two or more into a language picker inside a card; without it the samples

@@ -684,11 +684,10 @@
   /**
    * Turns each example response card into tabs, one per status, with an
    * Example/Schema switch: Example shows the status's example body, Schema
-   * the fields of its body, copied from the route's Responses list.
-   * Picking a view in one card picks it in every card on the page, and the
-   * choice is kept in the browser for the next page. Without this, the
-   * panels show one after another and the schema sits in the Responses
-   * list only.
+   * the body's JSON Schema. Picking a view in one card picks it in every
+   * card on the page, and the choice is kept in the browser for the next
+   * page. Without this, the panels show one after another, each with its
+   * example and then its schema.
    */
   function addResponseTabs() {
     const cards = [];
@@ -722,38 +721,24 @@
   }
 
   /**
-   * Adds the Example/Schema switch to a response card whose statuses all
-   * have an item in the route's Responses list, and gives each panel a
-   * schema view copied from that item (its description, body and fields).
+   * Adds the Example/Schema switch to a response card where a panel
+   * carries a schema view (the body's JSON Schema, laid out by the server
+   * after the example), and hides the view not picked. A panel without a
+   * schema view (a status with no body) shows its sentence in both views.
    *
    * @param {Element} card - The card, already laid out as tabs.
    * @param {Element[]} panels - Its status panels.
    * @param {(view: string) => void} pick - Called with the view a button picks.
    * @returns {((view: string) => void) | null} Shows a view ("example" or
-   *   "schema"), or null when a status has no item.
+   *   "schema"), or null when no panel has a schema view.
    */
   function addResponseViews(card, panels, pick) {
-    const section = card.closest(".api-op");
-    const items = section ? [...section.querySelectorAll("li.api-response-item")] : [];
-    const itemOf = (status) =>
-      items.find(
-        (item) => item.querySelector(".api-prop-head .api-status")?.textContent === status,
-      );
     const list = card.querySelector(".api-response-tabs");
-    if (!list || panels.some((panel) => !itemOf(panel.dataset.status || ""))) return null;
-    for (const panel of panels) {
-      const example = document.createElement("div");
-      example.className = "api-response-example";
-      example.append(...panel.childNodes);
-      const schema = document.createElement("div");
-      schema.className = "api-response-schema";
-      for (const node of itemOf(panel.dataset.status || "").childNodes) {
-        const copy = node.cloneNode(true);
-        if (copy instanceof Element && copy.classList.contains("api-prop-head")) continue;
-        schema.append(copy);
-      }
-      panel.append(example, schema);
-    }
+    const withSchema = panels.filter((panel) =>
+      panel.querySelector(":scope > .api-response-schema"),
+    );
+    if (!list || withSchema.length === 0) return null;
+    for (const panel of withSchema) panel.classList.add("api-response-with-schema");
     const head = document.createElement("div");
     head.className = "api-response-head";
     list.before(head);
@@ -771,6 +756,7 @@
     });
     toggle.append(...buttons);
     head.append(list, toggle);
+    card.classList.add("api-views");
     const show = (view) => {
       for (const button of buttons)
         button.setAttribute("aria-pressed", String(button.dataset.view === view));

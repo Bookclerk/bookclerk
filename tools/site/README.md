@@ -141,9 +141,10 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   section being read (`aria-current="location"`), kept in view when the
   rail scrolls, and the stepped line beside the rail that follows it,
   curving in and out with the nested routes of an API page, tabs for an
-  operation's example responses with an Example/Schema switch, a
-  page-wide language picker for its example requests (both choices kept
-  in local storage), and a filter box above the sidebar
+  operation's example responses with an Example/Schema switch (the
+  example body or its JSON Schema), a page-wide language picker for its
+  example requests (both choices kept in local storage), and a filter
+  box above the sidebar
   groups (`/` focuses it). On first focus the filter reads the docs
   version's search index (`/docs/search-index.json`, or under
   `/docs/v/<ref>/`), which the Worker builds from the docs repository:

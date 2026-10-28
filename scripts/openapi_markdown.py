@@ -712,9 +712,11 @@ class Document:
         """Render an example of each of an operation's responses.
 
         Every status gets a ``Status `<code>`: <description>`` line, then a
-        ``json`` block built from its schema, or a sentence saying the
-        response has no body or one the schemas do not describe (yet). The
-        site shows the statuses as tabs.
+        ``json`` block built from its schema and, after a ``Schema:`` line,
+        a ``json`` block holding the body's JSON Schema itself (see
+        :meth:`schema_text`), or a sentence saying the response has no body
+        or one the schemas do not describe (yet). The site shows the
+        statuses as tabs and the two blocks as an Example/Schema switch.
 
         Args:
             op: The operation.
@@ -750,10 +752,43 @@ class Document:
                 continue
             examples += 1
             text = json.dumps(value, indent=2, ensure_ascii=False)
-            entries += [label, "", "```json", text, "```", ""]
+            schema = self.schema_text(entry.get("schema", {}))
+            entries += [label, "", "```json", text, "```", "", "Schema:", "", "```json", schema, "```", ""]
         if examples == 0:
             return []
         return ["### Example response", "", *entries]
+
+    def schema_text(self, schema: Any) -> str:
+        """Render a body's JSON Schema as the text the site's Schema view shows.
+
+        References to components are replaced by the components themselves,
+        so the reader sees the fields in place rather than ``$ref`` strings;
+        a reference that would repeat a component already being expanded
+        stays a ``$ref``, so a recursive schema stays finite.
+
+        Args:
+            schema: The body's schema object.
+
+        Returns:
+            The schema as indented JSON.
+        """
+
+        def expand(node: Any, seen: tuple[str, ...]) -> Any:
+            if isinstance(node, list):
+                return [expand(item, seen) for item in node]
+            if not isinstance(node, Mapping):
+                return node
+            ref = node.get("$ref")
+            if isinstance(ref, str) and ref.startswith(REF_PREFIX):
+                name = ref.removeprefix(REF_PREFIX)
+                if name in self.schemas and name not in seen:
+                    target = self.schemas[name]
+                    if isinstance(target, Mapping):
+                        rest = {k: v for k, v in node.items() if k != "$ref"}
+                        return expand({**target, **rest}, (*seen, name))
+            return {key: expand(value, seen) for key, value in node.items()}
+
+        return json.dumps(expand(schema, ()), indent=2, ensure_ascii=False)
 
     # Pages ---------------------------------------------------------------
 

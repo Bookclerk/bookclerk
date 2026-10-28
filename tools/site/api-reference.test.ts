@@ -502,6 +502,12 @@ Status \`200\`: The book.
 {}
 \`\`\`
 
+Schema:
+
+\`\`\`json
+{ "type": "object" }
+\`\`\`
+
 Status \`404\`: No such book. No body.
 
 Status \`404\`: Again.
@@ -514,9 +520,21 @@ Status \`404\`: Again.
   );
   assert.ok(
     out.html.includes(
-      `<div class="api-response" id="${id}-response-200" data-status="200">\n<p class="api-response-status"><span class="api-response-code"><span class="visually-hidden">Status </span><span class="api-status api-status-2xx">200</span>:</span> The book.</p>\n<div class="code`,
+      `<div class="api-response" id="${id}-response-200" data-status="200">\n<p class="api-response-status"><span class="api-response-code"><span class="visually-hidden">Status </span><span class="api-status api-status-2xx">200</span>:</span> The book.</p>\n<div class="api-response-example">\n<div class="code`,
     ),
   );
+  // The `Schema:` line starts the schema view, which ends with the panel.
+  assert.match(
+    out.html,
+    /<\/div>\n<div class="api-response-schema">\n<p class="api-response-view-label">Schema:<\/p>\n<div class="code"[\s\S]*?<\/div>\n<\/div>\n<\/div>\n<div class="api-response" id="get-apibooksid-response-404"/,
+  );
+  // A panel without a schema has an example view only.
+  assert.ok(
+    out.html.includes(
+      `data-status="404">\n<p class="api-response-status"><span class="api-response-code"><span class="visually-hidden">Status </span><span class="api-status api-status-4xx">404</span>:</span> No such book. No body.</p>\n<div class="api-response-example">\n</div>\n</div>\n`,
+    ),
+  );
+  assert.equal(out.html.split('<div class="api-response-schema">').length, 2);
   assert.ok(out.html.includes(`id="${id}-response-404" data-status="404"`));
   assert.match(
     out.html,
