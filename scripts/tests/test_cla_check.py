@@ -22,6 +22,7 @@ import json
 import random
 import sys
 import unittest
+import urllib.error
 import urllib.parse
 from pathlib import Path
 
@@ -1345,6 +1346,22 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(fake.signed_ids(), {101})
         self.assertEqual(fake.last_status(), "success")
         self.assertIn("::warning::cannot add the eyes reaction", out.getvalue())
+
+    def test_reaction_network_failures_do_not_stop_the_signature(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        real_send = fake.send
+
+        def drop_reactions(method: str, path: str, body: dict | None) -> tuple[int, bytes]:
+            if "/reactions" in path:
+                raise urllib.error.URLError("timed out")
+            return real_send(method, path, body)
+
+        fake.send = drop_reactions  # type: ignore[method-assign]
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            drive(fake, comment_event(ALICE, cla.SIGN_PHRASE))
+        self.assertEqual(fake.signed_ids(), {101})
+        self.assertEqual(fake.last_status(), "success")
+        self.assertIn("timed out", out.getvalue())
 
     def test_the_status_is_posted_as_the_app(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])

@@ -1275,13 +1275,17 @@ class GitHub:
     def react(self, comment_id: int, content: str) -> int | None:
         """Adds reaction ``content`` to a comment, as the reporter.
 
-        Reactions only show progress, so a refusal is printed as a warning
-        and never fails the check.
+        Reactions only show progress, so a refusal, or a network failure, is
+        printed as a warning and never fails the check.
 
         # Returns
         The reaction's id, or ``None`` when it could not be added.
         """
-        status, raw = self.reporter.send("POST", f"{self.base}/issues/comments/{comment_id}/reactions", {"content": content})
+        try:
+            status, raw = self.reporter.send("POST", f"{self.base}/issues/comments/{comment_id}/reactions", {"content": content})
+        except OSError as err:
+            print(f"::warning::cannot add the {content} reaction to comment {comment_id} ({err})")
+            return None
         if status in (200, 201):
             try:
                 return parse_reaction(raw)
@@ -1291,8 +1295,12 @@ class GitHub:
         return None
 
     def unreact(self, comment_id: int, reaction_id: int) -> None:
-        """Removes the reporter's reaction ``reaction_id`` from a comment, warning on a refusal."""
-        status, _ = self.reporter.send("DELETE", f"{self.base}/issues/comments/{comment_id}/reactions/{reaction_id}", None)
+        """Removes the reporter's reaction ``reaction_id`` from a comment, warning on a refusal or network failure."""
+        try:
+            status, _ = self.reporter.send("DELETE", f"{self.base}/issues/comments/{comment_id}/reactions/{reaction_id}", None)
+        except OSError as err:
+            print(f"::warning::cannot remove reaction {reaction_id} from comment {comment_id} ({err})")
+            return
         if status != 204:
             print(f"::warning::cannot remove reaction {reaction_id} from comment {comment_id} (HTTP {status})")
 
