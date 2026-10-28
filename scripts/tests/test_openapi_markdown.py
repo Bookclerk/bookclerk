@@ -268,6 +268,31 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(om.fence_language("text/markdown; charset=utf-8"), "markdown")
         self.assertEqual(om.fence_language("application/problem+json"), "json")
         self.assertEqual(om.fence_language("image/svg+xml"), "xml")
+        # A text body whose schema says nothing is not binary; a `+json` type
+        # counts as JSON, also when listed after a text type; a Markdown
+        # example that holds a fence gets a longer one.
+        doc = json.loads(json.dumps(DOCUMENT))
+        responses = doc["paths"]["/books/{id}"]["get"]["responses"]
+        responses["504"] = {"description": "Slow.", "content": {"text/plain": {"schema": {}}}}
+        responses["409"] = {
+            "description": "Busy.",
+            "content": {
+                "text/plain": {"schema": {"type": "string"}},
+                "application/problem+json": {"schema": {"type": "object", "properties": {"title": {"type": "string", "example": "busy"}}}},
+            },
+        }
+        responses["418"] = {"description": "Tea.", "content": {"text/markdown": {"schema": {"type": "string", "example": "```sh\nbrew\n```"}}}}
+        page = om.Document(doc).render_all()["books.md"]
+        text = page.split("## `GET /books/{id}`")[1]
+        self.assertIn("Status `504`: Slow. The body is `text/plain` content the schemas do not describe yet.\n", text)
+        self.assertIn('Status `409`: Busy.\n\n```json\n{\n  "title": "busy"\n}\n```\n', text)
+        self.assertIn("Status `418`: Tea.\n\n````markdown\n```sh\nbrew\n```\n````\n\nSchema:\n", text)
+        # The Responses list takes its fields from the body the example shows.
+        self.assertIn("- `409` — Busy. Body: string (`text/plain`); object (`application/problem+json`)\n  - `title` *string*", page)
+        self.assertEqual(om.shown_media({"text/plain": {}, "application/problem+json": {}}), "application/problem+json")
+        self.assertEqual(om.shown_media({"text/plain": {}, "image/png": {}}), "text/plain")
+        self.assertEqual(om.fenced("text", "a `b` c"), ["```text", "a `b` c", "```"])
+        self.assertEqual(om.fenced("markdown", "````\nx\n````"), ["`````markdown", "````\nx\n````", "`````"])
 
     def test_examples_follow_references_and_stop_at_cycles(self) -> None:
         doc = om.Document(

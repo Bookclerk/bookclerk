@@ -520,10 +520,11 @@ Rust crates and the web UI library.
   schemas. Parameters, body fields and responses are lists, one item per
   property (`` `name` (path) *type*, **required** — description ``), with
   an inline object's fields nested under it. A request body that names a
-  schema lists that schema's fields in place, and a success response
-  whose JSON body is an object lists its fields too, so a route reads
-  without a trip to the schemas page; error bodies are shared, so they
-  keep the link only.
+  schema lists that schema's fields in place, and a response whose body
+  is an object, or an array of objects, lists its fields too, whatever
+  its status or media type, so a route reads without a trip to the
+  schemas page; when a status offers several media types, the fields
+  and the example come from the JSON one.
   - The website lays the route group pages out like an OpenAPI viewer
     (`tools/site/api-reference.ts`): a method badge beside each path, the
     examples in a second column when the reading column is wide enough,

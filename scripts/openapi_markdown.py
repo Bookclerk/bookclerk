@@ -715,11 +715,14 @@ class Document:
         example block built from its schema (``json`` for a JSON body, the
         media type's own language for a text body) and, after a ``Schema:``
         line, a ``json`` block holding the body's JSON Schema itself (see
-        :meth:`schema_text`). A binary body has no example to build, so a
-        sentence stands in for the block and its schema still follows. A
-        response with no body, or a JSON one the schemas do not describe
-        (yet), gets a sentence only. The site shows the statuses as tabs
-        and the two blocks as an Example/Schema switch.
+        :meth:`schema_text`). A status offering several media types shows
+        the JSON one (see :func:`shown_media`). A binary body has no
+        example to build, so a sentence stands in for the block and its
+        schema still follows. A response with no body, or one whose schema
+        says nothing about its shape (yet), gets a sentence only. The
+        fences are longer than any backtick run inside them, so a Markdown
+        example cannot close one early. The site shows the statuses as
+        tabs and the two blocks as an Example/Schema switch.
 
         Args:
             op: The operation.
@@ -742,27 +745,40 @@ class Document:
             if not isinstance(content, Mapping) or not content:
                 entries += [f"{label} No body.", ""]
                 continue
-            # A JSON body is the one shown when a status offers several.
-            media = "application/json" if "application/json" in content else str(next(iter(content)))
+            media = shown_media(content)
             entry = content.get(media)
             schema = entry.get("schema", {}) if isinstance(entry, Mapping) else {}
             value = self.example(schema)
-            if value is NO_EXAMPLE and media == "application/json":
-                entries += [f"{label} The body is JSON the schemas do not describe yet.", ""]
+            if value is NO_EXAMPLE and not self.is_binary(schema):
+                what = "JSON" if is_json(media) else f"{code(media)} content"
+                entries += [f"{label} The body is {what} the schemas do not describe yet.", ""]
                 continue
             described += 1
             if value is NO_EXAMPLE:
                 entries += [f"{label} The body is binary ({code(media)}).", ""]
-            elif media == "application/json":
-                text = json.dumps(value, indent=2, ensure_ascii=False)
-                entries += [label, "", "```json", text, "```", ""]
+            elif is_json(media):
+                entries += [label, "", *fenced("json", json.dumps(value, indent=2, ensure_ascii=False)), ""]
             else:
                 text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-                entries += [label, "", f"```{fence_language(media)}", text, "```", ""]
-            entries += ["Schema:", "", "```json", self.schema_text(schema), "```", ""]
+                entries += [label, "", *fenced(fence_language(media), text), ""]
+            entries += ["Schema:", "", *fenced("json", self.schema_text(schema)), ""]
         if described == 0:
             return []
         return ["### Example response", "", *entries]
+
+    def is_binary(self, schema: Any) -> bool:
+        """Whether a schema describes a binary body (a ``binary`` or ``byte`` string).
+
+        Args:
+            schema: A schema object, possibly a reference.
+
+        Returns:
+            ``True`` for a string schema with the ``binary`` or ``byte``
+            format, which has no example to build; ``False`` otherwise,
+            including for a schema that says nothing about its shape.
+        """
+        target, _name = self.resolve(schema)
+        return isinstance(target, Mapping) and target.get("type") == "string" and target.get("format") in ("binary", "byte")
 
     def schema_text(self, schema: Any) -> str:
         """Render a body's JSON Schema as the text the site's Schema view shows.
@@ -1032,10 +1048,12 @@ class Document:
             return [f"{head} No body."]
         bodies = []
         fields: list[str] = []
+        shown = shown_media(content)
         for media, entry in content.items():
             schema = entry.get("schema", {}) if isinstance(entry, Mapping) else {}
             bodies.append(f"{self.type_of(schema, here)} ({code(str(media))})")
-            if not fields:
+            # The fields come from the body the example response shows.
+            if str(media) == shown:
                 target, _name = self.resolve(schema)
                 # An array of objects lists the fields of one item.
                 if isinstance(target, Mapping) and not _inline_object(target) and "items" in target:
@@ -1114,6 +1132,51 @@ def fence_language(media: str) -> str:
     if subtype.endswith("+xml") or subtype == "xml":
         return "xml"
     return subtype if subtype in ("markdown", "html", "csv") else "text"
+
+
+def is_json(media: str) -> bool:
+    """Whether a media type carries JSON.
+
+    Args:
+        media: The media type, with any parameters.
+
+    Returns:
+        ``True`` for ``application/json`` and any ``+json`` type, such as
+        ``application/problem+json``.
+    """
+    return fence_language(media) == "json"
+
+
+def shown_media(content: Mapping[str, Any]) -> str:
+    """Pick the media type a status's example and field list show.
+
+    Args:
+        content: The response's ``content`` map, which is not empty.
+
+    Returns:
+        The first JSON media type (see :func:`is_json`) when the status
+        offers one, otherwise the first media type listed.
+    """
+    for media in content:
+        if is_json(str(media)):
+            return str(media)
+    return str(next(iter(content)))
+
+
+def fenced(language: str, text: str) -> list[str]:
+    """Fence a block of text so no backtick run inside it closes the fence.
+
+    Args:
+        language: The fence language.
+        text: The block's lines, joined.
+
+    Returns:
+        The opening fence, the text and the closing fence, using one more
+        backtick than the longest run in the text and at least three.
+    """
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    ticks = "`" * max(3, longest + 1)
+    return [f"{ticks}{language}", text, ticks]
 
 
 @dataclass(frozen=True)
