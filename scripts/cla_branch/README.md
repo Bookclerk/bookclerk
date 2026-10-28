@@ -46,7 +46,7 @@ Each entry records the GitHub account (`name`, `id`), the signing comment
      signatures.
    - **Pull requests: read and write**, to post the check's comment under
      the App's name and avatar.
-   - **Commit statuses: read and write**, to post the `CLA` status as the
+   - **Commit statuses: read and write**, to post the `Bookclerk CLA` status as the
      App.
 
    It needs no webhook. Install it on the repository, then generate a
@@ -79,7 +79,7 @@ Each entry records the GitHub account (`name`, `id`), the signing comment
    GitHub-signed commit on top of the branch. The App never needs the
    Administration permission. Every check run reads the rules that apply
    to this branch and warns when one is missing.
-5. After the check has run once, require the **CLA** status in the default
+5. After the check has run once, require the **Bookclerk CLA** status in the default
    branch's ruleset, with the App as its expected source.
 
 ## Start over

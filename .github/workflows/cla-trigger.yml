@@ -4,11 +4,11 @@
 # read-only token and no secrets, and a fork's copy of it is what runs for a
 # fork pull request. When it completes, the `CLA` workflow (cla.yml) runs on
 # `workflow_run` from the default branch with the write token it needs,
-# reads the pull request through the API, and reports the `CLA` status.
+# reads the pull request through the API, and reports the `Bookclerk CLA` status.
 #
 # Nothing here is trusted: a pull request that edits, renames or deletes this
 # file can only start the check, start it late, or never start it, and a
-# required `CLA` status that never arrives keeps the pull request blocked.
+# required `Bookclerk CLA` status that never arrives keeps the pull request blocked.
 # The check finds the pull request from the run's head commit, branch and
 # repository, which GitHub sets, not from anything this run produces.
 #

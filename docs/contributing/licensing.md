@@ -91,7 +91,7 @@ repositories:
    else from it.
 
 A pull request that edits or deletes the trigger can only delay the check
-or keep it from running, and a required **CLA** status that never arrives
+or keep it from running, and a required **Bookclerk CLA** status that never arrives
 keeps the pull request from merging.
 
 > [!NOTE]
@@ -137,11 +137,13 @@ Who must sign:
   closed, and when it moves to another base branch, because the new base can
   bring in commits from other authors without changing the head commit.
 
-The result is the **CLA** commit status on the pull request's head commit,
+The result is the **Bookclerk CLA** commit status on the pull request's head commit,
 and one comment that lists who still has to sign, edited in place. Both
 come from the [automation App](automation.md#automation-app), or from
-`github-actions[bot]` in a repository without the App. Merge
-queue runs report a passing **CLA** status, because each pull request
+`github-actions[bot]` in a repository without the App. While a check runs,
+the status is pending with "Checking signatures…"; it then says who is
+left ("1 still to sign.") or "Everyone has signed.". Merge
+queue runs report a passing **Bookclerk CLA** status, because each pull request
 passed it to enter the queue. A pull request with more than 250 commits
 cannot be checked and fails closed.
 
@@ -200,7 +202,7 @@ Setup, once, by a repository administrator:
 
    Every run of the check reads the rules that apply to `cla-signatures`
    and posts a workflow warning naming any of these that is missing.
-4. After the check has run on a pull request, add the **CLA** status to the
+4. After the check has run on a pull request, add the **Bookclerk CLA** status to the
    required checks in the main branch ruleset, with the automation App as
    its expected source, so no other app that can post statuses can satisfy
    it. The `CLA check` job is only the workflow that reports it.
@@ -210,6 +212,12 @@ Setup, once, by a repository administrator:
 > say), set the required check to **any source** first, merge the change,
 > then pin the new source. A pinned source that never reports blocks every
 > pull request.
+>
+> When the status name changes (`STATUS_CONTEXT` in `scripts/cla_check.py`),
+> swap the required check right after the change merges. Every run uses the
+> default branch's checker, so the change's own merge queue run still reports
+> the old name, and open pull requests report the new one only once they are
+> checked again (push, or comment `@bookclerk recheck`).
 
 ## The Bookclerk name and logo
 

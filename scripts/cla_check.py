@@ -17,7 +17,7 @@ check, since nobody can sign for it. A co-author whose email matches no
 account does not: the pull request author is the one authenticated party,
 and their signature covers what they submit (CLA section 4).
 
-The verdict is the ``CLA`` commit status on the pull request's head commit.
+The verdict is the ``Bookclerk CLA`` commit status on the pull request's head commit.
 Signatures live in ``signatures/cla.json`` on the ``cla-signatures`` branch,
 in the format CLA Assistant Lite used, and are written through the contents
 API with the automation App's token; the first signature starts the branch
@@ -37,7 +37,7 @@ token that may write to ``cla-signatures``, comment on pull requests and post
 commit statuses, and ``CLA_APP_SLUG``, that App's slug. Only that token
 records signatures, so the branch can refuse every other writer and each
 signature commit is signed by GitHub for the App. The check's comment and the
-``CLA`` status are posted as the App too, or as the workflow when no App is
+``Bookclerk CLA`` status are posted as the App too, or as the workflow when no App is
 configured. It exits 0 once the status is posted, whatever the
 verdict, and 1 when it could not decide.
 """
@@ -73,7 +73,11 @@ RECHECK_WORD = "recheck"
 COMMENT_MARKER = "<!-- bookclerk-cla-check -->"
 
 #: Commit status context the check reports; the one to require in rulesets.
-STATUS_CONTEXT = "CLA"
+STATUS_CONTEXT = "Bookclerk CLA"
+
+#: The description of the ``pending`` status posted while a pull request is
+#: being checked, so the status line shows progress.
+CHECKING_DESCRIPTION = "Checking signatures…"
 
 #: The branch that holds the signature file.
 SIGNATURE_BRANCH = "cla-signatures"
@@ -173,7 +177,7 @@ STATUS_ATTEMPTS = 3
 #: permalink to it at the last commit that changed it.
 CLA_PATH = "CLA.md"
 
-#: Most open pull requests that may share one head commit. The ``CLA``
+#: Most open pull requests that may share one head commit. The ``Bookclerk CLA``
 #: status belongs to the commit, so each of them is checked before it passes;
 #: more than this fails closed.
 MAX_SHARED_PULLS = 10
@@ -956,13 +960,13 @@ def render_comment(verdict: Verdict, cla_url: str, blocked_by: int | None = None
 def status_description(verdict: Verdict) -> str:
     """Returns the commit status description, at most 140 characters."""
     if verdict.passed:
-        return "Everyone has accepted the CLA."
+        return "Everyone has signed."
     parts = []
     if verdict.unsigned:
         parts.append(f"{len(verdict.unsigned)} still to sign")
     if verdict.unlinked:
         parts.append(f"{len(verdict.unlinked)} unlinked commit(s)")
-    return ("CLA: " + ", ".join(parts) + ".")[:140]
+    return (", ".join(parts) + ".").capitalize()[:140]
 
 
 #: Sends one API request: ``(method, path, JSON body or None)`` to
@@ -1002,7 +1006,7 @@ class GitHub:
           then fails closed).
         * ``branch_files``: the text of each of ``BRANCH_FILES`` by name,
           written when the first signature creates the branch.
-        * ``reporter``: who posts the check's comment and the ``CLA``
+        * ``reporter``: who posts the check's comment and the ``Bookclerk CLA``
           status, or ``None`` to post them through ``send`` as
           ``WORKFLOW_COMMENT_AUTHOR``.
         * ``server``: the web address of the GitHub server, for permalinks.
@@ -1309,7 +1313,7 @@ class GitHub:
         return parse_branch_rules(self.call("GET", f"rules/branches/{SIGNATURE_BRANCH}?per_page={PAGE_SIZE}"))
 
     def set_status(self, sha: str, state: str, description: str, target_url: str) -> None:
-        """Posts the ``CLA`` commit status on ``sha``."""
+        """Posts the ``Bookclerk CLA`` commit status on ``sha``."""
         self.report("POST", f"statuses/{sha}", {"state": state, "context": STATUS_CONTEXT, "description": description, "target_url": target_url})
 
     def upsert_comment(self, number: int, comments: list[Comment], body: str, create: bool) -> None:
@@ -1381,6 +1385,7 @@ def check_pull(event: Event, api: GitHub, number: int, cla_url: str, run_url: st
     pull = api.pull_request(number)
     if pull.open:
         api.head_sha = pull.head_sha
+        api.set_status(pull.head_sha, "pending", CHECKING_DESCRIPTION, run_url)
     book, _ = api.signatures()
     if not pull.open:
         # A closed pull request no longer holds its head; the open ones that
@@ -1406,7 +1411,7 @@ def check_pull(event: Event, api: GitHub, number: int, cla_url: str, run_url: st
         passed = verdict.passed and blocked_by is None
         api.upsert_comment(pull.number, comments, render_comment(verdict, cla_url, blocked_by, recheck_command(api.reporter.login)), create=not passed)
         if blocked_by is not None:
-            description = f"CLA: #{blocked_by}, which shares this commit, still needs signatures."
+            description = f"#{blocked_by}, which shares this commit, still needs signatures."
         else:
             description = status_description(verdict)
         api.set_status(pull.head_sha, "success" if passed else "failure", description, run_url)
@@ -1425,7 +1430,7 @@ def check_pull(event: Event, api: GitHub, number: int, cla_url: str, run_url: st
 def blocking_pull(api: GitHub, pull: PullRequest, book: SignatureBook) -> int | None:
     """Finds another open pull request on ``pull``'s head that fails.
 
-    The ``CLA`` status belongs to the commit, which other pull requests
+    The ``Bookclerk CLA`` status belongs to the commit, which other pull requests
     (another author or base) can share, so it passes only when all of them
     pass.
 
@@ -1457,7 +1462,7 @@ def settle(api: GitHub, sha: str, book: SignatureBook, run_url: str) -> None:
         return
     failing = [number for number, verdict in verdicts if not verdict.passed]
     if failing:
-        api.set_status(sha, "failure", f"CLA: #{failing[0]}, which has this commit, still needs signatures.", run_url)
+        api.set_status(sha, "failure", f"#{failing[0]}, which has this commit, still needs signatures.", run_url)
     else:
         api.set_status(sha, "success", status_description(verdicts[0][1]), run_url)
 
