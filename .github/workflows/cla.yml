@@ -14,19 +14,20 @@
 #   automation App, which GitHub signs for the App; the branch's ruleset lets
 #   only that App update it. The first signature starts the branch with a
 #   commit that has no history and no signer, then adds itself on top.
-# - The check's comment and the `Bookclerk CLA` status are posted as the same App, so
-#   they carry the project's name; the default branch's ruleset expects the
-#   status from that App. Without the App's secrets the workflow posts both.
+# - The check's comment and the `Bookclerk CLA` check run are posted as the
+#   same App, so they carry the project's name and logo (GitHub lists the check
+#   under the App); the default branch's ruleset expects the check from that
+#   App. Without the App's secrets the workflow posts both.
 # - Runs when a pull request is opened, pushed to, reopened, closed or
 #   retargeted (a new base can add commits without changing the head).
 # - `@<App slug> recheck` (`@bookclerk recheck` here, `@github-actions
 #   recheck` without the App) re-runs the check after a signature or
 #   allowlist change. Other comments that mention `recheck` are ignored.
-# - The verdict is the `Bookclerk CLA` commit status on the pull request's head; that
-#   context is the one to require. It passes only when every open pull
-#   request with that head passes, since they share the status, and is
-#   re-decided when one of them is closed. Merge groups get a
-#   passing `Bookclerk CLA` status: each pull request in them already passed it to
+# - The verdict is the `Bookclerk CLA` check run on the pull request's head;
+#   that name is the one to require. It passes only when every open pull
+#   request with that head passes, since they share the check, and is
+#   re-decided when one of them is closed. Merge groups get a passing
+#   `Bookclerk CLA` check run: each pull request in them already passed it to
 #   enter the queue.
 # - Pull request events reach this workflow through `workflow_run`: the
 #   unprivileged `CLA trigger` workflow (cla-trigger.yml) runs on
@@ -71,9 +72,9 @@ jobs:
     # replaces a pending run in the queue. Runs for one pull request's
     # comments, or for one head branch, wait for each other. Across the two
     # groups, signature writes retry on a conflict, and each run reads the
-    # signatures again after posting its status (and re-decides if they
+    # signatures again after posting its check (and re-decides if they
     # changed), so a run that read them before a concurrent signature cannot
-    # leave its stale status last.
+    # leave its stale check last.
     concurrency:
       group: cla-${{ github.event_name }}-${{ github.event.issue.number || github.event.workflow_run.head_repository.id || github.ref }}-${{ github.event.workflow_run.head_branch }}
       cancel-in-progress: false
@@ -87,9 +88,9 @@ jobs:
       # Read the pull request and its commits (REST and GraphQL), and keep
       # the check's comment when the App is not configured.
       pull-requests: write
-      # Report the `Bookclerk CLA` commit status when the App is not configured, or
+      # Report the `Bookclerk CLA` check run when the App is not configured, or
       # its error when the App's token fails.
-      statuses: write
+      checks: write
     steps:
       # The default branch's checker, never the pull request's.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -101,9 +102,10 @@ jobs:
             scripts/cla_branch/
           sparse-checkout-cone-mode: false
 
-      # Signature writes, the check's comment and the `Bookclerk CLA` status use it,
-      # narrowed to Contents, Pull requests and Commit statuses on this
-      # repository and revoked when the job ends. Without the App's secrets
+      # Signature writes, the check's comment and the `Bookclerk CLA` check run
+      # use it, narrowed to Contents, Pull requests and Checks on this
+      # repository and revoked when the job ends. The App must have been
+      # granted each of them, or minting fails and no check is reported. Without the App's secrets
       # the token is empty: recording a signature fails closed and the
       # workflow comments and reports instead.
       - name: Mint the App token
@@ -115,7 +117,7 @@ jobs:
           private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
           permission-contents: write
           permission-pull-requests: write
-          permission-statuses: write
+          permission-checks: write
 
       - name: Check signatures
         env:

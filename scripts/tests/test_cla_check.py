@@ -283,6 +283,8 @@ def oracle(kind: str, raw: bytes) -> object:
         return o_sha(o_obj(o_json(raw)).get("sha"))
     if kind == "reaction":
         return o_id(o_obj(o_json(raw)).get("id"))
+    if kind == "checkrun":
+        return o_id(o_obj(o_json(raw)).get("id"))
     if kind == "branchrules":
         rules = o_json(raw)
         if not isinstance(rules, list) or len(rules) > 200:
@@ -342,6 +344,8 @@ def module(kind: str, raw: bytes) -> object:
         return cla.parse_git_object(raw)
     if kind == "reaction":
         return cla.parse_reaction(raw)
+    if kind == "checkrun":
+        return cla.parse_check_run(raw)
     if kind == "branchrules":
         return cla.parse_branch_rules(raw)
     raise AssertionError(kind)
@@ -398,6 +402,7 @@ class CorpusTests(unittest.TestCase):
             "coauthors__no_cursor", "coauthors__bad_bot_login", "coauthors__null_pull",
             "coauthors__email_not_string", "gitobject__no_sha", "gitobject__upper_sha", "gitobject__not_object",
             "reaction__no_id", "reaction__string_id", "reaction__not_object",
+            "checkrun__no_id", "checkrun__string_id", "checkrun__not_object", "checkrun__negative_id",
             "branchrules__not_list", "branchrules__upper_type", "branchrules__no_type",
         ):
             kind = name.partition("__")[0]
@@ -412,6 +417,7 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(module("signatures", load("signatures__two")), (2, frozenset({101, 2})))
         self.assertEqual(module("gitobject", load("gitobject__commit")), SHA_B)
         self.assertEqual(module("reaction", load("reaction__eyes")), 31)
+        self.assertEqual(module("checkrun", load("checkrun__created")), 4242)
         self.assertEqual(module("branchrules", load("branchrules__all")), cla.SIGNATURE_BRANCH_RULES)
         data, blob = cla.parse_contents(load("contents__seed"))
         self.assertEqual(data, load("signatures__seed"))
@@ -563,7 +569,7 @@ class MutationFuzzTests(unittest.TestCase):
             self.assertEqual(set(verdict.unlinked), {c.sha for c in commits if c.author is None})
             self.assertEqual(verdict.passed, not verdict.unsigned and not verdict.unlinked)
             assert_safe_comment(self, cla.render_comment(verdict, CLA_URL), verdict)
-            self.assertLessEqual(len(cla.status_description(verdict)), 140)
+            self.assertLessEqual(len(cla.check_title(verdict)), 140)
         self.assertGreater(checked, 100)
 
 
@@ -614,7 +620,12 @@ class FakeGitHub:
         self.file = json.dumps({"signedContributors": signed or []}).encode()
         self.blob = 1
         self.comments: list[dict] = []
+        #: Each ``Bookclerk CLA`` report, in order, as ``(sha, {"state",
+        #: "context", "description", "target_url"})``; ``state`` is
+        #: ``pending`` for an in-progress check run, else its conclusion.
         self.statuses: list[tuple[str, dict]] = []
+        #: Check runs by id: ``(sha, status, creator login)``.
+        self.check_runs: dict[int, tuple[str, str, str]] = {}
         #: Who posted each of ``statuses``, in order.
         self.status_creators: list[dict] = []
         self.conflicts = 0
@@ -834,13 +845,26 @@ class FakeGitHub:
                     assert c["user"] == self.commenter_account(), "only a comment's author may edit it"
                     c["body"] = body["body"]
             return 200, b"{}"
-        if method == "POST" and route.startswith("statuses/"):
-            if self.before_status is not None and body["state"] != "pending":
+        if method in ("POST", "PATCH") and route.split("/", 1)[0] == "check-runs":
+            assert body is not None and body["name"] == "Bookclerk CLA"
+            assert body["output"]["title"] == body["output"]["summary"]
+            if method == "POST":
+                run_id, sha = 7000 + len(self.check_runs), body["head_sha"]
+            else:
+                run_id = int(route.rsplit("/", 1)[1])
+                sha, status, creator = self.check_runs[run_id]
+                assert "head_sha" not in body
+                assert status == "in_progress", "only an in-progress check is completed in place"
+                assert creator == self.commenter_account()["login"], "only a check run's App may update it"
+            state = "pending" if body["status"] == "in_progress" else body["conclusion"]
+            assert (body["status"], state) in (("in_progress", "pending"), ("completed", "success"), ("completed", "failure"))
+            if self.before_status is not None and state != "pending":
                 hook, self.before_status = self.before_status, None
                 hook()
-            self.statuses.append((route.rsplit("/", 1)[1], body))
+            self.check_runs[run_id] = (sha, body["status"], self.commenter_account()["login"])
+            self.statuses.append((sha, {"state": state, "context": body["name"], "description": body["output"]["title"], "target_url": body["details_url"]}))
             self.status_creators.append(self.commenter_account())
-            return 201, b"{}"
+            return (201 if method == "POST" else 200), json.dumps({"id": run_id, "status": body["status"]}).encode()
         return 404, b"{}"
 
     def signed_ids(self) -> set[int]:
@@ -1385,6 +1409,22 @@ class EndToEndTests(unittest.TestCase):
         drive(fake, comment_event(ALICE, cla.SIGN_PHRASE))
         self.assertEqual(fake.statuses[-1][1]["description"], "Everyone has signed.")
 
+    def test_the_check_run_in_progress_is_completed_in_place(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        drive(fake, pr_event(fake))
+        self.assertEqual([r for r in fake.requests if "check-runs" in r[1]],
+                         [("POST", "repos/bookclerk/bookclerk/check-runs"), ("PATCH", "repos/bookclerk/bookclerk/check-runs/7000")])
+        self.assertEqual(fake.check_runs, {7000: (SHA_C, "completed", APP["login"])})
+        drive(fake, comment_event(ALICE, cla.SIGN_PHRASE))
+        self.assertEqual(sorted(fake.check_runs), [7000, 7001])
+        self.assertEqual(fake.last_status(), "success")
+
+    def test_an_unreadable_check_run_answer_fails_closed(self) -> None:
+        api = cla.GitHub(lambda m, p, b: (201, b"[]"), "bookclerk/bookclerk")
+        with self.assertRaises(cla.ClaInputError):
+            api.set_check(SHA_C, cla.CheckState.CHECKING, cla.CHECKING_DESCRIPTION, RUN_URL)
+        self.assertEqual(api.open_checks, {})
+
     def test_without_an_app_the_workflow_reports(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
         api = cla.GitHub(fake.send, "bookclerk/bookclerk", fake.write, BRANCH_FILES)
@@ -1472,7 +1512,7 @@ class MainTests(unittest.TestCase):
                    "CLA_APP_SLUG": "bookclerk", "GITHUB_EVENT_NAME": "merge_group", "GITHUB_EVENT_PATH": str(event_path)}
             with mock.patch.object(cla, "urllib_transport", transport), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(cla.main(env), 1)
-        self.assertIn(("workflow", "POST", f"repos/bookclerk/bookclerk/statuses/{SHA_B}"), sent)
+        self.assertIn(("workflow", "POST", "repos/bookclerk/bookclerk/check-runs"), sent)
 
     def test_bad_app_slug(self) -> None:
         env = {"GITHUB_REPOSITORY": "bookclerk/bookclerk", "GITHUB_TOKEN": "t", "CLA_SIGNATURE_TOKEN": "s",

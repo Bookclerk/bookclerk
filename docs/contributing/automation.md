@@ -129,7 +129,7 @@ GitHub App as [Dependabot auto-merge](#dependabot-auto-merge), not
 | `cflite-batch.yml` | `fuzz-crash` issues for oracle failures; draft security advisories for crashes ([triage](fuzzing.md#fuzz-crash-triage)) |
 | `osv-advisories.yml` | Reads OSV code-scanning and Dependabot alerts; draft security advisories ([verdicts](#osv-advisories)) |
 | `docs-publish.yml` | Commits and release tags on the `bookclerk-docs` repository ([docs publishing](#docs-publishing)) |
-| `cla.yml` | Signature commits on the `cla-signatures` branch, the only writer its ruleset allows; the check's pull request comment and `Bookclerk CLA` status ([CLA check](licensing.md#the-cla-check)) |
+| `cla.yml` | Signature commits on the `cla-signatures` branch, the only writer its ruleset allows; the check's pull request comment and `Bookclerk CLA` check run ([CLA check](licensing.md#the-cla-check)) |
 
 The probes share `.github/actions/api-drift-report`:
 
@@ -153,8 +153,9 @@ signed and attributed to the App.
    - **Contents: read and write**, to push branches.
    - **Pull requests: read and write**, to open, update and auto-merge
      pull requests.
-   - **Commit statuses: read and write**, for the `Bookclerk CLA` status
-     (`cla.yml`).
+   - **Checks: read and write**, for the `Bookclerk CLA` check run
+     (`cla.yml`), which GitHub lists under the App's name and the logo
+     set in the App's **Display information**.
    - **Issues: read and write**, to file and update drift issues and add
      labels.
    - **Code scanning alerts: read**, because `osv-remediate.yml` and
