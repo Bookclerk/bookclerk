@@ -695,12 +695,15 @@ class Document:
     def render_index(self) -> str:
         """Render ``README.md``: description, authentication and route index."""
         info = _object(self.spec.get("info", {}), "info")
-        lines = [f"# {info.get('title', 'Web API')}", ""]
+        # The page keeps the name the docs sidebar gives it; the document's
+        # own title is named in the paragraph about the document below.
+        lines = ["# Web API", ""]
         if info.get("description"):
             lines += [prose(str(info["description"])), ""]
         version = info.get("version")
+        title = f", *{prose(str(info['title']))}*," if info.get("title") else ""
         lines += [
-            "The daemon serves this reference as an OpenAPI 3.1 document at "
+            f"The daemon serves this reference as an OpenAPI 3.1 document{title} at "
             + code("GET /api/openapi.json")
             + (f" (API version {code(str(version))})." if version else ".")
             + " Load it into an OpenAPI viewer such as Scalar or Swagger UI, or a client generator. "

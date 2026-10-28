@@ -49,6 +49,7 @@
 // Accept-Encoding headers (and conditional headers it passes on), and
 // fetches only from its own assets and the docs repository.
 
+import { API_INDEX } from "./api-reference.ts";
 import { datedPages, LAST_UPDATED_FILE, MAX_LAST_UPDATED_BYTES, pageDate } from "./last-updated.ts";
 import type { IsoDate } from "./last-updated.ts";
 import { docMarkdownUrl, docUrl, renderDocPage, renderSitemapPage, renderUnavailablePage } from "./render.ts";
@@ -362,6 +363,27 @@ export async function fetchDoc(ref: string, key: string, fetcher: DocsFetch): Pr
   return fetchDocsFile(ref, `${key}.md`, fetcher, MAX_DOC_BYTES);
 }
 
+/**
+ * Reads a docs version's Web API index, whose route groups the sidebar of
+ * the reference's other pages lists.
+ *
+ * Like the date, the list is a nicety: any failure is logged and the page
+ * is shown with a shorter sidebar.
+ *
+ * @param ref - The docs version's git ref.
+ * @param fetcher - `fetch`, or a stand-in in tests.
+ * @returns The index, or whether it is missing or could not be read.
+ */
+async function fetchApiIndex(ref: string, fetcher: DocsFetch): Promise<DatesFile> {
+  try {
+    const text = await fetchDoc(ref, API_INDEX, fetcher);
+    return text === null ? { kind: "missing" } : { kind: "file", text };
+  } catch (err) {
+    console.error(`Web API index fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+    return { kind: "failed" };
+  }
+}
+
 /** What reading a docs version's last-updated.json gave. */
 type DatesFile =
   /** The file's text, not yet validated. */
@@ -559,6 +581,8 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
   const { version } = target;
   // Fetched beside the page and only for HTML, which shows the date.
   const dates = wantsMarkdown ? null : fetchLastUpdated(version.ref, deps.fetch);
+  // A Web API page's sidebar lists the route groups its index names.
+  const apiIndex = wantsMarkdown || !target.keys.some((k) => k.startsWith("api/web/") && k !== API_INDEX) ? null : fetchApiIndex(version.ref, deps.fetch);
   let key: string | null = null;
   let source: string | null = null;
   // The last key asked for, so the unavailable page links on GitHub to the
@@ -599,8 +623,9 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
   const updated = datesFile?.kind === "file" ? pageDate(datesFile.text, key) : null;
   // A page whose date could not be read is shown, but kept out of the edge
   // cache so the date comes back once the docs repository answers again.
-  const cacheable = datesFile?.kind !== "failed";
-  const rendered = renderDocPage(deps.shell, source, key, { ref: version.ref, base: version.base, updated });
+  const index = apiIndex === null || key === API_INDEX ? null : await apiIndex;
+  const cacheable = datesFile?.kind !== "failed" && index?.kind !== "failed";
+  const rendered = renderDocPage(deps.shell, source, key, { ref: version.ref, base: version.base, updated, apiIndex: index?.kind === "file" ? index.text : null });
   const cacheControl = cacheable ? `public, max-age=${BROWSER_TTL}, s-maxage=${ttlFor(version.ref)}` : `public, max-age=${MISSING_TTL}, s-maxage=0`;
   const common: Record<string, string> = { "Cache-Control": cacheControl, Vary: "Accept" };
   // Only the default version is for search engines; older releases and main
