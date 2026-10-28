@@ -93,12 +93,14 @@ IDs it could not link.
    it reports the reindex finished.
 
 The Worker, dashboard and tests are strict TypeScript. Wrangler bundles the
-`.ts` sources and Node (26 in CI, 22.18 or newer) runs the tests by stripping types, so
-nothing is compiled. Check types with `npm run typecheck` (`tsconfig.json`
+`.ts` sources, so nothing is compiled. Check types with `npm run typecheck` (`tsconfig.json`
 checks everything with the Workers and Node types; `tsconfig.worker.json`
 checks the Worker's sources again with the Workers types only) and run the
-tests with `npm test` (the dashboard tests use `node:sqlite` as a stand-in
-for D1). `public/static/dashboard.js` is the browser script the dashboard
+tests with `npm test`. It runs Vitest (`vitest.config.ts`): the tests run
+inside the Workers runtime through `@cloudflare/vitest-plugin`, on the
+Worker's compatibility date and against real D1 databases with
+`migrations/` applied, except the summary fuzz test, whose Python oracle
+needs Node. `npm run coverage` adds a V8 coverage report. `public/static/dashboard.js` is the browser script the dashboard
 serves, not Worker code, and stays JavaScript.
 
 ## Bookclerk client

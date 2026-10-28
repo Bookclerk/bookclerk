@@ -78,7 +78,10 @@ only that. The others check:
 These boundaries follow the ADR's rule for non-Rust tooling (decision 6).
 Each one has a replay test and seeded mutation fuzzing, checked against
 an independent oracle, and most replay a seed corpus. Python scripts run
-them on every pull request; the Workers run them in `npm test`.
+them on every pull request; the Workers run them in `npm test`, inside the
+Workers runtime (Vitest with `@cloudflare/vitest-plugin`), which reads each
+corpus through Vite rather than from disk. The collector's summary fuzz test
+runs in Node instead, since its oracle is a Python subprocess.
 
 ### Diagnostics scripts (Python)
 

@@ -1,5 +1,5 @@
-// Dashboard tests: sign-in, sessions, pages, index and issue sync, run under
-// Node with a node:sqlite stand-in for D1 and a scripted GitHub.
+// Dashboard tests: sign-in, sessions, pages, index and issue sync, run in the
+// Workers runtime against real D1 (test-support/d1.ts) and a scripted GitHub.
 
 import assert from "node:assert/strict";
 import { generateKeyPairSync, verify as rsaVerify } from "node:crypto";

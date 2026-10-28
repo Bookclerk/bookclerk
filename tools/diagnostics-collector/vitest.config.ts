@@ -25,6 +25,9 @@ const NODE_TESTS = ["summary.fuzz.test.ts"];
 
 export default defineConfig({
   test: {
+    // node:test had no per-test timeout; the fuzz tests and coverage runs
+    // take longer than Vitest's 5 s default.
+    testTimeout: 120_000,
     // `npm run coverage`: V8 coverage from both projects, merged.
     coverage: {
       provider: "v8",

@@ -49,8 +49,9 @@ Types:
 - Cloudflare Worker code (`tools/site`, `tools/demo`,
   `tools/diagnostics-collector`), its build scripts and its tests are strict
   TypeScript too: only `.ts` modules (never new `.js` / `.mjs`), no build
-  step (Wrangler bundles the sources and Node runs the tests by stripping
-  types). Each Worker's `npm run typecheck` runs `tsc` on `tsconfig.json`
+  step (Wrangler bundles the sources; Vitest runs the tests, the Worker's
+  own inside the Workers runtime through `@cloudflare/vitest-plugin`, and
+  `npm run coverage` adds V8 coverage). Each Worker's `npm run typecheck` runs `tsc` on `tsconfig.json`
   (everything, Workers and Node types) and `tsconfig.worker.json` (the
   Worker's own sources, Workers types only); its CI check and its deploy
   workflow both run it first. Browser scripts a Worker serves are not Worker
