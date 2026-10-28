@@ -20,8 +20,9 @@ and their signature covers what they submit (CLA section 4).
 The verdict is the ``CLA`` commit status on the pull request's head commit.
 Signatures live in ``signatures/cla.json`` on the ``cla-signatures`` branch,
 in the format CLA Assistant Lite used, and are written through the contents
-API with the automation App's token. One comment, marked with ``COMMENT_MARKER``, says who still has to sign
-and is edited in place.
+API with the automation App's token; the first signature creates the branch
+as a single commit with no history. One comment, marked with
+``COMMENT_MARKER``, says who still has to sign and is edited in place.
 
 Everything that parses bytes from GitHub (the event payload, pull requests,
 commit and comment pages, the signature file) is sans-IO and fuzzed by
@@ -729,6 +730,18 @@ def parse_contents(raw: bytes) -> tuple[bytes, str]:
     return data, blob
 
 
+def parse_git_object(raw: bytes) -> str:
+    """Reads the response to creating a git tree or commit.
+
+    # Returns
+    The new object's SHA-1.
+
+    # Errors
+    ``ClaInputError`` when the response is not an object with a ``sha``.
+    """
+    return _sha(_object(_load_json(raw), "git object").get("sha"), "git object sha")
+
+
 def is_exempt(account: Account) -> bool:
     """Whether ``account`` is one of the bots that need not sign."""
     return account.type is AccountType.BOT and account.login in BOT_ALLOWLIST
@@ -999,17 +1012,58 @@ class GitHub:
                 return comments
             page += 1
 
-    def signatures(self) -> tuple[SignatureBook, str]:
-        """Reads the signature file and its blob SHA from ``SIGNATURE_BRANCH``."""
-        data, blob = parse_contents(self.call("GET", f"contents/{SIGNATURE_PATH}?ref={SIGNATURE_BRANCH}"))
+    def signatures(self) -> tuple[SignatureBook, str | None]:
+        """Reads the signature file and its blob SHA from ``SIGNATURE_BRANCH``.
+
+        # Returns
+        The signatures and the file's blob SHA, or an empty book and ``None``
+        when the branch or the file does not exist yet. Nobody has signed
+        then, so every check that needs a signature fails.
+        """
+        status, raw = self.send("GET", f"{self.base}/contents/{SIGNATURE_PATH}?ref={SIGNATURE_BRANCH}", None)
+        if status == 404:
+            return SignatureBook(entries=(), signed_ids=frozenset()), None
+        if status != 200:
+            raise ApiError(f"GET contents/{SIGNATURE_PATH}: HTTP {status}")
+        data, blob = parse_contents(raw)
         return parse_signatures(data), blob
+
+    def create_signature_branch(self, write: Transport, data: bytes, message: str) -> bool:
+        """Creates ``SIGNATURE_BRANCH`` as one commit with no parents that holds only the signature file.
+
+        The tree, commit and branch are created with ``write``, the
+        automation App's transport, so the commit is the App's and GitHub
+        signs it.
+
+        # Returns
+        ``False`` when another run created the branch first.
+
+        # Errors
+        ``ApiError`` when GitHub refuses a step.
+        """
+        entry = {"path": SIGNATURE_PATH, "mode": "100644", "type": "blob", "content": data.decode("utf-8")}
+        status, raw = write("POST", f"{self.base}/git/trees", {"tree": [entry]})
+        if status != 201:
+            raise ApiError(f"POST git/trees: HTTP {status}")
+        tree = parse_git_object(raw)
+        status, raw = write("POST", f"{self.base}/git/commits", {"message": message, "tree": tree, "parents": []})
+        if status != 201:
+            raise ApiError(f"POST git/commits: HTTP {status}")
+        commit = parse_git_object(raw)
+        status, _ = write("POST", f"{self.base}/git/refs", {"ref": f"refs/heads/{SIGNATURE_BRANCH}", "sha": commit})
+        if status == 422:
+            return False
+        if status != 201:
+            raise ApiError(f"POST git/refs: HTTP {status}")
+        return True
 
     def record(self, comment: Comment, repo_id: int, pull_number: int) -> SignatureBook:
         """Appends the commenter's signature unless it is already there.
 
         Retries when another run replaced the file between the read and the
         write. The write goes through ``self.write``, so the commit is made,
-        and signed, by the automation App.
+        and signed, by the automation App. The first signature creates the
+        file, and the branch too when it does not exist.
 
         # Errors
         ``ApiError`` when no signature token is configured, the write is
@@ -1022,19 +1076,27 @@ class GitHub:
             book, blob = self.signatures()
             if comment.author.id in book.signed_ids:
                 return book
-            if self.write is None:
+            write = self.write
+            if write is None:
                 raise ApiError("CLA_SIGNATURE_TOKEN is not set, so signatures cannot be recorded")
             data = add_signature(book, comment, repo_id, pull_number)
-            status, _ = self.write(
-                "PUT",
-                f"{self.base}/contents/{SIGNATURE_PATH}",
-                {
-                    "message": f"chore(cla): record @{comment.author.login}'s signature from #{pull_number}",
-                    "content": base64.b64encode(data).decode("ascii"),
-                    "sha": blob,
-                    "branch": SIGNATURE_BRANCH,
-                },
-            )
+            message = f"chore(cla): record @{comment.author.login}'s signature from #{pull_number}"
+            if blob is None:
+                branch, _ = self.send("GET", f"{self.base}/git/ref/heads/{SIGNATURE_BRANCH}", None)
+                if branch == 404:
+                    if self.create_signature_branch(write, data, message):
+                        return parse_signatures(data)
+                    continue
+                if branch != 200:
+                    raise ApiError(f"GET git/ref/heads/{SIGNATURE_BRANCH}: HTTP {branch}")
+            body: dict[str, object] = {
+                "message": message,
+                "content": base64.b64encode(data).decode("ascii"),
+                "branch": SIGNATURE_BRANCH,
+            }
+            if blob is not None:
+                body["sha"] = blob
+            status, _ = write("PUT", f"{self.base}/contents/{SIGNATURE_PATH}", body)
             if status in (200, 201):
                 return parse_signatures(data)
             if status not in (409, 422):

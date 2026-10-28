@@ -271,6 +271,8 @@ def oracle(kind: str, raw: bytes) -> object:
         if len(data) > 1024 * 1024:
             raise Refused
         return (data, sha)
+    if kind == "gitobject":
+        return o_sha(o_obj(o_json(raw)).get("sha"))
     raise AssertionError(kind)
 
 
@@ -315,6 +317,8 @@ def module(kind: str, raw: bytes) -> object:
         return (len(book.entries), book.signed_ids)
     if kind == "contents":
         return cla.parse_contents(raw)
+    if kind == "gitobject":
+        return cla.parse_git_object(raw)
     raise AssertionError(kind)
 
 
@@ -367,7 +371,7 @@ class CorpusTests(unittest.TestCase):
             "signatures__deep", "contents__dir", "contents__bad_base64", "contents__none_encoding",
             "coauthors__errors", "coauthors__too_many", "coauthors__count_mismatch", "coauthors__repeat",
             "coauthors__no_cursor", "coauthors__bad_bot_login", "coauthors__null_pull",
-            "coauthors__email_not_string",
+            "coauthors__email_not_string", "gitobject__no_sha", "gitobject__upper_sha", "gitobject__not_object",
         ):
             kind = name.partition("__")[0]
             self.assertEqual(outcome(module, kind, load(name), cla.ClaInputError), ("refused",), name)
@@ -379,6 +383,7 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(module("pull", load("pull__login_double_dash"))[1], (1, "al--ice", "User"))
         self.assertEqual(module("pull", load("pull__login_trailing_dash"))[1], (1, "alice-", "User"))
         self.assertEqual(module("signatures", load("signatures__two")), (2, frozenset({101, 2})))
+        self.assertEqual(module("gitobject", load("gitobject__commit")), SHA_B)
         data, blob = cla.parse_contents(load("contents__seed"))
         self.assertEqual(data, load("signatures__seed"))
         self.assertEqual(blob, SHA_A)
@@ -588,6 +593,14 @@ class FakeGitHub:
         #: True while a request comes through ``write``, the signature
         #: token's transport; only those may change the signature file.
         self.writing = False
+        #: Whether ``cla-signatures`` exists, and holds the signature file.
+        self.branch = True
+        self.has_file = True
+        #: Git objects created through the API, by SHA.
+        self.objects: dict[str, dict] = {}
+        #: Runs once, just before the branch is created, to stand in for a
+        #: concurrent run that created it first.
+        self.before_ref = None
 
     def pull(self) -> dict:
         head = {"sha": self.head, "label": "alice:feature", "repo": {"id": 700}}
@@ -681,11 +694,44 @@ class FakeGitHub:
             return 200, page_of(self.others[int(parts[1])].setdefault("comments", []))
         if method == "GET" and route == "contents/signatures/cla.json":
             assert params["ref"] == "cla-signatures"
+            if not (self.branch and self.has_file):
+                return 404, b'{"message": "Not Found"}'
             content = base64.encodebytes(self.file).decode()
             return 200, json.dumps({"type": "file", "encoding": "base64", "sha": self.blob_sha(), "content": content}).encode()
+        if method == "GET" and route == "git/ref/heads/cla-signatures":
+            return (200, b"{}") if self.branch else (404, b"{}")
+        if method == "POST" and route in ("git/trees", "git/commits", "git/refs"):
+            assert self.writing, "the signature branch must be created with the signature token"
+            assert body is not None
+            if route == "git/refs":
+                if self.before_ref is not None:
+                    hook, self.before_ref = self.before_ref, None
+                    hook()
+                assert body["ref"] == "refs/heads/cla-signatures"
+                if self.branch:
+                    return 422, b'{"message": "Reference already exists"}'
+                commit_obj = self.objects[body["sha"]]
+                assert commit_obj["parents"] == [], "the branch must start with no history"
+                tree = self.objects[commit_obj["tree"]]["tree"]
+                assert [e["path"] for e in tree] == ["signatures/cla.json"], "the branch holds only the signature file"
+                self.file = tree[0]["content"].encode("utf-8")
+                self.branch = self.has_file = True
+                self.blob += 1
+                return 201, b"{}"
+            sha = f"{len(self.objects) + 0xb00:040x}"
+            self.objects[sha] = body
+            return 201, json.dumps({"sha": sha}).encode()
         if method == "PUT" and route == "contents/signatures/cla.json":
             assert self.writing, "the signature file must be written with the signature token"
             assert body is not None and body["branch"] == "cla-signatures"
+            if not self.branch:
+                return 404, b'{"message": "Branch not found"}'
+            if not self.has_file:
+                assert "sha" not in body
+                self.file = base64.b64decode(body["content"])
+                self.has_file = True
+                self.blob += 1
+                return 201, b"{}"
             if self.conflicts:
                 self.conflicts -= 1
                 self.blob += 1
@@ -785,6 +831,49 @@ class EndToEndTests(unittest.TestCase):
         self.assertNotIn("@alice", fake.comments[0]["body"])
         entry = json.loads(fake.file)["signedContributors"][0]
         self.assertEqual(entry, {"name": "alice", "id": 101, "comment_id": 900, "created_at": "2026-10-27T17:00:00Z", "repoId": 555, "pullRequestNo": 7, "claVersion": "1.0"})
+
+    def test_a_missing_branch_counts_as_nobody_signed(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        fake.branch = False
+        drive(fake, pr_event(fake))
+        self.assertEqual(fake.last_status(), "failure")
+        self.assertFalse(fake.branch)
+        self.assertEqual(fake.objects, {})
+
+    def test_the_first_signature_creates_the_branch_without_history(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE, coauthors=[BOB])])
+        fake.branch = False
+        drive(fake, comment_event(ALICE, cla.SIGN_PHRASE))
+        self.assertTrue(fake.branch)
+        self.assertEqual(fake.signed_ids(), {101})
+        self.assertEqual(fake.last_status(), "failure")
+        # Later signatures append to it through the contents API.
+        objects = len(fake.objects)
+        drive(fake, comment_event(BOB, cla.SIGN_PHRASE))
+        self.assertEqual(fake.signed_ids(), {101, 102})
+        self.assertEqual(len(fake.objects), objects)
+        self.assertEqual(fake.last_status(), "success")
+
+    def test_a_branch_created_by_a_concurrent_run_is_appended_to(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE, coauthors=[BOB])])
+        fake.branch = False
+
+        def bob_signs_first() -> None:
+            fake.branch = fake.has_file = True
+            fake.file = json.dumps({"signedContributors": [{"name": "bob", "id": 102}]}).encode()
+            fake.blob += 1
+
+        fake.before_ref = bob_signs_first
+        drive(fake, comment_event(ALICE, cla.SIGN_PHRASE))
+        self.assertEqual(fake.signed_ids(), {101, 102})
+        self.assertEqual(fake.last_status(), "success")
+
+    def test_a_branch_without_the_file_gets_it_created(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        fake.has_file = False
+        drive(fake, comment_event(ALICE, cla.SIGN_PHRASE))
+        self.assertEqual(fake.signed_ids(), {101})
+        self.assertEqual(fake.objects, {})
 
     def test_without_a_signature_token_a_signature_fails_closed(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])

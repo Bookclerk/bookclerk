@@ -155,16 +155,20 @@ closed.
 
 Signatures are recorded in `signatures/cla.json` on the `cla-signatures`
 branch, so recording one needs no pull request and no bypass of the main
-branch rules. The copy on `main` stays empty and only seeds the branch.
-Each signature is one commit made through the API by the
-[automation App](automation.md#automation-app), so GitHub signs it
-for the App and nothing else needs to push there.
+branch rules. The branch holds only that file and shares no history with
+`main`. The first signature creates it as a single commit with no parents;
+each later signature is one more commit on top. Every commit is made
+through the API by the [automation App](automation.md#automation-app), so
+GitHub signs it for the App and nothing else needs to push there. Until the
+branch exists, nobody has signed, so every pull request that needs a
+signature fails the check.
 
 Setup, once, by a repository administrator:
 
-1. Create the `cla-signatures` branch from `main`, so it starts with
-   `main`'s empty `signatures/cla.json`. The check fails until the file
-   exists.
+1. Don't create the `cla-signatures` branch yourself; the first signature
+   creates it. To start over, delete the branch while its rulesets are
+   disabled (or before you add them). Every signature on it is lost, so
+   contributors sign again.
 2. Make sure the automation App's secrets are set (see
    [the automation App](automation.md#automation-app)). Without them
    the check still decides, but it cannot record a new signature and
