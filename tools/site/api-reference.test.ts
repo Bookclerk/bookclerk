@@ -114,8 +114,9 @@ test("the page's headings are its operations, with their methods", () => {
   ]);
   assert.equal(
     tocListHtml(out.headings),
-    '<ul><li class="depth-0"><a class="toc-op" href="#get-apijobs"><span class="api-method api-method-get">GET</span> <code>/<wbr>api/<wbr>jobs</code></a></li>' +
-      '<li class="depth-1"><a class="toc-op" href="#post-apijobsidcancel"><span class="api-method api-method-post">POST</span> <code>/<wbr>{id}/<wbr>cancel</code></a></li></ul>',
+    // Paths are relative to the prefix every route shares; the headings show it.
+    '<ul><li class="depth-0"><a class="toc-op" href="#get-apijobs"><span class="api-method api-method-get">GET</span> <code>/<wbr></code></a></li>' +
+      '<li class="depth-0"><a class="toc-op" href="#post-apijobsidcancel"><span class="api-method api-method-post">POST</span> <code>/<wbr>{id}/<wbr>cancel</code></a></li></ul>',
   );
 });
 
@@ -138,7 +139,7 @@ test("the sidebar lists the page under Web API, and its routes go to the rail", 
   assert.ok(!nav.includes("#get-apijobs"), "no routes in the sidebar");
   assert.ok(
     tocListHtml(out.headings).includes(
-      '<a class="toc-op" href="#get-apijobs"><span class="api-method api-method-get">GET</span> <code>/<wbr>api/<wbr>jobs</code></a>',
+      '<a class="toc-op" href="#get-apijobs"><span class="api-method api-method-get">GET</span> <code>/<wbr></code></a>',
     ),
   );
   assert.equal(apiNavNested("server/operations", "Running", "/docs/"), null);
@@ -440,23 +441,24 @@ test("a route group's routes nest by path in the rail", () => {
   const lines = tree.map(
     (e) => `${"  ".repeat(e.depth)}${e.kind === "op" ? `${e.method} ` : ""}${e.label}`,
   );
+  // The shared `/api/auth` is left out: the page's headings show it.
   assert.deepEqual(lines, [
-    "GET /api/auth/totp",
-    "DELETE /api/auth/totp",
+    "GET /totp",
+    "DELETE /totp",
     "  POST /login",
     "  /enroll",
     "    POST /begin",
     "    POST /finish",
-    "/api/auth/oidc",
+    "/oidc",
     "  GET /config",
     "  PUT /config",
     "  GET /providers",
     // Below the deepest level, routes keep their longer remainder.
-    "GET /api/auth/a",
+    "GET /a",
     "  /b/c/d",
     "    POST /e",
     "    POST /f",
-    "POST /api/auth/login",
+    "POST /login",
   ]);
   // Every operation is listed once, whatever its depth.
   assert.equal(tree.filter((e) => e.kind === "op").length, ops.length);
@@ -466,5 +468,20 @@ test("a route group's routes nest by path in the rail", () => {
   assert.deepEqual(
     routeTree([{ method: "GET", path: "/", id: "r" }]).map((e) => e.label),
     ["/"],
+  );
+  // A route at the shared prefix reads `/`; routes sharing one path keep it.
+  assert.deepEqual(
+    routeTree([
+      { method: "GET", path: "/api/jobs", id: "a" },
+      { method: "POST", path: "/api/jobs/{id}/cancel", id: "b" },
+    ]).map((e) => e.label),
+    ["/", "/{id}/cancel"],
+  );
+  assert.deepEqual(
+    routeTree([
+      { method: "GET", path: "/api/me", id: "a" },
+      { method: "PUT", path: "/api/me", id: "b" },
+    ]).map((e) => e.label),
+    ["/me", "/me"],
   );
 });

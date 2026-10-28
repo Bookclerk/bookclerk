@@ -447,8 +447,10 @@ interface RouteNode {
  * subsections: a route sits under the nearest shorter route (or shared
  * path) it extends, and shows only the part of its path past that line.
  *
- * The prefix every route shares stays on the top lines, so they read as
- * full paths. A shared path that is not a route becomes a label line only
+ * The prefix every route shares is left out, since the page's headings
+ * show it: on a page of `/api/auth/...` routes the top lines read `/login`,
+ * and a route at the prefix itself reads `/`. A page whose routes all share
+ * one path keeps its last segment. A shared path that is not a route becomes a label line only
  * when two or more routes branch from it; a single chain of segments is
  * kept on one line. Nesting stops at {@link ROUTE_TREE_MAX_DEPTH}: deeper
  * routes stay on that level with their longer remainder.
@@ -461,10 +463,12 @@ export function routeTree(
 ): RouteTreeEntry[] {
   const segments = (path: string): string[] => path.split("/").filter((s) => s !== "");
   const paths = ops.map((op) => segments(op.path));
-  // The shared prefix, kept short of every full path so each route keeps a segment.
+  // The shared prefix, which may be a whole route's path, unless it is every
+  // route's: then each route keeps its last segment.
   let shared = 0;
   const shortest = Math.min(...paths.map((p) => p.length));
-  while (shared < shortest - 1 && paths.every((p) => p[shared] === paths[0]?.[shared])) shared += 1;
+  while (shared < shortest && paths.every((p) => p[shared] === paths[0]?.[shared])) shared += 1;
+  if (paths.every((p) => p.length === shared)) shared = Math.max(0, shared - 1);
   const root: RouteNode = { ops: [], children: new Map() };
   ops.forEach((op, i) => {
     let node = root;
@@ -478,7 +482,6 @@ export function routeTree(
     }
     node.ops.push({ method: op.method, id: op.id });
   });
-  const prefix = (paths[0] ?? []).slice(0, shared);
   const entries: RouteTreeEntry[] = [];
   /**
    * Lists the lines for one node and what extends it.
@@ -503,8 +506,8 @@ export function routeTree(
     const carried = depth + 1 > ROUTE_TREE_MAX_DEPTH ? label : [];
     for (const [segment, child] of node.children) visit(child, [...carried, segment], below);
   };
-  // Only `/` itself ends at the root: every other path keeps a segment past the prefix.
+  // A route at the shared prefix itself, if any, reads `/`.
   for (const op of root.ops) entries.push({ kind: "op", ...op, label: "/", depth: 0 });
-  for (const [segment, child] of root.children) visit(child, [...prefix, segment], 0);
+  for (const [segment, child] of root.children) visit(child, [segment], 0);
   return entries;
 }

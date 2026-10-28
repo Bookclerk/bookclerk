@@ -1439,6 +1439,31 @@ export interface DocsShell {
   pageTitles: string[];
   /** src/sitemap.html rendered for the site, with SITEMAP_MARKER where the list goes. */
   sitemapHtml: string;
+  /**
+   * Generated reference folders under `api/` (`api/web`, `api/rust/<crate>`)
+   * mapped to the repository path each is generated from (build.ts
+   * `generatedSources`).
+   */
+  sources: Readonly<Record<string, string>>;
+}
+
+/**
+ * Finds the repository path a generated page under `api/` comes from: the
+ * entry of `sources` for the longest folder holding the page.
+ *
+ * @param key - The page's key.
+ * @param sources - DocsShell `sources`.
+ * @returns The repository path, or null when no folder holds the page.
+ */
+export function generatedSource(
+  key: string,
+  sources: Readonly<Record<string, string>>,
+): string | null {
+  for (let at = key.lastIndexOf("/"); at > 0; at = key.lastIndexOf("/", at - 1)) {
+    const folder = key.slice(0, at);
+    if (Object.hasOwn(sources, folder)) return sources[folder] ?? null;
+  }
+  return null;
 }
 
 /**
@@ -1477,11 +1502,20 @@ export function renderDocPage(
         : [];
   const markdownUrl = docMarkdownUrl(key, at.base);
   const generated = key.startsWith("api/");
-  const sourceUrl = generated ? null : `${blobBase}docs/${key}.md`;
-  const sourceLink =
-    sourceUrl === null
-      ? `Generated from the source at ${escapeHtml(at.ref)}`
-      : `Source: <a href="${escapeHtml(sourceUrl)}">docs/${escapeHtml(key)}.md</a> at ${escapeHtml(at.ref)}`;
+  // A generated page links to what it is generated from: a file (blob) or a
+  // folder (tree) of the repository.
+  const sourcePath = generated ? generatedSource(key, shell.sources) : `docs/${key}.md`;
+  const sourceUrl =
+    sourcePath === null
+      ? null
+      : `${/\.[a-z]+$/.test(sourcePath) ? blobBase : `${shell.repository}/tree/${at.ref}/`}${sourcePath}`;
+  const sourceAnchor =
+    sourceUrl === null || sourcePath === null
+      ? ""
+      : `<a href="${escapeHtml(sourceUrl)}">${escapeHtml(sourcePath)}</a>`;
+  const sourceLink = generated
+    ? `Generated from ${sourceAnchor || "the source"} at ${escapeHtml(at.ref)}`
+    : `Source: ${sourceAnchor} at ${escapeHtml(at.ref)}`;
   const issueUrl = `${shell.repository}/issues/new?title=${encodeURIComponent(`Docs: ${doc.title}`)}&body=${encodeURIComponent(`Page: ${shell.origin}${docUrl(key, at.base)}\n\n`)}`;
   const note =
     at.ref === "main"

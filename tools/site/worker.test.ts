@@ -589,9 +589,20 @@ test("main's docs say they are the development version and link within main", as
   assert.match(html, /unstable-badge/);
 });
 
-test("generated pages render without a source link and keep links inside the tree", async () => {
+test("generated pages link to what they are generated from and keep links inside the tree", async () => {
   const html = await (await get("/docs/api/rust/demo/index", BROWSER)).text();
-  assert.match(html, /Generated from the source at v0.2.0/);
+  // A crate the workspace does not hold falls back to the generator itself.
+  const generator = "https://github.com/Bookclerk/bookclerk/blob/v0.2.0/scripts/docs-markdown.py";
+  assert.ok(
+    html.includes(`Generated from <a href="${generator}">scripts/docs-markdown.py</a> at v0.2.0`),
+  );
+  assert.ok(html.includes(`<a href="${generator}">`) && html.includes("Source on GitHub"));
+  const web = await (await get("/docs/api/web/jobs", BROWSER)).text();
+  assert.ok(
+    web.includes(
+      'href="https://github.com/Bookclerk/bookclerk/blob/v0.2.0/crates/bookclerkd/openapi.json"',
+    ),
+  );
   assert.match(html, /href="\/docs\/api\/typescript"/);
   assert.match(html, /<h2 id="thing">/);
   // The publish step dates generated pages by when their content last changed.

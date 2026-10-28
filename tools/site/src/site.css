@@ -1202,6 +1202,14 @@ code.inline {
   padding-right: max(24px, env(safe-area-inset-right, 0px));
   align-items: start;
 }
+/* A route group's rail grows to fit its longest path on one line, up to a
+   limit past which paths wrap. */
+.docs-layout:has(.toc .toc-op) {
+  grid-template-columns: 17rem minmax(0, 1fr) fit-content(24rem);
+}
+.docs-layout:has(.toc .toc-op) .toc {
+  min-width: 15rem;
+}
 .docs-nav,
 .toc {
   position: sticky;
@@ -1996,7 +2004,8 @@ code.inline {
 }
 
 @media (max-width: 1200px) {
-  .docs-layout {
+  .docs-layout,
+  .docs-layout:has(.toc .toc-op) {
     grid-template-columns: 16rem minmax(0, 1fr);
   }
   .toc {
