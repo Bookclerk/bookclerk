@@ -915,6 +915,23 @@ class EndToEndTests(unittest.TestCase):
             cla.run(comment_event(ALICE, cla.SIGN_PHRASE), api, CLA_URL, RUN_URL)
         self.assertFalse(fake.branch)
 
+    def test_a_refused_branch_is_reported_not_retried(self) -> None:
+        # A ruleset refuses the new ref (422) and the branch stays missing.
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        fake.branch = False
+        real_send = fake.send
+
+        def refuse_refs(method: str, path: str, body: dict | None) -> tuple[int, bytes]:
+            if path.endswith("/git/refs"):
+                return 422, b'{"message": "Repository rule violations found"}'
+            return real_send(method, path, body)
+
+        fake.send = refuse_refs  # type: ignore[method-assign]
+        with self.assertRaises(cla.ApiError) as raised:
+            drive(fake, comment_event(ALICE, cla.SIGN_PHRASE))
+        self.assertIn("does not exist", str(raised.exception))
+        self.assertEqual(len(fake.objects), 2)
+
     def test_missing_branch_rules_are_warned_about(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
         api = cla.GitHub(fake.send, "bookclerk/bookclerk")

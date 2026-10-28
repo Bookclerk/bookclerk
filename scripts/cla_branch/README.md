@@ -32,7 +32,10 @@ Each entry records the GitHub account (`name`, `id`), the signing comment
 
    Then change the project-specific values at the top of
    `scripts/cla_check.py`: the signing sentence, the CLA version and the
-   allowlisted bots and assistant accounts.
+   allowlisted bots and assistant accounts. The job's `if:` in `cla.yml`
+   only starts on comments that contain the start of the signing sentence,
+   so change that text to match, or signature comments will not run the
+   check.
 2. Create a GitHub App (**Settings → Developer settings → GitHub Apps**,
    for a user or an organization) and give it one repository permission:
    - **Contents: read and write**, to create this branch and add

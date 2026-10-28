@@ -1107,7 +1107,12 @@ class GitHub:
         commit = parse_git_object(raw)
         status, _ = write("POST", f"{self.base}/git/refs", {"ref": f"refs/heads/{SIGNATURE_BRANCH}", "sha": commit})
         if status == 422:
-            return False
+            # Either another run created the branch first, or a ruleset
+            # refused the new ref; only the first is worth retrying.
+            exists, _ = self.send("GET", f"{self.base}/git/ref/heads/{SIGNATURE_BRANCH}", None)
+            if exists == 200:
+                return False
+            raise ApiError(f"POST git/refs: HTTP 422 and {SIGNATURE_BRANCH} does not exist (refused by a ruleset?)")
         if status != 201:
             raise ApiError(f"POST git/refs: HTTP {status}")
         return True
@@ -1362,7 +1367,7 @@ def warn_about_branch_rules(api: GitHub) -> None:
     """
     try:
         missing = sorted(SIGNATURE_BRANCH_RULES - api.branch_rules())
-    except (ApiError, ClaInputError) as err:
+    except (ApiError, ClaInputError, OSError) as err:
         print(f"::warning::cannot read the rules for {SIGNATURE_BRANCH}: {err}")
         return
     if missing:
@@ -1392,7 +1397,8 @@ def main(env: dict[str, str]) -> int:
     branch_files = load_branch_files(os.path.join(os.path.dirname(os.path.abspath(__file__)), "cla_branch"))
     api = GitHub(urllib_transport(env["GITHUB_TOKEN"], api_url), repository, write, branch_files)
     run_url = f"{server}/{repository}/actions/runs/{env.get('GITHUB_RUN_ID', '')}"
-    cla_url = f"{server}/{repository}/blob/main/CLA.md"
+    # `HEAD` names the default branch, whatever it is called.
+    cla_url = f"{server}/{repository}/blob/HEAD/CLA.md"
     try:
         with open(env["GITHUB_EVENT_PATH"], "rb") as handle:
             event = parse_event(env.get("GITHUB_EVENT_NAME", ""), handle.read(MAX_DOCUMENT_BYTES + 1))
