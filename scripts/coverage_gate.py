@@ -574,7 +574,11 @@ def main(argv: list[str] | None = None) -> int:
     config = parse_config(Path(AREAS_FILE).read_text(encoding="utf-8"))
     if args.export is not None:
         # Without a plan every workspace-gated area counts as partial.
-        full = full_workspace_checks(args.plan.read_text(encoding="utf-8")) if args.plan and args.plan.is_file() else frozenset()
+        full: frozenset[str] = frozenset()
+        if args.plan and args.plan.is_file():
+            full = full_workspace_checks(args.plan.read_text(encoding="utf-8"))
+        else:
+            print(f"::warning title=Coverage upload::No CI plan at {args.plan}; workspace-gated areas upload as partial.")
         print("Exported: " + (", ".join(export(config, args.reports, args.export, full)) or "nothing"))
         return 0
     if args.diff is None:

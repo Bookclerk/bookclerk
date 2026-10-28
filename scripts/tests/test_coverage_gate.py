@@ -594,7 +594,12 @@ class UploadWorkflowTest(unittest.TestCase):
             self.assertRegex(upload["uses"], r"@[0-9a-f]{40}$")
             self.assertEqual(upload["with"]["override_commit"], "${{ github.event.workflow_run.head_sha }}")
         export = next(s for s in steps if "--export coverage-upload" in s.get("run", ""))
-        self.assertIn('--plan "$RUNNER_TEMP/plan/ci-plan/ci-plan.json"', export["run"])
+        # Downloaded by name, the plan lands directly under the step's path.
+        plan = next(s for s in steps if s.get("name") == "Download the CI plan")
+        self.assertEqual(plan["with"]["name"], "ci-plan")
+        self.assertNotIn("pattern", plan["with"])
+        self.assertEqual(plan["with"]["path"], "${{ runner.temp }}/plan")
+        self.assertIn('--plan "$RUNNER_TEMP/plan/ci-plan.json"', export["run"])
         self.assertLess(steps.index(export), steps.index(uploads[0]))
 
     def test_runs_unprivileged_from_the_default_branch(self) -> None:

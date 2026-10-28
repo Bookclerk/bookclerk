@@ -350,8 +350,9 @@ jobs:
           CI_COVERAGE_DIR: ${{ runner.temp }}/coverage
         run: python3 scripts/ci-exec.py run python_sdk
 
+      # A build-only main push runs no tests, so there is no report.
       - name: Upload the Python SDK coverage report
-        if: needs.plan.outputs.check_python_sdk == 'true' && !inputs.private-head
+        if: env.CI_BUILD_ONLY != 'true' && needs.plan.outputs.check_python_sdk == 'true' && !inputs.private-head
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-python-sdk

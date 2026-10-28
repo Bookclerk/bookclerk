@@ -334,6 +334,10 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertEqual(step["with"]["path"], "${{ runner.temp }}/coverage", artifact)
             # Not for an unpublished OSV remediation bump (see the plan job).
             self.assertIn("!inputs.private-head", step["if"], artifact)
+            # A build-only main push runs no tests: a step that requires
+            # files must skip it (a missing report failed every main push).
+            if step["with"].get("if-no-files-found") == "error":
+                self.assertIn("env.CI_BUILD_ONLY != 'true'", step["if"], artifact)
         patch = next(s for s in self.jobs["plan"]["steps"] if s.get("with", {}).get("name") == "ci-patch")
         self.assertIn("!inputs.private-head", patch["if"])
         # Instrumentation is exported after the cache step, so the cache key
