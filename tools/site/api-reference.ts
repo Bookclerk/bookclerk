@@ -49,11 +49,14 @@ export type MakeToken = (type: string, tag: string, nesting: -1 | 0 | 1) => Toke
  * @returns True for `api/web/<group>`, false for its index and schema page.
  */
 export function isApiOperationsPage(key: string): boolean {
-  return key.startsWith("api/web/") && key !== API_INDEX && key !== "api/web/schemas";
+  return key.startsWith("api/web/") && key !== API_INDEX && key !== API_SCHEMAS;
 }
 
 /** Key of the Web API reference's index, which {@link layoutIndex} lays out. */
 export const API_INDEX = "api/web/README";
+
+/** Key of the Web API reference's schema page. */
+export const API_SCHEMAS = "api/web/schemas";
 
 /** The heading of the index section that sits beside its introduction. */
 const QUICK_START = "Quick start";

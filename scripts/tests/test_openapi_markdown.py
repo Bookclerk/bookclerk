@@ -118,7 +118,8 @@ class RenderTest(unittest.TestCase):
 
     def test_index_lists_credentials_and_routes(self) -> None:
         index = self.pages["README.md"]
-        self.assertIn("# Test API", index)
+        self.assertTrue(index.startswith("# Web API\n"))
+        self.assertIn("OpenAPI 3.1 document, *Test API*, at", index)
         self.assertIn("(API version `1.2.3`)", index)
         self.assertIn("| `token` | HTTP bearer | A token. |", index)
         self.assertIn("| `cookie` | cookie `sid` | A cookie. |", index)

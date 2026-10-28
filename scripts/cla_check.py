@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Checks that everyone behind a pull request has accepted the Bookclerk CLA.
 
-The ``CLA`` workflow runs this on ``pull_request_target``, on signature and
-``recheck`` comments, and on ``merge_group``. It reads only pull request
-metadata through the REST API and never checks out pull request code.
+The ``CLA`` workflow runs this on ``workflow_run`` after the unprivileged
+``CLA trigger`` workflow ran for a pull request, on signature and ``recheck``
+comments, and on ``merge_group``. It reads only pull request metadata through
+the REST API and never checks out pull request code.
 
 Who must sign: the pull request author, the GitHub account linked to every
 commit, and every account a commit credits with a ``Co-authored-by:`` line,
@@ -19,7 +20,7 @@ and their signature covers what they submit (CLA section 4).
 The verdict is the ``CLA`` commit status on the pull request's head commit.
 Signatures live in ``signatures/cla.json`` on the ``cla-signatures`` branch,
 in the format CLA Assistant Lite used, and are written through the contents
-API. One comment, marked with ``COMMENT_MARKER``, says who still has to sign
+API with the automation App's token. One comment, marked with ``COMMENT_MARKER``, says who still has to sign
 and is edited in place.
 
 Everything that parses bytes from GitHub (the event payload, pull requests,
@@ -29,7 +30,10 @@ fails closed.
 
 Usage (inside the workflow): ``cla_check.py`` with ``GITHUB_TOKEN``,
 ``GITHUB_REPOSITORY``, ``GITHUB_EVENT_NAME``, ``GITHUB_EVENT_PATH`` and
-``GITHUB_SERVER_URL`` set. It exits 0 once the status is posted, whatever the
+``GITHUB_SERVER_URL`` set, plus ``CLA_SIGNATURE_TOKEN``, an automation App
+token that may write to ``cla-signatures``. Only that token records
+signatures, so the branch can refuse every other writer and each signature
+commit is signed by GitHub for the App. It exits 0 once the status is posted, whatever the
 verdict, and 1 when it could not decide.
 """
 
@@ -41,6 +45,7 @@ import os
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from enum import Enum
@@ -117,6 +122,10 @@ MAX_SIGNATURE_BYTES = 1024 * 1024
 #: Times a signature write is retried after another run changed the file.
 SIGNATURE_WRITE_ATTEMPTS = 3
 
+#: Times a check decides and posts again because the signature file changed
+#: while it ran.
+STATUS_ATTEMPTS = 3
+
 #: The version of ``CLA.md`` a signature accepts, recorded with each entry.
 #: Bump it together with the version line in ``CLA.md``.
 CLA_VERSION = "1.0"
@@ -138,6 +147,9 @@ BOT_LOGIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}\[bot\]", re.ASCII)
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}", re.ASCII)
 
 #: An ``owner/name`` repository.
+#: Longest branch name accepted from a ``workflow_run`` payload, in characters.
+MAX_BRANCH_CHARS = 255
+
 REPOSITORY = re.compile(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}", re.ASCII)
 
 #: Largest id GitHub could hand out that still round-trips through JSON numbers.
@@ -238,6 +250,28 @@ class PullRef:
     open: bool
     #: The SHA-1 of its head commit.
     head_sha: str
+    #: The id of the repository its head branch lives in; ``None`` when the
+    #: listing leaves it out or that repository was deleted.
+    head_repo_id: int | None = None
+
+
+@dataclass(frozen=True)
+class RunHead:
+    """The head a ``CLA trigger`` run checked out, from a ``workflow_run`` payload.
+
+    GitHub sets every field from the run itself, so a pull request cannot
+    choose them; the check still matches them against the pull requests the
+    API lists instead of trusting a number.
+    """
+
+    #: The SHA-1 of the head commit the run was for.
+    sha: str
+    #: The head branch's name.
+    branch: str
+    #: The id of the repository the head branch lives in (a fork, or this one).
+    repo_id: int
+    #: The login of that repository's owner, for the ``head`` filter.
+    owner: str
 
 
 @dataclass(frozen=True)
@@ -257,8 +291,9 @@ class Comment:
 class EventKind(Enum):
     """Which workflow event triggered the run."""
 
-    #: A pull request was opened, pushed to, reopened or retargeted.
-    PULL_REQUEST = "pull_request_target"
+    #: The ``CLA trigger`` workflow ran for a pull request that was opened,
+    #: pushed to, reopened, retargeted or closed.
+    WORKFLOW_RUN = "workflow_run"
     #: A comment was posted on an issue or pull request.
     ISSUE_COMMENT = "issue_comment"
     #: A merge queue built a merge group.
@@ -273,18 +308,15 @@ class Event:
     kind: EventKind
     #: The id of the repository the workflow runs in.
     repo_id: int
-    #: The pull request number; ``None`` for a merge group or for a comment
-    #: on a plain issue.
+    #: The pull request number from an ``issue_comment`` payload; ``None``
+    #: for the other events and for a comment on a plain issue.
     pull_number: int | None
-    #: The pull request from a ``pull_request_target`` payload.
-    pull_request: PullRequest | None
     #: The new comment from an ``issue_comment`` payload.
     comment: Comment | None
     #: The merge group's head commit from a ``merge_group`` payload.
     merge_group_sha: str | None
-    #: The head the pull request had before a push (``synchronize``), whose
-    #: status other pull requests may still share.
-    before_sha: str | None = None
+    #: The head the ``CLA trigger`` run was for, from a ``workflow_run`` payload.
+    run_head: RunHead | None = None
 
 
 @dataclass(frozen=True)
@@ -429,7 +461,7 @@ def parse_pull_request(value: object) -> PullRequest:
 
 
 def parse_pull_refs(raw: bytes) -> list[PullRef]:
-    """Reads ``GET /commits/{sha}/pulls``.
+    """Reads a list of pull requests (``GET /commits/{sha}/pulls`` or ``GET /pulls``).
 
     # Errors
     ``ClaInputError`` when the page or an entry has the wrong shape.
@@ -444,11 +476,13 @@ def parse_pull_refs(raw: bytes) -> list[PullRef]:
         if state not in ("open", "closed"):
             raise ClaInputError("pull request state is not open or closed")
         head = _object(obj.get("head"), "pull request head")
+        repo = head.get("repo")
         refs.append(
             PullRef(
                 number=_id(obj.get("number"), "pull request number"),
                 open=state == "open",
                 head_sha=_sha(head.get("sha"), "pull request head"),
+                head_repo_id=None if repo is None else _id(_object(repo, "head repository").get("id"), "head repository id"),
             )
         )
     return refs
@@ -477,11 +511,11 @@ def parse_event(name: str, raw: bytes) -> Event:
     * ``raw``: the contents of ``GITHUB_EVENT_PATH``.
 
     # Returns
-    The event, with the pull request, comment or merge group it carries.
+    The event, with the run head, comment or merge group it carries.
 
     # Errors
-    ``ClaInputError`` for any other event name or a payload of the wrong
-    shape.
+    ``ClaInputError`` for any other event name, a ``workflow_run`` for
+    anything but a ``pull_request`` run, or a payload of the wrong shape.
     """
     try:
         kind = EventKind(name)
@@ -489,19 +523,41 @@ def parse_event(name: str, raw: bytes) -> Event:
         raise ClaInputError("unsupported event") from err
     payload = _object(_load_json(raw), "event")
     repo_id = _id(_object(payload.get("repository"), "repository").get("id"), "repository id")
-    if kind is EventKind.PULL_REQUEST:
-        pull = parse_pull_request(payload.get("pull_request"))
-        before = payload.get("before")
-        before_sha = None if before is None else _sha(before, "previous head")
-        return Event(kind, repo_id, pull.number, pull, None, None, before_sha)
+    if kind is EventKind.WORKFLOW_RUN:
+        return Event(kind, repo_id, None, None, None, parse_run_head(payload.get("workflow_run")))
     if kind is EventKind.ISSUE_COMMENT:
         issue = _object(payload.get("issue"), "issue")
         number = _id(issue.get("number"), "issue number")
         is_pull = issue.get("pull_request") is not None
         comment = parse_comment(payload.get("comment"))
-        return Event(kind, repo_id, number if is_pull else None, None, comment, None)
+        return Event(kind, repo_id, number if is_pull else None, comment, None)
     group = _object(payload.get("merge_group"), "merge group")
-    return Event(kind, repo_id, None, None, None, _sha(group.get("head_sha"), "merge group head"))
+    return Event(kind, repo_id, None, None, _sha(group.get("head_sha"), "merge group head"))
+
+
+def parse_run_head(value: object) -> RunHead:
+    """Reads the ``workflow_run`` object of a ``workflow_run`` payload.
+
+    # Errors
+    ``ClaInputError`` when the run was not for a ``pull_request`` event, or
+    a field is missing or malformed.
+    """
+    obj = _object(value, "workflow run")
+    if obj.get("event") != "pull_request":
+        raise ClaInputError("workflow run is not for a pull request")
+    repo = _object(obj.get("head_repository"), "head repository")
+    owner = _string(_object(repo.get("owner"), "head repository owner").get("login"), "head repository owner")
+    if USER_LOGIN.fullmatch(owner) is None:
+        raise ClaInputError("head repository owner is not a login")
+    branch = _string(obj.get("head_branch"), "head branch")
+    if not 1 <= len(branch) <= MAX_BRANCH_CHARS or not branch.isprintable():
+        raise ClaInputError("head branch has a bad name")
+    return RunHead(
+        sha=_sha(obj.get("head_sha"), "run head"),
+        branch=branch,
+        repo_id=_id(repo.get("id"), "head repository id"),
+        owner=owner,
+    )
 
 
 def parse_commit_page(raw: bytes) -> list[Commit]:
@@ -527,9 +583,10 @@ def parse_commit_page(raw: bytes) -> list[Commit]:
 def parse_coauthor_page(raw: bytes) -> CoauthorPage:
     """Reads one page of the ``COAUTHOR_QUERY`` GraphQL response.
 
-    GraphQL users are always people, so each linked author is read as a
-    ``USER`` account; bots resolve to no user and are left out. Accounts
-    linked to an ``ASSISTANT_EMAILS`` address are reported separately.
+    GraphQL types every linked author as a user, an App's bot included, so
+    an account is read as a ``BOT`` when its login has the ``[bot]`` suffix
+    and as a ``USER`` otherwise. Accounts linked to an ``ASSISTANT_EMAILS``
+    address are reported separately.
 
     # Errors
     ``ClaInputError`` when the response has errors or the wrong shape, a
@@ -801,10 +858,20 @@ Transport = Callable[[str, str, "dict[str, object] | None"], "tuple[int, bytes]"
 class GitHub:
     """The few REST calls the check makes, over a ``Transport``."""
 
-    def __init__(self, send: Transport, repository: str) -> None:
-        """Wraps ``send`` for ``repository`` (``owner/name``)."""
+    def __init__(self, send: Transport, repository: str, write: Transport | None = None) -> None:
+        """Wraps ``send`` for ``repository`` (``owner/name``).
+
+        # Arguments
+        * ``send``: performs every request except signature writes.
+        * ``repository``: ``owner/name``.
+        * ``write``: performs signature writes, with the automation App's
+          token, or ``None`` when none is configured (recording a signature
+          then fails closed).
+        """
         #: The function that performs requests.
         self.send = send
+        #: The function that writes the signature file, if any.
+        self.write = write
         #: ``repos/<owner>/<name>``, the prefix of every REST path.
         self.base = f"repos/{repository}"
         #: The repository's owner and name, for GraphQL.
@@ -898,6 +965,29 @@ class GitHub:
             raise ApiError(f"more than {MAX_SHARED_PULLS} pull requests share the head commit")
         return numbers
 
+    def pulls_from(self, head: RunHead) -> list[int]:
+        """Lists the open pull requests whose head is ``head``.
+
+        Matches the listing's head commit and head repository against the
+        run's, so a branch name reused by another fork or a later push does
+        not count. Closed pull requests are left out: one only hands its
+        head's shared status to the open ones, which the caller does when
+        nothing matches, and a branch reused for many pull requests (a
+        fork's ``main``) would otherwise fill the page with closed ones.
+
+        # Errors
+        ``ApiError`` when the listing fills a page or more than
+        ``MAX_SHARED_PULLS`` match.
+        """
+        label = f"{urllib.parse.quote(head.owner, safe='')}:{urllib.parse.quote(head.branch, safe='')}"
+        refs = parse_pull_refs(self.call("GET", f"pulls?state=open&head={label}&per_page={PAGE_SIZE}"))
+        if len(refs) >= PAGE_SIZE:
+            raise ApiError("too many pull requests come from the head branch")
+        numbers = sorted({r.number for r in refs if r.head_sha == head.sha and r.head_repo_id == head.repo_id})
+        if len(numbers) > MAX_SHARED_PULLS:
+            raise ApiError(f"more than {MAX_SHARED_PULLS} pull requests come from the head commit")
+        return numbers
+
     def comments(self, number: int) -> list[Comment]:
         """Fetches every comment on pull request ``number``, oldest first."""
         comments: list[Comment] = []
@@ -918,7 +1008,12 @@ class GitHub:
         """Appends the commenter's signature unless it is already there.
 
         Retries when another run replaced the file between the read and the
-        write.
+        write. The write goes through ``self.write``, so the commit is made,
+        and signed, by the automation App.
+
+        # Errors
+        ``ApiError`` when no signature token is configured, the write is
+        refused, or the file keeps changing.
 
         # Returns
         The signature book as written.
@@ -927,8 +1022,10 @@ class GitHub:
             book, blob = self.signatures()
             if comment.author.id in book.signed_ids:
                 return book
+            if self.write is None:
+                raise ApiError("CLA_SIGNATURE_TOKEN is not set, so signatures cannot be recorded")
             data = add_signature(book, comment, repo_id, pull_number)
-            status, _ = self.send(
+            status, _ = self.write(
                 "PUT",
                 f"{self.base}/contents/{SIGNATURE_PATH}",
                 {
@@ -976,22 +1073,33 @@ def run(event: Event, api: GitHub, cla_url: str, run_url: str) -> None:
         # enter the queue; the queue run needs the context reported too.
         api.set_status(event.merge_group_sha, "success", "Checked on each pull request in the group.", run_url)
         return
-    if event.pull_number is None:
+    if event.run_head is not None:
+        numbers = api.pulls_from(event.run_head)
+        if not numbers:
+            # The pull request was closed or moved on (a later push), or its
+            # branch is gone; the open pull requests still on that commit
+            # decide it alone.
+            book, _ = api.signatures()
+            settle(api, event.run_head.sha, book, run_url)
+        for number in numbers:
+            check_pull(event, api, number, cla_url, run_url)
         return
-    # Always re-read the pull request: a payload can predate a later push,
+    if event.pull_number is not None:
+        check_pull(event, api, event.pull_number, cla_url, run_url)
+
+
+def check_pull(event: Event, api: GitHub, number: int, cla_url: str, run_url: str) -> None:
+    """Decides pull request ``number`` and reports its comment and status.
+
+    # Errors
+    ``ApiError`` or ``ClaInputError`` when the check cannot decide.
+    """
+    # Always re-read the pull request: the event can predate a later push,
     # and its commit count must match the commit pages read next.
-    pull = api.pull_request(event.pull_number)
+    pull = api.pull_request(number)
     if pull.open:
         api.head_sha = pull.head_sha
     book, _ = api.signatures()
-    if event.before_sha is not None and event.before_sha != pull.head_sha:
-        # A push moved this pull request off a head other pull requests may
-        # still have; their shared status no longer has to wait for it. A
-        # failure there is theirs to retry and must not stop this check.
-        try:
-            settle(api, event.before_sha, book, run_url)
-        except (ApiError, ClaInputError) as err:
-            print(f"cla_check: could not re-decide the previous head: {err}", file=sys.stderr)
     if not pull.open:
         # A closed pull request no longer holds its head; the open ones that
         # share it decide the status alone.
@@ -1005,15 +1113,26 @@ def run(event: Event, api: GitHub, cla_url: str, run_url: str) -> None:
         comments.append(event.comment)
     for comment in signing_comments(comments, verdict):
         book = api.record(comment, event.repo_id, pull.number)
-    verdict = evaluate(pull, commits, book)
-    blocked_by = blocking_pull(api, pull, book) if verdict.passed else None
-    passed = verdict.passed and blocked_by is None
-    api.upsert_comment(pull.number, comments, render_comment(verdict, cla_url, blocked_by), create=not passed)
-    if blocked_by is not None:
-        description = f"CLA: #{blocked_by}, which shares this commit, still needs signatures."
-    else:
-        description = status_description(verdict)
-    api.set_status(pull.head_sha, "success" if passed else "failure", description, run_url)
+    for _ in range(STATUS_ATTEMPTS):
+        verdict = evaluate(pull, commits, book)
+        blocked_by = blocking_pull(api, pull, book) if verdict.passed else None
+        passed = verdict.passed and blocked_by is None
+        api.upsert_comment(pull.number, comments, render_comment(verdict, cla_url, blocked_by), create=not passed)
+        if blocked_by is not None:
+            description = f"CLA: #{blocked_by}, which shares this commit, still needs signatures."
+        else:
+            description = status_description(verdict)
+        api.set_status(pull.head_sha, "success" if passed else "failure", description, run_url)
+        # A run for a signature comment (another concurrency group) may have
+        # recorded a signature after this run read the file, and posted its
+        # status before this one. Reading the file again after posting means
+        # that, of two such runs, the one that posts last has seen every
+        # signature recorded before it posted.
+        latest, _ = api.signatures()
+        if latest.signed_ids == book.signed_ids:
+            return
+        book = latest
+        comments = api.comments(pull.number)
 
 
 def blocking_pull(api: GitHub, pull: PullRequest, book: SignatureBook) -> int | None:
@@ -1116,7 +1235,10 @@ def main(env: dict[str, str]) -> int:
         print("cla_check: GITHUB_REPOSITORY is not owner/name", file=sys.stderr)
         return 1
     server = env.get("GITHUB_SERVER_URL", "https://github.com")
-    api = GitHub(urllib_transport(env["GITHUB_TOKEN"], env.get("GITHUB_API_URL", "https://api.github.com")), repository)
+    api_url = env.get("GITHUB_API_URL", "https://api.github.com")
+    signature_token = env.get("CLA_SIGNATURE_TOKEN", "")
+    write = urllib_transport(signature_token, api_url) if signature_token else None
+    api = GitHub(urllib_transport(env["GITHUB_TOKEN"], api_url), repository, write)
     run_url = f"{server}/{repository}/actions/runs/{env.get('GITHUB_RUN_ID', '')}"
     cla_url = f"{server}/{repository}/blob/main/CLA.md"
     try:
@@ -1130,8 +1252,8 @@ def main(env: dict[str, str]) -> int:
     except (ApiError, ClaInputError) as err:
         print(f"cla_check: {err}", file=sys.stderr)
         sha = api.head_sha
-        if sha is None and event.pull_request is not None and event.pull_request.open:
-            sha = event.pull_request.head_sha
+        if sha is None and event.run_head is not None:
+            sha = event.run_head.sha
         if sha is not None:
             try:
                 api.set_status(sha, "error", "The CLA check could not decide; see the run.", run_url)

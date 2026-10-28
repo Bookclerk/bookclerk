@@ -17,6 +17,7 @@ import type { MarkdownIt as Markdown, RendererRule, Token } from "markdown-it";
 
 import {
   API_INDEX,
+  API_SCHEMAS,
   indexRoutes,
   isApiOperationsPage,
   layoutIndex,
@@ -446,7 +447,44 @@ function renderer(
   }
   md.renderer.rules["table_open"] = () => '<div class="table-scroll" tabindex="0"><table>\n';
   md.renderer.rules["table_close"] = () => "</table></div>\n";
+  // Every section heading below the title carries a link to itself, shown
+  // beside it on hover or focus (docs.js also copies the link). The link
+  // sits after the heading in a wrapper, so it is not part of the
+  // heading's name.
+  md.renderer.rules["heading_open"] = (tokens, idx, options, _env, self) => {
+    const token = tokens[idx];
+    const open = self.renderToken(tokens, idx, options);
+    return token === undefined || !anchored(token)
+      ? open
+      : `<div class="heading-wrapper level-${token.tag}">${open}`;
+  };
+  md.renderer.rules["heading_close"] = (tokens, idx, options, _env, self) => {
+    const close = self.renderToken(tokens, idx, options);
+    // A heading is always heading_open, inline, heading_close.
+    const open = tokens[idx - 2];
+    if (open === undefined || open.type !== "heading_open" || !anchored(open)) return close;
+    const id = escapeHtml(String(open.attrGet("id")));
+    const name = escapeHtml(inlineText(tokens[idx - 1]));
+    return `${close.trimEnd()}<a class="heading-anchor" href="#${id}" aria-label="Link to section: ${name}">${LINK_ICON}</a></div>\n`;
+  };
   return md;
+}
+
+/** The chain-link icon of a heading's link to itself; drawn here, not taken from an icon set. */
+const LINK_ICON =
+  '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.5-1.5"/></svg>';
+
+/**
+ * Whether a heading gets a link to itself: every heading below the title
+ * that has an id.
+ *
+ * @param token - A `heading_open` token.
+ * @returns True for `h2` to `h6` with an id.
+ */
+function anchored(token: Token): boolean {
+  return (
+    token.tag !== "h1" && typeof token.attrGet("id") === "string" && token.attrGet("id") !== ""
+  );
 }
 
 /** Per-render state markdown-it passes to every rule: the diagrams drawn so far. */
@@ -749,13 +787,7 @@ export function renderDoc(
     return [{ level: t.tag === "h2" ? 2 : 3, id, text: inlineText(tokens[i + 1]) }];
   });
   // Read before rendering, which rewrites the links in place.
-  const link = (href: string): string =>
-    rewriteLink(href, key, keys, blobBase, (k) => docUrl(k, base));
-  const routes = indexRoutes(tokens).map((group) => ({
-    ...group,
-    href: link(group.href),
-    routes: group.routes.map((route) => ({ ...route, href: link(route.href) })),
-  }));
+  const routes = routeLinks(indexRoutes(tokens), keys, blobBase, base);
   return {
     title: docTitle(source, key),
     description: describe(tokens),
@@ -908,15 +940,17 @@ export interface NavNested {
 }
 
 /**
- * The sidebar list for a Web API page, shown beneath the Web API entry: on
- * the index, every route group with its routes; on any other page, the page
- * itself, marked current, with its operations (if any) under it.
+ * The sidebar list for a Web API page, shown beneath the Web API entry:
+ * every route group (from the index), then the schemas page. Only the group
+ * being read is expanded, with its operations under it; on the index every
+ * group stays collapsed.
  *
  * @param key - The page's key.
  * @param title - Its title.
  * @param headings - Its headings (see renderDoc).
  * @param base - URL prefix of the docs version.
- * @param routes - The index's route groups (see renderDoc).
+ * @param groups - The index's route groups (see renderDoc and
+ *   apiRouteGroups); when empty, the list holds only this page.
  * @returns The list, or null for a page outside `api/web/` and for an
  *   index that lists no group.
  */
@@ -925,32 +959,69 @@ export function apiNavNested(
   title: string,
   headings: readonly DocHeading[],
   base: string,
-  routes: readonly ApiRouteGroup[] = [],
+  groups: readonly ApiRouteGroup[] = [],
 ): NavNested | null {
-  if (key === API_INDEX) {
-    const groups = routes
-      .map((group) => {
-        const ops = group.routes
-          .map(
-            (r) =>
-              `<li><a class="nav-op" href="${escapeHtml(r.href)}">${headingLabel({ level: 2, id: "", text: r.path, method: r.method })}</a></li>`,
-          )
-          .join("");
-        return `<li><a href="${escapeHtml(group.href)}">${escapeHtml(group.title)}</a>${ops === "" ? "" : `<ul class="nav-ops">${ops}</ul>`}</li>`;
-      })
-      .join("");
-    return groups === "" ? null : { under: API_INDEX, html: `<ul class="nav-sub">${groups}</ul>` };
-  }
-  if (!key.startsWith("api/web/")) return null;
+  if (!key.startsWith("api/web/") || (key === API_INDEX && groups.length === 0)) return null;
+  const here = docUrl(key, base);
   const ops = headings
     .filter((h) => h.method !== undefined)
     .map((h) => `<li><a class="nav-op" href="#${escapeHtml(h.id)}">${headingLabel(h)}</a></li>`)
     .join("");
-  const list = ops === "" ? "" : `<ul class="nav-ops">${ops}</ul>`;
-  return {
-    under: API_INDEX,
-    html: `<ul class="nav-sub"><li><a href="${escapeHtml(docUrl(key, base))}" aria-current="page">${escapeHtml(title)}</a>${list}</li></ul>`,
+  const item = (href: string, text: string): string => {
+    if (href !== here) return `<li><a href="${escapeHtml(href)}">${escapeHtml(text)}</a></li>`;
+    return `<li><a href="${escapeHtml(href)}" aria-current="page">${escapeHtml(text)}</a>${ops === "" ? "" : `<ul class="nav-ops">${ops}</ul>`}</li>`;
   };
+  const schemas = docUrl(API_SCHEMAS, base);
+  const listed =
+    groups.length === 0
+      ? [item(here, title)]
+      : [...groups.map((g) => item(g.href, g.title)), item(schemas, "Schemas")];
+  return { under: API_INDEX, html: `<ul class="nav-sub">${listed.join("")}</ul>` };
+}
+
+/**
+ * Reads the route groups the Web API index lists, for the sidebar of the
+ * reference's other pages.
+ *
+ * @param source - The index's Markdown.
+ * @param options - Docs that exist (null: any `.md`), the GitHub prefix for
+ *   repository files, and the URL prefix of the docs version.
+ * @returns The groups with their links rewritten for the site.
+ */
+export function apiRouteGroups(
+  source: string,
+  {
+    keys = null,
+    blobBase,
+    base = "/docs/",
+  }: { keys?: ReadonlySet<string> | null; blobBase: string; base?: string },
+): ApiRouteGroup[] {
+  const md = renderer(API_INDEX, keys, blobBase, (k) => docUrl(k, base));
+  return routeLinks(indexRoutes(md.parse(source, {})), keys, blobBase, base);
+}
+
+/**
+ * Rewrites the links of route groups for the site.
+ *
+ * @param groups - Groups as indexRoutes reads them from the index.
+ * @param keys - See rewriteLink.
+ * @param blobBase - See rewriteLink.
+ * @param base - URL prefix of the docs version.
+ * @returns The groups with site links.
+ */
+function routeLinks(
+  groups: readonly ApiRouteGroup[],
+  keys: ReadonlySet<string> | null,
+  blobBase: string,
+  base: string,
+): ApiRouteGroup[] {
+  const link = (href: string): string =>
+    rewriteLink(href, API_INDEX, keys, blobBase, (k) => docUrl(k, base));
+  return groups.map((group) => ({
+    ...group,
+    href: link(group.href),
+    routes: group.routes.map((route) => ({ ...route, href: link(route.href) })),
+  }));
 }
 
 /** Where a doc sits in the sidebar. */
@@ -1117,11 +1188,68 @@ export function tocHtml(
   links: { source: string | null; issue: string },
 ): string {
   const list = tocListHtml(headings);
-  const sections = list === "" ? "" : `<p class="toc-title">On this page</p>${list}`;
+  const sections =
+    list === "" ? "" : `<p class="toc-title">On this page</p><div class="toc-list">${list}</div>`;
   const source =
-    links.source === null ? "" : `<a href="${escapeHtml(links.source)}">Source on GitHub</a>`;
-  const actions = `<p class="toc-actions">${source}<a href="${escapeHtml(links.issue)}">Report a problem</a></p>`;
+    links.source === null
+      ? ""
+      : `<li><a href="${escapeHtml(links.source)}">${ICONS.edit}Source on GitHub</a></li>`;
+  const actions = `<ul class="toc-actions">${source}<li><a href="${escapeHtml(links.issue)}">${ICONS.report}Report a problem</a></li></ul>`;
   return `<aside class="toc" aria-label="On this page">${sections}${actions}</aside>`;
+}
+
+/**
+ * Small line icons for the page's actions, drawn here (not taken from an
+ * icon set) and hidden from assistive technology: the text beside each
+ * says what it does.
+ */
+const ICONS = {
+  /** A clock turning back: when the page last changed. */
+  updated: icon('<path d="M3 12a9 9 0 1 0 2.6-6.4"/><path d="M3 4v5h5"/><path d="M12 8v4l3 2"/>'),
+  /** Two sheets: copy the page. */
+  copy: icon(
+    '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
+  ),
+  /** A page with a folded corner: the Markdown version. */
+  markdown: icon(
+    '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/>',
+  ),
+  /** A pencil: the page's source. */
+  edit: icon('<path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>'),
+  /** A flag: report a problem. */
+  report: icon('<path d="M5 21V4"/><path d="M5 4h12l-2.5 4L17 12H5"/>'),
+} as const;
+
+/**
+ * Wraps icon paths in an `svg` that takes the text's color and size.
+ *
+ * @param paths - The icon's SVG elements, drawn on a 24-unit grid.
+ * @returns The `svg`, hidden from assistive technology.
+ */
+function icon(paths: string): string {
+  return `<svg class="icon" aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+}
+
+/**
+ * Renders the line under a doc's title: the development note, when the
+ * docs follow main, then the page's date and its Markdown actions.
+ *
+ * The Copy as Markdown button starts hidden; docs.js shows it when the
+ * browser can write to the clipboard.
+ *
+ * @param note - The development note's HTML, or empty.
+ * @param updated - The date the page last changed, or null to leave it out.
+ * @param markdownUrl - The page's Markdown version.
+ * @returns A `div.doc-meta`.
+ */
+export function metaHtml(note: string, updated: IsoDate | null, markdownUrl: string): string {
+  const date = updated
+    ? `<span class="doc-action doc-updated">${ICONS.updated}Last updated <time datetime="${updated}">${formatDate(updated)}</time></span>`
+    : "";
+  const url = escapeHtml(markdownUrl);
+  const copy = `<button type="button" class="doc-action doc-copy-markdown" data-markdown="${url}" hidden>${ICONS.copy}<span>Copy as Markdown</span></button>`;
+  const view = `<a class="doc-action" href="${url}" type="text/markdown">${ICONS.markdown}View as Markdown</a>`;
+  return `<div class="doc-meta">${note === "" ? "" : `<p class="doc-note-line">${note}</p>`}<p class="doc-actions">${date}${copy}${view}</p></div>`;
 }
 
 /**
@@ -1275,7 +1403,9 @@ export interface DocsShell {
  * @param key - The doc's key (path without `.md`).
  * @param at - The docs version: its ref, its URL prefix and the docs it
  *   holds (null when unknown), and the date the page last changed (null
- *   when unknown, which leaves out the "Last updated" line).
+ *   when unknown, which leaves out the "Last updated" line), and for a Web
+ *   API page other than the index, the index's Markdown (null when it could
+ *   not be read), whose route groups the sidebar lists.
  * @returns The full HTML page and the Markdown copy with links rewritten for
  *   the site.
  */
@@ -1283,10 +1413,22 @@ export function renderDocPage(
   shell: DocsShell,
   source: string,
   key: string,
-  at: { ref: string; base: string; keys?: ReadonlySet<string> | null; updated?: IsoDate | null },
+  at: {
+    ref: string;
+    base: string;
+    keys?: ReadonlySet<string> | null;
+    updated?: IsoDate | null;
+    apiIndex?: string | null;
+  },
 ): RenderedPage {
   const blobBase = `${shell.repository}/blob/${at.ref}/`;
   const doc = renderDoc(source, key, { keys: at.keys ?? null, blobBase, base: at.base });
+  const groups =
+    key === API_INDEX
+      ? doc.routes
+      : at.apiIndex
+        ? apiRouteGroups(at.apiIndex, { keys: at.keys ?? null, blobBase, base: at.base })
+        : [];
   const markdownUrl = docMarkdownUrl(key, at.base);
   const generated = key.startsWith("api/");
   const sourceUrl = generated ? null : `${blobBase}docs/${key}.md`;
@@ -1299,21 +1441,13 @@ export function renderDocPage(
     at.ref === "main"
       ? '<span class="doc-note" role="note"><span class="badge unstable-badge">Development</span> These docs follow the development version and change with every merge.</span>'
       : "";
-  const updated = at.updated
-    ? `<span class="doc-updated">Last updated <time datetime="${at.updated}">${formatDate(at.updated)}</time></span>`
-    : "";
-  const meta = `<p class="doc-meta">${note}${updated}<a href="${escapeHtml(markdownUrl)}" type="text/markdown">View as Markdown</a></p>`;
+  const meta = metaHtml(note, at.updated ?? null, markdownUrl);
   const place = navPlace(shell.nav, key);
   const trail = crumbTrail(shell.nav, key, doc.title);
   const versions = versionsHtml(shell.versions, at.ref, key);
   const nav =
     homeLink(at.base, key === "README") +
-    navHtml(
-      shell.nav,
-      key,
-      at.base,
-      apiNavNested(key, doc.title, doc.headings, at.base, doc.routes),
-    );
+    navHtml(shell.nav, key, at.base, apiNavNested(key, doc.title, doc.headings, at.base, groups));
   const html = fillShell(
     shell.html,
     {

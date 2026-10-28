@@ -20,6 +20,7 @@ import json
 import random
 import sys
 import unittest
+import urllib.parse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -141,9 +142,18 @@ def oracle(kind: str, raw: bytes) -> object:
         name = kind[len("event_"):]
         payload = o_obj(o_json(raw))
         repo = o_id(o_obj(payload.get("repository")).get("id"))
-        if name == "pull_request_target":
-            before = payload.get("before")
-            return ("pr", repo, o_pull(payload.get("pull_request")), None if before is None else o_sha(before))
+        if name == "workflow_run":
+            run = o_obj(payload.get("workflow_run"))
+            if run.get("event") != "pull_request":
+                raise Refused
+            head_repo = o_obj(run.get("head_repository"))
+            owner = o_str(o_obj(head_repo.get("owner")).get("login"))
+            if not o_base_login(owner):
+                raise Refused
+            branch = o_str(run.get("head_branch"))
+            if not branch or len(branch) > 255 or not all(ch.isprintable() for ch in branch):
+                raise Refused
+            return ("run", repo, (o_sha(run.get("head_sha")), branch, o_id(head_repo.get("id")), owner))
         if name == "issue_comment":
             issue = o_obj(payload.get("issue"))
             number = o_id(issue.get("number"))
@@ -183,7 +193,10 @@ def oracle(kind: str, raw: bytes) -> object:
             state = obj.get("state")
             if type(state) is not str or state not in ("open", "closed"):
                 raise Refused
-            out.append((o_id(obj.get("number")), state == "open", o_sha(o_obj(obj.get("head")).get("sha"))))
+            head = o_obj(obj.get("head"))
+            head_repo = head.get("repo")
+            repo_id = None if head_repo is None else o_id(o_obj(head_repo).get("id"))
+            out.append((o_id(obj.get("number")), state == "open", o_sha(head.get("sha")), repo_id))
         return out
     if kind == "coauthors":
         doc = o_obj(o_json(raw))
@@ -278,9 +291,10 @@ def module(kind: str, raw: bytes) -> object:
         return pull(cla.parse_pull_request(cla._load_json(raw)))
     if kind.startswith("event_"):
         ev = cla.parse_event(kind[len("event_"):], raw)
-        if ev.kind is cla.EventKind.PULL_REQUEST:
-            assert ev.pull_number == ev.pull_request.number
-            return ("pr", ev.repo_id, pull(ev.pull_request), ev.before_sha)
+        if ev.kind is cla.EventKind.WORKFLOW_RUN:
+            assert ev.pull_number is None and ev.comment is None
+            h = ev.run_head
+            return ("run", ev.repo_id, (h.sha, h.branch, h.repo_id, h.owner))
         if ev.kind is cla.EventKind.ISSUE_COMMENT:
             return ("comment", ev.repo_id, ev.pull_number, comment(ev.comment))
         return ("merge", ev.repo_id, ev.merge_group_sha)
@@ -291,7 +305,7 @@ def module(kind: str, raw: bytes) -> object:
         assert entries == len(cla._load_json(raw))
         return [comment(c) for c in kept]
     if kind == "pullrefs":
-        return [(r.number, r.open, r.head_sha) for r in cla.parse_pull_refs(raw)]
+        return [(r.number, r.open, r.head_sha, r.head_repo_id) for r in cla.parse_pull_refs(raw)]
     if kind == "coauthors":
         page = cla.parse_coauthor_page(raw)
         commits = {sha: [acc(a) for a in accounts] for sha, accounts in page.commits.items()}
@@ -345,7 +359,9 @@ class CorpusTests(unittest.TestCase):
             "pull__bot_login_as_user", "pull__user_login_as_bot", "pull__short_sha", "pull__upper_sha",
             "pull__bool_id", "pull__negative_commits", "pull__float_number", "pull__login_too_long", "pull__nan",
             "event_issue_comment__no_comment", "event_merge_group__bad_sha",
-            "event_pull_request_target__not_object", "event_pull_request_target__invalid_utf8",
+            "event_workflow_run__not_object", "event_workflow_run__invalid_utf8", "event_workflow_run__push",
+            "event_workflow_run__no_repository", "event_workflow_run__bad_owner", "event_workflow_run__bad_branch",
+            "event_workflow_run__long_branch", "pullrefs__bad_head_repository",
             "commits__not_list", "commits__missing_sha", "commits__bad_author", "comments__null_body",
             "signatures__missing_key", "signatures__string_id", "signatures__no_name", "signatures__zero_id",
             "signatures__deep", "contents__dir", "contents__bad_base64", "contents__none_encoding",
@@ -368,6 +384,14 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(blob, SHA_A)
         self.assertEqual(module("event_issue_comment", load("event_issue_comment__plain_issue"))[2], None)
         self.assertEqual(
+            module("event_workflow_run", load("event_workflow_run__opened")),
+            ("run", 555, (SHA_A, "feature", 700, "alice")),
+        )
+        self.assertEqual(
+            module("pullrefs", load("pullrefs__head_repository")),
+            [(7, True, SHA_C, 700), (8, False, SHA_C, None), (9, True, SHA_A, None)],
+        )
+        self.assertEqual(
             module("coauthors", load("coauthors__basic")),
             ({SHA_A: [(101, "alice", "User"), (102, "bob", "User")], SHA_B: []}, None, frozenset()),
         )
@@ -384,7 +408,7 @@ class CorpusTests(unittest.TestCase):
 
     def test_unknown_event_is_refused(self) -> None:
         with self.assertRaises(cla.ClaInputError):
-            cla.parse_event("pull_request", load("event_pull_request_target__opened"))
+            cla.parse_event("pull_request_target", load("event_workflow_run__opened"))
 
 
 # --- Fuzzing -------------------------------------------------------------------
@@ -546,7 +570,8 @@ class FakeGitHub:
     def __init__(self, author: dict, commits: list[dict], signed: list[dict] | None = None) -> None:
         self.author = author
         self.commit_list = commits
-        #: Other pull requests by number: ``{"author", "commits", "head", "state"}``.
+        #: Other pull requests by number: ``{"author", "commits", "head",
+        #: "state", "label", "repo"}``; ``label`` is the head's ``owner:branch``.
         self.others: dict[int, dict] = {}
         #: Pull request 7's head commit and state.
         self.head = SHA_C
@@ -557,9 +582,16 @@ class FakeGitHub:
         self.statuses: list[tuple[str, dict]] = []
         self.conflicts = 0
         self.requests: list[tuple[str, str]] = []
+        #: Runs once, just before the next status is recorded, to stand in
+        #: for a concurrent run.
+        self.before_status = None
+        #: True while a request comes through ``write``, the signature
+        #: token's transport; only those may change the signature file.
+        self.writing = False
 
     def pull(self) -> dict:
-        return {"number": 7, "user": self.author, "head": {"sha": self.head}, "state": self.state, "commits": len(self.commit_list)}
+        head = {"sha": self.head, "label": "alice:feature", "repo": {"id": 700}}
+        return {"number": 7, "user": self.author, "head": head, "state": self.state, "commits": len(self.commit_list)}
 
     def pull_of(self, number: int) -> dict | None:
         if number == 7:
@@ -570,7 +602,11 @@ class FakeGitHub:
         return {
             "number": number,
             "user": other["author"],
-            "head": {"sha": other.get("head", SHA_C)},
+            "head": {
+                "sha": other.get("head", SHA_C),
+                "label": other.get("label", f"bob:topic-{number}"),
+                "repo": {"id": other.get("repo", 800 + number)},
+            },
             "state": other.get("state", "open"),
             "commits": len(other["commits"]),
         }
@@ -601,6 +637,13 @@ class FakeGitHub:
         page = {"data": {"repository": {"pullRequest": {"commits": {"pageInfo": info, "nodes": nodes}}}}}
         return 200, json.dumps(page).encode()
 
+    def write(self, method: str, path: str, body: dict | None) -> tuple[int, bytes]:
+        self.writing = True
+        try:
+            return self.send(method, path, body)
+        finally:
+            self.writing = False
+
     def send(self, method: str, path: str, body: dict | None) -> tuple[int, bytes]:
         self.requests.append((method, path))
         if (method, path) == ("POST", "graphql"):
@@ -618,6 +661,11 @@ class FakeGitHub:
             return json.dumps(items[(page - 1) * size: page * size]).encode()
 
         parts = route.split("/")
+        if method == "GET" and route == "pulls":
+            assert params["state"] == "open"
+            label = urllib.parse.unquote(params["head"])
+            listed = [self.pull_of(n) for n in (7, *self.others)]
+            return 200, json.dumps([p for p in listed if p["head"]["label"] == label and p["state"] == "open"]).encode()
         if method == "GET" and len(parts) == 2 and parts[0] == "pulls" and self.pull_of(int(parts[1])) is not None:
             return 200, json.dumps(self.pull_of(int(parts[1]))).encode()
         if method == "GET" and len(parts) == 3 and parts[0] == "pulls" and parts[2] == "commits":
@@ -636,6 +684,7 @@ class FakeGitHub:
             content = base64.encodebytes(self.file).decode()
             return 200, json.dumps({"type": "file", "encoding": "base64", "sha": self.blob_sha(), "content": content}).encode()
         if method == "PUT" and route == "contents/signatures/cla.json":
+            assert self.writing, "the signature file must be written with the signature token"
             assert body is not None and body["branch"] == "cla-signatures"
             if self.conflicts:
                 self.conflicts -= 1
@@ -660,6 +709,9 @@ class FakeGitHub:
                     c["body"] = body["body"]
             return 200, b"{}"
         if method == "POST" and route.startswith("statuses/"):
+            if self.before_status is not None:
+                hook, self.before_status = self.before_status, None
+                hook()
             self.statuses.append((route.rsplit("/", 1)[1], body))
             return 201, b"{}"
         return 404, b"{}"
@@ -682,9 +734,22 @@ def commit(sha: str, author: dict | None, git_name: str = "someone", coauthors: 
     return entry
 
 
+def run_event(fake: FakeGitHub, number: int = 7, sha: str | None = None, repo: int | None = None) -> object:
+    """The ``workflow_run`` event of a ``CLA trigger`` run for pull request
+    ``number``, by default on its current head."""
+    pull = fake.pull_of(number)
+    owner, branch = pull["head"]["label"].split(":", 1)
+    raw = json.dumps({"repository": {"id": 555}, "workflow_run": {
+        "event": "pull_request",
+        "head_sha": sha or pull["head"]["sha"],
+        "head_branch": branch,
+        "head_repository": {"id": repo or pull["head"]["repo"]["id"], "owner": {"login": owner}},
+    }}).encode()
+    return cla.parse_event("workflow_run", raw)
+
+
 def pr_event(fake: FakeGitHub) -> object:
-    raw = json.dumps({"repository": {"id": 555}, "pull_request": fake.pull()}).encode()
-    return cla.parse_event("pull_request_target", raw)
+    return run_event(fake)
 
 
 def comment_event(user: dict, body: str, comment_id: int = 900) -> object:
@@ -697,12 +762,11 @@ def comment_event(user: dict, body: str, comment_id: int = 900) -> object:
 
 
 def pr_event_for(fake: FakeGitHub, number: int) -> object:
-    raw = json.dumps({"repository": {"id": 555}, "pull_request": fake.pull_of(number)}).encode()
-    return cla.parse_event("pull_request_target", raw)
+    return run_event(fake, number)
 
 
 def drive(fake: FakeGitHub, event: object) -> None:
-    cla.run(event, cla.GitHub(fake.send, "bookclerk/bookclerk"), CLA_URL, RUN_URL)
+    cla.run(event, cla.GitHub(fake.send, "bookclerk/bookclerk", fake.write), CLA_URL, RUN_URL)
 
 
 class EndToEndTests(unittest.TestCase):
@@ -721,6 +785,15 @@ class EndToEndTests(unittest.TestCase):
         self.assertNotIn("@alice", fake.comments[0]["body"])
         entry = json.loads(fake.file)["signedContributors"][0]
         self.assertEqual(entry, {"name": "alice", "id": 101, "comment_id": 900, "created_at": "2026-10-27T17:00:00Z", "repoId": 555, "pullRequestNo": 7, "claVersion": "1.0"})
+
+    def test_without_a_signature_token_a_signature_fails_closed(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        api = cla.GitHub(fake.send, "bookclerk/bookclerk")
+        with self.assertRaises(cla.ApiError):
+            cla.run(comment_event(ALICE, cla.SIGN_PHRASE), api, CLA_URL, RUN_URL)
+        self.assertEqual(fake.signed_ids(), set())
+        self.assertNotIn(("PUT", "repos/bookclerk/bookclerk/contents/signatures/cla.json"), fake.requests)
+        self.assertEqual(fake.statuses, [])
 
     def test_a_shared_head_passes_only_when_every_pull_request_passes(self) -> None:
         # Bob opens #8 on alice's signed head; a recheck on #7 must not
@@ -741,22 +814,57 @@ class EndToEndTests(unittest.TestCase):
         drive(fake, pr_event_for(fake, 8))
         self.assertEqual(fake.last_status(), "success")
 
-    def test_a_push_away_from_a_shared_head_releases_it(self) -> None:
-        # #8 shared #7's head unsigned, then pushed a new head: the old head's
-        # status is re-decided by #7 alone.
-        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}])
-        fake.others[8] = {"author": BOB, "commits": [commit(SHA_B, BOB)], "head": SHA_B}
-        raw = json.dumps({"repository": {"id": 555}, "before": SHA_C, "pull_request": fake.pull_of(8)}).encode()
-        drive(fake, cla.parse_event("pull_request_target", raw))
-        self.assertEqual([(sha, b["state"]) for sha, b in fake.statuses], [(SHA_C, "success"), (SHA_B, "failure")])
+    def test_a_signature_recorded_by_a_concurrent_run_is_not_overwritten(self) -> None:
+        # A trigger run reads the file before alice's comment run records her
+        # signature and posts success; the trigger run's stale failure lands
+        # after it, and its re-read must put success back.
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
 
-    def test_a_failure_on_the_previous_head_does_not_stop_the_check(self) -> None:
+        def comment_run() -> None:
+            drive(fake, comment_event(ALICE, cla.SIGN_PHRASE))
+
+        fake.before_status = comment_run
+        drive(fake, run_event(fake))
+        self.assertEqual([b["state"] for _, b in fake.statuses], ["success", "failure", "success"])
+        self.assertEqual(len(fake.comments), 1)
+        self.assertNotIn("@alice", fake.comments[0]["body"])
+
+    def test_a_stale_run_re_decides_its_old_head(self) -> None:
+        # #7 was pushed to a new head before its run started; the old head,
+        # which signed #8 still has, is decided by #8 alone.
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}])
-        for n in range(8, 8 + cla.MAX_SHARED_PULLS + 1):
-            fake.others[n] = {"author": BOB, "commits": [commit(SHA_B, BOB)], "head": SHA_B}
-        raw = json.dumps({"repository": {"id": 555}, "before": SHA_B, "pull_request": fake.pull()}).encode()
-        drive(fake, cla.parse_event("pull_request_target", raw))
+        fake.head = SHA_B
+        fake.others[8] = {"author": ALICE, "commits": [commit(SHA_A, ALICE)]}
+        drive(fake, run_event(fake, 7, sha=SHA_C))
+        self.assertEqual([(sha, b["state"]) for sha, b in fake.statuses], [(SHA_C, "success")])
+        self.assertEqual(fake.comments, [])
+
+    def test_a_same_named_branch_in_another_repository_does_not_count(self) -> None:
+        # The run's head repository must match: #7's branch name and head
+        # from another repository only re-decide the commit's shared status.
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        drive(fake, run_event(fake, 7, repo=999))
+        self.assertEqual(fake.last_status(), "failure")
+        self.assertEqual(fake.comments, [])
+        drive(fake, run_event(fake, 7))
+        self.assertEqual(len(fake.comments), 1)
+
+    def test_closed_pull_requests_on_a_reused_branch_do_not_count(self) -> None:
+        # A fork that opens every pull request from its `main` piles up
+        # closed ones with that label; they must not fill the listing.
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}])
+        for n in range(8, 8 + 2 * cla.MAX_SHARED_PULLS):
+            fake.others[n] = {"author": ALICE, "commits": [commit(SHA_A, ALICE)], "label": "alice:feature", "repo": 700, "state": "closed"}
+        drive(fake, run_event(fake))
         self.assertEqual(fake.last_status(), "success")
+
+    def test_too_many_pull_requests_from_one_head_fail_closed(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        for n in range(8, 8 + cla.MAX_SHARED_PULLS):
+            fake.others[n] = {"author": ALICE, "commits": [commit(SHA_A, ALICE)], "label": "alice:feature", "repo": 700}
+        with self.assertRaises(cla.ApiError):
+            drive(fake, run_event(fake))
+        self.assertEqual(fake.statuses, [])
 
     def test_a_closed_pull_request_never_passes_a_shared_head_alone(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}])

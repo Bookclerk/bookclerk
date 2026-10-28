@@ -129,6 +129,7 @@ GitHub App as [Dependabot auto-merge](#dependabot-auto-merge), not
 | `cflite-batch.yml` | `fuzz-crash` issues for oracle failures; draft security advisories for crashes ([triage](fuzzing.md#fuzz-crash-triage)) |
 | `osv-advisories.yml` | Reads OSV code-scanning and Dependabot alerts; draft security advisories ([verdicts](#osv-advisories)) |
 | `docs-publish.yml` | Commits and release tags on the `bookclerk-docs` repository ([docs publishing](#docs-publishing)) |
+| `cla.yml` | Signature commits on the `cla-signatures` branch, the only writer its ruleset allows ([CLA check](licensing.md#the-cla-check)) |
 
 The probes share `.github/actions/api-drift-report`:
 
@@ -508,14 +509,16 @@ Rust crates and the web UI library.
   sends only required fields, since optional ones can be alternatives
   that must not be sent together), and a page of
   schemas. A request body that names a schema lists that schema's fields
-  in place, so a route reads without a trip to the schemas page. The website lays the route group pages out like an OpenAPI
-  viewer (`tools/site/api-reference.ts`): a method badge beside each path,
-  the examples in a second column on wide screens, and the page's routes in
-  the sidebar under **Web API**. The index gets the same treatment: its
-  quick start sits beside the introduction, each route group is a card whose
-  routes carry method badges, and the sidebar lists every group with its
-  routes. The Markdown itself stays plain, so the pages read the same on
-  GitHub.
+  in place, so a route reads without a trip to the schemas page.
+  - The website lays the route group pages out like an OpenAPI viewer
+    (`tools/site/api-reference.ts`): a method badge beside each path, the
+    examples in a second column when the reading column is wide enough,
+    and the usual "On this page" rail.
+  - Under **Web API** the sidebar lists every route group, and only the
+    open group's page shows its routes. The index, titled **Web API** like
+    its sidebar entry and breadcrumb, puts its quick start beside the
+    introduction and shows each route group as a card of badged routes.
+  - The Markdown itself stays plain, so the pages read the same on GitHub.
 
 Every relative link to a file in the tree must resolve, and links in `api/`
 must stay inside the tree, or the build fails.

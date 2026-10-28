@@ -1,0 +1,13 @@
+{
+ "action": "completed",
+ "repository": {
+  "id": 555
+ },
+ "workflow_run": {
+  "event": "pull_request",
+  "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_branch": "feature",
+  "head_repository": null,
+  "conclusion": "success"
+ }
+}
