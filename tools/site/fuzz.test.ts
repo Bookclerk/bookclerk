@@ -927,6 +927,17 @@ const API_FRAGMENTS = [
   "$ curl ",
   "Invoke-RestMethod ",
   "`\n",
+  "- `",
+  "  - `",
+  "` (path) *",
+  "` (query) *",
+  "*, **required**",
+  "* — ",
+  "` — ",
+  "Body: ",
+  " No body.",
+  "*",
+  "**",
   "---",
   "===",
   "<",
@@ -1019,6 +1030,24 @@ function checkApiPage(source: string, context: string): void {
     !laid.includes('<div class="api-request"') || laid.includes('<div class="api-requests">'),
     `request panel outside a requests card: ${context}`,
   );
+  // Property rows: each has a head, and a folded list has its summary.
+  const props = (laid.match(/<li class="api-prop[^"]*">/g) ?? []).length;
+  const heads = (laid.match(/<span class="api-prop-head">/g) ?? []).length;
+  assert.equal(props, heads, `property row without its head: ${context}`);
+  assert.ok(
+    props === 0 || laid.includes('<ul class="api-props">'),
+    `property row outside a property list: ${context}`,
+  );
+  const folds = (laid.match(/<details class="api-prop-nested"/g) ?? []).length;
+  assert.equal(
+    folds,
+    (
+      laid.match(
+        /<details class="api-prop-nested"(?: open)?><summary>\d+ fields?<\/summary>\n<ul class="api-props">/g,
+      ) ?? []
+    ).length,
+    `fold without its summary and list: ${context}`,
+  );
   const badges = (laid.match(/<span class="api-method /g) ?? []).length;
   assert.equal(badges, sections.length, `badge outside an operation heading: ${context}`);
 
@@ -1033,7 +1062,16 @@ function checkApiPage(source: string, context: string): void {
     return [...text.join("").replace(/\s/g, "")].sort().join("");
   };
   const methods = sections.map((m) => m[4] ?? "").join("");
-  assert.equal(chars(laid + methods), chars(plain), `text changed: ${context}`);
+  // Property rows drop the Markdown's punctuation around a parameter's
+  // location (`(path)`), before `required` (`,`) and before a description
+  // (`—`), and a fold adds its summary (`3 fields`); nothing else changes.
+  const count = (re: RegExp): number => (laid.match(re) ?? []).length;
+  const dropped =
+    "()".repeat(count(/<span class="api-prop-in">/g)) +
+    ",".repeat(count(/<span class="api-prop-required">/g)) +
+    "—".repeat(count(/<span class="api-prop-desc">/g));
+  const added = [...laid.matchAll(/<summary>(\d+ fields?)<\/summary>/g)].map((m) => m[1]).join("");
+  assert.equal(chars(laid + methods + dropped), chars(plain + added), `text changed: ${context}`);
 }
 
 /** Fragments Web API index mutations splice in, on top of {@link API_FRAGMENTS}: links, group headings and the Quick start. */

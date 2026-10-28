@@ -82,6 +82,52 @@ def cell(text: str) -> str:
     return " ".join(text.split()).replace("|", "\\|")
 
 
+def line(text: str) -> str:
+    """Fold Markdown text onto one line.
+
+    Args:
+        text: Markdown text, possibly over several lines.
+
+    Returns:
+        The text with every run of whitespace, line breaks included, as one
+        space.
+    """
+    return " ".join(text.split())
+
+
+def property_line(
+    name: str, type_text: str, description: str, *, required: bool, location: str = "", depth: int = 0
+) -> str:
+    """Write one property of a body, or one parameter, as a list item.
+
+    The item reads ``- `name` (path) *type*, **required** — description``:
+    the name in code, the parameter's location in parentheses when there is
+    one, the type in italics, ``**required**`` when the property must be
+    sent, and the description after an em dash. The site lays these items
+    out as property rows; on GitHub they read as a list.
+
+    Args:
+        name: The property or parameter name.
+        type_text: Its type, from :meth:`Document.type_of`.
+        description: Its description, possibly over several lines.
+        required: Whether it must be present.
+        location: Where a parameter goes (``path``, ``query``, ``header``
+            or ``cookie``), or ``""`` for a body property.
+        depth: How many list levels enclose the item.
+
+    Returns:
+        The list item, indented two spaces per level.
+    """
+    parts = [code(name)]
+    if location:
+        parts.append(f"({location})")
+    parts.append(f"*{type_text}*" + (", **required**" if required else ""))
+    text = line(description)
+    if text:
+        parts.append(f"— {text}")
+    return "  " * depth + "- " + " ".join(parts)
+
+
 def prose(text: str) -> str:
     """Normalize a description for use as a paragraph.
 
@@ -347,6 +393,8 @@ class Document:
         fmt = schema.get("format")
         if name == "string" and fmt == "binary":
             return "binary"
+        if name == "null":
+            return name
         return f"{name} ({fmt})" if isinstance(fmt, str) and fmt else name
 
     def constraints(self, schema: Any) -> str:
@@ -403,29 +451,29 @@ class Document:
             return f"{text} {extra[0].upper()}{extra[1:]}."
         return f"{text} ({extra})"
 
-    def field_rows(self, schema: Any, here: str, prefix: str = "", depth: int = 0) -> list[str]:
-        """Table rows for an object's fields, flattening inline objects.
+    def field_items(self, schema: Any, here: str, depth: int = 0) -> list[str]:
+        """List items for an object's fields, nesting inline objects.
 
         Args:
             schema: An object schema (``allOf`` parts are merged).
-            here: The page the rows appear on.
-            prefix: Dotted name of the enclosing field, or ``""``.
+            here: The page the items appear on.
             depth: How many inline objects enclose this one.
 
         Returns:
-            ``| field | type | required | description |`` rows.
+            One :func:`property_line` per field, indented by ``depth``; the
+            fields of an inline object (or of an array's inline object
+            items) follow it, one level deeper, up to ``MAX_FIELD_DEPTH``.
         """
-        rows = []
+        items = []
         for name, prop, required in self.fields(schema):
-            full = f"{prefix}{name}"
-            rows.append(
-                f"| {code(full)} | {cell(self.type_of(prop, here))} | {'yes' if required else 'no'} | {cell(self.describe(prop))} |"
+            items.append(
+                property_line(name, self.type_of(prop, here), self.describe(prop), required=required, depth=depth)
             )
             if depth + 1 < MAX_FIELD_DEPTH and _inline_object(prop):
-                rows += self.field_rows(prop, here, f"{full}.", depth + 1)
+                items += self.field_items(prop, here, depth + 1)
             elif depth + 1 < MAX_FIELD_DEPTH and isinstance(prop, Mapping) and _inline_object(prop.get("items")):
-                rows += self.field_rows(prop["items"], here, f"{full}[].", depth + 1)
-        return rows
+                items += self.field_items(prop["items"], here, depth + 1)
+        return items
 
     def fields(self, schema: Any) -> Iterator[tuple[str, Any, bool]]:
         """Yield an object's fields with whether each is required.
@@ -853,14 +901,19 @@ class Document:
 
         params = [p for p in spec_list(spec.get("parameters", []), "parameters") if isinstance(p, Mapping)]
         if params:
-            lines += ["### Parameters", "", "| Name | In | Type | Required | Description |", "| --- | --- | --- | --- | --- |"]
+            lines += ["### Parameters", ""]
             for param in sorted(params, key=lambda p: PARAM_ORDER.get(str(p.get("in")), 9)):
                 schema = param.get("schema", {})
                 required = bool(param.get("required")) or param.get("in") == "path"
                 description = str(param.get("description", "")) or self.describe(schema)
                 lines.append(
-                    f"| {code(str(param.get('name', '')))} | {param.get('in', '')} | {cell(self.type_of(schema, here))} | "
-                    f"{'yes' if required else 'no'} | {cell(description)} |"
+                    property_line(
+                        str(param.get("name", "")),
+                        self.type_of(schema, here),
+                        description,
+                        required=required,
+                        location=str(param.get("in", "")),
+                    )
                 )
             lines.append("")
 
@@ -876,10 +929,9 @@ class Document:
 
         responses = _object(spec.get("responses", {}), f"{op.title} responses")
         if responses:
-            lines += ["### Responses", "", "| Status | Description | Body |", "| --- | --- | --- |"]
+            lines += ["### Responses", ""]
             for status, response in responses.items():
-                response = response if isinstance(response, Mapping) else {}
-                lines.append(f"| {status} | {cell(str(response.get('description', '')))} | {cell(self._body_summary(response, here))} |")
+                lines += self._response_item(str(status), response if isinstance(response, Mapping) else {}, here)
             lines.append("")
         lines += self.example_request(op)
         lines += self.example_response(op)
@@ -902,7 +954,7 @@ class Document:
         return " or ".join(_unique(options))
 
     def _content(self, content: Any, here: str) -> list[str]:
-        """Render a request body's media types, with field tables for objects."""
+        """Render a request body's media types, with a field list for objects."""
         lines: list[str] = []
         if not isinstance(content, Mapping):
             return lines
@@ -910,21 +962,46 @@ class Document:
             schema = entry.get("schema", {}) if isinstance(entry, Mapping) else {}
             lines += [f"{code(str(media))}: {self.type_of(schema, here)}", ""]
             target, _name = self.resolve(schema)
-            rows = self.field_rows(target, here) if _inline_object(target) else []
-            if rows:
-                lines += ["| Field | Type | Required | Description |", "| --- | --- | --- | --- |", *rows, ""]
+            items = self.field_items(target, here) if _inline_object(target) else []
+            if items:
+                lines += [*items, ""]
         return lines
 
-    def _body_summary(self, response: JsonObject, here: str) -> str:
-        """Summarize a response's body as ``type (media)`` entries."""
+    def _response_item(self, status: str, response: JsonObject, here: str) -> list[str]:
+        """List one response: its status, description and body.
+
+        The item reads ``- `200` — The book. Body: [`Book`](…) (`application/json`)``;
+        a success response whose JSON body is an object, or an array of
+        objects, lists the object's fields under it, so the route reads
+        without a trip to the schemas page (error bodies are shared, so they
+        keep the link only). A response without content says ``No body.``
+
+        Args:
+            status: The status code, range or ``default``.
+            response: The response object.
+            here: The page the item appears on.
+
+        Returns:
+            The item and any nested field items.
+        """
+        description = line(str(response.get("description", "")))
         content = response.get("content")
+        head = f"- {code(status)} — {description}".rstrip()
         if not isinstance(content, Mapping) or not content:
-            return ""
-        parts = []
+            return [f"{head} No body."]
+        bodies = []
+        fields: list[str] = []
         for media, entry in content.items():
             schema = entry.get("schema", {}) if isinstance(entry, Mapping) else {}
-            parts.append(f"{self.type_of(schema, here)} ({code(str(media))})")
-        return "; ".join(parts)
+            bodies.append(f"{self.type_of(schema, here)} ({code(str(media))})")
+            if media == "application/json" and status.startswith("2") and not fields:
+                target, _name = self.resolve(schema)
+                # An array of objects lists the fields of one item.
+                if isinstance(target, Mapping) and not _inline_object(target) and "items" in target:
+                    target, _name = self.resolve(target["items"])
+                if _inline_object(target):
+                    fields = self.field_items(target, here, 1)
+        return [f"{head} Body: {'; '.join(bodies)}", *fields]
 
     def render_schemas(self) -> str:
         """Render ``schemas.md``: every component schema."""
@@ -939,12 +1016,12 @@ class Document:
             lines += [f"## {name}", ""]
             if isinstance(schema, Mapping) and schema.get("description"):
                 lines += [prose(str(schema["description"])), ""]
-            rows = self.field_rows(schema, SCHEMA_PAGE)
+            rows = self.field_items(schema, SCHEMA_PAGE)
             refs = [p for p in spec_list(schema.get("allOf", []), "allOf") if isinstance(p, Mapping) and "$ref" in p] if isinstance(schema, Mapping) else []
             if refs:
                 lines += ["Includes every field of " + ", ".join(self.ref_link(str(p["$ref"]), SCHEMA_PAGE) for p in refs) + ".", ""]
             if rows:
-                lines += ["| Field | Type | Required | Description |", "| --- | --- | --- | --- |", *rows, ""]
+                lines += [*rows, ""]
             elif not refs:
                 lines += [f"Type: {self.type_of(schema, SCHEMA_PAGE)}", ""]
                 extra = self.constraints(schema)

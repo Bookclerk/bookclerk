@@ -620,6 +620,245 @@ function markStatuses(tokens: Token[], make: MakeToken): void {
   });
 }
 
+/** Where a parameter goes, as the generator writes it after the name. */
+const PARAMETER_LOCATIONS: ReadonlySet<string> = new Set(["path", "query", "header", "cookie"]);
+
+/**
+ * Lays out the property lists of a Web API page as property rows, the way
+ * OpenAPI viewers show a body: the generator writes each parameter, body
+ * field and response as a list item (`` `name` (path) *type*, **required** —
+ * description `` and `` `200` — description Body: … ``), which reads as a
+ * list on GitHub. Here a list whose every item is one of those becomes
+ * `ul.api-props`; each item is `li.api-prop` whose head holds the name,
+ * location, type and required mark in spans, with the description after it,
+ * and a nested list (an inline object's fields, or a response's) folds into
+ * a `details`. A response item is `li.api-prop api-response-item` with a
+ * status mark. Lists with any other item pass through, as do tables, so
+ * pages generated before this format still render.
+ *
+ * @param tokens - The page's block tokens.
+ * @param make - markdown-it's token constructor.
+ * @returns The same token list, with the lists re-marked.
+ */
+export function layoutProperties(tokens: readonly Token[], make: MakeToken): Token[] {
+  const out = [...tokens];
+  const html = (content: string): Token => {
+    const token = make("html_block", "", 0);
+    token.content = content;
+    return token;
+  };
+  // Innermost lists first, so a nested list is already laid out (and its
+  // item count known) when its parent folds it.
+  const lists: { open: number; close: number }[] = [];
+  const stack: number[] = [];
+  out.forEach((token, i) => {
+    if (token.type === "bullet_list_open") stack.push(i);
+    if (token.type === "bullet_list_close") {
+      const open = stack.pop();
+      if (open !== undefined) lists.push({ open, close: i });
+    }
+  });
+  const inserts: { at: number; token: Token }[] = [];
+  for (const { open, close } of lists) {
+    const items: { open: number; close: number; inline: Token }[] = [];
+    let depth = 0;
+    for (let i = open + 1; i < close; i++) {
+      const token = out[i];
+      if (token === undefined) continue;
+      if (token.type === "list_item_open" && depth === 0) {
+        const inline = out[i + 2];
+        if (out[i + 1]?.type !== "paragraph_open" || inline?.type !== "inline") {
+          items.length = 0;
+          break;
+        }
+        let end = i + 3;
+        let inner = 1;
+        while (end < close && inner > 0) {
+          if (out[end]?.type === "list_item_open") inner += 1;
+          if (out[end]?.type === "list_item_close") inner -= 1;
+          end += 1;
+        }
+        items.push({ open: i, close: end - 1, inline });
+      }
+      if (token.nesting === 1) depth += 1;
+      if (token.nesting === -1) depth -= 1;
+    }
+    if (items.length === 0) continue;
+    const parsed = items.map((item) => propertyItem(item.inline.children ?? []));
+    if (parsed.some((p) => p === null)) continue;
+    out[open]?.attrJoin("class", "api-props");
+    items.forEach((item, n) => {
+      const prop = parsed[n];
+      if (prop === null || prop === undefined) return;
+      out[item.open]?.attrJoin(
+        "class",
+        prop.kind === "response" ? "api-prop api-response-item" : "api-prop",
+      );
+      item.inline.children = propertyChildren(prop, make);
+      // A nested list (fields of an object or of a response body) folds.
+      for (let i = item.open + 3; i < item.close; i++) {
+        const token = out[i];
+        if (token?.type !== "bullet_list_open" || token.level !== (out[item.open]?.level ?? 0) + 1)
+          continue;
+        // A nested list that is not a property list stays a plain list.
+        if (!String(token.attrGet("class") ?? "").includes("api-props")) break;
+        let end = i + 1;
+        while (
+          end < item.close &&
+          !(out[end]?.type === "bullet_list_close" && out[end]?.level === token.level)
+        )
+          end += 1;
+        const count = out
+          .slice(i, end)
+          .filter((t) => t.type === "list_item_open" && t.level === token.level + 1).length;
+        const noun = count === 1 ? "field" : "fields";
+        // An object's fields start folded; a response body's start open.
+        const state = prop.kind === "response" ? " open" : "";
+        inserts.push({
+          at: i,
+          token: html(
+            `<details class="api-prop-nested"${state}><summary>${count} ${noun}</summary>\n`,
+          ),
+        });
+        inserts.push({ at: end + 1, token: html("</details>\n") });
+        break;
+      }
+    });
+  }
+  // Insert from the back so earlier indices stay valid.
+  inserts.sort((a, b) => b.at - a.at);
+  for (const { at, token } of inserts) out.splice(at, 0, token);
+  return out;
+}
+
+/** One property item of a generated list, as {@link propertyItem} reads it. */
+interface PropertyItem {
+  /** A parameter or body field, or a response. */
+  kind: "property" | "response";
+  /** The name, or the status; the leading code span. */
+  name: string;
+  /** Where a parameter goes, or "". */
+  location: string;
+  /** The inline tokens of the type (a response has none). */
+  type: Token[];
+  /** Whether the property is marked required. */
+  required: boolean;
+  /** The inline tokens of the description, after the em dash. */
+  description: Token[];
+}
+
+/**
+ * Reads a list item's inline tokens as a property or response item.
+ *
+ * @param inline - The item's inline children.
+ * @returns The item, or null when the tokens are not in the generator's form.
+ */
+export function propertyItem(inline: readonly Token[]): PropertyItem | null {
+  // markdown-it leaves an empty text token after a closing `**`.
+  const children = inline.filter((t) => !(t.type === "text" && t.content === ""));
+  const name = children[0];
+  if (name?.type !== "code_inline") return null;
+  let i = 1;
+  const text = (): string => (children[i]?.type === "text" ? (children[i]?.content ?? "") : "");
+  // A response: `` `200` — description `` or `` `204` — No body. ``
+  if (/^(?:[1-5]\d\d|[1-5]XX|default)$/i.test(name.content) && text().startsWith(" — ")) {
+    const first = Object.assign(Object.create(Object.getPrototypeOf(children[i])), children[i]);
+    first.content = text().slice(3);
+    return {
+      kind: "response",
+      name: name.content,
+      location: "",
+      type: [],
+      required: false,
+      description: [first, ...children.slice(i + 1)],
+    };
+  }
+  let location = "";
+  const where = /^ \((\w+)\) $/.exec(text());
+  if (where !== null && PARAMETER_LOCATIONS.has(where[1] ?? "")) {
+    location = where[1] ?? "";
+    i += 1;
+  } else if (text() !== " ") {
+    return null;
+  } else {
+    i += 1;
+  }
+  if (children[i]?.type !== "em_open") return null;
+  i += 1;
+  const type: Token[] = [];
+  let open = 1;
+  for (; i < children.length && open > 0; i++) {
+    const token = children[i];
+    if (token === undefined) return null;
+    if (token.type === "em_open") open += 1;
+    if (token.type === "em_close") open -= 1;
+    if (open > 0) type.push(token);
+  }
+  if (open > 0) return null;
+  let required = false;
+  let description: Token[] = [];
+  if (i < children.length) {
+    const rest = children.slice(i);
+    const [lead, strongOpen, word, strongClose] = rest;
+    if (
+      lead?.type === "text" &&
+      lead.content === ", " &&
+      strongOpen?.type === "strong_open" &&
+      word?.type === "text" &&
+      word.content === "required" &&
+      strongClose?.type === "strong_close"
+    ) {
+      required = true;
+      description = rest.slice(4);
+    } else {
+      description = rest;
+    }
+    if (description.length > 0) {
+      const dash = description[0];
+      if (dash?.type !== "text" || !dash.content.startsWith(" — ")) return null;
+      const first = Object.assign(Object.create(Object.getPrototypeOf(dash)), dash);
+      first.content = dash.content.slice(3);
+      description = [first, ...description.slice(1)];
+    }
+  }
+  return { kind: "property", name: name.content, location, type, required, description };
+}
+
+/**
+ * Writes a property item back as inline tokens with the row's spans.
+ *
+ * @param prop - The item.
+ * @param make - markdown-it's token constructor.
+ * @returns The inline children: a `span.api-prop-head` holding the name
+ *   (or status mark), location, type and required mark, then the
+ *   description in `span.api-prop-desc`.
+ */
+function propertyChildren(prop: PropertyItem, make: MakeToken): Token[] {
+  const html = (content: string): Token => {
+    const token = make("html_inline", "", 0);
+    token.content = content;
+    return token;
+  };
+  const out: Token[] = [html('<span class="api-prop-head">')];
+  if (prop.kind === "response") {
+    out.push(html(`<span class="${statusClass(prop.name)}">${escapeCode(prop.name)}</span>`));
+  } else {
+    const name = make("code_inline", "code", 0);
+    name.content = prop.name;
+    name.markup = "`";
+    name.attrJoin("class", "api-prop-name");
+    out.push(name);
+    if (prop.location !== "")
+      out.push(html(`<span class="api-prop-in">${escapeCode(prop.location)}</span>`));
+    out.push(html('<span class="api-prop-type">'), ...prop.type, html("</span>"));
+    if (prop.required) out.push(html('<span class="api-prop-required">required</span>'));
+  }
+  out.push(html("</span>"));
+  if (prop.description.length > 0)
+    out.push(html('<span class="api-prop-desc">'), ...prop.description, html("</span>"));
+  return out;
+}
+
 /** How many levels deep {@link routeTree} nests routes (0 is the top). */
 export const ROUTE_TREE_MAX_DEPTH = 2;
 

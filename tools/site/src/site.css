@@ -2307,6 +2307,83 @@ code.inline {
 .api-status-5xx::before {
   background: var(--brick);
 }
+/* Property rows (layoutProperties): a parameter, body field or response
+   per list item, the way OpenAPI viewers list a body. The head holds the
+   name, location, type and required mark; the description follows; an
+   inline object's fields fold under it. */
+.doc ul.api-props {
+  list-style: none;
+  margin: 0.6em 0 0;
+  padding: 0;
+  border: 1px solid var(--docs-line);
+  border-radius: 10px;
+}
+.doc ul.api-props > li {
+  margin: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--docs-line);
+}
+.doc ul.api-props > li:last-child {
+  border-bottom: 0;
+}
+.api-prop-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+.doc .api-prop-name {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-weight: 600;
+  color: var(--ink);
+}
+.api-prop-type {
+  font: 14px/22px var(--font-mono);
+  color: var(--docs-soft);
+}
+.doc .api-prop-type code {
+  font-size: 13px;
+}
+.api-prop-in,
+.api-prop-required {
+  font: 500 11px/18px var(--font-sans);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--docs-soft) 14%, transparent);
+  color: var(--docs-soft);
+}
+.api-prop-required {
+  background: color-mix(in srgb, var(--brick) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brick) 45%, transparent);
+  color: var(--ink);
+}
+.api-prop-desc {
+  display: block;
+  margin-top: 3px;
+  font-size: 15px;
+}
+.api-prop-desc > * + * {
+  margin-top: 0.5em;
+}
+.doc .api-prop-nested {
+  margin: 8px 0 0;
+}
+.doc .api-prop-nested > summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--docs-soft);
+}
+.doc .api-prop-nested > summary:hover {
+  color: var(--ink);
+}
+.doc .api-prop-nested > ul.api-props {
+  margin-top: 6px;
+  background: color-mix(in srgb, var(--ink) 2.5%, transparent);
+}
 /* Example responses (layoutResponses): one panel per status. docs.js turns
    two or more into tabs inside a card; without it the panels stack. */
 .doc .api-response > * + * {

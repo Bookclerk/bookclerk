@@ -1,0 +1,42 @@
+# Books
+
+## `GET /api/books/{id}`
+
+Reads a book.
+
+### Parameters
+
+- `id` (path) *integer*, **required** — Book id.
+- `full` (query) *boolean* — default `false`
+- `lang` (header) *string*
+- `sid` (cookie) *string* — The session.
+
+### Responses
+
+- `200` — The book. Body: [`Book`](schemas.md#book) (`application/json`)
+  - `id` *integer (int64)*, **required** — Its id.
+  - `status` *[`Status`](schemas.md#status)*, **required**
+  - `meta` *object*
+    - `pages` *integer or null* — at least 1
+- `404` — No | such book. No body.
+- `default` — Anything else. Body: string (`text/plain`)
+
+## `POST /api/books`
+
+### Request body
+
+`application/json`: object
+
+- `title` *string*, **required** — Shown on two lines.
+- `tags` *array of string* — no duplicates
+- `meta` *object*
+  - `pages` *integer or null* — at least 1
+
+Notes:
+
+- one
+- `two` *not* a property
+
+### Responses
+
+- `201` — Added. Body: binary (`image/png`)
