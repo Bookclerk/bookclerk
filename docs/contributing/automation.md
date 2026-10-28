@@ -533,7 +533,8 @@ Rust crates and the web UI library.
     in one card. The example request's samples become one panel per
     language the same way, and the page's script shows them as a
     language picker; picking a language picks it for every route on the
-    page. Nothing is kept in the browser, as the privacy page promises.
+    page and is kept in the browser's local storage, a display preference
+    the privacy page lists.
   - Like every generated page, each one ends with a Source on GitHub link
     to what it is generated from: `crates/bookclerkd/openapi.json` here.
   - Under **Web API** the sidebar lists every route group and the schemas

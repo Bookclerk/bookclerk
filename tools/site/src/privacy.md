@@ -1,12 +1,12 @@
 # Privacy
 
-Last changed 27 October 2026
+Last changed 28 October 2026
 
 Bookclerk is free software you run on your own computer. This page explains what information reaches the Bookclerk project when you visit this website{{#demo}}, try the live demo{{/demo}} or choose to share problem reports from the app, what we do with it, and how long we keep it. We do not sell or share it for advertising, and nothing here tracks you from one site to another.
 
 ## The short version
 
-- This website sets no cookies and stores nothing in your browser.
+- This website sets no cookies. The documentation pages remember display preferences, such as the language of a code sample, in your browser only; nothing identifying is stored or sent.
 - We count visits with Cloudflare Web Analytics, which uses no cookies and does not identify you.
 {{#demo}}- The live demo uses cookies only to keep your own private copy running, and deletes that copy when you leave.
 {{/demo}}- The Bookclerk app sends us nothing unless you turn on problem reports.
@@ -18,7 +18,7 @@ When you open a page, your browser connects to Cloudflare, which hosts the site.
 
 To see which pages people read and how fast they load, the site uses [Cloudflare Web Analytics](https://www.cloudflare.com/web-analytics/). Cloudflare adds a small script to each page that reports the page address, where you came from, your type of browser and device, your country and how long the page took to load. Cloudflare says it uses no cookies or browser storage for this and does not fingerprint visitors, so we see totals, not people.
 
-The site loads its fonts and images from itself, and makes no requests to anyone else apart from the analytics script above. It has no forms, accounts, comments or advertising.
+The site loads its fonts and images from itself, and makes no requests to anyone else apart from the analytics script above. It has no forms, accounts, comments or advertising. The documentation pages keep a few display choices in your browser's storage, such as the language you picked for a code sample. These stay on your device, are never sent to us and you can clear them in your browser's settings.
 
 ## Cookies, and why there is no cookie banner
 

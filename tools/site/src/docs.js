@@ -6,7 +6,9 @@
 // responses as tabs by status and example requests as tabs by language, and
 // adds a filter box to the sidebar. Its only network requests are
 // same-origin: Copy as Markdown reads the page's own Markdown, and the filter
-// reads the docs version's search index. It keeps nothing in the browser.
+// reads the docs version's search index. The one thing it keeps in the
+// browser is the request sample language last picked (localStorage), which
+// the privacy page lists as a display preference.
 
 (() => {
   "use strict";
@@ -655,13 +657,16 @@
     }
   }
 
+  /** The browser storage key of the request sample language last picked. */
+  const LANGUAGE_KEY = "docs.request-language";
+
   /**
    * Turns each example request card with more than one language into a
    * language picker, one tab per language. Picking a language in one card
-   * picks it in every card on the page. Nothing is kept in the browser
-   * (the privacy page promises that), so the next page starts from the
-   * first language again. Without this, every sample shows, one after
-   * another.
+   * picks it in every card on the page, and the choice is kept in the
+   * browser for the next page (a display preference the privacy page
+   * lists; a browser that refuses storage keeps it for the page only).
+   * Without this, every sample shows, one after another.
    */
   function addRequestTabs() {
     const cards = [];
@@ -682,7 +687,7 @@
             return tab;
           },
         },
-        (index) => show(langs[index]),
+        (index) => choose(langs[index]),
       );
       cards.push({ langs, select });
     }
@@ -692,7 +697,21 @@
         card.select(index < 0 ? 0 : index);
       }
     };
-    show("");
+    const choose = (lang) => {
+      show(lang);
+      try {
+        localStorage.setItem(LANGUAGE_KEY, lang);
+      } catch {
+        // Storage is off or full; the choice then lasts for this page.
+      }
+    };
+    let kept = "";
+    try {
+      kept = localStorage.getItem(LANGUAGE_KEY) || "";
+    } catch {
+      // Storage is off; start from the first language.
+    }
+    show(kept);
   }
 
   addCopyButtons();
