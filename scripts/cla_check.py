@@ -162,9 +162,9 @@ BRANCH_START_MESSAGE = "chore(cla): start the signature branch"
 #: while it ran.
 STATUS_ATTEMPTS = 3
 
-#: The version of ``CLA.md`` a signature accepts, recorded with each entry.
-#: Bump it together with the version line in ``CLA.md``.
-CLA_VERSION = "1.0"
+#: The agreement's path on the default branch. Each signature records a
+#: permalink to it at the last commit that changed it.
+CLA_PATH = "CLA.md"
 
 #: Most open pull requests that may share one head commit. The ``CLA``
 #: status belongs to the commit, so each of them is checked before it passes;
@@ -597,7 +597,7 @@ def parse_run_head(value: object) -> RunHead:
 
 
 def parse_commit_page(raw: bytes) -> list[Commit]:
-    """Reads one page of ``GET /pulls/{n}/commits``.
+    """Reads one page of ``GET /pulls/{n}/commits`` or ``GET /commits``.
 
     Only the top-level ``author``, the account GitHub linked the commit to,
     is read; the git author name and email are ignored.
@@ -858,11 +858,12 @@ def render_signatures(entries: list[dict[str, object]]) -> bytes:
     return (json.dumps(doc, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
-def add_signature(book: SignatureBook, comment: Comment, repo_id: int, pull_number: int) -> bytes:
+def add_signature(book: SignatureBook, comment: Comment, repo_id: int, pull_number: int, cla_url: str) -> bytes:
     """Returns the signature file with the commenter's signature appended.
 
     The entry uses CLA Assistant Lite's fields, so the file stays readable by
-    either tool, plus ``claVersion``, the version of ``CLA.md`` accepted.
+    either tool, plus ``claUrl``, a permalink to the text of ``CLA.md``
+    accepted (see ``GitHub.agreement_url``).
     Existing entries are written back unchanged.
     """
     entry: dict[str, object] = {
@@ -872,7 +873,7 @@ def add_signature(book: SignatureBook, comment: Comment, repo_id: int, pull_numb
         "created_at": comment.created_at,
         "repoId": repo_id,
         "pullRequestNo": pull_number,
-        "claVersion": CLA_VERSION,
+        "claUrl": cla_url,
     }
     return render_signatures([*book.entries, entry])
 
@@ -962,6 +963,7 @@ class GitHub:
         write: Transport | None = None,
         branch_files: dict[str, bytes] | None = None,
         reporter: Reporter | None = None,
+        server: str = "https://github.com",
     ) -> None:
         """Wraps ``send`` for ``repository`` (``owner/name``).
 
@@ -976,6 +978,7 @@ class GitHub:
         * ``reporter``: who posts the check's comment and the ``CLA``
           status, or ``None`` to post them through ``send`` as
           ``WORKFLOW_COMMENT_AUTHOR``.
+        * ``server``: the web address of the GitHub server, for permalinks.
         """
         #: The function that performs requests.
         self.send = send
@@ -989,6 +992,10 @@ class GitHub:
         self.base = f"repos/{repository}"
         #: The repository's owner and name, for GraphQL.
         self.owner, self.name = repository.split("/", 1)
+        #: The web address of the repository, for permalinks.
+        self.web = f"{server}/{repository}"
+        #: The permalink to the agreement, once read.
+        self.agreement: str | None = None
         #: The head commit of the pull request being checked, once known, so
         #: a failed run can still report ``error`` there.
         self.head_sha: str | None = None
@@ -1174,6 +1181,22 @@ class GitHub:
             raise ApiError(f"POST git/refs: HTTP {status}")
         return True
 
+    def agreement_url(self) -> str:
+        """Returns a permalink to ``CLA_PATH`` at the last commit that changed it.
+
+        Every signer of the same text records the same link, and editing the
+        agreement changes it, so each entry names the exact text accepted.
+
+        # Errors
+        ``ApiError`` when the default branch has no ``CLA_PATH``.
+        """
+        if self.agreement is None:
+            commits = parse_commit_page(self.call("GET", f"commits?path={CLA_PATH}&per_page=1"))
+            if not commits:
+                raise ApiError(f"{CLA_PATH} has no commits on the default branch")
+            self.agreement = f"{self.web}/blob/{commits[0].sha}/{CLA_PATH}"
+        return self.agreement
+
     def record(self, comment: Comment, repo_id: int, pull_number: int) -> SignatureBook:
         """Appends the commenter's signature unless it is already there.
 
@@ -1197,7 +1220,7 @@ class GitHub:
             write = self.write
             if write is None:
                 raise ApiError("CLA_SIGNATURE_TOKEN is not set, so signatures cannot be recorded")
-            data = add_signature(book, comment, repo_id, pull_number)
+            data = add_signature(book, comment, repo_id, pull_number, self.agreement_url())
             message = f"chore(cla): record @{comment.author.login}'s signature from #{pull_number}"
             if blob is None:
                 branch, _ = self.send("GET", f"{self.base}/git/ref/heads/{SIGNATURE_BRANCH}", None)
@@ -1505,7 +1528,7 @@ def main(env: dict[str, str]) -> int:
             return 1
         reporter = Reporter(write, login)
     branch_files = load_branch_files(os.path.join(os.path.dirname(os.path.abspath(__file__)), "cla_branch"))
-    api = GitHub(urllib_transport(env["GITHUB_TOKEN"], api_url), repository, write, branch_files, reporter)
+    api = GitHub(urllib_transport(env["GITHUB_TOKEN"], api_url), repository, write, branch_files, reporter, server)
     run_url = f"{server}/{repository}/actions/runs/{env.get('GITHUB_RUN_ID', '')}"
     # `HEAD` names the default branch, whatever it is called.
     cla_url = f"{server}/{repository}/blob/HEAD/CLA.md"

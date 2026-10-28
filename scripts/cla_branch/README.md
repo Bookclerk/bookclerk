@@ -22,7 +22,8 @@ Nobody edits it by hand. The CLA check writes it:
 
 Each entry records the GitHub account (`name`, `id`), the signing comment
 (`comment_id`, `created_at`), where it was made (`repoId`,
-`pullRequestNo`) and the version of the CLA it accepts (`claVersion`).
+`pullRequestNo`) and a permalink to the CLA text it accepts (`claUrl`,
+`CLA.md` at the last default-branch commit that changed it).
 
 ## Set up the check in a repository
 

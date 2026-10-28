@@ -44,6 +44,7 @@ cla = _load("cla_check", ROOT / "scripts" / "cla_check.py")
 SHA_A = "a" * 40
 SHA_B = "b" * 40
 SHA_C = "c" * 40
+SHA_D = "d" * 40
 CLA_URL = "https://github.com/bookclerk/bookclerk/blob/main/CLA.md"
 RUN_URL = "https://github.com/bookclerk/bookclerk/actions/runs/1"
 
@@ -633,6 +634,8 @@ class FakeGitHub:
         #: signature written through the contents API.
         self.branch_message: str | None = None
         self.put_messages: list[str] = []
+        #: The commits that changed ``CLA.md``, newest first.
+        self.cla_commits = [SHA_D]
         #: Reactions on comments by id: ``(comment id, content, login)``, and
         #: the ones removed, in order.
         self.reactions: dict[int, tuple[int, str, str]] = {}
@@ -739,6 +742,8 @@ class FakeGitHub:
             for n, o in self.others.items():
                 refs.append({"number": n, "state": o.get("state", "open"), "head": {"sha": o.get("head", SHA_C)}})
             return 200, json.dumps(refs).encode()
+        if method == "GET" and route == "commits" and params.get("path") == "CLA.md":
+            return 200, json.dumps([{"sha": sha, "author": None} for sha in self.cla_commits]).encode()
         if method == "GET" and route == "issues/7/comments":
             return 200, page_of(self.comments)
         if method == "GET" and len(parts) == 3 and parts[0] == "issues" and int(parts[1]) in self.others:
@@ -906,7 +911,9 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(len(fake.comments), 1)
         self.assertNotIn("@alice", fake.comments[0]["body"])
         entry = json.loads(fake.file)["signedContributors"][0]
-        self.assertEqual(entry, {"name": "alice", "id": 101, "comment_id": 900, "created_at": "2026-10-27T17:00:00Z", "repoId": 555, "pullRequestNo": 7, "claVersion": "1.0"})
+        self.assertEqual(entry, {"name": "alice", "id": 101, "comment_id": 900, "created_at": "2026-10-27T17:00:00Z", "repoId": 555, "pullRequestNo": 7, "claUrl": f"https://github.com/bookclerk/bookclerk/blob/{SHA_D}/CLA.md"})
+        # The agreement's history is read once per run, not per signature.
+        self.assertEqual(sum(1 for m, p in fake.requests if p.startswith("repos/bookclerk/bookclerk/commits?path=CLA.md")), 1)
 
     def test_a_missing_branch_counts_as_nobody_signed(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
@@ -1131,9 +1138,12 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(fake.signed_ids(), {101})
         self.assertEqual(fake.last_status(), "success")
 
-    def test_the_recorded_version_matches_the_agreement(self) -> None:
-        text = (ROOT / "CLA.md").read_text(encoding="utf-8")
-        self.assertIn(f"\nVersion {cla.CLA_VERSION}\n", text)
+    def test_without_the_agreements_history_a_signature_fails_closed(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        fake.cla_commits = []
+        with self.assertRaises(cla.ApiError):
+            drive(fake, comment_event(ALICE, cla.SIGN_PHRASE))
+        self.assertEqual(fake.signed_ids(), set())
 
     def test_a_failed_comment_run_still_knows_the_head(self) -> None:
         # main() reports ``error`` on ``api.head_sha``; a comment event

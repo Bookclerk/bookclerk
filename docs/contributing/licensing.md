@@ -126,8 +126,11 @@ Who must sign:
   signature from, and must be the sentence above exactly; spaces or line
   breaks around it are ignored. Every run reads the whole comment history,
   so a signature posted while another run was busy still counts.
-- Each signature records the version of the CLA it accepts (`claVersion`),
-  so a later edit to `CLA.md` does not blur what earlier signers agreed to.
+- Each signature records a permalink to the CLA text it accepts
+  (`claUrl`): `CLA.md` at the last commit on `main` that changed it. A
+  later edit to `CLA.md` gives later signers a new link, so it does not
+  blur what earlier signers agreed to, and there is no version number to
+  bump by hand.
 - The check runs when a pull request is opened, pushed to, reopened or
   closed, and when it moves to another base branch, because the new base can
   bring in commits from other authors without changing the head commit.
