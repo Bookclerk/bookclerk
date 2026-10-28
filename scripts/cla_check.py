@@ -32,12 +32,12 @@ fails closed.
 Usage (inside the workflow): ``cla_check.py`` with ``GITHUB_TOKEN``,
 ``GITHUB_REPOSITORY``, ``GITHUB_EVENT_NAME``, ``GITHUB_EVENT_PATH`` and
 ``GITHUB_SERVER_URL`` set, plus ``CLA_SIGNATURE_TOKEN``, an automation App
-token that may write to ``cla-signatures`` and comment on pull requests, and
-``CLA_APP_SLUG``, that App's slug. Only that token records signatures, so the
-branch can refuse every other writer and each signature commit is signed by
-GitHub for the App. The check's comment is posted as the App too, or as the
-workflow when no App is configured; the ``CLA`` status always comes from the
-workflow, the source the default branch's ruleset expects. It exits 0 once the status is posted, whatever the
+token that may write to ``cla-signatures``, comment on pull requests and post
+commit statuses, and ``CLA_APP_SLUG``, that App's slug. Only that token
+records signatures, so the branch can refuse every other writer and each
+signature commit is signed by GitHub for the App. The check's comment and the
+``CLA`` status are posted as the App too, or as the workflow when no App is
+configured. It exits 0 once the status is posted, whatever the
 verdict, and 1 when it could not decide.
 """
 
@@ -104,8 +104,8 @@ BOT_ALLOWLIST = frozenset({"dependabot[bot]", "bookclerk[bot]", "github-actions[
 #: can own it, so no person's account is ever exempted this way.
 ASSISTANT_EMAILS = frozenset({"noreply@anthropic.com"})
 
-#: The account the workflow's own token comments as, when no automation App
-#: token is configured to comment instead.
+#: The account the workflow's own token reports as, when no automation App
+#: token is configured to post the comment and status instead.
 WORKFLOW_COMMENT_AUTHOR = "github-actions[bot]"
 
 #: Most commits the pull request commits endpoint returns; larger pull
@@ -913,8 +913,8 @@ Transport = Callable[[str, str, "dict[str, object] | None"], "tuple[int, bytes]"
 
 
 @dataclass(frozen=True)
-class Commenter:
-    """The bot account that posts the check's comment, and how to reach it."""
+class Reporter:
+    """The bot account that posts the check's comment and status, and how to reach it."""
 
     #: Sends that bot's requests, with its token.
     send: Transport
@@ -931,7 +931,7 @@ class GitHub:
         repository: str,
         write: Transport | None = None,
         branch_files: dict[str, bytes] | None = None,
-        commenter: Commenter | None = None,
+        reporter: Reporter | None = None,
     ) -> None:
         """Wraps ``send`` for ``repository`` (``owner/name``).
 
@@ -943,8 +943,9 @@ class GitHub:
           then fails closed).
         * ``branch_files``: the text of each of ``BRANCH_FILES`` by name,
           written when the first signature creates the branch.
-        * ``commenter``: who posts and edits the check's comment, or ``None``
-          to comment through ``send`` as ``WORKFLOW_COMMENT_AUTHOR``.
+        * ``reporter``: who posts the check's comment and the ``CLA``
+          status, or ``None`` to post them through ``send`` as
+          ``WORKFLOW_COMMENT_AUTHOR``.
         """
         #: The function that performs requests.
         self.send = send
@@ -952,8 +953,8 @@ class GitHub:
         self.write = write
         #: The files that start the signature branch beside the signatures.
         self.branch_files = branch_files or {}
-        #: Who posts and edits the check's comment.
-        self.commenter = commenter or Commenter(send, WORKFLOW_COMMENT_AUTHOR)
+        #: Who posts the check's comment and status.
+        self.reporter = reporter or Reporter(send, WORKFLOW_COMMENT_AUTHOR)
         #: ``repos/<owner>/<name>``, the prefix of every REST path.
         self.base = f"repos/{repository}"
         #: The repository's owner and name, for GraphQL.
@@ -1192,24 +1193,24 @@ class GitHub:
 
     def set_status(self, sha: str, state: str, description: str, target_url: str) -> None:
         """Posts the ``CLA`` commit status on ``sha``."""
-        self.call("POST", f"statuses/{sha}", {"state": state, "context": STATUS_CONTEXT, "description": description, "target_url": target_url})
+        self.report("POST", f"statuses/{sha}", {"state": state, "context": STATUS_CONTEXT, "description": description, "target_url": target_url})
 
     def upsert_comment(self, number: int, comments: list[Comment], body: str, create: bool) -> None:
         """Edits the check's comment among ``comments``, or posts one when ``create`` is true."""
-        existing = own_comment(comments, self.commenter.login)
+        existing = own_comment(comments, self.reporter.login)
         if existing is not None:
             if existing.body != body:
-                self.comment_call("PATCH", f"issues/comments/{existing.id}", {"body": body})
+                self.report("PATCH", f"issues/comments/{existing.id}", {"body": body})
         elif create:
-            self.comment_call("POST", f"issues/{number}/comments", {"body": body})
+            self.report("POST", f"issues/{number}/comments", {"body": body})
 
-    def comment_call(self, method: str, path: str, body: dict[str, object]) -> None:
-        """Sends one comment request through the commenter's transport.
+    def report(self, method: str, path: str, body: dict[str, object]) -> None:
+        """Sends one comment or status request through the reporter's transport.
 
         # Errors
         ``ApiError`` when the response is not a success.
         """
-        status, _ = self.commenter.send(method, f"{self.base}/{path}", body)
+        status, _ = self.reporter.send(method, f"{self.base}/{path}", body)
         if status not in (200, 201):
             raise ApiError(f"{method} {path}: HTTP {status}")
 
@@ -1431,16 +1432,16 @@ def main(env: dict[str, str]) -> int:
     api_url = env.get("GITHUB_API_URL", "https://api.github.com")
     signature_token = env.get("CLA_SIGNATURE_TOKEN", "")
     write = urllib_transport(signature_token, api_url) if signature_token else None
-    commenter = None
+    reporter = None
     app_slug = env.get("CLA_APP_SLUG", "")
     if write is not None and app_slug:
         login = f"{app_slug}[bot]"
         if BOT_LOGIN.fullmatch(login) is None:
             print("cla_check: CLA_APP_SLUG is not an App slug", file=sys.stderr)
             return 1
-        commenter = Commenter(write, login)
+        reporter = Reporter(write, login)
     branch_files = load_branch_files(os.path.join(os.path.dirname(os.path.abspath(__file__)), "cla_branch"))
-    api = GitHub(urllib_transport(env["GITHUB_TOKEN"], api_url), repository, write, branch_files, commenter)
+    api = GitHub(urllib_transport(env["GITHUB_TOKEN"], api_url), repository, write, branch_files, reporter)
     run_url = f"{server}/{repository}/actions/runs/{env.get('GITHUB_RUN_ID', '')}"
     # `HEAD` names the default branch, whatever it is called.
     cla_url = f"{server}/{repository}/blob/HEAD/CLA.md"
@@ -1463,7 +1464,13 @@ def main(env: dict[str, str]) -> int:
             try:
                 api.set_status(sha, "error", "The CLA check could not decide; see the run.", run_url)
             except ApiError:
-                pass
+                # The App may be what failed (a missing permission, say), so
+                # still leave a visible error from the workflow.
+                fallback = GitHub(api.send, repository)
+                try:
+                    fallback.set_status(sha, "error", "The CLA check could not decide; see the run.", run_url)
+                except ApiError:
+                    pass
         return 1
     return 0
 

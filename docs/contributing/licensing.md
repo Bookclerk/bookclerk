@@ -133,10 +133,9 @@ Who must sign:
   bring in commits from other authors without changing the head commit.
 
 The result is the **CLA** commit status on the pull request's head commit,
-and one comment that lists who still has to sign, edited in place. The
-comment comes from the [automation App](automation.md#automation-app), or
-from `github-actions[bot]` in a repository without the App. The status
-always comes from GitHub Actions, the source to require. Merge
+and one comment that lists who still has to sign, edited in place. Both
+come from the [automation App](automation.md#automation-app), or from
+`github-actions[bot]` in a repository without the App. Merge
 queue runs report a passing **CLA** status, because each pull request
 passed it to enter the queue. A pull request with more than 250 commits
 cannot be checked and fails closed.
@@ -177,7 +176,7 @@ Setup, once, by a repository administrator:
    contributors sign again.
 2. Make sure the automation App's secrets are set (see
    [the automation App](automation.md#automation-app)). Without them
-   the check still decides and comments as `github-actions[bot]`, but it
+   the check still decides and reports as `github-actions[bot]`, but it
    cannot record a new signature and reports an error instead.
 3. Add two branch rulesets targeting `cla-signatures`, by hand or with
    `bash scripts/cla_branch/setup-rulesets.sh OWNER/REPO APP_SLUG` run
@@ -195,9 +194,15 @@ Setup, once, by a repository administrator:
    Every run of the check reads the rules that apply to `cla-signatures`
    and posts a workflow warning naming any of these that is missing.
 4. After the check has run on a pull request, add the **CLA** status to the
-   required checks in the main branch ruleset, with **GitHub Actions** as
+   required checks in the main branch ruleset, with the automation App as
    its expected source, so no other app that can post statuses can satisfy
    it. The `CLA check` job is only the workflow that reports it.
+
+> [!NOTE]
+> When the status moves to another source (from GitHub Actions to the App,
+> say), set the required check to **any source** first, merge the change,
+> then pin the new source. A pinned source that never reports blocks every
+> pull request.
 
 ## The Bookclerk name and logo
 

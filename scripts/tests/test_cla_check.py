@@ -603,6 +603,8 @@ class FakeGitHub:
         self.blob = 1
         self.comments: list[dict] = []
         self.statuses: list[tuple[str, dict]] = []
+        #: Who posted each of ``statuses``, in order.
+        self.status_creators: list[dict] = []
         self.conflicts = 0
         self.requests: list[tuple[str, str]] = []
         #: Runs once, just before the next status is recorded, to stand in
@@ -799,6 +801,7 @@ class FakeGitHub:
                 hook, self.before_status = self.before_status, None
                 hook()
             self.statuses.append((route.rsplit("/", 1)[1], body))
+            self.status_creators.append(self.commenter_account())
             return 201, b"{}"
         return 404, b"{}"
 
@@ -856,8 +859,8 @@ BRANCH_FILES = cla.load_branch_files(str(Path(cla.__file__).resolve().parent / "
 
 
 def drive(fake: FakeGitHub, event: object) -> None:
-    commenter = cla.Commenter(fake.comment, APP["login"])
-    cla.run(event, cla.GitHub(fake.send, "bookclerk/bookclerk", fake.write, BRANCH_FILES, commenter), CLA_URL, RUN_URL)
+    reporter = cla.Reporter(fake.comment, APP["login"])
+    cla.run(event, cla.GitHub(fake.send, "bookclerk/bookclerk", fake.write, BRANCH_FILES, reporter), CLA_URL, RUN_URL)
 
 
 class EndToEndTests(unittest.TestCase):
@@ -1270,12 +1273,20 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual([c["user"] for c in fake.comments], [APP])
         self.assertTrue(fake.comments[0]["body"].startswith(cla.COMMENT_MARKER))
 
-    def test_without_an_app_the_workflow_comments(self) -> None:
+    def test_the_status_is_posted_as_the_app(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        drive(fake, pr_event(fake))
+        drive(fake, cla.parse_event("merge_group", load("event_merge_group__queued")))
+        self.assertEqual(len(fake.statuses), 2)
+        self.assertEqual(fake.status_creators, [APP, APP])
+
+    def test_without_an_app_the_workflow_reports(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
         api = cla.GitHub(fake.send, "bookclerk/bookclerk", fake.write, BRANCH_FILES)
         cla.run(pr_event(fake), api, CLA_URL, RUN_URL)
         cla.run(pr_event(fake), api, CLA_URL, RUN_URL)
         self.assertEqual([c["user"] for c in fake.comments], [ACTIONS])
+        self.assertEqual(set(map(str, fake.status_creators)), {str(ACTIONS)})
 
     def test_the_workflows_old_comment_is_left_for_the_apps(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])

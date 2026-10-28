@@ -37,11 +37,13 @@ Each entry records the GitHub account (`name`, `id`), the signing comment
    so change that text to match, or signature comments will not run the
    check.
 2. Create a GitHub App (**Settings → Developer settings → GitHub Apps**,
-   for a user or an organization) and give it two repository permissions:
+   for a user or an organization) and give it three repository permissions:
    - **Contents: read and write**, to create this branch and add
      signatures.
    - **Pull requests: read and write**, to post the check's comment under
      the App's name and avatar.
+   - **Commit statuses: read and write**, to post the `CLA` status as the
+     App.
 
    It needs no webhook. Install it on the repository, then generate a
    private key.
@@ -50,11 +52,10 @@ Each entry records the GitHub account (`name`, `id`), the signing comment
    - `AUTOMATION_APP_CLIENT_ID`: the App's client ID.
    - `AUTOMATION_APP_PRIVATE_KEY`: the private key.
 
-   The workflow mints a short-lived token from them, narrowed to those two
+   The workflow mints a short-lived token from them, narrowed to those
    permissions on this repository. Without them, the check still decides
-   and comments as `github-actions[bot]`, but it cannot record a signature
-   and reports an error instead. The `CLA` status always comes from GitHub
-   Actions.
+   and reports as `github-actions[bot]`, but it cannot record a signature
+   and reports an error instead.
 4. Protect this branch. As a repository administrator, with the GitHub CLI
    signed in as yourself, run:
 
@@ -75,7 +76,7 @@ Each entry records the GitHub account (`name`, `id`), the signing comment
    Administration permission. Every check run reads the rules that apply
    to this branch and warns when one is missing.
 5. After the check has run once, require the **CLA** status in the default
-   branch's ruleset, with **GitHub Actions** as its expected source.
+   branch's ruleset, with the App as its expected source.
 
 ## Start over
 
