@@ -345,8 +345,13 @@ function responseStatusOf(inline: Token | undefined): string | null {
  * each `` Status `200`: <description> `` paragraph and the JSON block after
  * it become a `div.api-response` (id `<operation id>-response-<status>`)
  * whose caption carries a colored status mark (`span.api-response-code`,
- * which keeps every character of `` Status `200`: ``). docs.js turns the panels
- * into tabs; without it they stack. Everything else passes through.
+ * which keeps every character of `` Status `200`: ``). What follows the
+ * caption is the panel's example view (`div.api-response-example`); a
+ * `Schema:` paragraph in the panel starts its schema view
+ * (`div.api-response-schema`, the paragraph marked `api-response-view-label`),
+ * which holds the body's JSON Schema. docs.js turns the panels into tabs and
+ * the two views into an Example/Schema switch; without it they stack.
+ * Everything else passes through.
  *
  * @param tokens - An operation's example subsections.
  * @param make - markdown-it's token constructor.
@@ -376,13 +381,20 @@ export function layoutResponses(tokens: readonly Token[], make: MakeToken, id: s
   const out: Token[] = [...tokens.slice(0, start), html('<div class="api-responses">\n')];
   out.push(...tokens.slice(start, first));
   let open = false;
+  // Inside a panel: the caption, then the example view, then the schema view.
+  let view: "caption" | "example" | "schema" = "caption";
+  const closePanel = (): void => {
+    if (view !== "caption") out.push(html("</div>\n"));
+    out.push(html("</div>\n"));
+  };
   const used = new Set<string>();
   for (let i = first; i < end; i++) {
     const token = tokens[i];
     if (token === undefined) continue;
     const found = statusAt(i);
     if (found !== null) {
-      if (open) out.push(html("</div>\n"));
+      if (open) closePanel();
+      view = "caption";
       const slug = found.toLowerCase();
       // A status listed twice keeps its first panel's id unique.
       const panel = used.has(slug) ? `${id}-response-${slug}-${i}` : `${id}-response-${slug}`;
@@ -407,12 +419,37 @@ export function layoutResponses(tokens: readonly Token[], make: MakeToken, id: s
         after.content = after.content.slice(1);
         inline.children = [mark, ...children.slice(2)];
       }
+    } else if (open && view === "example" && isSchemaLabel(tokens, i)) {
+      out.push(html('</div>\n<div class="api-response-schema">\n'));
+      view = "schema";
+      token.attrJoin("class", "api-response-view-label");
     }
     out.push(token);
+    if (open && view === "caption" && token.type === "paragraph_close" && token.level === 0) {
+      out.push(html('<div class="api-response-example">\n'));
+      view = "example";
+    }
   }
-  if (open) out.push(html("</div>\n"));
+  if (open) closePanel();
   out.push(html("</div>\n"), ...tokens.slice(end));
   return out;
+}
+
+/**
+ * Whether the token at `i` opens a top-level paragraph that reads `Schema:`,
+ * the line the generator puts before a response body's JSON Schema.
+ *
+ * @param tokens - The token list.
+ * @param i - The index of a candidate `paragraph_open` token.
+ * @returns True for the schema label.
+ */
+function isSchemaLabel(tokens: readonly Token[], i: number): boolean {
+  const token = tokens[i];
+  const inline = tokens[i + 1];
+  if (token?.type !== "paragraph_open" || token.level !== 0 || inline?.type !== "inline")
+    return false;
+  const children = inline.children ?? [];
+  return children.length === 1 && children[0]?.type === "text" && children[0].content === "Schema:";
 }
 
 /**

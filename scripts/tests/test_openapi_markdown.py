@@ -241,6 +241,12 @@ class RenderTest(unittest.TestCase):
         self.assertIn("### Example response\n\nStatus `200`: The book.\n\n```json\n", get)
         body = json.loads(get.split("```json\n")[1].split("\n```")[0])
         self.assertEqual(body, {"id": 0, "status": "new", "tags": ["string"], "extra": {"key": "new"}, "count": 0})
+        # The body's schema follows its example, with references expanded.
+        self.assertIn("\n```\n\nSchema:\n\n```json\n", get)
+        schema = json.loads(get.split("Schema:\n\n```json\n")[1].split("\n```")[0])
+        self.assertEqual(schema["type"], "object")
+        self.assertEqual(sorted(schema["properties"]), ["count", "extra", "id", "status", "tags"])
+        self.assertNotIn("$ref", json.dumps(schema))
         # Every status is listed, with a sentence where there is no example.
         self.assertIn("\n\nStatus `404`: No | such book. No body.\n", get)
         # Untyped and binary bodies get no example.
@@ -271,6 +277,11 @@ class RenderTest(unittest.TestCase):
         trees = om.Document({**DOCUMENT, "components": {"schemas": {"Tree": {"type": "array", "items": {"$ref": "#/components/schemas/Tree"}}}}})
         self.assertEqual(trees.example({"$ref": "#/components/schemas/Tree"}), [[]])
         self.assertEqual(doc.example({"type": "string", "example": "x", "enum": ["y"]}), "x")
+        # The schema text expands references in place and keeps a cycle as a reference.
+        text = json.loads(doc.schema_text({"$ref": "#/components/schemas/Node", "description": "Head."}))
+        self.assertEqual(text["description"], "Head.")
+        self.assertEqual(text["properties"]["next"]["oneOf"][0], {"$ref": "#/components/schemas/Node"})
+        self.assertEqual(json.loads(trees.schema_text({"$ref": "#/components/schemas/Tree"}))["items"], {"$ref": "#/components/schemas/Tree"})
 
     def test_credentials_and_query_strings(self) -> None:
         doc = om.Document(

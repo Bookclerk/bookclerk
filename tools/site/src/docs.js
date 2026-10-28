@@ -3,12 +3,13 @@
 // work without it: it adds copy buttons to code blocks, copies a heading's
 // link when it is clicked, offers Copy as Markdown, draws and follows the
 // "On this page" rail, closes the phone menus like menus, shows example
-// responses as tabs by status and example requests as tabs by language, and
-// adds a filter box to the sidebar. Its only network requests are
-// same-origin: Copy as Markdown reads the page's own Markdown, and the filter
-// reads the docs version's search index. The one thing it keeps in the
-// browser is the request sample language last picked (localStorage), which
-// the privacy page lists as a display preference.
+// responses as tabs by status with an Example/Schema view, example requests
+// as tabs by language, and adds a filter box to the sidebar. Its only
+// network requests are same-origin: Copy as Markdown reads the page's own
+// Markdown, and the filter reads the docs version's search index. The only
+// things it keeps in the browser are the request sample language and the
+// response view last picked (localStorage), which the privacy page lists as
+// display preferences.
 
 (() => {
   "use strict";
@@ -635,13 +636,64 @@
   }
 
   /**
-   * Turns each example response card with more than one status into tabs,
-   * one per status. Without this, every panel shows, one after another.
+   * A display preference kept in the browser's local storage, which the
+   * privacy page lists. A browser that refuses storage keeps the choice for
+   * the page only.
+   *
+   * @param {string} key - The storage key.
+   * @returns {{ get: () => string, set: (value: string) => void }} Reads
+   *   the kept value ("" when there is none) and keeps a new one.
+   */
+  function preference(key) {
+    return {
+      get: () => {
+        try {
+          return localStorage.getItem(key) || "";
+        } catch {
+          return "";
+        }
+      },
+      set: (value) => {
+        try {
+          localStorage.setItem(key, value);
+        } catch {
+          // Storage is off or full; the choice then lasts for this page.
+        }
+      },
+    };
+  }
+
+  /**
+   * Applies a kept preference now and again when the page comes back from
+   * the back/forward cache, where a choice made on another page since would
+   * otherwise not show.
+   *
+   * @param {{ get: () => string }} kept - The preference.
+   * @param {(value: string) => void} show - Applies a value.
+   */
+  function follow(kept, show) {
+    show(kept.get());
+    window.addEventListener("pageshow", (event) => {
+      if (event.persisted) show(kept.get());
+    });
+  }
+
+  /** The browser storage key of the response view last picked. */
+  const VIEW_KEY = "docs.response-view";
+
+  /**
+   * Turns each example response card into tabs, one per status, with an
+   * Example/Schema switch: Example shows the status's example body, Schema
+   * the body's JSON Schema. Picking a view in one card picks it in every
+   * card on the page, and the choice is kept in the browser for the next
+   * page. Without this, the panels show one after another, each with its
+   * example and then its schema.
    */
   function addResponseTabs() {
+    const cards = [];
     for (const card of document.querySelectorAll(".api-responses")) {
       const panels = [...card.querySelectorAll(":scope > .api-response")];
-      if (panels.length < 2) continue;
+      if (panels.length === 0) continue;
       const select = tabCard(card, panels, {
         list: "api-response-tabs",
         group: "api-response-group",
@@ -654,7 +706,63 @@
         },
       });
       select(0);
+      const toggle = addResponseViews(card, panels, (view) => choose(view));
+      if (toggle) cards.push(toggle);
     }
+    const show = (view) => {
+      for (const card of cards) card(view === "schema" ? "schema" : "example");
+    };
+    const kept = preference(VIEW_KEY);
+    const choose = (view) => {
+      show(view);
+      kept.set(view);
+    };
+    follow(kept, show);
+  }
+
+  /**
+   * Adds the Example/Schema switch to a response card where a panel
+   * carries a schema view (the body's JSON Schema, laid out by the server
+   * after the example), and hides the view not picked. A panel without a
+   * schema view (a status with no body) shows its sentence in both views.
+   *
+   * @param {Element} card - The card, already laid out as tabs.
+   * @param {Element[]} panels - Its status panels.
+   * @param {(view: string) => void} pick - Called with the view a button picks.
+   * @returns {((view: string) => void) | null} Shows a view ("example" or
+   *   "schema"), or null when no panel has a schema view.
+   */
+  function addResponseViews(card, panels, pick) {
+    const list = card.querySelector(".api-response-tabs");
+    const withSchema = panels.filter((panel) =>
+      panel.querySelector(":scope > .api-response-schema"),
+    );
+    if (!list || withSchema.length === 0) return null;
+    for (const panel of withSchema) panel.classList.add("api-response-with-schema");
+    const head = document.createElement("div");
+    head.className = "api-response-head";
+    list.before(head);
+    const toggle = document.createElement("div");
+    toggle.className = "api-view-toggle";
+    toggle.setAttribute("role", "group");
+    toggle.setAttribute("aria-label", "Response view");
+    const buttons = ["example", "schema"].map((view) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.view = view;
+      button.textContent = view === "schema" ? "Schema" : "Example";
+      button.addEventListener("click", () => pick(view));
+      return button;
+    });
+    toggle.append(...buttons);
+    head.append(list, toggle);
+    card.classList.add("api-views");
+    const show = (view) => {
+      for (const button of buttons)
+        button.setAttribute("aria-pressed", String(button.dataset.view === view));
+      card.classList.toggle("shows-schema", view === "schema");
+    };
+    return show;
   }
 
   /** The browser storage key of the request sample language last picked. */
@@ -664,9 +772,8 @@
    * Turns each example request card with more than one language into a
    * language picker, one tab per language. Picking a language in one card
    * picks it in every card on the page, and the choice is kept in the
-   * browser for the next page (a display preference the privacy page
-   * lists; a browser that refuses storage keeps it for the page only).
-   * Without this, every sample shows, one after another.
+   * browser for the next page. Without this, every sample shows, one after
+   * another.
    */
   function addRequestTabs() {
     const cards = [];
@@ -697,21 +804,12 @@
         card.select(index < 0 ? 0 : index);
       }
     };
+    const kept = preference(LANGUAGE_KEY);
     const choose = (lang) => {
       show(lang);
-      try {
-        localStorage.setItem(LANGUAGE_KEY, lang);
-      } catch {
-        // Storage is off or full; the choice then lasts for this page.
-      }
+      kept.set(lang);
     };
-    let kept = "";
-    try {
-      kept = localStorage.getItem(LANGUAGE_KEY) || "";
-    } catch {
-      // Storage is off; start from the first language.
-    }
-    show(kept);
+    follow(kept, show);
   }
 
   addCopyButtons();
