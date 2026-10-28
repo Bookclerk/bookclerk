@@ -540,12 +540,14 @@ Rust crates and the web UI library.
     Any other list, and the tables of pages generated before this format,
     pass through unchanged.
   - The example responses become one panel per status with a colored
-    status mark; with two or more, the page's script shows them as tabs
-    in one card. The example request's samples become one panel per
-    language the same way, and the page's script shows them as a
-    language picker; picking a language picks it for every route on the
-    page and is kept in the browser's local storage, a display preference
-    the privacy page lists.
+    status mark; the page's script shows them as tabs in one card with
+    an Example/Schema switch, where Schema shows the status's body and
+    fields copied from the route's Responses list. The example request's
+    samples become one panel per language the same way, and the page's
+    script shows them as a language picker. Picking a language or a view
+    picks it for every route on the page and is kept in the browser's
+    local storage, a display preference the privacy page lists; a page
+    restored from the back/forward cache reads the choice again.
   - Like every generated page, each one ends with a Source on GitHub link
     to what it is generated from: `crates/bookclerkd/openapi.json` here.
   - Under **Web API** the sidebar lists every route group and the schemas

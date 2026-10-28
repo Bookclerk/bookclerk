@@ -2385,7 +2385,8 @@ code.inline {
   background: color-mix(in srgb, var(--ink) 2.5%, transparent);
 }
 /* Example responses (layoutResponses): one panel per status. docs.js turns
-   two or more into tabs inside a card; without it the panels stack. */
+   them into tabs inside a card with an Example/Schema switch; without it
+   the panels stack and the schema stays in the Responses list. */
 .doc .api-response > * + * {
   margin-top: 0.5em;
 }
@@ -2443,6 +2444,69 @@ code.inline {
   outline: 2px solid var(--teal);
   outline-offset: -2px;
   border-radius: 4px;
+}
+.api-response-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 8px;
+  border-bottom: 1px solid var(--docs-line);
+}
+.api-response-head .api-response-tabs {
+  flex: 1 1 auto;
+  min-width: 0;
+  border-bottom: 0;
+}
+/* The Example/Schema switch: a segmented pair of buttons. */
+.api-view-toggle {
+  display: inline-flex;
+  flex: none;
+  border: 1px solid var(--docs-line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.api-view-toggle button {
+  min-height: 26px;
+  padding: 0 9px;
+  border: 0;
+  background: none;
+  font: 500 12px/1 var(--font-sans);
+  color: var(--docs-soft);
+  cursor: pointer;
+}
+.api-view-toggle button + button {
+  border-left: 1px solid var(--docs-line);
+}
+.api-view-toggle button:hover {
+  color: var(--ink);
+}
+.api-view-toggle button[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--teal) 14%, transparent);
+  color: var(--ink);
+}
+.api-view-toggle button:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: -2px;
+}
+/* One view shows at a time; the schema view is the Responses item's
+   description, body and fields. */
+.doc .api-responses .api-response-schema,
+.doc .api-responses.shows-schema .api-response-example {
+  display: none;
+}
+.doc .api-responses.shows-schema .api-response-schema {
+  display: block;
+}
+.doc .api-response-schema > .api-prop-desc {
+  margin-top: 0;
+  color: var(--docs-soft);
+}
+.doc .api-response-schema > .api-prop-nested > summary {
+  display: none;
+}
+.doc .api-response-schema > .api-prop-nested > ul.api-props {
+  margin-top: 0.5em;
+  background: var(--paper);
 }
 /* Example requests (layoutRequests): one panel per language. docs.js turns
    two or more into a language picker inside a card; without it the samples
