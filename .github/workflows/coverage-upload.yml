@@ -65,11 +65,14 @@ jobs:
           github-token: ${{ github.token }}
 
       # The plan says whether `rust_test` ran the whole workspace; a run
-      # without one exports every workspace-gated area as partial.
+      # without one (its plan job failed) exports every workspace-gated area
+      # as partial, with a warning. Downloaded by name, so the file lands
+      # directly under `path`.
       - name: Download the CI plan
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
         with:
-          pattern: ci-plan
+          name: ci-plan
           path: ${{ runner.temp }}/plan
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
@@ -77,7 +80,7 @@ jobs:
       - name: Export the reports
         run: >-
           python3 scripts/coverage_gate.py --reports "$RUNNER_TEMP/coverage"
-          --plan "$RUNNER_TEMP/plan/ci-plan/ci-plan.json" --export coverage-upload
+          --plan "$RUNNER_TEMP/plan/ci-plan.json" --export coverage-upload
 
       # Fork branches go to Codecov as `<owner>:<branch>`, so they never
       # land on a branch of this repository with the same name. A branch
