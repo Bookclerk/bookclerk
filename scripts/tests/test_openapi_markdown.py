@@ -160,7 +160,7 @@ class RenderTest(unittest.TestCase):
         self.assertLess(page.index("- `id` (path)"), page.index("- `full` (query)"))
         self.assertIn("- `id` (path) *integer*, **required** — Book id.\n", page)
         self.assertIn("- `full` (query) *boolean* — default `false`\n", page)
-        # A success response lists its object's fields; other statuses keep the link.
+        # A response with a JSON object body lists the object's fields.
         self.assertIn(
             "- `200` — The book. Body: [`Book`](schemas.md#book) (`application/json`)\n  - `id` *integer (int64)*, **required** — Its id.\n  - `status` *[`Status`](schemas.md#status)*, **required**\n",
             page,
@@ -172,8 +172,11 @@ class RenderTest(unittest.TestCase):
             "tags": ["Books"],
             "responses": {"200": {"description": "All.", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Book"}}}}}},
         }
+        # An error body that is an object lists its fields too.
+        doc["paths"]["/books"]["get"]["responses"]["401"] = {"description": "No.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Book"}}}}
         listing = om.Document(doc).render_all()["books.md"].split("## `GET /books`")[1]
         self.assertIn("- `200` — All. Body: array of [`Book`](schemas.md#book) (`application/json`)\n  - `id` *integer (int64)*, **required** — Its id.\n", listing)
+        self.assertIn("- `401` — No. Body: [`Book`](schemas.md#book) (`application/json`)\n  - `id` *integer (int64)*, **required** — Its id.\n", listing)
         self.assertIn("**Deprecated.**", page)
         self.assertIn("**Credentials:** none", page)
 

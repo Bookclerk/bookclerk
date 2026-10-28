@@ -793,7 +793,7 @@ test("property lists become property rows with a folded nested object", () => {
   assert.equal(out.html.split("<details").length, out.html.split("</details>").length);
 });
 
-test("response lists become status rows whose body fields start open", () => {
+test("response lists become status rows; the first body's fields start open", () => {
   const page = `# Books
 
 ## \`GET /api/books/{id}\`
@@ -803,6 +803,8 @@ test("response lists become status rows whose body fields start open", () => {
 - \`200\` — The book. Body: [\`Book\`](schemas.md#book) (\`application/json\`)
   - \`id\` *integer (int64)*, **required** — Its id.
 - \`404\` — No such book. No body.
+- \`401\` — Not signed in. Body: [\`ErrorJson\`](schemas.md#errorjson) (\`application/json\`)
+  - \`error\` *string*, **required** — The slug.
 - \`default\` — Anything else.
 `;
   const out = renderDoc(page, "api/web/books", { blobBase: BLOB });
@@ -815,6 +817,12 @@ test("response lists become status rows whose body fields start open", () => {
     out.html.includes(
       '<span class="api-status api-status-4xx">404</span></span><span class="api-prop-desc">No such book. No body.</span></li>',
     ),
+  );
+  assert.ok(
+    out.html.includes(
+      '<span class="api-status api-status-4xx">401</span></span><span class="api-prop-desc">Not signed in. Body: <a href="/docs/api/web/schemas#errorjson"><code>ErrorJson</code></a> (<code>application/json</code>)</span><details class="api-prop-nested"><summary>1 field</summary>',
+    ),
+    "a later response's fields start closed",
   );
   assert.ok(out.html.includes('<span class="api-status">default</span>'));
 });

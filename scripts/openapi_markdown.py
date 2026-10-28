@@ -1006,10 +1006,10 @@ class Document:
         """List one response: its status, description and body.
 
         The item reads ``- `200` — The book. Body: [`Book`](…) (`application/json`)``;
-        a success response whose JSON body is an object, or an array of
-        objects, lists the object's fields under it, so the route reads
-        without a trip to the schemas page (error bodies are shared, so they
-        keep the link only). A response without content says ``No body.``
+        a response whose JSON body is an object, or an array of objects,
+        lists the object's fields under it, so the route reads without a
+        trip to the schemas page. A response without content says
+        ``No body.``
 
         Args:
             status: The status code, range or ``default``.
@@ -1029,7 +1029,7 @@ class Document:
         for media, entry in content.items():
             schema = entry.get("schema", {}) if isinstance(entry, Mapping) else {}
             bodies.append(f"{self.type_of(schema, here)} ({code(str(media))})")
-            if media == "application/json" and status.startswith("2") and not fields:
+            if media == "application/json" and not fields:
                 target, _name = self.resolve(schema)
                 # An array of objects lists the fields of one item.
                 if isinstance(target, Mapping) and not _inline_object(target) and "items" in target:

@@ -536,7 +536,8 @@ Rust crates and the web UI library.
   - The property lists become property rows (`tools/site/api-reference.ts`
     `layoutProperties`): name, location, type and a required mark on one
     line, the description under it, a nested object's fields folded with
-    their count, and a response's body fields open under its status mark.
+    their count, and each response's body fields folded under its status
+    mark, the first open; the page's script keeps one open at a time.
     Any other list, and the tables of pages generated before this format,
     pass through unchanged.
   - The example responses become one panel per status with a colored
