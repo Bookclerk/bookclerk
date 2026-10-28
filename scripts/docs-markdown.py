@@ -118,6 +118,9 @@ LINT_COMMENT_RE = re.compile(r"[ \t]*<!--[ \t]*markdownlint-[^\n]*?-->")
 # The container markers and indentation that open a line: block quotes
 # (`> `), list items (`- `, `1. `) and their continuation indent.
 CONTAINER_RE = re.compile(r"(?:[ \t]*(?:>|[-*+](?=[ \t])|\d{1,9}[.)](?=[ \t])) ?)*[ \t]*")
+# The block-quote markers and indentation that open a line inside a fence.
+# List markers there are code, so a closing fence cannot follow one.
+QUOTE_PREFIX_RE = re.compile(r"(?:[ \t]*> ?)*[ \t]*")
 # A code fence line after its container markers: its backtick or tilde run,
 # then the rest of the line.
 FENCE_RUN_RE = re.compile(r"(`{3,}|~{3,})(.*)$")
@@ -283,12 +286,15 @@ def closes_fence(line: str, fence: tuple[str, int]) -> bool | None:
         the fence's block quote (which ends the fence before the line), and
         ``False`` when it is code.
     """
-    prefix = CONTAINER_RE.match(line)
+    prefix = QUOTE_PREFIX_RE.match(line)
     depth = prefix.group(0).count(">") if prefix else 0
     if depth < fence[1]:
         return None
-    # A closing fence is a run of the opening character at least as long as
-    # the opening run, with nothing but spaces after it.
+    # A closing fence sits at the fence's own quote depth (deeper markers are
+    # code) and is a run of the opening character at least as long as the
+    # opening run, with nothing but spaces after it.
+    if depth > fence[1]:
+        return False
     run = FENCE_RUN_RE.match(line, prefix.end() if prefix else 0)
     return bool(run and run.group(1).startswith(fence[0]) and run.group(2).strip() == "")
 
