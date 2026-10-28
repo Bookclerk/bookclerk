@@ -149,7 +149,12 @@ like any other App's checks. While a check runs, it is in progress with
 again, comment `@bookclerk recheck`: the App has no webhook, so a **Re-run**
 button on the check reaches nothing. Merge
 queue runs report a passing **Bookclerk CLA** check, because each pull request
-passed it to enter the queue. A pull request with more than 250 commits
+passed it to enter the queue.
+
+Commits that already carry a **Bookclerk CLA** commit status, from before
+the check became a check run, get each verdict as a status too. GitHub
+requires both a check run and a status of a required name to pass, so the
+old status would otherwise keep those pull requests blocked. A pull request with more than 250 commits
 cannot be checked and fails closed.
 
 The check belongs to the commit, not to the pull request. When other open

@@ -285,6 +285,11 @@ def oracle(kind: str, raw: bytes) -> object:
         return o_id(o_obj(o_json(raw)).get("id"))
     if kind == "checkrun":
         return o_id(o_obj(o_json(raw)).get("id"))
+    if kind == "combined":
+        statuses = o_obj(o_json(raw)).get("statuses")
+        if not isinstance(statuses, list) or len(statuses) > 100:
+            raise Refused
+        return frozenset(o_str(o_obj(e).get("context")) for e in statuses)
     if kind == "branchrules":
         rules = o_json(raw)
         if not isinstance(rules, list) or len(rules) > 200:
@@ -346,6 +351,8 @@ def module(kind: str, raw: bytes) -> object:
         return cla.parse_reaction(raw)
     if kind == "checkrun":
         return cla.parse_check_run(raw)
+    if kind == "combined":
+        return cla.parse_status_contexts(raw)
     if kind == "branchrules":
         return cla.parse_branch_rules(raw)
     raise AssertionError(kind)
@@ -403,6 +410,7 @@ class CorpusTests(unittest.TestCase):
             "coauthors__email_not_string", "gitobject__no_sha", "gitobject__upper_sha", "gitobject__not_object",
             "reaction__no_id", "reaction__string_id", "reaction__not_object",
             "checkrun__no_id", "checkrun__string_id", "checkrun__not_object", "checkrun__negative_id",
+            "combined__no_statuses", "combined__context_not_string", "combined__not_object",
             "branchrules__not_list", "branchrules__upper_type", "branchrules__no_type",
         ):
             kind = name.partition("__")[0]
@@ -418,6 +426,7 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(module("gitobject", load("gitobject__commit")), SHA_B)
         self.assertEqual(module("reaction", load("reaction__eyes")), 31)
         self.assertEqual(module("checkrun", load("checkrun__created")), 4242)
+        self.assertEqual(module("combined", load("combined__legacy")), frozenset({"Bookclerk CLA", "codecov/patch"}))
         self.assertEqual(module("branchrules", load("branchrules__all")), cla.SIGNATURE_BRANCH_RULES)
         data, blob = cla.parse_contents(load("contents__seed"))
         self.assertEqual(data, load("signatures__seed"))
@@ -625,6 +634,11 @@ class FakeGitHub:
         #: ``pending`` for an in-progress check run, else its conclusion. The
         #: newest one per commit is what GitHub shows.
         self.statuses: list[tuple[str, dict]] = []
+        #: Commits that carry a ``Bookclerk CLA`` commit status from before
+        #: the check became a check run, and each status posted to mirror a
+        #: check there, as ``(sha, state, creator login)``.
+        self.legacy: set[str] = set()
+        self.legacy_posts: list[tuple[str, str, str]] = []
         #: Check runs by id: ``(sha, status, creator login)``.
         self.check_runs: dict[int, tuple[str, str, str]] = {}
         #: Who posted each of ``statuses``, in order.
@@ -846,6 +860,14 @@ class FakeGitHub:
                     assert c["user"] == self.commenter_account(), "only a comment's author may edit it"
                     c["body"] = body["body"]
             return 200, b"{}"
+        if method == "GET" and route.startswith("commits/") and route.endswith("/status"):
+            sha = route.split("/")[1]
+            contexts = ["Bookclerk CLA"] if sha in self.legacy else []
+            return 200, json.dumps({"state": "pending", "statuses": [{"context": c, "state": "failure"} for c in ["CI", *contexts]]}).encode()
+        if method == "POST" and route.startswith("statuses/"):
+            assert body is not None and body["context"] == "Bookclerk CLA"
+            self.legacy_posts.append((route.rsplit("/", 1)[1], body["state"], self.commenter_account()["login"]))
+            return 201, b"{}"
         if method in ("POST", "PATCH") and route.split("/", 1)[0] == "check-runs":
             assert body is not None and body["name"] == "Bookclerk CLA"
             assert body["output"]["title"] == body["output"]["summary"]
@@ -1425,6 +1447,22 @@ class EndToEndTests(unittest.TestCase):
         drive(fake, comment_event(ALICE, cla.SIGN_PHRASE))
         self.assertEqual({status for _, status, _ in fake.check_runs.values()}, {"completed"})
         self.assertEqual(fake.last_status(), "success")
+
+    def test_a_status_left_from_before_the_check_run_gets_the_same_verdict(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        fake.legacy.add(SHA_C)
+        drive(fake, pr_event(fake))
+        drive(fake, comment_event(ALICE, cla.SIGN_PHRASE))
+        app = APP["login"]
+        self.assertEqual(fake.legacy_posts, [(SHA_C, "pending", app), (SHA_C, "failure", app), (SHA_C, "pending", app), (SHA_C, "success", app)])
+        self.assertEqual(fake.last_status(), "success")
+
+    def test_no_status_is_posted_where_there_was_none(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}])
+        drive(fake, pr_event(fake))
+        drive(fake, cla.parse_event("merge_group", load("event_merge_group__queued")))
+        self.assertEqual(fake.legacy_posts, [])
+        self.assertEqual([b["state"] for _, b in fake.final_statuses()], ["success", "success"])
 
     def test_a_refused_completion_of_the_run_in_progress_only_warns(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])

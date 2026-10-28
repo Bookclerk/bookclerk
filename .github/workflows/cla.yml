@@ -91,6 +91,9 @@ jobs:
       # Report the `Bookclerk CLA` check run when the App is not configured, or
       # its error when the App's token fails.
       checks: write
+      # Read a commit's statuses, and update a `Bookclerk CLA` commit status
+      # left from before the check became a check run (as above).
+      statuses: write
     steps:
       # The default branch's checker, never the pull request's.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -103,11 +106,12 @@ jobs:
           sparse-checkout-cone-mode: false
 
       # Signature writes, the check's comment and the `Bookclerk CLA` check run
-      # use it, narrowed to Contents, Pull requests and Checks on this
+      # use it, narrowed to Contents, Pull requests, Checks and Commit statuses
+      # (for `Bookclerk CLA` statuses left from before the check run) on this
       # repository and revoked when the job ends. The App must have been
-      # granted each of them, or minting fails and no check is reported. Without the App's secrets
-      # the token is empty: recording a signature fails closed and the
-      # workflow comments and reports instead.
+      # granted each of them, or minting fails and no check is reported.
+      # Without the App's secrets the token is empty: recording a signature
+      # fails closed and the workflow comments and reports instead.
       - name: Mint the App token
         id: app-token
         if: env.HAS_APP == 'true'
@@ -118,6 +122,7 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
           permission-checks: write
+          permission-statuses: write
 
       - name: Check signatures
         env:

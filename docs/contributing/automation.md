@@ -156,6 +156,9 @@ signed and attributed to the App.
    - **Checks: read and write**, for the `Bookclerk CLA` check run
      (`cla.yml`), which GitHub lists under the App's name and the logo
      set in the App's **Display information**.
+   - **Commit statuses: read and write**, so `cla.yml` can update a
+     `Bookclerk CLA` commit status left on a commit from before the check
+     became a check run.
    - **Issues: read and write**, to file and update drift issues and add
      labels.
    - **Code scanning alerts: read**, because `osv-remediate.yml` and

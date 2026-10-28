@@ -1,0 +1,1 @@
+{"state": "failure", "sha": "cccccccccccccccccccccccccccccccccccccccc", "total_count": 2, "statuses": [{"context": "Bookclerk CLA", "state": "failure", "description": "1 still to sign.", "creator": {"login": "bookclerk[bot]", "id": 900, "type": "Bot"}}, {"context": "codecov/patch", "state": "success"}]}

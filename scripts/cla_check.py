@@ -817,6 +817,23 @@ def parse_check_run(raw: bytes) -> int:
     return _id(_object(_load_json(raw), "check run").get("id"), "check run id")
 
 
+def parse_status_contexts(raw: bytes) -> frozenset[str]:
+    """Reads ``GET /commits/{sha}/status``: a commit's combined status.
+
+    # Returns
+    The contexts of the commit statuses on the commit.
+
+    # Errors
+    ``ClaInputError`` when the answer is not an object whose ``statuses``
+    is a list of at most ``PAGE_SIZE`` objects, each with a string
+    ``context``.
+    """
+    statuses = _object(_load_json(raw), "combined status").get("statuses")
+    if not isinstance(statuses, list) or len(statuses) > PAGE_SIZE:
+        raise ClaInputError("statuses are not a list of at most 100")
+    return frozenset(_string(_object(entry, "status").get("context"), "status context") for entry in statuses)
+
+
 def parse_branch_rules(raw: bytes) -> frozenset[str]:
     """Reads ``GET /rules/branches/{branch}``: the active rules for a branch.
 
@@ -995,6 +1012,16 @@ class CheckState(Enum):
             case CheckState.FAILURE:
                 return {"status": "completed", "conclusion": "failure"}
 
+    def legacy_status(self) -> str:
+        """Returns the commit status ``state`` that mirrors this state."""
+        match self:
+            case CheckState.CHECKING:
+                return "pending"
+            case CheckState.SUCCESS:
+                return "success"
+            case CheckState.FAILURE:
+                return "failure"
+
 
 def check_title(verdict: Verdict) -> str:
     """Returns the check run's title, at most 140 characters so it fits one line."""
@@ -1072,6 +1099,9 @@ class GitHub:
         #: The in-progress check run this process created on each commit,
         #: completed after the next verdict on that commit is reported.
         self.open_checks: dict[str, int] = {}
+        #: Whether each commit read so far carries a ``Bookclerk CLA`` commit
+        #: status from before the check became a check run.
+        self.legacy_statuses: dict[str, bool] = {}
 
     def call(self, method: str, path: str, body: dict[str, object] | None = None, ok: tuple[int, ...] = (200, 201)) -> bytes:
         """Sends a request and returns the body of a successful response.
@@ -1370,9 +1400,15 @@ class GitHub:
         * ``description``: the one-line title the checks list shows.
         * ``target_url``: the workflow run, linked as the check's details.
 
+        A commit that already carries a ``Bookclerk CLA`` commit status, from
+        before the check became a check run, gets the same verdict as a
+        status too: GitHub requires both a check run and a status of a
+        required name to pass, so the old status would otherwise block it.
+
         # Errors
-        ``ApiError`` when GitHub refuses the request, ``ClaInputError`` when
-        it answers a new in-progress check run with something unreadable.
+        ``ApiError`` when GitHub refuses a request, ``ClaInputError`` when
+        it answers a new in-progress check run or the commit's statuses
+        with something unreadable.
         """
         body: dict[str, object] = {
             "name": CHECK_NAME,
@@ -1381,6 +1417,8 @@ class GitHub:
             **state.body(),
         }
         raw = self.report("POST", "check-runs", {"head_sha": sha, **body})
+        if self.has_legacy_status(sha):
+            self.report("POST", f"statuses/{sha}", {"state": state.legacy_status(), "context": CHECK_NAME, "description": description, "target_url": target_url})
         if state is CheckState.CHECKING:
             self.open_checks[sha] = parse_check_run(raw)
             return
@@ -1394,6 +1432,17 @@ class GitHub:
             return
         if status != 200:
             print(f"::warning::cannot complete check run {started} (HTTP {status})")
+
+    def has_legacy_status(self, sha: str) -> bool:
+        """Tells whether ``sha`` carries a ``Bookclerk CLA`` commit status, read once per commit.
+
+        # Errors
+        ``ApiError`` or ``ClaInputError`` when the statuses cannot be read.
+        """
+        if sha not in self.legacy_statuses:
+            contexts = parse_status_contexts(self.call("GET", f"commits/{sha}/status?per_page={PAGE_SIZE}"))
+            self.legacy_statuses[sha] = CHECK_NAME in contexts
+        return self.legacy_statuses[sha]
 
     def upsert_comment(self, number: int, comments: list[Comment], body: str, create: bool) -> None:
         """Edits the check's comment among ``comments``, or posts one when ``create`` is true."""

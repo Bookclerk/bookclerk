@@ -42,7 +42,7 @@ Each entry records the GitHub account (`name`, `id`), the signing comment
    check.
 2. Create a GitHub App (**Settings → Developer settings → GitHub Apps**,
    for a user or an organization), upload a logo under **Display
-   information** (GitHub shows it beside the check), and give it three
+   information** (GitHub shows it beside the check), and give it four
    repository permissions:
    - **Contents: read and write**, to create this branch and add
      signatures.
@@ -50,6 +50,9 @@ Each entry records the GitHub account (`name`, `id`), the signing comment
      the App's name and avatar.
    - **Checks: read and write**, to post the `Bookclerk CLA` check run as
      the App, listed under its name and logo.
+   - **Commit statuses: read and write**, to read a commit's statuses and
+     update a `Bookclerk CLA` status left from before the check became a
+     check run.
 
    It needs no webhook. Install it on the repository, then generate a
    private key.
