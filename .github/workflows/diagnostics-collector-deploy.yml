@@ -150,6 +150,13 @@ jobs:
           B2_BUCKET_ID: ${{ secrets.DIAGNOSTICS_B2_BUCKET_ID }}
           REPORT_API_KEY: ${{ secrets.DIAGNOSTICS_REPORT_API_KEY }}
 
+      # Cloudflare's own startup figure for this deploy
+      # (docs/contributing/ci.md#worker-startup-time); warns near the limit.
+      - name: Report the startup time
+        env:
+          WRANGLER_OUTPUT: ${{ steps.deploy.outputs.command-output }}
+        run: python3 scripts/worker_startup.py deploy --worker collector
+
       # The binding has no id: wrangler created the database on deploy, so
       # migrations can only run now. Applied migrations are skipped.
       - name: Apply dashboard database migrations
