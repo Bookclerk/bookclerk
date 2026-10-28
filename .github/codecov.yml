@@ -32,12 +32,21 @@ comment:
 # One flag per area of scripts/coverage_areas.toml. A selective run measures
 # only the areas whose tests it ran; carryforward keeps the others at their
 # last measured value instead of reporting them as dropped.
+#
+# An area with a `workspace_check` (rust) that a selective run tested only in
+# part goes up as `<area>-partial` instead: uploaded under the area's flag it
+# would replace the carried-forward whole-workspace figure with the selected
+# packages' alone. The partial flag is never carried forward, so it counts
+# only on the commit it measured, merged with the carried-forward area.
 flag_management:
   default_rules:
     carryforward: true
   individual_flags:
     - name: rust
       paths: [crates/, fuzz/, examples/]
+    - name: rust-partial
+      paths: [crates/, fuzz/, examples/]
+      carryforward: false
     - name: site
       paths: [tools/site/]
     - name: demo

@@ -18,6 +18,9 @@
 #   the run, never from an artifact.
 # - Uploads are one per area, each with the area's Codecov flag. Selective
 #   runs measure only some areas; `codecov.yml` carries the others forward.
+#   A selective Rust run tests only the affected packages, so its report
+#   goes up under `rust-partial`, which is never carried forward, and the
+#   whole-workspace `rust` figure stays as it was.
 #
 # Setup: install the Codecov GitHub App on the repository
 # (docs/contributing/ci.md#codecov).
@@ -61,8 +64,20 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
 
+      # The plan says whether `rust_test` ran the whole workspace; a run
+      # without one exports every workspace-gated area as partial.
+      - name: Download the CI plan
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: ci-plan
+          path: ${{ runner.temp }}/plan
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
       - name: Export the reports
-        run: python3 scripts/coverage_gate.py --reports "$RUNNER_TEMP/coverage" --export coverage-upload
+        run: >-
+          python3 scripts/coverage_gate.py --reports "$RUNNER_TEMP/coverage"
+          --plan "$RUNNER_TEMP/plan/ci-plan/ci-plan.json" --export coverage-upload
 
       # Fork branches go to Codecov as `<owner>:<branch>`, so they never
       # land on a branch of this repository with the same name. A branch
@@ -112,6 +127,28 @@ jobs:
         with:
           files: coverage-upload/rust.lcov
           flags: rust
+          disable_search: true
+          # This checkout is the default branch, not the commit measured:
+          # its file list and contents would make Codecov drop new files
+          # and mark the wrong lines as non-code. Send no file list (the
+          # reports are already repository-relative) and no line fixes.
+          network_filter: coverage-upload-sends-no-file-list/
+          disable_file_fixes: true
+          use_oidc: true
+          version: v11.3.1
+          fail_ci_if_error: false
+          override_commit: ${{ github.event.workflow_run.head_sha }}
+          override_branch: ${{ steps.target.outputs.branch }}
+          override_pr: ${{ steps.target.outputs.pr }}
+          override_build: ${{ github.event.workflow_run.id }}
+          override_build_url: ${{ github.event.workflow_run.html_url }}
+
+      - name: Upload rust-partial
+        if: steps.target.outputs.upload == 'true' && hashFiles('coverage-upload/rust-partial.lcov') != ''
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          files: coverage-upload/rust-partial.lcov
+          flags: rust-partial
           disable_search: true
           # This checkout is the default branch, not the commit measured:
           # its file list and contents would make Codecov drop new files

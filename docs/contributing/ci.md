@@ -703,7 +703,7 @@ each CI run of a pull request or merge group finishes:
 
 1. It runs from the default branch through `workflow_run`. CI keeps its
    read-only token, and fork pull requests upload too.
-2. It downloads the run's `coverage-*` artifacts and runs
+2. It downloads the run's `coverage-*` artifacts and plan, and runs
    `scripts/coverage_gate.py --export`. That rewrites each report through
    the gate's parser, keeping only repository-relative paths, line numbers
    and hit counts.
@@ -719,7 +719,11 @@ file it under the default branch.
 
 The settings live in [`.github/codecov.yml`](../../.github/codecov.yml).
 Each area is a flag with carryforward, so a selective run that skips an
-area keeps that area's last figure. The patch target matches CI Gate's.
+area keeps that area's last figure. A selective run that tests only some
+Rust packages uploads under `rust-partial` instead of `rust`. That flag is
+never carried forward, so the whole-workspace `rust` figure stays as it
+was while the change's own lines are still measured. The patch target
+matches CI Gate's.
 A test checks that the flags, their paths and the target agree with
 `scripts/coverage_areas.toml`.
 

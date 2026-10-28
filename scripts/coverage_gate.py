@@ -30,9 +30,10 @@ sans-IO so ``scripts/tests/test_coverage_gate.py`` drives the same code.
 
 Usage: ``coverage_gate.py --reports DIR --diff FILE --plan ci-plan.json``
 from the repository root (``--summary FILE`` defaults to
-``$GITHUB_STEP_SUMMARY``). ``coverage_gate.py --reports DIR --export OUT``
-instead writes each area's report, read by the same parser and made
-repository-relative, to ``OUT/<area>.lcov`` for the Codecov upload
+``$GITHUB_STEP_SUMMARY``). ``coverage_gate.py --reports DIR --plan
+ci-plan.json --export OUT`` instead writes each area's report, read by the
+same parser and made repository-relative, to ``OUT/<area>.lcov`` (or
+``OUT/<area>-partial.lcov``, see :func:`export`) for the Codecov upload
 (``.github/workflows/coverage-upload.yml``).
 """
 
@@ -468,21 +469,20 @@ def measure(config: Config, reports: Path, diff: Path, plan: Path | None) -> Ver
         OSError: The diff or the plan could not be read.
     """
     full = full_workspace_checks(plan.read_text(encoding="utf-8")) if plan else frozenset()
-    results = []
-    for result in read_reports(config, reports):
-        if result.measured and result.area.workspace_check is not None and result.area.workspace_check not in full:
-            result.partial = True
-        results.append(result)
+    results = read_reports(config, reports, full)
     added = parse_diff(diff.read_text(encoding="utf-8", errors="replace"))
     return judge(config, results, added)
 
 
-def read_reports(config: Config, reports: Path) -> list[AreaResult]:
+def read_reports(config: Config, reports: Path, full: frozenset[str]) -> list[AreaResult]:
     """Read each area's report from the downloaded artifacts.
 
     Args:
         config: The areas file.
         reports: The directory the ``coverage-*`` artifacts were downloaded to.
+        full: The plan's checks that ran the whole workspace (see
+            :func:`full_workspace_checks`); a measured area whose
+            ``workspace_check`` is not among them is partial.
 
     Returns:
         Each area's result, in the areas file's order; an area without a
@@ -497,7 +497,8 @@ def read_reports(config: Config, reports: Path) -> list[AreaResult]:
             continue
         text = report.read_text(encoding="utf-8", errors="replace")
         hits = {p: h for p, h in parse_lcov(text, area.root, workspace).items() if area.owns(p)}
-        results.append(AreaResult(area, measured=True, hits=hits))
+        partial = area.workspace_check is not None and area.workspace_check not in full
+        results.append(AreaResult(area, measured=True, hits=hits, partial=partial))
     return results
 
 
@@ -522,23 +523,32 @@ def write_lcov(hits: dict[str, LineHits]) -> str:
     return "".join(f"{line}\n" for line in out)
 
 
-def export(config: Config, reports: Path, out: Path) -> list[str]:
-    """Write each measured area's report as ``<out>/<area>.lcov``.
+def export(config: Config, reports: Path, out: Path, full: frozenset[str]) -> list[str]:
+    """Write each measured area's report for the Codecov upload.
+
+    A whole area goes to ``<out>/<area>.lcov``. A partial one (a selective
+    run that tested only the affected packages) goes to
+    ``<out>/<area>-partial.lcov`` instead: uploaded under the area's own
+    flag it would replace the area's carried-forward figure with the
+    selected packages' alone, so it gets a flag of its own that is never
+    carried forward.
 
     Args:
         config: The areas file.
         reports: The directory the ``coverage-*`` artifacts were downloaded to.
         out: The directory to write to; created when missing.
+        full: The plan's checks that ran the whole workspace.
 
     Returns:
-        The names of the areas written.
+        The names of the files written, without ``.lcov``.
     """
     out.mkdir(parents=True, exist_ok=True)
     written = []
-    for result in read_reports(config, reports):
+    for result in read_reports(config, reports, full):
         if result.measured and result.hits:
-            (out / f"{result.area.name}.lcov").write_text(write_lcov(result.hits), encoding="utf-8")
-            written.append(result.area.name)
+            name = f"{result.area.name}-partial" if result.partial else result.area.name
+            (out / f"{name}.lcov").write_text(write_lcov(result.hits), encoding="utf-8")
+            written.append(name)
     return written
 
 
@@ -563,7 +573,9 @@ def main(argv: list[str] | None = None) -> int:
 
     config = parse_config(Path(AREAS_FILE).read_text(encoding="utf-8"))
     if args.export is not None:
-        print("Exported: " + (", ".join(export(config, args.reports, args.export)) or "nothing"))
+        # Without a plan every workspace-gated area counts as partial.
+        full = full_workspace_checks(args.plan.read_text(encoding="utf-8")) if args.plan and args.plan.is_file() else frozenset()
+        print("Exported: " + (", ".join(export(config, args.reports, args.export, full)) or "nothing"))
         return 0
     if args.diff is None:
         parser.error("--diff is required unless --export is given")
