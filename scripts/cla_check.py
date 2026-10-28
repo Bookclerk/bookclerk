@@ -1584,7 +1584,7 @@ def main(env: dict[str, str]) -> int:
         run(event, api, cla_url, run_url)
     except (ApiError, ClaInputError) as err:
         print(f"cla_check: {err}", file=sys.stderr)
-        sha = api.head_sha
+        sha = api.head_sha or event.merge_group_sha
         if sha is None and event.run_head is not None:
             sha = event.run_head.sha
         if sha is not None:

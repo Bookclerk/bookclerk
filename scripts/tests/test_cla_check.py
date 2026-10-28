@@ -21,7 +21,9 @@ import io
 import json
 import random
 import sys
+import tempfile
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.parse
 from pathlib import Path
@@ -1440,6 +1442,24 @@ class MainTests(unittest.TestCase):
         env = {"GITHUB_REPOSITORY": "bookclerk/bookclerk", "GITHUB_TOKEN": "t", "GITHUB_EVENT_NAME": "push",
                "GITHUB_EVENT_PATH": str(CORPUS / "pull__basic")}
         self.assertEqual(cla.main(env), 1)
+
+    def test_a_refused_app_status_still_leaves_an_error_on_a_merge_group(self) -> None:
+        sent: list[tuple[str, str, str]] = []
+
+        def transport(token: str, api_url: str):
+            def send(method: str, path: str, body: dict | None) -> tuple[int, bytes]:
+                sent.append((token, method, path))
+                return (403, b"{}") if token == "app" else (201, b"{}")
+            return send
+
+        with tempfile.TemporaryDirectory() as folder:
+            event_path = Path(folder) / "event.json"
+            event_path.write_bytes(load("event_merge_group__queued"))
+            env = {"GITHUB_REPOSITORY": "bookclerk/bookclerk", "GITHUB_TOKEN": "workflow", "CLA_SIGNATURE_TOKEN": "app",
+                   "CLA_APP_SLUG": "bookclerk", "GITHUB_EVENT_NAME": "merge_group", "GITHUB_EVENT_PATH": str(event_path)}
+            with mock.patch.object(cla, "urllib_transport", transport), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(cla.main(env), 1)
+        self.assertIn(("workflow", "POST", f"repos/bookclerk/bookclerk/statuses/{SHA_B}"), sent)
 
     def test_bad_app_slug(self) -> None:
         env = {"GITHUB_REPOSITORY": "bookclerk/bookclerk", "GITHUB_TOKEN": "t", "CLA_SIGNATURE_TOKEN": "s",
