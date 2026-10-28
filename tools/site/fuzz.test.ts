@@ -17,7 +17,7 @@ import { cleanSvg, diagram } from "./diagram.ts";
 import { HTTP_METHODS } from "./api-reference.ts";
 import { highlight } from "./highlight.ts";
 import { datedPages, formatDate, MAX_DOC_KEY_LENGTH, pageDate } from "./last-updated.ts";
-import { renderDoc } from "./render.ts";
+import { renderDoc, SEARCH_INDEX } from "./render.ts";
 import { docsTarget, pickEncoding, sitePageLocation } from "./worker.ts";
 import type { Encoding } from "./worker.ts";
 
@@ -1148,6 +1148,7 @@ const PATH_FRAGMENTS = [
   "..",
   "/..",
   ".html",
+  "search-index.json",
   "index.html",
   ".md",
   "/docs",
@@ -1221,6 +1222,9 @@ function checkRedirects(path: string, context: string): void {
       "redirect",
       `${context}: ${location} redirects again`,
     );
+  } else if (target.kind === "search") {
+    // Only the index's own name at a version's root.
+    assert.equal(path, `${target.version.base}${SEARCH_INDEX}`, context);
   } else if (target.kind !== "missing") {
     for (const key of target.keys) {
       for (const segment of key.split("/")) {

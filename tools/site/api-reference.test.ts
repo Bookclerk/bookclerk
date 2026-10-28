@@ -15,6 +15,7 @@ import {
   navHtml,
   navParent,
   renderDoc,
+  searchPage,
   tocListHtml,
 } from "./render.ts";
 
@@ -545,4 +546,20 @@ Status \`abc\`: not a status.
   assert.ok(out.html.includes('<div class="api-responses">'));
   assert.ok(!out.html.includes('<div class="api-response"'));
   assert.ok(out.html.includes("<p>Status <code>abc</code>: not a status.</p>"));
+});
+
+test("an operations page offers the filter its operations by method and path", () => {
+  const page = searchPage(PAGE, "api/web/jobs", "Web API", "Jobs", "/docs/v/main/");
+  assert.deepEqual(page, {
+    section: "Web API",
+    title: "Jobs",
+    url: "/docs/v/main/api/web/jobs",
+    headings: [
+      { text: "GET /api/jobs", url: "/docs/v/main/api/web/jobs#get-apijobs" },
+      {
+        text: "POST /api/jobs/{id}/cancel",
+        url: "/docs/v/main/api/web/jobs#post-apijobsidcancel",
+      },
+    ],
+  });
 });

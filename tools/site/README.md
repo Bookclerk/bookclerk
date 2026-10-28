@@ -79,7 +79,8 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   builds from the doc's `##` and `###` headings. Each `##`–`######` heading
   carries a self-link that shows on hover, and a row under the title holds
   the last updated date, Copy as Markdown and View as Markdown. The rail
-  ends with Source on GitHub and Report a problem, and comes with a
+  ends with Source on GitHub (for a generated page under `api/`, what it is
+  generated from: build.ts `generatedSources`) and Report a problem, and comes with a
   breadcrumb and previous and next links taken from `NAV`. Every crumb is a
   link: a sidebar group links to its first page, and a Web API route page
   runs through the Web API entry it sits under. Below 1200px the
@@ -136,12 +137,20 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   as the Worker does.
 - `src/docs.js` – the docs pages' only script, served from the site: a Copy
   button on code blocks, heading self-links that copy their URL, the Copy
-  as Markdown button (hidden without the script; its fetch of the page's
-  `.md` copy is the script's only request), the "On this page" link of the
+  as Markdown button (hidden without the script), the "On this page" link of the
   section being read (`aria-current="location"`), kept in view when the
   rail scrolls, and the stepped line beside the rail that follows it,
-  curving in and out with the nested routes of an API page, and a filter box above the sidebar
-  groups (`/` focuses it). Everything it enhances works without it; Chromium also marks the current section through CSS
+  curving in and out with the nested routes of an API page, tabs for an
+  operation's example responses, and a filter box above the sidebar
+  groups (`/` focuses it). On first focus the filter reads the docs
+  version's search index (`/docs/search-index.json`, or under
+  `/docs/v/<ref>/`), which the Worker builds from the docs repository:
+  every sidebar page with its headings, and the Web API's route groups
+  with their routes from its index. Matches show as "Group / Page" with
+  the matching headings under them, collapsed groups included; until the
+  index loads, or if it cannot, the filter matches sidebar titles. Its
+  two same-origin reads (the index and the page's `.md` copy for Copy as
+  Markdown) are the script's only requests. Everything it enhances works without it; Chromium also marks the current section through CSS
   (`scroll-target-group`).
 - `src/index.md`, `src/download.md`, `src/privacy.md`, `src/404.md` – Markdown versions of
   those pages, rendered with the same template syntax. Keep them in step with

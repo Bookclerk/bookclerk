@@ -1323,6 +1323,32 @@ code.inline {
 .nav-filter input:not(:placeholder-shown) + kbd {
   display: none;
 }
+/* Sidebar filter results from the search index (docs.js addSidebarFilter). */
+.nav-results {
+  margin-top: 4px;
+}
+.nav-result-section {
+  color: var(--docs-soft);
+}
+.docs-nav .nav-results .nav-sub a {
+  padding-block: 4px;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.docs-nav .nav-result-route {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.docs-nav .nav-result-route .api-method {
+  flex: none;
+  margin: 0;
+}
+.docs-nav .nav-result-route code {
+  font: 13px/18px var(--font-mono);
+  min-width: 0;
+  overflow-wrap: normal;
+}
 .nav-empty {
   padding: 8px 10px;
   font-size: 14px;
@@ -2428,7 +2454,8 @@ code.inline {
   }
 }
 .toc .api-method,
-.menu-toc .api-method {
+.menu-toc .api-method,
+.nav-results .api-method {
   font-size: 10px;
   line-height: 15px;
   padding: 0 4px;

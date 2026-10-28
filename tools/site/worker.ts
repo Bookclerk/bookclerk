@@ -49,17 +49,20 @@
 // Accept-Encoding headers (and conditional headers it passes on), and
 // fetches only from its own assets and the docs repository.
 
-import { API_INDEX } from "./api-reference.ts";
+import { API_INDEX, API_SCHEMAS } from "./api-reference.ts";
 import { datedPages, LAST_UPDATED_FILE, MAX_LAST_UPDATED_BYTES, pageDate } from "./last-updated.ts";
 import type { IsoDate } from "./last-updated.ts";
 import {
+  apiSearchPages,
   docMarkdownUrl,
   docUrl,
   renderDocPage,
   renderSitemapPage,
   renderUnavailablePage,
+  SEARCH_INDEX,
+  searchPage,
 } from "./render.ts";
-import type { DocsShell, DocsVersion, SitemapPageLink } from "./render.ts";
+import type { DocsShell, DocsVersion, SearchPage, SitemapPageLink } from "./render.ts";
 import { MAX_SITEMAP_URLS, sitemapIndexXml, sitemapXml } from "./sitemap.ts";
 import type { SitemapEntry } from "./sitemap.ts";
 
@@ -302,6 +305,12 @@ export type DocsTarget =
       kind: "missing";
     }
   | {
+      /** The version's search index, which the sidebar filter reads. */
+      kind: "search";
+      /** The docs version. */
+      version: DocsVersion;
+    }
+  | {
       /** A page, or its Markdown copy asked for by name. */
       kind: "page" | "markdown";
       /** The docs version. */
@@ -345,6 +354,7 @@ export function docsTarget(pathname: string, versions: readonly DocsVersion[]): 
     version = found;
   }
   if (!DOC_REST_RE.test(rest)) return { kind: "missing" };
+  if (rest === SEARCH_INDEX) return { kind: "search", version };
   const last = rest.slice(rest.lastIndexOf("/") + 1);
   if (last.endsWith(".md"))
     return { kind: "markdown", version, keys: [rest.slice(0, -".md".length)] };
@@ -622,6 +632,7 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
     target.kind === "markdown" || prefersMarkdown(request.headers.get("Accept"));
   if (target.kind === "redirect") return redirect(url, target.location);
   if (target.kind === "missing") return toDocsHome(url, "/docs/", url.pathname.endsWith(".md"));
+  if (target.kind === "search") return serveSearchIndex(request, url, deps, target.version);
 
   // Rendered pages are cached by deploy, version, path and format: the shell
   // id changes whenever the picker, sidebar or page template does, and the ref
@@ -731,6 +742,82 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
         Link: `<${url.origin}${docMarkdownUrl(key, version.base)}>; rel="alternate"; type="text/markdown"`,
       });
   if (deps.cache && cacheable) deps.waitUntil(deps.cache.put(cacheKey, response.clone()));
+  return request.method === "HEAD" ? new Response(null, response) : response;
+}
+
+/** How many docs the search index reads from the docs repository at once. */
+const SEARCH_FETCHES = 6;
+
+/**
+ * Serves a docs version's search index: every sidebar page with its
+ * headings, the Web API's route groups with their routes (read from its
+ * index), and the schemas page, as JSON for the sidebar filter in docs.js.
+ *
+ * Built from the docs repository at request time, like the pages, and
+ * cached at the edge by version and deploy. A doc that cannot be read is
+ * listed by its title alone, and the index is then kept out of the cache.
+ *
+ * @param request - The request (GET or HEAD).
+ * @param url - Its URL.
+ * @param deps - The shell, fetcher and cache.
+ * @param version - The docs version.
+ * @returns The index, `{ "pages": SearchPage[] }`.
+ */
+async function serveSearchIndex(
+  request: Request,
+  url: URL,
+  deps: DocsDeps,
+  version: DocsVersion,
+): Promise<Response> {
+  const cacheKey = new Request(
+    `${url.origin}${url.pathname}?ref=${encodeURIComponent(version.ref)}&shell=${encodeURIComponent(deps.shell.id)}`,
+  );
+  if (deps.cache) {
+    const hit = await deps.cache.match(cacheKey);
+    if (hit) return request.method === "HEAD" ? new Response(null, hit) : hit;
+  }
+  const listed = deps.shell.nav.flatMap((group) =>
+    group.pages.map((page) => ({ ...page, section: group.title })),
+  );
+  if (listed.some((page) => page.key === API_INDEX))
+    listed.push({ key: API_SCHEMAS, title: "Schemas", section: "Web API" });
+  let failed = false;
+  const pages: SearchPage[][] = Array.from({ length: listed.length }, () => []);
+  let next = 0;
+  const work = async (): Promise<void> => {
+    for (let i = next++; i < listed.length; i = next++) {
+      const page = listed[i];
+      if (page === undefined) continue;
+      const entry: SearchPage = {
+        section: page.section,
+        title: page.title,
+        url: docUrl(page.key, version.base),
+        headings: [],
+      };
+      try {
+        const source = await fetchDoc(version.ref, page.key, deps.fetch);
+        if (source === null) continue;
+        const found = searchPage(source, page.key, page.section, page.title, version.base);
+        pages[i] =
+          page.key === API_INDEX ? [found, ...apiSearchPages(source, version.base)] : [found];
+      } catch (err) {
+        console.error(
+          `search index: ${page.key}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        failed = true;
+        pages[i] = [entry];
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: SEARCH_FETCHES }, work));
+  const response = withHeaders(new Response(JSON.stringify({ pages: pages.flat() })), {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": failed
+      ? `public, max-age=${MISSING_TTL}, s-maxage=0`
+      : `public, max-age=${BROWSER_TTL}, s-maxage=${ttlFor(version.ref)}`,
+    "X-Robots-Tag": "noindex",
+  });
+  if (deps.cache && !failed) deps.waitUntil(deps.cache.put(cacheKey, response.clone()));
   return request.method === "HEAD" ? new Response(null, response) : response;
 }
 
