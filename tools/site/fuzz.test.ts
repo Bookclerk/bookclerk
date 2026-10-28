@@ -911,6 +911,14 @@ const API_FRAGMENTS = [
   "default",
   "```",
   "```json\n",
+  "```console\n",
+  "```powershell\n",
+  "```python\n",
+  "```javascript\n",
+  "```rust\n",
+  "$ curl ",
+  "Invoke-RestMethod ",
+  "`\n",
   "---",
   "===",
   "<",
@@ -981,6 +989,27 @@ function checkApiPage(source: string, context: string): void {
   assert.ok(
     !laid.includes('<div class="api-response"') || laid.includes('<div class="api-responses">'),
     `panel outside a responses card: ${context}`,
+  );
+  // Request panels: unique ids, each naming a language, each holding one code block.
+  const requests = [
+    ...laid.matchAll(
+      /<div class="api-request" id="([^"]*)" data-lang="([^"]*)" data-label="([^"]*)">\n<div class="code/g,
+    ),
+  ];
+  assert.equal(
+    requests.length,
+    (laid.match(/<div class="api-request"/g) ?? []).length,
+    `request panel without its code block: ${context}`,
+  );
+  const requestIds = requests.map((m) => m[1]);
+  assert.equal(new Set(requestIds).size, requestIds.length, `duplicate request id: ${context}`);
+  for (const [, id, lang, label] of requests) {
+    assert.ok(id?.endsWith(`-request-${lang}`), context);
+    assert.ok((lang ?? "") !== "" && (label ?? "") !== "", context);
+  }
+  assert.ok(
+    !laid.includes('<div class="api-request"') || laid.includes('<div class="api-requests">'),
+    `request panel outside a requests card: ${context}`,
   );
   const badges = (laid.match(/<span class="api-method /g) ?? []).length;
   assert.equal(badges, sections.length, `badge outside an operation heading: ${context}`);

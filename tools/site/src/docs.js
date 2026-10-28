@@ -3,9 +3,10 @@
 // work without it: it adds copy buttons to code blocks, copies a heading's
 // link when it is clicked, offers Copy as Markdown, draws and follows the
 // "On this page" rail, closes the phone menus like menus, shows example
-// responses as tabs by status, and adds a filter box to the sidebar. Its only
-// network requests are same-origin: Copy as Markdown reads the page's own
-// Markdown, and the filter reads the docs version's search index.
+// responses as tabs by status and example requests as tabs by language, and
+// adds a filter box to the sidebar. Its only network requests are
+// same-origin: Copy as Markdown reads the page's own Markdown, and the filter
+// reads the docs version's search index. It keeps nothing in the browser.
 
 (() => {
   "use strict";
@@ -565,70 +566,138 @@
   }
 
   /**
-   * Turns each example response card with more than one status into tabs:
-   * a row of status buttons above the panels, one panel shown at a time.
-   * Arrow keys, Home and End move between the tabs, as the ARIA tabs
-   * pattern describes. Without this, every panel shows, one after another.
+   * Turns a card's panels into tabs: a row of buttons above the panels, one
+   * panel shown at a time. Arrow keys, Home and End move between the tabs,
+   * as the ARIA tabs pattern describes.
+   *
+   * @param {Element} card - The card, which gets the `has-tabs` class.
+   * @param {Element[]} panels - Its panels, each with an id.
+   * @param {{ list: string, group: string, tab: (panel: Element, i: number) => HTMLButtonElement }} parts -
+   *   The class of the tab list and of the group that holds list and
+   *   panels, and a function that makes the button for a panel.
+   * @param {(index: number) => void} [chosen] - Called when a tab is picked.
+   * @returns {(index: number) => void} Selects the tab at an index.
+   */
+  function tabCard(card, panels, parts, chosen) {
+    const list = document.createElement("div");
+    list.className = parts.list;
+    list.setAttribute("role", "tablist");
+    const heading = card.querySelector("h3");
+    if (heading && heading.id) list.setAttribute("aria-labelledby", heading.id);
+    const tabs = panels.map((panel, i) => {
+      const tab = parts.tab(panel, i);
+      tab.type = "button";
+      tab.id = `${panel.id}-tab`;
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-controls", panel.id);
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", tab.id);
+      panel.tabIndex = 0;
+      return tab;
+    });
+    const select = (index, focus) => {
+      tabs.forEach((tab, i) => {
+        const on = i === index;
+        tab.setAttribute("aria-selected", String(on));
+        tab.tabIndex = on ? 0 : -1;
+        panels[i].hidden = !on;
+      });
+      if (focus) tabs[index].focus();
+    };
+    const pick = (index, focus) => {
+      select(index, focus);
+      if (chosen) chosen(index);
+    };
+    tabs.forEach((tab, i) => {
+      tab.addEventListener("click", () => pick(i, false));
+      tab.addEventListener("keydown", (event) => {
+        const last = tabs.length - 1;
+        const to = {
+          ArrowRight: i === last ? 0 : i + 1,
+          ArrowLeft: i === 0 ? last : i - 1,
+          Home: 0,
+          End: last,
+        }[event.key];
+        if (to === undefined) return;
+        event.preventDefault();
+        pick(to, true);
+      });
+    });
+    list.append(...tabs);
+    const group = document.createElement("div");
+    group.className = parts.group;
+    panels[0].before(group);
+    group.append(list, ...panels);
+    card.classList.add("has-tabs");
+    return (index) => select(index, false);
+  }
+
+  /**
+   * Turns each example response card with more than one status into tabs,
+   * one per status. Without this, every panel shows, one after another.
    */
   function addResponseTabs() {
     for (const card of document.querySelectorAll(".api-responses")) {
       const panels = [...card.querySelectorAll(":scope > .api-response")];
       if (panels.length < 2) continue;
-      const list = document.createElement("div");
-      list.className = "api-response-tabs";
-      list.setAttribute("role", "tablist");
-      const heading = card.querySelector("h3");
-      if (heading && heading.id) list.setAttribute("aria-labelledby", heading.id);
-      const tabs = panels.map((panel, i) => {
-        const tab = document.createElement("button");
-        tab.type = "button";
-        tab.id = `${panel.id}-tab`;
-        tab.setAttribute("role", "tab");
-        tab.setAttribute("aria-controls", panel.id);
-        const mark = panel.querySelector(".api-response-status .api-status");
-        tab.className = mark ? mark.className : "api-status";
-        tab.textContent = panel.dataset.status || String(i + 1);
-        panel.setAttribute("role", "tabpanel");
-        panel.setAttribute("aria-labelledby", tab.id);
-        panel.tabIndex = 0;
-        return tab;
+      const select = tabCard(card, panels, {
+        list: "api-response-tabs",
+        group: "api-response-group",
+        tab: (panel, i) => {
+          const tab = document.createElement("button");
+          const mark = panel.querySelector(".api-response-status .api-status");
+          tab.className = mark ? mark.className : "api-status";
+          tab.textContent = panel.dataset.status || String(i + 1);
+          return tab;
+        },
       });
-      const select = (index, focus) => {
-        tabs.forEach((tab, i) => {
-          const on = i === index;
-          tab.setAttribute("aria-selected", String(on));
-          tab.tabIndex = on ? 0 : -1;
-          panels[i].hidden = !on;
-        });
-        if (focus) tabs[index].focus();
-      };
-      tabs.forEach((tab, i) => {
-        tab.addEventListener("click", () => select(i, false));
-        tab.addEventListener("keydown", (event) => {
-          const last = tabs.length - 1;
-          const to = {
-            ArrowRight: i === last ? 0 : i + 1,
-            ArrowLeft: i === 0 ? last : i - 1,
-            Home: 0,
-            End: last,
-          }[event.key];
-          if (to === undefined) return;
-          event.preventDefault();
-          select(to, true);
-        });
-      });
-      list.append(...tabs);
-      const group = document.createElement("div");
-      group.className = "api-response-group";
-      panels[0].before(group);
-      group.append(list, ...panels);
-      card.classList.add("has-tabs");
-      select(0, false);
+      select(0);
     }
+  }
+
+  /**
+   * Turns each example request card with more than one language into a
+   * language picker, one tab per language. Picking a language in one card
+   * picks it in every card on the page. Nothing is kept in the browser
+   * (the privacy page promises that), so the next page starts from the
+   * first language again. Without this, every sample shows, one after
+   * another.
+   */
+  function addRequestTabs() {
+    const cards = [];
+    for (const card of document.querySelectorAll(".api-requests")) {
+      const panels = [...card.querySelectorAll(":scope > .api-request")];
+      if (panels.length < 2) continue;
+      const langs = panels.map((panel) => panel.dataset.lang || "");
+      const select = tabCard(
+        card,
+        panels,
+        {
+          list: "api-request-tabs",
+          group: "api-request-group",
+          tab: (panel) => {
+            const tab = document.createElement("button");
+            tab.className = "api-lang";
+            tab.textContent = panel.dataset.label || panel.dataset.lang || "";
+            return tab;
+          },
+        },
+        (index) => show(langs[index]),
+      );
+      cards.push({ langs, select });
+    }
+    const show = (lang) => {
+      for (const card of cards) {
+        const index = card.langs.indexOf(lang);
+        card.select(index < 0 ? 0 : index);
+      }
+    };
+    show("");
   }
 
   addCopyButtons();
   addResponseTabs();
+  addRequestTabs();
   dismissMenus();
   copyHeadingLinks();
   addCopyMarkdown();

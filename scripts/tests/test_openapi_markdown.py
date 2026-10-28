@@ -188,13 +188,40 @@ class RenderTest(unittest.TestCase):
             "### Example request\n\n```console\n$ curl 'http://127.0.0.1:8787/books/<id>' \\\n    -H 'Authorization: Bearer <token>'\n```",
             get,
         )
+        # The same request in each sample language, in a fixed order.
+        self.assertIn(
+            "```powershell\nInvoke-RestMethod -Uri 'http://127.0.0.1:8787/books/<id>' `\n    -Headers @{ Authorization = 'Bearer <token>' }\n```",
+            get,
+        )
+        self.assertIn(
+            '```python\nimport requests\n\nresponse = requests.get(\n    "http://127.0.0.1:8787/books/<id>",\n    headers={"Authorization": "Bearer <token>"},\n)\nprint(response.status_code, response.text)\n```',
+            get,
+        )
+        self.assertIn(
+            '```javascript\nconst response = await fetch("http://127.0.0.1:8787/books/<id>", {\n  headers: { Authorization: "Bearer <token>" },\n});\nconsole.log(response.status, await response.text());\n```',
+            get,
+        )
+        self.assertIn(
+            '```rust\nlet client = reqwest::Client::new();\nlet response = client\n    .get("http://127.0.0.1:8787/books/<id>")\n    .header("Authorization", "Bearer <token>")\n    .send()\n    .await?;\nprintln!("{} {}", response.status(), response.text().await?);\n```',
+            get,
+        )
+        fences = re.findall(r"^```(\w+)$", get.split("### Example response")[0], re.MULTILINE)
+        self.assertEqual(fences, ["console", "powershell", "python", "javascript", "rust"])
         post = self.pages["books.md"].split("## `POST /books`")[1]
         # A request example sends only required fields (optional ones may be
         # alternatives), with the JSON on one line so the Copy button keeps it.
         self.assertIn("    -X POST \\\n    -H 'Content-Type: application/json' \\\n    -d '{\"title\": \"string\"}'", post)
-        # An open route sends no credential.
+        self.assertIn("    -Method Post `\n    -ContentType 'application/json' `\n    -Body '{\"title\": \"string\"}'", post)
+        self.assertIn('requests.post(\n    "http://127.0.0.1:8787/books",\n    json={"title": "string"},\n)', post)
+        self.assertIn('  method: "POST",\n  headers: { "Content-Type": "application/json" },\n  body: JSON.stringify({"title": "string"}),', post)
+        self.assertIn('    .post("http://127.0.0.1:8787/books")\n    .json(&serde_json::json!({"title": "string"}))', post)
+        # An open route sends no credential, and a bare GET stays one call.
         shelf = self.pages["books.md"].split("## `GET /shelves/{shelf}`")[1]
         self.assertIn("$ curl 'http://127.0.0.1:8787/shelves/<shelf>'\n```", shelf)
+        self.assertIn("Invoke-RestMethod -Uri 'http://127.0.0.1:8787/shelves/<shelf>'\n```", shelf)
+        self.assertIn('response = requests.get("http://127.0.0.1:8787/shelves/<shelf>")\n', shelf)
+        self.assertIn('await fetch("http://127.0.0.1:8787/shelves/<shelf>");\n', shelf)
+        self.assertIn('let response = reqwest::get("http://127.0.0.1:8787/shelves/<shelf>").await?;\n', shelf)
 
     def test_example_response(self) -> None:
         get = self.pages["books.md"].split("## `GET /books/{id}`")[1].split("## `DELETE")[0]
@@ -320,7 +347,10 @@ class RenderTest(unittest.TestCase):
 
     def test_no_raw_html(self) -> None:
         for name, text in self.pages.items():
-            outside_code = re.sub(r"`[^`]*`", "", text)
+            # Drop fenced blocks first: a PowerShell sample ends lines with a
+            # backtick, which would otherwise pair with an inline code span.
+            outside_fences = re.sub(r"^```.*?^```$", "", text, flags=re.DOTALL | re.MULTILINE)
+            outside_code = re.sub(r"`[^`]*`", "", outside_fences)
             self.assertNotRegex(outside_code, r"<[a-zA-Z/]", name)
 
 

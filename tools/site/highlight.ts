@@ -23,6 +23,7 @@ import http from "@shikijs/langs/http";
 import json from "@shikijs/langs/json";
 import jsonc from "@shikijs/langs/jsonc";
 import nginx from "@shikijs/langs/nginx";
+import powershell from "@shikijs/langs/powershell";
 import python from "@shikijs/langs/python";
 import rust from "@shikijs/langs/rust";
 import shellscript from "@shikijs/langs/shellscript";
@@ -144,6 +145,9 @@ const LANGUAGE_NAMES: ReadonlyMap<string, string> = new Map([
   ["rs", "rust"],
   ["python", "python"],
   ["py", "python"],
+  ["powershell", "powershell"],
+  ["pwsh", "powershell"],
+  ["ps1", "powershell"],
   ["sql", "sql"],
   ["nginx", "nginx"],
   ["http", "http"],
@@ -160,7 +164,20 @@ let highlighter: HighlighterCore | null = null;
 function getHighlighter(): HighlighterCore {
   highlighter ??= createHighlighterCoreSync({
     themes: [THEME_REGISTRATION],
-    langs: [http, json, jsonc, nginx, python, rust, shellscript, sql, toml, typescript, yaml],
+    langs: [
+      http,
+      json,
+      jsonc,
+      nginx,
+      powershell,
+      python,
+      rust,
+      shellscript,
+      sql,
+      toml,
+      typescript,
+      yaml,
+    ],
     // A grammar pattern the engine cannot translate matches nothing instead of throwing.
     engine: createJavaScriptRegexEngine({ forgiving: true }),
   });

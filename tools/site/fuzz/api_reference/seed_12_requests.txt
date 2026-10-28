@@ -1,0 +1,78 @@
+# Books
+
+## `POST /api/books`
+
+### Example request
+
+```console
+$ curl 'http://127.0.0.1:8787/api/books' \
+    -X POST \
+    -H 'Content-Type: application/json' \
+    -d '{"title": "string"}'
+```
+
+```powershell
+Invoke-RestMethod -Uri 'http://127.0.0.1:8787/api/books' `
+    -Method Post `
+    -ContentType 'application/json' `
+    -Body '{"title": "string"}'
+```
+
+```python
+import requests
+
+response = requests.post(
+    "http://127.0.0.1:8787/api/books",
+    json={"title": "string"},
+)
+print(response.status_code, response.text)
+```
+
+```javascript
+const response = await fetch("http://127.0.0.1:8787/api/books", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({"title": "string"}),
+});
+console.log(response.status, await response.text());
+```
+
+```rust
+let client = reqwest::Client::new();
+let response = client
+    .post("http://127.0.0.1:8787/api/books")
+    .json(&serde_json::json!({"title": "string"}))
+    .send()
+    .await?;
+println!("{} {}", response.status(), response.text().await?);
+```
+
+### Example response
+
+Status `201`: Added.
+
+```json
+{ "id": 1 }
+```
+
+## `GET /api/books`
+
+### Example request
+
+A note first.
+
+```console
+$ curl 'http://127.0.0.1:8787/api/books'
+```
+
+- ```console
+  $ curl 'in a list'
+  ```
+
+```console
+$ curl 'the same language again'
+```
+
+```
+no language
+```

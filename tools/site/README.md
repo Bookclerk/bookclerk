@@ -90,8 +90,8 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   so opening one closes the other, and `docs.js` also closes the open one
   on a tap outside it, Escape or a followed link.
 - `highlight.ts` – syntax colors for fenced code blocks in the languages the
-  docs use (shell, TOML, YAML, JSON, TypeScript, Rust, Python, SQL, nginx,
-  HTTP), as `<span class="hl-…">` around escaped text; other fences stay
+  docs use (shell, PowerShell, TOML, YAML, JSON, TypeScript, Rust, Python,
+  SQL, nginx, HTTP), as `<span class="hl-…">` around escaped text; other fences stay
   plain. [Shiki](https://shiki.style/) tokenizes the code with the TextMate
   grammars editors use; a placeholder theme marks each kind of token, and
   `highlight.ts` turns those marks into classes and writes the HTML itself,
@@ -141,7 +141,8 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   section being read (`aria-current="location"`), kept in view when the
   rail scrolls, and the stepped line beside the rail that follows it,
   curving in and out with the nested routes of an API page, tabs for an
-  operation's example responses, and a filter box above the sidebar
+  operation's example responses, a page-wide language picker for its
+  example requests, and a filter box above the sidebar
   groups (`/` focuses it). On first focus the filter reads the docs
   version's search index (`/docs/search-index.json`, or under
   `/docs/v/<ref>/`), which the Worker builds from the docs repository:

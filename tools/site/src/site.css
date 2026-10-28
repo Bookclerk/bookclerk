@@ -2367,6 +2367,63 @@ code.inline {
   outline-offset: -2px;
   border-radius: 4px;
 }
+/* Example requests (layoutRequests): one panel per language. docs.js turns
+   two or more into a language picker inside a card; without it the samples
+   stack. The picker shares the response tabs' look. */
+.doc .api-request + .api-request {
+  margin-top: 0.6em;
+}
+.doc .api-requests.has-tabs .api-request-group {
+  border: 1px solid var(--docs-line);
+  border-radius: 8px;
+  background: var(--code-card);
+  margin-top: 0.6em;
+}
+.doc .api-requests.has-tabs .api-request {
+  margin: 0;
+}
+.doc .api-requests.has-tabs .api-request .code {
+  margin: 0;
+}
+/* The picked tab names the language, so the block's own label goes. */
+.doc .api-requests.has-tabs .api-request .code::before {
+  content: none;
+}
+.doc .api-requests.has-tabs .api-request pre {
+  border: 0;
+  border-radius: 0 0 8px 8px;
+  padding-top: 14px;
+}
+.api-request-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 4px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--docs-line);
+}
+.api-request-tabs button {
+  min-height: 36px;
+  padding: 0 8px;
+  margin-bottom: -1px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  font: 500 13px/1 var(--font-sans);
+  color: var(--docs-soft);
+  cursor: pointer;
+}
+.api-request-tabs button:hover {
+  color: var(--ink);
+}
+.api-request-tabs button[aria-selected="true"] {
+  color: var(--ink);
+  border-bottom-color: var(--teal);
+}
+.api-request-tabs button:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
 .docs-nav .nav-sub,
 .docs-menus .nav-sub {
   margin: 2px 0 4px 12px;
