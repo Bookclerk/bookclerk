@@ -466,8 +466,15 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
 .heading-wrapper:not(.level-h2):not(.level-h3) { --heading-lh: 26px; }
 .heading-anchor {
   position: absolute; top: 0; left: -28px; display: flex; align-items: center; justify-content: center;
-  width: 22px; height: var(--heading-lh); color: var(--docs-soft); opacity: 0; transition: opacity 0.15s, color 0.15s;
+  width: 22px; height: var(--heading-lh); margin: 0; color: var(--docs-soft); opacity: 0; transition: opacity 0.15s, color 0.15s;
 }
+/* Text for screen readers only, such as docs.js's copy status. */
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+/* Beats the space the adjacency rule gives whatever follows a heading. */
+.doc .heading-wrapper > .heading-anchor { margin: 0; }
 .heading-wrapper:hover .heading-anchor, .heading-anchor:focus-visible, .heading-anchor.copied { opacity: 1; }
 .heading-anchor:hover, .heading-anchor.copied { color: var(--teal-text); }
 @media (hover: none), (max-width: 900px) {
@@ -486,6 +493,7 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
   display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border: 0; border-radius: 6px;
   background: none; color: inherit; font: inherit; text-decoration: none; cursor: default;
 }
+.doc-action[hidden] { display: none; }
 :is(a, button).doc-action { cursor: pointer; }
 :is(a, button).doc-action:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); color: var(--ink); }
 .doc-actions > :not([hidden]) ~ :not([hidden])::before {

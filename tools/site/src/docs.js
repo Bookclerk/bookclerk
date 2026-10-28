@@ -99,19 +99,32 @@
    */
   function copyHeadingLinks() {
     if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") return;
-    for (const anchor of document.querySelectorAll(".doc .heading-anchor")) {
-      const label = anchor.getAttribute("aria-label") || "";
-      let reset = 0;
+    const anchors = document.querySelectorAll(".doc .heading-anchor");
+    if (anchors.length === 0) return;
+    // One polite status line tells screen readers whether the copy worked.
+    const status = document.createElement("span");
+    status.className = "visually-hidden";
+    status.setAttribute("role", "status");
+    document.body.append(status);
+    let reset = 0;
+    const show = (anchor, text, copied) => {
+      for (const other of anchors) other.classList.remove("copied");
+      anchor.classList.toggle("copied", copied);
+      anchor.title = text;
+      status.textContent = text;
+      window.clearTimeout(reset);
+      reset = window.setTimeout(() => {
+        anchor.classList.remove("copied");
+        anchor.removeAttribute("title");
+        status.textContent = "";
+      }, 2000);
+    };
+    for (const anchor of anchors) {
       anchor.addEventListener("click", () => {
-        navigator.clipboard.writeText(anchor.href).then(() => {
-          anchor.classList.add("copied");
-          anchor.setAttribute("aria-label", "Link copied");
-          window.clearTimeout(reset);
-          reset = window.setTimeout(() => {
-            anchor.classList.remove("copied");
-            anchor.setAttribute("aria-label", label);
-          }, 2000);
-        }, () => {});
+        navigator.clipboard.writeText(anchor.href).then(
+          () => show(anchor, "Link copied", true),
+          () => show(anchor, "Could not copy the link", false),
+        );
       });
     }
   }
