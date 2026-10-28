@@ -620,9 +620,10 @@ class FakeGitHub:
         self.file = json.dumps({"signedContributors": signed or []}).encode()
         self.blob = 1
         self.comments: list[dict] = []
-        #: Each ``Bookclerk CLA`` report, in order, as ``(sha, {"state",
-        #: "context", "description", "target_url"})``; ``state`` is
-        #: ``pending`` for an in-progress check run, else its conclusion.
+        #: Each ``Bookclerk CLA`` check run created, oldest first, as ``(sha,
+        #: {"state", "context", "description", "target_url"})``; ``state`` is
+        #: ``pending`` for an in-progress check run, else its conclusion. The
+        #: newest one per commit is what GitHub shows.
         self.statuses: list[tuple[str, dict]] = []
         #: Check runs by id: ``(sha, status, creator login)``.
         self.check_runs: dict[int, tuple[str, str, str]] = {}
@@ -848,23 +849,26 @@ class FakeGitHub:
         if method in ("POST", "PATCH") and route.split("/", 1)[0] == "check-runs":
             assert body is not None and body["name"] == "Bookclerk CLA"
             assert body["output"]["title"] == body["output"]["summary"]
-            if method == "POST":
-                run_id, sha = 7000 + len(self.check_runs), body["head_sha"]
-            else:
+            state = "pending" if body["status"] == "in_progress" else body.get("conclusion")
+            assert (body["status"], state) in (("in_progress", "pending"), ("completed", "success"), ("completed", "failure"))
+            if method == "PATCH":
+                # Completing an older run changes nothing GitHub shows: the
+                # newest run of a name is the one that counts.
                 run_id = int(route.rsplit("/", 1)[1])
                 sha, status, creator = self.check_runs[run_id]
-                assert "head_sha" not in body
+                assert "head_sha" not in body and state != "pending"
                 assert status == "in_progress", "only an in-progress check is completed in place"
                 assert creator == self.commenter_account()["login"], "only a check run's App may update it"
-            state = "pending" if body["status"] == "in_progress" else body["conclusion"]
-            assert (body["status"], state) in (("in_progress", "pending"), ("completed", "success"), ("completed", "failure"))
+                self.check_runs[run_id] = (sha, "completed", creator)
+                return 200, json.dumps({"id": run_id, "status": "completed"}).encode()
             if self.before_status is not None and state != "pending":
                 hook, self.before_status = self.before_status, None
                 hook()
+            run_id, sha = 7000 + len(self.check_runs), body["head_sha"]
             self.check_runs[run_id] = (sha, body["status"], self.commenter_account()["login"])
             self.statuses.append((sha, {"state": state, "context": body["name"], "description": body["output"]["title"], "target_url": body["details_url"]}))
             self.status_creators.append(self.commenter_account())
-            return (201 if method == "POST" else 200), json.dumps({"id": run_id, "status": body["status"]}).encode()
+            return 201, json.dumps({"id": run_id, "status": body["status"]}).encode()
         return 404, b"{}"
 
     def signed_ids(self) -> set[int]:
@@ -1409,15 +1413,32 @@ class EndToEndTests(unittest.TestCase):
         drive(fake, comment_event(ALICE, cla.SIGN_PHRASE))
         self.assertEqual(fake.statuses[-1][1]["description"], "Everyone has signed.")
 
-    def test_the_check_run_in_progress_is_completed_in_place(self) -> None:
+    def test_a_verdict_is_a_new_check_run_and_completes_the_one_in_progress(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
         drive(fake, pr_event(fake))
-        self.assertEqual([r for r in fake.requests if "check-runs" in r[1]],
-                         [("POST", "repos/bookclerk/bookclerk/check-runs"), ("PATCH", "repos/bookclerk/bookclerk/check-runs/7000")])
-        self.assertEqual(fake.check_runs, {7000: (SHA_C, "completed", APP["login"])})
+        self.assertEqual([r for r in fake.requests if "check-runs" in r[1]], [
+            ("POST", "repos/bookclerk/bookclerk/check-runs"),
+            ("POST", "repos/bookclerk/bookclerk/check-runs"),
+            ("PATCH", "repos/bookclerk/bookclerk/check-runs/7000"),
+        ])
+        self.assertEqual(fake.check_runs, {7000: (SHA_C, "completed", APP["login"]), 7001: (SHA_C, "completed", APP["login"])})
         drive(fake, comment_event(ALICE, cla.SIGN_PHRASE))
-        self.assertEqual(sorted(fake.check_runs), [7000, 7001])
+        self.assertEqual({status for _, status, _ in fake.check_runs.values()}, {"completed"})
         self.assertEqual(fake.last_status(), "success")
+
+    def test_a_refused_completion_of_the_run_in_progress_only_warns(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        send = fake.comment
+
+        def comment(method: str, path: str, body: dict | None) -> tuple[int, bytes]:
+            return (502, b"") if method == "PATCH" and "check-runs/" in path else send(method, path, body)
+
+        api = cla.GitHub(fake.send, "bookclerk/bookclerk", fake.write, BRANCH_FILES, cla.Reporter(comment, APP["login"]))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cla.run(pr_event(fake), api, CLA_URL, RUN_URL)
+        self.assertIn("cannot complete check run 7000 (HTTP 502)", out.getvalue())
+        self.assertEqual(fake.last_status(), "failure")
 
     def test_an_unreadable_check_run_answer_fails_closed(self) -> None:
         api = cla.GitHub(lambda m, p, b: (201, b"[]"), "bookclerk/bookclerk")

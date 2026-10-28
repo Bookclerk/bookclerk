@@ -176,7 +176,7 @@ BRANCH_START_MESSAGE = "chore(cla): start the signature branch"
 
 #: Times a check decides and posts again because the signature file changed
 #: while it ran.
-STATUS_ATTEMPTS = 3
+CHECK_ATTEMPTS = 3
 
 #: The agreement's path on the default branch. Each signature records a
 #: permalink to it at the last commit that changed it.
@@ -975,14 +975,25 @@ def render_comment(verdict: Verdict, cla_url: str, blocked_by: int | None = None
 
 
 class CheckState(Enum):
-    """Where the ``Bookclerk CLA`` check run stands."""
+    """Where the ``Bookclerk CLA`` check run stands; each value is the Checks API ``status``."""
 
     #: Still reading the pull request and the signatures.
     CHECKING = "in_progress"
-    #: Everyone who has to sign has signed.
+    #: Everyone who has to sign has signed (``completed``, conclusion ``success``).
     SUCCESS = "success"
-    #: Someone still has to sign, or the check could not decide.
+    #: Someone still has to sign, or the check could not decide (``completed``,
+    #: conclusion ``failure``).
     FAILURE = "failure"
+
+    def body(self) -> dict[str, object]:
+        """Returns the ``status`` and, once completed, ``conclusion`` fields for this state."""
+        match self:
+            case CheckState.CHECKING:
+                return {"status": "in_progress"}
+            case CheckState.SUCCESS:
+                return {"status": "completed", "conclusion": "success"}
+            case CheckState.FAILURE:
+                return {"status": "completed", "conclusion": "failure"}
 
 
 def check_title(verdict: Verdict) -> str:
@@ -1035,7 +1046,7 @@ class GitHub:
         * ``branch_files``: the text of each of ``BRANCH_FILES`` by name,
           written when the first signature creates the branch.
         * ``reporter``: who posts the check's comment and the ``Bookclerk CLA``
-          status, or ``None`` to post them through ``send`` as
+          check run, or ``None`` to post them through ``send`` as
           ``WORKFLOW_COMMENT_AUTHOR``.
         * ``server``: the web address of the GitHub server, for permalinks.
         """
@@ -1059,7 +1070,7 @@ class GitHub:
         #: a failed run can still report its error there.
         self.head_sha: str | None = None
         #: The in-progress check run this process created on each commit,
-        #: completed by the next report on that commit.
+        #: completed after the next verdict on that commit is reported.
         self.open_checks: dict[str, int] = {}
 
     def call(self, method: str, path: str, body: dict[str, object] | None = None, ok: tuple[int, ...] = (200, 201)) -> bytes:
@@ -1346,9 +1357,12 @@ class GitHub:
     def set_check(self, sha: str, state: CheckState, description: str, target_url: str) -> None:
         """Reports the ``Bookclerk CLA`` check run on ``sha``.
 
-        A check this process started on ``sha`` is completed in place;
-        otherwise a new check run is created, and GitHub shows the newest one
-        by name.
+        Every report creates a new check run. GitHub shows, and rulesets
+        judge, the newest check run of a name, so of two concurrent runs the
+        one that reports last wins, as the re-read after reporting in
+        ``check_pull`` relies on. A verdict then also completes the
+        in-progress run this process started on ``sha`` with the same
+        result (best effort), so no spinner is left behind it.
 
         # Arguments
         * ``sha``: the commit the check run belongs to.
@@ -1364,19 +1378,22 @@ class GitHub:
             "name": CHECK_NAME,
             "details_url": target_url,
             "output": {"title": description, "summary": description},
+            **state.body(),
         }
-        if state is CheckState.CHECKING:
-            body["status"] = "in_progress"
-        else:
-            body["status"] = "completed"
-            body["conclusion"] = state.value
-        started = self.open_checks.pop(sha, None)
-        if started is not None:
-            self.report("PATCH", f"check-runs/{started}", body)
-            return
         raw = self.report("POST", "check-runs", {"head_sha": sha, **body})
         if state is CheckState.CHECKING:
             self.open_checks[sha] = parse_check_run(raw)
+            return
+        started = self.open_checks.pop(sha, None)
+        if started is None:
+            return
+        try:
+            status, _ = self.reporter.send("PATCH", f"{self.base}/check-runs/{started}", body)
+        except OSError as err:
+            print(f"::warning::cannot complete check run {started}: {err}")
+            return
+        if status != 200:
+            print(f"::warning::cannot complete check run {started} (HTTP {status})")
 
     def upsert_comment(self, number: int, comments: list[Comment], body: str, create: bool) -> None:
         """Edits the check's comment among ``comments``, or posts one when ``create`` is true."""
@@ -1471,7 +1488,7 @@ def check_pull(event: Event, api: GitHub, number: int, cla_url: str, run_url: st
         api.react(comment.id, SIGNED_REACTION)
         if seen is not None:
             api.unreact(comment.id, seen)
-    for _ in range(STATUS_ATTEMPTS):
+    for _ in range(CHECK_ATTEMPTS):
         verdict = evaluate(pull, commits, book)
         blocked_by = blocking_pull(api, pull, book) if verdict.passed else None
         passed = verdict.passed and blocked_by is None

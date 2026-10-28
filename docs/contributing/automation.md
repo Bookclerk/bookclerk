@@ -172,6 +172,12 @@ signed and attributed to the App.
      the token API has no Variables permission to request, so the job mints
      it only for the one write.
 
+   > [!NOTE]
+   > Grant and accept a permission before merging a workflow change that
+   > requests it. A job that asks for a permission the installation lacks
+   > fails to mint its token, so `cla.yml`, for one, would report no
+   > **Bookclerk CLA** check at all and block every pull request.
+
    **Workflows** isn't needed, because none of these pull requests touch
    `.github/workflows/`. Install the App on `bookclerk-docs` as well, with
    the same Contents permission, for `docs-publish.yml`.
