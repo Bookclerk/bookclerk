@@ -71,6 +71,24 @@ SIGNATURE_BRANCH = "cla-signatures"
 #: Path of the signature file on ``SIGNATURE_BRANCH``.
 SIGNATURE_PATH = "signatures/cla.json"
 
+#: Files the first signature writes beside the signature file, so the branch
+#: explains itself: name on the branch, file mode. Their text comes from
+#: ``scripts/cla_branch/`` on the default branch.
+BRANCH_FILES = (("README.md", "100644"), ("setup-rulesets.sh", "100755"))
+
+#: Ruleset rule types that must apply to ``SIGNATURE_BRANCH``: only the App
+#: may create or update it, and nobody may delete it, force-push, merge
+#: into it or push unsigned commits. Each run warns about missing ones.
+SIGNATURE_BRANCH_RULES = frozenset(
+    {"creation", "update", "deletion", "non_fast_forward", "required_linear_history", "required_signatures"}
+)
+
+#: Most rules a branch rules answer may list.
+MAX_BRANCH_RULES = 200
+
+#: A ruleset rule type, such as ``non_fast_forward``.
+RULE_TYPE = re.compile(r"[a-z][a-z_]{0,63}", re.ASCII)
+
 #: Bot accounts exempt from signing. Only API accounts of type ``Bot`` match,
 #: and ``[bot]`` logins cannot be registered by people.
 BOT_ALLOWLIST = frozenset({"dependabot[bot]", "bookclerk[bot]", "github-actions[bot]"})
@@ -742,6 +760,28 @@ def parse_git_object(raw: bytes) -> str:
     return _sha(_object(_load_json(raw), "git object").get("sha"), "git object sha")
 
 
+def parse_branch_rules(raw: bytes) -> frozenset[str]:
+    """Reads ``GET /rules/branches/{branch}``: the active rules for a branch.
+
+    # Returns
+    The rule types that apply.
+
+    # Errors
+    ``ClaInputError`` when the answer is not a list of at most
+    ``MAX_BRANCH_RULES`` objects, each with a lowercase ``type``.
+    """
+    rules = _load_json(raw)
+    if not isinstance(rules, list) or len(rules) > MAX_BRANCH_RULES:
+        raise ClaInputError("branch rules are not a list of at most 200")
+    types = set()
+    for rule in rules:
+        kind = _string(_object(rule, "branch rule").get("type"), "rule type")
+        if RULE_TYPE.fullmatch(kind) is None:
+            raise ClaInputError("rule type is malformed")
+        types.add(kind)
+    return frozenset(types)
+
+
 def is_exempt(account: Account) -> bool:
     """Whether ``account`` is one of the bots that need not sign."""
     return account.type is AccountType.BOT and account.login in BOT_ALLOWLIST
@@ -871,7 +911,9 @@ Transport = Callable[[str, str, "dict[str, object] | None"], "tuple[int, bytes]"
 class GitHub:
     """The few REST calls the check makes, over a ``Transport``."""
 
-    def __init__(self, send: Transport, repository: str, write: Transport | None = None) -> None:
+    def __init__(
+        self, send: Transport, repository: str, write: Transport | None = None, branch_files: dict[str, bytes] | None = None
+    ) -> None:
         """Wraps ``send`` for ``repository`` (``owner/name``).
 
         # Arguments
@@ -880,11 +922,15 @@ class GitHub:
         * ``write``: performs signature writes, with the automation App's
           token, or ``None`` when none is configured (recording a signature
           then fails closed).
+        * ``branch_files``: the text of each of ``BRANCH_FILES`` by name,
+          written when the first signature creates the branch.
         """
         #: The function that performs requests.
         self.send = send
         #: The function that writes the signature file, if any.
         self.write = write
+        #: The files that start the signature branch beside the signatures.
+        self.branch_files = branch_files or {}
         #: ``repos/<owner>/<name>``, the prefix of every REST path.
         self.base = f"repos/{repository}"
         #: The repository's owner and name, for GraphQL.
@@ -1029,7 +1075,10 @@ class GitHub:
         return parse_signatures(data), blob
 
     def create_signature_branch(self, write: Transport, data: bytes, message: str) -> bool:
-        """Creates ``SIGNATURE_BRANCH`` as one commit with no parents that holds only the signature file.
+        """Creates ``SIGNATURE_BRANCH`` as one commit with no parents.
+
+        The commit holds the signature file and ``BRANCH_FILES``, which say
+        what the branch is and how to set the check up.
 
         The tree, commit and branch are created with ``write``, the
         automation App's transport, so the commit is the App's and GitHub
@@ -1041,8 +1090,14 @@ class GitHub:
         # Errors
         ``ApiError`` when GitHub refuses a step.
         """
-        entry = {"path": SIGNATURE_PATH, "mode": "100644", "type": "blob", "content": data.decode("utf-8")}
-        status, raw = write("POST", f"{self.base}/git/trees", {"tree": [entry]})
+        entries: list[dict[str, object]] = []
+        for name, mode in BRANCH_FILES:
+            text = self.branch_files.get(name)
+            if text is None:
+                raise ApiError(f"scripts/cla_branch/{name} is missing, so the signature branch cannot be started")
+            entries.append({"path": name, "mode": mode, "type": "blob", "content": text.decode("utf-8")})
+        entries.append({"path": SIGNATURE_PATH, "mode": "100644", "type": "blob", "content": data.decode("utf-8")})
+        status, raw = write("POST", f"{self.base}/git/trees", {"tree": entries})
         if status != 201:
             raise ApiError(f"POST git/trees: HTTP {status}")
         tree = parse_git_object(raw)
@@ -1102,6 +1157,10 @@ class GitHub:
             if status not in (409, 422):
                 raise ApiError(f"PUT contents/{SIGNATURE_PATH}: HTTP {status}")
         raise ApiError("the signature file kept changing; try recheck")
+
+    def branch_rules(self) -> frozenset[str]:
+        """Reads the rule types that apply to ``SIGNATURE_BRANCH``."""
+        return parse_branch_rules(self.call("GET", f"rules/branches/{SIGNATURE_BRANCH}?per_page={PAGE_SIZE}"))
 
     def set_status(self, sha: str, state: str, description: str, target_url: str) -> None:
         """Posts the ``CLA`` commit status on ``sha``."""
@@ -1283,6 +1342,36 @@ def urllib_transport(token: str, api_url: str) -> Transport:
     return send
 
 
+def load_branch_files(folder: str) -> dict[str, bytes]:
+    """Reads ``BRANCH_FILES`` from ``folder``, leaving out any that cannot be read."""
+    files: dict[str, bytes] = {}
+    for name, _ in BRANCH_FILES:
+        try:
+            with open(os.path.join(folder, name), "rb") as handle:
+                files[name] = handle.read(MAX_SIGNATURE_BYTES)
+        except OSError:
+            continue
+    return files
+
+
+def warn_about_branch_rules(api: GitHub) -> None:
+    """Prints a workflow warning naming each of ``SIGNATURE_BRANCH_RULES`` that does not apply.
+
+    The verdict does not depend on it: a missing rule only means people
+    other than the App could change the signatures.
+    """
+    try:
+        missing = sorted(SIGNATURE_BRANCH_RULES - api.branch_rules())
+    except (ApiError, ClaInputError) as err:
+        print(f"::warning::cannot read the rules for {SIGNATURE_BRANCH}: {err}")
+        return
+    if missing:
+        print(
+            f"::warning::{SIGNATURE_BRANCH} is missing ruleset rules: {', '.join(missing)}. "
+            f"See README.md on that branch, or scripts/cla_branch/README.md, to set them up."
+        )
+
+
 def main(env: dict[str, str]) -> int:
     """Runs the check from the workflow environment.
 
@@ -1300,7 +1389,8 @@ def main(env: dict[str, str]) -> int:
     api_url = env.get("GITHUB_API_URL", "https://api.github.com")
     signature_token = env.get("CLA_SIGNATURE_TOKEN", "")
     write = urllib_transport(signature_token, api_url) if signature_token else None
-    api = GitHub(urllib_transport(env["GITHUB_TOKEN"], api_url), repository, write)
+    branch_files = load_branch_files(os.path.join(os.path.dirname(os.path.abspath(__file__)), "cla_branch"))
+    api = GitHub(urllib_transport(env["GITHUB_TOKEN"], api_url), repository, write, branch_files)
     run_url = f"{server}/{repository}/actions/runs/{env.get('GITHUB_RUN_ID', '')}"
     cla_url = f"{server}/{repository}/blob/main/CLA.md"
     try:
@@ -1309,6 +1399,8 @@ def main(env: dict[str, str]) -> int:
     except (OSError, ClaInputError) as err:
         print(f"cla_check: cannot read the event: {err}", file=sys.stderr)
         return 1
+    if event.kind is not EventKind.MERGE_GROUP:
+        warn_about_branch_rules(api)
     try:
         run(event, api, cla_url, run_url)
     except (ApiError, ClaInputError) as err:

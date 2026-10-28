@@ -585,7 +585,7 @@ class FullSuiteTests(unittest.TestCase):
     def test_cla_files_select_nothing(self) -> None:
         # The checker runs from the default branch in its own workflow; the
         # plan job's test_cla_check.py covers it, so no check is selected.
-        for path in ("scripts/cla_check.py", "CLA.md", "TRADEMARK.md"):
+        for path in ("scripts/cla_check.py", "scripts/cla_branch/README.md", "scripts/cla_branch/setup-rulesets.sh", "CLA.md", "TRADEMARK.md"):
             with self.subTest(path=path):
                 p = plan(path)
                 self.assertFalse(p.full_suite, p.reasons)

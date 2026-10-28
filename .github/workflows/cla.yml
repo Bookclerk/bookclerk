@@ -90,7 +90,9 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-          sparse-checkout: scripts/cla_check.py
+          sparse-checkout: |
+            scripts/cla_check.py
+            scripts/cla_branch/
           sparse-checkout-cone-mode: false
 
       # Only signature writes use it, narrowed to Contents on this

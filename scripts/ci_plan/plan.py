@@ -149,7 +149,9 @@ DOC_FILES = frozenset(
 PLAN_JOB_TEST_PREFIX = "scripts/tests/"
 # Scripts that only plan-job tests exercise (the CLA checker runs in its own
 # workflow, from the default branch, and builds nothing).
-PLAN_JOB_SCRIPT_FILES = frozenset({"scripts/cla_check.py"})
+PLAN_JOB_SCRIPT_FILES = frozenset(
+    {"scripts/cla_check.py", "scripts/cla_branch/README.md", "scripts/cla_branch/setup-rulesets.sh"}
+)
 
 KNOWN_TOP_LEVEL = frozenset(
     {

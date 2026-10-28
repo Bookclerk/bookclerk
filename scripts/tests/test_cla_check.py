@@ -14,8 +14,10 @@ must sign, how signatures are recorded, and what the comment may contain.
 from __future__ import annotations
 
 import base64
+import contextlib
 import copy
 import importlib.util
+import io
 import json
 import random
 import sys
@@ -273,6 +275,17 @@ def oracle(kind: str, raw: bytes) -> object:
         return (data, sha)
     if kind == "gitobject":
         return o_sha(o_obj(o_json(raw)).get("sha"))
+    if kind == "branchrules":
+        rules = o_json(raw)
+        if not isinstance(rules, list) or len(rules) > 200:
+            raise Refused
+        kinds = set()
+        for rule in rules:
+            kind_ = o_str(o_obj(rule).get("type"))
+            if not kind_ or len(kind_) > 64 or not kind_[0].islower() or any(c not in "abcdefghijklmnopqrstuvwxyz_" for c in kind_):
+                raise Refused
+            kinds.add(kind_)
+        return frozenset(kinds)
     raise AssertionError(kind)
 
 
@@ -319,6 +332,8 @@ def module(kind: str, raw: bytes) -> object:
         return cla.parse_contents(raw)
     if kind == "gitobject":
         return cla.parse_git_object(raw)
+    if kind == "branchrules":
+        return cla.parse_branch_rules(raw)
     raise AssertionError(kind)
 
 
@@ -372,6 +387,7 @@ class CorpusTests(unittest.TestCase):
             "coauthors__errors", "coauthors__too_many", "coauthors__count_mismatch", "coauthors__repeat",
             "coauthors__no_cursor", "coauthors__bad_bot_login", "coauthors__null_pull",
             "coauthors__email_not_string", "gitobject__no_sha", "gitobject__upper_sha", "gitobject__not_object",
+            "branchrules__not_list", "branchrules__upper_type", "branchrules__no_type",
         ):
             kind = name.partition("__")[0]
             self.assertEqual(outcome(module, kind, load(name), cla.ClaInputError), ("refused",), name)
@@ -384,6 +400,7 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(module("pull", load("pull__login_trailing_dash"))[1], (1, "alice-", "User"))
         self.assertEqual(module("signatures", load("signatures__two")), (2, frozenset({101, 2})))
         self.assertEqual(module("gitobject", load("gitobject__commit")), SHA_B)
+        self.assertEqual(module("branchrules", load("branchrules__all")), cla.SIGNATURE_BRANCH_RULES)
         data, blob = cla.parse_contents(load("contents__seed"))
         self.assertEqual(data, load("signatures__seed"))
         self.assertEqual(blob, SHA_A)
@@ -596,8 +613,12 @@ class FakeGitHub:
         #: Whether ``cla-signatures`` exists, and holds the signature file.
         self.branch = True
         self.has_file = True
-        #: Git objects created through the API, by SHA.
+        #: Git objects created through the API, by SHA, and the tree the
+        #: branch was started with, by path.
         self.objects: dict[str, dict] = {}
+        self.branch_tree: dict[str, dict] = {}
+        #: The ruleset rule types that apply to ``cla-signatures``.
+        self.rules: set[str] = set(cla.SIGNATURE_BRANCH_RULES)
         #: Runs once, just before the branch is created, to stand in for a
         #: concurrent run that created it first.
         self.before_ref = None
@@ -698,6 +719,8 @@ class FakeGitHub:
                 return 404, b'{"message": "Not Found"}'
             content = base64.encodebytes(self.file).decode()
             return 200, json.dumps({"type": "file", "encoding": "base64", "sha": self.blob_sha(), "content": content}).encode()
+        if method == "GET" and route == "rules/branches/cla-signatures":
+            return 200, json.dumps([{"type": t, "ruleset_id": 1} for t in sorted(self.rules)]).encode()
         if method == "GET" and route == "git/ref/heads/cla-signatures":
             return (200, b"{}") if self.branch else (404, b"{}")
         if method == "POST" and route in ("git/trees", "git/commits", "git/refs"):
@@ -712,9 +735,11 @@ class FakeGitHub:
                     return 422, b'{"message": "Reference already exists"}'
                 commit_obj = self.objects[body["sha"]]
                 assert commit_obj["parents"] == [], "the branch must start with no history"
-                tree = self.objects[commit_obj["tree"]]["tree"]
-                assert [e["path"] for e in tree] == ["signatures/cla.json"], "the branch holds only the signature file"
-                self.file = tree[0]["content"].encode("utf-8")
+                tree = {e["path"]: e for e in self.objects[commit_obj["tree"]]["tree"]}
+                assert sorted(tree) == ["README.md", "setup-rulesets.sh", "signatures/cla.json"], sorted(tree)
+                assert tree["setup-rulesets.sh"]["mode"] == "100755"
+                self.branch_tree = tree
+                self.file = tree["signatures/cla.json"]["content"].encode("utf-8")
                 self.branch = self.has_file = True
                 self.blob += 1
                 return 201, b"{}"
@@ -811,8 +836,12 @@ def pr_event_for(fake: FakeGitHub, number: int) -> object:
     return run_event(fake, number)
 
 
+#: The files that start the signature branch, as the workflow checks them out.
+BRANCH_FILES = cla.load_branch_files(str(Path(cla.__file__).resolve().parent / "cla_branch"))
+
+
 def drive(fake: FakeGitHub, event: object) -> None:
-    cla.run(event, cla.GitHub(fake.send, "bookclerk/bookclerk", fake.write), CLA_URL, RUN_URL)
+    cla.run(event, cla.GitHub(fake.send, "bookclerk/bookclerk", fake.write, BRANCH_FILES), CLA_URL, RUN_URL)
 
 
 class EndToEndTests(unittest.TestCase):
@@ -847,6 +876,9 @@ class EndToEndTests(unittest.TestCase):
         self.assertTrue(fake.branch)
         self.assertEqual(fake.signed_ids(), {101})
         self.assertEqual(fake.last_status(), "failure")
+        # The branch explains itself with the default branch's templates.
+        for name, _ in cla.BRANCH_FILES:
+            self.assertEqual(fake.branch_tree[name]["content"].encode(), BRANCH_FILES[name])
         # Later signatures append to it through the contents API.
         objects = len(fake.objects)
         drive(fake, comment_event(BOB, cla.SIGN_PHRASE))
@@ -874,6 +906,26 @@ class EndToEndTests(unittest.TestCase):
         drive(fake, comment_event(ALICE, cla.SIGN_PHRASE))
         self.assertEqual(fake.signed_ids(), {101})
         self.assertEqual(fake.objects, {})
+
+    def test_the_branch_is_not_started_without_its_readme(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        fake.branch = False
+        api = cla.GitHub(fake.send, "bookclerk/bookclerk", fake.write, {"README.md": b"x"})
+        with self.assertRaises(cla.ApiError):
+            cla.run(comment_event(ALICE, cla.SIGN_PHRASE), api, CLA_URL, RUN_URL)
+        self.assertFalse(fake.branch)
+
+    def test_missing_branch_rules_are_warned_about(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        api = cla.GitHub(fake.send, "bookclerk/bookclerk")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cla.warn_about_branch_rules(api)
+        self.assertEqual(out.getvalue(), "")
+        fake.rules -= {"update", "required_signatures"}
+        with contextlib.redirect_stdout(out):
+            cla.warn_about_branch_rules(api)
+        self.assertIn("::warning::cla-signatures is missing ruleset rules: required_signatures, update.", out.getvalue())
 
     def test_without_a_signature_token_a_signature_fails_closed(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
