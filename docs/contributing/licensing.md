@@ -91,7 +91,7 @@ repositories:
    else from it.
 
 A pull request that edits or deletes the trigger can only delay the check
-or keep it from running, and a required **Bookclerk CLA** status that never arrives
+or keep it from running, and a required **Bookclerk CLA** check that never arrives
 keeps the pull request from merging.
 
 > [!NOTE]
@@ -137,29 +137,41 @@ Who must sign:
   closed, and when it moves to another base branch, because the new base can
   bring in commits from other authors without changing the head commit.
 
-The result is the **Bookclerk CLA** commit status on the pull request's head commit,
+The result is the **Bookclerk CLA** check run on the pull request's head commit,
 and one comment that lists who still has to sign, edited in place. Both
 come from the [automation App](automation.md#automation-app), or from
-`github-actions[bot]` in a repository without the App. While a check runs,
-the status is pending with "Checking signatures…"; it then says who is
-left ("1 still to sign.") or "Everyone has signed.". Merge
-queue runs report a passing **Bookclerk CLA** status, because each pull request
-passed it to enter the queue. A pull request with more than 250 commits
+`github-actions[bot]` in a repository without the App. Because the check is
+a check run created through the Checks API rather than a commit status,
+GitHub lists it under the App's own heading, with the App's name and logo,
+like any other App's checks. While a check runs, it is in progress with
+"Checking signatures…"; it then says who is left ("1 still to sign.") or
+"Everyone has signed.", and **Details** opens the workflow run. To run it
+again, press **Re-run** on the check or comment `@bookclerk recheck`. The
+button needs no webhook: GitHub starts the `CLA` workflow for a re-run of a
+check run that another App created. The comment also names who signed on
+the pull request ("Signed on this pull request: @alice."). Merge
+queue runs report a passing **Bookclerk CLA** check, because each pull request
+passed it to enter the queue.
+
+Commits that already carry a **Bookclerk CLA** commit status, from before
+the check became a check run, get each verdict as a status too. GitHub
+requires both a check run and a status of a required name to pass, so the
+old status would otherwise keep those pull requests blocked. A pull request with more than 250 commits
 cannot be checked and fails closed.
 
-The status belongs to the commit, not to the pull request. When other open
+The check belongs to the commit, not to the pull request. When other open
 pull requests have the same head commit (from another author, or against
-another base), the status passes only when every one of them passes, so
+another base), the check passes only when every one of them passes, so
 nobody can borrow a signed contributor's result. When one of them is
-closed, the others decide the status again. When one is pushed to, the
-commit it left keeps its last status until one of the others is checked
+closed, the others decide the check again. When one is pushed to, the
+commit it left keeps its last check until one of the others is checked
 again; comment `@bookclerk recheck` there. More than 10 such pull requests fail
 closed.
 
 > [!NOTE]
 > Anyone can open a pull request on the same head commit as yours and turn
 > your check red. The check's comment names that pull request. A maintainer
-> closes it, and the status is decided again without it; comment
+> closes it, and the check is decided again without it; comment
 > `@bookclerk recheck` if it is not.
 
 Signatures are recorded in `signatures/cla.json` on the `cla-signatures`
@@ -202,18 +214,21 @@ Setup, once, by a repository administrator:
 
    Every run of the check reads the rules that apply to `cla-signatures`
    and posts a workflow warning naming any of these that is missing.
-4. After the check has run on a pull request, add the **Bookclerk CLA** status to the
+4. After the check has run on a pull request, add the **Bookclerk CLA** check to the
    required checks in the main branch ruleset, with the automation App as
-   its expected source, so no other app that can post statuses can satisfy
-   it. The `CLA check` job is only the workflow that reports it.
+   its expected source, so no other app that can post checks or statuses
+   can satisfy it. The `CLA check` job is only the workflow that reports it.
+   A required check pinned to an App is met by that App's check run or
+   commit status of the same name, so switching between the two needs no
+   ruleset change.
 
 > [!NOTE]
-> When the status moves to another source (from GitHub Actions to the App,
+> When the check moves to another source (from GitHub Actions to the App,
 > say), set the required check to **any source** first, merge the change,
 > then pin the new source. A pinned source that never reports blocks every
 > pull request.
 >
-> When the status name changes (`STATUS_CONTEXT` in `scripts/cla_check.py`),
+> When the check's name changes (`CHECK_NAME` in `scripts/cla_check.py`),
 > swap the required check right after the change merges. Every run uses the
 > default branch's checker, so the change's own merge queue run still reports
 > the old name, and open pull requests report the new one only once they are

@@ -41,13 +41,18 @@ Each entry records the GitHub account (`name`, `id`), the signing comment
    so change that text to match, or signature comments will not run the
    check.
 2. Create a GitHub App (**Settings → Developer settings → GitHub Apps**,
-   for a user or an organization) and give it three repository permissions:
+   for a user or an organization), upload a logo under **Display
+   information** (GitHub shows it beside the check), and give it four
+   repository permissions:
    - **Contents: read and write**, to create this branch and add
      signatures.
    - **Pull requests: read and write**, to post the check's comment under
      the App's name and avatar.
-   - **Commit statuses: read and write**, to post the `Bookclerk CLA` status as the
-     App.
+   - **Checks: read and write**, to post the `Bookclerk CLA` check run as
+     the App, listed under its name and logo.
+   - **Commit statuses: read and write**, to read a commit's statuses and
+     update a `Bookclerk CLA` status left from before the check became a
+     check run.
 
    It needs no webhook. Install it on the repository, then generate a
    private key.
@@ -79,7 +84,7 @@ Each entry records the GitHub account (`name`, `id`), the signing comment
    GitHub-signed commit on top of the branch. The App never needs the
    Administration permission. Every check run reads the rules that apply
    to this branch and warns when one is missing.
-5. After the check has run once, require the **Bookclerk CLA** status in the default
+5. After the check has run once, require the **Bookclerk CLA** check in the default
    branch's ruleset, with the App as its expected source.
 
 ## Start over

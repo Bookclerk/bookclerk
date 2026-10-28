@@ -3,7 +3,8 @@
 
 The ``CLA`` workflow runs this on ``workflow_run`` after the unprivileged
 ``CLA trigger`` workflow ran for a pull request, on signature and ``recheck``
-comments, and on ``merge_group``. It reads only pull request metadata through
+comments, on **Re-run** of the ``Bookclerk CLA`` check run (``check_run``),
+and on ``merge_group``. It reads only pull request metadata through
 the REST API and never checks out pull request code.
 
 Who must sign: the pull request author, the GitHub account linked to every
@@ -17,7 +18,9 @@ check, since nobody can sign for it. A co-author whose email matches no
 account does not: the pull request author is the one authenticated party,
 and their signature covers what they submit (CLA section 4).
 
-The verdict is the ``Bookclerk CLA`` commit status on the pull request's head commit.
+The verdict is the ``Bookclerk CLA`` check run on the pull request's head commit,
+created through the Checks API so GitHub lists it under the App's name and
+logo.
 Signatures live in ``signatures/cla.json`` on the ``cla-signatures`` branch,
 in the format CLA Assistant Lite used, and are written through the contents
 API with the automation App's token; the first signature starts the branch
@@ -33,12 +36,12 @@ fails closed.
 Usage (inside the workflow): ``cla_check.py`` with ``GITHUB_TOKEN``,
 ``GITHUB_REPOSITORY``, ``GITHUB_EVENT_NAME``, ``GITHUB_EVENT_PATH`` and
 ``GITHUB_SERVER_URL`` set, plus ``CLA_SIGNATURE_TOKEN``, an automation App
-token that may write to ``cla-signatures``, comment on pull requests and post
-commit statuses, and ``CLA_APP_SLUG``, that App's slug. Only that token
+token that may write to ``cla-signatures``, comment on pull requests and
+create check runs, and ``CLA_APP_SLUG``, that App's slug. Only that token
 records signatures, so the branch can refuse every other writer and each
 signature commit is signed by GitHub for the App. The check's comment and the
-``Bookclerk CLA`` status are posted as the App too, or as the workflow when no App is
-configured. It exits 0 once the status is posted, whatever the
+``Bookclerk CLA`` check run are posted as the App too, or as the workflow when no
+App is configured. It exits 0 once the check run is complete, whatever the
 verdict, and 1 when it could not decide.
 """
 
@@ -72,12 +75,15 @@ RECHECK_WORD = "recheck"
 #: First line of the check's own comment, used to find it again.
 COMMENT_MARKER = "<!-- bookclerk-cla-check -->"
 
-#: Commit status context the check reports; the one to require in rulesets.
-STATUS_CONTEXT = "Bookclerk CLA"
+#: Name of the check run the check reports; the one to require in rulesets.
+CHECK_NAME = "Bookclerk CLA"
 
-#: The description of the ``pending`` status posted while a pull request is
-#: being checked, so the status line shows progress.
+#: The title of the check run while a pull request is being checked, so the
+#: checks list shows progress.
 CHECKING_DESCRIPTION = "Checking signatures…"
+
+#: The title of the check run when the check could not decide.
+ERROR_DESCRIPTION = "The CLA check could not decide; see the run."
 
 #: The branch that holds the signature file.
 SIGNATURE_BRANCH = "cla-signatures"
@@ -171,14 +177,14 @@ BRANCH_START_MESSAGE = "chore(cla): start the signature branch"
 
 #: Times a check decides and posts again because the signature file changed
 #: while it ran.
-STATUS_ATTEMPTS = 3
+CHECK_ATTEMPTS = 3
 
 #: The agreement's path on the default branch. Each signature records a
 #: permalink to it at the last commit that changed it.
 CLA_PATH = "CLA.md"
 
 #: Most open pull requests that may share one head commit. The ``Bookclerk CLA``
-#: status belongs to the commit, so each of them is checked before it passes;
+#: check belongs to the commit, so each of them is checked before it passes;
 #: more than this fails closed.
 MAX_SHARED_PULLS = 10
 
@@ -279,11 +285,11 @@ class PullRequest:
     number: int
     #: The account that opened it.
     author: Account
-    #: The SHA-1 of its head commit, where the status goes.
+    #: The SHA-1 of its head commit, where the check run goes.
     head_sha: str
     #: How many commits it has.
     commits: int
-    #: Whether it is open; a closed pull request gets no status of its own.
+    #: Whether it is open; a closed pull request gets no check of its own.
     open: bool = True
 
 
@@ -345,6 +351,8 @@ class EventKind(Enum):
     ISSUE_COMMENT = "issue_comment"
     #: A merge queue built a merge group.
     MERGE_GROUP = "merge_group"
+    #: Someone pressed **Re-run** on a check run.
+    CHECK_RUN = "check_run"
 
 
 @dataclass(frozen=True)
@@ -364,6 +372,11 @@ class Event:
     merge_group_sha: str | None
     #: The head the ``CLA trigger`` run was for, from a ``workflow_run`` payload.
     run_head: RunHead | None = None
+    #: The commit of a ``Bookclerk CLA`` check run someone asked to re-run,
+    #: from a ``check_run`` payload; ``None`` for another check's re-run.
+    rerun_sha: str | None = None
+    #: The slug of the App that owns that check run.
+    rerun_app: str | None = None
 
 
 @dataclass(frozen=True)
@@ -378,6 +391,9 @@ class SignatureBook:
     entries: tuple[dict[str, object], ...]
     #: The account ids that have signed.
     signed_ids: frozenset[int]
+    #: ``(account id, repository id, pull request number)`` of each entry
+    #: that names where it was signed; older entries may not.
+    signed_on: frozenset[tuple[int, int, int]] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -388,6 +404,9 @@ class Verdict:
     unsigned: tuple[Account, ...]
     #: Commits linked to no account, by SHA-1.
     unlinked: tuple[str, ...]
+    #: Accounts that must sign and signed on this pull request, in
+    #: first-seen order.
+    signed_here: tuple[Account, ...] = ()
 
     @property
     def passed(self) -> bool:
@@ -578,6 +597,13 @@ def parse_event(name: str, raw: bytes) -> Event:
         is_pull = issue.get("pull_request") is not None
         comment = parse_comment(payload.get("comment"))
         return Event(kind, repo_id, number if is_pull else None, comment, None)
+    if kind is EventKind.CHECK_RUN:
+        run = _object(payload.get("check_run"), "check run")
+        sha = _sha(run.get("head_sha"), "check run head")
+        app = _string(_object(run.get("app"), "check run app").get("slug"), "check run app slug")
+        if _string(run.get("name"), "check run name") != CHECK_NAME:
+            return Event(kind, repo_id, None, None, None)
+        return Event(kind, repo_id, None, None, None, rerun_sha=sha, rerun_app=app)
     group = _object(payload.get("merge_group"), "merge group")
     return Event(kind, repo_id, None, None, _sha(group.get("head_sha"), "merge group head"))
 
@@ -745,11 +771,16 @@ def parse_signatures(raw: bytes) -> SignatureBook:
     if not isinstance(entries, list):
         raise ClaInputError("signedContributors is not a list")
     ids = set()
+    places = set()
     for entry in entries:
         obj = _object(entry, "signature")
         _string(obj.get("name"), "signature name")
-        ids.add(_id(obj.get("id"), "signature id"))
-    return SignatureBook(entries=tuple(entries), signed_ids=frozenset(ids))
+        account = _id(obj.get("id"), "signature id")
+        ids.add(account)
+        repo, number = obj.get("repoId"), obj.get("pullRequestNo")
+        if type(repo) is int and type(number) is int:
+            places.add((account, repo, number))
+    return SignatureBook(entries=tuple(entries), signed_ids=frozenset(ids), signed_on=frozenset(places))
 
 
 def parse_contents(raw: bytes) -> tuple[bytes, str]:
@@ -800,6 +831,35 @@ def parse_reaction(raw: bytes) -> int:
     return _id(_object(_load_json(raw), "reaction").get("id"), "reaction id")
 
 
+def parse_check_run(raw: bytes) -> int:
+    """Reads the response to creating a check run.
+
+    # Returns
+    The check run's id, which completing it later needs.
+
+    # Errors
+    ``ClaInputError`` when the response is not an object with an ``id``.
+    """
+    return _id(_object(_load_json(raw), "check run").get("id"), "check run id")
+
+
+def parse_status_contexts(raw: bytes) -> frozenset[str]:
+    """Reads ``GET /commits/{sha}/status``: a commit's combined status.
+
+    # Returns
+    The contexts of the commit statuses on the commit.
+
+    # Errors
+    ``ClaInputError`` when the answer is not an object whose ``statuses``
+    is a list of at most ``PAGE_SIZE`` objects, each with a string
+    ``context``.
+    """
+    statuses = _object(_load_json(raw), "combined status").get("statuses")
+    if not isinstance(statuses, list) or len(statuses) > PAGE_SIZE:
+        raise ClaInputError("statuses are not a list of at most 100")
+    return frozenset(_string(_object(entry, "status").get("context"), "status context") for entry in statuses)
+
+
 def parse_branch_rules(raw: bytes) -> frozenset[str]:
     """Reads ``GET /rules/branches/{branch}``: the active rules for a branch.
 
@@ -846,21 +906,25 @@ def required_signers(pull: PullRequest, commits: list[Commit]) -> list[Account]:
     return signers
 
 
-def evaluate(pull: PullRequest, commits: list[Commit], book: SignatureBook) -> Verdict:
+def evaluate(pull: PullRequest, commits: list[Commit], book: SignatureBook, repo_id: int | None = None) -> Verdict:
     """Decides whether the pull request passes the CLA check.
 
     # Arguments
     * ``pull``: the pull request.
     * ``commits``: all of its commits.
     * ``book``: the signatures recorded so far.
+    * ``repo_id``: the repository's id, to find who signed on this pull
+      request; ``None`` leaves ``signed_here`` empty.
 
     # Returns
-    The accounts that still have to sign and the commits linked to no
-    account; the check passes when both are empty.
+    The accounts that still have to sign, the commits linked to no account
+    and who signed here; the check passes when the first two are empty.
     """
-    unsigned = tuple(a for a in required_signers(pull, commits) if a.id not in book.signed_ids)
+    required = required_signers(pull, commits)
+    unsigned = tuple(a for a in required if a.id not in book.signed_ids)
     unlinked = tuple(dict.fromkeys(c.sha for c in commits if c.author is None))
-    return Verdict(unsigned=unsigned, unlinked=unlinked)
+    signed_here = () if repo_id is None else tuple(a for a in required if (a.id, repo_id, pull.number) in book.signed_on)
+    return Verdict(unsigned=unsigned, unlinked=unlinked, signed_here=signed_here)
 
 
 def render_signatures(entries: list[dict[str, object]]) -> bytes:
@@ -925,23 +989,27 @@ def render_comment(verdict: Verdict, cla_url: str, blocked_by: int | None = None
     The Markdown body, starting with ``COMMENT_MARKER``.
     """
     lines = [COMMENT_MARKER]
+    signed = ["", "Signed on this pull request: " + ", ".join(f"@{a.login}" for a in verdict.signed_here) + "."] if verdict.signed_here else []
     if verdict.passed and blocked_by is None:
         lines.append("Everyone on this pull request has accepted the Bookclerk CLA. Thank you!")
+        lines += signed
         return "\n".join(lines) + "\n"
     if verdict.passed:
         lines += [
             (
                 "Everyone on this pull request has accepted the Bookclerk CLA, but the check stays red:"
-                f" #{blocked_by} has the same head commit, and the check's status belongs to the commit."
+                f" #{blocked_by} has the same head commit, and the check belongs to the commit."
             ),
             "",
             f"Once #{blocked_by} is closed, pushed to, or signed, comment `{recheck}` here.",
+            *signed,
         ]
         return "\n".join(lines) + "\n"
     lines.append(
         "Thank you for your pull request. Before it can be merged, everyone who wrote"
         f" it needs to accept the [Bookclerk Contributor License Agreement]({cla_url}) once."
     )
+    lines += signed
     if verdict.unsigned:
         lines += ["", "Still to sign: " + ", ".join(f"@{a.login}" for a in verdict.unsigned) + "."]
         lines += ["", "To sign, read the agreement and post this exact comment:", "", "```text", SIGN_PHRASE, "```"]
@@ -957,8 +1025,40 @@ def render_comment(verdict: Verdict, cla_url: str, blocked_by: int | None = None
     return "\n".join(lines) + "\n"
 
 
-def status_description(verdict: Verdict) -> str:
-    """Returns the commit status description, at most 140 characters."""
+class CheckState(Enum):
+    """Where the ``Bookclerk CLA`` check run stands; each value is the Checks API ``status``."""
+
+    #: Still reading the pull request and the signatures.
+    CHECKING = "in_progress"
+    #: Everyone who has to sign has signed (``completed``, conclusion ``success``).
+    SUCCESS = "success"
+    #: Someone still has to sign, or the check could not decide (``completed``,
+    #: conclusion ``failure``).
+    FAILURE = "failure"
+
+    def body(self) -> dict[str, object]:
+        """Returns the ``status`` and, once completed, ``conclusion`` fields for this state."""
+        match self:
+            case CheckState.CHECKING:
+                return {"status": "in_progress"}
+            case CheckState.SUCCESS:
+                return {"status": "completed", "conclusion": "success"}
+            case CheckState.FAILURE:
+                return {"status": "completed", "conclusion": "failure"}
+
+    def legacy_status(self) -> str:
+        """Returns the commit status ``state`` that mirrors this state."""
+        match self:
+            case CheckState.CHECKING:
+                return "pending"
+            case CheckState.SUCCESS:
+                return "success"
+            case CheckState.FAILURE:
+                return "failure"
+
+
+def check_title(verdict: Verdict) -> str:
+    """Returns the check run's title, at most 140 characters so it fits one line."""
     if verdict.passed:
         return "Everyone has signed."
     parts = []
@@ -976,7 +1076,7 @@ Transport = Callable[[str, str, "dict[str, object] | None"], "tuple[int, bytes]"
 
 @dataclass(frozen=True)
 class Reporter:
-    """The bot account that posts the check's comment and status, and how to reach it."""
+    """The bot account that posts the check's comment and check run, and how to reach it."""
 
     #: Sends that bot's requests, with its token.
     send: Transport
@@ -1007,7 +1107,7 @@ class GitHub:
         * ``branch_files``: the text of each of ``BRANCH_FILES`` by name,
           written when the first signature creates the branch.
         * ``reporter``: who posts the check's comment and the ``Bookclerk CLA``
-          status, or ``None`` to post them through ``send`` as
+          check run, or ``None`` to post them through ``send`` as
           ``WORKFLOW_COMMENT_AUTHOR``.
         * ``server``: the web address of the GitHub server, for permalinks.
         """
@@ -1017,7 +1117,7 @@ class GitHub:
         self.write = write
         #: The files that start the signature branch beside the signatures.
         self.branch_files = branch_files or {}
-        #: Who posts the check's comment and status.
+        #: Who posts the check's comment and check run.
         self.reporter = reporter or Reporter(send, WORKFLOW_COMMENT_AUTHOR)
         #: ``repos/<owner>/<name>``, the prefix of every REST path.
         self.base = f"repos/{repository}"
@@ -1028,8 +1128,14 @@ class GitHub:
         #: The permalink to the agreement, once read.
         self.agreement: str | None = None
         #: The head commit of the pull request being checked, once known, so
-        #: a failed run can still report ``error`` there.
+        #: a failed run can still report its error there.
         self.head_sha: str | None = None
+        #: The in-progress check run this process created on each commit,
+        #: completed after the next verdict on that commit is reported.
+        self.open_checks: dict[str, int] = {}
+        #: Whether each commit read so far carries a ``Bookclerk CLA`` commit
+        #: status from before the check became a check run.
+        self.legacy_statuses: dict[str, bool] = {}
 
     def call(self, method: str, path: str, body: dict[str, object] | None = None, ok: tuple[int, ...] = (200, 201)) -> bytes:
         """Sends a request and returns the body of a successful response.
@@ -1122,7 +1228,7 @@ class GitHub:
         Matches the listing's head commit and head repository against the
         run's, so a branch name reused by another fork or a later push does
         not count. Closed pull requests are left out: one only hands its
-        head's shared status to the open ones, which the caller does when
+        head's shared check to the open ones, which the caller does when
         nothing matches, and a branch reused for many pull requests (a
         fork's ``main``) would otherwise fill the page with closed ones.
 
@@ -1312,9 +1418,65 @@ class GitHub:
         """Reads the rule types that apply to ``SIGNATURE_BRANCH``."""
         return parse_branch_rules(self.call("GET", f"rules/branches/{SIGNATURE_BRANCH}?per_page={PAGE_SIZE}"))
 
-    def set_status(self, sha: str, state: str, description: str, target_url: str) -> None:
-        """Posts the ``Bookclerk CLA`` commit status on ``sha``."""
-        self.report("POST", f"statuses/{sha}", {"state": state, "context": STATUS_CONTEXT, "description": description, "target_url": target_url})
+    def set_check(self, sha: str, state: CheckState, description: str, target_url: str) -> None:
+        """Reports the ``Bookclerk CLA`` check run on ``sha``.
+
+        Every report creates a new check run. GitHub shows, and rulesets
+        judge, the newest check run of a name, so of two concurrent runs the
+        one that reports last wins, as the re-read after reporting in
+        ``check_pull`` relies on. A verdict then also completes the
+        in-progress run this process started on ``sha`` with the same
+        result (best effort), so no spinner is left behind it.
+
+        # Arguments
+        * ``sha``: the commit the check run belongs to.
+        * ``state``: in progress, passed or failed.
+        * ``description``: the one-line title the checks list shows.
+        * ``target_url``: the workflow run, linked as the check's details.
+
+        A commit that already carries a ``Bookclerk CLA`` commit status, from
+        before the check became a check run, gets the same verdict as a
+        status too: GitHub requires both a check run and a status of a
+        required name to pass, so the old status would otherwise block it.
+
+        # Errors
+        ``ApiError`` when GitHub refuses a request, ``ClaInputError`` when
+        it answers a new in-progress check run or the commit's statuses
+        with something unreadable.
+        """
+        body: dict[str, object] = {
+            "name": CHECK_NAME,
+            "details_url": target_url,
+            "output": {"title": description, "summary": description},
+            **state.body(),
+        }
+        raw = self.report("POST", "check-runs", {"head_sha": sha, **body})
+        if self.has_legacy_status(sha):
+            self.report("POST", f"statuses/{sha}", {"state": state.legacy_status(), "context": CHECK_NAME, "description": description, "target_url": target_url})
+        if state is CheckState.CHECKING:
+            self.open_checks[sha] = parse_check_run(raw)
+            return
+        started = self.open_checks.pop(sha, None)
+        if started is None:
+            return
+        try:
+            status, _ = self.reporter.send("PATCH", f"{self.base}/check-runs/{started}", body)
+        except OSError as err:
+            print(f"::warning::cannot complete check run {started}: {err}")
+            return
+        if status != 200:
+            print(f"::warning::cannot complete check run {started} (HTTP {status})")
+
+    def has_legacy_status(self, sha: str) -> bool:
+        """Tells whether ``sha`` carries a ``Bookclerk CLA`` commit status, read once per commit.
+
+        # Errors
+        ``ApiError`` or ``ClaInputError`` when the statuses cannot be read.
+        """
+        if sha not in self.legacy_statuses:
+            contexts = parse_status_contexts(self.call("GET", f"commits/{sha}/status?per_page={PAGE_SIZE}"))
+            self.legacy_statuses[sha] = CHECK_NAME in contexts
+        return self.legacy_statuses[sha]
 
     def upsert_comment(self, number: int, comments: list[Comment], body: str, create: bool) -> None:
         """Edits the check's comment among ``comments``, or posts one when ``create`` is true."""
@@ -1325,15 +1487,19 @@ class GitHub:
         elif create:
             self.report("POST", f"issues/{number}/comments", {"body": body})
 
-    def report(self, method: str, path: str, body: dict[str, object]) -> None:
-        """Sends one comment or status request through the reporter's transport.
+    def report(self, method: str, path: str, body: dict[str, object]) -> bytes:
+        """Sends one comment or check run request through the reporter's transport.
+
+        # Returns
+        The response body.
 
         # Errors
         ``ApiError`` when the response is not a success.
         """
-        status, _ = self.reporter.send(method, f"{self.base}/{path}", body)
+        status, raw = self.reporter.send(method, f"{self.base}/{path}", body)
         if status not in (200, 201):
             raise ApiError(f"{method} {path}: HTTP {status}")
+        return raw
 
 
 def run(event: Event, api: GitHub, cla_url: str, run_url: str) -> None:
@@ -1343,16 +1509,25 @@ def run(event: Event, api: GitHub, cla_url: str, run_url: str) -> None:
     * ``event``: the parsed event.
     * ``api``: the GitHub client.
     * ``cla_url``: the link to the agreement, for the comment.
-    * ``run_url``: the workflow run, for the status link.
+    * ``run_url``: the workflow run, for the check's details link.
 
     # Errors
     ``ApiError`` or ``ClaInputError`` when the check cannot decide; the
-    caller then reports an ``error`` status.
+    caller then reports a failed check.
     """
     if event.merge_group_sha is not None:
-        # Every pull request in the group passed the required CLA status to
+        # Every pull request in the group passed the required CLA check to
         # enter the queue; the queue run needs the context reported too.
-        api.set_status(event.merge_group_sha, "success", "Checked on each pull request in the group.", run_url)
+        api.set_check(event.merge_group_sha, CheckState.SUCCESS, "Checked on each pull request in the group.", run_url)
+        return
+    if event.kind is EventKind.CHECK_RUN:
+        # **Re-run** on the App's own ``Bookclerk CLA`` check runs the check
+        # again for the open pull requests on that commit. A check run of
+        # the same name from anyone else is not ours to answer.
+        if event.rerun_sha is None or f"{event.rerun_app}[bot]" != api.reporter.login:
+            return
+        for number in api.open_pulls_on(event.rerun_sha):
+            check_pull(event, api, number, cla_url, run_url)
         return
     if event.run_head is not None:
         numbers = api.pulls_from(event.run_head)
@@ -1375,7 +1550,7 @@ def run(event: Event, api: GitHub, cla_url: str, run_url: str) -> None:
 
 
 def check_pull(event: Event, api: GitHub, number: int, cla_url: str, run_url: str) -> None:
-    """Decides pull request ``number`` and reports its comment and status.
+    """Decides pull request ``number`` and reports its comment and check run.
 
     # Errors
     ``ApiError`` or ``ClaInputError`` when the check cannot decide.
@@ -1385,15 +1560,15 @@ def check_pull(event: Event, api: GitHub, number: int, cla_url: str, run_url: st
     pull = api.pull_request(number)
     if pull.open:
         api.head_sha = pull.head_sha
-        api.set_status(pull.head_sha, "pending", CHECKING_DESCRIPTION, run_url)
+        api.set_check(pull.head_sha, CheckState.CHECKING, CHECKING_DESCRIPTION, run_url)
     book, _ = api.signatures()
     if not pull.open:
         # A closed pull request no longer holds its head; the open ones that
-        # share it decide the status alone.
+        # share it decide the check alone.
         settle(api, pull.head_sha, book, run_url)
         return
     commits = api.commits(pull)
-    verdict = evaluate(pull, commits, book)
+    verdict = evaluate(pull, commits, book, event.repo_id)
     comments = api.comments(pull.number)
     if event.comment is not None and all(c.id != event.comment.id for c in comments):
         # The listing can lag behind the event that started the run.
@@ -1405,19 +1580,19 @@ def check_pull(event: Event, api: GitHub, number: int, cla_url: str, run_url: st
         api.react(comment.id, SIGNED_REACTION)
         if seen is not None:
             api.unreact(comment.id, seen)
-    for _ in range(STATUS_ATTEMPTS):
-        verdict = evaluate(pull, commits, book)
+    for _ in range(CHECK_ATTEMPTS):
+        verdict = evaluate(pull, commits, book, event.repo_id)
         blocked_by = blocking_pull(api, pull, book) if verdict.passed else None
         passed = verdict.passed and blocked_by is None
         api.upsert_comment(pull.number, comments, render_comment(verdict, cla_url, blocked_by, recheck_command(api.reporter.login)), create=not passed)
         if blocked_by is not None:
             description = f"#{blocked_by}, which shares this commit, still needs signatures."
         else:
-            description = status_description(verdict)
-        api.set_status(pull.head_sha, "success" if passed else "failure", description, run_url)
+            description = check_title(verdict)
+        api.set_check(pull.head_sha, CheckState.SUCCESS if passed else CheckState.FAILURE, description, run_url)
         # A run for a signature comment (another concurrency group) may have
         # recorded a signature after this run read the file, and posted its
-        # status before this one. Reading the file again after posting means
+        # check before this one. Reading the file again after posting means
         # that, of two such runs, the one that posts last has seen every
         # signature recorded before it posted.
         latest, _ = api.signatures()
@@ -1430,7 +1605,7 @@ def check_pull(event: Event, api: GitHub, number: int, cla_url: str, run_url: st
 def blocking_pull(api: GitHub, pull: PullRequest, book: SignatureBook) -> int | None:
     """Finds another open pull request on ``pull``'s head that fails.
 
-    The ``Bookclerk CLA`` status belongs to the commit, which other pull requests
+    The ``Bookclerk CLA`` check belongs to the commit, which other pull requests
     (another author or base) can share, so it passes only when all of them
     pass.
 
@@ -1449,7 +1624,7 @@ def blocking_pull(api: GitHub, pull: PullRequest, book: SignatureBook) -> int | 
 
 
 def settle(api: GitHub, sha: str, book: SignatureBook, run_url: str) -> None:
-    """Re-decides the shared status of ``sha`` from the open pull requests on it.
+    """Re-decides the shared check of ``sha`` from the open pull requests on it.
 
     Does nothing when no open pull request has ``sha`` as its head.
     """
@@ -1462,9 +1637,9 @@ def settle(api: GitHub, sha: str, book: SignatureBook, run_url: str) -> None:
         return
     failing = [number for number, verdict in verdicts if not verdict.passed]
     if failing:
-        api.set_status(sha, "failure", f"#{failing[0]}, which has this commit, still needs signatures.", run_url)
+        api.set_check(sha, CheckState.FAILURE, f"#{failing[0]}, which has this commit, still needs signatures.", run_url)
     else:
-        api.set_status(sha, "success", status_description(verdicts[0][1]), run_url)
+        api.set_check(sha, CheckState.SUCCESS, check_title(verdicts[0][1]), run_url)
 
 
 def own_comment(comments: list[Comment], author: str) -> Comment | None:
@@ -1554,7 +1729,7 @@ def main(env: dict[str, str]) -> int:
     * ``env``: the process environment.
 
     # Returns
-    0 when the status was posted, 1 when the check could not decide.
+    0 when the check run was completed, 1 when the check could not decide.
     """
     repository = env.get("GITHUB_REPOSITORY", "")
     if REPOSITORY.fullmatch(repository) is None:
@@ -1592,16 +1767,18 @@ def main(env: dict[str, str]) -> int:
         sha = api.head_sha or event.merge_group_sha
         if sha is None and event.run_head is not None:
             sha = event.run_head.sha
+        if sha is None:
+            sha = event.rerun_sha
         if sha is not None:
             try:
-                api.set_status(sha, "error", "The CLA check could not decide; see the run.", run_url)
-            except ApiError:
+                api.set_check(sha, CheckState.FAILURE, ERROR_DESCRIPTION, run_url)
+            except (ApiError, ClaInputError):
                 # The App may be what failed (a missing permission, say), so
                 # still leave a visible error from the workflow.
                 fallback = GitHub(api.send, repository)
                 try:
-                    fallback.set_status(sha, "error", "The CLA check could not decide; see the run.", run_url)
-                except ApiError:
+                    fallback.set_check(sha, CheckState.FAILURE, ERROR_DESCRIPTION, run_url)
+                except (ApiError, ClaInputError):
                     pass
         return 1
     return 0
