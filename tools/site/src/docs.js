@@ -2,9 +2,10 @@
 // allows scripts from 'self' and Cloudflare's analytics beacon only). Pages
 // work without it: it adds copy buttons to code blocks, copies a heading's
 // link when it is clicked, offers Copy as Markdown, draws and follows the
-// "On this page" rail, closes the phone menus like menus, and adds a
-// filter box to the sidebar. Its only
-// network request is Copy as Markdown reading the page's own Markdown.
+// "On this page" rail, closes the phone menus like menus, shows example
+// responses as tabs by status, and adds a filter box to the sidebar. Its only
+// network requests are same-origin: Copy as Markdown reads the page's own
+// Markdown, and the filter reads the docs version's search index.
 
 (() => {
   "use strict";
@@ -331,9 +332,47 @@
     update();
   }
 
+  /** Most pages the sidebar filter lists. */
+  const MAX_RESULTS = 30;
+
+  /** Most matching headings listed under one page. */
+  const MAX_HEADINGS = 4;
+
   /**
-   * Adds a box above the sidebar groups that hides pages whose title does
-   * not contain what is typed. "/" focuses it, Escape clears it.
+   * Reads the docs version's search index (worker.ts `serveSearchIndex`),
+   * keeping only well-formed entries.
+   *
+   * @param {string} url - The index's URL path.
+   * @returns {Promise<Array<{section: string, title: string, url: string, headings: Array<{text: string, url: string}>}>>}
+   *   Its pages; rejects when it cannot be read.
+   */
+  async function loadSearchIndex(url) {
+    const response = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error(`search index: ${response.status}`);
+    const data = await response.json();
+    const isText = (v) => typeof v === "string";
+    const sameSite = (v) => isText(v) && v.startsWith("/") && !v.startsWith("//");
+    const pages = Array.isArray(data?.pages) ? data.pages : [];
+    return pages
+      .filter((p) => isText(p?.section) && isText(p?.title) && sameSite(p?.url))
+      .map((p) => ({
+        section: p.section,
+        title: p.title,
+        url: p.url,
+        headings: (Array.isArray(p.headings) ? p.headings : []).filter(
+          (h) => isText(h?.text) && sameSite(h?.url),
+        ),
+      }));
+  }
+
+  /**
+   * Adds a box above the sidebar groups that finds pages as you type.
+   * Once the docs version's search index has loaded (on first focus), it
+   * lists every page whose title or headings hold each typed word, as
+   * "Group / Page" with the matching headings under it, including pages
+   * in collapsed groups and the Web API's route groups. Until then, or if
+   * the index cannot be read, it hides sidebar pages whose title does not
+   * match. "/" focuses it, Escape clears it.
    */
   function addSidebarFilter() {
     const nav = document.querySelector(".docs-nav");
@@ -345,20 +384,109 @@
     const input = document.createElement("input");
     input.type = "search";
     input.placeholder = "Filter pages";
-    input.setAttribute("aria-label", "Filter pages");
+    input.setAttribute("aria-label", "Filter pages and their sections");
     input.autocomplete = "off";
     const hint = document.createElement("kbd");
     hint.textContent = "/";
     hint.setAttribute("aria-hidden", "true");
     box.append(input, hint);
+    const results = document.createElement("ul");
+    results.className = "nav-results";
+    results.setAttribute("aria-label", "Matching pages");
+    results.hidden = true;
     const empty = document.createElement("p");
     empty.className = "nav-empty";
+    empty.setAttribute("role", "status");
     empty.textContent = "No page matches.";
     empty.hidden = true;
-    groups[0].before(box);
+    groups[0].before(box, results);
     groups[groups.length - 1].after(empty);
+
+    /** @type {null | "loading" | "failed" | Awaited<ReturnType<typeof loadSearchIndex>>} */
+    let index = null;
+    const indexUrl = nav.getAttribute("data-search-index");
+    const load = () => {
+      if (index !== null || !indexUrl) return;
+      index = "loading";
+      loadSearchIndex(indexUrl).then(
+        (pages) => {
+          index = pages;
+          apply();
+        },
+        () => {
+          index = "failed";
+        },
+      );
+    };
+
+    /**
+     * Lists the index's pages that match every word.
+     *
+     * @param {string[]} words - The lowercased words typed.
+     * @returns {number} How many pages are listed.
+     */
+    const search = (words) => {
+      if (!Array.isArray(index)) return 0;
+      const has = (text) => {
+        const lower = text.toLowerCase();
+        return words.every((w) => lower.includes(w));
+      };
+      const titled = [];
+      const headed = [];
+      for (const page of index) {
+        const hits = page.headings.filter((h) => has(h.text)).slice(0, MAX_HEADINGS);
+        if (has(`${page.section} ${page.title}`)) titled.push({ page, hits });
+        else if (hits.length > 0) headed.push({ page, hits });
+      }
+      const here = window.location.pathname;
+      const listed = [...titled, ...headed].slice(0, MAX_RESULTS).map(({ page, hits }) => {
+        const item = document.createElement("li");
+        const link = document.createElement("a");
+        link.href = page.url;
+        if (page.url === here) link.setAttribute("aria-current", "page");
+        const section = document.createElement("span");
+        section.className = "nav-result-section";
+        section.textContent = `${page.section} / `;
+        link.append(section, page.title);
+        item.append(link);
+        if (hits.length > 0) {
+          const sub = document.createElement("ul");
+          sub.className = "nav-sub";
+          for (const hit of hits) {
+            const li = document.createElement("li");
+            const a = document.createElement("a");
+            a.href = hit.url;
+            // A route shows its method as a badge, as in the "On this page" rail.
+            const route = /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) (\/\S*)$/.exec(hit.text);
+            if (route) {
+              const badge = document.createElement("span");
+              badge.className = `api-method api-method-${route[1].toLowerCase()}`;
+              badge.textContent = route[1];
+              // Long paths wrap only after a slash.
+              const path = document.createElement("code");
+              route[2].split(/(?<=\/)/).forEach((part, i) => {
+                if (i > 0) path.append(document.createElement("wbr"));
+                path.append(part);
+              });
+              a.classList.add("nav-result-route");
+              a.append(badge, " ", path);
+            } else {
+              a.textContent = hit.text;
+            }
+            li.append(a);
+            sub.append(li);
+          }
+          item.append(sub);
+        }
+        return item;
+      });
+      results.replaceChildren(...listed);
+      return listed.length;
+    };
+
     const apply = () => {
       const query = input.value.trim().toLowerCase();
+      const indexed = query !== "" && Array.isArray(index);
       let shown = 0;
       for (const group of groups) {
         let groupShown = 0;
@@ -367,13 +495,20 @@
           item.hidden = !match;
           if (match) groupShown++;
         }
-        group.hidden = groupShown === 0;
+        group.hidden = indexed || groupShown === 0;
         group.open = query === "" ? (wasOpen.get(group) ?? false) : groupShown > 0;
         shown += groupShown;
       }
+      results.hidden = !indexed;
+      if (indexed) shown = search(query.split(/\s+/));
+      else results.replaceChildren();
       empty.hidden = shown > 0;
     };
-    input.addEventListener("input", apply);
+    input.addEventListener("focus", load);
+    input.addEventListener("input", () => {
+      load();
+      apply();
+    });
     input.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && input.value !== "") {
         input.value = "";
@@ -429,7 +564,71 @@
     });
   }
 
+  /**
+   * Turns each example response card with more than one status into tabs:
+   * a row of status buttons above the panels, one panel shown at a time.
+   * Arrow keys, Home and End move between the tabs, as the ARIA tabs
+   * pattern describes. Without this, every panel shows, one after another.
+   */
+  function addResponseTabs() {
+    for (const card of document.querySelectorAll(".api-responses")) {
+      const panels = [...card.querySelectorAll(":scope > .api-response")];
+      if (panels.length < 2) continue;
+      const list = document.createElement("div");
+      list.className = "api-response-tabs";
+      list.setAttribute("role", "tablist");
+      const heading = card.querySelector("h3");
+      if (heading && heading.id) list.setAttribute("aria-labelledby", heading.id);
+      const tabs = panels.map((panel, i) => {
+        const tab = document.createElement("button");
+        tab.type = "button";
+        tab.id = `${panel.id}-tab`;
+        tab.setAttribute("role", "tab");
+        tab.setAttribute("aria-controls", panel.id);
+        const mark = panel.querySelector(".api-response-status .api-status");
+        tab.className = mark ? mark.className : "api-status";
+        tab.textContent = panel.dataset.status || String(i + 1);
+        panel.setAttribute("role", "tabpanel");
+        panel.setAttribute("aria-labelledby", tab.id);
+        panel.tabIndex = 0;
+        return tab;
+      });
+      const select = (index, focus) => {
+        tabs.forEach((tab, i) => {
+          const on = i === index;
+          tab.setAttribute("aria-selected", String(on));
+          tab.tabIndex = on ? 0 : -1;
+          panels[i].hidden = !on;
+        });
+        if (focus) tabs[index].focus();
+      };
+      tabs.forEach((tab, i) => {
+        tab.addEventListener("click", () => select(i, false));
+        tab.addEventListener("keydown", (event) => {
+          const last = tabs.length - 1;
+          const to = {
+            ArrowRight: i === last ? 0 : i + 1,
+            ArrowLeft: i === 0 ? last : i - 1,
+            Home: 0,
+            End: last,
+          }[event.key];
+          if (to === undefined) return;
+          event.preventDefault();
+          select(to, true);
+        });
+      });
+      list.append(...tabs);
+      const group = document.createElement("div");
+      group.className = "api-response-group";
+      panels[0].before(group);
+      group.append(list, ...panels);
+      card.classList.add("has-tabs");
+      select(0, false);
+    }
+  }
+
   addCopyButtons();
+  addResponseTabs();
   dismissMenus();
   copyHeadingLinks();
   addCopyMarkdown();

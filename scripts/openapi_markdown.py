@@ -651,32 +651,51 @@ class Document:
         return ["### Example request", "", "```console", command, "```", ""]
 
     def example_response(self, op: Operation) -> list[str]:
-        """Render an example of an operation's first successful JSON response.
+        """Render an example of each of an operation's responses.
+
+        Every status gets a ``Status `<code>`: <description>`` line, then a
+        ``json`` block built from its schema, or a sentence saying the
+        response has no body or one the schemas do not describe (yet). The
+        site shows the statuses as tabs.
 
         Args:
             op: The operation.
 
         Returns:
-            Markdown lines: an ``Example response`` heading, the status and a
-            ``json`` block; nothing when no 2xx response has a JSON body the
-            schemas describe.
+            Markdown lines: an ``Example response`` heading and one entry per
+            status; nothing when no status has a JSON example.
         """
         responses = op.spec.get("responses", {})
         if not isinstance(responses, Mapping):
             return []
+        entries: list[str] = []
+        examples = 0
         for status, response in responses.items():
-            if not str(status).startswith("2") or not isinstance(response, Mapping):
+            if not isinstance(response, Mapping):
                 continue
+            description = str(response.get("description", "")).strip()
+            label = f"Status {code(str(status))}:" + (f" {prose(description)}" if description else "")
             content = response.get("content", {})
-            entry = content.get("application/json") if isinstance(content, Mapping) else None
-            if not isinstance(entry, Mapping):
+            if not isinstance(content, Mapping) or not content:
+                entries += [f"{label} No body.", ""]
                 continue
-            value = self.example(entry.get("schema", {}))
+            entry = content.get("application/json")
+            value = self.example(entry.get("schema", {})) if isinstance(entry, Mapping) else NO_EXAMPLE
             if value is NO_EXAMPLE:
+                media = ", ".join(code(str(m)) for m in content)
+                note = (
+                    "The body is JSON the schemas do not describe yet."
+                    if isinstance(entry, Mapping)
+                    else f"The body is {media}."
+                )
+                entries += [f"{label} {note}", ""]
                 continue
+            examples += 1
             text = json.dumps(value, indent=2, ensure_ascii=False)
-            return ["### Example response", "", f"Status {code(str(status))}:", "", "```json", text, "```", ""]
-        return []
+            entries += [label, "", "```json", text, "```", ""]
+        if examples == 0:
+            return []
+        return ["### Example response", "", *entries]
 
     # Pages ---------------------------------------------------------------
 

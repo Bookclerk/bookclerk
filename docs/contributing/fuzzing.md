@@ -350,7 +350,8 @@ fuzzing in `npm test`.
   slash-free URL. Corpus `tools/site/fuzz/site_redirects/`. Oracle: the
   website moves exactly the slash and `.html` spellings of a listed page;
   a docs redirect stays under `/docs`, is slash-free, never repeats the
-  request path and takes one hop, and docs keys never leave the tree.
+  request path and takes one hop, docs keys never leave the tree, and
+  only a version's own `search-index.json` path names its search index.
 - **Code-block highlighter** (`highlight` in `tools/site/highlight.ts`)
   colors fenced code from the docs repository. Corpus
   `tools/site/fuzz/highlight/`, fuzzed across its languages. Oracle: an
@@ -366,9 +367,11 @@ fuzzing in `npm test`.
 - **Web API layout** (`layoutOperations` in
   `tools/site/api-reference.ts`, through `renderDoc`) rearranges the
   generated `api/web/` pages from the docs repository into operation
-  sections. Corpus `tools/site/fuzz/api_reference/`. Oracle: the HTML nests
+  sections, with one panel per example response (`layoutResponses`).
+  Corpus `tools/site/fuzz/api_reference/`. Oracle: the HTML nests
   properly, every section is labelled by its own heading with one badge
-  for a known method, and the page keeps the same text as it has without
+  for a known method, every response panel has a unique id and a caption
+  marking its status, and the page keeps the same text as it has without
   the layout.
 - **Web API index layout** (`layoutIndex` and `indexRoutes` in
   `tools/site/api-reference.ts`, through `renderDoc`) lays out the

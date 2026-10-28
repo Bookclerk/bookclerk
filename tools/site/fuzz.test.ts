@@ -17,7 +17,7 @@ import { cleanSvg, diagram } from "./diagram.ts";
 import { HTTP_METHODS } from "./api-reference.ts";
 import { highlight } from "./highlight.ts";
 import { datedPages, formatDate, MAX_DOC_KEY_LENGTH, pageDate } from "./last-updated.ts";
-import { renderDoc } from "./render.ts";
+import { renderDoc, SEARCH_INDEX } from "./render.ts";
 import { docsTarget, pickEncoding, sitePageLocation } from "./worker.ts";
 import type { Encoding } from "./worker.ts";
 
@@ -902,6 +902,10 @@ const API_FRAGMENTS = [
   "Example request",
   "Example response",
   "Responses",
+  "Status `",
+  "`: ",
+  "Status `200`: Done.\n\n",
+  "Status `404`:",
   "200",
   "4XX",
   "default",
@@ -926,8 +930,9 @@ const VOID_ELEMENTS = /^(br|hr|img|input|wbr|col|meta|link|source)$/;
  * Checks a rendered Web API page against an oracle that does not use
  * api-reference.ts: the HTML nests properly, every operation section is
  * labelled by a heading on the page that carries one badge for an HTTP
- * method, and the visible text is the same as the page rendered without
- * the layout, apart from the badges.
+ * method, every example response panel has a unique id and a caption
+ * marking its status, and the visible text is the same as the page
+ * rendered without the layout, apart from the badges.
  *
  * @param source - The Markdown.
  * @param context - What to print when a check fails.
@@ -956,6 +961,27 @@ function checkApiPage(source: string, context: string): void {
     assert.ok((HTTP_METHODS as readonly string[]).includes(method ?? ""), context);
     assert.equal(lower, method?.toLowerCase(), context);
   }
+  // Response panels: unique ids, each naming a status its caption marks.
+  const panels = [
+    ...laid.matchAll(
+      /<div class="api-response" id="([^"]*)" data-status="([^"]*)">\n<p class="api-response-status"><span class="api-response-code"><span class="visually-hidden">Status <\/span><span class="api-status[^"]*">([^<]*)<\/span>:<\/span>/g,
+    ),
+  ];
+  assert.equal(
+    panels.length,
+    (laid.match(/<div class="api-response"/g) ?? []).length,
+    `panel without its caption: ${context}`,
+  );
+  const panelIds = panels.map((m) => m[1]);
+  assert.equal(new Set(panelIds).size, panelIds.length, `duplicate panel id: ${context}`);
+  for (const [, , status, shown] of panels) {
+    assert.equal(status, shown, context);
+    assert.match(status ?? "", /^(?:[1-5]\d\d|[1-5]XX|default)$/i, context);
+  }
+  assert.ok(
+    !laid.includes('<div class="api-response"') || laid.includes('<div class="api-responses">'),
+    `panel outside a responses card: ${context}`,
+  );
   const badges = (laid.match(/<span class="api-method /g) ?? []).length;
   assert.equal(badges, sections.length, `badge outside an operation heading: ${context}`);
 
@@ -1122,6 +1148,7 @@ const PATH_FRAGMENTS = [
   "..",
   "/..",
   ".html",
+  "search-index.json",
   "index.html",
   ".md",
   "/docs",
@@ -1195,6 +1222,9 @@ function checkRedirects(path: string, context: string): void {
       "redirect",
       `${context}: ${location} redirects again`,
     );
+  } else if (target.kind === "search") {
+    // Only the index's own name at a version's root.
+    assert.equal(path, `${target.version.base}${SEARCH_INDEX}`, context);
   } else if (target.kind !== "missing") {
     for (const key of target.keys) {
       for (const segment of key.split("/")) {

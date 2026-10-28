@@ -1,0 +1,11 @@
+# X
+
+## `GET /api/x`
+
+### Example response
+
+- Status `200`: Done.
+
+> Status `404`: Gone.
+
+Status `500`: Own.

@@ -1202,6 +1202,14 @@ code.inline {
   padding-right: max(24px, env(safe-area-inset-right, 0px));
   align-items: start;
 }
+/* A route group's rail grows to fit its longest path on one line, up to a
+   limit past which paths wrap. */
+.docs-layout:has(.toc .toc-op) {
+  grid-template-columns: 17rem minmax(0, 1fr) fit-content(24rem);
+}
+.docs-layout:has(.toc .toc-op) .toc {
+  min-width: 15rem;
+}
 .docs-nav,
 .toc {
   position: sticky;
@@ -1314,6 +1322,32 @@ code.inline {
 .nav-filter input:focus + kbd,
 .nav-filter input:not(:placeholder-shown) + kbd {
   display: none;
+}
+/* Sidebar filter results from the search index (docs.js addSidebarFilter). */
+.nav-results {
+  margin-top: 4px;
+}
+.nav-result-section {
+  color: var(--docs-soft);
+}
+.docs-nav .nav-results .nav-sub a {
+  padding-block: 4px;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.docs-nav .nav-result-route {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.docs-nav .nav-result-route .api-method {
+  flex: none;
+  margin: 0;
+}
+.docs-nav .nav-result-route code {
+  font: 13px/18px var(--font-mono);
+  min-width: 0;
+  overflow-wrap: normal;
 }
 .nav-empty {
   padding: 8px 10px;
@@ -1996,7 +2030,8 @@ code.inline {
 }
 
 @media (max-width: 1200px) {
-  .docs-layout {
+  .docs-layout,
+  .docs-layout:has(.toc .toc-op) {
     grid-template-columns: 16rem minmax(0, 1fr);
   }
   .toc {
@@ -2272,6 +2307,66 @@ code.inline {
 .api-status-5xx::before {
   background: var(--brick);
 }
+/* Example responses (layoutResponses): one panel per status. docs.js turns
+   two or more into tabs inside a card; without it the panels stack. */
+.doc .api-response > * + * {
+  margin-top: 0.5em;
+}
+.doc .api-response + .api-response {
+  margin-top: 1.15em;
+}
+.doc .api-response-status {
+  color: var(--docs-soft);
+}
+.doc .api-response-code {
+  color: var(--ink);
+  margin-right: 4px;
+}
+.doc .api-responses.has-tabs .api-response-group {
+  border: 1px solid var(--docs-line);
+  border-radius: 8px;
+  background: var(--code-card);
+  margin-top: 0.6em;
+}
+.doc .api-responses.has-tabs .api-response {
+  margin: 0;
+  padding: 10px 12px 12px;
+}
+.doc .api-responses.has-tabs .api-response-code {
+  display: none;
+}
+.doc .api-responses.has-tabs .api-response .code {
+  margin-top: 0.5em;
+}
+.api-response-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 4px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--docs-line);
+}
+.api-response-tabs button {
+  min-height: 36px;
+  padding: 0 8px;
+  margin-bottom: -1px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--docs-soft);
+  cursor: pointer;
+}
+.api-response-tabs button:hover {
+  color: var(--ink);
+}
+.api-response-tabs button[aria-selected="true"] {
+  color: var(--ink);
+  border-bottom-color: var(--teal);
+}
+.api-response-tabs button:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
 .docs-nav .nav-sub,
 .docs-menus .nav-sub {
   margin: 2px 0 4px 12px;
@@ -2359,7 +2454,8 @@ code.inline {
   }
 }
 .toc .api-method,
-.menu-toc .api-method {
+.menu-toc .api-method,
+.nav-results .api-method {
   font-size: 10px;
   line-height: 15px;
   padding: 0 4px;

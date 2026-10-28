@@ -511,7 +511,8 @@ Rust crates and the web UI library.
   committed OpenAPI document (`crates/bookclerkd/openapi.json`). It writes
   an index with a quick-start request, the credentials and every route, one page per route group (with each
   route's access rule, parameters, body, responses, an example `curl`
-  request and an example response built from the schemas; the request
+  request and an example response for each status, built from the
+  schemas or saying why there is no JSON body; the request
   sends only required fields, since optional ones can be alternatives
   that must not be sent together), and a page of
   schemas. A request body that names a schema lists that schema's fields
@@ -520,9 +521,16 @@ Rust crates and the web UI library.
     (`tools/site/api-reference.ts`): a method badge beside each path, the
     examples in a second column when the reading column is wide enough,
     and the usual "On this page" rail. The rail lists the routes nested
-    by path, with the shared start of each path written once above the
-    routes under it, and every method badge is the same width so the
-    paths line up.
+    by path, relative to the start every route of the page shares
+    (`/login` on the Auth page, whose headings keep the full path), with
+    the shared start of each deeper path written once above the routes
+    under it. Every method badge is the same width so the paths line up,
+    and the rail is sized to fit the longest path on one line.
+  - The example responses become one panel per status with a colored
+    status mark; with two or more, the page's script shows them as tabs
+    in one card.
+  - Like every generated page, each one ends with a Source on GitHub link
+    to what it is generated from: `crates/bookclerkd/openapi.json` here.
   - Under **Web API** the sidebar lists every route group and the schemas
     page, not their routes; those are in the rail. The index, titled **Web API** like
     its sidebar entry and breadcrumb, puts its quick start beside the

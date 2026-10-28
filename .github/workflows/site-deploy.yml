@@ -43,6 +43,10 @@ on:
       - "assets/brand/**"
       # Rendered as /security.
       - "SECURITY.md"
+      # A crate that moves changes where its generated reference links to
+      # (build.ts generatedSources).
+      - "crates/**/Cargo.toml"
+      - "examples/**/Cargo.toml"
       - ".github/workflows/site-deploy.yml"
   release:
     types: [published]

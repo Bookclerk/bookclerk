@@ -15,6 +15,7 @@ import {
   navHtml,
   navParent,
   renderDoc,
+  searchPage,
   tocListHtml,
 } from "./render.ts";
 
@@ -114,8 +115,9 @@ test("the page's headings are its operations, with their methods", () => {
   ]);
   assert.equal(
     tocListHtml(out.headings),
-    '<ul><li class="depth-0"><a class="toc-op" href="#get-apijobs"><span class="api-method api-method-get">GET</span> <code>/<wbr>api/<wbr>jobs</code></a></li>' +
-      '<li class="depth-1"><a class="toc-op" href="#post-apijobsidcancel"><span class="api-method api-method-post">POST</span> <code>/<wbr>{id}/<wbr>cancel</code></a></li></ul>',
+    // Paths are relative to the prefix every route shares; the headings show it.
+    '<ul><li class="depth-0"><a class="toc-op" href="#get-apijobs"><span class="api-method api-method-get">GET</span> <code>/<wbr></code></a></li>' +
+      '<li class="depth-0"><a class="toc-op" href="#post-apijobsidcancel"><span class="api-method api-method-post">POST</span> <code>/<wbr>{id}/<wbr>cancel</code></a></li></ul>',
   );
 });
 
@@ -138,7 +140,7 @@ test("the sidebar lists the page under Web API, and its routes go to the rail", 
   assert.ok(!nav.includes("#get-apijobs"), "no routes in the sidebar");
   assert.ok(
     tocListHtml(out.headings).includes(
-      '<a class="toc-op" href="#get-apijobs"><span class="api-method api-method-get">GET</span> <code>/<wbr>api/<wbr>jobs</code></a>',
+      '<a class="toc-op" href="#get-apijobs"><span class="api-method api-method-get">GET</span> <code>/<wbr></code></a>',
     ),
   );
   assert.equal(apiNavNested("server/operations", "Running", "/docs/"), null);
@@ -440,23 +442,24 @@ test("a route group's routes nest by path in the rail", () => {
   const lines = tree.map(
     (e) => `${"  ".repeat(e.depth)}${e.kind === "op" ? `${e.method} ` : ""}${e.label}`,
   );
+  // The shared `/api/auth` is left out: the page's headings show it.
   assert.deepEqual(lines, [
-    "GET /api/auth/totp",
-    "DELETE /api/auth/totp",
+    "GET /totp",
+    "DELETE /totp",
     "  POST /login",
     "  /enroll",
     "    POST /begin",
     "    POST /finish",
-    "/api/auth/oidc",
+    "/oidc",
     "  GET /config",
     "  PUT /config",
     "  GET /providers",
     // Below the deepest level, routes keep their longer remainder.
-    "GET /api/auth/a",
+    "GET /a",
     "  /b/c/d",
     "    POST /e",
     "    POST /f",
-    "POST /api/auth/login",
+    "POST /login",
   ]);
   // Every operation is listed once, whatever its depth.
   assert.equal(tree.filter((e) => e.kind === "op").length, ops.length);
@@ -467,4 +470,116 @@ test("a route group's routes nest by path in the rail", () => {
     routeTree([{ method: "GET", path: "/", id: "r" }]).map((e) => e.label),
     ["/"],
   );
+  // A route at the shared prefix reads `/`; routes sharing one path keep it.
+  assert.deepEqual(
+    routeTree([
+      { method: "GET", path: "/api/jobs", id: "a" },
+      { method: "POST", path: "/api/jobs/{id}/cancel", id: "b" },
+    ]).map((e) => e.label),
+    ["/", "/{id}/cancel"],
+  );
+  assert.deepEqual(
+    routeTree([
+      { method: "GET", path: "/api/me", id: "a" },
+      { method: "PUT", path: "/api/me", id: "b" },
+    ]).map((e) => e.label),
+    ["/me", "/me"],
+  );
+});
+
+test("example responses become one panel per status with a status mark", () => {
+  const page = `# Books
+
+## \`GET /api/books/{id}\`
+
+Returns a book.
+
+### Example response
+
+Status \`200\`: The book.
+
+\`\`\`json
+{}
+\`\`\`
+
+Status \`404\`: No such book. No body.
+
+Status \`404\`: Again.
+`;
+  const out = renderDoc(page, "api/web/books", { blobBase: BLOB });
+  const id = "get-apibooksid";
+  assert.match(
+    out.html,
+    /<div class="api-responses">\n<div class="heading-wrapper level-h3"><h3 id="example-response"/,
+  );
+  assert.ok(
+    out.html.includes(
+      `<div class="api-response" id="${id}-response-200" data-status="200">\n<p class="api-response-status"><span class="api-response-code"><span class="visually-hidden">Status </span><span class="api-status api-status-2xx">200</span>:</span> The book.</p>\n<div class="code`,
+    ),
+  );
+  assert.ok(out.html.includes(`id="${id}-response-404" data-status="404"`));
+  assert.match(
+    out.html,
+    new RegExp(`id="${id}-response-404-\\d+" data-status="404"`),
+    "a repeated status gets its own id",
+  );
+  assert.equal(out.html.split('<div class="api-response"').length, 4);
+  const examples = out.html.slice(out.html.indexOf('<div class="api-op-examples">'));
+  assert.ok(
+    examples.includes('<div class="api-responses">'),
+    "the responses sit in the examples column",
+  );
+});
+
+test("a status line in a list or quote opens no panel", () => {
+  const page = `# Books
+
+## \`GET /api/books\`
+
+### Example response
+
+- Status \`200\`: In a list.
+
+> Status \`404\`: In a quote.
+
+Status \`500\`: On its own.
+`;
+  const out = renderDoc(page, "api/web/books", { blobBase: BLOB });
+  assert.equal(out.html.split('<div class="api-response"').length, 2);
+  assert.ok(out.html.includes('id="get-apibooks-response-500"'));
+  assert.ok(out.html.includes("<li>Status <code>200</code>: In a list.</li>"));
+  assert.ok(out.html.includes("<p>Status <code>404</code>: In a quote.</p>\n</blockquote>"));
+});
+
+test("paragraphs that are not status lines stay outside the panels", () => {
+  const page = `# Books
+
+## \`GET /api/books\`
+
+### Example response
+
+Some note.
+
+Status \`abc\`: not a status.
+`;
+  const out = renderDoc(page, "api/web/books", { blobBase: BLOB });
+  assert.ok(out.html.includes('<div class="api-responses">'));
+  assert.ok(!out.html.includes('<div class="api-response"'));
+  assert.ok(out.html.includes("<p>Status <code>abc</code>: not a status.</p>"));
+});
+
+test("an operations page offers the filter its operations by method and path", () => {
+  const page = searchPage(PAGE, "api/web/jobs", "Web API", "Jobs", "/docs/v/main/");
+  assert.deepEqual(page, {
+    section: "Web API",
+    title: "Jobs",
+    url: "/docs/v/main/api/web/jobs",
+    headings: [
+      { text: "GET /api/jobs", url: "/docs/v/main/api/web/jobs#get-apijobs" },
+      {
+        text: "POST /api/jobs/{id}/cancel",
+        url: "/docs/v/main/api/web/jobs#post-apijobsidcancel",
+      },
+    ],
+  });
 });

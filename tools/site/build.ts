@@ -37,7 +37,15 @@
 // value is HTML-escaped.
 
 import { createHash } from "node:crypto";
-import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -726,6 +734,55 @@ function homeJsonLd(context: SiteContext, facts: HomeFacts): object {
   };
 }
 
+/** Generated reference folders under `api/` and the repository path each is generated from. */
+const GENERATED_SOURCES: Readonly<Record<string, string>> = {
+  api: "scripts/docs-markdown.py",
+  "api/web": "crates/bookclerkd/openapi.json",
+  "api/typescript": "packages/plugin-sdk",
+  "api/python": "packages/plugin-sdk-python",
+  "api/ui": "ui/src/lib",
+  "api/rust": "scripts/docs-markdown.py",
+};
+
+/**
+ * Maps each generated reference folder under `api/` to the repository path
+ * it is generated from, for the "Source on GitHub" link of generated pages:
+ * the fixed folders, plus `api/rust/<crate>` for every library crate in the
+ * workspace (the crate's folder, wherever it sits).
+ *
+ * @param root - The repository root.
+ * @returns Folder keys mapped to repository paths.
+ */
+export function generatedSources(root: string): Record<string, string> {
+  const sources: Record<string, string> = { ...GENERATED_SOURCES };
+  /**
+   * Adds every library crate at or below a folder.
+   *
+   * @param dir - The folder, relative to the root.
+   */
+  const visit = (dir: string): void => {
+    const abs = join(root, dir);
+    const manifest = join(abs, "Cargo.toml");
+    if (existsSync(manifest) && existsSync(join(abs, "src", "lib.rs"))) {
+      // The [package] table's name; a workspace manifest has none.
+      const name = /^\[package\][^[]*?^name\s*=\s*"([^"]+)"/ms.exec(
+        readFileSync(manifest, "utf8"),
+      )?.[1];
+      if (name !== undefined) sources[`api/rust/${name.replaceAll("-", "_")}`] = dir;
+    }
+    for (const entry of readdirSync(abs, { withFileTypes: true })) {
+      if (
+        entry.isDirectory() &&
+        !["target", "node_modules", "src", "tests", "fuzz"].includes(entry.name) &&
+        !entry.name.startsWith(".")
+      )
+        visit(`${dir}/${entry.name}`);
+    }
+  };
+  for (const top of ["crates", "examples"]) if (existsSync(join(root, top))) visit(top);
+  return sources;
+}
+
 /**
  * Renders the docs page shell the Worker fills for every docs page.
  *
@@ -793,6 +850,7 @@ export function buildDocsShell(
     pages,
     pageTitles,
     sitemapHtml,
+    sources: generatedSources(REPO_ROOT),
   };
   // The renderers' sources and libraries go into the id too: a change to how
   // pages are rendered must drop pages cached by an earlier deploy, like a

@@ -28,7 +28,7 @@ import {
 import type { DocsFetch, Env, PageCache } from "./worker.ts";
 import type { BuildEnv } from "./build.ts";
 import { docPageTitle, docUrl, TITLE_MAX } from "./render.ts";
-import type { DocsShell } from "./render.ts";
+import type { DocsShell, SearchPage } from "./render.ts";
 import { MAX_LAST_UPDATED_BYTES } from "./last-updated.ts";
 
 /** This directory. */
@@ -589,13 +589,90 @@ test("main's docs say they are the development version and link within main", as
   assert.match(html, /unstable-badge/);
 });
 
-test("generated pages render without a source link and keep links inside the tree", async () => {
+test("generated pages link to what they are generated from and keep links inside the tree", async () => {
   const html = await (await get("/docs/api/rust/demo/index", BROWSER)).text();
-  assert.match(html, /Generated from the source at v0.2.0/);
+  // A crate the workspace does not hold falls back to the generator itself.
+  const generator = "https://github.com/Bookclerk/bookclerk/blob/v0.2.0/scripts/docs-markdown.py";
+  assert.ok(
+    html.includes(`Generated from <a href="${generator}">scripts/docs-markdown.py</a> at v0.2.0`),
+  );
+  assert.ok(html.includes(`<a href="${generator}">`) && html.includes("Source on GitHub"));
+  const web = await (await get("/docs/api/web/jobs", BROWSER)).text();
+  assert.ok(
+    web.includes(
+      'href="https://github.com/Bookclerk/bookclerk/blob/v0.2.0/crates/bookclerkd/openapi.json"',
+    ),
+  );
   assert.match(html, /href="\/docs\/api\/typescript"/);
   assert.match(html, /<h2 id="thing">/);
   // The publish step dates generated pages by when their content last changed.
   assert.match(html, /Last updated <time datetime="2026-10-01">Oct 1, 2026<\/time>/);
+});
+
+test("the search index lists every sidebar page with its headings, and the Web API's routes", async () => {
+  const response = await get("/docs/search-index.json", "*/*");
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Content-Type"), "application/json; charset=utf-8");
+  assert.equal(response.headers.get("X-Robots-Tag"), "noindex");
+  assert.match(response.headers.get("Cache-Control") ?? "", /s-maxage=[1-9]/);
+  const { pages } = (await response.json()) as { pages: SearchPage[] };
+  const config = pages.find((p) => p.url === "/docs/server/configuration");
+  assert.equal(config?.section, "Run a server");
+  assert.equal(config?.title, "Configuration");
+  assert.ok(
+    config?.headings.some(
+      (h) =>
+        h.text === "Tables in config.toml" &&
+        h.url === "/docs/server/configuration#tables-in-configtoml",
+    ),
+    JSON.stringify(config?.headings.slice(0, 3)),
+  );
+  const jobs = pages.find((p) => p.section === "Web API" && p.title === "Jobs");
+  assert.deepEqual(jobs, {
+    section: "Web API",
+    title: "Jobs",
+    url: "/docs/api/web/jobs",
+    headings: [{ text: "GET /api/jobs", url: "/docs/api/web/jobs#get-apijobs" }],
+  });
+  const html = await (await get("/docs/server/configuration", BROWSER)).text();
+  assert.match(
+    html,
+    /<nav class="docs-nav" aria-label="Documentation" data-search-index="\/docs\/search-index.json">/,
+  );
+});
+
+test("each docs version has its own search index, linked at that version", async () => {
+  const main = await get("/docs/v/main/search-index.json", "*/*");
+  const { pages } = (await main.json()) as { pages: SearchPage[] };
+  assert.ok(pages.length > 0 && pages.every((p) => p.url.startsWith("/docs/v/main/")));
+  assert.ok(pages.every((p) => p.headings.every((h) => h.url.startsWith("/docs/v/main/"))));
+  const prefixed = await get("/docs/v/v0.2.0/search-index.json", "*/*");
+  assert.equal(prefixed.status, 301);
+  assert.equal(
+    new URL(prefixed.headers.get("Location") ?? "", "https://x").pathname,
+    "/docs/search-index.json",
+  );
+  assert.equal((await get("/docs/v/nope/search-index.json", "*/*")).status, 302);
+  const head = await get("/docs/search-index.json", "*/*", "HEAD");
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), "");
+});
+
+test("a search index missing a doc lists it by title and is cached only briefly", async () => {
+  const flaky: DocsFetch = async (url, init) =>
+    url.endsWith("/server/configuration.md")
+      ? new Response("oops", { status: 502 })
+      : docsFetch(url, init);
+  const response = await handle(new Request("https://bookclerk.app/docs/search-index.json"), env, {
+    shell,
+    fetch: flaky,
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Cache-Control"), "public, max-age=60, s-maxage=60");
+  const { pages } = (await response.json()) as { pages: SearchPage[] };
+  const config = pages.find((p) => p.url === "/docs/server/configuration");
+  assert.deepEqual(config?.headings, []);
+  assert.equal(config?.title, "Configuration");
 });
 
 test("a page shows no date when the dates file leaves it out, is broken or cannot be read", async () => {

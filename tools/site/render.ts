@@ -755,6 +755,109 @@ export function docTitle(source: string, key: string): string {
   return heading === undefined ? key : heading.replace(/`/g, "");
 }
 
+/** The name of a docs version's search index, under its URL prefix. */
+export const SEARCH_INDEX = "search-index.json";
+
+/**
+ * Where a docs version's search index is served (see worker.ts).
+ *
+ * @param base - URL prefix of the docs version, ending in `/`.
+ * @returns The URL path.
+ */
+export function searchIndexUrl(base: string): string {
+  return `${base}${SEARCH_INDEX}`;
+}
+
+/**
+ * Reads a doc's `##` and `###` headings from its parsed tokens. A Web API
+ * page lists its operations, not their subsections (Parameters,
+ * Responses, …), which repeat on every one.
+ *
+ * @param tokens - The doc's block tokens, after heading ids are set.
+ * @returns The headings in order.
+ */
+function headingsOf(tokens: readonly Token[]): DocHeading[] {
+  let inOperation = false;
+  return tokens.flatMap((t, i): DocHeading[] => {
+    if (t.type !== "heading_open" || (t.tag !== "h2" && t.tag !== "h3")) return [];
+    const id = String(t.attrGet("id") ?? "");
+    const op = operationMeta(t);
+    if (t.tag === "h2") inOperation = op !== null;
+    if (op !== null) return [{ level: 2, id, text: op.path, method: op.method }];
+    if (inOperation) return [];
+    return [{ level: t.tag === "h2" ? 2 : 3, id, text: inlineText(tokens[i + 1]) }];
+  });
+}
+
+/** A heading the sidebar filter can find, and where it links. */
+export interface SearchHeading {
+  /** Its text; an operation's is its method and path (`POST /api/jobs/{id}/cancel`). */
+  text: string;
+  /** Its URL path with the fragment. */
+  url: string;
+}
+
+/** One page the sidebar filter can find. */
+export interface SearchPage {
+  /** What it sits under: its sidebar group, or `Web API` for a route group page. */
+  section: string;
+  /** Its title. */
+  title: string;
+  /** Its URL path. */
+  url: string;
+  /** Its headings, in order. */
+  headings: SearchHeading[];
+}
+
+/**
+ * Reads what the sidebar filter needs from one doc: its headings, linked
+ * at the docs version. Only parses the Markdown, so it costs much less
+ * than {@link renderDoc}.
+ *
+ * @param source - The doc's Markdown.
+ * @param key - The doc's key.
+ * @param section - Its sidebar group's title.
+ * @param title - Its title as the sidebar shows it.
+ * @param base - URL prefix of the docs version.
+ * @returns The page's entry.
+ */
+export function searchPage(
+  source: string,
+  key: string,
+  section: string,
+  title: string,
+  base: string,
+): SearchPage {
+  const url = docUrl(key, base);
+  const tokens = renderer(key, null, "", (k) => docUrl(k, base)).parse(source, {});
+  const headings = headingsOf(tokens).map((h) => ({
+    text: h.method === undefined ? h.text : `${h.method} ${h.text}`,
+    url: `${url}#${h.id}`,
+  }));
+  return { section, title, url, headings };
+}
+
+/**
+ * The entries of the Web API's route group pages, read from its index:
+ * each group page with its routes as headings, so a filter for `cancel`
+ * finds Web API / Jobs without fetching every group page.
+ *
+ * @param source - The Web API index's Markdown.
+ * @param base - URL prefix of the docs version.
+ * @returns One entry per route group.
+ */
+export function apiSearchPages(source: string, base: string): SearchPage[] {
+  return apiRouteGroups(source, { blobBase: "", base }).map((group) => ({
+    section: "Web API",
+    title: group.title,
+    url: group.href,
+    headings: group.routes.map((route) => ({
+      text: `${route.method} ${route.path}`,
+      url: route.href,
+    })),
+  }));
+}
+
 /**
  * Renders one doc.
  *
@@ -776,18 +879,7 @@ export function renderDoc(
 ): RenderedDoc {
   const md = renderer(key, keys, blobBase, (k) => docUrl(k, base));
   const tokens = md.parse(source, {});
-  // A Web API page lists its operations, not their subsections
-  // (Parameters, Responses, …), which repeat on every one.
-  let inOperation = false;
-  const headings = tokens.flatMap((t, i): DocHeading[] => {
-    if (t.type !== "heading_open" || (t.tag !== "h2" && t.tag !== "h3")) return [];
-    const id = String(t.attrGet("id") ?? "");
-    const op = operationMeta(t);
-    if (t.tag === "h2") inOperation = op !== null;
-    if (op !== null) return [{ level: 2, id, text: op.path, method: op.method }];
-    if (inOperation) return [];
-    return [{ level: t.tag === "h2" ? 2 : 3, id, text: inlineText(tokens[i + 1]) }];
-  });
+  const headings = headingsOf(tokens);
   // Read before rendering, which rewrites the links in place.
   const routes = routeLinks(indexRoutes(tokens), keys, blobBase, base);
   return {
@@ -1333,7 +1425,14 @@ export function versionsHtml(
 const SHELL_VALUE_RE = /%%([A-Za-z]+)%%/g;
 
 /** Values every docs shell hole takes. */
-export const SHELL_VALUES = ["pageTitle", "pageDescription", "pagePath", "markdownUrl", "docsBase"];
+export const SHELL_VALUES = [
+  "pageTitle",
+  "pageDescription",
+  "pagePath",
+  "markdownUrl",
+  "docsBase",
+  "searchIndex",
+];
 
 /** `<!--name-->` markers in the docs shell, filled with trusted HTML. */
 export const SHELL_MARKERS = [
@@ -1400,6 +1499,31 @@ export interface DocsShell {
   pageTitles: string[];
   /** src/sitemap.html rendered for the site, with SITEMAP_MARKER where the list goes. */
   sitemapHtml: string;
+  /**
+   * Generated reference folders under `api/` (`api/web`, `api/rust/<crate>`)
+   * mapped to the repository path each is generated from (build.ts
+   * `generatedSources`).
+   */
+  sources: Readonly<Record<string, string>>;
+}
+
+/**
+ * Finds the repository path a generated page under `api/` comes from: the
+ * entry of `sources` for the longest folder holding the page.
+ *
+ * @param key - The page's key.
+ * @param sources - DocsShell `sources`.
+ * @returns The repository path, or null when no folder holds the page.
+ */
+export function generatedSource(
+  key: string,
+  sources: Readonly<Record<string, string>>,
+): string | null {
+  for (let at = key.lastIndexOf("/"); at > 0; at = key.lastIndexOf("/", at - 1)) {
+    const folder = key.slice(0, at);
+    if (Object.hasOwn(sources, folder)) return sources[folder] ?? null;
+  }
+  return null;
 }
 
 /**
@@ -1438,11 +1562,20 @@ export function renderDocPage(
         : [];
   const markdownUrl = docMarkdownUrl(key, at.base);
   const generated = key.startsWith("api/");
-  const sourceUrl = generated ? null : `${blobBase}docs/${key}.md`;
-  const sourceLink =
-    sourceUrl === null
-      ? `Generated from the source at ${escapeHtml(at.ref)}`
-      : `Source: <a href="${escapeHtml(sourceUrl)}">docs/${escapeHtml(key)}.md</a> at ${escapeHtml(at.ref)}`;
+  // A generated page links to what it is generated from: a file (blob) or a
+  // folder (tree) of the repository.
+  const sourcePath = generated ? generatedSource(key, shell.sources) : `docs/${key}.md`;
+  const sourceUrl =
+    sourcePath === null
+      ? null
+      : `${/\.[a-z]+$/.test(sourcePath) ? blobBase : `${shell.repository}/tree/${at.ref}/`}${sourcePath}`;
+  const sourceAnchor =
+    sourceUrl === null || sourcePath === null
+      ? ""
+      : `<a href="${escapeHtml(sourceUrl)}">${escapeHtml(sourcePath)}</a>`;
+  const sourceLink = generated
+    ? `Generated from ${sourceAnchor || "the source"} at ${escapeHtml(at.ref)}`
+    : `Source: ${sourceAnchor} at ${escapeHtml(at.ref)}`;
   const issueUrl = `${shell.repository}/issues/new?title=${encodeURIComponent(`Docs: ${doc.title}`)}&body=${encodeURIComponent(`Page: ${shell.origin}${docUrl(key, at.base)}\n\n`)}`;
   const note =
     at.ref === "main"
@@ -1463,6 +1596,7 @@ export function renderDocPage(
       pagePath: docUrl(key, at.base),
       markdownUrl,
       docsBase: docUrl("README", at.base),
+      searchIndex: searchIndexUrl(at.base),
     },
     {
       jsonld: jsonLd(
@@ -1531,6 +1665,7 @@ export function renderUnavailablePage(
       pagePath: docUrl(key, at.base),
       markdownUrl: docMarkdownUrl(key, at.base),
       docsBase: docUrl("README", at.base),
+      searchIndex: searchIndexUrl(at.base),
     },
     {
       jsonld: "",

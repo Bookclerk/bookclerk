@@ -211,11 +211,114 @@ export function layoutOperations(tokens: readonly Token[], make: MakeToken): Tok
       html("</div>\n"),
     );
     if (examples.length > 0)
-      out.push(html('<div class="api-op-examples">\n'), ...examples, html("</div>\n"));
+      out.push(
+        html('<div class="api-op-examples">\n'),
+        ...layoutResponses(examples, make, id),
+        html("</div>\n"),
+      );
     out.push(html("</div>\n</section>\n"));
     at = end;
   }
   out.push(...tokens.slice(at), html("</div>\n"));
+  return out;
+}
+
+/** The heading of the examples subsection {@link layoutResponses} lays out. */
+const EXAMPLE_RESPONSE = "Example response";
+
+/**
+ * Reads a status line of an example response: a paragraph whose inline
+ * text starts with `` Status `200`: ``.
+ *
+ * @param inline - The paragraph's `inline` token.
+ * @returns The status, or null for any other paragraph.
+ */
+function responseStatusOf(inline: Token | undefined): string | null {
+  const children = inline?.children ?? [];
+  const lead = children[0];
+  const status = children[1];
+  const after = children[2];
+  if (lead?.type !== "text" || lead.content !== "Status ") return null;
+  if (status?.type !== "code_inline" || !/^(?:[1-5]\d\d|[1-5]XX|default)$/i.test(status.content))
+    return null;
+  if (after?.type !== "text" || !after.content.startsWith(":")) return null;
+  return status.content;
+}
+
+/**
+ * Lays out an operation's `### Example response` subsection as a card with
+ * one panel per status, the way OpenAPI viewers show example responses:
+ * each `` Status `200`: <description> `` paragraph and the JSON block after
+ * it become a `div.api-response` (id `<operation id>-response-<status>`)
+ * whose caption carries a colored status mark (`span.api-response-code`,
+ * which keeps every character of `` Status `200`: ``). docs.js turns the panels
+ * into tabs; without it they stack. Everything else passes through.
+ *
+ * @param tokens - An operation's example subsections.
+ * @param make - markdown-it's token constructor.
+ * @param id - The operation heading's id, which panel ids start with.
+ * @returns The new token list.
+ */
+export function layoutResponses(tokens: readonly Token[], make: MakeToken, id: string): Token[] {
+  const html = (content: string): Token => {
+    const token = make("html_block", "", 0);
+    token.content = content;
+    return token;
+  };
+  const isH3 = (t: Token | undefined): boolean =>
+    t?.type === "heading_open" && t.tag === "h3" && t.level === 0;
+  const start = tokens.findIndex((t, i) => isH3(t) && tokens[i + 1]?.content === EXAMPLE_RESPONSE);
+  if (start < 0) return [...tokens];
+  const nextH3 = tokens.findIndex((t, i) => i > start && isH3(t));
+  const end = nextH3 < 0 ? tokens.length : nextH3;
+  // A status line is a top-level paragraph: one in a list or quote stays
+  // where it is, since a panel opened there would close outside it.
+  const statusAt = (i: number): string | null =>
+    tokens[i]?.type === "paragraph_open" && tokens[i]?.level === 0
+      ? responseStatusOf(tokens[i + 1])
+      : null;
+  // The heading and anything before the first status line stay as they are.
+  let first = start + 3;
+  while (first < end && statusAt(first) === null) first += 1;
+  const out: Token[] = [...tokens.slice(0, start), html('<div class="api-responses">\n')];
+  out.push(...tokens.slice(start, first));
+  let open = false;
+  const used = new Set<string>();
+  for (let i = first; i < end; i++) {
+    const token = tokens[i];
+    if (token === undefined) continue;
+    const found = statusAt(i);
+    if (found !== null) {
+      if (open) out.push(html("</div>\n"));
+      const slug = found.toLowerCase();
+      // A status listed twice keeps its first panel's id unique.
+      const panel = used.has(slug) ? `${id}-response-${slug}-${i}` : `${id}-response-${slug}`;
+      used.add(slug);
+      out.push(
+        html(
+          `<div class="api-response" id="${escapeCode(panel)}" data-status="${escapeCode(found)}">\n`,
+        ),
+      );
+      open = true;
+      token.attrJoin("class", "api-response-status");
+      const inline = tokens[i + 1];
+      const children = inline?.children ?? [];
+      // `Status `200`: text` becomes a status mark and the text; the word
+      // stays for screen readers, and tabs hide the whole mark.
+      const after = children[2];
+      if (inline !== undefined && after !== undefined) {
+        const mark = make("html_inline", "", 0);
+        mark.content =
+          `<span class="api-response-code"><span class="visually-hidden">Status </span>` +
+          `<span class="${statusClass(found)}">${escapeCode(found)}</span>:</span>`;
+        after.content = after.content.slice(1);
+        inline.children = [mark, ...children.slice(2)];
+      }
+    }
+    out.push(token);
+  }
+  if (open) out.push(html("</div>\n"));
+  out.push(html("</div>\n"), ...tokens.slice(end));
   return out;
 }
 
@@ -447,8 +550,10 @@ interface RouteNode {
  * subsections: a route sits under the nearest shorter route (or shared
  * path) it extends, and shows only the part of its path past that line.
  *
- * The prefix every route shares stays on the top lines, so they read as
- * full paths. A shared path that is not a route becomes a label line only
+ * The prefix every route shares is left out, since the page's headings
+ * show it: on a page of `/api/auth/...` routes the top lines read `/login`,
+ * and a route at the prefix itself reads `/`. A page whose routes all share
+ * one path keeps its last segment. A shared path that is not a route becomes a label line only
  * when two or more routes branch from it; a single chain of segments is
  * kept on one line. Nesting stops at {@link ROUTE_TREE_MAX_DEPTH}: deeper
  * routes stay on that level with their longer remainder.
@@ -461,10 +566,12 @@ export function routeTree(
 ): RouteTreeEntry[] {
   const segments = (path: string): string[] => path.split("/").filter((s) => s !== "");
   const paths = ops.map((op) => segments(op.path));
-  // The shared prefix, kept short of every full path so each route keeps a segment.
+  // The shared prefix, which may be a whole route's path, unless it is every
+  // route's: then each route keeps its last segment.
   let shared = 0;
   const shortest = Math.min(...paths.map((p) => p.length));
-  while (shared < shortest - 1 && paths.every((p) => p[shared] === paths[0]?.[shared])) shared += 1;
+  while (shared < shortest && paths.every((p) => p[shared] === paths[0]?.[shared])) shared += 1;
+  if (paths.every((p) => p.length === shared)) shared = Math.max(0, shared - 1);
   const root: RouteNode = { ops: [], children: new Map() };
   ops.forEach((op, i) => {
     let node = root;
@@ -478,7 +585,6 @@ export function routeTree(
     }
     node.ops.push({ method: op.method, id: op.id });
   });
-  const prefix = (paths[0] ?? []).slice(0, shared);
   const entries: RouteTreeEntry[] = [];
   /**
    * Lists the lines for one node and what extends it.
@@ -503,8 +609,8 @@ export function routeTree(
     const carried = depth + 1 > ROUTE_TREE_MAX_DEPTH ? label : [];
     for (const [segment, child] of node.children) visit(child, [...carried, segment], below);
   };
-  // Only `/` itself ends at the root: every other path keeps a segment past the prefix.
+  // A route at the shared prefix itself, if any, reads `/`.
   for (const op of root.ops) entries.push({ kind: "op", ...op, label: "/", depth: 0 });
-  for (const [segment, child] of root.children) visit(child, [...prefix, segment], 0);
+  for (const [segment, child] of root.children) visit(child, [segment], 0);
   return entries;
 }

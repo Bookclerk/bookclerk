@@ -198,9 +198,11 @@ class RenderTest(unittest.TestCase):
 
     def test_example_response(self) -> None:
         get = self.pages["books.md"].split("## `GET /books/{id}`")[1].split("## `DELETE")[0]
-        self.assertIn("### Example response\n\nStatus `200`:\n\n```json\n", get)
+        self.assertIn("### Example response\n\nStatus `200`: The book.\n\n```json\n", get)
         body = json.loads(get.split("```json\n")[1].split("\n```")[0])
         self.assertEqual(body, {"id": 0, "status": "new", "tags": ["string"], "extra": {"key": "new"}, "count": 0})
+        # Every status is listed, with a sentence where there is no example.
+        self.assertIn("\n\nStatus `404`: No | such book. No body.\n", get)
         # Untyped and binary bodies get no example.
         self.assertNotIn("Example response", self.pages["other.md"])
         self.assertNotIn("Example response", self.pages["books.md"].split("## `POST /books`")[1])
