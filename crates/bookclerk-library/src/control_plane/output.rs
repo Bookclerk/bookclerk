@@ -125,73 +125,99 @@ pub fn is_output_setting_key(key: &str) -> bool {
 /// the nested `lame` and `replacement_characters` objects too, so a document
 /// written by a newer binary under the same schema version fails closed
 /// instead of being silently truncated on the next write.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OutputSettingsV1 {
     /// Post-acquire packaging format.
     pub format: OutputFormat,
     /// Prefer Widevine/CENC.
+    #[schema(example = true)]
     pub widevine: bool,
     /// Prefer xHE-AAC on the Widevine path when offered.
+    #[schema(example = false)]
     pub xhe_aac: bool,
     /// Optional `.wvd` path; relative paths resolve under each host's files dir.
+    #[schema(value_type = Option<String>, example = "cdm/device.wvd")]
     pub widevine_cdm: Option<PathBuf>,
     /// Remote L3 CDM provider (`None` = AudibleCdm, empty/`off` disables).
+    #[schema(example = "audible")]
     pub widevine_cdm_provider: Option<String>,
     /// Named path-template preset.
     pub naming_profile: NamingProfile,
     /// Folder-path template override.
+    #[schema(example = "<author>/<title>")]
     pub folder_template: Option<String>,
     /// File-stem template override.
+    #[schema(example = "<title> [<id>]")]
     pub file_template: Option<String>,
     /// Per-chapter file-stem template override.
+    #[schema(example = "<title> - <ch#> - <chapter title>")]
     pub chapter_file_template: Option<String>,
     /// Embedded chapter-title template.
+    #[schema(example = "<ch#> - <chapter title>")]
     pub chapter_title_template: Option<String>,
     /// Save cover JPEG alongside audio.
+    #[schema(example = true)]
     pub download_cover: bool,
     /// Download companion PDF when available.
+    #[schema(example = true)]
     pub download_pdf: bool,
     /// Write a `.cue` sidecar.
+    #[schema(example = false)]
     pub create_cue: bool,
     /// Embed tags, cover, and chapters natively.
+    #[schema(example = true)]
     pub fixup_metadata: bool,
     /// Chapter JSON sidecars.
     pub chapter_json: ChapterJsonMode,
     /// Persist raw catalog API JSON.
+    #[schema(example = false)]
     pub save_metadata_json: bool,
     /// Cover image size (`500`, `1215`, another pixel size, or `native`).
+    #[schema(example = "1215")]
     pub cover_size: String,
     /// Preferred chapter API layout (`tree`, `flat`, or `both`).
+    #[schema(example = "tree")]
     pub chapter_layout: String,
     /// Re-acquire when media already exists at the destination.
+    #[schema(example = false)]
     pub overwrite_existing: bool,
     /// Policy when only some enabled destinations have a title.
     pub multi_destination: MultiDestinationMode,
     /// Operator action when a title fails to acquire.
     pub bad_book_action: BadBookAction,
     /// Max MP3 part size in MiB for `split_mp3_by_size`.
+    #[schema(example = 100)]
     pub split_mp3_max_mb: u32,
     /// Drop chapter splits shorter than this many minutes.
+    #[schema(example = 1)]
     pub minimum_file_duration_minutes: u32,
     /// Flatten nested chapter titles.
+    #[schema(example = false)]
     pub combine_nested_chapter_titles: bool,
     /// Merge opening/end credit chapters into neighbours.
+    #[schema(example = true)]
     pub merge_opening_and_end_credits: bool,
     /// Strip an "Unabridged" suffix from titles used in naming.
+    #[schema(example = true)]
     pub strip_unabridged: bool,
     /// Trim Audible brand intro/outro audio.
+    #[schema(example = false)]
     pub strip_audible_brand_audio: bool,
     /// Download Audible clips/bookmarks sidecars.
+    #[schema(example = false)]
     pub download_clips_bookmarks: bool,
     /// Keep the encrypted download.
+    #[schema(example = false)]
     pub retain_aax_file: bool,
     /// Fetch speed cap in KB/s (`0` = unlimited).
+    #[schema(example = 0)]
     pub download_speed_limit_kbps: u32,
     /// LAME encoder knobs.
     #[serde(deserialize_with = "deserialize_lame")]
     pub lame: LameConfig,
     /// Optional output sample-rate ceiling in Hz.
+    #[schema(example = 44100)]
     pub max_sample_rate: Option<u32>,
     /// File creation timestamp policy.
     pub creation_time: FileTimestampMode,
@@ -201,8 +227,10 @@ pub struct OutputSettingsV1 {
     pub path_sanitization: PathSanitizationMode,
     /// Explicit find/replace rules for path segments.
     #[serde(deserialize_with = "deserialize_replacement_rules")]
+    #[schema(example = json!([{"find": ":", "replace": " -"}]))]
     pub replacement_characters: Vec<ReplacementRule>,
     /// Max length per path segment (`0` disables truncation).
+    #[schema(example = 255)]
     pub max_filename_length: u32,
 }
 

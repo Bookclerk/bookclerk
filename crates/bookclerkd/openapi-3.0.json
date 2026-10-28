@@ -3308,16 +3308,8 @@
             "description": "The `core.events` settings.",
             "content": {
               "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The body is invalid.",
-            "content": {
-              "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/EventsDomainResponse"
                 }
               }
             }
@@ -3343,7 +3335,7 @@
             }
           },
           "500": {
-            "description": "The configuration could not be read or written.",
+            "description": "The configuration could not be read.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3391,10 +3383,12 @@
         },
         "responses": {
           "200": {
-            "description": "The settings after the change.",
+            "description": "The settings after the change, or a `replayed` note when the same change had already been written.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/EventsDomainChange"
+                }
               }
             }
           },
@@ -3424,6 +3418,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`expected_revision` is stale; `current_revision` is the revision to retry against.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevisionConflict"
                 }
               }
             }
@@ -3472,16 +3476,8 @@
             "description": "The `core.output` settings.",
             "content": {
               "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The body is invalid.",
-            "content": {
-              "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/OutputDomainResponse"
                 }
               }
             }
@@ -3507,7 +3503,7 @@
             }
           },
           "500": {
-            "description": "The configuration could not be read or written.",
+            "description": "The configuration could not be read.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3555,10 +3551,12 @@
         },
         "responses": {
           "200": {
-            "description": "The settings after the change.",
+            "description": "The settings after the change, or a `replayed` note when the same change had already been written.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OutputDomainChange"
+                }
               }
             }
           },
@@ -3588,6 +3586,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`expected_revision` is stale; `current_revision` is the revision to retry against.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevisionConflict"
                 }
               }
             }
@@ -9022,7 +9030,9 @@
             "description": "A filter is invalid.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
               }
             }
           },
@@ -9040,7 +9050,9 @@
             "description": "The library could not be read.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                }
               }
             }
           },
@@ -14370,7 +14382,9 @@
             "description": "The OpenAPI 3.1 document for this daemon's version.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OpenApiDocument"
+                }
               }
             }
           },
@@ -14402,7 +14416,9 @@
             "description": "The OpenAPI 3.0.3 document for this daemon's version.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OpenApiDocument"
+                }
               }
             }
           },
@@ -14411,7 +14427,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/OpenApiV30Unavailable"
                 }
               }
             }
@@ -15229,6 +15245,17 @@
         },
         "additionalProperties": false
       },
+      "BadBookAction": {
+        "type": "string",
+        "description": "How to handle acquire failures (`BadBook` setting).",
+        "enum": [
+          "ask",
+          "abort",
+          "retry",
+          "ignore"
+        ],
+        "example": "ask"
+      },
       "BinaryBody": {
         "type": "string",
         "format": "binary",
@@ -15941,6 +15968,17 @@
           }
         }
       },
+      "ChapterJsonMode": {
+        "type": "string",
+        "description": "Whether / which chapter JSON sidecars to write beside acquired audio.\n\nDefault is [`Self::Off`]. Replaces the old `save_chapter_json` bool +\n`chapter_layout` pair for *sidecar output* (Audible API fetch layout is\nchosen separately when chapters are needed for embedding).",
+        "enum": [
+          "off",
+          "flat",
+          "tree",
+          "both"
+        ],
+        "example": "off"
+      },
       "ClusterJobsBody": {
         "type": "object",
         "description": "`POST /api/config/clusters/{cluster_id}/jobs` body.",
@@ -16544,6 +16582,85 @@
           }
         }
       },
+      "DomainReplayed": {
+        "type": "object",
+        "description": "Body of a `PUT` to a configuration domain that changed nothing because\nthe same change (by its request id) had already been written.",
+        "required": [
+          "namespace",
+          "replayed",
+          "revision"
+        ],
+        "properties": {
+          "namespace": {
+            "type": "string",
+            "description": "Domain namespace (`core.events` or `core.output`).",
+            "example": "core.events"
+          },
+          "replayed": {
+            "type": "boolean",
+            "description": "Always `true`: the write was a replay.",
+            "example": true
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Revision the earlier write produced.",
+            "example": 12
+          }
+        }
+      },
+      "DomainRevision": {
+        "type": "object",
+        "description": "Where a configuration domain document lives and which revision it is at:\nthe metadata every domain response carries before its settings.",
+        "required": [
+          "namespace",
+          "scope_type",
+          "scope_id",
+          "schema_version",
+          "revision",
+          "updated_at",
+          "updated_by"
+        ],
+        "properties": {
+          "namespace": {
+            "type": "string",
+            "description": "Domain namespace (`core.events` or `core.output`).",
+            "example": "core.events"
+          },
+          "scope_type": {
+            "type": "string",
+            "description": "Scope type: `cluster` for a shared document, `node` for one node's.",
+            "example": "cluster"
+          },
+          "scope_id": {
+            "type": "string",
+            "description": "Scope id: `singleton` for the cluster, else the node id.",
+            "example": "singleton"
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Version of the document's schema, starting at 1.",
+            "example": 1
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Compare-and-swap revision; send it back as `expected_revision`.",
+            "example": 12
+          },
+          "updated_at": {
+            "type": "string",
+            "description": "RFC 3339 time of the last write.",
+            "example": "2026-10-28T19:07:00Z"
+          },
+          "updated_by": {
+            "type": "string",
+            "description": "Audit identity of the last writer.",
+            "example": "operator"
+          }
+        }
+      },
       "ElevateRequest": {
         "type": "object",
         "description": "JSON body for Owner password re-auth before issuing an elevated operator cookie.",
@@ -16614,16 +16731,19 @@
         "properties": {
           "error": {
             "type": "string",
-            "description": "Machine slug (same as [`ErrorBody::code`])."
+            "description": "Machine slug (same as [`ErrorBody::code`]).",
+            "example": "not_found"
           },
           "message": {
             "type": "string",
-            "description": "Operator-facing explanation."
+            "description": "Operator-facing explanation.",
+            "example": "That page or resource was not found."
           },
           "status": {
             "type": "integer",
             "format": "int32",
             "description": "Numeric HTTP status (duplicates the response status for clients).",
+            "example": 404,
             "minimum": 0
           }
         }
@@ -16792,6 +16912,90 @@
             "nullable": true
           }
         }
+      },
+      "EventsDomainChange": {
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EventsDomainResponse"
+              }
+            ],
+            "description": "The change was written; these are the settings now."
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DomainReplayed"
+              }
+            ],
+            "description": "The same change had already been written."
+          }
+        ],
+        "description": "Body of `PUT /api/config/domains/core.events`: the settings after the\nchange, or a replay note."
+      },
+      "EventsDomainResponse": {
+        "allOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DomainRevision"
+              }
+            ],
+            "description": "Where the document lives and which revision it is at."
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EventsSettingsV1"
+              }
+            ],
+            "description": "The settings at that revision."
+          }
+        ],
+        "description": "Body of `GET /api/config/domains/core.events` and of a `PUT` that was\napplied: the revision metadata, then the `[events]` settings themselves."
+      },
+      "EventsSettingsV1": {
+        "type": "object",
+        "description": "Typed `[events]` document, schema version 1.",
+        "required": [
+          "retention_days",
+          "dead_letter_retention_days",
+          "concurrency"
+        ],
+        "properties": {
+          "retention_days": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Days to keep acked and rejected deliveries.",
+            "example": 30,
+            "minimum": 0
+          },
+          "dead_letter_retention_days": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Days to keep dead-lettered deliveries.",
+            "example": 90,
+            "minimum": 0
+          },
+          "concurrency": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Local delivery workers and the cluster in-flight cap.",
+            "example": 4,
+            "minimum": 0
+          }
+        }
+      },
+      "FileTimestampMode": {
+        "type": "string",
+        "description": "Which timestamp to apply after acquire (`CreationTime` / `LastWriteTime`).",
+        "enum": [
+          "now",
+          "purchased",
+          "published"
+        ],
+        "example": "now"
       },
       "HealthResponse": {
         "type": "object",
@@ -16971,6 +17175,52 @@
           "cancelled"
         ]
       },
+      "LameConfig": {
+        "type": "object",
+        "description": "LAME encoder tuning (classic `Lame*` settings).",
+        "properties": {
+          "target": {
+            "type": "string",
+            "description": "`LameTarget`: `quality`, `bitrate`, `constant`, etc.",
+            "default": "quality",
+            "example": "quality"
+          },
+          "vbr_quality": {
+            "type": "integer",
+            "format": "int32",
+            "description": "`LameVBRQuality` (0–9, lower = better).",
+            "default": 2,
+            "example": 2,
+            "minimum": 0
+          },
+          "bitrate_kbps": {
+            "type": "integer",
+            "format": "int32",
+            "description": "`LameBitrate` in kbps when target is bitrate/constant.",
+            "default": 128,
+            "example": 128,
+            "minimum": 0
+          },
+          "mode": {
+            "type": "string",
+            "description": "`LameMode`: `default`, `mono`, `stereo`.",
+            "default": "default",
+            "example": "default"
+          },
+          "downsample_mono": {
+            "type": "boolean",
+            "description": "`LameDownsampleMono`.",
+            "default": false,
+            "example": false
+          },
+          "constant_bitrate": {
+            "type": "boolean",
+            "description": "`LameConstantBitrate`.",
+            "default": false,
+            "example": false
+          }
+        }
+      },
       "LeaveBody": {
         "type": "object",
         "description": "`POST /api/config/join/leave` body.",
@@ -17069,6 +17319,25 @@
             "nullable": true
           }
         }
+      },
+      "MultiDestinationMode": {
+        "type": "string",
+        "description": "Behavior when some output destinations already have a title and others do not.",
+        "enum": [
+          "sync_missing",
+          "refetch_missing",
+          "refetch_all"
+        ],
+        "example": "sync_missing"
+      },
+      "NamingProfile": {
+        "type": "string",
+        "description": "Preset path-template profile.\n\nSelect via `output.naming_profile`. Individual `folder_template` /\n`file_template` / `chapter_file_template` values override the profile when\nset.",
+        "enum": [
+          "audiobookshelf",
+          "classic"
+        ],
+        "example": "audiobookshelf"
       },
       "OAuthEnrollRequest": {
         "type": "object",
@@ -17499,6 +17768,390 @@
           }
         }
       },
+      "OpenApiDocument": {
+        "type": "object",
+        "description": "An OpenAPI document as this daemon serves it: the `openapi` version string, `info` about the daemon, every route under `paths` and the schemas under `components`.",
+        "example": {
+          "components": {
+            "schemas": {}
+          },
+          "info": {
+            "title": "Bookclerk daemon API",
+            "version": "0.1.0"
+          },
+          "openapi": "3.1.0",
+          "paths": {
+            "/health": {
+              "get": {
+                "responses": {
+                  "200": {
+                    "description": "The daemon is up."
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "OpenApiV30Unavailable": {
+        "type": "object",
+        "description": "Body of the `500` from `GET /api/openapi-3.0.json` when the 3.1\ndocument could not be restated as 3.0.3.",
+        "required": [
+          "error",
+          "message"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Always `openapi_v30_unavailable`.",
+            "example": "openapi_v30_unavailable"
+          },
+          "message": {
+            "type": "string",
+            "description": "What to do: the daemon log names the form that could not be restated.",
+            "example": "The OpenAPI 3.0 document could not be built; see the daemon log."
+          }
+        }
+      },
+      "OutputDomainChange": {
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OutputDomainResponse"
+              }
+            ],
+            "description": "The change was written; these are the settings now (boxed: the\noutput document is far larger than a replay note)."
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DomainReplayed"
+              }
+            ],
+            "description": "The same change had already been written."
+          }
+        ],
+        "description": "Body of `PUT /api/config/domains/core.output`: the settings after the\nchange, or a replay note."
+      },
+      "OutputDomainResponse": {
+        "allOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DomainRevision"
+              }
+            ],
+            "description": "Where the document lives and which revision it is at."
+          },
+          {
+            "type": "object",
+            "required": [
+              "document"
+            ],
+            "properties": {
+              "document": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/OutputSettingsV1"
+                  }
+                ],
+                "description": "The settings at that revision (schema version 1)."
+              }
+            }
+          }
+        ],
+        "description": "Body of `GET /api/config/domains/core.output` and of a `PUT` that was\napplied: the revision metadata and the `[output]` document."
+      },
+      "OutputFormat": {
+        "type": "string",
+        "description": "Post-download output formatting. Default is enriched M4B (tags + chapters).",
+        "enum": [
+          "enriched_m4b",
+          "single_mp3",
+          "split_mp3_by_chapter",
+          "split_mp3_by_size",
+          "opus",
+          "none"
+        ],
+        "example": "enriched_m4b"
+      },
+      "OutputSettingsV1": {
+        "type": "object",
+        "description": "Typed `core.output` document, schema version 1.\n\nField meanings match [`OutputConfig`]. Unknown fields are rejected, inside\nthe nested `lame` and `replacement_characters` objects too, so a document\nwritten by a newer binary under the same schema version fails closed\ninstead of being silently truncated on the next write.",
+        "required": [
+          "format",
+          "widevine",
+          "xhe_aac",
+          "naming_profile",
+          "download_cover",
+          "download_pdf",
+          "create_cue",
+          "fixup_metadata",
+          "chapter_json",
+          "save_metadata_json",
+          "cover_size",
+          "chapter_layout",
+          "overwrite_existing",
+          "multi_destination",
+          "bad_book_action",
+          "split_mp3_max_mb",
+          "minimum_file_duration_minutes",
+          "combine_nested_chapter_titles",
+          "merge_opening_and_end_credits",
+          "strip_unabridged",
+          "strip_audible_brand_audio",
+          "download_clips_bookmarks",
+          "retain_aax_file",
+          "download_speed_limit_kbps",
+          "lame",
+          "creation_time",
+          "last_write_time",
+          "path_sanitization",
+          "replacement_characters",
+          "max_filename_length"
+        ],
+        "properties": {
+          "format": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OutputFormat"
+              }
+            ],
+            "description": "Post-acquire packaging format."
+          },
+          "widevine": {
+            "type": "boolean",
+            "description": "Prefer Widevine/CENC.",
+            "example": true
+          },
+          "xhe_aac": {
+            "type": "boolean",
+            "description": "Prefer xHE-AAC on the Widevine path when offered.",
+            "example": false
+          },
+          "widevine_cdm": {
+            "type": "string",
+            "description": "Optional `.wvd` path; relative paths resolve under each host's files dir.",
+            "example": "cdm/device.wvd",
+            "nullable": true
+          },
+          "widevine_cdm_provider": {
+            "type": "string",
+            "description": "Remote L3 CDM provider (`None` = AudibleCdm, empty/`off` disables).",
+            "example": "audible",
+            "nullable": true
+          },
+          "naming_profile": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/NamingProfile"
+              }
+            ],
+            "description": "Named path-template preset."
+          },
+          "folder_template": {
+            "type": "string",
+            "description": "Folder-path template override.",
+            "example": "<author>/<title>",
+            "nullable": true
+          },
+          "file_template": {
+            "type": "string",
+            "description": "File-stem template override.",
+            "example": "<title> [<id>]",
+            "nullable": true
+          },
+          "chapter_file_template": {
+            "type": "string",
+            "description": "Per-chapter file-stem template override.",
+            "example": "<title> - <ch#> - <chapter title>",
+            "nullable": true
+          },
+          "chapter_title_template": {
+            "type": "string",
+            "description": "Embedded chapter-title template.",
+            "example": "<ch#> - <chapter title>",
+            "nullable": true
+          },
+          "download_cover": {
+            "type": "boolean",
+            "description": "Save cover JPEG alongside audio.",
+            "example": true
+          },
+          "download_pdf": {
+            "type": "boolean",
+            "description": "Download companion PDF when available.",
+            "example": true
+          },
+          "create_cue": {
+            "type": "boolean",
+            "description": "Write a `.cue` sidecar.",
+            "example": false
+          },
+          "fixup_metadata": {
+            "type": "boolean",
+            "description": "Embed tags, cover, and chapters natively.",
+            "example": true
+          },
+          "chapter_json": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ChapterJsonMode"
+              }
+            ],
+            "description": "Chapter JSON sidecars."
+          },
+          "save_metadata_json": {
+            "type": "boolean",
+            "description": "Persist raw catalog API JSON.",
+            "example": false
+          },
+          "cover_size": {
+            "type": "string",
+            "description": "Cover image size (`500`, `1215`, another pixel size, or `native`).",
+            "example": "1215"
+          },
+          "chapter_layout": {
+            "type": "string",
+            "description": "Preferred chapter API layout (`tree`, `flat`, or `both`).",
+            "example": "tree"
+          },
+          "overwrite_existing": {
+            "type": "boolean",
+            "description": "Re-acquire when media already exists at the destination.",
+            "example": false
+          },
+          "multi_destination": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MultiDestinationMode"
+              }
+            ],
+            "description": "Policy when only some enabled destinations have a title."
+          },
+          "bad_book_action": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BadBookAction"
+              }
+            ],
+            "description": "Operator action when a title fails to acquire."
+          },
+          "split_mp3_max_mb": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Max MP3 part size in MiB for `split_mp3_by_size`.",
+            "example": 100,
+            "minimum": 0
+          },
+          "minimum_file_duration_minutes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Drop chapter splits shorter than this many minutes.",
+            "example": 1,
+            "minimum": 0
+          },
+          "combine_nested_chapter_titles": {
+            "type": "boolean",
+            "description": "Flatten nested chapter titles.",
+            "example": false
+          },
+          "merge_opening_and_end_credits": {
+            "type": "boolean",
+            "description": "Merge opening/end credit chapters into neighbours.",
+            "example": true
+          },
+          "strip_unabridged": {
+            "type": "boolean",
+            "description": "Strip an \"Unabridged\" suffix from titles used in naming.",
+            "example": true
+          },
+          "strip_audible_brand_audio": {
+            "type": "boolean",
+            "description": "Trim Audible brand intro/outro audio.",
+            "example": false
+          },
+          "download_clips_bookmarks": {
+            "type": "boolean",
+            "description": "Download Audible clips/bookmarks sidecars.",
+            "example": false
+          },
+          "retain_aax_file": {
+            "type": "boolean",
+            "description": "Keep the encrypted download.",
+            "example": false
+          },
+          "download_speed_limit_kbps": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Fetch speed cap in KB/s (`0` = unlimited).",
+            "example": 0,
+            "minimum": 0
+          },
+          "lame": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/LameConfig"
+              }
+            ],
+            "description": "LAME encoder knobs."
+          },
+          "max_sample_rate": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Optional output sample-rate ceiling in Hz.",
+            "example": 44100,
+            "minimum": 0,
+            "nullable": true
+          },
+          "creation_time": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/FileTimestampMode"
+              }
+            ],
+            "description": "File creation timestamp policy."
+          },
+          "last_write_time": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/FileTimestampMode"
+              }
+            ],
+            "description": "File last-write timestamp policy."
+          },
+          "path_sanitization": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PathSanitizationMode"
+              }
+            ],
+            "description": "Sanitization profile used when no explicit rules are set."
+          },
+          "replacement_characters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReplacementRule"
+            },
+            "description": "Explicit find/replace rules for path segments.",
+            "example": [
+              {
+                "find": ":",
+                "replace": " -"
+              }
+            ]
+          },
+          "max_filename_length": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Max length per path segment (`0` disables truncation).",
+            "example": 255,
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "PasskeyReauthBody": {
         "type": "object",
         "description": "Optional current password for step-up before register or delete.",
@@ -17666,6 +18319,18 @@
             "nullable": true
           }
         }
+      },
+      "PathSanitizationMode": {
+        "type": "string",
+        "description": "How to sanitize storage path segments when [`crate::OutputConfig::replacement_characters`]\nis empty (explicit rules always win).",
+        "enum": [
+          "auto",
+          "windows",
+          "posix",
+          "s3",
+          "none"
+        ],
+        "example": "auto"
       },
       "PlacementView": {
         "type": "object",
@@ -19280,24 +19945,28 @@
           "expected_revision": {
             "type": "integer",
             "format": "int64",
-            "description": "Revision the caller read. A mismatch is a conflict."
+            "description": "Revision the caller read. A mismatch is a conflict.",
+            "example": 12
           },
           "retention_days": {
             "type": "integer",
             "format": "int64",
             "description": "Replacement `[events]` document.",
+            "example": 30,
             "minimum": 0
           },
           "dead_letter_retention_days": {
             "type": "integer",
             "format": "int64",
             "description": "Replacement dead-letter retention.",
+            "example": 90,
             "minimum": 0
           },
           "concurrency": {
             "type": "integer",
             "format": "int32",
             "description": "Replacement concurrency cap.",
+            "example": 4,
             "minimum": 0
           }
         }
@@ -19385,10 +20054,15 @@
           "expected_revision": {
             "type": "integer",
             "format": "int64",
-            "description": "Revision the caller read. A mismatch is a conflict."
+            "description": "Revision the caller read. A mismatch is a conflict.",
+            "example": 12
           },
           "document": {
-            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OutputSettingsV1"
+              }
+            ],
             "description": "Complete replacement document (schema version 1)."
           }
         }
@@ -19914,6 +20588,26 @@
         },
         "additionalProperties": false
       },
+      "ReplacementRule": {
+        "type": "object",
+        "description": "Character replacement rule (`ReplacementCharacters` in classic Settings.json).",
+        "required": [
+          "find",
+          "replace"
+        ],
+        "properties": {
+          "find": {
+            "type": "string",
+            "description": "Substring to search for in each path segment / tag value.",
+            "example": ":"
+          },
+          "replace": {
+            "type": "string",
+            "description": "Replacement text (may be empty to strip `find`).",
+            "example": " -"
+          }
+        }
+      },
       "RequestStatus": {
         "type": "string",
         "description": "Wishlist row status (`open` while wishlisted; `cancelled` after un-wishlist).",
@@ -19921,6 +20615,27 @@
           "open",
           "cancelled"
         ]
+      },
+      "RevisionConflict": {
+        "type": "object",
+        "description": "Body of a `409 Conflict` from a compare-and-swap write whose\n`expected_revision` lost to a newer revision.",
+        "required": [
+          "error",
+          "current_revision"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Always `revision_conflict`.",
+            "example": "revision_conflict"
+          },
+          "current_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision to read and retry against.",
+            "example": 13
+          }
+        }
       },
       "RevokeBody": {
         "type": "object",

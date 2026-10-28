@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 /// Default is [`Self::Off`]. Replaces the old `save_chapter_json` bool +
 /// `chapter_layout` pair for *sidecar output* (Audible API fetch layout is
 /// chosen separately when chapters are needed for embedding).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
+#[schema(example = "off")]
 pub enum ChapterJsonMode {
     /// Do not write chapter JSON sidecars.
     #[default]
@@ -54,8 +55,9 @@ impl ChapterJsonMode {
 }
 
 /// Post-download output formatting. Default is enriched M4B (tags + chapters).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
+#[schema(example = "enriched_m4b")]
 pub enum OutputFormat {
     /// Remux/transcode to M4B and embed metadata/chapters (default).
     #[default]

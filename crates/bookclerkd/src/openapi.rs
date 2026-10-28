@@ -692,11 +692,41 @@ pub fn shared_document() -> Arc<OpenApi> {
     DOCUMENT.get_or_init(|| Arc::new(document())).clone()
 }
 
+/// An OpenAPI document as this daemon serves it: the `openapi` version
+/// string, `info` about the daemon, every route under `paths` and the
+/// schemas under `components`.
+pub struct OpenApiDocument;
+
+impl utoipa::PartialSchema for OpenApiDocument {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::schema::ObjectBuilder::new()
+            .description(Some(
+                "An OpenAPI document as this daemon serves it: the `openapi` version string, \
+                 `info` about the daemon, every route under `paths` and the schemas under \
+                 `components`.",
+            ))
+            .examples([serde_json::json!({
+                "openapi": "3.1.0",
+                "info": {"title": "Bookclerk daemon API", "version": "0.1.0"},
+                "paths": {"/health": {"get": {"responses": {"200": {"description": "The daemon is up."}}}}},
+                "components": {"schemas": {}}
+            })])
+            .build()
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for OpenApiDocument {
+    fn name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("OpenApiDocument")
+    }
+}
+
 /// Serves the OpenAPI document.
 #[utoipa::path(
     get,
     path = "/api/openapi.json",
-    responses((status = 200, description = "The OpenAPI 3.1 document for this daemon's version.", content_type = "application/json")),
+    responses((status = 200, description = "The OpenAPI 3.1 document for this daemon's version.", body = OpenApiDocument)),
 )]
 pub async fn get_openapi(
     axum::extract::State(doc): axum::extract::State<Arc<OpenApi>>,
@@ -758,8 +788,8 @@ pub fn shared_v30_document() -> V30Document {
                    nullable types use `nullable: true`, and a nullable reference is a copy of \
                    the schema it names.",
     responses(
-        (status = 200, description = "The OpenAPI 3.0.3 document for this daemon's version.", content_type = "application/json"),
-        (status = 500, description = "The document could not be restated; this is a bug."),
+        (status = 200, description = "The OpenAPI 3.0.3 document for this daemon's version.", body = OpenApiDocument),
+        (status = 500, description = "The document could not be restated; this is a bug.", body = OpenApiV30Unavailable),
     ),
 )]
 pub async fn get_openapi_v30(
@@ -770,13 +800,25 @@ pub async fn get_openapi_v30(
         Ok(value) => Json(value).into_response(),
         Err(_) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": "openapi_v30_unavailable",
-                "message": "The OpenAPI 3.0 document could not be built; see the daemon log.",
-            })),
+            Json(OpenApiV30Unavailable {
+                error: "openapi_v30_unavailable",
+                message: "The OpenAPI 3.0 document could not be built; see the daemon log.",
+            }),
         )
             .into_response(),
     }
+}
+
+/// Body of the `500` from `GET /api/openapi-3.0.json` when the 3.1
+/// document could not be restated as 3.0.3.
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct OpenApiV30Unavailable {
+    /// Always `openapi_v30_unavailable`.
+    #[schema(example = "openapi_v30_unavailable")]
+    pub error: &'static str,
+    /// What to do: the daemon log names the form that could not be restated.
+    #[schema(example = "The OpenAPI 3.0 document could not be built; see the daemon log.")]
+    pub message: &'static str,
 }
 
 /// The document as pretty JSON, as `bookclerkd --print-openapi` prints it

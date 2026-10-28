@@ -12,8 +12,9 @@ use serde::{Deserialize, Serialize};
 /// Select via `output.naming_profile`. Individual `folder_template` /
 /// `file_template` / `chapter_file_template` values override the profile when
 /// set.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
+#[schema(example = "audiobookshelf")]
 pub enum NamingProfile {
     /// [Audiobookshelf](https://audiobookshelf.org/docs/documentation/libraries/book-library/directory-structure/)
     /// recommended layout: `{Author}/{Series}/{Book}` or `{Author}/{Book}`,

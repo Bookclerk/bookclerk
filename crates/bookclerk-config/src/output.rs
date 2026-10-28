@@ -275,8 +275,9 @@ impl OutputConfig {
 }
 
 /// Behavior when some output destinations already have a title and others do not.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
+#[schema(example = "sync_missing")]
 pub enum MultiDestinationMode {
     /// Copy the existing object from a present destination into missing ones
     /// (no store re-download). Default.
@@ -290,8 +291,9 @@ pub enum MultiDestinationMode {
 }
 
 /// How to handle acquire failures (`BadBook` setting).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
+#[schema(example = "ask")]
 pub enum BadBookAction {
     /// Prompt the operator (interactive CLI / GUI) for how to proceed (default).
     #[default]

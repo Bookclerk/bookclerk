@@ -19,7 +19,7 @@ use axum::Json;
 use bookclerk_library::control_plane::{
     load_cluster_row, load_events, load_output, overlay_events, overlay_output, replace_events,
     replace_output, ConfigActor, ConfigurationDocument, EventsReplace, EventsSettingsV1,
-    OutputReplace, OutputSettingsV1,
+    OutputReplace, OutputSettingsV1, EVENTS_NAMESPACE,
 };
 use bookclerk_library::LibraryStore;
 use serde::{Deserialize, Serialize};
@@ -205,12 +205,16 @@ pub async fn reconcile_events(state: &AppState) -> anyhow::Result<()> {
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PutEventsDomainRequest {
     /// Revision the caller read. A mismatch is a conflict.
+    #[schema(example = 12)]
     pub expected_revision: i64,
     /// Replacement `[events]` document.
+    #[schema(example = 30)]
     pub retention_days: u64,
     /// Replacement dead-letter retention.
+    #[schema(example = 90)]
     pub dead_letter_retention_days: u64,
     /// Replacement concurrency cap.
+    #[schema(example = 4)]
     pub concurrency: u32,
 }
 
@@ -219,17 +223,16 @@ pub struct PutEventsDomainRequest {
     get,
     path = "/api/config/domains/core.events",
     responses(
-        (status = 200, description = "The `core.events` settings.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
+        (status = 200, description = "The `core.events` settings.", body = EventsDomainResponse),
+        (status = 500, description = "The configuration could not be read."),
     ),
 )]
 pub async fn get_events_domain(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<EventsDomainResponse>, Response> {
     let library = state.library_snapshot().await;
     let doc = load_events(&library).await.map_err(events_error)?;
-    Ok(Json(events_json(&doc)))
+    Ok(Json(EventsDomainResponse::from_document(&doc)))
 }
 
 /// `PUT /api/config/domains/core.events`.
@@ -238,15 +241,16 @@ pub async fn get_events_domain(
     path = "/api/config/domains/core.events",
     request_body = PutEventsDomainRequest,
     responses(
-        (status = 200, description = "The settings after the change.", body = serde_json::Value),
+        (status = 200, description = "The settings after the change, or a `replayed` note when the same change had already been written.", body = EventsDomainChange),
         (status = 400, description = "The body is invalid."),
+        (status = 409, description = "`expected_revision` is stale; `current_revision` is the revision to retry against.", body = RevisionConflict),
         (status = 500, description = "The configuration could not be read or written."),
     ),
 )]
 pub async fn put_events_domain(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PutEventsDomainRequest>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<EventsDomainChange>, Response> {
     let replacement = EventsSettingsV1 {
         retention_days: body.retention_days,
         dead_letter_retention_days: body.dead_letter_retention_days,
@@ -266,13 +270,13 @@ pub async fn put_events_domain(
         EventsReplace::Applied(doc) => {
             let cluster_id = cluster_id_of(&library).await?;
             publish_events(state.as_ref(), &doc, &cluster_id).await;
-            Ok(Json(events_json(&doc)))
+            Ok(Json(EventsDomainChange::Applied(
+                EventsDomainResponse::from_document(&doc),
+            )))
         }
-        EventsReplace::Replayed { revision } => Ok(Json(json!({
-            "namespace": "core.events",
-            "replayed": true,
-            "revision": revision,
-        }))),
+        EventsReplace::Replayed { revision } => Ok(Json(EventsDomainChange::Replayed(
+            DomainReplayed::new(EVENTS_NAMESPACE, revision),
+        ))),
         EventsReplace::Conflict { current_revision } => Err(conflict(current_revision)),
     }
 }
@@ -367,22 +371,117 @@ fn apply_events_key(body: &mut EventsSettingsV1, key: &str, value: &str) -> Resu
     body.validate().map_err(|err| err.to_string())
 }
 
-/// JSON body for the events domain API.
-fn events_json(
-    doc: &bookclerk_library::control_plane::ConfigurationDocument<EventsSettingsV1>,
-) -> serde_json::Value {
-    json!({
-        "namespace": doc.namespace,
-        "scope_type": doc.scope_type,
-        "scope_id": doc.scope_id,
-        "schema_version": doc.schema_version,
-        "revision": doc.revision,
-        "updated_at": doc.updated_at,
-        "updated_by": doc.updated_by,
-        "retention_days": doc.body.retention_days,
-        "dead_letter_retention_days": doc.body.dead_letter_retention_days,
-        "concurrency": doc.body.concurrency,
-    })
+/// Where a configuration domain document lives and which revision it is at:
+/// the metadata every domain response carries before its settings.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct DomainRevision {
+    /// Domain namespace (`core.events` or `core.output`).
+    #[schema(example = "core.events")]
+    pub namespace: String,
+    /// Scope type: `cluster` for a shared document, `node` for one node's.
+    #[schema(example = "cluster")]
+    pub scope_type: String,
+    /// Scope id: `singleton` for the cluster, else the node id.
+    #[schema(example = "singleton")]
+    pub scope_id: String,
+    /// Version of the document's schema, starting at 1.
+    #[schema(example = 1)]
+    pub schema_version: i64,
+    /// Compare-and-swap revision; send it back as `expected_revision`.
+    #[schema(example = 12)]
+    pub revision: i64,
+    /// RFC 3339 time of the last write.
+    #[schema(example = "2026-10-28T19:07:00Z")]
+    pub updated_at: String,
+    /// Audit identity of the last writer.
+    #[schema(example = "operator")]
+    pub updated_by: String,
+}
+
+impl DomainRevision {
+    /// The metadata of `doc`, whatever its body.
+    fn of<T>(doc: &ConfigurationDocument<T>) -> Self {
+        Self {
+            namespace: doc.namespace.clone(),
+            scope_type: doc.scope_type.clone(),
+            scope_id: doc.scope_id.clone(),
+            schema_version: doc.schema_version,
+            revision: doc.revision,
+            updated_at: doc.updated_at.clone(),
+            updated_by: doc.updated_by.clone(),
+        }
+    }
+}
+
+/// Body of `GET /api/config/domains/core.events` and of a `PUT` that was
+/// applied: the revision metadata, then the `[events]` settings themselves.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct EventsDomainResponse {
+    /// Where the document lives and which revision it is at.
+    #[serde(flatten)]
+    pub revision: DomainRevision,
+    /// The settings at that revision.
+    #[serde(flatten)]
+    pub settings: EventsSettingsV1,
+}
+
+impl EventsDomainResponse {
+    /// Restates a stored document as the API body.
+    fn from_document(doc: &ConfigurationDocument<EventsSettingsV1>) -> Self {
+        Self {
+            revision: DomainRevision::of(doc),
+            settings: doc.body.clone(),
+        }
+    }
+}
+
+/// Body of a `PUT` to a configuration domain that changed nothing because
+/// the same change (by its request id) had already been written.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct DomainReplayed {
+    /// Domain namespace (`core.events` or `core.output`).
+    #[schema(example = "core.events")]
+    pub namespace: String,
+    /// Always `true`: the write was a replay.
+    #[schema(example = true)]
+    pub replayed: bool,
+    /// Revision the earlier write produced.
+    #[schema(example = 12)]
+    pub revision: i64,
+}
+
+impl DomainReplayed {
+    /// A replay note for `namespace` at `revision`.
+    fn new(namespace: &str, revision: i64) -> Self {
+        Self {
+            namespace: namespace.to_string(),
+            replayed: true,
+            revision,
+        }
+    }
+}
+
+/// Body of `PUT /api/config/domains/core.events`: the settings after the
+/// change, or a replay note.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+#[serde(untagged)]
+pub enum EventsDomainChange {
+    /// The change was written; these are the settings now.
+    Applied(EventsDomainResponse),
+    /// The same change had already been written.
+    Replayed(DomainReplayed),
+}
+
+/// Body of a `409 Conflict` from a compare-and-swap write whose
+/// `expected_revision` lost to a newer revision.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct RevisionConflict {
+    /// Always `revision_conflict`.
+    #[schema(example = "revision_conflict")]
+    pub error: &'static str,
+    /// The revision to read and retry against.
+    #[schema(example = 13)]
+    pub current_revision: i64,
 }
 
 /// One `core.output` read tied to the cluster that stored it.
@@ -501,9 +600,9 @@ pub async fn reconcile_output(state: &AppState) -> anyhow::Result<()> {
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PutOutputDomainRequest {
     /// Revision the caller read. A mismatch is a conflict.
+    #[schema(example = 12)]
     pub expected_revision: i64,
     /// Complete replacement document (schema version 1).
-    #[schema(value_type = Object)]
     pub document: OutputSettingsV1,
 }
 
@@ -512,17 +611,16 @@ pub struct PutOutputDomainRequest {
     get,
     path = "/api/config/domains/core.output",
     responses(
-        (status = 200, description = "The `core.output` settings.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
+        (status = 200, description = "The `core.output` settings.", body = OutputDomainResponse),
+        (status = 500, description = "The configuration could not be read."),
     ),
 )]
 pub async fn get_output_domain(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<OutputDomainResponse>, Response> {
     let library = state.library_snapshot().await;
     let doc = load_output(&library).await.map_err(events_error)?;
-    Ok(Json(output_json(&doc)))
+    Ok(Json(OutputDomainResponse::from_document(&doc)))
 }
 
 /// `PUT /api/config/domains/core.output`.
@@ -531,15 +629,16 @@ pub async fn get_output_domain(
     path = "/api/config/domains/core.output",
     request_body = PutOutputDomainRequest,
     responses(
-        (status = 200, description = "The settings after the change.", body = serde_json::Value),
+        (status = 200, description = "The settings after the change, or a `replayed` note when the same change had already been written.", body = OutputDomainChange),
         (status = 400, description = "The body is invalid."),
+        (status = 409, description = "`expected_revision` is stale; `current_revision` is the revision to retry against.", body = RevisionConflict),
         (status = 500, description = "The configuration could not be read or written."),
     ),
 )]
 pub async fn put_output_domain(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PutOutputDomainRequest>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<OutputDomainChange>, Response> {
     let library = state.library_snapshot().await;
     let outcome = replace_output(
         &library,
@@ -554,13 +653,13 @@ pub async fn put_output_domain(
         OutputReplace::Applied(doc) => {
             let cluster_id = cluster_id_of(&library).await?;
             publish_output(state.as_ref(), &doc, &cluster_id).await;
-            Ok(Json(output_json(&doc)))
+            Ok(Json(OutputDomainChange::Applied(Box::new(
+                OutputDomainResponse::from_document(&doc),
+            ))))
         }
-        OutputReplace::Replayed { revision } => Ok(Json(json!({
-            "namespace": bookclerk_library::control_plane::OUTPUT_NAMESPACE,
-            "replayed": true,
-            "revision": revision,
-        }))),
+        OutputReplace::Replayed { revision } => Ok(Json(OutputDomainChange::Replayed(
+            DomainReplayed::new(bookclerk_library::control_plane::OUTPUT_NAMESPACE, revision),
+        ))),
         OutputReplace::Conflict { current_revision } => Err(conflict(current_revision)),
     }
 }
@@ -638,18 +737,37 @@ async fn publish_output(
     publish_loaded_output(state, &loaded, EventsPublish::Monotonic).await;
 }
 
-/// JSON body for the output domain API.
-fn output_json(doc: &ConfigurationDocument<OutputSettingsV1>) -> serde_json::Value {
-    json!({
-        "namespace": doc.namespace,
-        "scope_type": doc.scope_type,
-        "scope_id": doc.scope_id,
-        "schema_version": doc.schema_version,
-        "revision": doc.revision,
-        "updated_at": doc.updated_at,
-        "updated_by": doc.updated_by,
-        "document": doc.body,
-    })
+/// Body of `GET /api/config/domains/core.output` and of a `PUT` that was
+/// applied: the revision metadata and the `[output]` document.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct OutputDomainResponse {
+    /// Where the document lives and which revision it is at.
+    #[serde(flatten)]
+    pub revision: DomainRevision,
+    /// The settings at that revision (schema version 1).
+    pub document: OutputSettingsV1,
+}
+
+impl OutputDomainResponse {
+    /// Restates a stored document as the API body.
+    fn from_document(doc: &ConfigurationDocument<OutputSettingsV1>) -> Self {
+        Self {
+            revision: DomainRevision::of(doc),
+            document: doc.body.clone(),
+        }
+    }
+}
+
+/// Body of `PUT /api/config/domains/core.output`: the settings after the
+/// change, or a replay note.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+#[serde(untagged)]
+pub enum OutputDomainChange {
+    /// The change was written; these are the settings now (boxed: the
+    /// output document is far larger than a replay note).
+    Applied(Box<OutputDomainResponse>),
+    /// The same change had already been written.
+    Replayed(DomainReplayed),
 }
 
 /// Re-reads local plugin deployments on each `deployment.changed` or
@@ -1930,10 +2048,10 @@ pub async fn delete_plugin_placement_route(
 fn conflict(current_revision: i64) -> Response {
     (
         StatusCode::CONFLICT,
-        Json(json!({
-            "error": "revision_conflict",
-            "current_revision": current_revision,
-        })),
+        Json(RevisionConflict {
+            error: "revision_conflict",
+            current_revision,
+        }),
     )
         .into_response()
 }

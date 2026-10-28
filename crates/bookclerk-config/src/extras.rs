@@ -5,18 +5,21 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 /// Character replacement rule (`ReplacementCharacters` in classic Settings.json).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct ReplacementRule {
     /// Substring to search for in each path segment / tag value.
+    #[schema(example = ":")]
     pub find: String,
     /// Replacement text (may be empty to strip `find`).
+    #[schema(example = " -")]
     pub replace: String,
 }
 
 /// How to sanitize storage path segments when [`crate::OutputConfig::replacement_characters`]
 /// is empty (explicit rules always win).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
+#[schema(example = "auto")]
 pub enum PathSanitizationMode {
     /// Pick a profile from the storage backend and host OS.
     ///
@@ -37,20 +40,26 @@ pub enum PathSanitizationMode {
 }
 
 /// LAME encoder tuning (classic `Lame*` settings).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(default)]
 pub struct LameConfig {
     /// `LameTarget`: `quality`, `bitrate`, `constant`, etc.
+    #[schema(example = "quality")]
     pub target: String,
     /// `LameVBRQuality` (0–9, lower = better).
+    #[schema(example = 2)]
     pub vbr_quality: u8,
     /// `LameBitrate` in kbps when target is bitrate/constant.
+    #[schema(example = 128)]
     pub bitrate_kbps: u32,
     /// `LameMode`: `default`, `mono`, `stereo`.
+    #[schema(example = "default")]
     pub mode: String,
     /// `LameDownsampleMono`.
+    #[schema(example = false)]
     pub downsample_mono: bool,
     /// `LameConstantBitrate`.
+    #[schema(example = false)]
     pub constant_bitrate: bool,
 }
 
@@ -68,8 +77,9 @@ impl Default for LameConfig {
 }
 
 /// Which timestamp to apply after acquire (`CreationTime` / `LastWriteTime`).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
+#[schema(example = "now")]
 pub enum FileTimestampMode {
     /// Use the wall-clock time at acquire completion (default).
     #[default]
