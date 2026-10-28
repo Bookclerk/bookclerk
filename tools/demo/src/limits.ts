@@ -82,7 +82,12 @@ export function utcDay(seconds: number): string {
  * @param windowStart - Window start in Unix seconds.
  * @returns The count after this bump.
  */
-async function bump(db: D1Database, ipHash: string, kind: "session" | "signin", windowStart: number): Promise<number> {
+async function bump(
+  db: D1Database,
+  ipHash: string,
+  kind: "session" | "signin",
+  windowStart: number,
+): Promise<number> {
   const row = await db
     .prepare(
       `INSERT INTO rate (ip_hash, kind, window_start, count) VALUES (?, ?, ?, 1)
@@ -107,7 +112,11 @@ async function bump(db: D1Database, ipHash: string, kind: "session" | "signin", 
  * @param limits - Limits.
  * @returns The hard stop in Unix seconds, or the refusal.
  */
-export async function admit(db: D1Database, s: { id: string; ipHash: string; now: number; version: string; }, limits: Limits): Promise<{ ok: true; endsAt: number; } | { ok: false; reason: "rate" | "busy" | "budget"; }> {
+export async function admit(
+  db: D1Database,
+  s: { id: string; ipHash: string; now: number; version: string },
+  limits: Limits,
+): Promise<{ ok: true; endsAt: number } | { ok: false; reason: "rate" | "busy" | "budget" }> {
   const hour = s.now - (s.now % 3600);
   if ((await bump(db, s.ipHash, "session", hour)) > limits.sessionsPerHour) {
     return { ok: false, reason: "rate" };
@@ -128,7 +137,9 @@ export async function admit(db: D1Database, s: { id: string; ipHash: string; now
   if (!reserved) return { ok: false, reason: "budget" };
   const endsAt = s.now + limits.sessionSeconds;
   await db
-    .prepare("INSERT INTO sessions (id, ip_hash, started_at, ends_at, version) VALUES (?, ?, ?, ?, ?)")
+    .prepare(
+      "INSERT INTO sessions (id, ip_hash, started_at, ends_at, version) VALUES (?, ?, ?, ?, ?)",
+    )
     .bind(s.id, s.ipHash, s.now, endsAt, s.version)
     .run();
   return { ok: true, endsAt };
@@ -144,7 +155,11 @@ export async function admit(db: D1Database, s: { id: string; ipHash: string; now
  * @returns True when the attempt is within both the
  *   session's and the address's daily allowance.
  */
-export async function countSignin(db: D1Database, s: { id: string; ipHash: string; now: number; }, limits: Limits): Promise<boolean> {
+export async function countSignin(
+  db: D1Database,
+  s: { id: string; ipHash: string; now: number },
+  limits: Limits,
+): Promise<boolean> {
   const row = await db
     .prepare(
       `UPDATE sessions SET signins = signins + 1
@@ -166,7 +181,10 @@ export async function countSignin(db: D1Database, s: { id: string; ipHash: strin
  * @returns True when this call ended the session; false
  *   when it had already ended or does not exist.
  */
-export async function finish(db: D1Database, e: { id: string; now: number; reason: string; revoked: number; failed: number; }): Promise<boolean> {
+export async function finish(
+  db: D1Database,
+  e: { id: string; now: number; reason: string; revoked: number; failed: number },
+): Promise<boolean> {
   const row = await db
     .prepare(
       `UPDATE sessions SET ended_at = ?, end_reason = ?, revoked = ?, revoke_failed = ?
@@ -203,7 +221,10 @@ const STARTUP_MAX_SECONDS = 600;
  * @param db - Database.
  * @param s - Session id and the seconds from Start to ready.
  */
-export async function recordStartup(db: D1Database, s: { id: string; seconds: number; }): Promise<void> {
+export async function recordStartup(
+  db: D1Database,
+  s: { id: string; seconds: number },
+): Promise<void> {
   if (!Number.isFinite(s.seconds) || s.seconds < 0 || s.seconds > STARTUP_MAX_SECONDS) return;
   await db
     .prepare("UPDATE sessions SET startup_seconds = ? WHERE id = ? AND startup_seconds IS NULL")
@@ -229,10 +250,16 @@ export async function startupEstimate(db: D1Database, now: number): Promise<numb
     )
     .bind(now - STARTUP_WINDOW_SECONDS, STARTUP_SAMPLE)
     .all();
-  const seconds = results.map((r) => Number(r.startup_seconds)).filter(Number.isFinite).sort((a, b) => a - b);
+  const seconds = results
+    .map((r) => Number(r.startup_seconds))
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b);
   if (seconds.length < STARTUP_MIN_SAMPLES) return null;
   const mid = Math.floor(seconds.length / 2);
-  const median = seconds.length % 2 === 1 ? (seconds[mid] ?? 0) : ((seconds[mid - 1] ?? 0) + (seconds[mid] ?? 0)) / 2;
+  const median =
+    seconds.length % 2 === 1
+      ? (seconds[mid] ?? 0)
+      : ((seconds[mid - 1] ?? 0) + (seconds[mid] ?? 0)) / 2;
   return Math.max(5, Math.ceil(median / 5) * 5);
 }
 
@@ -246,9 +273,16 @@ export async function startupEstimate(db: D1Database, now: number): Promise<numb
  * @returns Session ids and
  *   their hard stops (Unix seconds), oldest first.
  */
-export async function overdue(db: D1Database, now: number, graceSeconds: number, max: number): Promise<Array<{ id: string; endsAt: number; }>> {
+export async function overdue(
+  db: D1Database,
+  now: number,
+  graceSeconds: number,
+  max: number,
+): Promise<Array<{ id: string; endsAt: number }>> {
   const { results } = await db
-    .prepare("SELECT id, ends_at FROM sessions WHERE ended_at IS NULL AND ends_at < ? ORDER BY ends_at LIMIT ?")
+    .prepare(
+      "SELECT id, ends_at FROM sessions WHERE ended_at IS NULL AND ends_at < ? ORDER BY ends_at LIMIT ?",
+    )
     .bind(now - graceSeconds, max)
     .all();
   return results.map((r) => ({ id: String(r.id), endsAt: Number(r.ends_at) }));
@@ -263,7 +297,9 @@ export async function overdue(db: D1Database, now: number, graceSeconds: number,
 export async function prune(db: D1Database, now: number): Promise<void> {
   await db.batch([
     db.prepare("DELETE FROM rate WHERE window_start < ?").bind(now - 2 * 86400),
-    db.prepare("DELETE FROM sessions WHERE started_at < ? AND ended_at IS NOT NULL").bind(now - 30 * 86400),
+    db
+      .prepare("DELETE FROM sessions WHERE started_at < ? AND ended_at IS NOT NULL")
+      .bind(now - 30 * 86400),
     db.prepare("DELETE FROM budget WHERE day < ?").bind(utcDay(now - 30 * 86400)),
   ]);
 }

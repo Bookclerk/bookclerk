@@ -75,7 +75,7 @@ the host then uses `[[oidc.clients]]` only.
 
 Plugin redirect URIs are **deterministic**:
 
-```
+```text
 {plugin_origin}{callback_path}
 ```
 

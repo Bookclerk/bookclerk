@@ -272,10 +272,7 @@ export interface DatabaseBinding {
    * @param statements Prepared statements (binds and intent already applied).
    * @param options Retry token.
    */
-  batch(
-    statements: PreparedStatement[],
-    options?: { retry?: RetryToken },
-  ): Promise<D1Result[]>;
+  batch(statements: PreparedStatement[], options?: { retry?: RetryToken }): Promise<D1Result[]>;
   /**
    * Execute raw SQL without bind parameters (Cloudflare `D1Database.exec`).
    *
@@ -420,10 +417,7 @@ export function decodeExecuteResultReply(bytes: Uint8Array): ExecuteReply {
  * @param timing Handler/engine timing from the execute reply.
  * @returns Cloudflare-shaped `{ success, results, meta }`.
  */
-export function statementResultToD1Result(
-  stmt: StatementResult,
-  timing: DbTiming,
-): D1Result {
+export function statementResultToD1Result(stmt: StatementResult, timing: DbTiming): D1Result {
   const changes = stmt.rowsAffected;
   const durationMs = timing.dbExecutionUs / 1000;
   const results =
@@ -471,10 +465,7 @@ function rowMapFromStatement(result: StatementResult): Record<string, DbValue> |
   return row;
 }
 
-function columnValueFromRow(
-  row: Record<string, DbValue>,
-  colName: string,
-): DbValue {
+function columnValueFromRow(row: Record<string, DbValue>, colName: string): DbValue {
   if (colName in row) {
     return row[colName]!;
   }

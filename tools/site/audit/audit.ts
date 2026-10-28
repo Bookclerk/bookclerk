@@ -22,7 +22,16 @@
 // go to --out (default audit/report). Exits 1 when any page misses.
 
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import type { AddressInfo } from "node:net";
@@ -86,7 +95,13 @@ export const UNAVAILABLE_KEY = "audit-docs-unavailable";
  * layout shift for pages that answer 200. Performance allows for lab noise on
  * shared CI runners.
  */
-export const PAGE: Limits = { performance: 90, accessibility: 100, "best-practices": 95, seo: 100, cls: 0.05 };
+export const PAGE: Limits = {
+  performance: 90,
+  accessibility: 100,
+  "best-practices": 95,
+  seo: 100,
+  cls: 0.05,
+};
 /** The same for the 404 and docs-unavailable pages: accessibility only. */
 export const ERROR_PAGE: Limits = { accessibility: 100 };
 
@@ -164,7 +179,11 @@ function serveDocs(): Promise<{ origin: string; close: () => void }> {
       return;
     }
     const file = docsFile(DOCS_DIR, path);
-    if (file === null || !existsSync(file) || !realpathSync(file).startsWith(realpathSync(DOCS_DIR) + sep)) {
+    if (
+      file === null ||
+      !existsSync(file) ||
+      !realpathSync(file).startsWith(realpathSync(DOCS_DIR) + sep)
+    ) {
       res.writeHead(404).end();
       return;
     }
@@ -210,7 +229,8 @@ function writeWranglerConfig(): string {
   ];
   let config = base;
   for (const [pattern, line] of replacements) {
-    if (!pattern.test(config)) throw new Error(`tools/site/wrangler.toml has no line matching ${pattern}`);
+    if (!pattern.test(config))
+      throw new Error(`tools/site/wrangler.toml has no line matching ${pattern}`);
     config = config.replace(pattern, line);
   }
   const file = join(HERE, "wrangler.generated.toml");
@@ -226,12 +246,25 @@ function writeWranglerConfig(): string {
  * @returns The site origin and a stop function.
  * @throws {Error} When wrangler exits or does not serve within two minutes.
  */
-async function serveSite(docsOrigin: string, logFile: string): Promise<{ origin: string; stop: () => void }> {
+async function serveSite(
+  docsOrigin: string,
+  logFile: string,
+): Promise<{ origin: string; stop: () => void }> {
   const config = writeWranglerConfig();
   const port = await freePort();
   const inspector = await freePort();
   const wrangler = join(SITE, "node_modules", ".bin", "wrangler");
-  const args = ["dev", "--config", config, "--ip", "127.0.0.1", "--port", String(port), "--inspector-port", String(inspector)];
+  const args = [
+    "dev",
+    "--config",
+    config,
+    "--ip",
+    "127.0.0.1",
+    "--port",
+    String(port),
+    "--inspector-port",
+    String(inspector),
+  ];
   args.push("--var", `AUDIT_DOCS_ORIGIN:${docsOrigin}`);
   const child = spawn(wrangler, args, {
     cwd: HERE,
@@ -344,7 +377,13 @@ function keepChromeErrLog(from: string, to: string): void {
  * @throws The last attempt's error when none started, or the first error
  *   that another start would not fix.
  */
-export async function launchChrome(launcher: ChromeLauncher, chromePath: string, chromeFlags: string[], out: string, attempts = 2): Promise<AuditChrome> {
+export async function launchChrome(
+  launcher: ChromeLauncher,
+  chromePath: string,
+  chromeFlags: string[],
+  out: string,
+  attempts = 2,
+): Promise<AuditChrome> {
   for (let attempt = 1; ; attempt++) {
     // Our own profile directory rather than chrome-launcher's temporary one, so
     // its chrome-err.log is still there to read after a failed start.
@@ -355,7 +394,8 @@ export async function launchChrome(launcher: ChromeLauncher, chromePath: string,
     } catch (err) {
       // chrome-launcher leaves a browser that never answered running and
       // gives no handle to it, only killAll (this audit starts one Chrome).
-      for (const killErr of launcher.killAll()) console.error(`could not stop Chrome: ${killErr.message}`);
+      for (const killErr of launcher.killAll())
+        console.error(`could not stop Chrome: ${killErr.message}`);
       const message = err instanceof Error ? err.message : String(err);
       console.error(`Chrome did not start (attempt ${attempt} of ${attempts}): ${message}`);
       keepChromeErrLog(join(userDataDir, "chrome-err.log"), join(out, `chrome-err-${attempt}.log`));
@@ -376,7 +416,12 @@ export async function launchChrome(launcher: ChromeLauncher, chromePath: string,
  * @param limits - The page's thresholds.
  * @returns The kept run.
  */
-async function runLighthouse(url: string, form: "mobile" | "desktop", port: number, limits: Limits): Promise<LighthouseRun> {
+async function runLighthouse(
+  url: string,
+  form: "mobile" | "desktop",
+  port: number,
+  limits: Limits,
+): Promise<LighthouseRun> {
   const flags: Flags = {
     port,
     output: ["json", "html"],
@@ -390,8 +435,13 @@ async function runLighthouse(url: string, form: "mobile" | "desktop", port: numb
     const result = await lighthouse(url, flags, config);
     if (!result) throw new Error(`Lighthouse returned nothing for ${url}`);
     const [json, html] = result.report;
-    if (typeof json !== "string" || typeof html !== "string") throw new Error(`Lighthouse returned no JSON and HTML reports for ${url}`);
-    const run: LighthouseRun = { lhr: result.lhr, report: [json, html], misses: lighthouseMisses(result.lhr, limits) };
+    if (typeof json !== "string" || typeof html !== "string")
+      throw new Error(`Lighthouse returned no JSON and HTML reports for ${url}`);
+    const run: LighthouseRun = {
+      lhr: result.lhr,
+      report: [json, html],
+      misses: lighthouseMisses(result.lhr, limits),
+    };
     if (best === null || run.misses.length < best.misses.length) best = run;
     if (!best.misses.every((m) => m.startsWith("performance "))) break;
     if (best.misses.length === 0) break;
@@ -426,15 +476,27 @@ async function runAxe(origin: string, chromePath: string): Promise<string[]> {
       for (const width of AXE_WIDTHS) {
         for (const page of PAGES) {
           // The site's CSP forbids inline scripts; bypass it so axe can be injected.
-          const context = await browser.newContext({ colorScheme, viewport: { width, height: 900 }, bypassCSP: true });
+          const context = await browser.newContext({
+            colorScheme,
+            viewport: { width, height: 900 },
+            bypassCSP: true,
+          });
           const tab = await context.newPage();
           await tab.goto(origin + page.path, { waitUntil: "load" });
           await tab.addScriptTag({ content: axeSource });
           const violations = await tab.evaluate(async (tags) => {
             // axe is the script just added.
-            const { axe } = window as unknown as { axe: { run(context: Document, options: RunOptions): Promise<AxeResults> } };
+            const { axe } = window as unknown as {
+              axe: { run(context: Document, options: RunOptions): Promise<AxeResults> };
+            };
             const result = await axe.run(document, { runOnly: tags });
-            return result.violations.map((v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => n.target.join(" ")).slice(0, 3).join(", ")}`);
+            return result.violations.map(
+              (v) =>
+                `${v.id} (${v.impact}): ${v.nodes
+                  .map((n) => n.target.join(" "))
+                  .slice(0, 3)
+                  .join(", ")}`,
+            );
           }, AXE_TAGS);
           for (const v of violations) found.push(`${page.name} ${colorScheme} ${width}px: ${v}`);
           await context.close();
@@ -473,19 +535,24 @@ async function main(): Promise<number> {
   const out = resolve(values.out);
   mkdirSync(out, { recursive: true });
   const chromePath = values.chrome ?? findChrome();
-  if (!existsSync(join(SITE, "dist", "index.html"))) throw new Error("tools/site/dist is missing: run `npm run build` first");
+  if (!existsSync(join(SITE, "dist", "index.html")))
+    throw new Error("tools/site/dist is missing: run `npm run build` first");
 
   const docs = await serveDocs();
   let site: { stop: () => void } | null = null;
   let chrome: AuditChrome | null = null;
   const failures: string[] = [];
-  const rows = ["| Page | Form | Status | Perf | A11y | BP | SEO | CLS | Result |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"];
+  const rows = [
+    "| Page | Form | Status | Perf | A11y | BP | SEO | CLS | Result |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+  ];
   try {
     const served = await serveSite(docs.origin, join(out, "wrangler.log"));
     site = served;
     for (const page of PAGES) {
       const res = await fetch(served.origin + page.path);
-      if (res.status !== page.status) failures.push(`${page.name}: ${page.path} answered ${res.status}, expected ${page.status}`);
+      if (res.status !== page.status)
+        failures.push(`${page.name}: ${page.path} answered ${res.status}, expected ${page.status}`);
     }
 
     // The proxy flags only matter where HTTPS_PROXY is set (not on CI runners).
@@ -495,7 +562,12 @@ async function main(): Promise<number> {
     chrome = await launchChrome(chromeLauncher, chromePath, flags, out);
     for (const page of PAGES) {
       for (const form of ["mobile", "desktop"] as const) {
-        const run = await runLighthouse(served.origin + page.path, form, chrome.chrome.port, page.limits);
+        const run = await runLighthouse(
+          served.origin + page.path,
+          form,
+          chrome.chrome.port,
+          page.limits,
+        );
         writeFileSync(join(out, `${page.name}-${form}.json`), run.report[0]);
         writeFileSync(join(out, `${page.name}-${form}.html`), run.report[1]);
         const c = run.lhr.categories;
@@ -526,7 +598,9 @@ async function main(): Promise<number> {
     "",
     ...rows,
     "",
-    failures.length ? `**${failures.length} problem(s):**\n\n${failures.map((f) => `- ${f}`).join("\n")}` : "Every page passed Lighthouse and axe-core.",
+    failures.length
+      ? `**${failures.length} problem(s):**\n\n${failures.map((f) => `- ${f}`).join("\n")}`
+      : "Every page passed Lighthouse and axe-core.",
     "",
   ].join("\n");
   writeFileSync(join(out, "summary.md"), summary);

@@ -13,7 +13,8 @@ document.addEventListener("DOMContentLoaded", () => {
   // Event-log level toggles show and hide rows by level.
   const log = document.getElementById("log");
   for (const button of document.querySelectorAll(".lvl-toggle")) {
-    if (button.getAttribute("aria-pressed") !== "true") log?.classList.add(`hide-${button.dataset.level}`);
+    if (button.getAttribute("aria-pressed") !== "true")
+      log?.classList.add(`hide-${button.dataset.level}`);
     button.addEventListener("click", () => {
       const on = button.getAttribute("aria-pressed") !== "true";
       button.setAttribute("aria-pressed", String(on));
@@ -52,7 +53,10 @@ document.addEventListener("DOMContentLoaded", () => {
     pending = false;
     lastAt = Date.now();
     try {
-      const res = await fetch(location.href, { headers: { "Bookclerk-Live": "1" }, credentials: "same-origin" });
+      const res = await fetch(location.href, {
+        headers: { "Bookclerk-Live": "1" },
+        credentials: "same-origin",
+      });
       // A redirect means the session ended; stop rather than show the
       // sign-in page. Other failures wait for the next push.
       if (res.redirected) {
@@ -88,7 +92,9 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function connect() {
-    const ws = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/live`);
+    const ws = new WebSocket(
+      `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/live`,
+    );
     socket = ws;
     ws.addEventListener("open", () => {
       const dot = indicator();

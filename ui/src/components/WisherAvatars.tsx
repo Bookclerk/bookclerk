@@ -72,10 +72,7 @@ export function WisherAvatars({
                 avatarSource={wisher.avatar_source}
                 gravatarHash={wisher.gravatar_hash}
                 ssoPictures={ssoPictures}
-                className={cn(
-                  "rounded-full shadow-sm ring-1 ring-paper",
-                  sizeClass,
-                )}
+                className={cn("rounded-full shadow-sm ring-1 ring-paper", sizeClass)}
               />
             </span>
           );

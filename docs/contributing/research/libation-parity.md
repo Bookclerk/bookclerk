@@ -44,7 +44,7 @@ checks), or **minor headless polish** listed under
 | `set-status` | ✅ | `library set-status` — probe-based match; `--downloaded` / `--not-downloaded` / `--force` / `--fix-layout` + ASINs |
 | `get-license` | ✅ | `library get-license --json` (summary) / `--full` (raw API JSON) |
 | `search` | ✅ | `library search` (+ `--filter` saved quick filters) |
-| `export` | ✅ | `library export --csv|--json|--xlsx` |
+| `export` | ✅ | `library export --csv\|--json\|--xlsx` |
 | `convert` | ✅ | `library convert` (m4b/m4a → mp3) |
 | `import-account` | ✅ | `auth import --mkb79` |
 | `login-external` | ✅ | `auth login --external` |

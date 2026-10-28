@@ -136,3 +136,30 @@ flowchart TB
 - Put one command on each line. Readers copy the whole block with its
   copy button.
 - Write placeholders as `<branch>` and say what to put in their place.
+
+## Markdown lint
+
+CI runs markdownlint on every Markdown file (the `lint` check in
+[Continuous integration](ci.md#formatting-and-markdown-lint)). Its settings
+in `.markdownlint-cli2.jsonc` keep the defaults except where they fight
+this guide:
+
+- Line length is free, so paragraphs wrap wherever the writer likes.
+- Inline HTML, bare URLs and a page that opens before its `#` heading are
+  allowed.
+- Headings may repeat under different parents, such as "Arguments".
+- Console blocks keep their `$` prompt, and two callouts in a row keep the
+  blank line between them.
+
+When one line has to break a rule, say so on that line, not for the whole
+file:
+
+```markdown
+In a `console` fence only `$ ` prompt lines run. <!-- markdownlint-disable-line MD038 -->
+```
+
+Use `<!-- markdownlint-disable-next-line MDxxx -->` above a block instead.
+GitHub and the site both hide these comments; any other HTML comment
+shows as text on the site.
+Run it locally with `--fix` to repair spacing and list markers (see
+[Formatting and Markdown lint](ci.md#formatting-and-markdown-lint)).

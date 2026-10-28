@@ -121,10 +121,7 @@ export function pathForView(view: AppView): string {
  * @param defaultView - Session default view when the path is `/`.
  * @returns Effective {@link AppView}.
  */
-export function resolveView(
-  pathname: string,
-  defaultView: AppView | string | undefined,
-): AppView {
+export function resolveView(pathname: string, defaultView: AppView | string | undefined): AppView {
   return viewFromPath(pathname) ?? normalizeAppView(defaultView);
 }
 
@@ -205,14 +202,7 @@ export type DiscoverSearchHandoff = {
   q: string;
   /** Storefront-scoped search (`author` / `narrator` / `series` / `genre`). */
   field?: "author" | "narrator" | "series" | "genre";
-  sort?:
-    | "relevance"
-    | "popularity"
-    | "rating"
-    | "title"
-    | "author"
-    | "price"
-    | "length";
+  sort?: "relevance" | "popularity" | "rating" | "title" | "author" | "price" | "length";
   sortDir?: "asc" | "desc";
   /** Seed include filters (server-applied). */
   authors?: string[];
@@ -231,25 +221,12 @@ export type DiscoverSearchHandoff = {
   /** When false, do not exclude Virtual Voice (default hide is on). */
   hideVirtualVoice?: boolean;
   /** @deprecated legacy single-dimension filter */
-  filterKind?:
-    | "all"
-    | "authors"
-    | "series"
-    | "narrators"
-    | "genres"
-    | "sources";
+  filterKind?: "all" | "authors" | "series" | "narrators" | "genres" | "sources";
   /** @deprecated */
   filterValue?: string;
   /** @deprecated */
   sortKey?:
-    | "title"
-    | "author"
-    | "series"
-    | "relevance"
-    | "popularity"
-    | "rating"
-    | "price"
-    | "length";
+    "title" | "author" | "series" | "relevance" | "popularity" | "rating" | "price" | "length";
 };
 
 /**

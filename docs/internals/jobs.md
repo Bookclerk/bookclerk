@@ -487,4 +487,3 @@ guarding correctness: the window between a fence check and its delete is
 one statement. Node-local cleanup (scratch directories, expired job and
 delivery leases) still runs on every node. `GET /api/cluster/status`
 lists every lease with its holder, token, and whether it is held.
-

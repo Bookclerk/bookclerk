@@ -6787,7 +6787,10 @@ function queueResult(outcome) {
     case "retry":
       return {
         kind: "retry",
-        value: { delaySeconds: Number(outcome.delaySeconds) || 0, reason: String(outcome.reason ?? "") }
+        value: {
+          delaySeconds: Number(outcome.delaySeconds) || 0,
+          reason: String(outcome.reason ?? "")
+        }
       };
     default:
       return { kind: "retry", value: { delaySeconds: 0, reason: "unknown queue outcome" } };
@@ -6800,7 +6803,10 @@ function eventResult(outcome) {
     case "retry":
       return {
         kind: "retry",
-        value: { retryAtUnixMs: Number(outcome.retryAtUnixMs) || 0, reason: String(outcome.reason ?? "") }
+        value: {
+          retryAtUnixMs: Number(outcome.retryAtUnixMs) || 0,
+          reason: String(outcome.reason ?? "")
+        }
       };
     case "reject":
       return { kind: "reject", value: { reason: String(outcome.reason ?? "") } };
@@ -6826,12 +6832,18 @@ function jobOutcome(record) {
     case "completed":
       return {
         kind: "completed",
-        value: { message: String(record.message ?? ""), bytesCopied: Number(record.bytesCopied) || 0 }
+        value: {
+          message: String(record.message ?? ""),
+          bytesCopied: Number(record.bytesCopied) || 0
+        }
       };
     case "retryable":
       return {
         kind: "retryable",
-        value: { message: String(record.message ?? ""), retryAfterUnixMs: Number(record.retryAfterUnixMs) || 0 }
+        value: {
+          message: String(record.message ?? ""),
+          retryAfterUnixMs: Number(record.retryAfterUnixMs) || 0
+        }
       };
     case "rejected":
       return { kind: "rejected", value: { message: String(record.message ?? "") } };
@@ -6920,7 +6932,10 @@ var METHODS = {
       call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "head", [String(p.key ?? "")]),
       ok: (value) => {
         const meta = value ?? null;
-        return okValue({ found: meta != null, meta: meta ?? void 0 });
+        return okValue({
+          found: meta != null,
+          meta: meta ?? void 0
+        });
       }
     }),
     list: spec({
@@ -6948,14 +6963,20 @@ var METHODS = {
       params: DestinationCommitParamsCodec,
       results: DestinationCommitResultsCodec,
       stub: "storage",
-      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "commit", [String(p.key ?? ""), String(p.commitToken ?? "")]),
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "commit", [
+        String(p.key ?? ""),
+        String(p.commitToken ?? "")
+      ]),
       ok: okPass
     }),
     abortStage: spec({
       params: DestinationAbortStageParamsCodec,
       results: DestinationAbortStageResultsCodec,
       stub: "storage",
-      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "abortStage", [String(p.key ?? ""), String(p.commitToken ?? "")]),
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "abortStage", [
+        String(p.key ?? ""),
+        String(p.commitToken ?? "")
+      ]),
       ok: okEmpty
     })
   },
@@ -7053,7 +7074,12 @@ var METHODS = {
     assertRestoreConstraints: session("assertRestoreConstraints", AdapterDatabaseSessionAssertRestoreConstraintsParamsCodec, AdapterDatabaseSessionAssertRestoreConstraintsResultsCodec, okEmpty)
   }
 };
-var CAP_KINDS = /* @__PURE__ */ new Set(["source", "destination", "progress", "cancellation"]);
+var CAP_KINDS = /* @__PURE__ */ new Set([
+  "source",
+  "destination",
+  "progress",
+  "cancellation"
+]);
 function requestCapTable(caps, host, stop) {
   const resolved = /* @__PURE__ */ new Map();
   return {
@@ -7474,7 +7500,9 @@ function invocationEnv(rawEnv, context) {
           merged[entry.name] = entry.database;
         } else if (entry.transport) {
           const transport = entry.transport;
-          merged[entry.name] = createDatabaseBinding({ execute: (request) => transport.execute(request) });
+          merged[entry.name] = createDatabaseBinding({
+            execute: (request) => transport.execute(request)
+          });
         }
       }
     }
@@ -8820,7 +8848,9 @@ var GrantedQueue = class extends RpcTarget {
     if (!resp.ok) {
       throw PluginError.fromWire("internal", `queue send HTTP ${resp.status}`);
     }
-    return { messageIds: Array.isArray(value.messageIds) ? value.messageIds.map((id) => String(id)) : [] };
+    return {
+      messageIds: Array.isArray(value.messageIds) ? value.messageIds.map((id) => String(id)) : []
+    };
   }
 };
 function checkKvKey(key) {
@@ -8994,7 +9024,10 @@ var CancelWatch = class extends RpcTarget {
     this.#promise = new Promise((resolve) => {
       const poll = async () => {
         while (!stop.aborted) {
-          const resp = await granted.fetch("http://granted/cancel", { headers: auth, signal: stop });
+          const resp = await granted.fetch("http://granted/cancel", {
+            headers: auth,
+            signal: stop
+          });
           if (resp.status === 200) {
             resolve();
             return;
@@ -9187,7 +9220,10 @@ function createInvocationAdapter() {
         for (const [name, token] of Object.entries(queues)) {
           if (!name || typeof token !== "string" || !token)
             continue;
-          named2.push({ name, queue: new GrantedQueue(granted, { Authorization: `Bearer ${token}` }) });
+          named2.push({
+            name,
+            queue: new GrantedQueue(granted, { Authorization: `Bearer ${token}` })
+          });
         }
         if (named2.length > 0)
           bound.queues = named2;
@@ -9273,14 +9309,21 @@ function createInvocationAdapter() {
     async invokeDestination(op, ctx, args = {}, body) {
       switch (op) {
         case "get":
-          return this.invokeEntrypoint("storage", ctx, "get", [String(args.key ?? ""), args.options]);
+          return this.invokeEntrypoint("storage", ctx, "get", [
+            String(args.key ?? ""),
+            args.options
+          ]);
         case "put": {
           if (!body) {
             throw PluginError.fromWire("invalid_params", "put missing body stream");
           }
           const options = args.options;
           const bounded = exactLengthBody(body, options?.contentLength);
-          return this.invokeEntrypoint("storage", ctx, "put", [String(args.key ?? ""), bounded, options]);
+          return this.invokeEntrypoint("storage", ctx, "put", [
+            String(args.key ?? ""),
+            bounded,
+            options
+          ]);
         }
         default:
           throw PluginError.fromWire("unsupported", `destination.${op} is not a stream route`);

@@ -56,9 +56,7 @@ class EntrypointsNullCapTests(unittest.TestCase):
                 self.assertNotIn(name, decoded)
 
     def test_several_entrypoints(self) -> None:
-        decoded = _round_trip(
-            {"storefront": "sf", "cli": "cli", "eventConsumer": "ev"}
-        )
+        decoded = _round_trip({"storefront": "sf", "cli": "cli", "eventConsumer": "ev"})
         self.assertEqual(decoded["storefront"], "sf")
         self.assertEqual(decoded["cli"], "cli")
         self.assertEqual(decoded["eventConsumer"], "ev")

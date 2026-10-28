@@ -230,7 +230,9 @@ function documentValue(
 ): string | number | boolean | null {
   if (option.value_type === "boolean") {
     const normalized = value.trim().toLowerCase();
-    return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+    return (
+      normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on"
+    );
   }
   if (!value.trim()) return null;
   if (option.value_type === "number") return Number(value);
@@ -496,12 +498,7 @@ export function SettingsPage({
     jailCpuCores < 0.01 || hostCpuCoresMax < jailCpuCores
       ? `CPU cores must be between 0.01 and ${hostCpuCoresMax.toFixed(2)}`
       : null;
-  const jailProcessError = optionalIntegerError(
-    jailExtraProcesses,
-    "Additional processes",
-    0,
-    62,
-  );
+  const jailProcessError = optionalIntegerError(jailExtraProcesses, "Additional processes", 0, 62);
   const confinementHasErrors = Boolean(jailMemoryError || jailCpuError || jailProcessError);
   const isImpersonating = Boolean(session?.impersonating);
   const showOperatorChrome = role === "operator" && !isImpersonating;
@@ -571,7 +568,11 @@ export function SettingsPage({
     return out;
   }
 
-  async function withRequestTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 10_000): Promise<T> {
+  async function withRequestTimeout<T>(
+    promise: Promise<T>,
+    label: string,
+    timeoutMs = 10_000,
+  ): Promise<T> {
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     try {
       const timeoutPromise = new Promise<never>((_, reject) => {
@@ -608,7 +609,9 @@ export function SettingsPage({
 
   function parseBooleanLike(value: string): boolean {
     const normalized = value.trim().toLowerCase();
-    return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+    return (
+      normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on"
+    );
   }
 
   function pluginValidationForOption(value: string, option: PluginSettingOption): string | null {
@@ -733,10 +736,7 @@ export function SettingsPage({
         setConsentCoverage({});
         setOperatorBaseline(null);
       } else {
-        const nextSettings = await withRequestTimeout(
-          fetchSettings(),
-          "Operator settings request",
-        );
+        const nextSettings = await withRequestTimeout(fetchSettings(), "Operator settings request");
         const nextPluginValues = buildPluginValues(nextSettings);
         setSettings(nextSettings);
         const listen = nextSettings.settings["daemon.listen"] ?? "";
@@ -798,16 +798,12 @@ export function SettingsPage({
         return;
       }
       setSettings(null);
-      setOperatorLoadError(
-        err instanceof Error ? err.message : "Failed to load operator settings",
-      );
+      setOperatorLoadError(err instanceof Error ? err.message : "Failed to load operator settings");
       if (showUserAdmin) {
         // The user list is read after operator settings, so it was skipped;
         // say so on the User Management tab, which hides the page error.
         setUsersError(
-          err instanceof Error
-            ? `Users were not loaded: ${err.message}`
-            : "Users were not loaded",
+          err instanceof Error ? `Users were not loaded: ${err.message}` : "Users were not loaded",
         );
       }
       setError(
@@ -1287,829 +1283,840 @@ export function SettingsPage({
       </header>
 
       <div className="min-h-0 flex-1 overflow-auto">
-      <main className={cn("flex w-full flex-col gap-8 px-4 py-6 sm:px-5", pageWidthClass)}>
-        <div className="space-y-3">
-          <div className="space-y-1">
-            <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">Settings</h1>
-            <p className="text-sm text-ink/60">
-              {showOperatorChrome
-                ? "Account, users, sign-in providers, daemon, output packaging, and plugin knobs for this server."
-                : showSignInSettings
-                  ? "Account security, user management, and sign-in providers."
-                  : showUserAdmin
-                    ? "Account security and user management. Discover preferences stay in the header Preferences dialog."
-                    : "Account security and sessions. Discover preferences stay in the header Preferences dialog."}
-            </p>
-          </div>
+        <main className={cn("flex w-full flex-col gap-8 px-4 py-6 sm:px-5", pageWidthClass)}>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">
+                Settings
+              </h1>
+              <p className="text-sm text-ink/60">
+                {showOperatorChrome
+                  ? "Account, users, sign-in providers, daemon, output packaging, and plugin knobs for this server."
+                  : showSignInSettings
+                    ? "Account security, user management, and sign-in providers."
+                    : showUserAdmin
+                      ? "Account security and user management. Discover preferences stay in the header Preferences dialog."
+                      : "Account security and sessions. Discover preferences stay in the header Preferences dialog."}
+              </p>
+            </div>
 
-          <div
-            className="flex flex-wrap gap-1 rounded-md border border-ink/10 bg-card p-1"
-            role="tablist"
-            aria-label="Settings sections"
-          >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === "account"}
-              className={cn(
-                "rounded px-3 py-1.5 text-sm font-medium transition-colors",
-                activeTab === "account"
-                  ? "bg-ink text-paper shadow-sm"
-                  : "text-ink/60 hover:text-ink",
-              )}
-              onClick={() => setActiveTab("account")}
+            <div
+              className="flex flex-wrap gap-1 rounded-md border border-ink/10 bg-card p-1"
+              role="tablist"
+              aria-label="Settings sections"
             >
-              Account
-            </button>
-            {showUserAdmin ? (
               <button
                 type="button"
                 role="tab"
-                aria-selected={activeTab === "users"}
+                aria-selected={activeTab === "account"}
                 className={cn(
                   "rounded px-3 py-1.5 text-sm font-medium transition-colors",
-                  activeTab === "users"
+                  activeTab === "account"
                     ? "bg-ink text-paper shadow-sm"
                     : "text-ink/60 hover:text-ink",
                 )}
-                onClick={() => setActiveTab("users")}
+                onClick={() => setActiveTab("account")}
               >
-                User Management
+                Account
               </button>
-            ) : null}
-            {showSignInSettings ? (
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeTab === "signin"}
-                className={cn(
-                  "rounded px-3 py-1.5 text-sm font-medium transition-colors",
-                  activeTab === "signin"
-                    ? "bg-ink text-paper shadow-sm"
-                    : "text-ink/60 hover:text-ink",
-                )}
-                onClick={() => setActiveTab("signin")}
-              >
-                Sign-in
-              </button>
-            ) : null}
-            {showOperatorChrome ? (
-              <>
+              {showUserAdmin ? (
                 <button
                   type="button"
                   role="tab"
-                  aria-selected={activeTab === "server"}
+                  aria-selected={activeTab === "users"}
                   className={cn(
                     "rounded px-3 py-1.5 text-sm font-medium transition-colors",
-                    activeTab === "server"
+                    activeTab === "users"
                       ? "bg-ink text-paper shadow-sm"
                       : "text-ink/60 hover:text-ink",
                   )}
-                  onClick={() => setActiveTab("server")}
+                  onClick={() => setActiveTab("users")}
                 >
-                  Server Settings
+                  User Management
                 </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={activeTab === "plugins"}
-                  className={cn(
-                    "rounded px-3 py-1.5 text-sm font-medium transition-colors",
-                    activeTab === "plugins"
-                      ? "bg-ink text-paper shadow-sm"
-                      : "text-ink/60 hover:text-ink",
-                  )}
-                  onClick={() => setActiveTab("plugins")}
-                >
-                  Plugins
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={activeTab === "output"}
-                  className={cn(
-                    "rounded px-3 py-1.5 text-sm font-medium transition-colors",
-                    activeTab === "output"
-                      ? "bg-ink text-paper shadow-sm"
-                      : "text-ink/60 hover:text-ink",
-                  )}
-                  onClick={() => setActiveTab("output")}
-                >
-                  Output
-                </button>
-              </>
-            ) : null}
-            {showNodes ? (
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeTab === "nodes"}
-                className={cn(
-                  "rounded px-3 py-1.5 text-sm font-medium transition-colors",
-                  activeTab === "nodes"
-                    ? "bg-ink text-paper shadow-sm"
-                    : "text-ink/60 hover:text-ink",
-                )}
-                onClick={() => setActiveTab("nodes")}
-              >
-                Nodes
-              </button>
-            ) : null}
-            {showLibrary ? (
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeTab === "clusters"}
-                className={cn(
-                  "rounded px-3 py-1.5 text-sm font-medium transition-colors",
-                  activeTab === "clusters"
-                    ? "bg-ink text-paper shadow-sm"
-                    : "text-ink/60 hover:text-ink",
-                )}
-                onClick={() => setActiveTab("clusters")}
-              >
-                Library
-              </button>
-            ) : null}
-            {showSignInSettings ? (
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeTab === "branches"}
-                className={cn(
-                  "rounded px-3 py-1.5 text-sm font-medium transition-colors",
-                  activeTab === "branches"
-                    ? "bg-ink text-paper shadow-sm"
-                    : "text-ink/60 hover:text-ink",
-                )}
-                onClick={() => setActiveTab("branches")}
-              >
-                Branches
-              </button>
-            ) : null}
-            {showSignInSettings ? (
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeTab === "clerks"}
-                className={cn(
-                  "rounded px-3 py-1.5 text-sm font-medium transition-colors",
-                  activeTab === "clerks"
-                    ? "bg-ink text-paper shadow-sm"
-                    : "text-ink/60 hover:text-ink",
-                )}
-                onClick={() => setActiveTab("clerks")}
-              >
-                Clerks
-              </button>
-            ) : null}
-          </div>
-        </div>
-
-        {error && !showOperatorChrome ? (
-          <ErrorStatePage
-            title="Settings request failed"
-            message={error}
-            onRetry={() => void refresh()}
-          />
-        ) : null}
-
-        {activeTab === "account" ? (
-          <AccountSettingsPanel
-            session={session ?? null}
-            onSessionChange={onSessionChange}
-            onDeleted={async () => {
-              await onSignOut();
-            }}
-            sessions={sessions}
-            sessionsBusy={sessionsBusy}
-            sessionsError={sessionsError}
-            onRefreshSessions={() => {
-              void (async () => {
-                setSessionsBusy(true);
-                try {
-                  await reloadSessions();
-                } catch (err) {
-                  setSessionsError(
-                    err instanceof Error ? err.message : "Failed to load sessions",
-                  );
-                } finally {
-                  setSessionsBusy(false);
-                }
-              })();
-            }}
-            onRevokeSession={(id) => void onRevokeSession(id)}
-            onRevokeOtherSessions={() => void onRevokeOtherSessions()}
-          />
-        ) : null}
-
-        {activeTab === "users" && showUserAdmin ? (
-          <UserManagementPanel
-            users={users}
-            setUsers={setUsers}
-            loading={!usersLoaded}
-            busy={usersBusy}
-            setBusy={setUsersBusy}
-            error={usersError}
-            setError={setUsersError}
-            showBootstrap={showBootstrap}
-            showOperatorChrome={showOperatorChrome}
-            session={session ?? null}
-            adminCount={adminCount}
-            currentUserId={currentUserId}
-            onSessionChange={onSessionChange}
-            onUsersChanged={async () => {
-              await reloadUsers();
-            }}
-          />
-        ) : null}
-
-        {activeTab === "signin" && showSignInSettings ? <OidcSettingsPanel /> : null}
-
-        {activeTab === "nodes" && showNodes ? (
-          <NodesPanel onSessionExpired={onSessionExpired} />
-        ) : null}
-
-        {activeTab === "output" && showOperatorChrome ? (
-          <OutputSettingsPanel onSessionExpired={onSessionExpired} />
-        ) : null}
-
-        {activeTab === "clusters" && showLibrary ? (
-          <ClusterConsentsPanel
-            onSessionExpired={onSessionExpired}
-            sharingOnly={!showOperatorChrome}
-          />
-        ) : null}
-
-        {activeTab === "branches" && showSignInSettings ? (
-          <BranchesPanel
-            onSessionExpired={onSessionExpired}
-            canAddOwn={role !== "operator" && Boolean(session?.user)}
-          />
-        ) : null}
-
-        {activeTab === "clerks" && showSignInSettings ? (
-          <ClerksPanel onSessionExpired={onSessionExpired} />
-        ) : null}
-
-        {(activeTab === "server" || activeTab === "plugins") && showOperatorChrome ? (
-          loading ? (
-            <p className="text-sm text-ink/50">Loading operator settings…</p>
-          ) : settings ? (
-            <form
-              id="operator-settings-form"
-              className="flex flex-col gap-10"
-              onSubmit={(e) => void onOperatorSave(e)}
-            >
-              {error ? (
-                <p className="text-sm font-medium text-brick" role="alert">
-                  {error}
-                </p>
               ) : null}
-
-              {activeTab === "server" ? (
+              {showSignInSettings ? (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === "signin"}
+                  className={cn(
+                    "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                    activeTab === "signin"
+                      ? "bg-ink text-paper shadow-sm"
+                      : "text-ink/60 hover:text-ink",
+                  )}
+                  onClick={() => setActiveTab("signin")}
+                >
+                  Sign-in
+                </button>
+              ) : null}
+              {showOperatorChrome ? (
                 <>
-              <section className="space-y-3">
-                <div className="space-y-1">
-                  <h2 className="text-lg font-semibold text-ink">Daemon</h2>
-                  <p className="text-sm text-ink/55">
-                    How bookclerkd listens and whether operator auth is required.
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={activeTab === "server"}
+                    className={cn(
+                      "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                      activeTab === "server"
+                        ? "bg-ink text-paper shadow-sm"
+                        : "text-ink/60 hover:text-ink",
+                    )}
+                    onClick={() => setActiveTab("server")}
+                  >
+                    Server Settings
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={activeTab === "plugins"}
+                    className={cn(
+                      "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                      activeTab === "plugins"
+                        ? "bg-ink text-paper shadow-sm"
+                        : "text-ink/60 hover:text-ink",
+                    )}
+                    onClick={() => setActiveTab("plugins")}
+                  >
+                    Plugins
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={activeTab === "output"}
+                    className={cn(
+                      "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                      activeTab === "output"
+                        ? "bg-ink text-paper shadow-sm"
+                        : "text-ink/60 hover:text-ink",
+                    )}
+                    onClick={() => setActiveTab("output")}
+                  >
+                    Output
+                  </button>
+                </>
+              ) : null}
+              {showNodes ? (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === "nodes"}
+                  className={cn(
+                    "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                    activeTab === "nodes"
+                      ? "bg-ink text-paper shadow-sm"
+                      : "text-ink/60 hover:text-ink",
+                  )}
+                  onClick={() => setActiveTab("nodes")}
+                >
+                  Nodes
+                </button>
+              ) : null}
+              {showLibrary ? (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === "clusters"}
+                  className={cn(
+                    "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                    activeTab === "clusters"
+                      ? "bg-ink text-paper shadow-sm"
+                      : "text-ink/60 hover:text-ink",
+                  )}
+                  onClick={() => setActiveTab("clusters")}
+                >
+                  Library
+                </button>
+              ) : null}
+              {showSignInSettings ? (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === "branches"}
+                  className={cn(
+                    "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                    activeTab === "branches"
+                      ? "bg-ink text-paper shadow-sm"
+                      : "text-ink/60 hover:text-ink",
+                  )}
+                  onClick={() => setActiveTab("branches")}
+                >
+                  Branches
+                </button>
+              ) : null}
+              {showSignInSettings ? (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === "clerks"}
+                  className={cn(
+                    "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                    activeTab === "clerks"
+                      ? "bg-ink text-paper shadow-sm"
+                      : "text-ink/60 hover:text-ink",
+                  )}
+                  onClick={() => setActiveTab("clerks")}
+                >
+                  Clerks
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          {error && !showOperatorChrome ? (
+            <ErrorStatePage
+              title="Settings request failed"
+              message={error}
+              onRetry={() => void refresh()}
+            />
+          ) : null}
+
+          {activeTab === "account" ? (
+            <AccountSettingsPanel
+              session={session ?? null}
+              onSessionChange={onSessionChange}
+              onDeleted={async () => {
+                await onSignOut();
+              }}
+              sessions={sessions}
+              sessionsBusy={sessionsBusy}
+              sessionsError={sessionsError}
+              onRefreshSessions={() => {
+                void (async () => {
+                  setSessionsBusy(true);
+                  try {
+                    await reloadSessions();
+                  } catch (err) {
+                    setSessionsError(
+                      err instanceof Error ? err.message : "Failed to load sessions",
+                    );
+                  } finally {
+                    setSessionsBusy(false);
+                  }
+                })();
+              }}
+              onRevokeSession={(id) => void onRevokeSession(id)}
+              onRevokeOtherSessions={() => void onRevokeOtherSessions()}
+            />
+          ) : null}
+
+          {activeTab === "users" && showUserAdmin ? (
+            <UserManagementPanel
+              users={users}
+              setUsers={setUsers}
+              loading={!usersLoaded}
+              busy={usersBusy}
+              setBusy={setUsersBusy}
+              error={usersError}
+              setError={setUsersError}
+              showBootstrap={showBootstrap}
+              showOperatorChrome={showOperatorChrome}
+              session={session ?? null}
+              adminCount={adminCount}
+              currentUserId={currentUserId}
+              onSessionChange={onSessionChange}
+              onUsersChanged={async () => {
+                await reloadUsers();
+              }}
+            />
+          ) : null}
+
+          {activeTab === "signin" && showSignInSettings ? <OidcSettingsPanel /> : null}
+
+          {activeTab === "nodes" && showNodes ? (
+            <NodesPanel onSessionExpired={onSessionExpired} />
+          ) : null}
+
+          {activeTab === "output" && showOperatorChrome ? (
+            <OutputSettingsPanel onSessionExpired={onSessionExpired} />
+          ) : null}
+
+          {activeTab === "clusters" && showLibrary ? (
+            <ClusterConsentsPanel
+              onSessionExpired={onSessionExpired}
+              sharingOnly={!showOperatorChrome}
+            />
+          ) : null}
+
+          {activeTab === "branches" && showSignInSettings ? (
+            <BranchesPanel
+              onSessionExpired={onSessionExpired}
+              canAddOwn={role !== "operator" && Boolean(session?.user)}
+            />
+          ) : null}
+
+          {activeTab === "clerks" && showSignInSettings ? (
+            <ClerksPanel onSessionExpired={onSessionExpired} />
+          ) : null}
+
+          {(activeTab === "server" || activeTab === "plugins") && showOperatorChrome ? (
+            loading ? (
+              <p className="text-sm text-ink/50">Loading operator settings…</p>
+            ) : settings ? (
+              <form
+                id="operator-settings-form"
+                className="flex flex-col gap-10"
+                onSubmit={(e) => void onOperatorSave(e)}
+              >
+                {error ? (
+                  <p className="text-sm font-medium text-brick" role="alert">
+                    {error}
                   </p>
-                </div>
-                <div className="divide-y divide-ink/10 bg-card px-3">
-                  <div className="space-y-4 py-3">
-                    <div className="space-y-2">
-                      <p className="text-sm font-medium text-ink">Listen on</p>
-                      <div className="flex flex-wrap gap-2">
-                        {(
-                          [
-                            ["localhost", "Localhost"],
-                            ["all", "All interfaces"],
-                          ] as const
-                        ).map(([id, label]) => (
-                          <Button
-                            key={id}
-                            type="button"
-                            variant={listenExposure === id ? "secondary" : "ghost"}
-                            className="px-3 py-1.5 text-sm"
-                            onClick={() => {
-                              setListenExposure(id);
-                              setAdvancedOpen(false);
-                              const p = daemonPort.trim() || DEFAULT_DAEMON_PORT;
-                              setAdvancedRows(
-                                id === "localhost"
-                                  ? [
-                                      { host: "127.0.0.1", port: p },
-                                      { host: "::1", port: p },
-                                    ]
-                                  : [
-                                      { host: "0.0.0.0", port: p },
-                                      { host: "::", port: p },
-                                    ],
-                              );
-                            }}
-                          >
-                            {label}
-                          </Button>
-                        ))}
-                        {listenExposure === "custom" ? (
-                          <Badge className="bg-ink/5 text-ink/60 normal-case tracking-normal">
-                            Custom
-                          </Badge>
-                        ) : null}
-                      </div>
-                      <p className="text-xs text-ink/50">
-                        Localhost binds both 127.0.0.1 and ::1. All interfaces binds 0.0.0.0 and ::.
-                        The tray opens {"http://localhost:<port>"}.
-                      </p>
-                    </div>
+                ) : null}
 
-                    {listenExposure !== "custom" ? (
-                      <FieldBlock
-                        label="Port"
-                        htmlFor="daemon-port"
-                        error={daemonListenError ?? undefined}
-                      >
-                        <Input
-                          id="daemon-port"
-                          className="max-w-[8rem]"
-                          inputMode="numeric"
-                          value={daemonPort}
-                          onChange={(e) => {
-                            const p = e.target.value;
-                            setDaemonPort(p);
-                            setAdvancedRows((rows) =>
-                              rows.map((r) => ({ ...r, port: p || DEFAULT_DAEMON_PORT })),
-                            );
-                          }}
-                          placeholder={DEFAULT_DAEMON_PORT}
-                          autoComplete="off"
-                          spellCheck={false}
-                        />
-                      </FieldBlock>
-                    ) : null}
-
-                    <details
-                      className="rounded-md border border-ink/10 bg-paper/40"
-                      open={advancedOpen}
-                      onToggle={(e) => setAdvancedOpen(e.currentTarget.open)}
-                    >
-                      <summary className="cursor-pointer px-3 py-2 text-sm font-medium text-ink">
-                        Advanced bind addresses
-                      </summary>
-                      <div className="space-y-3 border-t border-ink/10 px-3 py-3">
-                        <p className="text-xs text-ink/50">
-                          Bind each address separately. Editing here switches to a custom listen list.
+                {activeTab === "server" ? (
+                  <>
+                    <section className="space-y-3">
+                      <div className="space-y-1">
+                        <h2 className="text-lg font-semibold text-ink">Daemon</h2>
+                        <p className="text-sm text-ink/55">
+                          How bookclerkd listens and whether operator auth is required.
                         </p>
-                        {advancedRows.map((row, index) => (
-                          <div
-                            key={`listen-row-${index}`}
-                            className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_7rem_auto]"
+                      </div>
+                      <div className="divide-y divide-ink/10 bg-card px-3">
+                        <div className="space-y-4 py-3">
+                          <div className="space-y-2">
+                            <p className="text-sm font-medium text-ink">Listen on</p>
+                            <div className="flex flex-wrap gap-2">
+                              {(
+                                [
+                                  ["localhost", "Localhost"],
+                                  ["all", "All interfaces"],
+                                ] as const
+                              ).map(([id, label]) => (
+                                <Button
+                                  key={id}
+                                  type="button"
+                                  variant={listenExposure === id ? "secondary" : "ghost"}
+                                  className="px-3 py-1.5 text-sm"
+                                  onClick={() => {
+                                    setListenExposure(id);
+                                    setAdvancedOpen(false);
+                                    const p = daemonPort.trim() || DEFAULT_DAEMON_PORT;
+                                    setAdvancedRows(
+                                      id === "localhost"
+                                        ? [
+                                            { host: "127.0.0.1", port: p },
+                                            { host: "::1", port: p },
+                                          ]
+                                        : [
+                                            { host: "0.0.0.0", port: p },
+                                            { host: "::", port: p },
+                                          ],
+                                    );
+                                  }}
+                                >
+                                  {label}
+                                </Button>
+                              ))}
+                              {listenExposure === "custom" ? (
+                                <Badge className="bg-ink/5 text-ink/60 normal-case tracking-normal">
+                                  Custom
+                                </Badge>
+                              ) : null}
+                            </div>
+                            <p className="text-xs text-ink/50">
+                              Localhost binds both 127.0.0.1 and ::1. All interfaces binds 0.0.0.0
+                              and ::. The tray opens {"http://localhost:<port>"}.
+                            </p>
+                          </div>
+
+                          {listenExposure !== "custom" ? (
+                            <FieldBlock
+                              label="Port"
+                              htmlFor="daemon-port"
+                              error={daemonListenError ?? undefined}
+                            >
+                              <Input
+                                id="daemon-port"
+                                className="max-w-[8rem]"
+                                inputMode="numeric"
+                                value={daemonPort}
+                                onChange={(e) => {
+                                  const p = e.target.value;
+                                  setDaemonPort(p);
+                                  setAdvancedRows((rows) =>
+                                    rows.map((r) => ({ ...r, port: p || DEFAULT_DAEMON_PORT })),
+                                  );
+                                }}
+                                placeholder={DEFAULT_DAEMON_PORT}
+                                autoComplete="off"
+                                spellCheck={false}
+                              />
+                            </FieldBlock>
+                          ) : null}
+
+                          <details
+                            className="rounded-md border border-ink/10 bg-paper/40"
+                            open={advancedOpen}
+                            onToggle={(e) => setAdvancedOpen(e.currentTarget.open)}
                           >
-                            <Input
-                              aria-label={`Listen address ${index + 1}`}
-                              value={row.host}
-                              onChange={(e) => {
-                                const host = e.target.value;
-                                setListenExposure("custom");
-                                setAdvancedRows((rows) =>
-                                  rows.map((r, i) => (i === index ? { ...r, host } : r)),
-                                );
-                              }}
-                              placeholder="127.0.0.1"
-                              autoComplete="off"
-                              spellCheck={false}
-                            />
-                            <Input
-                              aria-label={`Listen port ${index + 1}`}
-                              inputMode="numeric"
-                              value={row.port}
-                              onChange={(e) => {
-                                const port = e.target.value;
-                                setListenExposure("custom");
-                                setAdvancedRows((rows) =>
-                                  rows.map((r, i) => (i === index ? { ...r, port } : r)),
-                                );
-                              }}
-                              placeholder={DEFAULT_DAEMON_PORT}
-                              autoComplete="off"
-                              spellCheck={false}
+                            <summary className="cursor-pointer px-3 py-2 text-sm font-medium text-ink">
+                              Advanced bind addresses
+                            </summary>
+                            <div className="space-y-3 border-t border-ink/10 px-3 py-3">
+                              <p className="text-xs text-ink/50">
+                                Bind each address separately. Editing here switches to a custom
+                                listen list.
+                              </p>
+                              {advancedRows.map((row, index) => (
+                                <div
+                                  key={`listen-row-${index}`}
+                                  className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_7rem_auto]"
+                                >
+                                  <Input
+                                    aria-label={`Listen address ${index + 1}`}
+                                    value={row.host}
+                                    onChange={(e) => {
+                                      const host = e.target.value;
+                                      setListenExposure("custom");
+                                      setAdvancedRows((rows) =>
+                                        rows.map((r, i) => (i === index ? { ...r, host } : r)),
+                                      );
+                                    }}
+                                    placeholder="127.0.0.1"
+                                    autoComplete="off"
+                                    spellCheck={false}
+                                  />
+                                  <Input
+                                    aria-label={`Listen port ${index + 1}`}
+                                    inputMode="numeric"
+                                    value={row.port}
+                                    onChange={(e) => {
+                                      const port = e.target.value;
+                                      setListenExposure("custom");
+                                      setAdvancedRows((rows) =>
+                                        rows.map((r, i) => (i === index ? { ...r, port } : r)),
+                                      );
+                                    }}
+                                    placeholder={DEFAULT_DAEMON_PORT}
+                                    autoComplete="off"
+                                    spellCheck={false}
+                                  />
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    className="px-2"
+                                    disabled={advancedRows.length <= 1}
+                                    onClick={() => {
+                                      setListenExposure("custom");
+                                      setAdvancedRows((rows) => rows.filter((_, i) => i !== index));
+                                    }}
+                                  >
+                                    Remove
+                                  </Button>
+                                </div>
+                              ))}
+                              {daemonListenError && listenExposure === "custom" ? (
+                                <p className="text-xs text-brick" role="alert">
+                                  {daemonListenError}
+                                </p>
+                              ) : null}
+                              <Button
+                                type="button"
+                                variant="secondary"
+                                className="text-sm"
+                                onClick={() => {
+                                  setListenExposure("custom");
+                                  setAdvancedRows((rows) => [
+                                    ...rows,
+                                    {
+                                      host: "",
+                                      port: rows[0]?.port || DEFAULT_DAEMON_PORT,
+                                    },
+                                  ]);
+                                }}
+                              >
+                                Add address
+                              </Button>
+                            </div>
+                          </details>
+
+                          <p className="text-xs text-ink/45">
+                            Saves as <span className="font-mono text-ink/60">{daemonListen}</span>
+                          </p>
+                        </div>
+                        <ToggleRow
+                          id="daemon-auth"
+                          label="Require operator auth"
+                          description="When off, the control plane accepts unauthenticated requests."
+                          checked={daemonAuthEnabled}
+                          onChange={setDaemonAuthEnabled}
+                        />
+                      </div>
+                    </section>
+
+                    <section className="space-y-3">
+                      <div className="space-y-1">
+                        <h2 className="text-lg font-semibold text-ink">Library</h2>
+                        <p className="text-sm text-ink/55">
+                          Behavior for scheduled scans and pending titles.
+                        </p>
+                      </div>
+                      <div className="divide-y divide-ink/10 bg-card px-3">
+                        <ToggleRow
+                          id="auto-acquire"
+                          label="Auto acquire"
+                          description="Acquire pending titles after scans without a manual trigger."
+                          checked={autoAcquire}
+                          onChange={setAutoAcquire}
+                        />
+                      </div>
+                    </section>
+
+                    <section className="space-y-3">
+                      <div className="space-y-1">
+                        <h2 className="text-lg font-semibold text-ink">Confinement</h2>
+                        <p className="text-sm text-ink/55">
+                          Host isolation policy for plugins and media workers.
+                        </p>
+                      </div>
+                      <div className="grid gap-4 bg-card px-3 py-3 sm:grid-cols-2">
+                        <FieldBlock label="Plugin isolation" htmlFor="plugins-isolation">
+                          <select
+                            id="plugins-isolation"
+                            value={pluginsIsolation}
+                            onChange={(e) => setPluginsIsolation(e.target.value)}
+                            className={selectClassName}
+                          >
+                            {ISOLATION_OPTIONS.map(([value, label]) => (
+                              <option key={value} value={value}>
+                                {label}
+                              </option>
+                            ))}
+                          </select>
+                        </FieldBlock>
+                        <FieldBlock label="Media isolation" htmlFor="media-isolation">
+                          <select
+                            id="media-isolation"
+                            value={mediaIsolation}
+                            onChange={(e) => setMediaIsolation(e.target.value)}
+                            className={selectClassName}
+                          >
+                            {ISOLATION_OPTIONS.map(([value, label]) => (
+                              <option key={value} value={value}>
+                                {label}
+                              </option>
+                            ))}
+                          </select>
+                        </FieldBlock>
+                        <FieldBlock
+                          label="Jail memory MiB"
+                          htmlFor="plugins-jail-memory"
+                          hint="Leave empty for the platform default."
+                          error={jailMemoryError ?? undefined}
+                        >
+                          <Input
+                            id="plugins-jail-memory"
+                            type="number"
+                            min={0}
+                            value={jailMemoryMiB}
+                            onChange={(e) => setJailMemoryMiB(e.target.value)}
+                            placeholder="default"
+                          />
+                        </FieldBlock>
+                        <FieldBlock
+                          label="Jail CPU cores"
+                          htmlFor="plugins-jail-cpu"
+                          hint="Per-jail ceiling in cores (two decimals; 1.00 = one logical CPU). Defaults to 0.80. Idle guests do not reserve CPU."
+                          error={jailCpuError ?? undefined}
+                        >
+                          <div className="flex flex-col gap-2">
+                            <CpuCoresSlider
+                              id="plugins-jail-cpu"
+                              value={jailCpuCores}
+                              onChange={(cores) => setJailCpuCores(cores)}
+                              hostMaxCores={hostCpuCoresMax}
+                              disabled={false}
                             />
                             <Button
                               type="button"
                               variant="ghost"
-                              className="px-2"
-                              disabled={advancedRows.length <= 1}
-                              onClick={() => {
-                                setListenExposure("custom");
-                                setAdvancedRows((rows) => rows.filter((_, i) => i !== index));
-                              }}
+                              className="self-start px-0 text-xs text-ink/55"
+                              onClick={() => setJailCpuCores(DEFAULT_JAIL_CPU_CORES)}
                             >
-                              Remove
+                              Reset to default (0.80)
                             </Button>
                           </div>
-                        ))}
-                        {daemonListenError && listenExposure === "custom" ? (
-                          <p className="text-xs text-brick" role="alert">
-                            {daemonListenError}
-                          </p>
-                        ) : null}
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          className="text-sm"
-                          onClick={() => {
-                            setListenExposure("custom");
-                            setAdvancedRows((rows) => [
-                              ...rows,
-                              {
-                                host: "",
-                                port: rows[0]?.port || DEFAULT_DAEMON_PORT,
-                              },
-                            ]);
-                          }}
+                        </FieldBlock>
+                        <FieldBlock
+                          label="Additional processes"
+                          htmlFor="plugins-jail-processes"
+                          hint="Ceiling on extra processes/threads beyond each guest’s launcher overhead (native default 2; workerd headroom is host-managed)."
+                          error={jailProcessError ?? undefined}
                         >
-                          Add address
-                        </Button>
+                          <Input
+                            id="plugins-jail-processes"
+                            type="number"
+                            min={0}
+                            max={62}
+                            value={jailExtraProcesses}
+                            onChange={(e) => setJailExtraProcesses(e.target.value)}
+                            placeholder={DEFAULT_JAIL_EXTRA_PROCESSES}
+                          />
+                        </FieldBlock>
                       </div>
-                    </details>
+                    </section>
+                  </>
+                ) : null}
 
-                    <p className="text-xs text-ink/45">
-                      Saves as <span className="font-mono text-ink/60">{daemonListen}</span>
-                    </p>
-                  </div>
-                  <ToggleRow
-                    id="daemon-auth"
-                    label="Require operator auth"
-                    description="When off, the control plane accepts unauthenticated requests."
-                    checked={daemonAuthEnabled}
-                    onChange={setDaemonAuthEnabled}
-                  />
-                </div>
-              </section>
-
-              <section className="space-y-3">
-                <div className="space-y-1">
-                  <h2 className="text-lg font-semibold text-ink">Library</h2>
-                  <p className="text-sm text-ink/55">
-                    Behavior for scheduled scans and pending titles.
-                  </p>
-                </div>
-                <div className="divide-y divide-ink/10 bg-card px-3">
-                  <ToggleRow
-                    id="auto-acquire"
-                    label="Auto acquire"
-                    description="Acquire pending titles after scans without a manual trigger."
-                    checked={autoAcquire}
-                    onChange={setAutoAcquire}
-                  />
-                </div>
-              </section>
-
-              <section className="space-y-3">
-                <div className="space-y-1">
-                  <h2 className="text-lg font-semibold text-ink">Confinement</h2>
-                  <p className="text-sm text-ink/55">
-                    Host isolation policy for plugins and media workers.
-                  </p>
-                </div>
-                <div className="grid gap-4 bg-card px-3 py-3 sm:grid-cols-2">
-                  <FieldBlock label="Plugin isolation" htmlFor="plugins-isolation">
-                    <select
-                      id="plugins-isolation"
-                      value={pluginsIsolation}
-                      onChange={(e) => setPluginsIsolation(e.target.value)}
-                      className={selectClassName}
-                    >
-                      {ISOLATION_OPTIONS.map(([value, label]) => (
-                        <option key={value} value={value}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
-                  </FieldBlock>
-                  <FieldBlock label="Media isolation" htmlFor="media-isolation">
-                    <select
-                      id="media-isolation"
-                      value={mediaIsolation}
-                      onChange={(e) => setMediaIsolation(e.target.value)}
-                      className={selectClassName}
-                    >
-                      {ISOLATION_OPTIONS.map(([value, label]) => (
-                        <option key={value} value={value}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
-                  </FieldBlock>
-                  <FieldBlock
-                    label="Jail memory MiB"
-                    htmlFor="plugins-jail-memory"
-                    hint="Leave empty for the platform default."
-                    error={jailMemoryError ?? undefined}
-                  >
-                    <Input
-                      id="plugins-jail-memory"
-                      type="number"
-                      min={0}
-                      value={jailMemoryMiB}
-                      onChange={(e) => setJailMemoryMiB(e.target.value)}
-                      placeholder="default"
-                    />
-                  </FieldBlock>
-                  <FieldBlock
-                    label="Jail CPU cores"
-                    htmlFor="plugins-jail-cpu"
-                    hint="Per-jail ceiling in cores (two decimals; 1.00 = one logical CPU). Defaults to 0.80. Idle guests do not reserve CPU."
-                    error={jailCpuError ?? undefined}
-                  >
-                    <div className="flex flex-col gap-2">
-                      <CpuCoresSlider
-                        id="plugins-jail-cpu"
-                        value={jailCpuCores}
-                        onChange={(cores) => setJailCpuCores(cores)}
-                        hostMaxCores={hostCpuCoresMax}
-                        disabled={false}
-                      />
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        className="self-start px-0 text-xs text-ink/55"
-                        onClick={() => setJailCpuCores(DEFAULT_JAIL_CPU_CORES)}
-                      >
-                        Reset to default (0.80)
-                      </Button>
+                {activeTab === "plugins" ? (
+                  <section className="space-y-5">
+                    <div className="space-y-1">
+                      <h2 className="text-lg font-semibold text-ink">Plugins</h2>
+                      <p className="text-sm text-ink/55">
+                        Settings each plugin declares in its manifest, stored per instance in the
+                        database. Deployed means the instance runs on this node.
+                      </p>
                     </div>
-                  </FieldBlock>
-                  <FieldBlock
-                    label="Additional processes"
-                    htmlFor="plugins-jail-processes"
-                    hint="Ceiling on extra processes/threads beyond each guest’s launcher overhead (native default 2; workerd headroom is host-managed)."
-                    error={jailProcessError ?? undefined}
-                  >
-                    <Input
-                      id="plugins-jail-processes"
-                      type="number"
-                      min={0}
-                      max={62}
-                      value={jailExtraProcesses}
-                      onChange={(e) => setJailExtraProcesses(e.target.value)}
-                      placeholder={DEFAULT_JAIL_EXTRA_PROCESSES}
-                    />
-                  </FieldBlock>
-                </div>
-              </section>
-                </>
-              ) : null}
 
-              {activeTab === "plugins" ? (
-              <section className="space-y-5">
-                <div className="space-y-1">
-                  <h2 className="text-lg font-semibold text-ink">Plugins</h2>
-                  <p className="text-sm text-ink/55">
-                    Settings each plugin declares in its manifest, stored per instance in the
-                    database. Deployed means the instance runs on this node.
-                  </p>
-                </div>
+                    {pluginsByFamily.size === 0 ? (
+                      <p className="text-sm text-ink/50">No plugins discovered.</p>
+                    ) : (
+                      Array.from(pluginsByFamily.entries()).map(([family, plugins]) => (
+                        <div key={family} className="space-y-2">
+                          <h3 className="text-sm font-semibold text-ink/70">
+                            {familyLabel(family)}
+                          </h3>
+                          <ul className="divide-y divide-ink/10 bg-card">
+                            {plugins.map((plugin) => {
+                              const rowKey = pluginRowKey(plugin);
+                              const expanded = expandedPlugins.has(rowKey);
+                              const enabledOption = findEnabledOption(plugin);
+                              const instanceGroup = isInstanceGroup(plugin);
+                              const enabled = enabledOption
+                                ? parseBooleanLike(
+                                    pluginValues[pluginValueKey(plugin, enabledOption)] ??
+                                      enabledOption.value,
+                                  )
+                                : instanceGroup
+                                  ? deploymentEnabled(plugin)
+                                  : null;
+                              const detailSettings = plugin.settings.filter(
+                                (option) => option.key !== enabledOption?.key,
+                              );
+                              const canExpand =
+                                detailSettings.length > 0 || plugin.settings.length === 0;
+                              const consent = consentCoverage[pluginConsentKey(plugin)];
+                              const loaded = effectiveLoaded(settings, plugin);
+                              const deploymentStatus = deploymentStatusLabel(plugin.deployment);
+                              const switchBusy = deploymentBusy.has(rowKey);
 
-                {pluginsByFamily.size === 0 ? (
-                  <p className="text-sm text-ink/50">No plugins discovered.</p>
-                ) : (
-                  Array.from(pluginsByFamily.entries()).map(([family, plugins]) => (
-                    <div key={family} className="space-y-2">
-                      <h3 className="text-sm font-semibold text-ink/70">{familyLabel(family)}</h3>
-                      <ul className="divide-y divide-ink/10 bg-card">
-                        {plugins.map((plugin) => {
-                          const rowKey = pluginRowKey(plugin);
-                          const expanded = expandedPlugins.has(rowKey);
-                          const enabledOption = findEnabledOption(plugin);
-                          const instanceGroup = isInstanceGroup(plugin);
-                          const enabled = enabledOption
-                            ? parseBooleanLike(
-                                pluginValues[pluginValueKey(plugin, enabledOption)] ??
-                                  enabledOption.value,
-                              )
-                            : instanceGroup
-                              ? deploymentEnabled(plugin)
-                              : null;
-                          const detailSettings = plugin.settings.filter(
-                            (option) => option.key !== enabledOption?.key,
-                          );
-                          const canExpand =
-                            detailSettings.length > 0 || plugin.settings.length === 0;
-                          const consent = consentCoverage[pluginConsentKey(plugin)];
-                          const loaded = effectiveLoaded(settings, plugin);
-                          const deploymentStatus = deploymentStatusLabel(plugin.deployment);
-                          const switchBusy = deploymentBusy.has(rowKey);
-
-                          return (
-                            <li key={rowKey} className="px-3 py-2.5">
-                              <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-                                <button
-                                  type="button"
-                                  className="flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left hover:bg-ink/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal"
-                                  aria-expanded={expanded}
-                                  aria-controls={`plugin-settings-${rowKey}`}
-                                  disabled={!canExpand}
-                                  onClick={() => {
-                                    setExpandedPlugins((current) => {
-                                      const next = new Set(current);
-                                      if (next.has(rowKey)) next.delete(rowKey);
-                                      else next.add(rowKey);
-                                      return next;
-                                    });
-                                  }}
-                                >
-                                  {canExpand ? (
-                                    expanded ? (
-                                      <ChevronDown className="h-4 w-4 shrink-0 text-ink/45" />
-                                    ) : (
-                                      <ChevronRight className="h-4 w-4 shrink-0 text-ink/45" />
-                                    )
-                                  ) : (
-                                    <span className="inline-block h-4 w-4 shrink-0" />
-                                  )}
-                                  <PluginLogo plugin={plugin} />
-                                  <span className="truncate font-medium text-ink">
-                                    {plugin.display_name?.trim() || plugin.id}
-                                  </span>
-                                  {plugin.display_name?.trim() && plugin.display_name.trim() !== plugin.id ? (
-                                    <span className="hidden text-xs text-ink/45 sm:inline">
-                                      {plugin.id}
-                                    </span>
-                                  ) : null}
-                                  <span className="hidden text-xs text-ink/45 sm:inline">
-                                    {plugin.family}
-                                  </span>
-                                  {instanceGroup && plugin.is_default === false ? (
-                                    <span className="text-[10px] uppercase tracking-wide text-ink/40">
-                                      instance
-                                    </span>
-                                  ) : null}
-                                  {plugin.provenance ? (
-                                    <span
-                                      className="hidden max-w-[14rem] truncate font-mono text-[10px] text-ink/40 sm:inline"
-                                      title={plugin.plugin_key ?? plugin.provenance}
+                              return (
+                                <li key={rowKey} className="px-3 py-2.5">
+                                  <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                                    <button
+                                      type="button"
+                                      className="flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left hover:bg-ink/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal"
+                                      aria-expanded={expanded}
+                                      aria-controls={`plugin-settings-${rowKey}`}
+                                      disabled={!canExpand}
+                                      onClick={() => {
+                                        setExpandedPlugins((current) => {
+                                          const next = new Set(current);
+                                          if (next.has(rowKey)) next.delete(rowKey);
+                                          else next.add(rowKey);
+                                          return next;
+                                        });
+                                      }}
                                     >
-                                      {plugin.provenance}
-                                    </span>
-                                  ) : null}
-                                </button>
-
-                                {enabled !== null ? (
-                                  <div className="ml-auto flex items-center gap-2">
-                                    <Badge
-                                      className={
-                                        enabled
-                                          ? "bg-teal/15 text-ink normal-case tracking-normal"
-                                          : "bg-ink/5 text-ink/55 normal-case tracking-normal"
-                                      }
-                                    >
-                                      {instanceGroup
-                                        ? enabled
-                                          ? "Deployed"
-                                          : "Not deployed"
-                                        : enabled
-                                          ? "Enabled"
-                                          : "Disabled"}
-                                    </Badge>
-                                    {deploymentStatus && deploymentStatus !== "Running" ? (
-                                      <Badge
-                                        className={
-                                          deploymentStatus === "Error"
-                                            ? "bg-brick/10 text-brick normal-case tracking-normal"
-                                            : "bg-ink/5 text-ink/55 normal-case tracking-normal"
-                                        }
-                                      >
-                                        <span title={plugin.deployment?.detail}>{deploymentStatus}</span>
-                                      </Badge>
-                                    ) : null}
-                                    <PlacementBadge plugin={plugin} />
-                                    {loaded ? (
-                                      <Badge className="bg-teal/10 text-ink/70 normal-case tracking-normal">
-                                        Loaded
-                                      </Badge>
-                                    ) : null}
-                                    {consent ? (
-                                      <Badge
-                                        className={
-                                          consent.covered
-                                            ? "bg-teal/15 text-ink normal-case tracking-normal"
-                                            : "bg-brick/10 text-brick normal-case tracking-normal"
-                                        }
-                                      >
-                                        {consent.covered ? "Granted" : "Needs approval"}
-                                      </Badge>
-                                    ) : null}
-                                    <input
-                                      id={`plugin-enabled-${rowKey}`}
-                                      type="checkbox"
-                                      className="h-4 w-4 accent-teal"
-                                      aria-label={`${plugin.display_name?.trim() || plugin.id} ${instanceGroup ? "deployed" : "enabled"}`}
-                                      title={
-                                        plugin.placement
-                                          ? "Placed by the cluster scheduler; change its placement instead"
-                                          : undefined
-                                      }
-                                      checked={enabled}
-                                      disabled={switchBusy || Boolean(plugin.placement)}
-                                      onChange={(e) =>
-                                        void onPluginEnabledChange(
-                                          plugin,
-                                          enabledOption,
-                                          e.target.checked,
+                                      {canExpand ? (
+                                        expanded ? (
+                                          <ChevronDown className="h-4 w-4 shrink-0 text-ink/45" />
+                                        ) : (
+                                          <ChevronRight className="h-4 w-4 shrink-0 text-ink/45" />
                                         )
-                                      }
-                                      onClick={(e) => e.stopPropagation()}
-                                    />
-                                  </div>
-                                ) : (
-                                  <div className="ml-auto flex items-center gap-2">
-                                    {loaded ? (
-                                      <Badge className="bg-teal/10 text-ink/70 normal-case tracking-normal">
-                                        Loaded
-                                      </Badge>
-                                    ) : null}
-                                    {consent ? (
-                                      <Badge
-                                        className={
-                                          consent.covered
-                                            ? "bg-teal/15 text-ink normal-case tracking-normal"
-                                            : "bg-brick/10 text-brick normal-case tracking-normal"
-                                        }
-                                      >
-                                        {consent.covered ? "Granted" : "Needs approval"}
-                                      </Badge>
-                                    ) : null}
-                                    <span className="text-xs text-ink/45">{plugin.family}</span>
-                                  </div>
-                                )}
-                              </div>
+                                      ) : (
+                                        <span className="inline-block h-4 w-4 shrink-0" />
+                                      )}
+                                      <PluginLogo plugin={plugin} />
+                                      <span className="truncate font-medium text-ink">
+                                        {plugin.display_name?.trim() || plugin.id}
+                                      </span>
+                                      {plugin.display_name?.trim() &&
+                                      plugin.display_name.trim() !== plugin.id ? (
+                                        <span className="hidden text-xs text-ink/45 sm:inline">
+                                          {plugin.id}
+                                        </span>
+                                      ) : null}
+                                      <span className="hidden text-xs text-ink/45 sm:inline">
+                                        {plugin.family}
+                                      </span>
+                                      {instanceGroup && plugin.is_default === false ? (
+                                        <span className="text-[10px] uppercase tracking-wide text-ink/40">
+                                          instance
+                                        </span>
+                                      ) : null}
+                                      {plugin.provenance ? (
+                                        <span
+                                          className="hidden max-w-[14rem] truncate font-mono text-[10px] text-ink/40 sm:inline"
+                                          title={plugin.plugin_key ?? plugin.provenance}
+                                        >
+                                          {plugin.provenance}
+                                        </span>
+                                      ) : null}
+                                    </button>
 
-                              {expanded ? (
-                                <div
-                                  id={`plugin-settings-${rowKey}`}
-                                  className="mt-3 border-t border-ink/10 pt-3"
-                                >
-                                  {detailSettings.length === 0 ? (
-                                    <p className="text-xs text-ink/50">
-                                      {plugin.settings.length === 0
-                                        ? "No editable settings exposed for this plugin."
-                                        : "No additional settings beyond Enabled."}
-                                    </p>
-                                  ) : (
-                                    <div className="grid gap-3 sm:grid-cols-2">
-                                      {detailSettings.map((option) => {
-                                        const control = renderPluginOption(plugin, option);
-                                        if (option.value_type === "boolean") {
-                                          return (
-                                            <div
-                                              key={`${plugin.family}-${plugin.plugin_instance_id ?? plugin.id}-${option.key}`}
-                                              className="border-t border-ink/10 sm:col-span-2"
-                                            >
-                                              {control}
-                                            </div>
-                                          );
-                                        }
-                                        return control;
-                                      })}
+                                    {enabled !== null ? (
+                                      <div className="ml-auto flex items-center gap-2">
+                                        <Badge
+                                          className={
+                                            enabled
+                                              ? "bg-teal/15 text-ink normal-case tracking-normal"
+                                              : "bg-ink/5 text-ink/55 normal-case tracking-normal"
+                                          }
+                                        >
+                                          {instanceGroup
+                                            ? enabled
+                                              ? "Deployed"
+                                              : "Not deployed"
+                                            : enabled
+                                              ? "Enabled"
+                                              : "Disabled"}
+                                        </Badge>
+                                        {deploymentStatus && deploymentStatus !== "Running" ? (
+                                          <Badge
+                                            className={
+                                              deploymentStatus === "Error"
+                                                ? "bg-brick/10 text-brick normal-case tracking-normal"
+                                                : "bg-ink/5 text-ink/55 normal-case tracking-normal"
+                                            }
+                                          >
+                                            <span title={plugin.deployment?.detail}>
+                                              {deploymentStatus}
+                                            </span>
+                                          </Badge>
+                                        ) : null}
+                                        <PlacementBadge plugin={plugin} />
+                                        {loaded ? (
+                                          <Badge className="bg-teal/10 text-ink/70 normal-case tracking-normal">
+                                            Loaded
+                                          </Badge>
+                                        ) : null}
+                                        {consent ? (
+                                          <Badge
+                                            className={
+                                              consent.covered
+                                                ? "bg-teal/15 text-ink normal-case tracking-normal"
+                                                : "bg-brick/10 text-brick normal-case tracking-normal"
+                                            }
+                                          >
+                                            {consent.covered ? "Granted" : "Needs approval"}
+                                          </Badge>
+                                        ) : null}
+                                        <input
+                                          id={`plugin-enabled-${rowKey}`}
+                                          type="checkbox"
+                                          className="h-4 w-4 accent-teal"
+                                          aria-label={`${plugin.display_name?.trim() || plugin.id} ${instanceGroup ? "deployed" : "enabled"}`}
+                                          title={
+                                            plugin.placement
+                                              ? "Placed by the cluster scheduler; change its placement instead"
+                                              : undefined
+                                          }
+                                          checked={enabled}
+                                          disabled={switchBusy || Boolean(plugin.placement)}
+                                          onChange={(e) =>
+                                            void onPluginEnabledChange(
+                                              plugin,
+                                              enabledOption,
+                                              e.target.checked,
+                                            )
+                                          }
+                                          onClick={(e) => e.stopPropagation()}
+                                        />
+                                      </div>
+                                    ) : (
+                                      <div className="ml-auto flex items-center gap-2">
+                                        {loaded ? (
+                                          <Badge className="bg-teal/10 text-ink/70 normal-case tracking-normal">
+                                            Loaded
+                                          </Badge>
+                                        ) : null}
+                                        {consent ? (
+                                          <Badge
+                                            className={
+                                              consent.covered
+                                                ? "bg-teal/15 text-ink normal-case tracking-normal"
+                                                : "bg-brick/10 text-brick normal-case tracking-normal"
+                                            }
+                                          >
+                                            {consent.covered ? "Granted" : "Needs approval"}
+                                          </Badge>
+                                        ) : null}
+                                        <span className="text-xs text-ink/45">{plugin.family}</span>
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {expanded ? (
+                                    <div
+                                      id={`plugin-settings-${rowKey}`}
+                                      className="mt-3 border-t border-ink/10 pt-3"
+                                    >
+                                      {detailSettings.length === 0 ? (
+                                        <p className="text-xs text-ink/50">
+                                          {plugin.settings.length === 0
+                                            ? "No editable settings exposed for this plugin."
+                                            : "No additional settings beyond Enabled."}
+                                        </p>
+                                      ) : (
+                                        <div className="grid gap-3 sm:grid-cols-2">
+                                          {detailSettings.map((option) => {
+                                            const control = renderPluginOption(plugin, option);
+                                            if (option.value_type === "boolean") {
+                                              return (
+                                                <div
+                                                  key={`${plugin.family}-${plugin.plugin_instance_id ?? plugin.id}-${option.key}`}
+                                                  className="border-t border-ink/10 sm:col-span-2"
+                                                >
+                                                  {control}
+                                                </div>
+                                              );
+                                            }
+                                            return control;
+                                          })}
+                                        </div>
+                                      )}
+                                      {instanceGroup ? (
+                                        <PlacementPanel
+                                          plugin={plugin}
+                                          onChanged={reloadSettings}
+                                          onError={setError}
+                                          onSessionExpired={onSessionExpired}
+                                        />
+                                      ) : null}
                                     </div>
-                                  )}
-                                  {instanceGroup ? (
-                                    <PlacementPanel
-                                      plugin={plugin}
-                                      onChanged={reloadSettings}
-                                      onError={setError}
-                                      onSessionExpired={onSessionExpired}
-                                    />
                                   ) : null}
-                                </div>
-                              ) : null}
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </div>
-                  ))
-                )}
-              </section>
-              ) : null}
-            </form>
-          ) : (
-            <ErrorStatePage
-              title="Operator settings unavailable"
-              message={
-                operatorLoadError ??
-                "Operator settings could not be loaded. Check your operator session, verify bookclerkd is running, then try Refresh."
-              }
-              onRetry={() => void refresh()}
-            />
-          )
-        ) : null}
-      </main>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        </div>
+                      ))
+                    )}
+                  </section>
+                ) : null}
+              </form>
+            ) : (
+              <ErrorStatePage
+                title="Operator settings unavailable"
+                message={
+                  operatorLoadError ??
+                  "Operator settings could not be loaded. Check your operator session, verify bookclerkd is running, then try Refresh."
+                }
+                onRetry={() => void refresh()}
+              />
+            )
+          ) : null}
+        </main>
       </div>
 
-      {showOperatorChrome && settings && !loading && (activeTab === "server" || activeTab === "plugins") ? (
+      {showOperatorChrome &&
+      settings &&
+      !loading &&
+      (activeTab === "server" || activeTab === "plugins") ? (
         <div className="shrink-0 border-t border-ink/10 bg-paper/90 px-4 py-3 backdrop-blur-md">
           <div className={cn("flex flex-wrap items-center justify-between gap-3", pageWidthClass)}>
             <p className={`text-xs ${operatorHasValidationErrors ? "text-brick" : "text-ink/50"}`}>

@@ -139,8 +139,7 @@ export function JoinCallbackPage({ onOpenLibrary }: JoinCallbackPageProps) {
         lead={
           <>
             This server now shares <strong>{phase.library}</strong>'s database and keys. It is
-            restarting to open them; sign in again with your account on the library once it is
-            back.
+            restarting to open them; sign in again with your account on the library once it is back.
           </>
         }
       >

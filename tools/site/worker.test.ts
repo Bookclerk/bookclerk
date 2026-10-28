@@ -48,17 +48,26 @@ const DOCS = join(HERE, "..", "..", "docs");
 
 /** Generated pages the stand-in docs repository adds to docs/. */
 const GENERATED: Readonly<Record<string, string>> = {
-  "api/rust/demo/index.md": "# Crate `demo`\n\nA demo crate. See [the SDK](../../typescript/README.md) and [`Thing`](#thing).\n\n## Thing\n",
-  "api/web/README.md": "# Web API\n\n## Routes\n\n### [Jobs](jobs.md)\n\n| Route | Summary |\n| --- | --- |\n| [`GET /api/jobs`](jobs.md#get-apijobs) | Lists. |\n\n### [Health](health.md)\n\n| Route | Summary |\n| --- | --- |\n| [`GET /health`](health.md#get-health) | Liveness. |\n",
+  "api/rust/demo/index.md":
+    "# Crate `demo`\n\nA demo crate. See [the SDK](../../typescript/README.md) and [`Thing`](#thing).\n\n## Thing\n",
+  "api/web/README.md":
+    "# Web API\n\n## Routes\n\n### [Jobs](jobs.md)\n\n| Route | Summary |\n| --- | --- |\n| [`GET /api/jobs`](jobs.md#get-apijobs) | Lists. |\n\n### [Health](health.md)\n\n| Route | Summary |\n| --- | --- |\n| [`GET /health`](health.md#get-health) | Liveness. |\n",
   "api/web/jobs.md": "# Jobs\n\n## `GET /api/jobs`\n\nLists jobs.\n",
-  "last-updated.json": JSON.stringify({ version: 1, pages: { "plugins/README": "2026-10-26", "api/rust/demo/index": "2026-10-01" } }),
+  "last-updated.json": JSON.stringify({
+    version: 1,
+    pages: { "plugins/README": "2026-10-26", "api/rust/demo/index": "2026-10-01" },
+  }),
 };
 
 /** What a browser sends. */
 const BROWSER = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
 
 /** Content types the stand-in assets serve, by extension. */
-const TYPES: Readonly<Record<string, string>> = { ".html": "text/html; charset=utf-8", ".md": "text/markdown; charset=utf-8", ".css": "text/css" };
+const TYPES: Readonly<Record<string, string>> = {
+  ".html": "text/html; charset=utf-8",
+  ".md": "text/markdown; charset=utf-8",
+  ".css": "text/css",
+};
 
 /** Temporary directory holding the build. */
 let root = "";
@@ -109,7 +118,8 @@ async function docsFetch(url: string, init: RequestInit): Promise<Response> {
   const generated = Object.hasOwn(GENERATED, file) ? GENERATED[file] : undefined;
   if (generated !== undefined) return new Response(generated);
   const path = join(DOCS, file);
-  if (!file.includes("..") && existsSync(path) && statSync(path).isFile()) return new Response(readFileSync(path));
+  if (!file.includes("..") && existsSync(path) && statSync(path).isFile())
+    return new Response(readFileSync(path));
   return new Response("404: Not Found", { status: 404 });
 }
 
@@ -126,10 +136,16 @@ async function assetsFetch(input: Request | URL | string): Promise<Response> {
   for (const candidate of candidates) {
     const file = join(dist, candidate);
     if (existsSync(file) && statSync(file).isFile()) {
-      return new Response(readFileSync(file), { status: 200, headers: { "Content-Type": TYPES[extname(file)] ?? "application/octet-stream" } });
+      return new Response(readFileSync(file), {
+        status: 200,
+        headers: { "Content-Type": TYPES[extname(file)] ?? "application/octet-stream" },
+      });
     }
   }
-  return new Response(readFileSync(join(dist, "404.html")), { status: 404, headers: { "Content-Type": "text/html; charset=utf-8" } });
+  return new Response(readFileSync(join(dist, "404.html")), {
+    status: 404,
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
 }
 
 /** Bindings for handle(). */
@@ -144,7 +160,11 @@ const env: Env = { ASSETS: { fetch: assetsFetch } };
  * @returns The Worker's response.
  */
 function get(path: string, accept: string, method = "GET"): Promise<Response> {
-  return handle(new Request(`https://bookclerk.app${path}`, { method, headers: { Accept: accept } }), env, { shell, fetch: docsFetch });
+  return handle(
+    new Request(`https://bookclerk.app${path}`, { method, headers: { Accept: accept } }),
+    env,
+    { shell, fetch: docsFetch },
+  );
 }
 
 before(() => {
@@ -160,14 +180,23 @@ test("acceptWeights reads quality values and counts wildcards as HTML", () => {
   assert.deepEqual(acceptWeights("text/markdown"), { markdown: 1, html: 0 });
   assert.deepEqual(acceptWeights("text/markdown;q=0.5, text/html"), { markdown: 0.5, html: 1 });
   assert.deepEqual(acceptWeights("*/*"), { markdown: 0, html: 1 });
-  assert.deepEqual(acceptWeights("text/x-markdown; q=0.7, text/*;q=0.2"), { markdown: 0.7, html: 0.2 });
+  assert.deepEqual(acceptWeights("text/x-markdown; q=0.7, text/*;q=0.2"), {
+    markdown: 0.7,
+    html: 0.2,
+  });
   assert.deepEqual(acceptWeights("text/markdown;q=banana"), { markdown: 0, html: 0 });
   assert.deepEqual(acceptWeights(null), { markdown: 0, html: 0 });
 });
 
 test("acceptWeights lets a named type override a wildcard", () => {
-  assert.deepEqual(acceptWeights("text/markdown;q=0.5, text/html;q=0, */*;q=0.8"), { markdown: 0.5, html: 0 });
-  assert.deepEqual(acceptWeights("text/*;q=0.9, text/html;q=0.1, text/markdown;q=0.5"), { markdown: 0.5, html: 0.1 });
+  assert.deepEqual(acceptWeights("text/markdown;q=0.5, text/html;q=0, */*;q=0.8"), {
+    markdown: 0.5,
+    html: 0,
+  });
+  assert.deepEqual(acceptWeights("text/*;q=0.9, text/html;q=0.1, text/markdown;q=0.5"), {
+    markdown: 0.5,
+    html: 0.1,
+  });
   assert.deepEqual(acceptWeights("text/*;q=0.3, */*"), { markdown: 0, html: 0.3 });
   assert.equal(prefersMarkdown("text/markdown;q=0.5, text/html;q=0, */*;q=0.8"), true);
 });
@@ -199,33 +228,96 @@ test("docsTarget reads versions and paths", () => {
   ];
   const [latest, main] = versions;
   // Every redirect lands on the final URL in one hop.
-  assert.deepEqual(docsTarget("/docs/v/v0.2.0/guide/install.html", versions), { kind: "redirect", location: "/docs/guide/install" });
-  assert.deepEqual(docsTarget("/docs/v/v0.2.0/api/web/index.html", versions), { kind: "redirect", location: "/docs/api/web" });
-  assert.deepEqual(docsTarget("/docs/a.html/index.html", versions), { kind: "redirect", location: "/docs/a" });
-  assert.deepEqual(docsTarget("/docs", versions), { kind: "page", version: latest, keys: ["README", "index"] });
-  assert.deepEqual(docsTarget("/docs/", versions), { kind: "page", version: latest, keys: ["README", "index"] });
-  assert.deepEqual(docsTarget("/docs/plugins", versions), { kind: "page", version: latest, keys: ["plugins", "plugins/README", "plugins/index"] });
-  assert.deepEqual(docsTarget("/docs/api/", versions), { kind: "page", version: latest, keys: ["api/README", "api/index", "api"] });
-  assert.deepEqual(docsTarget("/docs/plugins.md", versions), { kind: "markdown", version: latest, keys: ["plugins"] });
+  assert.deepEqual(docsTarget("/docs/v/v0.2.0/guide/install.html", versions), {
+    kind: "redirect",
+    location: "/docs/guide/install",
+  });
+  assert.deepEqual(docsTarget("/docs/v/v0.2.0/api/web/index.html", versions), {
+    kind: "redirect",
+    location: "/docs/api/web",
+  });
+  assert.deepEqual(docsTarget("/docs/a.html/index.html", versions), {
+    kind: "redirect",
+    location: "/docs/a",
+  });
+  assert.deepEqual(docsTarget("/docs", versions), {
+    kind: "page",
+    version: latest,
+    keys: ["README", "index"],
+  });
+  assert.deepEqual(docsTarget("/docs/", versions), {
+    kind: "page",
+    version: latest,
+    keys: ["README", "index"],
+  });
+  assert.deepEqual(docsTarget("/docs/plugins", versions), {
+    kind: "page",
+    version: latest,
+    keys: ["plugins", "plugins/README", "plugins/index"],
+  });
+  assert.deepEqual(docsTarget("/docs/api/", versions), {
+    kind: "page",
+    version: latest,
+    keys: ["api/README", "api/index", "api"],
+  });
+  assert.deepEqual(docsTarget("/docs/plugins.md", versions), {
+    kind: "markdown",
+    version: latest,
+    keys: ["plugins"],
+  });
   assert.deepEqual(docsTarget("/docs/v/main/sql-contract/v1", versions), {
     kind: "page",
     version: main,
     keys: ["sql-contract/v1", "sql-contract/v1/README", "sql-contract/v1/index"],
   });
-  assert.deepEqual(docsTarget("/docs/v/main", versions), { kind: "page", version: main, keys: ["README", "index"] });
+  assert.deepEqual(docsTarget("/docs/v/main", versions), {
+    kind: "page",
+    version: main,
+    keys: ["README", "index"],
+  });
   assert.deepEqual(docsTarget("/docs/v/v0.2.0", versions), { kind: "redirect", location: "/docs" });
-  assert.deepEqual(docsTarget("/docs/v/v0.2.0/", versions), { kind: "redirect", location: "/docs" });
-  assert.deepEqual(docsTarget("/docs/index.html", versions), { kind: "redirect", location: "/docs" });
-  assert.deepEqual(docsTarget("/docs/v/v0.2.0/plugins", versions), { kind: "redirect", location: "/docs/plugins" });
-  assert.deepEqual(docsTarget("/docs/v/v0.2.0/plugins/", versions), { kind: "redirect", location: "/docs/plugins" });
-  assert.deepEqual(docsTarget("/docs/plugins.html", versions), { kind: "redirect", location: "/docs/plugins" });
-  assert.deepEqual(docsTarget("/docs/api/index.html", versions), { kind: "redirect", location: "/docs/api" });
+  assert.deepEqual(docsTarget("/docs/v/v0.2.0/", versions), {
+    kind: "redirect",
+    location: "/docs",
+  });
+  assert.deepEqual(docsTarget("/docs/index.html", versions), {
+    kind: "redirect",
+    location: "/docs",
+  });
+  assert.deepEqual(docsTarget("/docs/v/v0.2.0/plugins", versions), {
+    kind: "redirect",
+    location: "/docs/plugins",
+  });
+  assert.deepEqual(docsTarget("/docs/v/v0.2.0/plugins/", versions), {
+    kind: "redirect",
+    location: "/docs/plugins",
+  });
+  assert.deepEqual(docsTarget("/docs/plugins.html", versions), {
+    kind: "redirect",
+    location: "/docs/plugins",
+  });
+  assert.deepEqual(docsTarget("/docs/api/index.html", versions), {
+    kind: "redirect",
+    location: "/docs/api",
+  });
   assert.deepEqual(docsTarget("/docs/api/python/sdk.workerd", versions), {
     kind: "page",
     version: latest,
-    keys: ["api/python/sdk.workerd", "api/python/sdk.workerd/README", "api/python/sdk.workerd/index"],
+    keys: [
+      "api/python/sdk.workerd",
+      "api/python/sdk.workerd/README",
+      "api/python/sdk.workerd/index",
+    ],
   });
-  for (const path of ["/docs/v/v9.9.9/plugins", "/docs/v/", "/docs/../worker.js", "/docs/.hidden", "/docs/a//b", "/docs/a/.git/x", "/docs/v/v0.2.0//evil.example"]) {
+  for (const path of [
+    "/docs/v/v9.9.9/plugins",
+    "/docs/v/",
+    "/docs/../worker.js",
+    "/docs/.hidden",
+    "/docs/a//b",
+    "/docs/a/.git/x",
+    "/docs/v/v0.2.0//evil.example",
+  ]) {
     assert.deepEqual(docsTarget(path, versions), { kind: "missing" }, path);
   }
 });
@@ -240,7 +332,8 @@ test("every page with a Markdown version runs the Worker and is mapped", () => {
     assert.equal(PAGE_MARKDOWN.get(page.path), page.markdown, page.path);
     assert.ok(routes.includes(page.path), `${page.path} not in run_worker_first`);
   }
-  for (const path of PAGE_MARKDOWN.keys()) assert.ok(routes.includes(path), `${path} not in run_worker_first`);
+  for (const path of PAGE_MARKDOWN.keys())
+    assert.ok(routes.includes(path), `${path} not in run_worker_first`);
 });
 
 test("the Worker sends the same security headers as src/_headers", () => {
@@ -269,7 +362,8 @@ test("the CSP lets only the site's own scripts and Cloudflare's analytics beacon
   assert.equal(directives["script-src-attr"], undefined);
   for (const [name, sources] of Object.entries(directives)) {
     if (name === "script-src" || name === "connect-src") continue;
-    for (const source of sources) assert.ok(source.startsWith("'"), `${name} names a host: ${source}`);
+    for (const source of sources)
+      assert.ok(source.startsWith("'"), `${name} names a host: ${source}`);
   }
 });
 
@@ -285,8 +379,16 @@ test("a Markdown request for a page gets its Markdown version", async () => {
     assert.equal(res.status, 200, path);
     assert.equal(res.headers.get("Content-Type"), "text/markdown; charset=utf-8", path);
     assert.match(res.headers.get("Vary") ?? "", /Accept/, path);
-    assert.equal(res.headers.get("Link"), `<https://bookclerk.app${canonical}>; rel="canonical"`, path);
-    assert.equal(res.headers.get("Content-Security-Policy"), SECURITY_HEADERS["Content-Security-Policy"], path);
+    assert.equal(
+      res.headers.get("Link"),
+      `<https://bookclerk.app${canonical}>; rel="canonical"`,
+      path,
+    );
+    assert.equal(
+      res.headers.get("Content-Security-Policy"),
+      SECURITY_HEADERS["Content-Security-Policy"],
+      path,
+    );
     const body = await res.text();
     assert.ok(body.startsWith(heading), `${path}: ${body.slice(0, 40)}`);
     assert.doesNotMatch(body, /<html|\{\{|%%/, path);
@@ -296,7 +398,11 @@ test("a Markdown request for a page gets its Markdown version", async () => {
 test("the Markdown version links to the site's own Markdown copies", async () => {
   const body = await (await get("/docs/plugins/README.md", "*/*")).text();
   assert.ok(body.includes("](/docs/"));
-  assert.doesNotMatch(body, /\]\(https:\/\/raw\.githubusercontent\.com\//, "no link points at the docs repository's raw files");
+  assert.doesNotMatch(
+    body,
+    /\]\(https:\/\/raw\.githubusercontent\.com\//,
+    "no link points at the docs repository's raw files",
+  );
   assert.ok(!/\]\((?!https?:|\/|#|mailto:)[^)]*\.md/.test(body));
   const main = await (await get("/docs/v/main/plugins/README.md", "*/*")).text();
   assert.ok(main.includes("](/docs/v/main/"));
@@ -324,7 +430,16 @@ test("website pages have one slash-free URL; other spellings move there permanen
   assert.equal(sitePageLocation("/index.html", pages), "/");
   assert.equal(sitePageLocation("/download/", pages), "/download");
   assert.equal(sitePageLocation("/download.html", pages), "/download");
-  for (const path of ["/", "/download", "/download.md", "/nope/", "/nope.html", "/.html", "/404.html"]) assert.equal(sitePageLocation(path, pages), null, path);
+  for (const path of [
+    "/",
+    "/download",
+    "/download.md",
+    "/nope/",
+    "/nope.html",
+    "/.html",
+    "/404.html",
+  ])
+    assert.equal(sitePageLocation(path, pages), null, path);
   const toml = readFileSync(join(HERE, "wrangler.toml"), "utf8");
   assert.match(toml, /^html_handling = "drop-trailing-slash"$/m);
   const routes: string[] = JSON.parse(toml.match(/^run_worker_first = (\[.*\])$/m)?.[1] ?? "[]");
@@ -360,8 +475,15 @@ test("a docs link that leads nowhere goes to the docs home page", async () => {
 
 test("a missing docs home page is a 404, not a redirect loop", async () => {
   const empty: DocsFetch = async () => new Response("404: Not Found", { status: 404 });
-  for (const [path, accept] of [["/docs", BROWSER], ["/docs/README.md", "*/*"]] as const) {
-    const res = await handle(new Request(`https://bookclerk.app${path}`, { headers: { Accept: accept } }), env, { shell, fetch: empty });
+  for (const [path, accept] of [
+    ["/docs", BROWSER],
+    ["/docs/README.md", "*/*"],
+  ] as const) {
+    const res = await handle(
+      new Request(`https://bookclerk.app${path}`, { headers: { Accept: accept } }),
+      env,
+      { shell, fetch: empty },
+    );
     assert.equal(res.status, 404, path);
     assert.equal(res.headers.get("X-Robots-Tag"), "noindex", path);
   }
@@ -369,13 +491,22 @@ test("a missing docs home page is a 404, not a redirect loop", async () => {
 
 test("only listed versions and plain paths reach the docs repository", async () => {
   fetched.length = 0;
-  for (const path of ["/docs/v/v9.9.9/plugins/", "/docs/v/feature/plugins/", "/docs/%2e%2e/secret", "/docs/.env", "/docs/a%00b"]) {
+  for (const path of [
+    "/docs/v/v9.9.9/plugins/",
+    "/docs/v/feature/plugins/",
+    "/docs/%2e%2e/secret",
+    "/docs/.env",
+    "/docs/a%00b",
+  ]) {
     // Bad docs paths go to the docs home page; `%2e%2e` leaves /docs/ and is a plain 404.
     assert.ok([302, 404].includes((await get(path, BROWSER)).status), path);
   }
   assert.deepEqual(fetched, []);
   await get("/docs/v/v0.1.0/plugins", BROWSER);
-  assert.deepEqual(fetched, [`${DOCS_RAW_BASE}v0.1.0/last-updated.json`, `${DOCS_RAW_BASE}v0.1.0/plugins/README.md`]);
+  assert.deepEqual(fetched, [
+    `${DOCS_RAW_BASE}v0.1.0/last-updated.json`,
+    `${DOCS_RAW_BASE}v0.1.0/plugins/README.md`,
+  ]);
 });
 
 test("a browser gets the doc in the site's page, with its version and sidebar", async () => {
@@ -385,7 +516,10 @@ test("a browser gets the doc in the site's page, with its version and sidebar", 
   assert.equal(res.headers.get("Vary"), "Accept, Accept-Encoding");
   assert.equal(res.headers.get("Cache-Control"), "public, max-age=300, s-maxage=86400");
   assert.equal(res.headers.get("X-Robots-Tag"), null);
-  assert.equal(res.headers.get("Link"), '<https://bookclerk.app/docs/plugins/README.md>; rel="alternate"; type="text/markdown"');
+  assert.equal(
+    res.headers.get("Link"),
+    '<https://bookclerk.app/docs/plugins/README.md>; rel="alternate"; type="text/markdown"',
+  );
   const html = await res.text();
   assert.match(html, /^<!doctype html>/);
   assert.doesNotMatch(html, /%%|<!--doc-|\{\{/);
@@ -396,23 +530,49 @@ test("a browser gets the doc in the site's page, with its version and sidebar", 
   assert.match(html, /<a href="\/docs\/plugins" aria-current="page">/);
   assert.match(html, /<strong>v0.2.0 \(latest\)<\/strong>/);
   assert.match(html, /href="\/docs\/v\/main\/plugins"/);
-  assert.match(html, /href="https:\/\/github.com\/Bookclerk\/bookclerk\/blob\/v0.2.0\/docs\/plugins\/README.md"/);
+  assert.match(
+    html,
+    /href="https:\/\/github.com\/Bookclerk\/bookclerk\/blob\/v0.2.0\/docs\/plugins\/README.md"/,
+  );
   assert.ok(!html.includes("doc-note"), "a release's docs carry no development note");
-  assert.match(html, /<nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="\/docs">Docs<\/a><\/li><li><a href="\/docs\/plugins">Build plugins<\/a><\/li>/);
+  assert.match(
+    html,
+    /<nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="\/docs">Docs<\/a><\/li><li><a href="\/docs\/plugins">Build plugins<\/a><\/li>/,
+  );
   assert.match(html, /<aside class="toc" aria-label="On this page">/);
-  assert.match(html, /<div class="docs-menus"><details class="menu menu-nav" name="docs-menu"><summary>Menu<\/summary>/);
+  assert.match(
+    html,
+    /<div class="docs-menus"><details class="menu menu-nav" name="docs-menu"><summary>Menu<\/summary>/,
+  );
   assert.match(html, /<details class="nav-group" open><summary>Build plugins<\/summary>/);
   assert.match(html, /<script src="\/docs.js" defer><\/script>/);
-  const ld: { "@graph": { "@type": string; url: string }[] } = JSON.parse(html.match(/<script type="application\/ld\+json">(.*?)<\/script>/)?.[1] ?? "{}");
+  const ld: { "@graph": { "@type": string; url: string }[] } = JSON.parse(
+    html.match(/<script type="application\/ld\+json">(.*?)<\/script>/)?.[1] ?? "{}",
+  );
   assert.equal(ld["@graph"][0]?.["@type"], "TechArticle");
   assert.equal(ld["@graph"][0]?.url, "https://bookclerk.app/docs/plugins");
-  assert.match(html, /<span class="doc-action doc-updated"><svg [^>]*>.*?<\/svg>Last updated <time datetime="2026-10-26">Oct 26, 2026<\/time><\/span>/);
-  assert.match(html, /<button type="button" class="doc-action doc-copy-markdown" data-markdown="\/docs\/plugins\/README.md" hidden>/);
-  assert.match(html, /<a class="doc-action" href="\/docs\/plugins\/README.md" type="text\/markdown">/);
-  assert.equal((ld["@graph"][0] as { dateModified?: string } | undefined)?.dateModified, "2026-10-26");
+  assert.match(
+    html,
+    /<span class="doc-action doc-updated"><svg [^>]*>.*?<\/svg>Last updated <time datetime="2026-10-26">Oct 26, 2026<\/time><\/span>/,
+  );
+  assert.match(
+    html,
+    /<button type="button" class="doc-action doc-copy-markdown" data-markdown="\/docs\/plugins\/README.md" hidden>/,
+  );
+  assert.match(
+    html,
+    /<a class="doc-action" href="\/docs\/plugins\/README.md" type="text\/markdown">/,
+  );
+  assert.equal(
+    (ld["@graph"][0] as { dateModified?: string } | undefined)?.dateModified,
+    "2026-10-26",
+  );
 
   const home = await get("/", "*/*");
-  assert.equal(home.headers.get("Link"), '<https://bookclerk.app/index.md>; rel="alternate"; type="text/markdown"');
+  assert.equal(
+    home.headers.get("Link"),
+    '<https://bookclerk.app/index.md>; rel="alternate"; type="text/markdown"',
+  );
 });
 
 test("main's docs say they are the development version and link within main", async () => {
@@ -422,7 +582,10 @@ test("main's docs say they are the development version and link within main", as
   const html = await res.text();
   assert.match(html, /class="doc-note"/);
   assert.match(html, /<a href="\/docs\/v\/main\/plugins" aria-current="page">/);
-  assert.match(html, /<link rel="canonical" href="https:\/\/bookclerk.app\/docs\/v\/main\/plugins">/);
+  assert.match(
+    html,
+    /<link rel="canonical" href="https:\/\/bookclerk.app\/docs\/v\/main\/plugins">/,
+  );
   assert.match(html, /unstable-badge/);
 });
 
@@ -436,31 +599,57 @@ test("generated pages render without a source link and keep links inside the tre
 });
 
 test("a page shows no date when the dates file leaves it out, is broken or cannot be read", async () => {
-  assert.doesNotMatch(await (await get("/docs/server/cluster-hosts", BROWSER)).text(), /Last updated|dateModified/);
-  const broken = (answer: () => Promise<Response>): DocsFetch => async (url, init) => (url.endsWith("/last-updated.json") ? answer() : docsFetch(url, init));
+  assert.doesNotMatch(
+    await (await get("/docs/server/cluster-hosts", BROWSER)).text(),
+    /Last updated|dateModified/,
+  );
+  const broken =
+    (answer: () => Promise<Response>): DocsFetch =>
+    async (url, init) =>
+      url.endsWith("/last-updated.json") ? answer() : docsFetch(url, init);
   const answers = [
     async () => new Response("oops", { status: 502 }),
     async () => new Response(null, { status: 302, headers: { Location: "https://example.com/" } }),
     async () => new Response("{not json"),
-    async () => new Response(JSON.stringify({ version: 2, pages: { "plugins/README": "2026-10-26" } })),
-    async () => new Response(JSON.stringify({ version: 1, pages: { "plugins/README": "2026-02-30" } })),
-    async () => new Response(JSON.stringify({ version: 1, pages: { "plugins/README": "<b>x</b>" } })),
-    async () => new Response("x", { headers: { "Content-Length": String(MAX_LAST_UPDATED_BYTES + 1) } }),
+    async () =>
+      new Response(JSON.stringify({ version: 2, pages: { "plugins/README": "2026-10-26" } })),
+    async () =>
+      new Response(JSON.stringify({ version: 1, pages: { "plugins/README": "2026-02-30" } })),
+    async () =>
+      new Response(JSON.stringify({ version: 1, pages: { "plugins/README": "<b>x</b>" } })),
+    async () =>
+      new Response("x", { headers: { "Content-Length": String(MAX_LAST_UPDATED_BYTES + 1) } }),
     async () => Promise.reject(new Error("network")),
   ];
   // Answers that are the file itself (however wrong) are cached like the page; failed reads are not.
   const failed = new Set([0, 1, 6, 7]);
   for (const [i, answer] of answers.entries()) {
     const store = new Map<string, Response>();
-    const cache: PageCache = { match: async (req) => store.get(req.url)?.clone(), put: async (req, res) => void store.set(req.url, res) };
+    const cache: PageCache = {
+      match: async (req) => store.get(req.url)?.clone(),
+      put: async (req, res) => void store.set(req.url, res),
+    };
     const pending: Promise<unknown>[] = [];
-    const deps = { shell, fetch: broken(answer), cache, waitUntil: (p: Promise<unknown>) => void pending.push(p) };
-    const res = await handle(new Request("https://bookclerk.app/docs/plugins", { headers: { Accept: BROWSER } }), env, deps);
+    const deps = {
+      shell,
+      fetch: broken(answer),
+      cache,
+      waitUntil: (p: Promise<unknown>) => void pending.push(p),
+    };
+    const res = await handle(
+      new Request("https://bookclerk.app/docs/plugins", { headers: { Accept: BROWSER } }),
+      env,
+      deps,
+    );
     await Promise.all(pending);
     assert.equal(res.status, 200);
     assert.doesNotMatch(await res.text(), /Last updated|dateModified/);
     assert.equal(store.size, failed.has(i) ? 0 : 1, `answer ${i}`);
-    assert.equal(res.headers.get("Cache-Control"), failed.has(i) ? "public, max-age=60, s-maxage=0" : "public, max-age=300, s-maxage=86400", `answer ${i}`);
+    assert.equal(
+      res.headers.get("Cache-Control"),
+      failed.has(i) ? "public, max-age=60, s-maxage=0" : "public, max-age=300, s-maxage=86400",
+      `answer ${i}`,
+    );
   }
 });
 
@@ -486,7 +675,8 @@ test("raw HTML in a doc is shown as text", async () => {
 
 test("a failing or oversized docs repository answer is a 503, not a page", async () => {
   const down = async () => new Response("oops", { status: 502 });
-  const big = async () => new Response("x", { headers: { "Content-Length": String(MAX_DOC_BYTES + 1) } });
+  const big = async () =>
+    new Response("x", { headers: { "Content-Length": String(MAX_DOC_BYTES + 1) } });
   // No Content-Length: the body is cut off once it passes the cap.
   const chunk = new Uint8Array(1024 * 1024);
   let sent = 0;
@@ -507,7 +697,13 @@ test("a failing or oversized docs repository answer is a 503, not a page", async
     assert.equal(init.redirect, "manual");
     return new Response(null, { status: 302, headers: { Location: "https://example.com/" } });
   };
-  const fetchers: DocsFetch[] = [down, big, endless, moved, async () => Promise.reject(new Error("network"))];
+  const fetchers: DocsFetch[] = [
+    down,
+    big,
+    endless,
+    moved,
+    async () => Promise.reject(new Error("network")),
+  ];
   for (const fetcher of fetchers) {
     const req = new Request("https://bookclerk.app/docs/plugins", { headers: { Accept: BROWSER } });
     const res = await handle(req, env, { shell, fetch: fetcher });
@@ -519,33 +715,69 @@ test("a failing or oversized docs repository answer is a 503, not a page", async
 
 test("the docs-unavailable page keeps the site's look and links to the doc on GitHub", async () => {
   const down = async () => new Response("oops", { status: 502 });
-  const page = await handle(new Request("https://bookclerk.app/docs/plugins", { headers: { Accept: BROWSER } }), env, { shell, fetch: down });
+  const page = await handle(
+    new Request("https://bookclerk.app/docs/plugins", { headers: { Accept: BROWSER } }),
+    env,
+    { shell, fetch: down },
+  );
   assert.equal(page.status, 503);
   assert.equal(page.headers.get("Content-Type"), "text/html; charset=utf-8");
   assert.equal(page.headers.get("Retry-After"), "60");
   assert.equal(page.headers.get("X-Robots-Tag"), "noindex");
-  assert.equal(page.headers.get("Content-Security-Policy"), SECURITY_HEADERS["Content-Security-Policy"]);
+  assert.equal(
+    page.headers.get("Content-Security-Policy"),
+    SECURITY_HEADERS["Content-Security-Policy"],
+  );
   const html = await page.text();
   assert.match(html, /<link rel="stylesheet" href="\/site\.css/);
   assert.match(html, /class="docs-nav"/);
   assert.doesNotMatch(html, /<h2>Using Bookclerk<\/h2>/, "no sidebar links that would fail too");
   assert.match(html, /<h1>The docs could not be loaded<\/h1>/);
-  assert.ok(html.includes('href="https://github.com/Bookclerk/bookclerk-docs/blob/v0.2.0/plugins/README.md"'), "links the doc on GitHub");
-  assert.ok(html.includes('href="https://github.com/Bookclerk/bookclerk-docs/tree/v0.2.0"'), "links every doc on GitHub");
+  assert.ok(
+    html.includes(
+      'href="https://github.com/Bookclerk/bookclerk-docs/blob/v0.2.0/plugins/README.md"',
+    ),
+    "links the doc on GitHub",
+  );
+  assert.ok(
+    html.includes('href="https://github.com/Bookclerk/bookclerk-docs/tree/v0.2.0"'),
+    "links every doc on GitHub",
+  );
 
   // A directory names its README; Markdown readers get the same links.
-  const md = await handle(new Request("https://bookclerk.app/docs/api", { headers: { Accept: "text/markdown" } }), env, { shell, fetch: down });
+  const md = await handle(
+    new Request("https://bookclerk.app/docs/api", { headers: { Accept: "text/markdown" } }),
+    env,
+    { shell, fetch: down },
+  );
   assert.equal(md.status, 503);
   assert.equal(md.headers.get("Content-Type"), "text/markdown; charset=utf-8");
-  assert.match(await md.text(), /<https:\/\/github\.com\/Bookclerk\/bookclerk-docs\/blob\/v0\.2\.0\/api\/README\.md>/);
+  assert.match(
+    await md.text(),
+    /<https:\/\/github\.com\/Bookclerk\/bookclerk-docs\/blob\/v0\.2\.0\/api\/README\.md>/,
+  );
 
   // When the first key is missing and the next one fails, GitHub gets the one that failed.
-  const missingThenDown: DocsFetch = async (url) => (url.endsWith("/plugins/README.md") ? new Response("404: Not Found", { status: 404 }) : down());
-  const later = await (await handle(new Request("https://bookclerk.app/docs/plugins", { headers: { Accept: BROWSER } }), env, { shell, fetch: missingThenDown })).text();
-  assert.ok(later.includes('href="https://github.com/Bookclerk/bookclerk-docs/blob/v0.2.0/plugins.md"'), "links the key that failed");
+  const missingThenDown: DocsFetch = async (url) =>
+    url.endsWith("/plugins/README.md") ? new Response("404: Not Found", { status: 404 }) : down();
+  const later = await (
+    await handle(
+      new Request("https://bookclerk.app/docs/plugins", { headers: { Accept: BROWSER } }),
+      env,
+      { shell, fetch: missingThenDown },
+    )
+  ).text();
+  assert.ok(
+    later.includes('href="https://github.com/Bookclerk/bookclerk-docs/blob/v0.2.0/plugins.md"'),
+    "links the key that failed",
+  );
   assert.ok(later.includes('href="/docs/plugins"'), "tries the page's own URL again");
 
-  const head = await handle(new Request("https://bookclerk.app/docs/plugins", { method: "HEAD" }), env, { shell, fetch: down });
+  const head = await handle(
+    new Request("https://bookclerk.app/docs/plugins", { method: "HEAD" }),
+    env,
+    { shell, fetch: down },
+  );
   assert.equal(head.status, 503);
   assert.equal(await head.text(), "");
 });
@@ -557,24 +789,50 @@ test("rendered pages are cached per deploy, version, path and format", async () 
     put: async (req, res) => void store.set(req.url, res),
   };
   const pending: Promise<unknown>[] = [];
-  const deps = { shell, fetch: docsFetch, cache, waitUntil: (p: Promise<unknown>) => void pending.push(p) };
+  const deps = {
+    shell,
+    fetch: docsFetch,
+    cache,
+    waitUntil: (p: Promise<unknown>) => void pending.push(p),
+  };
   fetched.length = 0;
   for (let i = 0; i < 2; i += 1) {
-    const res = await handle(new Request("https://bookclerk.app/docs/plugins?utm=x", { headers: { Accept: BROWSER } }), env, deps);
+    const res = await handle(
+      new Request("https://bookclerk.app/docs/plugins?utm=x", { headers: { Accept: BROWSER } }),
+      env,
+      deps,
+    );
     assert.equal(res.status, 200);
     await Promise.all(pending);
   }
   // The dates file is asked for first, beside the page.
-  assert.deepEqual(fetched, [`${DOCS_RAW_BASE}v0.2.0/last-updated.json`, `${DOCS_RAW_BASE}v0.2.0/plugins/README.md`]);
-  assert.deepEqual([...store.keys()], [`https://bookclerk.app/docs/plugins?format=html&ref=v0.2.0&shell=${shell.id}`]);
+  assert.deepEqual(fetched, [
+    `${DOCS_RAW_BASE}v0.2.0/last-updated.json`,
+    `${DOCS_RAW_BASE}v0.2.0/plugins/README.md`,
+  ]);
+  assert.deepEqual(
+    [...store.keys()],
+    [`https://bookclerk.app/docs/plugins?format=html&ref=v0.2.0&shell=${shell.id}`],
+  );
   assert.match(shell.id, /^[0-9a-f]{16}$/);
-  const head = await handle(new Request("https://bookclerk.app/docs/plugins", { method: "HEAD", headers: { Accept: BROWSER } }), env, deps);
+  const head = await handle(
+    new Request("https://bookclerk.app/docs/plugins", {
+      method: "HEAD",
+      headers: { Accept: BROWSER },
+    }),
+    env,
+    deps,
+  );
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");
 });
 
 test("the sitemap is an index of one sitemap per section, listing every dated page of the default docs version", async () => {
-  const routes: string[] = JSON.parse(readFileSync(join(HERE, "wrangler.toml"), "utf8").match(/^run_worker_first = (\[.*\])$/m)?.[1] ?? "[]");
+  const routes: string[] = JSON.parse(
+    readFileSync(join(HERE, "wrangler.toml"), "utf8").match(
+      /^run_worker_first = (\[.*\])$/m,
+    )?.[1] ?? "[]",
+  );
   assert.ok(routes.includes("/sitemap.xml") && routes.includes("/sitemap-*"));
   fetched.length = 0;
   const res = await get("/sitemap.xml", "*/*");
@@ -584,8 +842,13 @@ test("the sitemap is an index of one sitemap per section, listing every dated pa
   assert.equal(res.headers.get("X-Content-Type-Options"), "nosniff");
   assert.deepEqual(fetched, [`${DOCS_RAW_BASE}v0.2.0/last-updated.json`]);
   const index = await res.text();
-  assert.match(index, /^<\?xml version="1.0" encoding="UTF-8"\?>\n<\?xml-stylesheet type="text\/css" href="\/sitemap.css"\?>\n<sitemapindex xmlns="http:\/\/www.sitemaps.org\/schemas\/sitemap\/0.9">\n/);
-  const sitemaps = [...index.matchAll(/<sitemap><loc>([^<]*)<\/loc>(?:<lastmod>([^<]*)<\/lastmod>)?<\/sitemap>/g)].map((m) => [m[1], m[2] ?? null]);
+  assert.match(
+    index,
+    /^<\?xml version="1.0" encoding="UTF-8"\?>\n<\?xml-stylesheet type="text\/css" href="\/sitemap.css"\?>\n<sitemapindex xmlns="http:\/\/www.sitemaps.org\/schemas\/sitemap\/0.9">\n/,
+  );
+  const sitemaps = [
+    ...index.matchAll(/<sitemap><loc>([^<]*)<\/loc>(?:<lastmod>([^<]*)<\/lastmod>)?<\/sitemap>/g),
+  ].map((m) => [m[1], m[2] ?? null]);
   assert.deepEqual(sitemaps, [
     ["https://bookclerk.app/sitemap-site.xml", null],
     ["https://bookclerk.app/sitemap-plugins.xml", "2026-10-26"],
@@ -597,42 +860,82 @@ test("the sitemap is an index of one sitemap per section, listing every dated pa
     assert.equal(section.headers.get("Content-Type"), "application/xml; charset=utf-8", path);
     const xml = await section.text();
     assert.match(xml, /<urlset xmlns="http:\/\/www.sitemaps.org\/schemas\/sitemap\/0.9">/, path);
-    return [...xml.matchAll(/<url><loc>([^<]*)<\/loc>(?:<lastmod>([^<]*)<\/lastmod>)?<\/url>/g)].map((m) => [m[1] ?? "", m[2] ?? null]);
+    return [
+      ...xml.matchAll(/<url><loc>([^<]*)<\/loc>(?:<lastmod>([^<]*)<\/lastmod>)?<\/url>/g),
+    ].map((m) => [m[1] ?? "", m[2] ?? null]);
   };
-  assert.deepEqual(await urls("/sitemap-site.xml"), [...PAGES.filter((p) => p.indexable).map((p) => p.path), "/sitemap"].map((p) => [`https://bookclerk.app${p}`, null]));
-  assert.deepEqual(await urls("/sitemap-plugins.xml"), [["https://bookclerk.app/docs/plugins", "2026-10-26"]]);
-  assert.deepEqual(await urls("/sitemap-api.xml"), [["https://bookclerk.app/docs/api/rust/demo/index", "2026-10-01"]]);
-  for (const path of ["/sitemap-guide.xml", "/sitemap-x.xml"]) assert.equal((await get(path, "*/*")).status, 404, path);
+  assert.deepEqual(
+    await urls("/sitemap-site.xml"),
+    [...PAGES.filter((p) => p.indexable).map((p) => p.path), "/sitemap"].map((p) => [
+      `https://bookclerk.app${p}`,
+      null,
+    ]),
+  );
+  assert.deepEqual(await urls("/sitemap-plugins.xml"), [
+    ["https://bookclerk.app/docs/plugins", "2026-10-26"],
+  ]);
+  assert.deepEqual(await urls("/sitemap-api.xml"), [
+    ["https://bookclerk.app/docs/api/rust/demo/index", "2026-10-01"],
+  ]);
+  for (const path of ["/sitemap-guide.xml", "/sitemap-x.xml"])
+    assert.equal((await get(path, "*/*")).status, 404, path);
   const head = await get("/sitemap.xml", "*/*", "HEAD");
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");
 });
 
 test("/sitemap lists every page for people, grouped like the sidebar, with dates", async () => {
-  const routes: string[] = JSON.parse(readFileSync(join(HERE, "wrangler.toml"), "utf8").match(/^run_worker_first = (\[.*\])$/m)?.[1] ?? "[]");
-  for (const path of ["/sitemap", "/sitemap/", "/sitemap.md"]) assert.ok(routes.includes(path), path);
+  const routes: string[] = JSON.parse(
+    readFileSync(join(HERE, "wrangler.toml"), "utf8").match(
+      /^run_worker_first = (\[.*\])$/m,
+    )?.[1] ?? "[]",
+  );
+  for (const path of ["/sitemap", "/sitemap/", "/sitemap.md"])
+    assert.ok(routes.includes(path), path);
   const res = await get("/sitemap", BROWSER);
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("Content-Type"), "text/html; charset=utf-8");
-  assert.equal(res.headers.get("Link"), '<https://bookclerk.app/sitemap.md>; rel="alternate"; type="text/markdown"');
+  assert.equal(
+    res.headers.get("Link"),
+    '<https://bookclerk.app/sitemap.md>; rel="alternate"; type="text/markdown"',
+  );
   const html = await res.text();
   assert.match(html, /<title>Sitemap · Bookclerk<\/title>/);
   assert.match(html, /<link rel="canonical" href="https:\/\/bookclerk.app\/sitemap">/);
   // A website page, like /privacy, not a docs page.
   assert.match(html, /<main id="main" class="reading">/);
   assert.doesNotMatch(html, /version-picker|docs-menus|class="toc"/);
-  assert.match(html, /<nav aria-label="Sections"><p><a href="#sitemap-website">Website<\/a> · <a href="#sitemap-build-plugins">/);
-  assert.match(html, /<h2 id="sitemap-website">Website<\/h2>\n<ul><li><a href="\/">Home<\/a><\/li><li><a href="\/download">Download Bookclerk<\/a><\/li>/);
-  assert.match(html, /<h2 id="sitemap-build-plugins">Build plugins<\/h2>\n<ul><li><a href="\/docs\/plugins">[^<]+<\/a> <span class="faint">· <time datetime="2026-10-26">Oct 26, 2026<\/time><\/span><\/li><\/ul>/);
-  assert.match(html, /<h2 id="sitemap-api-reference">API reference<\/h2>\n<h3>Rust crates<\/h3>\n<ul><li><a href="\/docs\/api\/rust\/demo\/index">demo<\/a>/);
+  assert.match(
+    html,
+    /<nav aria-label="Sections"><p><a href="#sitemap-website">Website<\/a> · <a href="#sitemap-build-plugins">/,
+  );
+  assert.match(
+    html,
+    /<h2 id="sitemap-website">Website<\/h2>\n<ul><li><a href="\/">Home<\/a><\/li><li><a href="\/download">Download Bookclerk<\/a><\/li>/,
+  );
+  assert.match(
+    html,
+    /<h2 id="sitemap-build-plugins">Build plugins<\/h2>\n<ul><li><a href="\/docs\/plugins">[^<]+<\/a> <span class="faint">· <time datetime="2026-10-26">Oct 26, 2026<\/time><\/span><\/li><\/ul>/,
+  );
+  assert.match(
+    html,
+    /<h2 id="sitemap-api-reference">API reference<\/h2>\n<h3>Rust crates<\/h3>\n<ul><li><a href="\/docs\/api\/rust\/demo\/index">demo<\/a>/,
+  );
   assert.match(html, /<a href="\/sitemap">Sitemap<\/a>/, "footer link");
   assert.doesNotMatch(html, /<script(?! type="application\/ld\+json")(?! src="\/)/);
-  for (const [path, accept] of [["/sitemap.md", "*/*"], ["/sitemap", "text/markdown"]] as const) {
+  for (const [path, accept] of [
+    ["/sitemap.md", "*/*"],
+    ["/sitemap", "text/markdown"],
+  ] as const) {
     const md = await get(path, accept);
     assert.equal(md.status, 200, path);
     assert.equal(md.headers.get("Content-Type"), "text/markdown; charset=utf-8", path);
     assert.equal(md.headers.get("Link"), '<https://bookclerk.app/sitemap>; rel="canonical"', path);
-    assert.match(await md.text(), /^# Sitemap\n[\s\S]*## API reference\n\n### Rust crates\n\n- \[demo\]\(https:\/\/bookclerk.app\/docs\/api\/rust\/demo\/index\) \(Oct 1, 2026\)/, path);
+    assert.match(
+      await md.text(),
+      /^# Sitemap\n[\s\S]*## API reference\n\n### Rust crates\n\n- \[demo\]\(https:\/\/bookclerk.app\/docs\/api\/rust\/demo\/index\) \(Oct 1, 2026\)/,
+      path,
+    );
   }
   const slash = await get("/sitemap/", BROWSER);
   assert.equal(slash.status, 301);
@@ -640,8 +943,15 @@ test("/sitemap lists every page for people, grouped like the sidebar, with dates
 });
 
 test("/sitemap lists the sidebar without dates when the dates file cannot be read", async () => {
-  const down: DocsFetch = async (url, init) => (url.endsWith("/last-updated.json") ? new Response("oops", { status: 502 }) : docsFetch(url, init));
-  const res = await handle(new Request("https://bookclerk.app/sitemap", { headers: { Accept: BROWSER } }), env, { shell, fetch: down });
+  const down: DocsFetch = async (url, init) =>
+    url.endsWith("/last-updated.json")
+      ? new Response("oops", { status: 502 })
+      : docsFetch(url, init);
+  const res = await handle(
+    new Request("https://bookclerk.app/sitemap", { headers: { Accept: BROWSER } }),
+    env,
+    { shell, fetch: down },
+  );
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("Cache-Control"), "public, max-age=60, s-maxage=0");
   const html = await res.text();
@@ -675,11 +985,24 @@ test("the sitemap leaves out keys the docs route does not serve as themselves an
       "guide/stores.html": "2026-10-20",
     },
   };
-  const fetcher: DocsFetch = async (url, init) => (url.endsWith("/last-updated.json") ? new Response(JSON.stringify(dates)) : docsFetch(url, init));
-  const index = await (await handle(new Request("https://bookclerk.app/sitemap.xml"), env, { shell, fetch: fetcher })).text();
-  assert.deepEqual([...index.matchAll(/<loc>([^<]*)<\/loc>/g)].map((m) => m[1]), ["https://bookclerk.app/sitemap-site.xml", "https://bookclerk.app/sitemap-guide.xml"]);
-  const xml = await (await handle(new Request("https://bookclerk.app/sitemap-guide.xml"), env, { shell, fetch: fetcher })).text();
-  const docs = [...xml.matchAll(/<loc>https:\/\/bookclerk.app(\/docs\/[^<]*)<\/loc>/g)].map((m) => m[1]);
+  const fetcher: DocsFetch = async (url, init) =>
+    url.endsWith("/last-updated.json") ? new Response(JSON.stringify(dates)) : docsFetch(url, init);
+  const index = await (
+    await handle(new Request("https://bookclerk.app/sitemap.xml"), env, { shell, fetch: fetcher })
+  ).text();
+  assert.deepEqual(
+    [...index.matchAll(/<loc>([^<]*)<\/loc>/g)].map((m) => m[1]),
+    ["https://bookclerk.app/sitemap-site.xml", "https://bookclerk.app/sitemap-guide.xml"],
+  );
+  const xml = await (
+    await handle(new Request("https://bookclerk.app/sitemap-guide.xml"), env, {
+      shell,
+      fetch: fetcher,
+    })
+  ).text();
+  const docs = [...xml.matchAll(/<loc>https:\/\/bookclerk.app(\/docs\/[^<]*)<\/loc>/g)].map(
+    (m) => m[1],
+  );
   assert.deepEqual(docs, ["/docs/guide/stores"]);
 });
 
@@ -694,7 +1017,8 @@ test("the sitemap falls back to the built one when the dates file is missing, un
     async () => new Response(JSON.stringify({ version: 2, pages: {} })),
     async () => new Response(JSON.stringify({ version: 1, pages: {} })),
     async () => new Response(JSON.stringify({ version: 1, pages: { "v/x": "2026-10-20" } })),
-    async () => new Response("x", { headers: { "Content-Length": String(MAX_LAST_UPDATED_BYTES + 1) } }),
+    async () =>
+      new Response("x", { headers: { "Content-Length": String(MAX_LAST_UPDATED_BYTES + 1) } }),
     async () => Promise.reject(new Error("network")),
   ];
   // A release published without the file never gets one, so its fallback is
@@ -702,41 +1026,71 @@ test("the sitemap falls back to the built one when the dates file is missing, un
   const missing = 0;
   for (const [i, answer] of answers.entries()) {
     const store = new Map<string, Response>();
-    const cache: PageCache = { match: async (req) => store.get(req.url)?.clone(), put: async (req, res) => void store.set(req.url, res) };
+    const cache: PageCache = {
+      match: async (req) => store.get(req.url)?.clone(),
+      put: async (req, res) => void store.set(req.url, res),
+    };
     const pending: Promise<unknown>[] = [];
-    const fetcher: DocsFetch = async (url, init) => (url.endsWith("/last-updated.json") ? answer() : docsFetch(url, init));
-    const res = await handle(new Request("https://bookclerk.app/sitemap.xml"), env, { shell, fetch: fetcher, cache, waitUntil: (p) => void pending.push(p) });
+    const fetcher: DocsFetch = async (url, init) =>
+      url.endsWith("/last-updated.json") ? answer() : docsFetch(url, init);
+    const res = await handle(new Request("https://bookclerk.app/sitemap.xml"), env, {
+      shell,
+      fetch: fetcher,
+      cache,
+      waitUntil: (p) => void pending.push(p),
+    });
     await Promise.all(pending);
     assert.equal(res.status, 200, `answer ${i}`);
     assert.equal(res.headers.get("Content-Type"), "application/xml; charset=utf-8", `answer ${i}`);
-    assert.equal(res.headers.get("Cache-Control"), i === missing ? "public, max-age=60, s-maxage=86400" : "public, max-age=60, s-maxage=60", `answer ${i}`);
+    assert.equal(
+      res.headers.get("Cache-Control"),
+      i === missing ? "public, max-age=60, s-maxage=86400" : "public, max-age=60, s-maxage=60",
+      `answer ${i}`,
+    );
     assert.equal(await res.text(), built, `answer ${i}`);
     assert.equal(store.size, i === missing ? 1 : 0, `answer ${i}`);
     // The flat fallback names no sections, and a section asked for anyway is not served.
-    const section = await handle(new Request("https://bookclerk.app/sitemap-guide.xml"), env, { shell, fetch: fetcher });
+    const section = await handle(new Request("https://bookclerk.app/sitemap-guide.xml"), env, {
+      shell,
+      fetch: fetcher,
+    });
     assert.equal(section.status, i === missing ? 404 : 503, `answer ${i}`);
-    if (i !== missing) assert.equal(section.headers.get("Cache-Control"), "no-store", `answer ${i}`);
+    if (i !== missing)
+      assert.equal(section.headers.get("Cache-Control"), "no-store", `answer ${i}`);
   }
 });
 
 test("the sitemap is cached per deploy and docs version", async () => {
   const store = new Map<string, Response>();
-  const cache: PageCache = { match: async (req) => store.get(req.url)?.clone(), put: async (req, res) => void store.set(req.url, res) };
+  const cache: PageCache = {
+    match: async (req) => store.get(req.url)?.clone(),
+    put: async (req, res) => void store.set(req.url, res),
+  };
   const pending: Promise<unknown>[] = [];
-  const deps = { shell, fetch: docsFetch, cache, waitUntil: (p: Promise<unknown>) => void pending.push(p) };
+  const deps = {
+    shell,
+    fetch: docsFetch,
+    cache,
+    waitUntil: (p: Promise<unknown>) => void pending.push(p),
+  };
   fetched.length = 0;
   const bodies: string[] = [];
   for (const path of ["/sitemap.xml", "/sitemap.xml", "/sitemap-api.xml", "/sitemap-api.xml"]) {
-    bodies.push(await (await handle(new Request(`https://bookclerk.app${path}`), env, deps)).text());
+    bodies.push(
+      await (await handle(new Request(`https://bookclerk.app${path}`), env, deps)).text(),
+    );
     await Promise.all(pending);
   }
   assert.equal(bodies[0], bodies[1]);
   assert.equal(bodies[2], bodies[3]);
   assert.equal(fetched.length, 2);
-  assert.deepEqual([...store.keys()], [
-    `https://bookclerk.app/sitemap.xml?ref=v0.2.0&shell=${shell.id}`,
-    `https://bookclerk.app/sitemap-api.xml?ref=v0.2.0&shell=${shell.id}`,
-  ]);
+  assert.deepEqual(
+    [...store.keys()],
+    [
+      `https://bookclerk.app/sitemap.xml?ref=v0.2.0&shell=${shell.id}`,
+      `https://bookclerk.app/sitemap-api.xml?ref=v0.2.0&shell=${shell.id}`,
+    ],
+  );
 });
 
 test("Markdown files fetched by name point at their pages", async () => {
@@ -757,7 +1111,9 @@ test("a Markdown request passes conditional headers to the assets", async () => 
       },
     },
   };
-  const req = new Request("https://bookclerk.app/download", { headers: { Accept: "text/markdown", "If-None-Match": '"abc"' } });
+  const req = new Request("https://bookclerk.app/download", {
+    headers: { Accept: "text/markdown", "If-None-Match": '"abc"' },
+  });
   const res = await handle(req, spy, { shell });
   assert.equal(res.status, 304);
   assert.deepEqual(seen, ['"abc"']);
@@ -789,16 +1145,24 @@ test("text answers are compressed for clients that accept it", async () => {
     ["/docs/plugins", "text/markdown"],
     ["/no-such-page", BROWSER],
   ] as const) {
-    const req = new Request(`https://bookclerk.app${path}`, { headers: { Accept: accept, "Accept-Encoding": "gzip, deflate, br" } });
+    const req = new Request(`https://bookclerk.app${path}`, {
+      headers: { Accept: accept, "Accept-Encoding": "gzip, deflate, br" },
+    });
     const res = await handle(req, env, { shell, fetch: docsFetch });
     assert.equal(res.headers.get("Content-Encoding"), "br", `${path} as ${accept}`);
     assert.equal(res.headers.get("Content-Length"), null, path);
     assert.ok((res.headers.get("Vary") ?? "").split(", ").includes("Accept-Encoding"), path);
   }
-  const gzipOnly = await handle(new Request("https://bookclerk.app/", { headers: { "Accept-Encoding": "gzip" } }), env, { shell });
+  const gzipOnly = await handle(
+    new Request("https://bookclerk.app/", { headers: { "Accept-Encoding": "gzip" } }),
+    env,
+    { shell },
+  );
   assert.equal(gzipOnly.headers.get("Content-Encoding"), "gzip");
   // Cloudflare rewrites Accept-Encoding before the Worker runs; what the client sent wins.
-  const viaEdge = new Request("https://bookclerk.app/", { headers: { "Accept-Encoding": "gzip, br" } });
+  const viaEdge = new Request("https://bookclerk.app/", {
+    headers: { "Accept-Encoding": "gzip, br" },
+  });
   Object.defineProperty(viaEdge, "cf", { value: { clientAcceptEncoding: "identity" } });
   assert.equal((await handle(viaEdge, env, { shell })).headers.get("Content-Encoding"), null);
 });
@@ -807,7 +1171,9 @@ test("compression leaves alone what must not or need not be compressed", async (
   const plain = await get("/", BROWSER);
   assert.equal(plain.headers.get("Content-Encoding"), null);
   assert.ok((plain.headers.get("Vary") ?? "").split(", ").includes("Accept-Encoding"));
-  const answer = (headers: Record<string, string>, status = 200): Env => ({ ASSETS: { fetch: async () => new Response(status === 304 ? null : "x", { status, headers }) } });
+  const answer = (headers: Record<string, string>, status = 200): Env => ({
+    ASSETS: { fetch: async () => new Response(status === 304 ? null : "x", { status, headers }) },
+  });
   const cases: [Record<string, string>, number][] = [
     [{ "Content-Type": "text/html", "Content-Encoding": "gzip" }, 200],
     [{ "Content-Type": "text/html", "Cache-Control": "public, no-transform" }, 200],
@@ -815,15 +1181,27 @@ test("compression leaves alone what must not or need not be compressed", async (
     [{ "Content-Type": "text/html", "Content-Range": "bytes 0-0/20" }, 206],
   ];
   for (const [headers, status] of cases) {
-    const req = new Request("https://bookclerk.app/download", { headers: { "Accept-Encoding": "br" } });
+    const req = new Request("https://bookclerk.app/download", {
+      headers: { "Accept-Encoding": "br" },
+    });
     const res = await handle(req, answer(headers, status), { shell });
-    assert.equal(res.headers.get("Content-Encoding"), headers["Content-Encoding"] ?? null, JSON.stringify(headers));
+    assert.equal(
+      res.headers.get("Content-Encoding"),
+      headers["Content-Encoding"] ?? null,
+      JSON.stringify(headers),
+    );
   }
-  const tagged = await handle(new Request("https://bookclerk.app/download", { headers: { "Accept-Encoding": "br" } }), answer({ "Content-Type": "text/html", ETag: '"abc"' }), { shell });
+  const tagged = await handle(
+    new Request("https://bookclerk.app/download", { headers: { "Accept-Encoding": "br" } }),
+    answer({ "Content-Type": "text/html", ETag: '"abc"' }),
+    { shell },
+  );
   assert.equal(tagged.headers.get("ETag"), 'W/"abc"');
   for (const headers of [{ "Content-Type": "text/html", ETag: '"abc"' }, { ETag: '"abc"' }]) {
     // A 304 keeps the compressed answer's Vary and weak validator, with no body to encode.
-    const req = new Request("https://bookclerk.app/download", { headers: { "Accept-Encoding": "br", "If-None-Match": 'W/"abc"' } });
+    const req = new Request("https://bookclerk.app/download", {
+      headers: { "Accept-Encoding": "br", "If-None-Match": 'W/"abc"' },
+    });
     const res = await handle(req, answer(headers, 304), { shell });
     assert.equal(res.status, 304);
     assert.equal(res.headers.get("Content-Encoding"), null);
@@ -831,18 +1209,29 @@ test("compression leaves alone what must not or need not be compressed", async (
     assert.ok((res.headers.get("Vary") ?? "").split(", ").includes("Accept-Encoding"));
   }
   const md304 = await handle(
-    new Request("https://bookclerk.app/download", { headers: { Accept: "text/markdown", "Accept-Encoding": "gzip", "If-None-Match": 'W/"abc"' } }),
+    new Request("https://bookclerk.app/download", {
+      headers: { Accept: "text/markdown", "Accept-Encoding": "gzip", "If-None-Match": 'W/"abc"' },
+    }),
     answer({ ETag: '"abc"' }, 304),
     { shell },
   );
   assert.equal(md304.headers.get("Vary"), "Accept, Accept-Encoding");
   assert.equal(md304.headers.get("ETag"), 'W/"abc"');
-  const post = await handle(new Request("https://bookclerk.app/", { method: "POST", headers: { "Accept-Encoding": "br" } }), env, { shell });
+  const post = await handle(
+    new Request("https://bookclerk.app/", { method: "POST", headers: { "Accept-Encoding": "br" } }),
+    env,
+    { shell },
+  );
   assert.equal(post.headers.get("Content-Encoding"), null);
 });
 
 /** Where scripts/generate-api-docs.sh writes the API reference into docs/ (gitignored, see docs/api/README.md). */
-const GENERATED_API_DIRS: ReadonlySet<string> = new Set(["api/rust", "api/typescript", "api/ui", "api/python"]);
+const GENERATED_API_DIRS: ReadonlySet<string> = new Set([
+  "api/rust",
+  "api/typescript",
+  "api/ui",
+  "api/python",
+]);
 
 /**
  * Decodes the character references escapeHtml writes.
@@ -852,9 +1241,17 @@ const GENERATED_API_DIRS: ReadonlySet<string> = new Set(["api/rust", "api/typesc
  */
 function unescapeHtml(text: string): string {
   return text.replace(/&(#\d+|#x[0-9a-f]+|amp|lt|gt|quot|apos);/gi, (_, ref: string) => {
-    const named: Readonly<Record<string, string>> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+    const named: Readonly<Record<string, string>> = {
+      amp: "&",
+      lt: "<",
+      gt: ">",
+      quot: '"',
+      apos: "'",
+    };
     if (!ref.startsWith("#")) return named[ref.toLowerCase()] ?? "";
-    return String.fromCodePoint(ref[1] === "x" || ref[1] === "X" ? parseInt(ref.slice(2), 16) : parseInt(ref.slice(1), 10));
+    return String.fromCodePoint(
+      ref[1] === "x" || ref[1] === "X" ? parseInt(ref.slice(2), 16) : parseInt(ref.slice(1), 10),
+    );
   });
 }
 
@@ -868,14 +1265,24 @@ function markdownFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name);
     // The generated API reference is gitignored here; GENERATED stands in for it.
-    if (entry.isDirectory()) return GENERATED_API_DIRS.has(relative(DOCS, path)) ? [] : markdownFiles(path);
+    if (entry.isDirectory())
+      return GENERATED_API_DIRS.has(relative(DOCS, path)) ? [] : markdownFiles(path);
     return entry.isFile() && entry.name.endsWith(".md") ? [path] : [];
   });
 }
 
 test("every page has a description, a title search engines show whole, and alt text on every image", async () => {
-  const docs = [...markdownFiles(DOCS).map((file) => relative(DOCS, file).slice(0, -".md".length)), ...Object.keys(GENERATED).filter((f) => f.endsWith(".md")).map((f) => f.slice(0, -".md".length))];
-  const paths = [...PAGES.map((page) => page.path), "/no-such-page", ...docs.map((key) => docUrl(key))];
+  const docs = [
+    ...markdownFiles(DOCS).map((file) => relative(DOCS, file).slice(0, -".md".length)),
+    ...Object.keys(GENERATED)
+      .filter((f) => f.endsWith(".md"))
+      .map((f) => f.slice(0, -".md".length)),
+  ];
+  const paths = [
+    ...PAGES.map((page) => page.path),
+    "/no-such-page",
+    ...docs.map((key) => docUrl(key)),
+  ];
   assert.ok(docs.length > 50, "the docs were found");
   for (const path of paths) {
     const res = await get(path, BROWSER);
@@ -885,7 +1292,10 @@ test("every page has a description, a title search engines show whole, and alt t
     const description = /<meta name="description" content="([^"]*)">/.exec(html)?.[1] ?? "";
     assert.ok(description.trim().length > 0, `${path} has no description`);
     const title = unescapeHtml(/<title>([^<]*)<\/title>/.exec(html)?.[1] ?? "");
-    assert.ok(title.length > 0 && title.length <= TITLE_MAX, `${path} title is ${title.length} characters: ${title}`);
+    assert.ok(
+      title.length > 0 && title.length <= TITLE_MAX,
+      `${path} title is ${title.length} characters: ${title}`,
+    );
     for (const img of html.match(/<img\b[^>]*>/g) ?? []) {
       assert.match(img, /\salt="[^"]*\S[^"]*"/, `${path} has an image without alt text: ${img}`);
     }
@@ -894,15 +1304,22 @@ test("every page has a description, a title search engines show whole, and alt t
 
 test("docPageTitle names the site when it fits and otherwise keeps what identifies the page", () => {
   assert.equal(docPageTitle("Getting started"), "Getting started · Bookclerk docs");
-  const prose = docPageTitle("ADR: Control plane — bootstrap, host identity, and database configuration");
+  const prose = docPageTitle(
+    "ADR: Control plane — bootstrap, host identity, and database configuration",
+  );
   assert.equal(prose, "ADR: Control plane — bootstrap, host identity, and database…");
-  const path = docPageTitle("bookclerk_plugin_abi::plugin_capnp::adapter_database_session::assert_restore_constraints_results");
+  const path = docPageTitle(
+    "bookclerk_plugin_abi::plugin_capnp::adapter_database_session::assert_restore_constraints_results",
+  );
   assert.equal(path, "…adapter_database_session::assert_restore_constraints_results");
   assert.equal(docPageTitle("x".repeat(200)).length, TITLE_MAX);
   const shortLast = docPageTitle(`crate.${"m".repeat(80)}.io`);
   assert.equal(shortLast.length, TITLE_MAX);
   assert.ok(shortLast.endsWith(".io"));
-  assert.doesNotMatch(docPageTitle(`${"😀".repeat(40)} title`), /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+  assert.doesNotMatch(
+    docPageTitle(`${"😀".repeat(40)} title`),
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/,
+  );
 });
 
 test("a Web API page's sidebar lists every route group from the index, marking its own", async () => {
@@ -914,7 +1331,11 @@ test("a Web API page's sidebar lists every route group from the index, marking i
       '<ul class="nav-sub"><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a></li>',
     ),
   );
-  assert.ok(html.includes('<li><a href="/docs/api/web/health">Health</a></li><li><a href="/docs/api/web/schemas">Schemas</a></li></ul>'));
+  assert.ok(
+    html.includes(
+      '<li><a href="/docs/api/web/health">Health</a></li><li><a href="/docs/api/web/schemas">Schemas</a></li></ul>',
+    ),
+  );
   // The Markdown version needs no sidebar, so it does not read the index.
   fetched.length = 0;
   await get("/docs/api/web/jobs.md", "text/markdown");
@@ -922,9 +1343,20 @@ test("a Web API page's sidebar lists every route group from the index, marking i
 });
 
 test("a Web API page is shown, and not cached, when its index cannot be read", async () => {
-  const broken: DocsFetch = async (url, init) => (url.endsWith("/api/web/README.md") ? new Response("oops", { status: 502 }) : docsFetch(url, init));
-  const res = await handle(new Request("https://bookclerk.app/docs/api/web/jobs", { headers: { Accept: BROWSER } }), env, { shell, fetch: broken });
+  const broken: DocsFetch = async (url, init) =>
+    url.endsWith("/api/web/README.md")
+      ? new Response("oops", { status: 502 })
+      : docsFetch(url, init);
+  const res = await handle(
+    new Request("https://bookclerk.app/docs/api/web/jobs", { headers: { Accept: BROWSER } }),
+    env,
+    { shell, fetch: broken },
+  );
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("Cache-Control"), "public, max-age=60, s-maxage=0");
-  assert.ok((await res.text()).includes('<ul class="nav-sub"><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a>'));
+  assert.ok(
+    (await res.text()).includes(
+      '<ul class="nav-sub"><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a>',
+    ),
+  );
 });

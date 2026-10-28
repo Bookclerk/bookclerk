@@ -178,9 +178,12 @@ const MARK = raw('<img class="mark" src="/static/mark.svg" width="28" height="28
  * @returns The document.
  */
 export function layout(p: {
-    title: string; member?: Member | null;
-    nav?: string; body: SafeHtml; bodyClass?: string;
-  }): SafeHtml {
+  title: string;
+  member?: Member | null;
+  nav?: string;
+  body: SafeHtml;
+  bodyClass?: string;
+}): SafeHtml {
   const navItem = (id: string, label: string, href: string): SafeHtml =>
     html`<a href="${href}"${p.nav === id ? raw(' class="on" aria-current="page"') : ""}>${label}</a>`;
   const header = p.member
@@ -248,7 +251,11 @@ export function privacyUrl(env: Pick<Env, "SITE_URL">): string | null {
  * @param privacy - The website's privacy page (see privacyUrl), or null for no link.
  * @returns The document.
  */
-export function signInPage(cfg: { owner: string; }, next: string | null = null, privacy: string | null = null): SafeHtml {
+export function signInPage(
+  cfg: { owner: string },
+  next: string | null = null,
+  privacy: string | null = null,
+): SafeHtml {
   const start = next ? `/auth/github?next=${encodeURIComponent(next)}` : "/auth/github";
   const policy = privacy ? html` <a href="${privacy}">Privacy</a>` : "";
   return layout({
@@ -274,7 +281,7 @@ export function signInPage(cfg: { owner: string; }, next: string | null = null, 
  * @param n - Number.
  * @returns URL.
  */
-function ghUrl(cfg: { owner: string; repo: string; }, kind: "issues" | "pull", n: number): string {
+function ghUrl(cfg: { owner: string; repo: string }, kind: "issues" | "pull", n: number): string {
   return `https://github.com/${cfg.owner}/${cfg.repo}/${kind}/${Number(n)}`;
 }
 
@@ -289,7 +296,8 @@ function ghUrl(cfg: { owner: string; repo: string; }, kind: "issues" | "pull", n
  */
 function issueKindChip(cfg: Repo, i: Pick<IssueRow, "kind" | "regression_of">): SafeHtml | string {
   if (i.kind === "fallback") return html` <span class="chip none">untriaged batch</span>`;
-  if (i.regression_of != null) return html` <a class="chip crit" href="${ghUrl(cfg, "issues", i.regression_of)}">regression of #${i.regression_of}</a>`;
+  if (i.regression_of != null)
+    return html` <a class="chip crit" href="${ghUrl(cfg, "issues", i.regression_of)}">regression of #${i.regression_of}</a>`;
   return "";
 }
 
@@ -301,7 +309,11 @@ function issueKindChip(cfg: Repo, i: Pick<IssueRow, "kind" | "regression_of">): 
  * @param state - Issue state.
  * @returns The chip.
  */
-function issueChip(cfg: { owner: string; repo: string; }, n: number | null | undefined, state: string | null | undefined): SafeHtml {
+function issueChip(
+  cfg: { owner: string; repo: string },
+  n: number | null | undefined,
+  state: string | null | undefined,
+): SafeHtml {
   if (!n) return html`<span class="chip none">Not filed</span>`;
   return html`<a class="chip ${state === "open" ? "open" : "closed"}" href="${ghUrl(cfg, "issues", n)}">#${n}</a>`;
 }
@@ -313,7 +325,7 @@ function issueChip(cfg: { owner: string; repo: string; }, n: number | null | und
  * @param r - Report row.
  * @returns The link, or nothing.
  */
-function moreIssues(r: { report_id: string; issue_count?: number | null; }): SafeHtml | string {
+function moreIssues(r: { report_id: string; issue_count?: number | null }): SafeHtml | string {
   const more = Number(r.issue_count ?? 0) - 1;
   if (!(more > 0)) return "";
   return html` <a class="quiet" href="/reports/${r.report_id}" title="Listed in ${more + 1} issues">+${more}</a>`;
@@ -326,7 +338,7 @@ function moreIssues(r: { report_id: string; issue_count?: number | null; }): Saf
  * @param fix - The issue's entry from `fixStatus`.
  * @returns Short text, empty when there is nothing to add.
  */
-function fixNote(fix: { fixedIn: string | null; source: string | null; } | undefined): string {
+function fixNote(fix: { fixedIn: string | null; source: string | null } | undefined): string {
   if (!fix) return "";
   if (fix.fixedIn) return `fixed in ${fix.fixedIn}${fix.source === "manual" ? " (label)" : ""}`;
   return fix.source === "unreleased" ? "merged, not in a release yet" : "";
@@ -338,10 +350,16 @@ function fixNote(fix: { fixedIn: string | null; source: string | null; } | undef
  * @param fix - The issue's entry from `fixStatus`.
  * @returns One sentence.
  */
-function afterFixText(fix: { fixedIn: string | null; fixAt: number | null; after: number; }): string {
+function afterFixText(fix: {
+  fixedIn: string | null;
+  fixAt: number | null;
+  after: number;
+}): string {
   const n = `${fmtInt(fix.after)} ${fix.after === 1 ? "report" : "reports"} with this signature`;
   if (fix.fixedIn) return `${n} from ${fix.fixedIn} or later`;
-  return fix.fixAt ? `${n} since the fix merged on ${fmtDay(fix.fixAt)}, before any release carries it` : n;
+  return fix.fixAt
+    ? `${n} since the fix merged on ${fmtDay(fix.fixAt)}, before any release carries it`
+    : n;
 }
 
 /** How a report's link to its tracking issue was made, by ledger `source`. */
@@ -361,10 +379,15 @@ const LINK_SOURCE: Readonly<Record<string, string>> = {
  * @returns The form.
  */
 function linkForm(f: {
-    action: "attach" | "detach" | "move" | "merge"; issue?: number;
-    report?: string | null; back: string; label: string; danger?: boolean;
-    options?: Array<{ number: number; title: string; }>; pickerLabel?: string;
-  }): SafeHtml {
+  action: "attach" | "detach" | "move" | "merge";
+  issue?: number;
+  report?: string | null;
+  back: string;
+  label: string;
+  danger?: boolean;
+  options?: Array<{ number: number; title: string }>;
+  pickerLabel?: string;
+}): SafeHtml {
   const field = f.issue === undefined ? "issue" : "to";
   const id = `${field}-${f.action}-${f.issue ?? "pick"}-${f.report ?? "all"}`;
   const picker = f.options
@@ -405,9 +428,14 @@ const LINK_HOW: Readonly<Record<string, string>> = {
  * @param l - Ledger row.
  * @returns Short text.
  */
-function linkHow(l: { source: string; linked_by?: string | null; linked_at?: number | null; }): string {
+function linkHow(l: {
+  source: string;
+  linked_by?: string | null;
+  linked_at?: number | null;
+}): string {
   const base = LINK_HOW[l.source] ?? "";
-  if ((l.source === "manual" || l.source === "excluded") && l.linked_by) return `${base} by ${l.linked_by}${l.linked_at ? ` on ${fmtDay(l.linked_at)}` : ""}`;
+  if ((l.source === "manual" || l.source === "excluded") && l.linked_by)
+    return `${base} by ${l.linked_by}${l.linked_at ? ` on ${fmtDay(l.linked_at)}` : ""}`;
   return base;
 }
 
@@ -419,12 +447,14 @@ function linkHow(l: { source: string; linked_by?: string | null; linked_at?: num
  * @returns The picker.
  */
 function rangePicker(url: URL, current: RangeId): SafeHtml {
-  return html`<nav class="picker" aria-label="Time range">${Object.entries(RANGES).map(([id, range]) => {
-    const u = new URL(url);
-    u.searchParams.set("range", id);
-    u.searchParams.delete("page");
-    return html`<a href="${u.pathname}${u.search}"${id === current ? raw(' aria-current="true"') : ""}>${range.label}</a>`;
-  })}</nav>`;
+  return html`<nav class="picker" aria-label="Time range">${Object.entries(RANGES).map(
+    ([id, range]) => {
+      const u = new URL(url);
+      u.searchParams.set("range", id);
+      u.searchParams.delete("page");
+      return html`<a href="${u.pathname}${u.search}"${id === current ? raw(' aria-current="true"') : ""}>${range.label}</a>`;
+    },
+  )}</nav>`;
 }
 
 /**
@@ -437,12 +467,19 @@ function rangePicker(url: URL, current: RangeId): SafeHtml {
  * @param byBucket - Bucket index → values.
  * @returns One per bucket.
  */
-export function buckets(now: number, range: { ms: number; bucket: number; }, byBucket: Map<number, Record<string, number>>): { label: string; values: Record<string, number>; }[] {
+export function buckets(
+  now: number,
+  range: { ms: number; bucket: number },
+  byBucket: Map<number, Record<string, number>>,
+): { label: string; values: Record<string, number> }[] {
   const last = Math.floor(now / range.bucket);
-  const out: { label: string; values: Record<string, number>; }[] = [];
+  const out: { label: string; values: Record<string, number> }[] = [];
   for (let b = Math.floor((now - range.ms) / range.bucket); b <= last; b++) {
     const t = b * range.bucket;
-    const label = range.bucket < 86_400_000 ? `${String(new Date(t).getUTCHours()).padStart(2, "0")}:00` : fmtDay(t);
+    const label =
+      range.bucket < 86_400_000
+        ? `${String(new Date(t).getUTCHours()).padStart(2, "0")}:00`
+        : fmtDay(t);
     out.push({ label, values: byBucket.get(b) ?? {} });
   }
   return out;
@@ -481,9 +518,11 @@ function reportRows(cfg: Repo, rows: ReportListRow[], full: boolean): SafeHtml {
       <td>${`${r.os} ${r.arch}`.trim()}</td>
       <td>${r.trigger}</td>
       <td class="mono wrap-any">${r.signature_label ?? "none"}</td>
-      ${full
-        ? html`<td class="r num">${r.errors}</td><td class="r num">${r.warnings}</td>`
-        : html`<td class="r num">${r.events}</td>`}
+      ${
+        full
+          ? html`<td class="r num">${r.errors}</td><td class="r num">${r.warnings}</td>`
+          : html`<td class="r num">${r.events}</td>`
+      }
       <td>${issueChip(cfg, r.issue_number, r.issue_state)}${moreIssues(r)}</td></tr>`,
   )}`;
 }
@@ -498,12 +537,18 @@ export function overviewPage(d: OverviewData): SafeHtml {
   const range = RANGES[d.rangeId];
   const byBucket = new Map<number, Record<string, number>>();
   for (const row of d.counts) {
-    const key = TRIGGER_SERIES.some((s) => s.key === row.trigger && s.key !== "other") ? row.trigger : "other";
+    const key = TRIGGER_SERIES.some((s) => s.key === row.trigger && s.key !== "other")
+      ? row.trigger
+      : "other";
     const vals = byBucket.get(Number(row.bucket)) ?? {};
     vals[key] = (vals[key] ?? 0) + Number(row.n);
     byBucket.set(Number(row.bucket), vals);
   }
-  const series = TRIGGER_SERIES.filter((s) => d.counts.some((c) => (s.key === "other" ? !TRIGGER_SERIES.some((t) => t.key === c.trigger) : c.trigger === s.key)));
+  const series = TRIGGER_SERIES.filter((s) =>
+    d.counts.some((c) =>
+      s.key === "other" ? !TRIGGER_SERIES.some((t) => t.key === c.trigger) : c.trigger === s.key,
+    ),
+  );
   const delta = d.stats.last24h - d.stats.prev24h;
   const platMax = Math.max(1, ...d.platforms.map((p) => Number(p.n)));
   const verMax = Math.max(1, ...d.versions.map((p) => Number(p.n)));
@@ -513,10 +558,12 @@ export function overviewPage(d: OverviewData): SafeHtml {
       <input type="hidden" name="range" value="${d.rangeId}">
       <label class="sr" for="ov-version">Version</label>
       <select id="ov-version" name="version" class="sel autosubmit"><option value="">All versions</option>${d.versionOptions.map(
-        (v) => html`<option value="${v}"${v === d.filter.version ? raw(" selected") : ""}>${v}</option>`,
+        (v) =>
+          html`<option value="${v}"${v === d.filter.version ? raw(" selected") : ""}>${v}</option>`,
       )}</select><noscript><button type="submit" class="sel">Apply</button></noscript></form>`;
-  const owner = d.member.role === "admin"
-    ? html`<section class="panel s12" aria-labelledby="owner-h"><h2 id="owner-h">Owner tools</h2>
+  const owner =
+    d.member.role === "admin"
+      ? html`<section class="panel s12" aria-labelledby="owner-h"><h2 id="owner-h">Owner tools</h2>
         <div class="owner-row">
           <form method="post" action="/admin/reindex"><button class="button small" type="submit">Index older reports from storage</button></form>
           <form method="post" action="/admin/sync"><button class="button small" type="submit">Sync issues from GitHub now</button></form>
@@ -524,9 +571,10 @@ export function overviewPage(d: OverviewData): SafeHtml {
           <span class="fine">${d.reindexNote}</span>
         </div>
         <div class="tbl"><table><thead><tr><th>Time (UTC)</th><th>Member</th><th>Action</th><th>Report</th></tr></thead><tbody>${d.access.map(
-          (a) => html`<tr><td class="num">${fmtTime(a.at)}</td><td>${a.login}</td><td>${a.action}</td><td>${a.report_id ? html`<a class="mono" href="/reports/${a.report_id}">${String(a.report_id).slice(0, 8)}</a>` : ""}</td></tr>`,
+          (a) =>
+            html`<tr><td class="num">${fmtTime(a.at)}</td><td>${a.login}</td><td>${a.action}</td><td>${a.report_id ? html`<a class="mono" href="/reports/${a.report_id}">${String(a.report_id).slice(0, 8)}</a>` : ""}</td></tr>`,
         )}</tbody></table></div></section>`
-    : "";
+      : "";
   return layout({
     title: "Overview",
     member: d.member,
@@ -545,14 +593,17 @@ export function overviewPage(d: OverviewData): SafeHtml {
         <section class="panel s8"><h2>Reports per ${range.bucket < 86_400_000 ? "hour" : "day"}, by trigger <span class="legend">${series.map((s) => html`<span><i class="${s.cls}"></i>${s.key}</span>`)}</span></h2>
           ${stackedBars(buckets(d.now, range, byBucket), series.length ? series : TRIGGER_SERIES.slice(0, 1), "Stacked bars of reports per time bucket by trigger")}</section>
         <section class="panel s4"><h2>Platforms</h2><div class="tbl"><table><thead><tr><th>OS / arch</th><th class="r">Reports</th><th><span class="sr">Share</span></th></tr></thead><tbody>${d.platforms.map(
-          (p) => html`<tr><td>${String(p.key).trim() || "unknown"}</td><td class="r num">${fmtInt(p.n)}</td><td class="bar-cell">${meter(Number(p.n) / platMax)}</td></tr>`,
+          (p) =>
+            html`<tr><td>${String(p.key).trim() || "unknown"}</td><td class="r num">${fmtInt(p.n)}</td><td class="bar-cell">${meter(Number(p.n) / platMax)}</td></tr>`,
         )}</tbody></table></div></section>
 
         <section class="panel s7"><h2>Top error signatures <a href="/reports?range=${d.rangeId}">Explore</a></h2><div class="tbl"><table><thead><tr><th>Signature</th><th class="r">${range.label}</th><th>Trend</th><th>Tracked by</th></tr></thead><tbody>${d.signatures.map(
-          (s) => html`<tr><td class="mono wrap-any"><a class="quiet" href="/reports?range=${d.rangeId}&amp;signature=${s.signature}">${s.label}</a></td><td class="r num">${fmtInt(s.n)}</td><td>${sparkline(dailySeries(d.now, 14, s.days), s.issue ? "muted" : "amber")}</td><td>${issueChip(d.cfg, s.issue?.number, s.issue?.state)}</td></tr>`,
+          (s) =>
+            html`<tr><td class="mono wrap-any"><a class="quiet" href="/reports?range=${d.rangeId}&amp;signature=${s.signature}">${s.label}</a></td><td class="r num">${fmtInt(s.n)}</td><td>${sparkline(dailySeries(d.now, 14, s.days), s.issue ? "muted" : "amber")}</td><td>${issueChip(d.cfg, s.issue?.number, s.issue?.state)}</td></tr>`,
         )}</tbody></table></div></section>
         <section class="panel s5"><h2>Versions</h2><div class="tbl"><table><thead><tr><th>Version</th><th class="r">Reports</th><th class="r">Errors / report</th><th><span class="sr">Share</span></th></tr></thead><tbody>${d.versions.map(
-          (v) => html`<tr><td class="mono">${String(v.key) || "unknown"}</td><td class="r num">${fmtInt(v.n)}</td><td class="r num">${Number(v.errors ?? 0).toFixed(1)}</td><td class="bar-cell">${meter(Number(v.n) / verMax)}</td></tr>`,
+          (v) =>
+            html`<tr><td class="mono">${String(v.key) || "unknown"}</td><td class="r num">${fmtInt(v.n)}</td><td class="r num">${Number(v.errors ?? 0).toFixed(1)}</td><td class="bar-cell">${meter(Number(v.n) / verMax)}</td></tr>`,
         )}</tbody></table></div></section>
 
         <section class="panel s12"><h2>Recent reports <a href="/reports?range=${d.rangeId}">All reports</a></h2><div class="tbl"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th><th>Trigger</th><th>Top error</th><th class="r">Events</th><th>Issue</th></tr></thead><tbody>${reportRows(d.cfg, d.recent, false)}</tbody></table></div></section>
@@ -568,9 +619,16 @@ export function overviewPage(d: OverviewData): SafeHtml {
  * @returns The document.
  */
 export function reportsPage(d: ReportsData): SafeHtml {
-  const sel = (id: string, name: string, label: string, options: [string, string][], value: string): SafeHtml => html`<label class="sr" for="${id}">${label}</label>
+  const sel = (
+    id: string,
+    name: string,
+    label: string,
+    options: [string, string][],
+    value: string,
+  ): SafeHtml => html`<label class="sr" for="${id}">${label}</label>
     <select id="${id}" name="${name}" class="sel autosubmit">${options.map(
-      ([v, text]) => html`<option value="${v}"${v === value ? raw(" selected") : ""}>${text}</option>`,
+      ([v, text]) =>
+        html`<option value="${v}"${v === value ? raw(" selected") : ""}>${text}</option>`,
     )}</select>`;
   const pages = Math.max(1, Math.ceil(d.total / d.pageSize));
   const pageLink = (p: number, text: string): SafeHtml => {
@@ -591,7 +649,17 @@ export function reportsPage(d: ReportsData): SafeHtml {
           ${sel("f-ver", "version", "Version", [["", "All versions"], ...d.options.versions.map((v): [string, string] => [v, v])], d.filter.version ?? "")}
           ${sel("f-os", "platform", "Platform", [["", "All platforms"], ...d.options.platforms.map((v): [string, string] => [v, v])], d.filter.platform ?? "")}
           ${sel("f-trig", "trigger", "Trigger", [["", "All triggers"], ...d.options.triggers.map((v): [string, string] => [v, v])], d.filter.trigger ?? "")}
-          ${sel("f-filed", "filed", "Filed", [["", "Filed or not"], ["no", "Not filed"], ["yes", "Filed"]], d.filter.filed ?? "")}
+          ${sel(
+            "f-filed",
+            "filed",
+            "Filed",
+            [
+              ["", "Filed or not"],
+              ["no", "Not filed"],
+              ["yes", "Filed"],
+            ],
+            d.filter.filed ?? "",
+          )}
           <noscript><button class="button small" type="submit">Apply</button></noscript>
           <span class="fine" data-live="total">${fmtInt(d.total)} reports · page ${d.page} of ${pages}${d.filter.signature ? html` · signature <span class="mono">${d.filter.signature}</span> <a href="/reports?range=${d.rangeId}">clear</a>` : ""}</span>
         </form>
@@ -638,7 +706,13 @@ const LEVELS = ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"] as const;
 type Level = (typeof LEVELS)[number];
 
 /** Button text for each level's filter. */
-const LEVEL_NAMES: Readonly<Record<Level, string>> = { ERROR: "Errors", WARN: "Warnings", INFO: "Info", DEBUG: "Debug", TRACE: "Trace" };
+const LEVEL_NAMES: Readonly<Record<Level, string>> = {
+  ERROR: "Errors",
+  WARN: "Warnings",
+  INFO: "Info",
+  DEBUG: "Debug",
+  TRACE: "Trace",
+};
 
 /**
  * Whether text names one of `LEVELS`.
@@ -657,7 +731,7 @@ function isLevel(level: string): level is Level {
  * @param events - `payload.events` from storage.
  * @returns Level counts and `<div>` rows.
  */
-export function eventLog(events: unknown): { counts: Record<Level, number>; rows: SafeHtml; } {
+export function eventLog(events: unknown): { counts: Record<Level, number>; rows: SafeHtml } {
   const list: unknown[] = Array.isArray(events) ? events.slice(0, 500) : [];
   const counts: Record<Level, number> = { ERROR: 0, WARN: 0, INFO: 0, DEBUG: 0, TRACE: 0 };
   const rows = list.map((ev) => {
@@ -692,11 +766,10 @@ export function reportPage(d: ReportData): SafeHtml {
   const log = eventLog(p.events);
   const title = d.issues[0]?.title ?? r.signature_label ?? "Report";
   const fix = d.fix;
-  const filters = LEVELS
-    .filter((l) => log.counts[l] > 0)
-    .map(
-      (l) => html`<button type="button" class="lvl-toggle" data-level="${l.toLowerCase()}" aria-pressed="${l === "DEBUG" || l === "TRACE" ? "false" : "true"}">${LEVEL_NAMES[l]} ${log.counts[l]}</button>`,
-    );
+  const filters = LEVELS.filter((l) => log.counts[l] > 0).map(
+    (l) =>
+      html`<button type="button" class="lvl-toggle" data-level="${l.toLowerCase()}" aria-pressed="${l === "DEBUG" || l === "TRACE" ? "false" : "true"}">${LEVEL_NAMES[l]} ${log.counts[l]}</button>`,
+  );
   return layout({
     title: `Report ${String(r.report_id).slice(0, 8)}`,
     member: d.member,
@@ -716,9 +789,14 @@ export function reportPage(d: ReportData): SafeHtml {
           <div><dt>Install</dt><dd class="mono">${r.install_hash ? `${String(r.install_hash).slice(0, 4)}…${String(r.install_hash).slice(-4)}` : "not recorded"}</dd></div>
         </dl></section>
         <section class="panel s4" data-live="tracked"><h2>Tracked by</h2><div class="links">
-          ${d.issues.length
-            ? d.issues.map((i, n) => html`<div class="link-item"><span class="chip ${i.state === "open" ? "open" : "closed"}">${i.state === "open" ? "Open" : "Closed"}</span><a href="/issues/${i.number}">#${i.number} ${i.title}</a>${issueKindChip(d.cfg, i)} <span class="fine">${n === 0 ? LINK_SOURCE[i.source] ?? "" : "also lists it"}</span> ${linkForm({ action: "detach", issue: Number(i.number), report: String(r.report_id), back: `/reports/${r.report_id}`, label: "Detach" })}</div>`)
-            : html`<p class="fine">No issue lists this report yet. Triage may have judged it noise, or ingest has not run since it arrived.</p>`}
+          ${
+            d.issues.length
+              ? d.issues.map(
+                  (i, n) =>
+                    html`<div class="link-item"><span class="chip ${i.state === "open" ? "open" : "closed"}">${i.state === "open" ? "Open" : "Closed"}</span><a href="/issues/${i.number}">#${i.number} ${i.title}</a>${issueKindChip(d.cfg, i)} <span class="fine">${n === 0 ? (LINK_SOURCE[i.source] ?? "") : "also lists it"}</span> ${linkForm({ action: "detach", issue: Number(i.number), report: String(r.report_id), back: `/reports/${r.report_id}`, label: "Detach" })}</div>`,
+                )
+              : html`<p class="fine">No issue lists this report yet. Triage may have judged it noise, or ingest has not run since it arrived.</p>`
+          }
           ${d.issues.length === 0 && d.openIssues?.length ? html`<div class="link-item">${linkForm({ action: "attach", report: String(r.report_id), back: `/reports/${r.report_id}`, label: "Attach", options: d.openIssues, pickerLabel: "Attach to issue" })}</div>` : ""}
           ${d.issues.length > 1 ? html`<p class="fine"><span class="chip crit">Conflict</span> ${d.issues.length} issues list this report; it counts under #${d.issues[0]?.number} until a member detaches it from the others.</p>` : ""}
           ${d.prs.map((pr) => html`<div class="link-item"><span class="chip ${pr.state}">${{ open: "Open", closed: "Closed", merged: "Merged" }[pr.state] ?? pr.state}</span><a href="${ghUrl(d.cfg, "pull", pr.pr_number)}">#${pr.pr_number} ${pr.title}</a></div>`)}
@@ -726,14 +804,21 @@ export function reportPage(d: ReportData): SafeHtml {
           ${fix && (d.regression || fix.after > 0) ? html`<div class="link-item"><span class="chip crit">${d.regression ? "Regression" : "Seen after fix"}</span><span class="fine">${d.regression ? `this report runs ${r.version}, after the fix; ` : ""}${afterFixText(fix)}</span></div>` : ""}
         </div></section>
         <section class="panel s12"><h2>Event log <span class="note">secrets were redacted on the client before upload</span></h2>
-          ${d.stored
-            ? html`<div class="filters" role="group" aria-label="Levels">${filters}</div><div class="log" id="log" role="log" aria-label="Report events">${log.rows}</div>`
-            : html`<p class="banner">The stored report could not be read from storage. The index entry above is all that is available.</p>`}
+          ${
+            d.stored
+              ? html`<div class="filters" role="group" aria-label="Levels">${filters}</div><div class="log" id="log" role="log" aria-label="Report events">${log.rows}</div>`
+              : html`<p class="banner">The stored report could not be read from storage. The index entry above is all that is available.</p>`
+          }
         </section>
         <section class="panel s6" data-live="sig-days"><h2>Same signature, last 14 days</h2>${r.signature ? histogram(d.sigDays, d.sigMarker, "Reports per day with this signature") : html`<p class="fine">This report has no errors or warnings to group by.</p>`}</section>
-        <section class="panel s6" data-live="similar"><h2>Similar reports</h2><div class="tbl"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th></tr></thead><tbody>${d.similar.length
-          ? d.similar.map((s) => html`<tr><td class="num">${fmtTime(s.received_at)}</td><td><a class="mono" href="/reports/${s.report_id}">${String(s.report_id).slice(0, 8)}</a></td><td class="mono">${s.version}</td><td>${`${s.os} ${s.arch}`.trim()}</td></tr>`)
-          : html`<tr><td colspan="4" class="empty">No other report shares this signature.</td></tr>`}</tbody></table></div></section>
+        <section class="panel s6" data-live="similar"><h2>Similar reports</h2><div class="tbl"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th></tr></thead><tbody>${
+          d.similar.length
+            ? d.similar.map(
+                (s) =>
+                  html`<tr><td class="num">${fmtTime(s.received_at)}</td><td><a class="mono" href="/reports/${s.report_id}">${String(s.report_id).slice(0, 8)}</a></td><td class="mono">${s.version}</td><td>${`${s.os} ${s.arch}`.trim()}</td></tr>`,
+              )
+            : html`<tr><td colspan="4" class="empty">No other report shares this signature.</td></tr>`
+        }</tbody></table></div></section>
       </div></div>`,
   });
 }
@@ -745,7 +830,8 @@ export function reportPage(d: ReportData): SafeHtml {
  * @returns The document.
  */
 export function issuesPage(d: IssuesData): SafeHtml {
-  const tab = (id: IssuesData["state"], label: string): SafeHtml => html`<a href="/issues?state=${id}"${id === d.state ? raw(' aria-current="true"') : ""}>${label}</a>`;
+  const tab = (id: IssuesData["state"], label: string): SafeHtml =>
+    html`<a href="/issues?state=${id}"${id === d.state ? raw(' aria-current="true"') : ""}>${label}</a>`;
   return layout({
     title: "Issues",
     member: d.member,
@@ -753,13 +839,14 @@ export function issuesPage(d: IssuesData): SafeHtml {
     body: html`<div class="wrap">
       <div class="toolbar"><h1>Issues and fixes</h1><nav class="picker" aria-label="Issue state">${tab("open", "Open")}${tab("closed", "Closed")}${tab("all", "All")}</nav></div>
       <section class="panel" data-live="issues"><h2>Diagnostics issues <span class="note">${d.syncedAt ? `synced from GitHub ${fmtTime(d.syncedAt)} UTC` : "not synced from GitHub yet"}</span></h2>
-        <div class="tbl"><table><thead><tr><th>Issue</th><th>State</th><th class="r">Reports</th><th>Activity, 14d</th><th>First seen</th><th>Last seen</th><th>Fix</th><th class="r">After fix</th></tr></thead><tbody>${d.issues.length
-          ? d.issues.map((i) => {
-              const fix = d.afterFix.get(Number(i.number));
-              const merged = i.prs.find((p) => p.state === "merged");
-              const open = i.prs.find((p) => p.state === "open");
-              const pr = merged ?? open;
-              return html`<tr>
+        <div class="tbl"><table><thead><tr><th>Issue</th><th>State</th><th class="r">Reports</th><th>Activity, 14d</th><th>First seen</th><th>Last seen</th><th>Fix</th><th class="r">After fix</th></tr></thead><tbody>${
+          d.issues.length
+            ? d.issues.map((i) => {
+                const fix = d.afterFix.get(Number(i.number));
+                const merged = i.prs.find((p) => p.state === "merged");
+                const open = i.prs.find((p) => p.state === "open");
+                const pr = merged ?? open;
+                return html`<tr>
                 <td class="issue-cell"><a href="/issues/${i.number}"><b>#${i.number}</b> ${i.title}</a>${issueKindChip(d.cfg, i)} <a class="quiet" href="${ghUrl(d.cfg, "issues", i.number)}">GitHub</a></td>
                 <td><span class="chip ${i.state === "open" ? "open" : "closed"}">${i.state === "open" ? "Open" : "Closed"}</span></td>
                 <td class="r num">${fmtInt(i.reports)}</td>
@@ -768,8 +855,9 @@ export function issuesPage(d: IssuesData): SafeHtml {
                 <td class="num">${i.last_seen ? html`${fmtDay(i.last_seen)} · <span class="mono">${i.last_version}</span>` : ""}</td>
                 <td>${pr ? html`<a class="chip ${pr.state}" href="${ghUrl(d.cfg, "pull", pr.pr_number)}">PR #${pr.pr_number} ${pr.state}</a>` : html`<span class="fine">none linked</span>`}${fixNote(fix) ? html` <span class="fine">${fixNote(fix)}</span>` : ""}</td>
                 <td class="r num">${!fix ? html`<span class="fine">no fix yet</span>` : fix.after > 0 ? html`<span class="chip crit" title="${afterFixText(fix)}">${fmtInt(fix.after)} ${fix.fixedIn ? "regressions" : "since merge"}</span>` : "0"}</td></tr>`;
-            })
-          : html`<tr><td colspan="8" class="empty">No diagnostics issues in this view.</td></tr>`}</tbody></table></div>
+              })
+            : html`<tr><td colspan="8" class="empty">No diagnostics issues in this view.</td></tr>`
+        }</tbody></table></div>
       </section></div>`,
   });
 }
@@ -791,9 +879,17 @@ export function issuePage(d: IssueData): SafeHtml {
   const back = `/issues/${n}`;
   const merged = t.prs.find((p) => p.state === "merged");
   const filed = t.links.filter((l) => l.source === "filed");
-  const correlated = t.links.filter((l) => l.source === "signature" || l.source === "triage" || l.source === "manual");
+  const correlated = t.links.filter(
+    (l) => l.source === "signature" || l.source === "triage" || l.source === "manual",
+  );
   const excluded = t.links.filter((l) => l.source === "excluded");
-  const breakdown = (list: Array<{ key: string; n: number }>): SafeHtml | SafeHtml[] => list.length ? list.map((v) => html`<span class="chip none">${v.key || "unknown"} <b class="num">${fmtInt(v.n)}</b></span>`) : html`<span class="fine">none</span>`;
+  const breakdown = (list: Array<{ key: string; n: number }>): SafeHtml | SafeHtml[] =>
+    list.length
+      ? list.map(
+          (v) =>
+            html`<span class="chip none">${v.key || "unknown"} <b class="num">${fmtInt(v.n)}</b></span>`,
+        )
+      : html`<span class="fine">none</span>`;
   const row = (l: LedgerView, actions: SafeHtml): SafeHtml => html`<tr>
     <td class="num">${fmtTime(l.received_at)}</td>
     <td><a class="mono" href="/reports/${l.report_id}">${String(l.report_id).slice(0, 8)}</a></td>
@@ -801,10 +897,20 @@ export function issuePage(d: IssueData): SafeHtml {
     <td>${`${l.os} ${l.arch}`.trim()}</td>
     <td class="fine">${linkHow(l)}${l.source !== "excluded" && !l.tracked ? html` · <span class="chip crit" title="An older issue also lists this report, so it counts there">counts elsewhere</span>` : ""}</td>
     <td class="actions">${actions}</td></tr>`;
-  const table = (rows: SafeHtml[], empty: string): SafeHtml => html`<div class="tbl"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th><th>How</th><th>Actions</th></tr></thead><tbody>${rows.length ? rows : html`<tr><td colspan="6" class="empty">${empty}</td></tr>`}</tbody></table></div>`;
-  const moveForm = (l: { report_id: string }): SafeHtml | string => d.openIssues.length
-    ? linkForm({ action: "move", issue: n, report: String(l.report_id), back, label: "Move", options: d.openIssues, pickerLabel: "Move to issue" })
-    : "";
+  const table = (rows: SafeHtml[], empty: string): SafeHtml =>
+    html`<div class="tbl"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th><th>How</th><th>Actions</th></tr></thead><tbody>${rows.length ? rows : html`<tr><td colspan="6" class="empty">${empty}</td></tr>`}</tbody></table></div>`;
+  const moveForm = (l: { report_id: string }): SafeHtml | string =>
+    d.openIssues.length
+      ? linkForm({
+          action: "move",
+          issue: n,
+          report: String(l.report_id),
+          back,
+          label: "Move",
+          options: d.openIssues,
+          pickerLabel: "Move to issue",
+        })
+      : "";
   const owner = d.member.role === "admin";
   return layout({
     title: `Issue #${n}`,
@@ -814,9 +920,17 @@ export function issuePage(d: IssueData): SafeHtml {
       <div class="toolbar column"><span class="crumb"><a href="/issues">Issues</a> / #${n}</span>
         <h1>#${n} ${i.title}</h1>
         <span class="links-row"><span class="chip ${i.state === "open" ? "open" : "closed"}">${i.state === "open" ? "Open" : "Closed"}</span>${issueKindChip(d.cfg, i)} <a href="${ghUrl(d.cfg, "issues", n)}">Open on GitHub</a></span></div>
-      <div data-live="pending">${t.outdated || d.updateNote ? html`<div class="banner">${t.outdated ? html`The summary comment on GitHub is out of date${t.summarySentAt ? ` (last written ${fmtTime(t.summarySentAt)} UTC` : " (never written"}${t.pending > 0 ? `; ${plural(t.pending, "ledger change")} since)` : ")"}; the next ingest run rewrites it.
-        ${owner ? html`<form method="post" action="/admin/update-issue" class="inline"><input type="hidden" name="issue" value="${n}"><input type="hidden" name="back" value="${back}"><button class="button small" type="submit">Update GitHub now</button></form>` : ""}` : ""}
-        ${d.updateNote ? html` <span class="fine">${fmtTime(d.updateNote.at)} UTC: ${d.updateNote.text}</span>` : ""}</div>` : ""}</div>
+      <div data-live="pending">${
+        t.outdated || d.updateNote
+          ? html`<div class="banner">${
+              t.outdated
+                ? html`The summary comment on GitHub is out of date${t.summarySentAt ? ` (last written ${fmtTime(t.summarySentAt)} UTC` : " (never written"}${t.pending > 0 ? `; ${plural(t.pending, "ledger change")} since)` : ")"}; the next ingest run rewrites it.
+        ${owner ? html`<form method="post" action="/admin/update-issue" class="inline"><input type="hidden" name="issue" value="${n}"><input type="hidden" name="back" value="${back}"><button class="button small" type="submit">Update GitHub now</button></form>` : ""}`
+                : ""
+            }
+        ${d.updateNote ? html` <span class="fine">${fmtTime(d.updateNote.at)} UTC: ${d.updateNote.text}</span>` : ""}</div>`
+          : ""
+      }</div>
       <div class="grid">
         <section class="panel s7" data-live="stats"><h2>Reports tracked</h2><dl class="meta">
           <div><dt>Reports</dt><dd class="num">${fmtInt(t.reports)} from ${plural(t.installs, "installation")}</dd></div>
@@ -827,28 +941,77 @@ export function issuePage(d: IssueData): SafeHtml {
           <div><dt>Platforms</dt><dd class="chips">${breakdown(t.platforms)}</dd></div>
         </dl></section>
         <section class="panel s5"><h2>Fix</h2><div class="links">
-          ${t.prs.length
-            ? t.prs.map((pr) => html`<div class="link-item"><span class="chip ${pr.state}">${{ open: "Open", closed: "Closed", merged: "Merged" }[pr.state] ?? pr.state}</span><a href="${ghUrl(d.cfg, "pull", pr.pr_number)}">#${pr.pr_number} ${pr.title}</a></div>`)
-            : html`<p class="fine">No pull request references this issue.</p>`}
+          ${
+            t.prs.length
+              ? t.prs.map(
+                  (pr) =>
+                    html`<div class="link-item"><span class="chip ${pr.state}">${{ open: "Open", closed: "Closed", merged: "Merged" }[pr.state] ?? pr.state}</span><a href="${ghUrl(d.cfg, "pull", pr.pr_number)}">#${pr.pr_number} ${pr.title}</a></div>`,
+                )
+              : html`<p class="fine">No pull request references this issue.</p>`
+          }
           ${fix && fixNote(fix) ? html`<div class="link-item"><span class="chip ${fix.fixedIn ? "merged" : "none"}">${fix.fixedIn ? "Fixed" : "Merged"}</span><span class="fine">${fixNote(fix)}</span></div>` : ""}
           ${fix && fix.after > 0 ? html`<div class="link-item"><span class="chip crit">${fix.fixedIn ? "Regressions" : "Seen after fix"}</span><span class="fine">${afterFixText(fix)}</span></div>` : ""}
           ${merged && i.state === "open" ? html`<p class="fine">The fix merged; the issue is still open on GitHub.</p>` : ""}
         </div></section>
         <section class="panel s12" data-live="links"><h2>Filed <span class="note">listed in the issue body when it was filed</span></h2>
-          ${table(filed.map((l) => row(l, html`${linkForm({ action: "detach", issue: n, report: String(l.report_id), back, label: "Detach", danger: true })} ${moveForm(l)}`)), "The issue body lists no indexed report.")}
+          ${table(
+            filed.map((l) =>
+              row(
+                l,
+                html`${linkForm({ action: "detach", issue: n, report: String(l.report_id), back, label: "Detach", danger: true })} ${moveForm(l)}`,
+              ),
+            ),
+            "The issue body lists no indexed report.",
+          )}
           <h2>Correlated <span class="note">linked later by signature, triage or a member</span></h2>
-          ${table(correlated.map((l) => row(l, html`${linkForm({ action: "detach", issue: n, report: String(l.report_id), back, label: "Detach", danger: true })} ${moveForm(l)}`)), "No report was linked after filing.")}
-          ${excluded.length ? html`<details><summary class="fine">${plural(excluded.length, "report")} detached from this issue (nothing links them to it again unless a member does)</summary>
-            ${table(excluded.map((l) => row(l, linkForm({ action: "attach", issue: n, report: String(l.report_id), back, label: "Attach again" }))), "")}</details>` : ""}
+          ${table(
+            correlated.map((l) =>
+              row(
+                l,
+                html`${linkForm({ action: "detach", issue: n, report: String(l.report_id), back, label: "Detach", danger: true })} ${moveForm(l)}`,
+              ),
+            ),
+            "No report was linked after filing.",
+          )}
+          ${
+            excluded.length
+              ? html`<details><summary class="fine">${plural(excluded.length, "report")} detached from this issue (nothing links them to it again unless a member does)</summary>
+            ${table(
+              excluded.map((l) =>
+                row(
+                  l,
+                  linkForm({
+                    action: "attach",
+                    issue: n,
+                    report: String(l.report_id),
+                    back,
+                    label: "Attach again",
+                  }),
+                ),
+              ),
+              "",
+            )}</details>`
+              : ""
+          }
           ${t.links.length >= DETAIL_LINKS_SHOWN ? html`<p class="fine">Only the newest ${fmtInt(DETAIL_LINKS_SHOWN)} ledger rows are shown.</p>` : ""}
         </section>
         <section class="panel s12" data-live="suggested"><h2>Suggested <span class="note">unlinked reports with a signature this issue tracks</span></h2>
-          ${table(t.suggested.map((l) => row({ ...l, source: "none", tracked: true }, html`${linkForm({ action: "attach", issue: n, report: String(l.report_id), back, label: "Attach" })} ${linkForm({ action: "detach", issue: n, report: String(l.report_id), back, label: "Dismiss" })}`)), "Every report with these signatures is linked to an issue.")}
+          ${table(
+            t.suggested.map((l) =>
+              row(
+                { ...l, source: "none", tracked: true },
+                html`${linkForm({ action: "attach", issue: n, report: String(l.report_id), back, label: "Attach" })} ${linkForm({ action: "detach", issue: n, report: String(l.report_id), back, label: "Dismiss" })}`,
+              ),
+            ),
+            "Every report with these signatures is linked to an issue.",
+          )}
         </section>
-        ${filed.length + correlated.length > 0 && d.openIssues.length
-          ? html`<section class="panel s12"><h2>Merge</h2><div class="owner-row">${linkForm({ action: "merge", issue: n, back, label: "Merge into", danger: true, options: d.openIssues, pickerLabel: "Merge into issue" })}
+        ${
+          filed.length + correlated.length > 0 && d.openIssues.length
+            ? html`<section class="panel s12"><h2>Merge</h2><div class="owner-row">${linkForm({ action: "merge", issue: n, back, label: "Merge into", danger: true, options: d.openIssues, pickerLabel: "Merge into issue" })}
               <span class="fine">Every report linked here is attached to the chosen issue and detached from this one; close this issue on GitHub as a duplicate yourself.</span></div></section>`
-          : ""}
+            : ""
+        }
       </div></div>`,
   });
 }

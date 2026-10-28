@@ -92,12 +92,17 @@ export type GitHubConfig = {
  *   `GITHUB_REPOSITORY` is not `owner/name`.
  */
 export function githubConfig(env: Env): GitHubConfig | null {
-  const clientId = typeof env.GITHUB_APP_CLIENT_ID === "string" ? env.GITHUB_APP_CLIENT_ID.trim() : "";
+  const clientId =
+    typeof env.GITHUB_APP_CLIENT_ID === "string" ? env.GITHUB_APP_CLIENT_ID.trim() : "";
   // Trimmed: a secret pasted with a trailing newline makes GitHub answer
   // incorrect_client_credentials.
-  const clientSecret = typeof env.GITHUB_APP_CLIENT_SECRET === "string" ? env.GITHUB_APP_CLIENT_SECRET.trim() : "";
-  const privateKey = typeof env.GITHUB_APP_PRIVATE_KEY === "string" ? env.GITHUB_APP_PRIVATE_KEY : "";
-  const m = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(String(env.GITHUB_REPOSITORY || "").trim());
+  const clientSecret =
+    typeof env.GITHUB_APP_CLIENT_SECRET === "string" ? env.GITHUB_APP_CLIENT_SECRET.trim() : "";
+  const privateKey =
+    typeof env.GITHUB_APP_PRIVATE_KEY === "string" ? env.GITHUB_APP_PRIVATE_KEY : "";
+  const m = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(
+    String(env.GITHUB_REPOSITORY || "").trim(),
+  );
   if (!clientId || !clientSecret || !privateKey || !m) return null;
   if (!/^[A-Za-z0-9._-]{1,64}$/.test(clientId)) return null;
   const [, owner = "", repo = ""] = m;
@@ -173,7 +178,9 @@ const RSA_ALGORITHM = Uint8Array.from([
  * @throws {Error} When the PEM holds neither form.
  */
 export function pkcs8FromPem(pem: string): Uint8Array {
-  const m = /-----BEGIN (RSA )?PRIVATE KEY-----([\s\S]+?)-----END (RSA )?PRIVATE KEY-----/.exec(pem);
+  const m = /-----BEGIN (RSA )?PRIVATE KEY-----([\s\S]+?)-----END (RSA )?PRIVATE KEY-----/.exec(
+    pem,
+  );
   if (!m || Boolean(m[1]) !== Boolean(m[3])) throw new Error("unrecognized private key");
   const bin = atob((m[2] ?? "").replace(/\s+/g, ""));
   const body = Uint8Array.from(bin, (c) => c.charCodeAt(0));
@@ -232,7 +239,11 @@ let cachedToken: { key: string; token: string; expiresAt: number } | null = null
  */
 export async function installationToken(cfg: GitHubConfig, now: number): Promise<string> {
   const key = `${cfg.clientId}/${cfg.owner}/${cfg.repo}`;
-  if (cachedToken && cachedToken.key === key && cachedToken.expiresAt - TOKEN_REFRESH_MARGIN_MS > now) {
+  if (
+    cachedToken &&
+    cachedToken.key === key &&
+    cachedToken.expiresAt - TOKEN_REFRESH_MARGIN_MS > now
+  ) {
     return cachedToken.token;
   }
   const got = await mintToken(cfg, now, INSTALLATION_PERMISSIONS);
@@ -253,9 +264,15 @@ export async function installationToken(cfg: GitHubConfig, now: number): Promise
  * @throws {Error} When the App is not installed on the repository or GitHub
  *   refuses the permissions.
  */
-async function mintToken(cfg: GitHubConfig, now: number, permissions: Readonly<Record<string, string>>): Promise<{ token: string; expiresAt: number; }> {
+async function mintToken(
+  cfg: GitHubConfig,
+  now: number,
+  permissions: Readonly<Record<string, string>>,
+): Promise<{ token: string; expiresAt: number }> {
   const jwt = await appJwt(cfg, now);
-  const inst = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/installation`, { headers: apiHeaders(jwt) });
+  const inst = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/installation`, {
+    headers: apiHeaders(jwt),
+  });
   if (!inst.ok) throw new Error(`app installation lookup failed: HTTP ${inst.status}`);
   const id = decodeInstallationId(await inst.json().catch(() => null));
   if (id === null) throw new Error("app installation id missing");
@@ -278,7 +295,8 @@ async function mintToken(cfg: GitHubConfig, now: number, permissions: Readonly<R
  * good: the issue is locked (`reason` "locked") or gone (deleted or
  * transferred, `reason` "gone").
  */
-export type SummaryWrite = { outcome: "updated" | "created" } | { outcome: "refused"; reason: "locked" | "gone" };
+export type SummaryWrite =
+  { outcome: "updated" | "created" } | { outcome: "refused"; reason: "locked" | "gone" };
 
 /**
  * Writes an issue's summary comment, for the owner's "Update GitHub now"
@@ -301,27 +319,41 @@ export type SummaryWrite = { outcome: "updated" | "created" } | { outcome: "refu
  *   a refusal for good (a rate limit, an outage). Messages carry a stage
  *   and an HTTP status, never the token.
  */
-export async function writeSummaryComment(cfg: GitHubConfig, now: number, issue: number, body: string): Promise<SummaryWrite> {
+export async function writeSummaryComment(
+  cfg: GitHubConfig,
+  now: number,
+  issue: number,
+  body: string,
+): Promise<SummaryWrite> {
   const { token } = await mintToken(cfg, now, SUMMARY_PERMISSIONS);
   const base = `${API}/repos/${cfg.owner}/${cfg.repo}/issues`;
   let found = null;
   let last = false;
   for (let page = 1; page <= MAX_COMMENT_PAGES && found === null && !last; page++) {
-    const res = await gh(`${base}/${issue}/comments?per_page=${COMMENT_PAGE}&page=${page}`, { headers: apiHeaders(token) });
+    const res = await gh(`${base}/${issue}/comments?per_page=${COMMENT_PAGE}&page=${page}`, {
+      headers: apiHeaders(token),
+    });
     if (!res.ok) throw new Error(`comment listing failed: HTTP ${res.status}`);
     const comments = decodeComments(await res.json().catch(() => null));
     if (comments === null) throw new Error("comment listing malformed");
     found = comments.summary;
     last = comments.count < COMMENT_PAGE;
   }
-  if (found === null && !last) throw new Error(`comment listing longer than ${MAX_COMMENT_PAGES} pages`);
-  const write = (method: "PATCH" | "POST", url: string): Promise<Response> => gh(url, { method, headers: { ...apiHeaders(token), "Content-Type": "application/json" }, body: JSON.stringify({ body }) });
+  if (found === null && !last)
+    throw new Error(`comment listing longer than ${MAX_COMMENT_PAGES} pages`);
+  const write = (method: "PATCH" | "POST", url: string): Promise<Response> =>
+    gh(url, {
+      method,
+      headers: { ...apiHeaders(token), "Content-Type": "application/json" },
+      body: JSON.stringify({ body }),
+    });
   if (found !== null) {
     const res = await write("PATCH", `${base}/comments/${found}`);
     if (res.ok) return { outcome: "updated" };
     // 404 or 410 here means the comment went away since the listing (someone
     // deleted it), not the issue: a new one is posted below.
-    if (res.status !== 404 && res.status !== 410) return refusal("edit", res, await res.text().catch(() => ""));
+    if (res.status !== 404 && res.status !== 410)
+      return refusal("edit", res, await res.text().catch(() => ""));
   }
   const res = await write("POST", `${base}/${issue}/comments`);
   if (res.ok) return { outcome: "created" };
@@ -383,8 +415,16 @@ export function decodeInstallationId(data: unknown): number | null {
  * @returns A non-empty token
  *   and its expiry in milliseconds, or null when either is missing.
  */
-export function decodeInstallationToken(data: unknown): { token: string; expiresAt: number; } | null {
-  if (!isRecordLike(data) || typeof data.token !== "string" || data.token === "" || typeof data.expires_at !== "string") return null;
+export function decodeInstallationToken(
+  data: unknown,
+): { token: string; expiresAt: number } | null {
+  if (
+    !isRecordLike(data) ||
+    typeof data.token !== "string" ||
+    data.token === "" ||
+    typeof data.expires_at !== "string"
+  )
+    return null;
   const expiresAt = Date.parse(data.expires_at);
   return Number.isFinite(expiresAt) ? { token: data.token, expiresAt } : null;
 }
@@ -401,13 +441,14 @@ export function decodeInstallationToken(data: unknown): { token: string; expires
  *   most `COMMENT_PAGE`; a shorter page is the last); null when the body is
  *   not a list.
  */
-export function decodeComments(data: unknown): { summary: number | null; count: number; } | null {
+export function decodeComments(data: unknown): { summary: number | null; count: number } | null {
   if (!Array.isArray(data)) return null;
   const page = data.slice(0, COMMENT_PAGE);
   for (const c of page) {
     if (!isRecordLike(c) || !isSafeInteger(c.id) || c.id <= 0) continue;
     if (!isRecordLike(c.user) || c.user.type !== "Bot") continue;
-    if (typeof c.body === "string" && c.body.startsWith(MARKER)) return { summary: c.id, count: page.length };
+    if (typeof c.body === "string" && c.body.startsWith(MARKER))
+      return { summary: c.id, count: page.length };
   }
   return { summary: null, count: page.length };
 }
@@ -426,7 +467,12 @@ const LOCKED_MESSAGE = /\bissue is locked\b/i;
  *   saying the issue is locked.
  */
 export function isLockedMessage(data: unknown): boolean {
-  return isRecordLike(data) && typeof data.message === "string" && data.message.length <= 1000 && LOCKED_MESSAGE.test(data.message);
+  return (
+    isRecordLike(data) &&
+    typeof data.message === "string" &&
+    data.message.length <= 1000 &&
+    LOCKED_MESSAGE.test(data.message)
+  );
 }
 
 /**
@@ -436,7 +482,9 @@ export function isLockedMessage(data: unknown): boolean {
  * @returns A non-empty `access_token`, or null.
  */
 export function decodeAccessToken(data: unknown): string | null {
-  return isRecordLike(data) && typeof data.access_token === "string" && data.access_token !== "" ? data.access_token : null;
+  return isRecordLike(data) && typeof data.access_token === "string" && data.access_token !== ""
+    ? data.access_token
+    : null;
 }
 
 /**
@@ -450,7 +498,9 @@ export function decodeAccessToken(data: unknown): string | null {
  *   letters and underscores, else null.
  */
 export function oauthErrorCode(data: unknown): string | null {
-  return isRecordLike(data) && typeof data.error === "string" && /^[a-z_]{1,40}$/.test(data.error) ? data.error : null;
+  return isRecordLike(data) && typeof data.error === "string" && /^[a-z_]{1,40}$/.test(data.error)
+    ? data.error
+    : null;
 }
 
 /**
@@ -460,7 +510,7 @@ export function oauthErrorCode(data: unknown): string | null {
  * @returns A positive safe integer id
  *   and a GitHub-shaped login, or null.
  */
-export function decodeUser(data: unknown): { id: number; login: string; } | null {
+export function decodeUser(data: unknown): { id: number; login: string } | null {
   if (!isRecordLike(data) || !isSafeInteger(data.id) || data.id <= 0) return null;
   if (typeof data.login !== "string" || !LOGIN.test(data.login)) return null;
   return { id: data.id, login: data.login };
@@ -499,7 +549,11 @@ export type SyncedIssue = {
  *   pull requests), and the newest valid `updated_at` on the page as
  *   ISO-8601, or "" when none parses.
  */
-export function decodeIssuePage(data: unknown): { issues: SyncedIssue[]; full: boolean; newest: string; } {
+export function decodeIssuePage(data: unknown): {
+  issues: SyncedIssue[];
+  full: boolean;
+  newest: string;
+} {
   const list = Array.isArray(data) ? data : [];
   const str = (v: unknown): string => (typeof v === "string" ? v : "");
   let newestMs = -Infinity;
@@ -521,7 +575,11 @@ export function decodeIssuePage(data: unknown): { issues: SyncedIssue[]; full: b
       fixed_in_label: fixedInLabel(i.labels),
     });
   }
-  return { issues, full: list.length >= 100, newest: Number.isFinite(newestMs) ? new Date(newestMs).toISOString() : "" };
+  return {
+    issues,
+    full: list.length >= 100,
+    newest: Number.isFinite(newestMs) ? new Date(newestMs).toISOString() : "",
+  };
 }
 
 /**
@@ -532,13 +590,15 @@ export function decodeIssuePage(data: unknown): { issues: SyncedIssue[]; full: b
  *   `decodeIssuePage` reads it and whether its labels include
  *   `diagnostics`, or null for a pull request or a malformed answer.
  */
-export function decodeIssue(data: unknown): { issue: SyncedIssue; labeled: boolean; } | null {
+export function decodeIssue(data: unknown): { issue: SyncedIssue; labeled: boolean } | null {
   const { issues } = decodeIssuePage([data]);
   const [issue] = issues;
   if (issues.length !== 1 || issue === undefined) return null;
   const rawLabels = prop(data, "labels");
   const labels: unknown[] = Array.isArray(rawLabels) ? rawLabels : [];
-  const labeled = labels.some((l) => l === DIAGNOSTICS_LABEL || prop(l, "name") === DIAGNOSTICS_LABEL);
+  const labeled = labels.some(
+    (l) => l === DIAGNOSTICS_LABEL || prop(l, "name") === DIAGNOSTICS_LABEL,
+  );
   return { issue, labeled };
 }
 
@@ -575,7 +635,7 @@ const FINGERPRINT = /^[0-9a-f]{64}$/;
  *   when the body is not a JSON object with a positive integer `issue` of at
  *   most 1e9 and a 64-character lowercase hex `fingerprint`.
  */
-export function parseSummaryDone(text: unknown): { issue: number; fingerprint: string; } | null {
+export function parseSummaryDone(text: unknown): { issue: number; fingerprint: string } | null {
   if (typeof text !== "string" || text.length > 512) return null;
   let data: unknown;
   try {
@@ -631,7 +691,8 @@ export function parseAttachRequest(text: unknown): AttachLink[] | null {
   } catch {
     return null;
   }
-  if (!isObject(data) || !Array.isArray(data.links) || data.links.length > MAX_ATTACH_ISSUES) return null;
+  if (!isObject(data) || !Array.isArray(data.links) || data.links.length > MAX_ATTACH_ISSUES)
+    return null;
   const out: AttachLink[] = [];
   const issues = new Set<number>();
   const seen = new Set<string>();
@@ -665,7 +726,10 @@ export function parseAttachRequest(text: unknown): AttachLink[] | null {
  * @param p - Callback URL, CSRF state and PKCE S256 challenge.
  * @returns URL on github.com.
  */
-export function authorizeUrl(cfg: GitHubConfig, p: { redirectUri: string; state: string; challenge: string; }): string {
+export function authorizeUrl(
+  cfg: GitHubConfig,
+  p: { redirectUri: string; state: string; challenge: string },
+): string {
   const q = new URLSearchParams({
     client_id: cfg.clientId,
     redirect_uri: p.redirectUri,
@@ -687,10 +751,17 @@ export function authorizeUrl(cfg: GitHubConfig, p: { redirectUri: string; state:
  *   why GitHub refused the code: its OAuth error code, or the HTTP status
  *   when it gave none. Neither carries credentials.
  */
-export async function exchangeCode(cfg: GitHubConfig, p: { code: string; redirectUri: string; verifier: string; }): Promise<{ token: string; } | { error: string; }> {
+export async function exchangeCode(
+  cfg: GitHubConfig,
+  p: { code: string; redirectUri: string; verifier: string },
+): Promise<{ token: string } | { error: string }> {
   const res = await gh(`${WEB}/login/oauth/access_token`, {
     method: "POST",
-    headers: { Accept: "application/json", "Content-Type": "application/json", "User-Agent": "bookclerk-diagnostics-worker" },
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "User-Agent": "bookclerk-diagnostics-worker",
+    },
     body: JSON.stringify({
       client_id: cfg.clientId,
       client_secret: cfg.clientSecret,
@@ -712,7 +783,9 @@ export async function exchangeCode(cfg: GitHubConfig, p: { code: string; redirec
  * @returns Numeric id and login, or the HTTP status when GitHub refuses the token
  *   or answers with something else.
  */
-export async function fetchUser(userToken: string): Promise<{ user: { id: number; login: string; }; } | { error: string; }> {
+export async function fetchUser(
+  userToken: string,
+): Promise<{ user: { id: number; login: string } } | { error: string }> {
   const res = await gh(`${API}/user`, { headers: apiHeaders(userToken) });
   const user = res.ok ? decodeUser(await res.json().catch(() => null)) : null;
   return user ? { user } : { error: `HTTP ${res.status}` };
@@ -756,12 +829,15 @@ export async function revokeUserToken(cfg: GitHubConfig, userToken: string): Pro
  * @throws {Error} When GitHub cannot answer (token or permission problem),
  *   so a GitHub outage is not reported as "not a member".
  */
-export async function membershipRole(cfg: GitHubConfig, user: { id: number; login: string; }, now: number): Promise<"admin" | "member" | null> {
+export async function membershipRole(
+  cfg: GitHubConfig,
+  user: { id: number; login: string },
+  now: number,
+): Promise<"admin" | "member" | null> {
   const token = await installationToken(cfg, now);
-  const res = await gh(
-    `${API}/orgs/${cfg.owner}/memberships/${encodeURIComponent(user.login)}`,
-    { headers: apiHeaders(token) },
-  );
+  const res = await gh(`${API}/orgs/${cfg.owner}/memberships/${encodeURIComponent(user.login)}`, {
+    headers: apiHeaders(token),
+  });
   const body = res.status === 404 || !res.ok ? "" : await res.text().catch(() => "");
   return membershipDecision(res.status, body, user, cfg.owner);
 }
@@ -782,10 +858,17 @@ export async function membershipRole(cfg: GitHubConfig, user: { id: number; logi
  * @throws {Error} For any other status, so an outage or permission problem
  *   is not reported as "not a member".
  */
-export function membershipDecision(status: number, body: string, user: { id: number; login: string; }, owner: string): "admin" | "member" | null {
+export function membershipDecision(
+  status: number,
+  body: string,
+  user: { id: number; login: string },
+  owner: string,
+): "admin" | "member" | null {
   if (status === 404) {
     // Not a member, or the owner is a user account.
-    return typeof user?.login === "string" && typeof owner === "string" && user.login.toLowerCase() === owner.toLowerCase()
+    return typeof user?.login === "string" &&
+      typeof owner === "string" &&
+      user.login.toLowerCase() === owner.toLowerCase()
       ? "admin"
       : null;
   }
@@ -815,7 +898,12 @@ export function membershipDecision(status: number, body: string, user: { id: num
  *   another may follow; and the latest `updated_at` on the page, pull
  *   requests included, so the sync cursor moves past them too.
  */
-export async function listDiagnosticsIssues(cfg: GitHubConfig, token: string, sinceIso: string, page: number): Promise<{ issues: SyncedIssue[]; full: boolean; newest: string; }> {
+export async function listDiagnosticsIssues(
+  cfg: GitHubConfig,
+  token: string,
+  sinceIso: string,
+  page: number,
+): Promise<{ issues: SyncedIssue[]; full: boolean; newest: string }> {
   const q = new URLSearchParams({
     labels: DIAGNOSTICS_LABEL,
     state: "all",
@@ -825,7 +913,9 @@ export async function listDiagnosticsIssues(cfg: GitHubConfig, token: string, si
     page: String(page),
   });
   if (sinceIso) q.set("since", sinceIso);
-  const res = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/issues?${q}`, { headers: apiHeaders(token) });
+  const res = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/issues?${q}`, {
+    headers: apiHeaders(token),
+  });
   if (!res.ok) throw new Error(`issue list failed: HTTP ${res.status}`);
   return decodeIssuePage(await res.json().catch(() => null));
 }
@@ -841,10 +931,17 @@ export async function listDiagnosticsIssues(cfg: GitHubConfig, token: string, si
  *   transferred, or a pull request) or answers with another number.
  * @throws {Error} When GitHub answers with another failure.
  */
-export async function fetchIssue(cfg: GitHubConfig, token: string, number: number): Promise<{ issue: SyncedIssue; labeled: boolean; } | null> {
+export async function fetchIssue(
+  cfg: GitHubConfig,
+  token: string,
+  number: number,
+): Promise<{ issue: SyncedIssue; labeled: boolean } | null> {
   // A transferred issue answers 301 to its new home in another repository;
   // that is not this repository's issue, so the redirect is not followed.
-  const res = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/issues/${number}`, { headers: apiHeaders(token), redirect: "manual" });
+  const res = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/issues/${number}`, {
+    headers: apiHeaders(token),
+    redirect: "manual",
+  });
   if (res.status === 404 || res.status === 410 || res.status === 301) return null;
   if (!res.ok) throw new Error(`issue read failed: HTTP ${res.status}`);
   const got = decodeIssue(await res.json().catch(() => null));
@@ -865,7 +962,8 @@ export const FIXED_IN_LABEL = "fixed-in:";
  * an optional prerelease and build, with or without a leading `v`, which is
  * dropped. Longer or odder values are not versions.
  */
-const FIXED_IN_VERSION = /^v?(\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[0-9A-Za-z.-]{1,64})?(?:\+[0-9A-Za-z.-]{1,64})?)$/;
+const FIXED_IN_VERSION =
+  /^v?(\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[0-9A-Za-z.-]{1,64})?(?:\+[0-9A-Za-z.-]{1,64})?)$/;
 
 /**
  * The fixed-in version an issue's labels set.
@@ -905,10 +1003,12 @@ const RELEASE_PAGES = 5;
  *   digits, `.`, `_`, `-`; at most 100 characters) with a parseable
  *   `published_at`, one per tag (the first kept), oldest first.
  */
-export function decodeReleases(data: unknown): { tag: string; publishedAt: number; prerelease: boolean; }[] {
+export function decodeReleases(
+  data: unknown,
+): { tag: string; publishedAt: number; prerelease: boolean }[] {
   const list = Array.isArray(data) ? data : [];
   const seen = new Set<string>();
-  const out: { tag: string; publishedAt: number; prerelease: boolean; }[] = [];
+  const out: { tag: string; publishedAt: number; prerelease: boolean }[] = [];
   for (const r of list) {
     if (!isRecordLike(r) || r.draft === true) continue;
     const tag = typeof r.tag_name === "string" ? r.tag_name : "";
@@ -918,7 +1018,9 @@ export function decodeReleases(data: unknown): { tag: string; publishedAt: numbe
     seen.add(tag);
     out.push({ tag, publishedAt, prerelease: r.prerelease === true });
   }
-  return out.sort((a, b) => a.publishedAt - b.publishedAt || (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0));
+  return out.sort(
+    (a, b) => a.publishedAt - b.publishedAt || (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0),
+  );
 }
 
 /**
@@ -936,13 +1038,19 @@ export function decodeReleases(data: unknown): { tag: string; publishedAt: numbe
  *   `complete` is whether the end of the list was reached.
  * @throws {Error} When a call fails.
  */
-export async function listReleases(cfg: GitHubConfig, token: string): Promise<{ releases: ReturnType<typeof decodeReleases>; complete: boolean; }> {
+export async function listReleases(
+  cfg: GitHubConfig,
+  token: string,
+): Promise<{ releases: ReturnType<typeof decodeReleases>; complete: boolean }> {
   const raw = [];
   let complete = false;
   for (let page = 1; page <= RELEASE_PAGES && !complete; page++) {
-    const res = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/releases?per_page=${RELEASE_PAGE}&page=${page}`, {
-      headers: apiHeaders(token),
-    });
+    const res = await gh(
+      `${API}/repos/${cfg.owner}/${cfg.repo}/releases?per_page=${RELEASE_PAGE}&page=${page}`,
+      {
+        headers: apiHeaders(token),
+      },
+    );
     if (!res.ok) throw new Error(`release list failed: HTTP ${res.status}`);
     const body = await res.json().catch(() => null);
     const items = Array.isArray(body) ? body : [];
@@ -981,9 +1089,17 @@ export function decodeCompare(data: unknown): boolean | null {
  *   when GitHub has no such tag or commit (404).
  * @throws {Error} When the call fails otherwise.
  */
-export async function tagContains(cfg: GitHubConfig, token: string, tag: string, sha: string): Promise<boolean | null> {
+export async function tagContains(
+  cfg: GitHubConfig,
+  token: string,
+  tag: string,
+  sha: string,
+): Promise<boolean | null> {
   if (!/^[A-Za-z0-9._-]{1,100}$/.test(tag) || !/^[0-9a-f]{40}$/.test(sha)) return null;
-  const res = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/compare/${encodeURIComponent(tag)}...${sha}`, { headers: apiHeaders(token) });
+  const res = await gh(
+    `${API}/repos/${cfg.owner}/${cfg.repo}/compare/${encodeURIComponent(tag)}...${sha}`,
+    { headers: apiHeaders(token) },
+  );
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`compare failed: HTTP ${res.status}`);
   return decodeCompare(await res.json().catch(() => null));
@@ -1011,13 +1127,25 @@ const PR_FIELDS = "number title state mergedAt mergeCommit { oid } repository { 
  * @throws {Error} When the call fails or the response carries GraphQL
  *   errors, so a failed refresh never reads as "no pull requests".
  */
-export async function pullRequestsFor(cfg: GitHubConfig, token: string, numbers: number[]): Promise<Map<number, {
-  labeled: boolean; prs: {
-    number: number;
-    title: string; state: "open" | "closed" | "merged";
-    mergedAt: number | null; mergeSha: string | null;
-  }[];
-}>> {
+export async function pullRequestsFor(
+  cfg: GitHubConfig,
+  token: string,
+  numbers: number[],
+): Promise<
+  Map<
+    number,
+    {
+      labeled: boolean;
+      prs: {
+        number: number;
+        title: string;
+        state: "open" | "closed" | "merged";
+        mergedAt: number | null;
+        mergeSha: string | null;
+      }[];
+    }
+  >
+> {
   const fields = numbers
     .map(
       (n, i) => `i${i}: issue(number: ${Number(n)}) {
@@ -1055,20 +1183,36 @@ export async function pullRequestsFor(cfg: GitHubConfig, token: string, numbers:
  * @throws {Error} When the response carries GraphQL errors or no
  *   repository object.
  */
-export function decodePullRequests(data: unknown, numbers: number[], repository: string): Map<number, {
-  labeled: boolean; prs: {
-    number: number;
-    title: string; state: "open" | "closed" | "merged";
-    mergedAt: number | null; mergeSha: string | null;
-  }[];
-}> {
+export function decodePullRequests(
+  data: unknown,
+  numbers: number[],
+  repository: string,
+): Map<
+  number,
+  {
+    labeled: boolean;
+    prs: {
+      number: number;
+      title: string;
+      state: "open" | "closed" | "merged";
+      mergedAt: number | null;
+      mergeSha: string | null;
+    }[];
+  }
+> {
   const text = (v: unknown): string => (typeof v === "string" ? v : "");
   const errors = prop(data, "errors");
   if (Array.isArray(errors) && errors.length) throw new Error("graphql returned errors");
   const repoData = prop(prop(data, "data"), "repository");
   if (!isRecordLike(repoData)) throw new Error("graphql returned no repository");
   const self = repository.toLowerCase();
-  type Pr = { number: number; title: string; state: "open" | "closed" | "merged"; mergedAt: number | null; mergeSha: string | null };
+  type Pr = {
+    number: number;
+    title: string;
+    state: "open" | "closed" | "merged";
+    mergedAt: number | null;
+    mergeSha: string | null;
+  };
   const out = new Map<number, { labeled: boolean; prs: Pr[] }>();
   numbers.forEach((n, i) => {
     const issue = repoData[`i${i}`];
@@ -1077,7 +1221,14 @@ export function decodePullRequests(data: unknown, numbers: number[], repository:
     const take = (pr: unknown): void => {
       if (!isRecordLike(pr) || !isSafeInteger(pr.number) || pr.number <= 0) return;
       if (text(prop(pr.repository, "nameWithOwner")).toLowerCase() !== self) return;
-      const state = pr.state === "OPEN" ? "open" : pr.state === "CLOSED" ? "closed" : pr.state === "MERGED" ? "merged" : null;
+      const state =
+        pr.state === "OPEN"
+          ? "open"
+          : pr.state === "CLOSED"
+            ? "closed"
+            : pr.state === "MERGED"
+              ? "merged"
+              : null;
       if (!state) return;
       const mergedAt = Date.parse(text(pr.mergedAt));
       const oid = text(prop(pr.mergeCommit, "oid"));
@@ -1091,12 +1242,16 @@ export function decodePullRequests(data: unknown, numbers: number[], repository:
     };
     const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
     for (const pr of list(prop(issue.closedByPullRequestsReferences, "nodes"))) take(pr);
-    for (const ev of list(prop(issue.timelineItems, "nodes"))) take(prop(ev, "source") ?? prop(ev, "subject"));
+    for (const ev of list(prop(issue.timelineItems, "nodes")))
+      take(prop(ev, "source") ?? prop(ev, "subject"));
     const nodes = prop(issue.labels, "nodes");
     const labels: unknown[] | null = Array.isArray(nodes) ? nodes : null;
     // Without a complete label list the check is unknown: keep the issue.
-    const complete = labels !== null && prop(prop(issue.labels, "pageInfo"), "hasNextPage") === false;
-    const labeled = !complete || (labels ?? []).some((l) => text(prop(l, "name")).toLowerCase() === DIAGNOSTICS_LABEL);
+    const complete =
+      labels !== null && prop(prop(issue.labels, "pageInfo"), "hasNextPage") === false;
+    const labeled =
+      !complete ||
+      (labels ?? []).some((l) => text(prop(l, "name")).toLowerCase() === DIAGNOSTICS_LABEL);
     out.set(n, { labeled, prs: [...found.values()] });
   });
   return out;

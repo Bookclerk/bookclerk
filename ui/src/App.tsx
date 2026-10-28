@@ -153,10 +153,7 @@ export default function App() {
           setAuth("authed");
         } else if (me.authenticated) {
           const fromInvite = isInvitePath();
-          const next = resolveView(
-            fromInvite ? "/" : window.location.pathname,
-            me.default_view,
-          );
+          const next = resolveView(fromInvite ? "/" : window.location.pathname, me.default_view);
           setSession(me);
           setView(next);
           if (fromInvite) {
@@ -266,10 +263,7 @@ export default function App() {
       return;
     }
     const fromInvite = isInvitePath();
-    const resolved = resolveView(
-      fromInvite ? "/" : window.location.pathname,
-      next.default_view,
-    );
+    const resolved = resolveView(fromInvite ? "/" : window.location.pathname, next.default_view);
     setSession(next);
     setView(resolved);
     if (fromInvite) {
@@ -328,11 +322,7 @@ export default function App() {
   if (needsSecondFactorEnrollment(session)) {
     return (
       <PageSuspense>
-        <MfaEnrollDialog
-          role={session.role}
-          onEnrolled={refreshSession}
-          onLoggedOut={onLogout}
-        />
+        <MfaEnrollDialog role={session.role} onEnrolled={refreshSession} onLoggedOut={onLogout} />
       </PageSuspense>
     );
   }
@@ -377,14 +367,7 @@ export default function App() {
   const role = session.role;
   const nav = { view, onNavigate: navigate, defaultView: session.default_view, role };
 
-  let page = (
-    <LibraryPage
-      onLogout={onLogout}
-      canAcquire={canAcquire}
-      nav={nav}
-      role={role}
-    />
-  );
+  let page = <LibraryPage onLogout={onLogout} canAcquire={canAcquire} nav={nav} role={role} />;
 
   if (view === "accounts") {
     page = <AccountsPage onLogout={onLogout} nav={nav} role={role} />;
@@ -409,16 +392,12 @@ export default function App() {
     page = <StatusPage onLogout={onLogout} nav={nav} role={role} />;
   }
 
-  const impersonatedRole = formatAuthRole(
-    session.user?.role ?? session.role,
-  );
+  const impersonatedRole = formatAuthRole(session.user?.role ?? session.role);
 
   return (
     <PreferencesProvider
       defaultView={session.default_view}
-      onDefaultViewChange={(v) =>
-        setSession((s) => (s ? { ...s, default_view: v } : s))
-      }
+      onDefaultViewChange={(v) => setSession((s) => (s ? { ...s, default_view: v } : s))}
     >
       <div className="flex h-full min-h-0 flex-col">
         {session.elevated ? (
@@ -429,9 +408,7 @@ export default function App() {
                 <>
                   {" "}
                   for{" "}
-                  <strong>
-                    {session.user.display_name?.trim() || `user #${session.user.id}`}
-                  </strong>
+                  <strong>{session.user.display_name?.trim() || `user #${session.user.id}`}</strong>
                 </>
               ) : null}
             </span>
@@ -453,12 +430,7 @@ export default function App() {
                 {session.impersonating.display_name?.trim() ||
                   `user #${session.impersonating.user_id}`}
               </strong>
-              {impersonatedRole ? (
-                <>
-                  {" "}
-                  as {impersonatedRole}
-                </>
-              ) : null}
+              {impersonatedRole ? <> as {impersonatedRole}</> : null}
             </span>
             <Button
               type="button"

@@ -23,7 +23,15 @@ import {
   sweep,
   utcDayOf,
 } from "./db.ts";
-import { fetchIssue, installationToken, listDiagnosticsIssues, listReleases, pullRequestsFor, tagContains, type GitHubConfig } from "./github.ts";
+import {
+  fetchIssue,
+  installationToken,
+  listDiagnosticsIssues,
+  listReleases,
+  pullRequestsFor,
+  tagContains,
+  type GitHubConfig,
+} from "./github.ts";
 import { parseIssueReportIds, reportIdOf } from "./report-ids.ts";
 import { summarizeReport } from "./signature.ts";
 import { listPage, MAX_STORED_REPORT_CHARS, type B2Access } from "./storage.ts";
@@ -211,10 +219,16 @@ export async function storeIssue(db: D1Database, issue: JsonObject): Promise<voi
  * @param issues - Issues from the REST API (at most 100).
  * @param cursor - Statements that save the cursor.
  */
-async function storeIssuePage(db: D1Database, issues: JsonObject[], cursor: D1PreparedStatement[]): Promise<void> {
+async function storeIssuePage(
+  db: D1Database,
+  issues: JsonObject[],
+  cursor: D1PreparedStatement[],
+): Promise<void> {
   const batches: D1PreparedStatement[][] = [];
   for (let i = 0; i < issues.length; i += ISSUES_PER_BATCH) {
-    batches.push(issues.slice(i, i + ISSUES_PER_BATCH).flatMap((issue) => issueStatements(db, issue)));
+    batches.push(
+      issues.slice(i, i + ISSUES_PER_BATCH).flatMap((issue) => issueStatements(db, issue)),
+    );
   }
   const last = batches.at(-1) ?? [];
   if (!batches.length) batches.push(last);
@@ -233,17 +247,27 @@ async function storeIssuePage(db: D1Database, issues: JsonObject[], cursor: D1Pr
  * @param now - Unix time in milliseconds.
  * @returns Statements.
  */
-function pullRequestStatements(db: D1Database, number: number, prs: {
-    number: number; title: string; state: string; mergedAt: number | null;
+function pullRequestStatements(
+  db: D1Database,
+  number: number,
+  prs: {
+    number: number;
+    title: string;
+    state: string;
+    mergedAt: number | null;
     mergeSha: string | null;
-  }[], now: number): D1PreparedStatement[] {
+  }[],
+  now: number,
+): D1PreparedStatement[] {
   const stmts: D1PreparedStatement[] = [];
   if (prs.length === 0 || prs.length > KEEP_CHUNK) {
     stmts.push(db.prepare("DELETE FROM issue_pr WHERE issue_number = ?").bind(number));
   } else {
     stmts.push(
       db
-        .prepare(`DELETE FROM issue_pr WHERE issue_number = ? AND pr_number NOT IN (${prs.map(() => "?").join(", ")})`)
+        .prepare(
+          `DELETE FROM issue_pr WHERE issue_number = ? AND pr_number NOT IN (${prs.map(() => "?").join(", ")})`,
+        )
         .bind(number, ...prs.map((pr) => pr.number)),
     );
   }
@@ -312,7 +336,12 @@ function dropStatements(db: D1Database, number: number): D1PreparedStatement[] {
  * @param now - Unix time in milliseconds.
  * @returns Statements written.
  */
-export async function resolveFixes(db: MeteredD1, cfg: GitHubConfig, token: string, now: number): Promise<number> {
+export async function resolveFixes(
+  db: MeteredD1,
+  cfg: GitHubConfig,
+  token: string,
+  now: number,
+): Promise<number> {
   const stmts: D1PreparedStatement[] = [];
   const insert = (
     issue: number,
@@ -328,7 +357,17 @@ export async function resolveFixes(db: MeteredD1, cfg: GitHubConfig, token: stri
         `INSERT OR IGNORE INTO issue_fix (issue_number, recorded_at, source, fixed_in, pr_number, merge_sha, recorded_by, checked_until, checked_tag)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .bind(issue, now, source, fixedIn, prNumber, mergeSha, by, checked?.publishedAt ?? null, checked?.tag ?? null);
+      .bind(
+        issue,
+        now,
+        source,
+        fixedIn,
+        prNumber,
+        mergeSha,
+        by,
+        checked?.publishedAt ?? null,
+        checked?.tag ?? null,
+      );
   // Labels: 'set' needs a manual row; 'gone' has label rows to drop.
   const labels = await all(
     db,
@@ -342,8 +381,14 @@ export async function resolveFixes(db: MeteredD1, cfg: GitHubConfig, token: stri
      ORDER BY i.number LIMIT 100`,
   );
   for (const row of labels) {
-    if (row.kind === "set") stmts.push(insert(Number(row.number), "manual", String(row.label), null, null, "label"));
-    else stmts.push(db.prepare("DELETE FROM issue_fix WHERE issue_number = ? AND recorded_by = 'label'").bind(Number(row.number)));
+    if (row.kind === "set")
+      stmts.push(insert(Number(row.number), "manual", String(row.label), null, null, "label"));
+    else
+      stmts.push(
+        db
+          .prepare("DELETE FROM issue_fix WHERE issue_number = ? AND recorded_by = 'label'")
+          .bind(Number(row.number)),
+      );
   }
 
   // Closed issues with a merged fix the sync has not placed in a release.
@@ -363,7 +408,9 @@ export async function resolveFixes(db: MeteredD1, cfg: GitHubConfig, token: stri
      ORDER BY i.closed_at, i.number LIMIT ?`;
   // Releases in the order the lookup walks them: publish time, then tag,
   // as decodeReleases sorts them.
-  const after = (r: Release, cursor: Release): boolean => r.publishedAt > cursor.publishedAt || (r.publishedAt === cursor.publishedAt && r.tag > cursor.tag);
+  const after = (r: Release, cursor: Release): boolean =>
+    r.publishedAt > cursor.publishedAt ||
+    (r.publishedAt === cursor.publishedAt && r.tag > cursor.tag);
   // Cheap check before the GitHub call: anything at all to look at, taking
   // any release newer than an unreleased row's last comparison as possible.
   const pending = await all(db, CANDIDATES, Number.MAX_SAFE_INTEGER, -1, "", 1);
@@ -374,20 +421,32 @@ export async function resolveFixes(db: MeteredD1, cfg: GitHubConfig, token: stri
       // the first release after a merge is in it. A list cut off by the
       // page cap leaves fixed-in versions to labels.
       const { releases: listed, complete } = await listReleases(cfg, token);
-      if (!complete) throw new Error("the release list is longer than the lookup reads; set fixed-in labels");
+      if (!complete)
+        throw new Error("the release list is longer than the lookup reads; set fixed-in labels");
       const releases = listed.filter((r) => parseSemver(r.tag) !== null);
       const newest: Release = releases.at(-1) ?? { publishedAt: 0, tag: "" };
-      const candidates = await all(db, CANDIDATES, newest.publishedAt, newest.publishedAt, newest.tag, FIX_RESOLVE_MAX);
+      const candidates = await all(
+        db,
+        CANDIDATES,
+        newest.publishedAt,
+        newest.publishedAt,
+        newest.tag,
+        FIX_RESOLVE_MAX,
+      );
       for (const c of candidates) {
         const mergedAt = Number(c.merged_at);
         const cursor =
-          c.source === "unreleased" ? { publishedAt: Number(c.checked_until ?? 0), tag: String(c.checked_tag ?? "") } : { publishedAt: -Infinity, tag: "" };
+          c.source === "unreleased"
+            ? { publishedAt: Number(c.checked_until ?? 0), tag: String(c.checked_tag ?? "") }
+            : { publishedAt: -Infinity, tag: "" };
         const sha = String(c.merge_sha);
         let fixedIn: string | null = null;
         // Where the comparison got to: the last release compared, or the
         // newest release when none was (nothing after the merge yet).
         let checked = newest;
-        for (const r of releases.filter((x) => x.publishedAt >= mergedAt && after(x, cursor)).slice(0, FIX_COMPARES)) {
+        for (const r of releases
+          .filter((x) => x.publishedAt >= mergedAt && after(x, cursor))
+          .slice(0, FIX_COMPARES)) {
           checked = r;
           if (await tagContains(cfg, token, r.tag, sha)) {
             fixedIn = normalizeVersion(r.tag);
@@ -396,7 +455,15 @@ export async function resolveFixes(db: MeteredD1, cfg: GitHubConfig, token: stri
         }
         stmts.push(
           fixedIn === null
-            ? insert(Number(c.number), "unreleased", null, Number(c.pr_number), sha, "sync", checked)
+            ? insert(
+                Number(c.number),
+                "unreleased",
+                null,
+                Number(c.pr_number),
+                sha,
+                "sync",
+                checked,
+              )
             : insert(Number(c.number), "release", fixedIn, Number(c.pr_number), sha, "sync"),
         );
       }
@@ -432,7 +499,11 @@ export async function resolveFixes(db: MeteredD1, cfg: GitHubConfig, token: stri
  * @returns Issues stored and
  *   issues whose pull requests were refreshed.
  */
-export async function syncIssues(env: Pick<DashboardEnv, "DASHBOARD_DB">, cfg: GitHubConfig, now: number): Promise<{ issues: number; refreshed: number; }> {
+export async function syncIssues(
+  env: Pick<DashboardEnv, "DASHBOARD_DB">,
+  cfg: GitHubConfig,
+  now: number,
+): Promise<{ issues: number; refreshed: number }> {
   const db = metered(env.DASHBOARD_DB);
   const budget = db.budget;
   await sweep(db, now);
@@ -454,7 +525,8 @@ export async function syncIssues(env: Pick<DashboardEnv, "DASHBOARD_DB">, cfg: G
       // move: page on. When this run stops here, the next one reads this
       // page again (unless it was this run's only read, so every run moves
       // forward), in case updates meanwhile shifted the order.
-      const more = reads + 1 < MAX_ISSUE_PAGES && budget.left() >= 2 * ISSUE_PAGE_CALLS + SYNC_RESERVE;
+      const more =
+        reads + 1 < MAX_ISSUE_PAGES && budget.left() >= 2 * ISSUE_PAGE_CALLS + SYNC_RESERVE;
       page = more || reads === 0 ? page + 1 : page;
     } else {
       page = 1;
@@ -476,7 +548,9 @@ export async function syncIssues(env: Pick<DashboardEnv, "DASHBOARD_DB">, cfg: G
        LIMIT ?`,
       MAX_PR_REFRESH,
     );
-    const numbers = queue.map((r) => Number(r.number)).filter((n) => Number.isSafeInteger(n) && n > 0);
+    const numbers = queue
+      .map((r) => Number(r.number))
+      .filter((n) => Number.isSafeInteger(n) && n > 0);
     for (let i = 0; i < numbers.length && budget.left() > SYNC_RESERVE; i += PR_BATCH) {
       const batch = numbers.slice(i, i + PR_BATCH);
       const prs = await pullRequestsFor(cfg, token, batch);
@@ -486,10 +560,14 @@ export async function syncIssues(env: Pick<DashboardEnv, "DASHBOARD_DB">, cfg: G
         // move it to the back of the queue so it cannot starve the rest.
         const got = prs.get(n);
         if (!got) {
-          stmts.push(db.prepare("UPDATE issues SET prs_synced_at = ? WHERE number = ?").bind(now, n));
+          stmts.push(
+            db.prepare("UPDATE issues SET prs_synced_at = ? WHERE number = ?").bind(now, n),
+          );
           continue;
         }
-        stmts.push(...(got.labeled ? pullRequestStatements(db, n, got.prs, now) : dropStatements(db, n)));
+        stmts.push(
+          ...(got.labeled ? pullRequestStatements(db, n, got.prs, now) : dropStatements(db, n)),
+        );
         refreshed += 1;
       }
       await db.batch(stmts);
@@ -516,7 +594,13 @@ export async function syncIssues(env: Pick<DashboardEnv, "DASHBOARD_DB">, cfg: G
  *   with its links, or was forgotten (no such issue, or not labeled
  *   `diagnostics`).
  */
-export async function syncIssueNow(env: Pick<DashboardEnv, "DASHBOARD_DB">, cfg: GitHubConfig, number: number, now: number, retryDelaysMs: number[] = NOT_FOUND_RETRY_MS): Promise<"linked" | "dropped"> {
+export async function syncIssueNow(
+  env: Pick<DashboardEnv, "DASHBOARD_DB">,
+  cfg: GitHubConfig,
+  number: number,
+  now: number,
+  retryDelaysMs: number[] = NOT_FOUND_RETRY_MS,
+): Promise<"linked" | "dropped"> {
   const db = metered(env.DASHBOARD_DB);
   const token = await installationToken(cfg, now);
   let got = await fetchIssue(cfg, token, number);
@@ -549,7 +633,12 @@ export async function syncIssueNow(env: Pick<DashboardEnv, "DASHBOARD_DB">, cfg:
  * @param cap - Daily row cap.
  * @returns What happened.
  */
-export async function indexSubmitted(db: D1Database, enriched: SubmittedReport, objectKey: string, cap: number): Promise<"indexed" | "capped"> {
+export async function indexSubmitted(
+  db: D1Database,
+  enriched: SubmittedReport,
+  objectKey: string,
+  cap: number,
+): Promise<"indexed" | "capped"> {
   return indexReport(
     db,
     {
@@ -575,7 +664,10 @@ export async function indexSubmitted(db: D1Database, enriched: SubmittedReport, 
  * @returns Reports added and
  *   whether the listing reached its end (the cursor then starts over).
  */
-export async function reindexSlice(env: Pick<DashboardEnv, "DASHBOARD_DB">, b2: B2Access): Promise<{ indexed: number; done: boolean; }> {
+export async function reindexSlice(
+  env: Pick<DashboardEnv, "DASHBOARD_DB">,
+  b2: B2Access,
+): Promise<{ indexed: number; done: boolean }> {
   const db = metered(env.DASHBOARD_DB);
   const budget = db.budget;
   const auth = await b2.authorize();
@@ -587,7 +679,11 @@ export async function reindexSlice(env: Pick<DashboardEnv, "DASHBOARD_DB">, b2: 
   for (let pages = 0; pages < REINDEX_PAGES && downloads < REINDEX_DOWNLOADS; pages++) {
     if (fetches >= REINDEX_FETCHES || budget.left() < REINDEX_PAGE_CALLS + REINDEX_RESERVE) break;
     fetches += 1;
-    const page = await listPage(b2, auth, { prefix: PREFIX, startFileName: start, maxFileCount: 100 });
+    const page = await listPage(b2, auth, {
+      prefix: PREFIX,
+      startFileName: start,
+      maxFileCount: 100,
+    });
     const candidates = page.files.flatMap((f) => {
       const reportId = reportIdOf(f.fileName);
       return reportId ? [{ ...f, reportId }] : [];
@@ -620,9 +716,16 @@ export async function reindexSlice(env: Pick<DashboardEnv, "DASHBOARD_DB">, b2: 
         stored = null;
       }
       if (!isRecordLike(stored) || stored.report_id !== f.reportId) continue;
-      const receivedAt = isSafeInteger(stored.received_at_unix_ms) ? stored.received_at_unix_ms : f.uploadTimestamp;
+      const receivedAt = isSafeInteger(stored.received_at_unix_ms)
+        ? stored.received_at_unix_ms
+        : f.uploadTimestamp;
       if (!Number.isFinite(new Date(receivedAt).getTime())) continue;
-      rows.push({ reportId: f.reportId, objectKey: f.fileName, receivedAt, summary: await summarizeReport(stored) });
+      rows.push({
+        reportId: f.reportId,
+        objectKey: f.fileName,
+        receivedAt,
+        summary: await summarizeReport(stored),
+      });
     }
     if (stoppedAt) start = stoppedAt;
     else if (!page.nextFileName) {
@@ -641,7 +744,9 @@ export async function reindexSlice(env: Pick<DashboardEnv, "DASHBOARD_DB">, b2: 
       ...rows.map((row) => reportInsert(db, row)),
       ...[...perDay].map(([day, n]) =>
         db
-          .prepare("INSERT INTO index_days (day, rows) VALUES (?, ?) ON CONFLICT (day) DO UPDATE SET rows = rows + excluded.rows")
+          .prepare(
+            "INSERT INTO index_days (day, rows) VALUES (?, ?) ON CONFLICT (day) DO UPDATE SET rows = rows + excluded.rows",
+          )
           .bind(day, n),
       ),
       stateStatement(db, "reindex_cursor", start),

@@ -63,8 +63,8 @@ export function AvatarPickerDialog({
             Profile picture
           </h2>
           <p className="mt-1 text-sm text-ink/55">
-            Uploaded pictures come first. Otherwise the last sign-in provider
-            picture is used, then Gravatar when an email is set.
+            Uploaded pictures come first. Otherwise the last sign-in provider picture is used, then
+            Gravatar when an email is set.
           </p>
         </div>
         <div className="flex flex-wrap gap-3">
@@ -74,11 +74,7 @@ export function AvatarPickerDialog({
             label="Monogram"
             onClick={() => void onSelectSource("monogram")}
           >
-            <UserAvatar
-              label={label}
-              avatarSource="monogram"
-              className="h-16 w-16 text-xl"
-            />
+            <UserAvatar label={label} avatarSource="monogram" className="h-16 w-16 text-xl" />
           </ChoiceButton>
           {fields.gravatar_hash ? (
             <ChoiceButton
@@ -153,12 +149,7 @@ export function AvatarPickerDialog({
           ) : (
             <span />
           )}
-          <Button
-            type="button"
-            variant="ghost"
-            disabled={busy}
-            onClick={() => onOpenChange(false)}
-          >
+          <Button type="button" variant="ghost" disabled={busy} onClick={() => onOpenChange(false)}>
             Close
           </Button>
         </div>

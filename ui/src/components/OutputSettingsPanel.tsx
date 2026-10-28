@@ -200,8 +200,7 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
         <div className="space-y-1">
           <h2 className="text-lg font-semibold text-ink">Output</h2>
           <p className="text-sm text-ink/55">
-            How acquired audio is packaged and named on every host. Stored in the library
-            database
+            How acquired audio is packaged and named on every host. Stored in the library database
             {revision === null ? "" : ` (revision ${revision})`}; destination roots and prefixes are
             plugin settings.
           </p>
@@ -215,8 +214,8 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
         {unavailable ? (
           <div className="flex items-center justify-between gap-3" role="alert">
             <p className="text-sm font-medium text-brick">
-              Output settings are unavailable: the server could not read the shared output
-              document. Editing is disabled until it can be read.
+              Output settings are unavailable: the server could not read the shared output document.
+              Editing is disabled until it can be read.
             </p>
             <Button type="button" variant="ghost" disabled={busy} onClick={() => void load()}>
               Retry

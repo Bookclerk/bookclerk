@@ -66,10 +66,7 @@ export function loadPin(root = packageRoot()): WorkerdPin {
  * @param arch - Node arch string (default `process.arch`).
  * @returns Pin asset key, or `undefined` when the host is unsupported.
  */
-export function platformKey(
-  platform = process.platform,
-  arch = process.arch,
-): string | undefined {
+export function platformKey(platform = process.platform, arch = process.arch): string | undefined {
   const map: Record<string, string> = {
     "linux-x64": "linux-x86_64",
     "linux-arm64": "linux-aarch64",
@@ -164,11 +161,7 @@ export function ensureDirUnder(root: string, rel: string): string {
   const resolvedRoot = path.resolve(root);
   const resolved = assertPathInside(resolvedRoot, rel);
   const relCheck = path.relative(resolvedRoot, resolved);
-  if (
-    relCheck.startsWith(".." + path.sep) ||
-    relCheck === ".." ||
-    path.isAbsolute(relCheck)
-  ) {
+  if (relCheck.startsWith(".." + path.sep) || relCheck === ".." || path.isAbsolute(relCheck)) {
     throw new Error(`path ${resolved} escapes root ${resolvedRoot}`);
   }
   // Inspect existing components before recursive mkdir so a symlink prefix
@@ -246,10 +239,7 @@ export function copyFileUnder(root: string, name: string, src: string): string {
  * @returns The validated absolute path.
  * @throws {Error} When an existing suffix component is a symlink or escapes.
  */
-export function refuseSymlinkExistingComponents(
-  trustedRoot: string,
-  candidate: string,
-): string {
+export function refuseSymlinkExistingComponents(trustedRoot: string, candidate: string): string {
   const rootLex = path.resolve(trustedRoot);
   const target = path.resolve(candidate);
   const rel = path.relative(rootLex, target);
@@ -267,11 +257,7 @@ export function refuseSymlinkExistingComponents(
   for (let i = 0; i < parts.length; i++) {
     cur = path.resolve(cur, parts[i]!);
     const stepRel = path.relative(root, cur);
-    if (
-      path.isAbsolute(stepRel) ||
-      stepRel === ".." ||
-      stepRel.startsWith(".." + path.sep)
-    ) {
+    if (path.isAbsolute(stepRel) || stepRel === ".." || stepRel.startsWith(".." + path.sep)) {
       throw new Error(`path ${cur} escapes root ${root}`);
     }
     if (!cur.startsWith(root + path.sep) && cur !== root) {
@@ -326,11 +312,7 @@ export function refuseSymlinkPath(trustedRoot: string, candidate: string): strin
   for (let i = 0; i < parts.length; i++) {
     cur = path.resolve(cur, parts[i]!);
     const stepRel = path.relative(root, cur);
-    if (
-      path.isAbsolute(stepRel) ||
-      stepRel === ".." ||
-      stepRel.startsWith(".." + path.sep)
-    ) {
+    if (path.isAbsolute(stepRel) || stepRel === ".." || stepRel.startsWith(".." + path.sep)) {
       throw new Error(`path ${cur} escapes root ${root}`);
     }
     if (!cur.startsWith(root + path.sep) && cur !== root) {
@@ -374,12 +356,7 @@ export function validateFetchUrl(url: string): string {
   }
   if (parsed.protocol === "http:") {
     const host = parsed.hostname.toLowerCase();
-    if (
-      host === "127.0.0.1" ||
-      host === "localhost" ||
-      host === "::1" ||
-      host === "[::1]"
-    ) {
+    if (host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]") {
       return parsed.href;
     }
   }
@@ -399,10 +376,7 @@ export function validateFetchUrl(url: string): string {
  * @returns Absolute validated path.
  * @throws {Error} When the path is relative, contains NUL, or escapes `trustedRoot`.
  */
-export function validateSpawnExecutable(
-  bin: string,
-  trustedRoot?: string,
-): string {
+export function validateSpawnExecutable(bin: string, trustedRoot?: string): string {
   if (!bin || bin.includes("\0")) {
     throw new Error("spawn executable path is empty or contains NUL");
   }
@@ -527,9 +501,7 @@ export async function ensureWorkerd(
 
   const key = platformKey();
   if (!key || !pin.assets[key]) {
-    throw new Error(
-      `no pinned workerd asset for ${process.platform}-${process.arch}`,
-    );
+    throw new Error(`no pinned workerd asset for ${process.platform}-${process.arch}`);
   }
   const asset = pin.assets[key]!;
   const url = validateFetchUrl(downloadUrl(pin, asset.artifact));
@@ -542,9 +514,7 @@ export async function ensureWorkerd(
   const compressed = Buffer.from(await res.arrayBuffer());
   const got = createHash("sha256").update(compressed).digest("hex");
   if (got !== asset.sha256_hex) {
-    throw new Error(
-      `workerd download sha256 mismatch: got ${got}, expected ${asset.sha256_hex}`,
-    );
+    throw new Error(`workerd download sha256 mismatch: got ${got}, expected ${asset.sha256_hex}`);
   }
 
   const tmpName = `.${binaryName()}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -576,8 +546,6 @@ export async function ensureWorkerd(
     throw err;
   }
   writeFileUnder(absCache, stampFileName(pin), `${pin.release_tag}\n`);
-  console.error(
-    `bookclerk-plugin: installed ${pin.release_tag} → ${dest}`,
-  );
+  console.error(`bookclerk-plugin: installed ${pin.release_tag} → ${dest}`);
   return validateSpawnExecutable(dest, absCache);
 }

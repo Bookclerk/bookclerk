@@ -10,11 +10,5 @@
     "jsdoc/require-param-description": "off",
     "jsdoc/require-returns-description": "off"
   },
-  "ignorePatterns": [
-    "dist/**",
-    "node_modules/**",
-    "src/generated.ts",
-    "embed/**",
-    "bridge/**"
-  ]
+  "ignorePatterns": ["dist/**", "node_modules/**", "src/generated.ts", "embed/**", "bridge/**"]
 }

@@ -113,11 +113,7 @@ export function AppTopBar({
             >
               <Settings2 className="h-4 w-4" />
             </Button>
-            <Button
-              variant="ghost"
-              onClick={() => void onSignOut()}
-              aria-label="Sign out"
-            >
+            <Button variant="ghost" onClick={() => void onSignOut()} aria-label="Sign out">
               <LogOut className="h-4 w-4" />
             </Button>
           </div>
@@ -154,9 +150,7 @@ export function AppTopBar({
                 )}
               >
                 <div className="flex items-center justify-between border-b border-ink/10 px-4 py-3">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">
-                    Menu
-                  </p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">Menu</p>
                   <Button variant="ghost" onClick={closeMenu} aria-label="Close menu">
                     <X className="h-5 w-5" />
                   </Button>

@@ -95,7 +95,10 @@ class Plugin extends BookclerkEntrypoint {
     return [
       {
         id: `${binding}-001`,
-        operations: [schemaMigrationOp("CREATE TABLE seen (id TEXT)"), dataMigrationOp("INSERT INTO seen VALUES ('x')")],
+        operations: [
+          schemaMigrationOp("CREATE TABLE seen (id TEXT)"),
+          dataMigrationOp("INSERT INTO seen VALUES ('x')"),
+        ],
       },
     ];
   }
@@ -117,11 +120,19 @@ class Storefront extends StorefrontEntrypoint {
     return params.productId === "known" ? { productId: "known", title: "Known" } : null;
   }
   async revokeAccount(params) {
-    calls.storefront.push(["revokeAccount", params.accountId, Array.from(params.credentials ?? [])]);
+    calls.storefront.push([
+      "revokeAccount",
+      params.accountId,
+      Array.from(params.credentials ?? []),
+    ]);
     if (params.accountId === "bad") throw new Error("store refused sign-out");
   }
   async diagnose() {
-    return [`greeting=${this.env.CONFIG.greeting}`, `secret=${this.env.SECRETS.token}`, `inv=${this.invocation.id}`];
+    return [
+      `greeting=${this.env.CONFIG.greeting}`,
+      `secret=${this.env.SECRETS.token}`,
+      `inv=${this.invocation.id}`,
+    ];
   }
   async listAccounts() {
     return [{ accountId: "a1", source: "echo", marketplace: "us", displayName: "A" }];
@@ -185,7 +196,12 @@ const granted = {
   cancelState: { polls: 0, release: null, mode: "hold" },
   async fetch(url, init = {}) {
     const u = new URL(url);
-    this.requests.push({ path: u.pathname, method: init.method ?? "GET", headers: init.headers ?? {}, body: init.body });
+    this.requests.push({
+      path: u.pathname,
+      method: init.method ?? "GET",
+      headers: init.headers ?? {},
+      body: init.body,
+    });
     if (u.pathname === "/progress") return new Response(null, { status: 200 });
     if (u.pathname.startsWith("/kv/")) {
       const body = JSON.parse(init.body);
@@ -194,11 +210,17 @@ const granted = {
         case "/kv/get": {
           const row = store.get(body.key);
           return Response.json(
-            row ? { found: true, value: row.value, metadata: row.metadata, expirationUnixMs: 0 } : { found: false },
+            row
+              ? { found: true, value: row.value, metadata: row.metadata, expirationUnixMs: 0 }
+              : { found: false },
           );
         }
         case "/kv/put":
-          store.set(body.key, { value: body.value, metadata: body.options.metadata, options: body.options });
+          store.set(body.key, {
+            value: body.value,
+            metadata: body.options.metadata,
+            options: body.options,
+          });
           return Response.json({ expirationUnixMs: 0 });
         case "/kv/delete":
           return Response.json({ existed: store.delete(body.key) });
@@ -216,7 +238,10 @@ const granted = {
     }
     if (u.pathname === "/queues/send") {
       const sent = JSON.parse(init.body);
-      return Response.json({ messageIds: sent.messages.map((_, i) => `q-${i + 1}`) }, { status: 200 });
+      return Response.json(
+        { messageIds: sent.messages.map((_, i) => `q-${i + 1}`) },
+        { status: 200 },
+      );
     }
     if (u.pathname === "/cancel") {
       this.cancelState.polls += 1;
@@ -266,7 +291,13 @@ const contextJson = JSON.stringify(
   }),
 );
 
-async function invoke(iface, method, paramsCodec, params, { caps = null, target = null, ctx = contextJson } = {}) {
+async function invoke(
+  iface,
+  method,
+  paramsCodec,
+  params,
+  { caps = null, target = null, ctx = contextJson } = {},
+) {
   const body = W.encodeMessage(paramsCodec, params ?? {}, caps ? capTableFor(caps) : undefined);
   return adapter.invoke(iface, method, ctx, caps ? JSON.stringify(caps) : null, target, body);
 }
@@ -302,9 +333,14 @@ function decodeReply(reply, resultsCodec, caps) {
 // --- ContentSource --------------------------------------------------------
 
 {
-  const reply = await invoke("ContentSource", "searchCatalog", W.ContentSourceSearchCatalogParamsCodec, {
-    params: { query: "dune", region: "us", limit: 5, page: 1 },
-  });
+  const reply = await invoke(
+    "ContentSource",
+    "searchCatalog",
+    W.ContentSourceSearchCatalogParamsCodec,
+    {
+      params: { query: "dune", region: "us", limit: 5, page: 1 },
+    },
+  );
   assert.deepEqual(reply.caps, []);
   const result = decodeReply(reply, W.ContentSourceSearchCatalogResultsCodec);
   assert.equal(result.kind, "ok");
@@ -366,7 +402,10 @@ function decodeReply(reply, resultsCodec, caps) {
     await invoke("ContentSource", "diagnose", W.ContentSourceDiagnoseParamsCodec, {}),
     W.ContentSourceDiagnoseResultsCodec,
   );
-  assert.deepEqual(result, { kind: "ok", value: { lines: ["greeting=hi", "secret=s3cr3t", "inv=inv-1"] } });
+  assert.deepEqual(result, {
+    kind: "ok",
+    value: { lines: ["greeting=hi", "secret=s3cr3t", "inv=inv-1"] },
+  });
   const accounts = decodeReply(
     await invoke("ContentSource", "listAccounts", W.ContentSourceListAccountsParamsCodec, {}),
     W.ContentSourceListAccountsResultsCodec,
@@ -386,7 +425,10 @@ function decodeReply(reply, resultsCodec, caps) {
   });
   assert.equal(reply.error, undefined, "author failures are not transport failures");
   const result = decodeReply(reply, W.ContentSourceLoginResultsCodec);
-  assert.deepEqual(result, { kind: "err", value: { code: "unsupported", message: "login not implemented" } });
+  assert.deepEqual(result, {
+    kind: "err",
+    value: { code: "unsupported", message: "login not implemented" },
+  });
 }
 
 // --- Destination ----------------------------------------------------------
@@ -413,12 +455,23 @@ function decodeReply(reply, resultsCodec, caps) {
 
 {
   const page = decodeReply(
-    await invoke("Destination", "list", W.DestinationListParamsCodec, { options: { prefix: "", cursor: "", limit: 0 } }),
+    await invoke("Destination", "list", W.DestinationListParamsCodec, {
+      options: { prefix: "", cursor: "", limit: 0 },
+    }),
     W.DestinationListResultsCodec,
   );
-  assert.deepEqual(calls.list, { prefix: undefined, cursor: undefined, limit: undefined }, "zero values → omitted");
-  assert.deepEqual(page, { kind: "ok", value: { objects: [{ key: "a/1", size: 3 }], nextCursor: "next" } });
-  await invoke("Destination", "list", W.DestinationListParamsCodec, { options: { prefix: "a/", cursor: "c", limit: 5 } });
+  assert.deepEqual(
+    calls.list,
+    { prefix: undefined, cursor: undefined, limit: undefined },
+    "zero values → omitted",
+  );
+  assert.deepEqual(page, {
+    kind: "ok",
+    value: { objects: [{ key: "a/1", size: 3 }], nextCursor: "next" },
+  });
+  await invoke("Destination", "list", W.DestinationListParamsCodec, {
+    options: { prefix: "a/", cursor: "c", limit: 5 },
+  });
   assert.deepEqual(calls.list, { prefix: "a/", cursor: "c", limit: 5 });
 }
 
@@ -434,14 +487,20 @@ function decodeReply(reply, resultsCodec, caps) {
   );
   assert.deepEqual(del, { kind: "ok" });
   const commit = decodeReply(
-    await invoke("Destination", "commit", W.DestinationCommitParamsCodec, { key: "k", commitToken: "tok" }),
+    await invoke("Destination", "commit", W.DestinationCommitParamsCodec, {
+      key: "k",
+      commitToken: "tok",
+    }),
     W.DestinationCommitResultsCodec,
   );
   assert.equal(commit.value.key, "k");
   assert.equal(commit.value.bytesWritten, 7);
   assert.equal(commit.value.etag, "tok");
   const abort = decodeReply(
-    await invoke("Destination", "abortStage", W.DestinationAbortStageParamsCodec, { key: "k", commitToken: "tok" }),
+    await invoke("Destination", "abortStage", W.DestinationAbortStageParamsCodec, {
+      key: "k",
+      commitToken: "tok",
+    }),
     W.DestinationAbortStageResultsCodec,
   );
   assert.deepEqual(abort, { kind: "err", value: { code: "not_found", message: "no such stage" } });
@@ -508,10 +567,18 @@ function decodeReply(reply, resultsCodec, caps) {
       results: [{ kind: "ack" }, { kind: "retry", value: { delaySeconds: 7, reason: "again" } }],
     },
   });
-  assert.deepEqual(calls.queueSends, [{ messageIds: ["q-1"] }], "send returns the host-assigned ids");
+  assert.deepEqual(
+    calls.queueSends,
+    [{ messageIds: ["q-1"] }],
+    "send returns the host-assigned ids",
+  );
   const send = granted.requests.slice(before).find((r) => r.path === "/queues/send");
   assert.ok(send, "env.NOTIFY.send went through the granted channel");
-  assert.equal(send.headers.Authorization, "Bearer qtok", "the queue grant token never reaches the author");
+  assert.equal(
+    send.headers.Authorization,
+    "Bearer qtok",
+    "the queue grant token never reaches the author",
+  );
   const body = JSON.parse(send.body);
   assert.equal(body.delaySeconds, 0);
   assert.equal(body.messages.length, 1);
@@ -522,7 +589,11 @@ function decodeReply(reply, resultsCodec, caps) {
   // env.KV: Workers KVNamespace shape over `/kv/*` with the kv-only token.
   assert.equal(calls.kvMissing, null, "absent key reads as null");
   assert.equal(calls.kvText, "page-7");
-  assert.match(String(calls.kvJson), /JSON|Unexpected token/, "text that is not JSON fails the json decode");
+  assert.match(
+    String(calls.kvJson),
+    /JSON|Unexpected token/,
+    "text that is not JSON fails the json decode",
+  );
   assert.equal(calls.kvBytes, "page-7");
   assert.deepEqual(calls.kvList, {
     keys: [{ name: "cursor", expiration: 61, metadata: { page: 7 } }],
@@ -532,10 +603,17 @@ function decodeReply(reply, resultsCodec, caps) {
   assert.equal(calls.kvTooBig, "payload_too_large", "oversize values never leave the isolate");
   const kvCalls = granted.requests.slice(before).filter((r) => r.path.startsWith("/kv/"));
   assert.ok(kvCalls.length >= 6, "every KV op went through the granted channel");
-  assert.ok(kvCalls.every((r) => r.headers.Authorization === "Bearer ktok"), "the kv grant token never reaches the author");
+  assert.ok(
+    kvCalls.every((r) => r.headers.Authorization === "Bearer ktok"),
+    "the kv grant token never reaches the author",
+  );
   const put = JSON.parse(kvCalls.find((r) => r.path === "/kv/put").body);
   assert.equal(Buffer.from(put.value, "base64").toString(), "page-7");
-  assert.deepEqual(put.options, { expirationUnixMs: 0, expirationTtlSeconds: 60, metadata: '{"page":7}' });
+  assert.deepEqual(put.options, {
+    expirationUnixMs: 0,
+    expirationTtlSeconds: 60,
+    metadata: '{"page":7}',
+  });
   assert.ok(!kvCalls.some((r) => r.path === "/kv/put" && JSON.parse(r.body).key === "big"));
 }
 
@@ -563,14 +641,22 @@ const jobCaps = [
   { kind: "cancellation", token: "tok-cancel" },
 ];
 const jobParams = (commandType) => ({
-  controller: { invocation: { ...jobInvocation, commandType }, input: "in", output: "out", progress: "p", cancel: "c" },
+  controller: {
+    invocation: { ...jobInvocation, commandType },
+    input: "in",
+    output: "out",
+    progress: "p",
+    cancel: "c",
+  },
 });
 
 {
   granted.requests.length = 0;
   granted.cancelState = { polls: 0, release: null, mode: "idle" };
   const result = decodeReply(
-    await invoke("JobRunner", "job", W.JobRunnerJobParamsCodec, jobParams("echo.copy"), { caps: jobCaps }),
+    await invoke("JobRunner", "job", W.JobRunnerJobParamsCodec, jobParams("echo.copy"), {
+      caps: jobCaps,
+    }),
     W.JobRunnerJobResultsCodec,
   );
   assert.deepEqual(result, {
@@ -602,18 +688,28 @@ const jobParams = (commandType) => ({
     fire();
   };
   const result = decodeReply(
-    await invoke("JobRunner", "job", W.JobRunnerJobParamsCodec, jobParams("cancel-me"), { caps: jobCaps }),
+    await invoke("JobRunner", "job", W.JobRunnerJobParamsCodec, jobParams("cancel-me"), {
+      caps: jobCaps,
+    }),
     W.JobRunnerJobResultsCodec,
   );
   jobHooks.onProgressed = undefined;
-  assert.deepEqual(result, { kind: "ok", value: { kind: "cancelled", value: { message: "stopped" } } });
+  assert.deepEqual(result, {
+    kind: "ok",
+    value: { kind: "cancelled", value: { message: "stopped" } },
+  });
   assert.equal(granted.cancelState.polls, 2, "204 re-arms the poll; 200 resolves it");
 }
 
 // bad capability table → 400
 {
   const reply = await invoke("JobRunner", "job", W.JobRunnerJobParamsCodec, jobParams("x"), {
-    caps: [{ kind: "source", token: "a" }, { kind: "bogus" }, { kind: "progress" }, { kind: "cancellation" }],
+    caps: [
+      { kind: "source", token: "a" },
+      { kind: "bogus" },
+      { kind: "progress" },
+      { kind: "cancellation" },
+    ],
   });
   assert.equal(reply.status, 400);
   assert.equal(reply.error.code, "invalid_params");
@@ -641,9 +737,15 @@ const jobParams = (commandType) => ({
   const id = opened.caps[0].id;
 
   const caps = decodeReply(
-    await invoke("AdapterDatabaseSession", "capabilities", W.AdapterDatabaseSessionCapabilitiesParamsCodec, {}, {
-      target: id,
-    }),
+    await invoke(
+      "AdapterDatabaseSession",
+      "capabilities",
+      W.AdapterDatabaseSessionCapabilitiesParamsCodec,
+      {},
+      {
+        target: id,
+      },
+    ),
     W.AdapterDatabaseSessionCapabilitiesResultsCodec,
   );
   assert.equal(caps.kind, "ok");
@@ -652,9 +754,15 @@ const jobParams = (commandType) => ({
   assert.equal(caps.value.schemaMigrations, false);
 
   const relations = decodeReply(
-    await invoke("AdapterDatabaseSession", "listUserRelations", W.AdapterDatabaseSessionListUserRelationsParamsCodec, {}, {
-      target: id,
-    }),
+    await invoke(
+      "AdapterDatabaseSession",
+      "listUserRelations",
+      W.AdapterDatabaseSessionListUserRelationsParamsCodec,
+      {},
+      {
+        target: id,
+      },
+    ),
     W.AdapterDatabaseSessionListUserRelationsResultsCodec,
   );
   assert.deepEqual(relations, { kind: "ok", value: ["books", "authors"] });
@@ -671,23 +779,49 @@ const jobParams = (commandType) => ({
   assert.deepEqual(dropped, { kind: "ok" });
   assert.deepEqual(calls.dropped, ["books"]);
   const unsupported = decodeReply(
-    await invoke("AdapterDatabaseSession", "bootstrap", W.AdapterDatabaseSessionBootstrapParamsCodec, {}, { target: id }),
+    await invoke(
+      "AdapterDatabaseSession",
+      "bootstrap",
+      W.AdapterDatabaseSessionBootstrapParamsCodec,
+      {},
+      { target: id },
+    ),
     W.AdapterDatabaseSessionBootstrapResultsCodec,
   );
-  assert.deepEqual(unsupported, { kind: "err", value: { code: "unsupported", message: "bootstrap not implemented" } });
+  assert.deepEqual(unsupported, {
+    kind: "err",
+    value: { code: "unsupported", message: "bootstrap not implemented" },
+  });
 
-  const noTarget = await invoke("AdapterDatabaseSession", "close", W.AdapterDatabaseSessionCloseParamsCodec, {});
+  const noTarget = await invoke(
+    "AdapterDatabaseSession",
+    "close",
+    W.AdapterDatabaseSessionCloseParamsCodec,
+    {},
+  );
   assert.equal(noTarget.status, 400, "session calls need X-Bookclerk-Target");
 
   const closed = decodeReply(
-    await invoke("AdapterDatabaseSession", "close", W.AdapterDatabaseSessionCloseParamsCodec, {}, { target: id }),
+    await invoke(
+      "AdapterDatabaseSession",
+      "close",
+      W.AdapterDatabaseSessionCloseParamsCodec,
+      {},
+      { target: id },
+    ),
     W.AdapterDatabaseSessionCloseResultsCodec,
   );
   assert.deepEqual(closed, { kind: "ok" });
   const gone = decodeReply(
-    await invoke("AdapterDatabaseSession", "capabilities", W.AdapterDatabaseSessionCapabilitiesParamsCodec, {}, {
-      target: id,
-    }),
+    await invoke(
+      "AdapterDatabaseSession",
+      "capabilities",
+      W.AdapterDatabaseSessionCapabilitiesParamsCodec,
+      {},
+      {
+        target: id,
+      },
+    ),
     W.AdapterDatabaseSessionCapabilitiesResultsCodec,
   );
   assert.equal(gone.kind, "err");
@@ -698,9 +832,15 @@ const jobParams = (commandType) => ({
 
 {
   const result = decodeReply(
-    await invoke("PluginWorker", "databaseMigrations", W.PluginWorkerDatabaseMigrationsParamsCodec, { binding: "DB" }, {
-      ctx: null,
-    }),
+    await invoke(
+      "PluginWorker",
+      "databaseMigrations",
+      W.PluginWorkerDatabaseMigrationsParamsCodec,
+      { binding: "DB" },
+      {
+        ctx: null,
+      },
+    ),
     W.PluginWorkerDatabaseMigrationsResultsCodec,
   );
   assert.deepEqual(result, {
@@ -740,14 +880,28 @@ const jobParams = (commandType) => ({
   assert.equal(unknownIface.status, 400);
   const proto = await invoke("ContentSource", "constructor", W.ContentSourceHealthParamsCodec, {});
   assert.equal(proto.status, 400, "prototype keys are not methods");
-  const streamRoute = await invoke("Destination", "get", W.DestinationHeadParamsCodec, { key: "k" });
+  const streamRoute = await invoke("Destination", "get", W.DestinationHeadParamsCodec, {
+    key: "k",
+  });
   assert.equal(streamRoute.status, 400, "get/put stay stream routes");
 
-  const missingBinding = await invoke("RemoteLibrary", "health", W.RemoteLibraryHealthParamsCodec, {});
+  const missingBinding = await invoke(
+    "RemoteLibrary",
+    "health",
+    W.RemoteLibraryHealthParamsCodec,
+    {},
+  );
   assert.equal(missingBinding.status, 404);
   assert.equal(missingBinding.error.code, "unsupported");
 
-  const malformed = await adapter.invoke("ContentSource", "health", contextJson, null, null, new Uint8Array([1, 2, 3]));
+  const malformed = await adapter.invoke(
+    "ContentSource",
+    "health",
+    contextJson,
+    null,
+    null,
+    new Uint8Array([1, 2, 3]),
+  );
   assert.equal(malformed.status, 400);
   const badContext = await adapter.invoke(
     "ContentSource",
@@ -791,7 +945,10 @@ const jobParams = (commandType) => ({
   assert.equal(typeof embed.wrapPluginFromBinding, "function");
   assert.equal(typeof embed.InvokeError, "function");
   const EmbedAdapter = embed.wrapPluginFromBinding();
-  const embedAdapter = new EmbedAdapter({}, { ...env, PLUGIN_STOREFRONT: new embed.StorefrontEntrypoint({}, {}) });
+  const embedAdapter = new EmbedAdapter(
+    {},
+    { ...env, PLUGIN_STOREFRONT: new embed.StorefrontEntrypoint({}, {}) },
+  );
   const reply = await embedAdapter.invoke(
     "ContentSource",
     "health",

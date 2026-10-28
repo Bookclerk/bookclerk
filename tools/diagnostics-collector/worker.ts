@@ -50,7 +50,12 @@
  * secrets; Bookclerk builds carry the collector URL, never this key.
  */
 
-import { MAX_ATTACH_BODY_CHARS, parseAttachRequest, parseIssueNotify, parseSummaryDone } from "./dashboard/github.ts";
+import {
+  MAX_ATTACH_BODY_CHARS,
+  parseAttachRequest,
+  parseIssueNotify,
+  parseSummaryDone,
+} from "./dashboard/github.ts";
 import { reportIdOf } from "./dashboard/report-ids.ts";
 import {
   dashboardFetch,
@@ -66,11 +71,7 @@ import {
 } from "./dashboard/routes.ts";
 import { MAX_CURSOR_CHARS, commitCursor, parseCursor, readCursor } from "./ingest-cursor.ts";
 import { handleTriage, readCapped } from "./triage.ts";
-import {
-  extractVersionFromKey,
-  normalizeVersion,
-  versionAcceptable,
-} from "./version-filter.ts";
+import { extractVersionFromKey, normalizeVersion, versionAcceptable } from "./version-filter.ts";
 import type { B2Access, B2Auth } from "./dashboard/storage.ts";
 import type { Background, Env } from "./env.ts";
 import { asObject, isObject, isRecordLike, type JsonObject } from "./json.ts";
@@ -93,7 +94,12 @@ export type PulledReport = {
   /** Version from the object key, or null. */
   object_version: string | null;
   /** The closed issue the report regresses, or null. */
-  regression_of: { issue: number; fixed_in: string; pr_number: number | null; title: string } | null;
+  regression_of: {
+    issue: number;
+    fixed_in: string;
+    pr_number: number | null;
+    title: string;
+  } | null;
   /** The stored object. */
   report: unknown;
 };
@@ -386,10 +392,16 @@ function b2Access(env: Env): B2Access {
 async function handleCursorCommit(request: Request, env: Env): Promise<Response> {
   const text = await readCapped(request, MAX_CURSOR_CHARS);
   const next = text === null ? null : parseCursor(text);
-  if (next === null) return json({ error: "expected {\"since\": <ms>, \"after\": \"<name>\"}" }, 400);
-  if (!env.DASHBOARD_DB) return json({ error: "no DASHBOARD_DB binding to store the cursor in" }, 503);
+  if (next === null) return json({ error: 'expected {"since": <ms>, "after": "<name>"}' }, 400);
+  if (!env.DASHBOARD_DB)
+    return json({ error: "no DASHBOARD_DB binding to store the cursor in" }, 503);
   const { advanced, cursor } = await commitCursor(env.DASHBOARD_DB, next);
-  return json({ ok: true, advanced, since: cursor.since, after: cursor.after } satisfies CursorAnswer);
+  return json({
+    ok: true,
+    advanced,
+    since: cursor.since,
+    after: cursor.after,
+  } satisfies CursorAnswer);
 }
 
 /**
@@ -405,7 +417,7 @@ async function handleCursorCommit(request: Request, env: Env): Promise<Response>
 async function handleIssueNotify(request: Request, env: Env): Promise<Response> {
   const text = await readCapped(request, 256);
   const number = text === null ? null : parseIssueNotify(text);
-  if (number === null) return json({ error: "expected {\"issue\": <number>}" }, 400);
+  if (number === null) return json({ error: 'expected {"issue": <number>}' }, 400);
   const result = await dashboardIssueNotify(env, number, Date.now());
   if (result === null) return new Response(null, { status: 204 });
   return json({ ok: true, issue: number, result }, 202);
@@ -426,7 +438,11 @@ async function handleIssueNotify(request: Request, env: Env): Promise<Response> 
 async function handleTriageAttach(request: Request, env: Env): Promise<Response> {
   const text = await readCapped(request, MAX_ATTACH_BODY_CHARS);
   const links = text === null ? null : parseAttachRequest(text);
-  if (links === null) return json({ error: "expected {\"links\": [{\"issue\": <number>, \"report_ids\": [\"<uuid>\"]}]}" }, 400);
+  if (links === null)
+    return json(
+      { error: 'expected {"links": [{"issue": <number>, "report_ids": ["<uuid>"]}]}' },
+      400,
+    );
   const result = await dashboardTriageAttach(env, links, Date.now());
   if (result === null) return new Response(null, { status: 204 });
   return json({ ok: true, ...result });
@@ -445,7 +461,8 @@ async function handleTriageAttach(request: Request, env: Env): Promise<Response>
 async function handleSummaryDone(request: Request, env: Env): Promise<Response> {
   const text = await readCapped(request, 512);
   const done = text === null ? null : parseSummaryDone(text);
-  if (done === null) return json({ error: "expected {\"issue\": <number>, \"fingerprint\": \"<sha-256 hex>\"}" }, 400);
+  if (done === null)
+    return json({ error: 'expected {"issue": <number>, "fingerprint": "<sha-256 hex>"}' }, 400);
   const known = await dashboardSummarySent(env, done, Date.now());
   if (known === null) return new Response(null, { status: 204 });
   if (!known) return json({ error: "unknown issue" }, 404);
@@ -522,7 +539,9 @@ async function handleSubmit(request: Request, env: Env, ctx: Background): Promis
   // owner's reindex and never fails the upload.
   const db = env.DASHBOARD_DB;
   if (db) {
-    ctx.waitUntil(dashboardIndexSubmitted({ ...env, DASHBOARD_DB: db }, enriched, objectKey).catch(() => {}));
+    ctx.waitUntil(
+      dashboardIndexSubmitted({ ...env, DASHBOARD_DB: db }, enriched, objectKey).catch(() => {}),
+    );
   }
 
   return json(
@@ -596,7 +615,8 @@ async function handleReport(request: Request, env: Env, url: URL): Promise<Respo
   // First pass: pick the objects this pull covers and move the cursor past
   // them; downloads wait until the dashboard has had a chance to link some
   // of them to an issue by signature, which needs only the index.
-  const picked: { f: B2File; ts: number; objectVersion: string | null; listedId: string | null }[] = [];
+  const picked: { f: B2File; ts: number; objectVersion: string | null; listedId: string | null }[] =
+    [];
   let maxTs = since;
   let nextAfter = afterName;
   let skippedVersion = 0;
@@ -631,11 +651,17 @@ async function handleReport(request: Request, env: Env, url: URL): Promise<Respo
   let linkedBySignature = new Map<string, number>();
   if (filed) {
     try {
-      linkedBySignature = await dashboardLinkBySignature(env, picked.map((p) => p.listedId).filter((id) => id !== null), Date.now());
+      linkedBySignature = await dashboardLinkBySignature(
+        env,
+        picked.map((p) => p.listedId).filter((id) => id !== null),
+        Date.now(),
+      );
     } catch (err) {
       // The pull needs only B2; without the links these reports go to
       // triage as before.
-      console.error(`signature linking failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(
+        `signature linking failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -643,16 +669,23 @@ async function handleReport(request: Request, env: Env, url: URL): Promise<Respo
   // that fixed one, or later, is returned as a regression of it for ingest
   // to open a new issue over; one from an older build on the same version
   // line joins the closed issue quietly and is not returned.
-  let closed: Awaited<ReturnType<typeof dashboardMatchClosed>> = { regressions: new Map(), linked: new Map() };
+  let closed: Awaited<ReturnType<typeof dashboardMatchClosed>> = {
+    regressions: new Map(),
+    linked: new Map(),
+  };
   if (filed) {
     try {
       closed = await dashboardMatchClosed(
         env,
-        picked.map((p) => p.listedId).filter((id): id is string => id !== null && !linkedBySignature.has(id)),
+        picked
+          .map((p) => p.listedId)
+          .filter((id): id is string => id !== null && !linkedBySignature.has(id)),
         Date.now(),
       );
     } catch (err) {
-      console.error(`closed-issue matching failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(
+        `closed-issue matching failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -690,7 +723,12 @@ async function handleReport(request: Request, env: Env, url: URL): Promise<Respo
       // The closed issue this report regresses, for ingest to name in the
       // issue it opens (scripts/regression_issue.py); absent otherwise.
       regression_of: regression
-        ? { issue: regression.issue, fixed_in: regression.fixedIn, pr_number: regression.prNumber, title: regression.title }
+        ? {
+            issue: regression.issue,
+            fixed_in: regression.fixedIn,
+            pr_number: regression.prNumber,
+            title: regression.title,
+          }
         : null,
       report: parsed,
     });
@@ -759,7 +797,12 @@ function compareUploadOrder(a: B2File, b: B2File): number {
  * @param fileName - The object's name.
  * @returns The cursor after the object.
  */
-function advanceCursor(maxTs: number, nextAfter: string, ts: number, fileName: string): { maxTs: number; nextAfter: string } {
+function advanceCursor(
+  maxTs: number,
+  nextAfter: string,
+  ts: number,
+  fileName: string,
+): { maxTs: number; nextAfter: string } {
   if (ts > maxTs) {
     return { maxTs: ts, nextAfter: fileName };
   }
@@ -775,7 +818,9 @@ function advanceCursor(maxTs: number, nextAfter: string, ts: number, fileName: s
  * @param env - Worker bindings.
  * @returns The normalized version and where it came from.
  */
-async function resolveLatestStableBaseline(env: Env): Promise<{ version: string | null; source: string; }> {
+async function resolveLatestStableBaseline(
+  env: Env,
+): Promise<{ version: string | null; source: string }> {
   const repo = (env.GITHUB_REPOSITORY || "").trim();
   if (!repo || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
     return { version: null, source: "all" };
@@ -790,9 +835,13 @@ async function resolveLatestStableBaseline(env: Env): Promise<{ version: string 
     headers.Authorization = `Bearer ${env.GITHUB_TOKEN}`;
   }
 
-  const res = await upstreamFetch("github releases/latest", `https://api.github.com/repos/${repo}/releases/latest`, {
-    headers,
-  });
+  const res = await upstreamFetch(
+    "github releases/latest",
+    `https://api.github.com/repos/${repo}/releases/latest`,
+    {
+      headers,
+    },
+  );
 
   // No releases published yet → ingest every version.
   if (res.status === 404) {
@@ -828,9 +877,7 @@ function requireReportAuth(request: Request, env: Env): boolean {
     return false;
   }
   const header = request.headers.get("authorization") || "";
-  const bearer = header.toLowerCase().startsWith("bearer ")
-    ? header.slice(7).trim()
-    : "";
+  const bearer = header.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : "";
   const alt = (request.headers.get("x-bookclerk-report-key") || "").trim();
   return timingSafe.equal(bearer, expected) || timingSafe.equal(alt, expected);
 }
@@ -997,7 +1044,11 @@ async function b2Authorize(env: Env): Promise<B2Auth> {
   });
   if (!res.ok) throw await b2Error("b2 authorize", res);
   const data = asObject(await res.json());
-  return { apiUrl: String(data.apiUrl), authorizationToken: String(data.authorizationToken), downloadUrl: String(data.downloadUrl) };
+  return {
+    apiUrl: String(data.apiUrl),
+    authorizationToken: String(data.authorizationToken),
+    downloadUrl: String(data.downloadUrl),
+  };
 }
 
 /** Where and with which token to upload one object. */
@@ -1031,14 +1082,18 @@ type B2File = {
  * @throws {UpstreamError} When B2 refuses.
  */
 async function b2GetUploadUrl(auth: B2Auth, bucketId: string): Promise<B2Upload> {
-  const res = await upstreamFetch("b2 get_upload_url", `${auth.apiUrl}/b2api/v2/b2_get_upload_url`, {
-    method: "POST",
-    headers: {
-      Authorization: auth.authorizationToken,
-      "Content-Type": "application/json",
+  const res = await upstreamFetch(
+    "b2 get_upload_url",
+    `${auth.apiUrl}/b2api/v2/b2_get_upload_url`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: auth.authorizationToken,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ bucketId }),
     },
-    body: JSON.stringify({ bucketId }),
-  });
+  );
   if (!res.ok) throw await b2Error("b2 get_upload_url", res);
   const data = asObject(await res.json());
   return { uploadUrl: String(data.uploadUrl), authorizationToken: String(data.authorizationToken) };
@@ -1053,7 +1108,12 @@ async function b2GetUploadUrl(auth: B2Auth, bucketId: string): Promise<B2Upload>
  * @param info - B2 file info, sent as `X-Bz-Info-*` headers.
  * @throws {UpstreamError} When B2 refuses.
  */
-async function b2Upload(upload: B2Upload, fileName: string, bodyText: string, info: Record<string, string> = {}): Promise<void> {
+async function b2Upload(
+  upload: B2Upload,
+  fileName: string,
+  bodyText: string,
+  info: Record<string, string> = {},
+): Promise<void> {
   const bytes = new TextEncoder().encode(bodyText);
   const hashBuffer = await crypto.subtle.digest("SHA-1", bytes);
   const sha1 = [...new Uint8Array(hashBuffer)].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -1086,18 +1146,22 @@ async function b2Upload(upload: B2Upload, fileName: string, bodyText: string, in
  * @returns The objects, and whether the page cap cut the listing short.
  * @throws {UpstreamError} When B2 refuses.
  */
-async function b2ListIncoming(auth: B2Auth, bucketId: string): Promise<{ files: B2File[]; listTruncated: boolean }> {
+async function b2ListIncoming(
+  auth: B2Auth,
+  bucketId: string,
+): Promise<{ files: B2File[]; listTruncated: boolean }> {
   const files: B2File[] = [];
   let startFileName: string | null = null;
   // Paginate until exhausted. Soft cap avoids runaway Worker CPU on huge buckets;
   // /report surfaces list_truncated when hit so ingest can alert.
   const maxPages = 500;
   for (let i = 0; i < maxPages; i++) {
-    const body: { bucketId: string; prefix: string; maxFileCount: number; startFileName?: string } = {
-      bucketId,
-      prefix: DIAGNOSTICS_PREFIX,
-      maxFileCount: 1000,
-    };
+    const body: { bucketId: string; prefix: string; maxFileCount: number; startFileName?: string } =
+      {
+        bucketId,
+        prefix: DIAGNOSTICS_PREFIX,
+        maxFileCount: 1000,
+      };
     if (startFileName) body.startFileName = startFileName;
     const res = await upstreamFetch("b2 list", `${auth.apiUrl}/b2api/v2/b2_list_file_names`, {
       method: "POST",
@@ -1139,9 +1203,13 @@ async function b2ListIncoming(auth: B2Auth, bucketId: string): Promise<{ files: 
  * @throws {UpstreamError} When B2 refuses.
  */
 async function b2DownloadById(auth: B2Auth, fileId: string): Promise<string> {
-  const res = await upstreamFetch("b2 download", `${auth.downloadUrl}/b2api/v2/b2_download_file_by_id?fileId=${encodeURIComponent(fileId)}`, {
-    headers: { Authorization: auth.authorizationToken },
-  });
+  const res = await upstreamFetch(
+    "b2 download",
+    `${auth.downloadUrl}/b2api/v2/b2_download_file_by_id?fileId=${encodeURIComponent(fileId)}`,
+    {
+      headers: { Authorization: auth.authorizationToken },
+    },
+  );
   if (!res.ok) throw await b2Error("b2 download", res);
   return res.text();
 }

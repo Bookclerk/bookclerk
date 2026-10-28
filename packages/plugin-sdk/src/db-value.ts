@@ -39,9 +39,7 @@ const TYPES = new Set<string>(DB_TYPES);
  */
 function requirePortableText(text: string): string {
   if (text.includes("\u0000")) {
-    throw new Error(
-      "BookclerkSQL TEXT cannot contain U+0000 (use BYTES/BLOB for binary)",
-    );
+    throw new Error("BookclerkSQL TEXT cannot contain U+0000 (use BYTES/BLOB for binary)");
   }
   return text;
 }
@@ -142,7 +140,14 @@ export function decodeDbValue(bytes: Uint8Array): DbValue {
  * contains U+0000.
  */
 export function writeDbValue(
-  root: { setUint16(i: number, v: number): void; setBool(i: number, v: boolean): void; setInt64(i: number, v: bigint): void; setFloat64(i: number, v: number): void; setText(i: number, v: string): void; setData(i: number, v: Uint8Array): void },
+  root: {
+    setUint16(i: number, v: number): void;
+    setBool(i: number, v: boolean): void;
+    setInt64(i: number, v: bigint): void;
+    setFloat64(i: number, v: number): void;
+    setText(i: number, v: string): void;
+    setData(i: number, v: Uint8Array): void;
+  },
   value: DbValue,
 ): void {
   switch (value.kind) {

@@ -11,7 +11,10 @@
   font-weight: 200 900;
   font-display: swap;
   src: url("./fonts/source-sans-3-v20-latin-ext.woff2") format("woff2");
-  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F,
+    U+A720-A7FF;
 }
 @font-face {
   font-family: "Source Sans 3";
@@ -19,7 +22,9 @@
   font-weight: 200 900;
   font-display: swap;
   src: url("./fonts/source-sans-3-v20-latin.woff2") format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Literata";
@@ -27,7 +32,10 @@
   font-weight: 400 900;
   font-display: swap;
   src: url("./fonts/literata-v40-latin-ext.woff2") format("woff2");
-  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F,
+    U+A720-A7FF;
 }
 @font-face {
   font-family: "Literata";
@@ -35,7 +43,9 @@
   font-weight: 400 900;
   font-display: swap;
   src: url("./fonts/literata-v40-latin.woff2") format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Google Sans";
@@ -43,7 +53,10 @@
   font-weight: 500;
   font-display: swap;
   src: url("./fonts/google-sans-v71-500-latin-ext.woff2") format("woff2");
-  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F,
+    U+A720-A7FF;
 }
 @font-face {
   font-family: "Google Sans";
@@ -51,15 +64,53 @@
   font-weight: 500;
   font-display: swap;
   src: url("./fonts/google-sans-v71-500-latin.woff2") format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
 /* Local fallbacks scaled to the web fonts' metrics so text keeps its line
    breaks when the web font arrives (values: tools/site/src/fonts/README.md). */
-@font-face { font-family: "Source Sans 3 Fallback"; font-weight: 400; src: local("Arial"), local("ArialMT"), local("Liberation Sans"), local("Arimo"); size-adjust: 93.12%; ascent-override: 109.97%; descent-override: 42.96%; line-gap-override: 0%; }
-@font-face { font-family: "Source Sans 3 Fallback"; font-weight: 600 700; src: local("Arial Bold"), local("Arial-BoldMT"), local("Liberation Sans Bold"), local("Arimo Bold"); size-adjust: 90.38%; ascent-override: 113.29%; descent-override: 44.26%; line-gap-override: 0%; }
-@font-face { font-family: "Literata Fallback"; font-weight: 400 500; src: local("Times New Roman"), local("TimesNewRomanPSMT"), local("Liberation Serif"), local("Tinos"); size-adjust: 119.61%; ascent-override: 98.40%; descent-override: 25.75%; line-gap-override: 0%; }
-@font-face { font-family: "Literata Fallback"; font-weight: 600 700; src: local("Times New Roman Bold"), local("TimesNewRomanPS-BoldMT"), local("Liberation Serif Bold"), local("Tinos Bold"); size-adjust: 117.64%; ascent-override: 100.05%; descent-override: 26.18%; line-gap-override: 0%; }
+@font-face {
+  font-family: "Source Sans 3 Fallback";
+  font-weight: 400;
+  src: local("Arial"), local("ArialMT"), local("Liberation Sans"), local("Arimo");
+  size-adjust: 93.12%;
+  ascent-override: 109.97%;
+  descent-override: 42.96%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "Source Sans 3 Fallback";
+  font-weight: 600 700;
+  src:
+    local("Arial Bold"), local("Arial-BoldMT"), local("Liberation Sans Bold"), local("Arimo Bold");
+  size-adjust: 90.38%;
+  ascent-override: 113.29%;
+  descent-override: 44.26%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "Literata Fallback";
+  font-weight: 400 500;
+  src:
+    local("Times New Roman"), local("TimesNewRomanPSMT"), local("Liberation Serif"), local("Tinos");
+  size-adjust: 119.61%;
+  ascent-override: 98.4%;
+  descent-override: 25.75%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "Literata Fallback";
+  font-weight: 600 700;
+  src:
+    local("Times New Roman Bold"), local("TimesNewRomanPS-BoldMT"), local("Liberation Serif Bold"),
+    local("Tinos Bold");
+  size-adjust: 117.64%;
+  ascent-override: 100.05%;
+  descent-override: 26.18%;
+  line-gap-override: 0%;
+}
 
 @theme {
   --color-ink: #0b3553;
@@ -74,8 +125,8 @@
   --color-card-strong: color-mix(in srgb, white 80%, transparent);
   /* Modal/drawer overlay — always darkens; not inverted ink. */
   --color-scrim: color-mix(in srgb, #0b3553 40%, transparent);
-  --font-display: "Literata", "Literata Fallback", "Iowan Old Style", "Palatino Linotype", Palatino,
-    serif;
+  --font-display:
+    "Literata", "Literata Fallback", "Iowan Old Style", "Palatino Linotype", Palatino, serif;
   --font-sans: "Source Sans 3", "Source Sans 3 Fallback", "Segoe UI", Candara, sans-serif;
   /* Sign in with Google only — Google Sans Medium from fonts.google.com/specimen/Google+Sans */
   --font-google-sans: "Google Sans", "Source Sans 3", sans-serif;

@@ -183,12 +183,7 @@ def _stamp_file_name(pin: dict[str, Any]) -> str:
     stamp = pin.get("version_stamp")
     if not isinstance(stamp, str) or not stamp:
         raise ValueError("invalid workerd version_stamp")
-    if (
-        "\0" in stamp
-        or "/" in stamp
-        or "\\" in stamp
-        or stamp in {".", ".."}
-    ):
+    if "\0" in stamp or "/" in stamp or "\\" in stamp or stamp in {".", ".."}:
         raise ValueError(f"invalid workerd version_stamp: {stamp}")
     return stamp
 
@@ -306,9 +301,7 @@ def ensure_workerd(
     key = platform_key()
     assets = pin.get("assets") or {}
     if not key or key not in assets:
-        raise RuntimeError(
-            f"no pinned workerd asset for {platform.system()}-{platform.machine()}"
-        )
+        raise RuntimeError(f"no pinned workerd asset for {platform.system()}-{platform.machine()}")
     asset = assets[key]
     url = validate_fetch_url(download_url(pin, asset["artifact"]))
     print(f"bookclerk-plugin: fetching {url}", flush=True)
@@ -322,11 +315,7 @@ def ensure_workerd(
         )
 
     tmp_name = f".{binary_name()}.tmp-{os.getpid()}-{time.time_ns()}"
-    if (
-        "/" in tmp_name
-        or "\\" in tmp_name
-        or tmp_name in {".", ".."}
-    ):
+    if "/" in tmp_name or "\\" in tmp_name or tmp_name in {".", ".."}:
         raise ValueError(f"invalid temp binary name: {tmp_name}")
     tmp_s = os.path.abspath(os.path.join(cache_s, tmp_name))
     try:
@@ -341,9 +330,10 @@ def ensure_workerd(
     fd = os.open(tmp_s, flags, 0o755 if platform.system().lower() != "windows" else 0o644)
     owned_tmp = True
     try:
-        with os.fdopen(fd, "wb") as out, gzip.GzipFile(
-            fileobj=__import__("io").BytesIO(compressed)
-        ) as gz:
+        with (
+            os.fdopen(fd, "wb") as out,
+            gzip.GzipFile(fileobj=__import__("io").BytesIO(compressed)) as gz,
+        ):
             shutil.copyfileobj(gz, out)
         if platform.system().lower() != "windows":
             os.chmod(tmp_s, 0o755)

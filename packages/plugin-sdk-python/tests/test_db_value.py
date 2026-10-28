@@ -10,23 +10,19 @@ from bookclerk_plugin_sdk.db_value import (
     RetryToken,
     canonical_execute_request_hash,
     decode_db_value,
-    decode_execute_result_reply,
     decode_execute_request,
+    decode_execute_result_reply,
     encode_db_value,
-    encode_execute_result_reply,
     encode_execute_request,
+    encode_execute_result_reply,
     parse_db_value,
 )
 
 I64_MIN = -(2**63)
 I64_MAX = 2**63 - 1
 
-GOLDEN_I64_MIN = (
-    "00000000040000000000000002000100000002000000000000000000000000800000000000000000"
-)
-GOLDEN_I64_MAX = (
-    "000000000400000000000000020001000000020000000000ffffffffffffff7f0000000000000000"
-)
+GOLDEN_I64_MIN = "00000000040000000000000002000100000002000000000000000000000000800000000000000000"
+GOLDEN_I64_MAX = "000000000400000000000000020001000000020000000000ffffffffffffff7f0000000000000000"
 GOLDEN_TEXT_B64 = (
     "0000000006000000000000000200010000000400000000000000000000000000010000004a000000"
     "6236343a414141410000000000000000"
@@ -125,7 +121,9 @@ class DbValueGoldens(unittest.TestCase):
             encode_db_value({"kind": "bytes", "value": b"\x00\x01\x02"}).hex(),
             GOLDEN_BYTES_012,
         )
-        self.assertEqual(encode_db_value({"kind": "boolean", "value": True}).hex(), GOLDEN_BOOL_TRUE)
+        self.assertEqual(
+            encode_db_value({"kind": "boolean", "value": True}).hex(), GOLDEN_BOOL_TRUE
+        )
         self.assertEqual(
             encode_db_value({"kind": "null", "value": "bytes"}).hex(), GOLDEN_NULL_BYTES
         )
@@ -133,7 +131,9 @@ class DbValueGoldens(unittest.TestCase):
             encode_db_value({"kind": "text", "value": "b64:AAAA"}),
             encode_db_value({"kind": "bytes", "value": b"\x00\x01\x02"}),
         )
-        self.assertEqual(decode_db_value(encode_db_value({"kind": "int64", "value": I64_MIN}))["value"], I64_MIN)
+        self.assertEqual(
+            decode_db_value(encode_db_value({"kind": "int64", "value": I64_MIN}))["value"], I64_MIN
+        )
         self.assertEqual(
             decode_db_value(encode_db_value({"kind": "text", "value": "b64:AAAA"}))["value"],
             "b64:AAAA",
@@ -202,9 +202,7 @@ class DbValueGoldens(unittest.TestCase):
             self.assertNotEqual(req["operationId"], "op")
             return {
                 "operationId": req["operationId"],
-                "statements": [
-                    {"rows": [], "columns": [], "rowsAffected": 0}
-                ],
+                "statements": [{"rows": [], "columns": [], "rowsAffected": 0}],
                 "timing": {
                     "attemptElapsedUs": 0,
                     "dbExecutionUs": 0,
@@ -227,20 +225,25 @@ class DbValueGoldens(unittest.TestCase):
             self.assertNotEqual(seen[0], "op")
             self.assertNotEqual(seen[1], "op")
             self.assertEqual(hashes, ["", ""])
-            retry = RetryToken(seen[0], canonical_execute_request_hash({
-                "operationId": seen[0],
-                "requestHash": "",
-                "statements": [
+            retry = RetryToken(
+                seen[0],
+                canonical_execute_request_hash(
                     {
-                        "sql": "INSERT INTO t VALUES (?)",
-                        "parameters": first,
-                        "kind": "execute",
-                        "maxRows": 0,
-                        "resultSelection": "affectedRows",
+                        "operationId": seen[0],
+                        "requestHash": "",
+                        "statements": [
+                            {
+                                "sql": "INSERT INTO t VALUES (?)",
+                                "parameters": first,
+                                "kind": "execute",
+                                "maxRows": 0,
+                                "resultSelection": "affectedRows",
+                            }
+                        ],
+                        "deadlineUnixMs": 0,
                     }
-                ],
-                "deadlineUnixMs": 0,
-            }))
+                ),
+            )
             replayed = []
 
             async def replay_transport(req):
@@ -326,7 +329,7 @@ class DbValueGoldens(unittest.TestCase):
                         "rows": [{"values": [{"kind": "int64", "value": 1}]}],
                         "columns": [{"name": "n", "dbType": "int64"}],
                         "rowsAffected": 0,
-                                            }
+                    }
                     for _ in range(n)
                 ],
                 "timing": {
@@ -357,9 +360,7 @@ class DbValueGoldens(unittest.TestCase):
             seen.clear()
             await binding.batch(
                 [
-                    binding.prepare("INSERT INTO t VALUES (?)").bind(
-                        {"kind": "int64", "value": 1}
-                    ),
+                    binding.prepare("INSERT INTO t VALUES (?)").bind({"kind": "int64", "value": 1}),
                     binding.prepare("SELECT n FROM t"),
                 ]
             )
@@ -370,9 +371,9 @@ class DbValueGoldens(unittest.TestCase):
             seen.clear()
             await binding.batch(
                 [
-                    binding.prepare("INSERT INTO t VALUES (?)").bind(
-                        {"kind": "int64", "value": 1}
-                    ).as_run(),
+                    binding.prepare("INSERT INTO t VALUES (?)")
+                    .bind({"kind": "int64", "value": 1})
+                    .as_run(),
                     binding.prepare("SELECT n FROM t").as_all(),
                 ]
             )
@@ -407,7 +408,7 @@ class DbValueGoldens(unittest.TestCase):
                         {"name": "n", "dbType": "int64"},
                     ],
                     "rowsAffected": 0,
-                                    }
+                }
             ],
             "timing": {
                 "attemptElapsedUs": 1,
@@ -424,9 +425,7 @@ class DbValueGoldens(unittest.TestCase):
         from bookclerk_plugin_sdk.workerd import PluginError
 
         with self.assertRaises(PluginError) as ctx:
-            decode_execute_result_reply(
-                encode_execute_result_reply(("unavailable", "retry me"))
-            )
+            decode_execute_result_reply(encode_execute_result_reply(("unavailable", "retry me")))
         self.assertEqual(ctx.exception.code, "unavailable")
         self.assertEqual(ctx.exception.wire_code, "unavailable")
 
@@ -434,9 +433,7 @@ class DbValueGoldens(unittest.TestCase):
         from bookclerk_plugin_sdk.guest_sql import guest_statement_kind
 
         self.assertEqual(guest_statement_kind("INSERT INTO t VALUES (?)"), "execute")
-        self.assertEqual(
-            guest_statement_kind("INSERT INTO t VALUES (?) RETURNING id"), "returning"
-        )
+        self.assertEqual(guest_statement_kind("INSERT INTO t VALUES (?) RETURNING id"), "returning")
         self.assertEqual(guest_statement_kind("SELECT 1"), "select")
 
     def test_dml_run_canonical_hash_uses_execute_kind(self) -> None:

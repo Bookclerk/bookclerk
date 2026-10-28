@@ -1,0 +1,45 @@
+[
+ {
+  "type": "creation",
+  "ruleset_source_type": "Repository",
+  "ruleset_source": "o/r",
+  "ruleset_id": 7
+ },
+ {
+  "type": "update",
+  "ruleset_source_type": "Repository",
+  "ruleset_source": "o/r",
+  "ruleset_id": 7
+ },
+ {
+  "type": "deletion",
+  "ruleset_source_type": "Repository",
+  "ruleset_source": "o/r",
+  "ruleset_id": 7
+ },
+ {
+  "type": "non_fast_forward",
+  "ruleset_source_type": "Repository",
+  "ruleset_source": "o/r",
+  "ruleset_id": 7
+ },
+ {
+  "type": "required_linear_history",
+  "ruleset_source_type": "Repository",
+  "ruleset_source": "o/r",
+  "ruleset_id": 7
+ },
+ {
+  "type": "required_signatures",
+  "ruleset_source_type": "Repository",
+  "ruleset_source": "o/r",
+  "ruleset_id": 7
+ },
+ {
+  "type": "update",
+  "ruleset_id": 8,
+  "parameters": {
+   "update_allows_fetch_and_merge": false
+  }
+ }
+]

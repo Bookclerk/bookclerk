@@ -48,7 +48,12 @@ export type LiveStatus = {
 };
 
 /** The status for a browser without a session. */
-export const NO_SESSION: LiveStatus = Object.freeze({ state: "none", endsAt: 0, remaining: 0, version: "" });
+export const NO_SESSION: LiveStatus = Object.freeze({
+  state: "none",
+  endsAt: 0,
+  remaining: 0,
+  version: "",
+});
 
 /**
  * The live status of a session.
@@ -57,7 +62,10 @@ export const NO_SESSION: LiveStatus = Object.freeze({ state: "none", endsAt: 0, 
  * @param nowMs - Current time in milliseconds.
  * @returns The status, with the seconds left counted from `nowMs`.
  */
-export function liveStatus(meta: { state: SessionState; endsAt: number; version: string }, nowMs: number): LiveStatus {
+export function liveStatus(
+  meta: { state: SessionState; endsAt: number; version: string },
+  nowMs: number,
+): LiveStatus {
   const remaining = Math.max(0, Math.floor(meta.endsAt - nowMs / 1000));
   return { state: meta.state, endsAt: meta.endsAt, remaining, version: meta.version };
 }
@@ -88,7 +96,9 @@ export function isOver(state: LiveStatus["state"]): boolean {
  * @returns `SITE_URL` when it is an https URL; otherwise empty.
  */
 export function siteUrl(env: Pick<Env, "SITE_URL">): string {
-  return typeof env.SITE_URL === "string" && /^https:\/\/[^\s"<>]+$/.test(env.SITE_URL) ? env.SITE_URL : "";
+  return typeof env.SITE_URL === "string" && /^https:\/\/[^\s"<>]+$/.test(env.SITE_URL)
+    ? env.SITE_URL
+    : "";
 }
 
 /** What the Worker does with a request to {@link LIVE_PATH}. */
@@ -111,7 +121,8 @@ export function liveRequest(r: {
   hasSession: boolean;
 }): LiveVerdict {
   // ASCII-only match: toLowerCase would also accept the Kelvin sign for "k".
-  if (r.method !== "GET" || r.upgrade === null || !/^websocket$/i.test(r.upgrade)) return "not_websocket";
+  if (r.method !== "GET" || r.upgrade === null || !/^websocket$/i.test(r.upgrade))
+    return "not_websocket";
   // Browsers send Origin on every WebSocket handshake, and the socket
   // carries the visitor's cookie: only pages on this origin may open one.
   if (r.origin !== r.ownOrigin) return "cross_origin";
@@ -149,6 +160,7 @@ export function socketsToEvict(open: number): number {
 export function replyCloseCode(code: number): number {
   const sendable =
     Number.isInteger(code) &&
-    ((code >= 1000 && code <= 1014 && ![1004, 1005, 1006].includes(code)) || (code >= 3000 && code <= 4999));
+    ((code >= 1000 && code <= 1014 && ![1004, 1005, 1006].includes(code)) ||
+      (code >= 3000 && code <= 4999));
   return sendable ? code : 1000;
 }

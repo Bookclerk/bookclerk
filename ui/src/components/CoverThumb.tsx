@@ -18,10 +18,7 @@ export function CoverThumb({
   const src = url?.trim() || null;
   const [failed, setFailed] = useState(false);
   const useFallback = !src || failed;
-  const frame = cn(
-    "shrink-0 overflow-hidden rounded-md bg-ink/5 shadow-sm",
-    className,
-  );
+  const frame = cn("shrink-0 overflow-hidden rounded-md bg-ink/5 shadow-sm", className);
   return (
     <img
       src={useFallback ? FALLBACK_COVER : src}
@@ -29,10 +26,7 @@ export function CoverThumb({
       loading="lazy"
       referrerPolicy="no-referrer"
       aria-hidden
-      className={cn(
-        frame,
-        useFallback ? "object-contain p-2.5 opacity-70" : "object-cover",
-      )}
+      className={cn(frame, useFallback ? "object-contain p-2.5 opacity-70" : "object-cover")}
       onError={() => {
         if (!useFallback) setFailed(true);
       }}

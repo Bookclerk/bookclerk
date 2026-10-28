@@ -7,13 +7,7 @@ import { cn } from "@/lib/utils";
  *
  * @param props - Store id and optional className.
  */
-export function StoreLogo({
-  source,
-  className,
-}: {
-  source: string;
-  className?: string;
-}) {
+export function StoreLogo({ source, className }: { source: string; className?: string }) {
   const [failed, setFailed] = useState(false);
   const src = storeFaviconUrl(source);
   const label = storeLabel(source);
@@ -34,10 +28,7 @@ export function StoreLogo({
     <img
       src={src}
       alt=""
-      className={cn(
-        "h-5 w-5 shrink-0 rounded bg-white object-contain p-0.5",
-        className,
-      )}
+      className={cn("h-5 w-5 shrink-0 rounded bg-white object-contain p-0.5", className)}
       onError={() => setFailed(true)}
     />
   );

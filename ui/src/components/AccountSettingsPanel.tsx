@@ -1,5 +1,21 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import { Camera, Fingerprint, KeyRound, Pencil, RefreshCw, Shield, Smartphone, Trash2 } from "lucide-react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
+import {
+  Camera,
+  Fingerprint,
+  KeyRound,
+  Pencil,
+  RefreshCw,
+  Shield,
+  Smartphone,
+  Trash2,
+} from "lucide-react";
 import { SsoSignInButton } from "@/components/SsoProviderMark";
 import { AvatarPickerDialog } from "@/components/AvatarPickerDialog";
 import { SessionsPanel } from "@/components/SessionsPanel";
@@ -71,8 +87,7 @@ export function AccountSettingsPanel({
   const user = session?.user;
   const isOperatorOnly = session?.role === "operator" && !user;
   const isImpersonating = Boolean(session?.impersonating);
-  const canElevate =
-    session?.role === "owner" && !session.impersonating && !session.elevated;
+  const canElevate = session?.role === "owner" && !session.impersonating && !session.elevated;
   const showElevationControls =
     (session?.role === "owner" && !session.impersonating) ||
     (session?.elevated === true && !session.impersonating);
@@ -100,9 +115,7 @@ export function AccountSettingsPanel({
   const [email, setEmail] = useState(user?.email ?? "");
   const [avatarKey, setAvatarKey] = useState(0);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [editingField, setEditingField] = useState<"name" | "email" | null>(
-    null,
-  );
+  const [editingField, setEditingField] = useState<"name" | "email" | null>(null);
   const skipProfileBlur = useRef(false);
   const canEditProfile = Boolean(user) && !isImpersonating;
 
@@ -470,9 +483,7 @@ export function AccountSettingsPanel({
   }
 
   const oidcIdentities = identities.filter((i) => i.provider.startsWith("oidc:"));
-  const linkedProviderIds = new Set(
-    oidcIdentities.map((i) => i.provider.replace(/^oidc:/, "")),
-  );
+  const linkedProviderIds = new Set(oidcIdentities.map((i) => i.provider.replace(/^oidc:/, "")));
   const elevateProviders = oidcProviders.filter((p) => linkedProviderIds.has(p.id));
   const showPasskeyBanner = Boolean(user) && oidcIdentities.length > 0 && passkeys.length === 0;
   const canUsePasskeys = passkeysSupported();
@@ -511,9 +522,7 @@ export function AccountSettingsPanel({
             className="group relative shrink-0 rounded-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal disabled:cursor-default"
             disabled={!canEditProfile || busy}
             onClick={() => setPickerOpen(true)}
-            aria-label={
-              canEditProfile ? "Change profile picture" : "Profile picture"
-            }
+            aria-label={canEditProfile ? "Change profile picture" : "Profile picture"}
           >
             <UserAvatar
               userId={user?.id}
@@ -567,9 +576,7 @@ export function AccountSettingsPanel({
                   onClick={() => setEditingField("name")}
                   aria-label="Edit display name"
                 >
-                  <span className="truncate font-semibold text-ink">
-                    {profileLabel}
-                  </span>
+                  <span className="truncate font-semibold text-ink">{profileLabel}</span>
                   <Pencil
                     className="h-3.5 w-3.5 shrink-0 text-ink/40 opacity-0 transition-opacity group-hover/profile:opacity-100 group-focus-within/profile:opacity-100"
                     aria-hidden
@@ -582,9 +589,7 @@ export function AccountSettingsPanel({
                 {session?.role ?? "unknown"}
               </Badge>
               {session?.elevated ? (
-                <Badge className="bg-teal/15 text-ink normal-case tracking-normal">
-                  Elevated
-                </Badge>
+                <Badge className="bg-teal/15 text-ink normal-case tracking-normal">Elevated</Badge>
               ) : null}
             </div>
             {editingField === "email" ? (
@@ -616,10 +621,7 @@ export function AccountSettingsPanel({
                 aria-label="Edit email"
               >
                 <span
-                  className={cn(
-                    "truncate text-sm",
-                    email.trim() ? "text-ink/55" : "text-ink/40",
-                  )}
+                  className={cn("truncate text-sm", email.trim() ? "text-ink/55" : "text-ink/40")}
                 >
                   {email.trim() || "Add email"}
                 </span>
@@ -631,9 +633,7 @@ export function AccountSettingsPanel({
             ) : (
               <p className="truncate text-sm text-ink/55">
                 {user?.email?.trim() ||
-                  (isOperatorOnly
-                    ? "Daemon operator token session"
-                    : "No email")}
+                  (isOperatorOnly ? "Daemon operator token session" : "No email")}
               </p>
             )}
           </div>
@@ -641,365 +641,343 @@ export function AccountSettingsPanel({
       </section>
 
       {!isImpersonating ? (
-      <section className="flex flex-col gap-4">
-        <div className="flex flex-col gap-1">
-          <h2 className="text-lg font-semibold text-ink">Security</h2>
-          <p className="text-sm text-ink/55">
-            Password, passkeys, authenticator app, linked identity providers, and Owner elevation.
-          </p>
-        </div>
-
-        {user && session?.second_factor?.required && !session.second_factor.enrolled ? (
-          <div className="rounded-md border border-brick/30 bg-brick/10 px-3 py-2.5 text-sm text-ink/80">
-            This server requires a passkey or authenticator app. Add one below to keep using the library.
+        <section className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1">
+            <h2 className="text-lg font-semibold text-ink">Security</h2>
+            <p className="text-sm text-ink/55">
+              Password, passkeys, authenticator app, linked identity providers, and Owner elevation.
+            </p>
           </div>
-        ) : null}
 
-        {user ? (
-          <div className="grid gap-4 lg:grid-cols-2">
-            <SecurityCard
-              icon={<KeyRound className="h-4 w-4" aria-hidden />}
-              title="Password"
-              description="Sign in with a Bookclerk password on this server."
-            >
-              <form
-                className="flex flex-col gap-3"
-                onSubmit={(e) => void onChangePassword(e)}
+          {user && session?.second_factor?.required && !session.second_factor.enrolled ? (
+            <div className="rounded-md border border-brick/30 bg-brick/10 px-3 py-2.5 text-sm text-ink/80">
+              This server requires a passkey or authenticator app. Add one below to keep using the
+              library.
+            </div>
+          ) : null}
+
+          {user ? (
+            <div className="grid gap-4 lg:grid-cols-2">
+              <SecurityCard
+                icon={<KeyRound className="h-4 w-4" aria-hidden />}
+                title="Password"
+                description="Sign in with a Bookclerk password on this server."
               >
-                {user.has_password ? (
-                  <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
-                    Current password
-                    <Input
-                      type="password"
-                      autoComplete="current-password"
-                      value={currentPassword}
-                      onChange={(e) => setCurrentPassword(e.target.value)}
-                      disabled={busy}
-                    />
-                  </label>
-                ) : null}
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
-                    New password
-                    <Input
-                      type="password"
-                      autoComplete="new-password"
-                      value={password}
-                      onChange={(e) => setPasswordValue(e.target.value)}
-                      disabled={busy}
-                    />
-                  </label>
-                  <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
-                    Confirm
-                    <Input
-                      type="password"
-                      autoComplete="new-password"
-                      value={passwordConfirm}
-                      onChange={(e) => setPasswordConfirm(e.target.value)}
-                      disabled={busy}
-                    />
-                  </label>
-                </div>
-                <Button
-                  type="submit"
-                  className="self-start"
-                  disabled={busy || !password}
-                >
-                  <KeyRound className="h-4 w-4" />
-                  {busy
-                    ? "Saving…"
-                    : user.has_password
-                      ? "Update password"
-                      : "Set password"}
-                </Button>
-              </form>
-            </SecurityCard>
+                <form className="flex flex-col gap-3" onSubmit={(e) => void onChangePassword(e)}>
+                  {user.has_password ? (
+                    <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
+                      Current password
+                      <Input
+                        type="password"
+                        autoComplete="current-password"
+                        value={currentPassword}
+                        onChange={(e) => setCurrentPassword(e.target.value)}
+                        disabled={busy}
+                      />
+                    </label>
+                  ) : null}
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
+                      New password
+                      <Input
+                        type="password"
+                        autoComplete="new-password"
+                        value={password}
+                        onChange={(e) => setPasswordValue(e.target.value)}
+                        disabled={busy}
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
+                      Confirm
+                      <Input
+                        type="password"
+                        autoComplete="new-password"
+                        value={passwordConfirm}
+                        onChange={(e) => setPasswordConfirm(e.target.value)}
+                        disabled={busy}
+                      />
+                    </label>
+                  </div>
+                  <Button type="submit" className="self-start" disabled={busy || !password}>
+                    <KeyRound className="h-4 w-4" />
+                    {busy ? "Saving…" : user.has_password ? "Update password" : "Set password"}
+                  </Button>
+                </form>
+              </SecurityCard>
 
-            <SecurityCard
-              icon={<Fingerprint className="h-4 w-4" aria-hidden />}
-              title="Passkeys"
-              description="Phishing-resistant sign-in that stays on this Bookclerk host."
-            >
-              {showPasskeyBanner ? (
-                <div className="rounded-md border border-teal/30 bg-teal/10 px-3 py-2.5 text-sm text-ink/70">
-                  <p className="font-medium text-ink">Register a passkey</p>
-                  <p className="mt-0.5">
-                    SSO created this account. Add a passkey so you can still
-                    sign in (and Owners can elevate) if the identity provider
-                    is down.
-                  </p>
-                </div>
-              ) : null}
-              {passkeys.length === 0 ? (
-                <p className="text-sm text-ink/55">No passkeys registered.</p>
-              ) : (
-                <ul className="flex flex-col gap-2">
-                  {passkeys.map((pk) => (
-                    <li
-                      key={pk.id}
-                      className="flex items-center justify-between gap-3 rounded-md border border-ink/10 bg-card-mid px-3 py-2 text-sm"
+              <SecurityCard
+                icon={<Fingerprint className="h-4 w-4" aria-hidden />}
+                title="Passkeys"
+                description="Phishing-resistant sign-in that stays on this Bookclerk host."
+              >
+                {showPasskeyBanner ? (
+                  <div className="rounded-md border border-teal/30 bg-teal/10 px-3 py-2.5 text-sm text-ink/70">
+                    <p className="font-medium text-ink">Register a passkey</p>
+                    <p className="mt-0.5">
+                      SSO created this account. Add a passkey so you can still sign in (and Owners
+                      can elevate) if the identity provider is down.
+                    </p>
+                  </div>
+                ) : null}
+                {passkeys.length === 0 ? (
+                  <p className="text-sm text-ink/55">No passkeys registered.</p>
+                ) : (
+                  <ul className="flex flex-col gap-2">
+                    {passkeys.map((pk) => (
+                      <li
+                        key={pk.id}
+                        className="flex items-center justify-between gap-3 rounded-md border border-ink/10 bg-card-mid px-3 py-2 text-sm"
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate font-medium text-ink">
+                            {pk.name?.trim() || "Passkey"}
+                          </span>
+                          <span className="block truncate font-mono text-xs text-ink/45">
+                            {pk.credential_id.slice(0, 16)}…
+                          </span>
+                        </span>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          disabled={busy}
+                          onClick={() => void onDeletePasskey(pk.id)}
+                        >
+                          Remove
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
+                  Name
+                  <Input
+                    value={passkeyName}
+                    onChange={(e) => setPasskeyName(e.target.value)}
+                    maxLength={80}
+                    placeholder="Laptop, YubiKey, …"
+                    disabled={busy}
+                  />
+                </label>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="self-start"
+                  disabled={busy || !canUsePasskeys}
+                  title={canUsePasskeys ? undefined : "This browser does not support passkeys"}
+                  onClick={() => void onRegisterPasskey()}
+                >
+                  <Fingerprint className="h-4 w-4" />
+                  {busy ? "Waiting…" : "Add passkey"}
+                </Button>
+                {oidcIdentities.length > 0 ? (
+                  <div className="flex flex-col gap-2 border-t border-ink/10 pt-3">
+                    <p className="text-sm font-medium text-ink">Linked sign-in</p>
+                    <ul className="flex flex-wrap gap-1.5">
+                      {oidcIdentities.map((id) => (
+                        <li key={`${id.provider}:${id.external_user_id}`}>
+                          <Badge className="bg-ink/8 text-ink normal-case tracking-normal">
+                            {id.provider.replace(/^oidc:/, "")}
+                            {id.label ? ` · ${id.label}` : ""}
+                          </Badge>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </SecurityCard>
+
+              <SecurityCard
+                icon={<Smartphone className="h-4 w-4" aria-hidden />}
+                title="Authenticator app"
+                description="Time-based codes (TOTP) for password sign-in. Passkey sign-in does not need a code."
+              >
+                {totpEnabled ? (
+                  <>
+                    <p className="text-sm text-ink/70">
+                      Authenticator app is enabled for this account.
+                    </p>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="self-start"
+                      disabled={busy}
+                      onClick={() => void onDisableTotp()}
                     >
-                      <span className="min-w-0">
-                        <span className="block truncate font-medium text-ink">
-                          {pk.name?.trim() || "Passkey"}
-                        </span>
-                        <span className="block truncate font-mono text-xs text-ink/45">
-                          {pk.credential_id.slice(0, 16)}…
-                        </span>
-                      </span>
+                      Disable authenticator
+                    </Button>
+                  </>
+                ) : totpEnroll ? (
+                  <form className="flex flex-col gap-3" onSubmit={(e) => void onConfirmTotp(e)}>
+                    <TotpSetupHint
+                      secret={totpEnroll.secret}
+                      otpauthUrl={totpEnroll.otpauth_url}
+                      qrSvg={totpEnroll.qr_svg}
+                    />
+                    <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
+                      Authenticator code
+                      <Input
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        value={totpCode}
+                        onChange={(e) => setTotpCode(e.target.value)}
+                        maxLength={8}
+                        disabled={busy}
+                      />
+                    </label>
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="submit" disabled={busy || totpCode.trim().length < 6}>
+                        Confirm
+                      </Button>
                       <Button
                         type="button"
                         variant="ghost"
                         disabled={busy}
-                        onClick={() => void onDeletePasskey(pk.id)}
+                        onClick={() => {
+                          setTotpEnroll(null);
+                          setTotpCode("");
+                        }}
                       >
-                        Remove
+                        Cancel
                       </Button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
-                Name
-                <Input
-                  value={passkeyName}
-                  onChange={(e) => setPasskeyName(e.target.value)}
-                  maxLength={80}
-                  placeholder="Laptop, YubiKey, …"
-                  disabled={busy}
-                />
-              </label>
-              <Button
-                type="button"
-                variant="secondary"
-                className="self-start"
-                disabled={busy || !canUsePasskeys}
-                title={
-                  canUsePasskeys
-                    ? undefined
-                    : "This browser does not support passkeys"
-                }
-                onClick={() => void onRegisterPasskey()}
-              >
-                <Fingerprint className="h-4 w-4" />
-                {busy ? "Waiting…" : "Add passkey"}
-              </Button>
-              {oidcIdentities.length > 0 ? (
-                <div className="flex flex-col gap-2 border-t border-ink/10 pt-3">
-                  <p className="text-sm font-medium text-ink">Linked sign-in</p>
-                  <ul className="flex flex-wrap gap-1.5">
-                    {oidcIdentities.map((id) => (
-                      <li key={`${id.provider}:${id.external_user_id}`}>
-                        <Badge className="bg-ink/8 text-ink normal-case tracking-normal">
-                          {id.provider.replace(/^oidc:/, "")}
-                          {id.label ? ` · ${id.label}` : ""}
-                        </Badge>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-            </SecurityCard>
-
-            <SecurityCard
-              icon={<Smartphone className="h-4 w-4" aria-hidden />}
-              title="Authenticator app"
-              description="Time-based codes (TOTP) for password sign-in. Passkey sign-in does not need a code."
-            >
-              {totpEnabled ? (
-                <>
-                  <p className="text-sm text-ink/70">
-                    Authenticator app is enabled for this account.
-                  </p>
+                    </div>
+                  </form>
+                ) : (
                   <Button
                     type="button"
                     variant="secondary"
                     className="self-start"
                     disabled={busy}
-                    onClick={() => void onDisableTotp()}
+                    onClick={() => void onBeginTotp()}
                   >
-                    Disable authenticator
+                    <Smartphone className="h-4 w-4" />
+                    Set up authenticator
                   </Button>
-                </>
-              ) : totpEnroll ? (
-                <form className="flex flex-col gap-3" onSubmit={(e) => void onConfirmTotp(e)}>
-                  <TotpSetupHint
-                    secret={totpEnroll.secret}
-                    otpauthUrl={totpEnroll.otpauth_url}
-                    qrSvg={totpEnroll.qr_svg}
-                  />
+                )}
+              </SecurityCard>
+
+              {showElevationControls ? (
+                <SecurityCard
+                  icon={<Shield className="h-4 w-4" aria-hidden />}
+                  title="Operator elevation"
+                  description="Unlocks Server Settings, Plugins, and impersonation for this session. The Operator token is a separate local login, not elevation."
+                >
+                  {session?.elevated ? (
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-teal/10 px-3 py-2.5">
+                      <p className="text-sm text-ink">Elevation active for this session.</p>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        disabled={elevateBusy}
+                        onClick={() => void onEndElevate()}
+                      >
+                        {elevateBusy ? "Ending…" : "End elevation"}
+                      </Button>
+                    </div>
+                  ) : canElevate ? (
+                    <div className="flex flex-col gap-3">
+                      {elevateProviders.length > 0 || passkeys.length > 0 ? (
+                        <div className="flex flex-wrap gap-2">
+                          {elevateProviders.map((p) => (
+                            <SsoSignInButton
+                              key={p.id}
+                              preset={p.preset}
+                              name={p.name}
+                              disabled={elevateBusy}
+                              onClick={() => {
+                                window.location.href = `/api/auth/oidc/elevate?provider=${encodeURIComponent(p.id)}`;
+                              }}
+                            />
+                          ))}
+                          {passkeys.length > 0 ? (
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              disabled={elevateBusy || !canUsePasskeys}
+                              title={
+                                canUsePasskeys
+                                  ? undefined
+                                  : "This browser does not support passkeys — confirm your password instead"
+                              }
+                              onClick={() => void onElevatePasskey()}
+                            >
+                              <Fingerprint className="h-4 w-4" />
+                              {elevateBusy ? "Waiting for passkey…" : "Elevate with passkey"}
+                            </Button>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      {hasPassword ? (
+                        <form className="flex flex-col gap-3" onSubmit={(e) => void onElevate(e)}>
+                          <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
+                            Confirm password
+                            <Input
+                              type="password"
+                              value={elevatePassword}
+                              onChange={(e) => setElevatePassword(e.target.value)}
+                              autoComplete="current-password"
+                              disabled={elevateBusy}
+                            />
+                          </label>
+                          <Button
+                            type="submit"
+                            className="self-start"
+                            disabled={elevateBusy || !elevatePassword.trim()}
+                          >
+                            {elevateBusy ? "Elevating…" : "Elevate to Operator"}
+                          </Button>
+                        </form>
+                      ) : (
+                        <p className="text-sm text-ink/55">
+                          This Owner has no local password. Use SSO step-up or a passkey, or sign in
+                          with the Operator token on the host.
+                        </p>
+                      )}
+                    </div>
+                  ) : null}
+                </SecurityCard>
+              ) : null}
+
+              <SecurityCard
+                icon={<Trash2 className="h-4 w-4" aria-hidden />}
+                title="Delete account"
+                description="Removes your wishlist, store links, and sessions. Acquired library titles stay in the library."
+                className="border-brick/20 bg-brick/5"
+                titleClassName="text-brick"
+                iconClassName="text-brick/70"
+              >
+                <div className="flex flex-col gap-3">
                   <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
-                    Authenticator code
+                    Type delete to confirm
                     <Input
-                      inputMode="numeric"
-                      autoComplete="one-time-code"
-                      value={totpCode}
-                      onChange={(e) => setTotpCode(e.target.value)}
-                      maxLength={8}
+                      placeholder='Type "delete"'
+                      value={deleteConfirm}
+                      onChange={(e) => setDeleteConfirm(e.target.value)}
                       disabled={busy}
+                      autoComplete="off"
                     />
                   </label>
-                  <div className="flex flex-wrap gap-2">
-                    <Button type="submit" disabled={busy || totpCode.trim().length < 6}>
-                      Confirm
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      disabled={busy}
-                      onClick={() => {
-                        setTotpEnroll(null);
-                        setTotpCode("");
-                      }}
-                    >
-                      Cancel
-                    </Button>
-                  </div>
-                </form>
-              ) : (
-                <Button
-                  type="button"
-                  variant="secondary"
-                  className="self-start"
-                  disabled={busy}
-                  onClick={() => void onBeginTotp()}
-                >
-                  <Smartphone className="h-4 w-4" />
-                  Set up authenticator
-                </Button>
-              )}
-            </SecurityCard>
-
-            {showElevationControls ? (
-              <SecurityCard
-                icon={<Shield className="h-4 w-4" aria-hidden />}
-                title="Operator elevation"
-                description="Unlocks Server Settings, Plugins, and impersonation for this session. The Operator token is a separate local login, not elevation."
-              >
-                {session?.elevated ? (
-                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-teal/10 px-3 py-2.5">
-                    <p className="text-sm text-ink">
-                      Elevation active for this session.
-                    </p>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      disabled={elevateBusy}
-                      onClick={() => void onEndElevate()}
-                    >
-                      {elevateBusy ? "Ending…" : "End elevation"}
-                    </Button>
-                  </div>
-                ) : canElevate ? (
-                  <div className="flex flex-col gap-3">
-                    {elevateProviders.length > 0 || passkeys.length > 0 ? (
-                      <div className="flex flex-wrap gap-2">
-                        {elevateProviders.map((p) => (
-                          <SsoSignInButton
-                            key={p.id}
-                            preset={p.preset}
-                            name={p.name}
-                            disabled={elevateBusy}
-                            onClick={() => {
-                              window.location.href = `/api/auth/oidc/elevate?provider=${encodeURIComponent(p.id)}`;
-                            }}
-                          />
-                        ))}
-                        {passkeys.length > 0 ? (
-                          <Button
-                            type="button"
-                            variant="secondary"
-                            disabled={elevateBusy || !canUsePasskeys}
-                            title={
-                              canUsePasskeys
-                                ? undefined
-                                : "This browser does not support passkeys — confirm your password instead"
-                            }
-                            onClick={() => void onElevatePasskey()}
-                          >
-                            <Fingerprint className="h-4 w-4" />
-                            {elevateBusy
-                              ? "Waiting for passkey…"
-                              : "Elevate with passkey"}
-                          </Button>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    {hasPassword ? (
-                      <form
-                        className="flex flex-col gap-3"
-                        onSubmit={(e) => void onElevate(e)}
-                      >
-                        <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
-                          Confirm password
-                          <Input
-                            type="password"
-                            value={elevatePassword}
-                            onChange={(e) => setElevatePassword(e.target.value)}
-                            autoComplete="current-password"
-                            disabled={elevateBusy}
-                          />
-                        </label>
-                        <Button
-                          type="submit"
-                          className="self-start"
-                          disabled={elevateBusy || !elevatePassword.trim()}
-                        >
-                          {elevateBusy ? "Elevating…" : "Elevate to Operator"}
-                        </Button>
-                      </form>
-                    ) : (
-                      <p className="text-sm text-ink/55">
-                        This Owner has no local password. Use SSO step-up or a
-                        passkey, or sign in with the Operator token on the host.
-                      </p>
-                    )}
-                  </div>
-                ) : null}
+                  <Button
+                    type="button"
+                    variant="danger"
+                    className="self-start"
+                    disabled={busy || deleteConfirm.trim().toLowerCase() !== "delete"}
+                    onClick={() => void onDeleteAccount()}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Delete my account
+                  </Button>
+                </div>
               </SecurityCard>
-            ) : null}
-
-            <SecurityCard
-              icon={<Trash2 className="h-4 w-4" aria-hidden />}
-              title="Delete account"
-              description="Removes your wishlist, store links, and sessions. Acquired library titles stay in the library."
-              className="border-brick/20 bg-brick/5"
-              titleClassName="text-brick"
-              iconClassName="text-brick/70"
-            >
-              <div className="flex flex-col gap-3">
-                <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
-                  Type delete to confirm
-                  <Input
-                    placeholder='Type "delete"'
-                    value={deleteConfirm}
-                    onChange={(e) => setDeleteConfirm(e.target.value)}
-                    disabled={busy}
-                    autoComplete="off"
-                  />
-                </label>
-                <Button
-                  type="button"
-                  variant="danger"
-                  className="self-start"
-                  disabled={busy || deleteConfirm.trim().toLowerCase() !== "delete"}
-                  onClick={() => void onDeleteAccount()}
-                >
-                  <Trash2 className="h-4 w-4" />
-                  Delete my account
-                </Button>
-              </div>
-            </SecurityCard>
-          </div>
-        ) : (
-          <div className="max-w-xl rounded-md border border-ink/10 bg-card p-4 text-sm text-ink/60">
-            <p>
-              Operator-only sessions use the daemon token. Sign in as an owner,
-              administrator, or member to manage a local password.
-            </p>
-          </div>
-        )}
-      </section>
+            </div>
+          ) : (
+            <div className="max-w-xl rounded-md border border-ink/10 bg-card p-4 text-sm text-ink/60">
+              <p>
+                Operator-only sessions use the daemon token. Sign in as an owner, administrator, or
+                member to manage a local password.
+              </p>
+            </div>
+          )}
+        </section>
       ) : null}
 
       <section className="space-y-3">
@@ -1084,13 +1062,9 @@ function SecurityCard({
       )}
     >
       <div className="flex items-start gap-3">
-        <span className={cn("mt-0.5 shrink-0 text-ink/50", iconClassName)}>
-          {icon}
-        </span>
+        <span className={cn("mt-0.5 shrink-0 text-ink/50", iconClassName)}>{icon}</span>
         <div className="min-w-0 flex-1">
-          <h3 className={cn("text-sm font-semibold text-ink", titleClassName)}>
-            {title}
-          </h3>
+          <h3 className={cn("text-sm font-semibold text-ink", titleClassName)}>{title}</h3>
           <p className="mt-0.5 text-sm text-ink/55">{description}</p>
         </div>
       </div>

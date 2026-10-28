@@ -6,7 +6,16 @@
 // check (routes.ts) before the request reaches the visitor's own container.
 
 import { classify } from "./routes.ts";
-import { admit, countSignin, finish, limitsFrom, overdue, prune, startupEstimate, utcDay } from "./limits.ts";
+import {
+  admit,
+  countSignin,
+  finish,
+  limitsFrom,
+  overdue,
+  prune,
+  startupEstimate,
+  utcDay,
+} from "./limits.ts";
 import {
   cookiesForContainer,
   decodeLaunchForm,
@@ -18,7 +27,14 @@ import {
   siteverifyPassed,
 } from "./inputs.ts";
 import type { Env, SessionApi } from "./env.ts";
-import { endedPage, htmlResponse, launchPage, REFUSALS, SECURITY_HEADERS, waitPage } from "./pages.ts";
+import {
+  endedPage,
+  htmlResponse,
+  launchPage,
+  REFUSALS,
+  SECURITY_HEADERS,
+  waitPage,
+} from "./pages.ts";
 import { LIVE_PATH, liveRequest, NO_SESSION, siteUrl } from "./live.ts";
 
 /** Turnstile's server-side check. */
@@ -66,13 +82,19 @@ let hmacKey: { text: string; key: Promise<CryptoKey> | null } = { text: "", key:
 async function hmacHex(key: string, message: string): Promise<string> {
   let imported = hmacKey.text === key ? hmacKey.key : null;
   if (imported === null) {
-    imported = crypto.subtle.importKey("raw", new TextEncoder().encode(key), { name: "HMAC", hash: "SHA-256" }, false, [
-      "sign",
-    ]);
+    imported = crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(key),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
     hmacKey = { text: key, key: imported };
   }
   const k = await imported;
-  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(message)));
+  const mac = new Uint8Array(
+    await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(message)),
+  );
   return Array.from(mac, (x) => x.toString(16).padStart(2, "0")).join("");
 }
 
@@ -84,7 +106,10 @@ async function hmacHex(key: string, message: string): Promise<string> {
 function newToken(): string {
   const b = new Uint8Array(16);
   crypto.getRandomValues(b);
-  return btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return btoa(String.fromCharCode(...b))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
 }
 
 /**
@@ -125,7 +150,11 @@ function sessionStub(env: Env, id: string): SessionApi {
 }
 
 /** An env with the session key and both Turnstile keys set. */
-type ConfiguredEnv = Env & { SESSION_KEY: string; TURNSTILE_SITE_KEY: string; TURNSTILE_SECRET: string };
+type ConfiguredEnv = Env & {
+  SESSION_KEY: string;
+  TURNSTILE_SITE_KEY: string;
+  TURNSTILE_SECRET: string;
+};
 
 /**
  * Whether the Worker has everything it needs to admit visitors.
@@ -157,7 +186,8 @@ let estimateCache: { at: number; seconds: Promise<number | null> } | null = null
  */
 async function estimate(env: Env, deps: Deps): Promise<number | null> {
   const now = deps.now();
-  if (estimateCache !== null && now - estimateCache.at < ESTIMATE_TTL_MS) return estimateCache.seconds;
+  if (estimateCache !== null && now - estimateCache.at < ESTIMATE_TTL_MS)
+    return estimateCache.seconds;
   const seconds = startupEstimate(env.DB, Math.floor(now / 1000)).catch((err: unknown) => {
     // The pages read fine without an estimate.
     console.error(`startup estimate failed: ${String(err)}`);
@@ -199,7 +229,10 @@ async function launch(env: Env, deps: Deps, message?: string): Promise<string> {
  * @returns The response.
  */
 function json(body: unknown, status: number, extra: Record<string, string> = {}): Response {
-  return Response.json(body, { status, headers: { "Cache-Control": "no-store", ...SECURITY_HEADERS, ...extra } });
+  return Response.json(body, {
+    status,
+    headers: { "Cache-Control": "no-store", ...SECURITY_HEADERS, ...extra },
+  });
 }
 
 /**
@@ -262,8 +295,13 @@ function sameOrigin(request: Request, url: URL): boolean {
  *   total size, whether the body ended within `max` (otherwise `chunks` holds
  *   just over `max` bytes and `reader` the rest).
  */
-async function readCapped(body: ReadableStream<Uint8Array>, max: number): Promise<{
-  chunks: Uint8Array[]; size: number; done: boolean;
+async function readCapped(
+  body: ReadableStream<Uint8Array>,
+  max: number,
+): Promise<{
+  chunks: Uint8Array[];
+  size: number;
+  done: boolean;
   reader: ReadableStreamDefaultReader<Uint8Array>;
 }> {
   const reader = body.getReader();
@@ -335,7 +373,9 @@ async function start(request: Request, url: URL, env: Env, deps: Deps): Promise<
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ secret: env.TURNSTILE_SECRET, response: token, remoteip: ip }),
   });
-  if (!siteverifyPassed(await verify.text(), { hostname: url.hostname, action: TURNSTILE_ACTION })) {
+  if (
+    !siteverifyPassed(await verify.text(), { hostname: url.hostname, action: TURNSTILE_ACTION })
+  ) {
     return page(REFUSALS.turnstile, 403);
   }
   // A visitor who starts again (a second tab, the back button) gives up
@@ -346,11 +386,17 @@ async function start(request: Request, url: URL, env: Env, deps: Deps): Promise<
   const sessionToken = newToken();
   const id = await sessionId(env, sessionToken);
   const version = String(env.DEMO_VERSION ?? "");
-  const admitted = await admit(env.DB, { id, ipHash: await ipHash(env, ip, now), now, version }, limitsFrom(env));
+  const admitted = await admit(
+    env.DB,
+    { id, ipHash: await ipHash(env, ip, now), now, version },
+    limitsFrom(env),
+  );
   if (!admitted.ok) return page(REFUSALS[admitted.reason], 429);
   await sessionStub(env, id).open({ id, endsAt: admitted.endsAt, version, origin: url.origin });
   const maxAge = admitted.endsAt - now;
-  return redirect("/_demo/wait", [`${SESSION_COOKIE}=${sessionToken}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`]);
+  return redirect("/_demo/wait", [
+    `${SESSION_COOKIE}=${sessionToken}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`,
+  ]);
 }
 
 /**
@@ -420,7 +466,13 @@ async function forwardResponse(upstream: Response): Promise<Response> {
  * @returns The container's answer, a refusal, or the
  *   page for a session that is not running.
  */
-async function proxy(request: Request, url: URL, env: ConfiguredEnv, deps: Deps, id: string): Promise<Response> {
+async function proxy(
+  request: Request,
+  url: URL,
+  env: ConfiguredEnv,
+  deps: Deps,
+  id: string,
+): Promise<Response> {
   const { verdict } = classify(request.method, url.pathname);
   if (verdict === "deny") {
     return json({ error: "This is not available in the Bookclerk demo." }, 403);
@@ -431,7 +483,9 @@ async function proxy(request: Request, url: URL, env: ConfiguredEnv, deps: Deps,
   if (verdict === "signin") {
     const now = Math.floor(deps.now() / 1000);
     const ip = request.headers.get("CF-Connecting-IP") ?? "";
-    if (!(await countSignin(env.DB, { id, ipHash: await ipHash(env, ip, now), now }, limitsFrom(env)))) {
+    if (
+      !(await countSignin(env.DB, { id, ipHash: await ipHash(env, ip, now), now }, limitsFrom(env)))
+    ) {
       return json({ error: "You have reached the demo's limit on store sign-in attempts." }, 429);
     }
   }
@@ -474,7 +528,9 @@ async function proxy(request: Request, url: URL, env: ConfiguredEnv, deps: Deps,
  */
 function notRunning(request: Request, state: string, env: Pick<Env, "SITE_URL"> = {}): Response {
   if (state === "starting") {
-    return isNavigation(request) ? redirect("/_demo/wait") : json({ error: "Your demo is still starting." }, 503);
+    return isNavigation(request)
+      ? redirect("/_demo/wait")
+      : json({ error: "Your demo is still starting." }, 503);
   }
   const response = isNavigation(request)
     ? htmlResponse(endedPage({ siteUrl: siteUrl(env) }), 410, {})
@@ -517,7 +573,9 @@ async function live(request: Request, url: URL, env: Env, id: string | null): Pr
   if (id === null) return json({ error: "Start the demo first." }, 401);
   // A fresh request: nothing the browser sent (cookies, headers) reaches
   // the object, which needs only the path and the upgrade.
-  return sessionStub(env, id).fetch(new Request(`https://session${LIVE_PATH}`, { headers: { Upgrade: "websocket" } }));
+  return sessionStub(env, id).fetch(
+    new Request(`https://session${LIVE_PATH}`, { headers: { Upgrade: "websocket" } }),
+  );
 }
 
 /**
@@ -530,11 +588,18 @@ async function live(request: Request, url: URL, env: Env, id: string | null): Pr
  * @param deps - Outside dependencies.
  * @returns The response.
  */
-export async function handle(request: Request, env: Env, deps: Deps = DEFAULT_DEPS): Promise<Response> {
+export async function handle(
+  request: Request,
+  env: Env,
+  deps: Deps = DEFAULT_DEPS,
+): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
   if (path === "/_demo/health") {
-    return json({ ok: true, version: String(env.DEMO_VERSION ?? ""), configured: configured(env) }, 200);
+    return json(
+      { ok: true, version: String(env.DEMO_VERSION ?? ""), configured: configured(env) },
+      200,
+    );
   }
   if (path === "/_demo/start") {
     return request.method === "POST" ? start(request, url, env, deps) : redirect("/");
@@ -543,7 +608,11 @@ export async function handle(request: Request, env: Env, deps: Deps = DEFAULT_DE
   const id = token && configured(env) ? await sessionId(env, token) : null;
 
   if (path === "/_demo/wait") {
-    return id ? htmlResponse(waitPage({ estimateSeconds: await estimate(env, deps), siteUrl: siteUrl(env) })) : redirect("/");
+    return id
+      ? htmlResponse(
+          waitPage({ estimateSeconds: await estimate(env, deps), siteUrl: siteUrl(env) }),
+        )
+      : redirect("/");
   }
   if (path === "/_demo/session") {
     const status = id ? await sessionStub(env, id).status() : NO_SESSION;

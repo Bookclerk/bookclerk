@@ -154,7 +154,10 @@ export type AccessRow = {
 };
 
 /** A ledger row naming an issue, as the issue page lists it. */
-export type LinkRow = Pick<ReportRow, "report_id" | "received_at" | "version" | "os" | "arch" | "signature"> & {
+export type LinkRow = Pick<
+  ReportRow,
+  "report_id" | "received_at" | "version" | "os" | "arch" | "signature"
+> & {
   /** How the row was made (`report_issue.source`). */
   source: string;
   /** Member who made a manual change, or null. */
@@ -166,7 +169,10 @@ export type LinkRow = Pick<ReportRow, "report_id" | "received_at" | "version" | 
 };
 
 /** A report as the short lists show it (similar and suggested reports). */
-export type ReportBriefRow = Pick<ReportRow, "report_id" | "received_at" | "version" | "os" | "arch">;
+export type ReportBriefRow = Pick<
+  ReportRow,
+  "report_id" | "received_at" | "version" | "os" | "arch"
+>;
 
 /** One issue's figures for its summary comment (`issueSummaries`). */
 export type IssueSummary = {
@@ -239,7 +245,7 @@ export type TopSignature = {
   /** Day index → reports that day. */
   days: Map<number, number>;
   /** The newest issue tracking a report with it, or null. */
-  issue: { number: number; state: string; } | null;
+  issue: { number: number; state: string } | null;
 };
 
 /** An issue a picker offers. */
@@ -287,8 +293,15 @@ export const PAGE_SIZE = 25;
  * @param params - Bound values.
  * @returns Result rows.
  */
-export async function all<T = Record<string, unknown>>(db: D1Database, sql: string, ...params: unknown[]): Promise<T[]> {
-  const res = await db.prepare(sql).bind(...params).all<T>();
+export async function all<T = Record<string, unknown>>(
+  db: D1Database,
+  sql: string,
+  ...params: unknown[]
+): Promise<T[]> {
+  const res = await db
+    .prepare(sql)
+    .bind(...params)
+    .all<T>();
   return res.results ?? [];
 }
 
@@ -302,8 +315,17 @@ export async function all<T = Record<string, unknown>>(db: D1Database, sql: stri
  * @param params - Bound values.
  * @returns The row, or null.
  */
-export async function first<T = Record<string, unknown>>(db: D1Database, sql: string, ...params: unknown[]): Promise<T | null> {
-  return (await db.prepare(sql).bind(...params).first<T>()) ?? null;
+export async function first<T = Record<string, unknown>>(
+  db: D1Database,
+  sql: string,
+  ...params: unknown[]
+): Promise<T | null> {
+  return (
+    (await db
+      .prepare(sql)
+      .bind(...params)
+      .first<T>()) ?? null
+  );
 }
 
 /**
@@ -314,7 +336,10 @@ export async function first<T = Record<string, unknown>>(db: D1Database, sql: st
  * @param params - Bound values.
  */
 export async function run(db: D1Database, sql: string, ...params: unknown[]): Promise<void> {
-  await db.prepare(sql).bind(...params).run();
+  await db
+    .prepare(sql)
+    .bind(...params)
+    .run();
 }
 
 /**
@@ -336,10 +361,15 @@ export function utcDayOf(ms: number): string {
  * @param row - The report and its summary.
  * @returns The bound statement.
  */
-export function reportInsert(db: D1Database, row: {
-    reportId: string; objectKey: string; receivedAt: number;
+export function reportInsert(
+  db: D1Database,
+  row: {
+    reportId: string;
+    objectKey: string;
+    receivedAt: number;
     summary: Awaited<ReturnType<typeof summarizeReport>>;
-  }): D1PreparedStatement {
+  },
+): D1PreparedStatement {
   const s = row.summary;
   return db
     .prepare(
@@ -380,11 +410,18 @@ export function reportInsert(db: D1Database, row: {
  * @returns What happened. A report already
  *   indexed counts as indexed and does not use up the cap.
  */
-export async function indexReport(db: D1Database, row: {
-    reportId: string; objectKey: string; receivedAt: number;
+export async function indexReport(
+  db: D1Database,
+  row: {
+    reportId: string;
+    objectKey: string;
+    receivedAt: number;
     summary: Awaited<ReturnType<typeof summarizeReport>>;
-  }, cap: number): Promise<"indexed" | "capped"> {
-  if (await first(db, "SELECT 1 AS hit FROM reports WHERE report_id = ?", row.reportId)) return "indexed";
+  },
+  cap: number,
+): Promise<"indexed" | "capped"> {
+  if (await first(db, "SELECT 1 AS hit FROM reports WHERE report_id = ?", row.reportId))
+    return "indexed";
   const day = utcDayOf(row.receivedAt);
   const reserved = await db
     .prepare(
@@ -439,7 +476,10 @@ export type ReportFilter = {
  * @param f - Filters.
  * @returns Clause over alias `r`.
  */
-export function reportWhere(since: number, f: ReportFilter = {}): { where: string; params: unknown[]; } {
+export function reportWhere(
+  since: number,
+  f: ReportFilter = {},
+): { where: string; params: unknown[] } {
   const clauses = ["r.received_at >= ?"];
   const params: unknown[] = [since];
   if (f.version) {
@@ -459,7 +499,9 @@ export function reportWhere(since: number, f: ReportFilter = {}): { where: strin
     params.push(f.signature);
   }
   if (f.filed === "yes" || f.filed === "no") {
-    clauses.push(`${f.filed === "no" ? "NOT " : ""}EXISTS (SELECT 1 FROM report_issue ri WHERE ri.report_id = r.report_id AND ${LINKED})`);
+    clauses.push(
+      `${f.filed === "no" ? "NOT " : ""}EXISTS (SELECT 1 FROM report_issue ri WHERE ri.report_id = r.report_id AND ${LINKED})`,
+    );
   }
   return { where: clauses.join(" AND "), params };
 }
@@ -507,7 +549,8 @@ const ISSUE_JOIN = `LEFT JOIN issues i ON i.number = ${TRACKER}`;
  * @returns True when both parse and their lines are equal.
  */
 export function sameVersionLine(a: unknown, b: unknown): boolean {
-  const line = (v: unknown): RegExpExecArray | null => (typeof v === "string" ? /^v?(\d+)\.(\d+)(?:[.+-]|$)/.exec(v) : null);
+  const line = (v: unknown): RegExpExecArray | null =>
+    typeof v === "string" ? /^v?(\d+)\.(\d+)(?:[.+-]|$)/.exec(v) : null;
   const x = line(a);
   const y = line(b);
   return Boolean(x && y && x[1] === y[1] && x[2] === y[2]);
@@ -530,7 +573,11 @@ const LINK_LOOKUP_CHUNK = 90;
  * @param now - Unix time in milliseconds.
  * @returns Report ID → issue number linked.
  */
-export async function linkBySignature(db: D1Database, reportIds: string[], now: number): Promise<Map<string, number>> {
+export async function linkBySignature(
+  db: D1Database,
+  reportIds: string[],
+  now: number,
+): Promise<Map<string, number>> {
   const chosen = new Map<string, number>();
   for (let i = 0; i < reportIds.length; i += LINK_LOOKUP_CHUNK) {
     const chunk = reportIds.slice(i, i + LINK_LOOKUP_CHUNK);
@@ -594,13 +641,26 @@ export async function linkBySignature(db: D1Database, reportIds: string[], now: 
  * @returns Report ID → the closed issue it regresses, and report ID → the closed
  *   issue it was linked to.
  */
-export async function matchClosedBySignature(db: D1Database, reportIds: string[], now: number): Promise<{
-  regressions: Map<string, {
-    issue: number; fixedIn: string;
-    prNumber: number | null; title: string;
-  }>; linked: Map<string, number>;
+export async function matchClosedBySignature(
+  db: D1Database,
+  reportIds: string[],
+  now: number,
+): Promise<{
+  regressions: Map<
+    string,
+    {
+      issue: number;
+      fixedIn: string;
+      prNumber: number | null;
+      title: string;
+    }
+  >;
+  linked: Map<string, number>;
 }> {
-  const regressions = new Map<string, { issue: number; fixedIn: string; prNumber: number | null; title: string }>();
+  const regressions = new Map<
+    string,
+    { issue: number; fixedIn: string; prNumber: number | null; title: string }
+  >();
   const linked = new Map<string, number>();
   for (let i = 0; i < reportIds.length; i += LINK_LOOKUP_CHUNK) {
     const chunk = reportIds.slice(i, i + LINK_LOOKUP_CHUNK);
@@ -633,19 +693,32 @@ export async function matchClosedBySignature(db: D1Database, reportIds: string[]
       // decision (not a bug, will not fix, or a regression issue a member
       // closed): the report joins it quietly rather than reopening the
       // question with yet another regression issue.
-      const decided = matches.some((m) => (m.fixed_in === null || m.fixed_in === undefined) && sameVersionLine(version, m.tracked_version));
-      let regression: { issue: number; fixedIn: string; prNumber: number | null; title: string } | null = null;
+      const decided = matches.some(
+        (m) =>
+          (m.fixed_in === null || m.fixed_in === undefined) &&
+          sameVersionLine(version, m.tracked_version),
+      );
+      let regression: {
+        issue: number;
+        fixedIn: string;
+        prNumber: number | null;
+        title: string;
+      } | null = null;
       for (const m of matches) {
         if (decided) break;
         const fixedIn = m.fixed_in === null || m.fixed_in === undefined ? null : String(m.fixed_in);
         if (fixedIn === null || !isRegressionVersion(version, fixedIn)) continue;
-        const newer = regression === null || (compareSemver(fixedIn, regression.fixedIn) ?? 0) > 0
-          || ((compareSemver(fixedIn, regression.fixedIn) ?? 0) === 0 && Number(m.issue) > regression.issue);
+        const newer =
+          regression === null ||
+          (compareSemver(fixedIn, regression.fixedIn) ?? 0) > 0 ||
+          ((compareSemver(fixedIn, regression.fixedIn) ?? 0) === 0 &&
+            Number(m.issue) > regression.issue);
         if (newer) {
           regression = {
             issue: Number(m.issue),
             fixedIn,
-            prNumber: m.pr_number === null || m.pr_number === undefined ? null : Number(m.pr_number),
+            prNumber:
+              m.pr_number === null || m.pr_number === undefined ? null : Number(m.pr_number),
             title: String(m.title ?? ""),
           };
         }
@@ -690,15 +763,33 @@ export async function matchClosedBySignature(db: D1Database, reportIds: string[]
  * @param f - Filters (version only on the overview).
  * @returns The figures.
  */
-export async function overviewStats(db: D1Database, now: number, since: number, f: ReportFilter): Promise<OverviewStats> {
+export async function overviewStats(
+  db: D1Database,
+  now: number,
+  since: number,
+  f: ReportFilter,
+): Promise<OverviewStats> {
   const range = reportWhere(since, f);
   const d1 = reportWhere(now - DAY_MS, f);
   const d2 = reportWhere(now - 2 * DAY_MS, f);
   const [tot, a, b, nf, oi] = await Promise.all([
-    first(db, `SELECT COUNT(*) AS n, COUNT(DISTINCT NULLIF(r.install_hash, '')) AS installs FROM reports r WHERE ${range.where}`, ...range.params),
+    first(
+      db,
+      `SELECT COUNT(*) AS n, COUNT(DISTINCT NULLIF(r.install_hash, '')) AS installs FROM reports r WHERE ${range.where}`,
+      ...range.params,
+    ),
     first(db, `SELECT COUNT(*) AS n FROM reports r WHERE ${d1.where}`, ...d1.params),
-    first(db, `SELECT COUNT(*) AS n FROM reports r WHERE ${d2.where} AND r.received_at < ?`, ...d2.params, now - DAY_MS),
-    first(db, `SELECT COUNT(*) AS n FROM reports r WHERE ${range.where} AND NOT EXISTS (SELECT 1 FROM report_issue ri WHERE ri.report_id = r.report_id AND ${LINKED})`, ...range.params),
+    first(
+      db,
+      `SELECT COUNT(*) AS n FROM reports r WHERE ${d2.where} AND r.received_at < ?`,
+      ...d2.params,
+      now - DAY_MS,
+    ),
+    first(
+      db,
+      `SELECT COUNT(*) AS n FROM reports r WHERE ${range.where} AND NOT EXISTS (SELECT 1 FROM report_issue ri WHERE ri.report_id = r.report_id AND ${LINKED})`,
+      ...range.params,
+    ),
     first(db, "SELECT COUNT(*) AS n FROM issues WHERE state = 'open'"),
   ]);
   return {
@@ -721,7 +812,12 @@ export async function overviewStats(db: D1Database, now: number, since: number, 
  * @returns Bucket
  *   index (time / bucket, floored) per row.
  */
-export async function countsByBucket(db: D1Database, since: number, bucket: number, f: ReportFilter): Promise<BucketCount[]> {
+export async function countsByBucket(
+  db: D1Database,
+  since: number,
+  bucket: number,
+  f: ReportFilter,
+): Promise<BucketCount[]> {
   const w = reportWhere(since, f);
   return all(
     db,
@@ -743,8 +839,16 @@ export async function countsByBucket(db: D1Database, since: number, bucket: numb
  * @returns Rows by
  *   count, with the mean errors per report.
  */
-export async function topBy(db: D1Database, by: "platform" | "version" | "trigger", since: number, f: ReportFilter, limit: number): Promise<TopRow[]> {
-  const expr = { platform: "(r.os || ' ' || r.arch)", version: "r.version", trigger: "r.trigger" }[by];
+export async function topBy(
+  db: D1Database,
+  by: "platform" | "version" | "trigger",
+  since: number,
+  f: ReportFilter,
+  limit: number,
+): Promise<TopRow[]> {
+  const expr = { platform: "(r.os || ' ' || r.arch)", version: "r.version", trigger: "r.trigger" }[
+    by
+  ];
   const w = reportWhere(since, f);
   return all(
     db,
@@ -765,7 +869,12 @@ export async function topBy(db: D1Database, by: "platform" | "version" | "trigge
  * @param limit - Most signatures.
  * @returns Signatures by count.
  */
-export async function topSignatures(db: D1Database, since: number, f: ReportFilter, limit: number): Promise<TopSignature[]> {
+export async function topSignatures(
+  db: D1Database,
+  since: number,
+  f: ReportFilter,
+  limit: number,
+): Promise<TopSignature[]> {
   const w = reportWhere(since, f);
   const sigs = await all<{ signature: string; label: string | null; n: number }>(
     db,
@@ -817,7 +926,13 @@ export async function topSignatures(db: D1Database, since: number, f: ReportFilt
  * @returns One page and the
  *   number of matching reports.
  */
-export async function listReports(db: D1Database, since: number, f: ReportFilter, limit: number, offset: number): Promise<{ rows: ReportListRow[]; total: number; }> {
+export async function listReports(
+  db: D1Database,
+  since: number,
+  f: ReportFilter,
+  limit: number,
+  offset: number,
+): Promise<{ rows: ReportListRow[]; total: number }> {
   const w = reportWhere(since, f);
   const [rows, count] = await Promise.all([
     all<ReportListRow>(
@@ -840,11 +955,15 @@ export async function listReports(db: D1Database, since: number, f: ReportFilter
  * @param since - Range start, in milliseconds.
  * @returns Up to 50 of each, most frequent first.
  */
-export async function filterOptions(db: D1Database, since: number): Promise<{ versions: string[]; platforms: string[]; triggers: string[]; }> {
+export async function filterOptions(
+  db: D1Database,
+  since: number,
+): Promise<{ versions: string[]; platforms: string[]; triggers: string[] }> {
   const [v, p, t] = await Promise.all(
     (["version", "platform", "trigger"] as const).map((by) => topBy(db, by, since, {}, 50)),
   );
-  const keys = (rows: { key: string }[] | undefined): string[] => (rows ?? []).map((r) => String(r.key)).filter((k) => k.trim() !== "");
+  const keys = (rows: { key: string }[] | undefined): string[] =>
+    (rows ?? []).map((r) => String(r.key)).filter((k) => k.trim() !== "");
   return { versions: keys(v), platforms: keys(p), triggers: keys(t) };
 }
 
@@ -857,8 +976,19 @@ export async function filterOptions(db: D1Database, since: number): Promise<{ ve
  * @param reportId - Lowercase UUID.
  * @returns Null when the report is not indexed.
  */
-export async function getReport(db: D1Database, reportId: string): Promise<{ report: ReportListRow; issues: (IssueRow & { source: string })[]; prs: PrRow[]; } | null> {
-  const report = await first<ReportListRow>(db, `SELECT ${REPORT_COLUMNS} FROM reports r ${ISSUE_JOIN} WHERE r.report_id = ?`, reportId);
+export async function getReport(
+  db: D1Database,
+  reportId: string,
+): Promise<{
+  report: ReportListRow;
+  issues: (IssueRow & { source: string })[];
+  prs: PrRow[];
+} | null> {
+  const report = await first<ReportListRow>(
+    db,
+    `SELECT ${REPORT_COLUMNS} FROM reports r ${ISSUE_JOIN} WHERE r.report_id = ?`,
+    reportId,
+  );
   if (!report) return null;
   const [issues, prs] = await Promise.all([
     all<IssueRow & { source: string }>(
@@ -885,7 +1015,11 @@ export async function getReport(db: D1Database, reportId: string): Promise<{ rep
  * @param since - Range start, in milliseconds.
  * @returns Day index → count.
  */
-export async function signatureDays(db: D1Database, signature: string, since: number): Promise<Map<number, number>> {
+export async function signatureDays(
+  db: D1Database,
+  signature: string,
+  since: number,
+): Promise<Map<number, number>> {
   const rows = await all(
     db,
     `SELECT CAST(received_at / ? AS INTEGER) AS day, COUNT(*) AS n FROM reports
@@ -930,7 +1064,10 @@ export const LATEST_FIX = `latest AS (
  * @param signature - Signature.
  * @returns Issue numbers, ascending.
  */
-export async function issuesTrackingSignature(db: D1Database, signature: string): Promise<number[]> {
+export async function issuesTrackingSignature(
+  db: D1Database,
+  signature: string,
+): Promise<number[]> {
   const rows = await all(
     db,
     `SELECT DISTINCT ri.issue_number AS n FROM report_issue ri JOIN reports r ON r.report_id = ri.report_id
@@ -998,7 +1135,11 @@ export async function fixStatus(db: D1Database): Promise<Map<number, FixStatus>>
     if (!fix) continue;
     const fixedIn = fix.fixedIn;
     const byVersion = fixedIn !== null && compareSemver(fixedIn, fixedIn) !== null;
-    fix.after += byVersion ? (isRegressionVersion(String(c.version ?? ""), fixedIn) ? Number(c.n) : 0) : Number(c.n_after);
+    fix.after += byVersion
+      ? isRegressionVersion(String(c.version ?? ""), fixedIn)
+        ? Number(c.n)
+        : 0
+      : Number(c.n_after);
   }
   return out;
 }
@@ -1041,7 +1182,12 @@ const WITH_TRACKED_FOR = `WITH tr AS (
  * @returns Issue rows with `reports`, `first_seen`,
  *   `last_seen`, `first_version`, `last_version`, `days` (Map) and `prs`.
  */
-export async function listIssues(db: D1Database, state: "open" | "closed" | "all", since: number, limit: number): Promise<IssueListRow[]> {
+export async function listIssues(
+  db: D1Database,
+  state: "open" | "closed" | "all",
+  since: number,
+  limit: number,
+): Promise<IssueListRow[]> {
   const filter = state === "all" ? "" : "WHERE i.state = ?";
   const params = state === "all" ? [] : [state];
   const issues = await all<Omit<IssueListRow, "days" | "prs">>(
@@ -1075,7 +1221,9 @@ export async function listIssues(db: D1Database, state: "open" | "closed" | "all
   ]);
   return issues.map((i) => ({
     ...i,
-    days: new Map(days.filter((d) => d.issue === i.number).map((d) => [Number(d.day), Number(d.n)])),
+    days: new Map(
+      days.filter((d) => d.issue === i.number).map((d) => [Number(d.day), Number(d.n)]),
+    ),
     prs: prs.filter((p) => p.issue_number === i.number),
   }));
 }
@@ -1088,7 +1236,11 @@ export async function listIssues(db: D1Database, state: "open" | "closed" | "all
  * @returns Rows, newest first.
  */
 export async function recentAccess(db: D1Database, limit: number): Promise<AccessRow[]> {
-  return all(db, "SELECT at, login, action, report_id FROM access_log ORDER BY at DESC, id DESC LIMIT ?", limit);
+  return all(
+    db,
+    "SELECT at, login, action, report_id FROM access_log ORDER BY at DESC, id DESC LIMIT ?",
+    limit,
+  );
 }
 
 /**
@@ -1100,8 +1252,23 @@ export async function recentAccess(db: D1Database, limit: number): Promise<Acces
  * @param reportId - Report viewed, when any.
  * @param now - Unix time in milliseconds.
  */
-export async function logAccess(db: D1Database, who: { userId: number; login: string; }, action: "sign-in" | "view-report" | "sign-out-all" | "reindex" | "sync" | "attach" | "detach" | "move" |
-  "merge" | "update-issue", reportId: string | null, now: number): Promise<void> {
+export async function logAccess(
+  db: D1Database,
+  who: { userId: number; login: string },
+  action:
+    | "sign-in"
+    | "view-report"
+    | "sign-out-all"
+    | "reindex"
+    | "sync"
+    | "attach"
+    | "detach"
+    | "move"
+    | "merge"
+    | "update-issue",
+  reportId: string | null,
+  now: number,
+): Promise<void> {
   await run(
     db,
     "INSERT INTO access_log (at, user_id, login, action, report_id) VALUES (?, ?, ?, ?, ?)",
@@ -1143,7 +1310,11 @@ const SUMMARY_NEWEST = 10;
  * @returns Summaries to render; `fingerprint` is echoed back through
  *   `markSummarySent` once the comment is written.
  */
-export async function issueSummaries(db: D1Database, limit: number, only: number | null = null): Promise<IssueSummary[]> {
+export async function issueSummaries(
+  db: D1Database,
+  limit: number,
+  only: number | null = null,
+): Promise<IssueSummary[]> {
   const tracked = only === null ? WITH_TRACKED : WITH_TRACKED_FOR;
   const scope = only === null ? [] : [only];
   const [totals, versions, platforms, newest] = await Promise.all([
@@ -1193,7 +1364,10 @@ export async function issueSummaries(db: D1Database, limit: number, only: number
       SUMMARY_NEWEST,
     ),
   ]);
-  const by = <E>(rows: Record<string, unknown>[], key: (row: Record<string, unknown>) => E): Map<number, E[]> => {
+  const by = <E>(
+    rows: Record<string, unknown>[],
+    key: (row: Record<string, unknown>) => E,
+  ): Map<number, E[]> => {
     const m = new Map<number, E[]>();
     for (const row of rows) {
       const issue = Number(row.issue);
@@ -1210,7 +1384,11 @@ export async function issueSummaries(db: D1Database, limit: number, only: number
   };
   const v = by(versions, (r) => ({ version: String(r.version ?? ""), n: Number(r.n) }));
   const pl = by(platforms, (r) => ({ platform: String(r.platform ?? ""), n: Number(r.n) }));
-  const nw = by(newest, (r) => ({ report_id: String(r.report_id), version: String(r.version ?? ""), received_at: Number(r.received_at) }));
+  const nw = by(newest, (r) => ({
+    report_id: String(r.report_id),
+    version: String(r.version ?? ""),
+    received_at: Number(r.received_at),
+  }));
   const out: IssueSummary[] = [];
   for (const t of totals) {
     const issue = Number(t.issue);
@@ -1222,7 +1400,12 @@ export async function issueSummaries(db: D1Database, limit: number, only: number
       installs: Number(t.installs),
       first_seen: t.first_seen === null ? null : Number(t.first_seen),
       last_seen: t.last_seen === null ? null : Number(t.last_seen),
-      sources: { filed: Number(t.filed), signature: Number(t.by_signature), triage: Number(t.by_triage), manual: Number(t.by_manual) },
+      sources: {
+        filed: Number(t.filed),
+        signature: Number(t.by_signature),
+        triage: Number(t.by_triage),
+        manual: Number(t.by_manual),
+      },
       versions: top(v.get(issue), (n) => ({ version: "others", n })),
       platforms: top(pl.get(issue), (n) => ({ platform: "others", n })),
       newest: nw.get(issue) ?? [],
@@ -1245,7 +1428,12 @@ export async function issueSummaries(db: D1Database, limit: number, only: number
  * @param now - Unix time in milliseconds, kept as when it was written.
  * @returns Whether the issue exists.
  */
-export async function markSummarySent(db: D1Database, issue: number, fingerprint: string, now: number): Promise<boolean> {
+export async function markSummarySent(
+  db: D1Database,
+  issue: number,
+  fingerprint: string,
+  now: number,
+): Promise<boolean> {
   const res = await db
     .prepare("UPDATE issues SET summary_sent = ?, summary_sent_at = ? WHERE number = ?")
     .bind(fingerprint, now, issue)
@@ -1276,12 +1464,25 @@ const SUMMARY_LOCK_MS = 2 * 60_000;
  * @param now - Unix time in milliseconds.
  * @returns The summaries to render.
  */
-export async function handOutSummaries<T extends { issue: number }>(db: D1Database, summaries: T[], now: number): Promise<T[]> {
+export async function handOutSummaries<T extends { issue: number }>(
+  db: D1Database,
+  summaries: T[],
+  now: number,
+): Promise<T[]> {
   if (summaries.length === 0) return summaries;
-  const locked = new Set((await all(db, "SELECT number FROM issues WHERE summary_lock_until > ?", now)).map((r) => Number(r.number)));
+  const locked = new Set(
+    (await all(db, "SELECT number FROM issues WHERE summary_lock_until > ?", now)).map((r) =>
+      Number(r.number),
+    ),
+  );
   const out = summaries.filter((s) => !locked.has(s.issue));
   if (out.length) {
-    await run(db, `UPDATE issues SET summary_handed_at = ? WHERE number IN (${out.map(() => "?").join(", ")})`, now, ...out.map((s) => s.issue));
+    await run(
+      db,
+      `UPDATE issues SET summary_handed_at = ? WHERE number IN (${out.map(() => "?").join(", ")})`,
+      now,
+      ...out.map((s) => s.issue),
+    );
   }
   return out;
 }
@@ -1297,7 +1498,11 @@ export async function handOutSummaries<T extends { issue: number }>(db: D1Databa
  * @returns Whether the press holds the issue; release it
  *   with `releaseSummaryWrite`.
  */
-export async function claimSummaryWrite(db: D1Database, issue: number, now: number): Promise<boolean> {
+export async function claimSummaryWrite(
+  db: D1Database,
+  issue: number,
+  now: number,
+): Promise<boolean> {
   const res = await db
     .prepare(
       `UPDATE issues SET summary_lock_until = ?
@@ -1364,9 +1569,9 @@ export type IssueDetail = {
   /** Last receipt, Unix ms, or null. */
   last_seen: number | null;
   /** Most frequent versions among them. */
-  versions: Array<{ key: string; n: number; }>;
+  versions: Array<{ key: string; n: number }>;
   /** Most frequent platforms among them. */
-  platforms: Array<{ key: string; n: number; }>;
+  platforms: Array<{ key: string; n: number }>;
   /** Day index → tracked reports received that day, within the range. */
   days: Map<number, number>;
   /** Ledger rows naming the issue, newest first. */
@@ -1396,84 +1601,93 @@ export type IssueDetail = {
  * @param since - Activity range start for `days`, in milliseconds.
  * @returns The detail, or null when the issue is not stored.
  */
-export async function issueDetail(db: D1Database, number: number, since: number): Promise<IssueDetail | null> {
+export async function issueDetail(
+  db: D1Database,
+  number: number,
+  since: number,
+): Promise<IssueDetail | null> {
   const issue = await first<IssueRow>(db, "SELECT * FROM issues WHERE number = ?", number);
   if (!issue) return null;
-  const [prs, totals, versions, platforms, days, links, suggested, pending, summaries] = await Promise.all([
-    all<PrRow>(db, "SELECT * FROM issue_pr WHERE issue_number = ? ORDER BY pr_number DESC", number),
-    first(
-      db,
-      `${WITH_TRACKED_FOR}
+  const [prs, totals, versions, platforms, days, links, suggested, pending, summaries] =
+    await Promise.all([
+      all<PrRow>(
+        db,
+        "SELECT * FROM issue_pr WHERE issue_number = ? ORDER BY pr_number DESC",
+        number,
+      ),
+      first(
+        db,
+        `${WITH_TRACKED_FOR}
        SELECT COUNT(r.report_id) AS reports, COUNT(DISTINCT NULLIF(r.install_hash, '')) AS installs,
          MIN(r.received_at) AS first_seen, MAX(r.received_at) AS last_seen
        FROM tr JOIN reports r ON r.report_id = tr.report_id WHERE tr.issue_number = ?`,
-      number,
-      number,
-    ),
-    all(
-      db,
-      `${WITH_TRACKED_FOR}
+        number,
+        number,
+      ),
+      all(
+        db,
+        `${WITH_TRACKED_FOR}
        SELECT r.version AS key, COUNT(*) AS n FROM tr JOIN reports r ON r.report_id = tr.report_id
        WHERE tr.issue_number = ? GROUP BY r.version ORDER BY n DESC, r.version LIMIT ?`,
-      number,
-      number,
-      DETAIL_TOP,
-    ),
-    all(
-      db,
-      `${WITH_TRACKED_FOR}
+        number,
+        number,
+        DETAIL_TOP,
+      ),
+      all(
+        db,
+        `${WITH_TRACKED_FOR}
        SELECT TRIM(r.os || ' ' || r.arch) AS key, COUNT(*) AS n FROM tr JOIN reports r ON r.report_id = tr.report_id
        WHERE tr.issue_number = ? GROUP BY key ORDER BY n DESC, key LIMIT ?`,
-      number,
-      number,
-      DETAIL_TOP,
-    ),
-    all(
-      db,
-      `${WITH_TRACKED_FOR}
+        number,
+        number,
+        DETAIL_TOP,
+      ),
+      all(
+        db,
+        `${WITH_TRACKED_FOR}
        SELECT CAST(r.received_at / ? AS INTEGER) AS day, COUNT(*) AS n FROM tr JOIN reports r ON r.report_id = tr.report_id
        WHERE tr.issue_number = ? AND r.received_at >= ? GROUP BY day`,
-      number,
-      DAY_MS,
-      number,
-      since,
-    ),
-    // Every ledger row naming the issue, with whether this issue is the one
-    // the report counts under (another, older issue may track it instead).
-    all<LinkRow>(
-      db,
-      `${WITH_TRACKED_FOR}
+        number,
+        DAY_MS,
+        number,
+        since,
+      ),
+      // Every ledger row naming the issue, with whether this issue is the one
+      // the report counts under (another, older issue may track it instead).
+      all<LinkRow>(
+        db,
+        `${WITH_TRACKED_FOR}
        SELECT r.report_id, r.received_at, r.version, r.os, r.arch, r.signature, ri.source, ri.linked_by, ri.linked_at,
          (tr.issue_number IS NOT NULL) AS tracked
        FROM report_issue ri JOIN reports r ON r.report_id = ri.report_id
        LEFT JOIN tr ON tr.report_id = ri.report_id AND tr.issue_number = ri.issue_number
        WHERE ri.issue_number = ? ORDER BY r.received_at DESC, r.report_id LIMIT ?`,
-      number,
-      number,
-      DETAIL_LINKS,
-    ),
-    all<ReportBriefRow>(
-      db,
-      `${WITH_TRACKED_FOR}
+        number,
+        number,
+        DETAIL_LINKS,
+      ),
+      all<ReportBriefRow>(
+        db,
+        `${WITH_TRACKED_FOR}
        SELECT r.report_id, r.received_at, r.version, r.os, r.arch FROM reports r
        WHERE r.signature IS NOT NULL
          AND r.signature IN (SELECT t.signature FROM tr JOIN reports t ON t.report_id = tr.report_id WHERE tr.issue_number = ?)
          AND NOT EXISTS (SELECT 1 FROM report_issue x WHERE x.report_id = r.report_id AND (x.source <> 'excluded' OR x.issue_number = ?))
        ORDER BY r.received_at DESC, r.report_id LIMIT ?`,
-      number,
-      number,
-      number,
-      DETAIL_SUGGESTIONS,
-    ),
-    first(
-      db,
-      `SELECT COUNT(*) AS n FROM report_issue ri WHERE ri.issue_number = ? AND ri.linked_at IS NOT NULL
+        number,
+        number,
+        number,
+        DETAIL_SUGGESTIONS,
+      ),
+      first(
+        db,
+        `SELECT COUNT(*) AS n FROM report_issue ri WHERE ri.issue_number = ? AND ri.linked_at IS NOT NULL
          AND ri.linked_at > COALESCE((SELECT summary_sent_at FROM issues WHERE number = ?), 0)`,
-      number,
-      number,
-    ),
-    issueSummaries(db, 1, number),
-  ]);
+        number,
+        number,
+      ),
+      issueSummaries(db, 1, number),
+    ]);
   return {
     issue,
     prs,
@@ -1500,7 +1714,10 @@ export async function issueDetail(db: D1Database, number: number, since: number)
  * @param limit - Most issues to return.
  * @returns Newest first.
  */
-export async function openIssueOptions(db: D1Database, limit: number = PICKER_ISSUES): Promise<IssueOption[]> {
+export async function openIssueOptions(
+  db: D1Database,
+  limit: number = PICKER_ISSUES,
+): Promise<IssueOption[]> {
   const rows = await all(
     db,
     "SELECT number, title FROM issues WHERE state = 'open' AND kind <> 'fallback' ORDER BY number DESC LIMIT ?",
@@ -1525,9 +1742,9 @@ export async function openIssueOptions(db: D1Database, limit: number = PICKER_IS
  */
 export async function attachByTriage(
   db: D1Database,
-  links: readonly { issue: number; reportIds: readonly string[]; }[],
+  links: readonly { issue: number; reportIds: readonly string[] }[],
   now: number,
-): Promise<{ linked: number; existing: number; unlinked: string[]; }> {
+): Promise<{ linked: number; existing: number; unlinked: string[] }> {
   const result = { linked: 0, existing: 0, unlinked: [] as string[] };
   if (links.length === 0) return result;
   const numbers = links.map((l) => l.issue);
@@ -1576,7 +1793,15 @@ export async function attachByTriage(
  * @param now - Unix time in milliseconds.
  * @returns The bound statement.
  */
-function ledgerUpsert(db: D1Database, source: "manual" | "excluded", guard: string, issue: number, reportId: string, login: string, now: number): D1PreparedStatement {
+function ledgerUpsert(
+  db: D1Database,
+  source: "manual" | "excluded",
+  guard: string,
+  issue: number,
+  reportId: string,
+  login: string,
+  now: number,
+): D1PreparedStatement {
   return db
     .prepare(
       `INSERT INTO report_issue (report_id, issue_number, source, linked_by, linked_at) VALUES (?, ?, ?, ?, ?)
@@ -1598,8 +1823,22 @@ function ledgerUpsert(db: D1Database, source: "manual" | "excluded", guard: stri
  * @param now - Unix time in milliseconds.
  * @returns The bound statement.
  */
-function attachStatement(db: D1Database, issue: number, reportId: string, login: string, now: number): D1PreparedStatement {
-  return ledgerUpsert(db, "manual", "report_issue.source = 'excluded'", issue, reportId, login, now);
+function attachStatement(
+  db: D1Database,
+  issue: number,
+  reportId: string,
+  login: string,
+  now: number,
+): D1PreparedStatement {
+  return ledgerUpsert(
+    db,
+    "manual",
+    "report_issue.source = 'excluded'",
+    issue,
+    reportId,
+    login,
+    now,
+  );
 }
 
 /**
@@ -1615,8 +1854,22 @@ function attachStatement(db: D1Database, issue: number, reportId: string, login:
  * @param now - Unix time in milliseconds.
  * @returns The bound statement.
  */
-function detachStatement(db: D1Database, issue: number, reportId: string, login: string, now: number): D1PreparedStatement {
-  return ledgerUpsert(db, "excluded", "report_issue.source <> 'excluded'", issue, reportId, login, now);
+function detachStatement(
+  db: D1Database,
+  issue: number,
+  reportId: string,
+  login: string,
+  now: number,
+): D1PreparedStatement {
+  return ledgerUpsert(
+    db,
+    "excluded",
+    "report_issue.source <> 'excluded'",
+    issue,
+    reportId,
+    login,
+    now,
+  );
 }
 
 /**
@@ -1634,7 +1887,13 @@ function detachStatement(db: D1Database, issue: number, reportId: string, login:
  * @param now - Unix time in milliseconds.
  * @returns The bound statement.
  */
-function takeStatement(db: D1Database, issue: number, reportId: string, login: string, now: number): D1PreparedStatement {
+function takeStatement(
+  db: D1Database,
+  issue: number,
+  reportId: string,
+  login: string,
+  now: number,
+): D1PreparedStatement {
   return db
     .prepare(
       `UPDATE report_issue SET source = 'excluded', linked_by = ?, linked_at = ?
@@ -1660,10 +1919,18 @@ function takeStatement(db: D1Database, issue: number, reportId: string, login: s
  * @param login - Member making the change.
  * @param now - Unix time in milliseconds.
  */
-export async function applyLinkAction(db: D1Database, change: LinkAction, login: string, now: number): Promise<void> {
+export async function applyLinkAction(
+  db: D1Database,
+  change: LinkAction,
+  login: string,
+  now: number,
+): Promise<void> {
   const { action, issue, report, to } = change;
   if (action === "attach" && report !== null) {
-    await db.batch([attachStatement(db, issue, report, login, now), takeStatement(db, issue, report, login, now)]);
+    await db.batch([
+      attachStatement(db, issue, report, login, now),
+      takeStatement(db, issue, report, login, now),
+    ]);
   } else if (action === "detach" && report !== null) {
     await detachStatement(db, issue, report, login, now).run();
   } else if (action === "move" && report !== null && to !== null) {
@@ -1696,12 +1963,13 @@ export async function applyLinkAction(db: D1Database, change: LinkAction, login:
       // The merged issue keeps nothing, not even reports the other issue
       // already linked.
       db
-        .prepare(`UPDATE report_issue SET source = 'excluded', linked_by = ?, linked_at = ? WHERE issue_number = ? AND source <> 'excluded'`)
+        .prepare(
+          `UPDATE report_issue SET source = 'excluded', linked_by = ?, linked_at = ? WHERE issue_number = ? AND source <> 'excluded'`,
+        )
         .bind(login, now, issue),
     ]);
   }
 }
-
 
 /**
  * A fingerprint of everything the issue sync writes that pages show: issue
@@ -1762,10 +2030,16 @@ export async function setState(db: D1Database, key: string, value: string): Prom
  * @param value - New value; null deletes the cursor.
  * @returns The bound statement.
  */
-export function stateStatement(db: D1Database, key: string, value: string | null): D1PreparedStatement {
+export function stateStatement(
+  db: D1Database,
+  key: string,
+  value: string | null,
+): D1PreparedStatement {
   if (value === null) return db.prepare("DELETE FROM sync_state WHERE key = ?").bind(key);
   return db
-    .prepare("INSERT INTO sync_state (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+    .prepare(
+      "INSERT INTO sync_state (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+    )
     .bind(key, value);
 }
 
@@ -1777,7 +2051,11 @@ export function stateStatement(db: D1Database, key: string, value: string | null
  * @returns Name → value, for the cursors set.
  */
 export async function getStates(db: D1Database, keys: string[]): Promise<Map<string, string>> {
-  const rows = await all(db, `SELECT key, value FROM sync_state WHERE key IN (${keys.map(() => "?").join(", ")})`, ...keys);
+  const rows = await all(
+    db,
+    `SELECT key, value FROM sync_state WHERE key IN (${keys.map(() => "?").join(", ")})`,
+    ...keys,
+  );
   return new Map(rows.map((r) => [String(r.key), String(r.value)]));
 }
 

@@ -60,7 +60,7 @@ export function creationOptionsFromJson(
       })
     : undefined;
   return {
-    ...((publicKey as unknown) as PublicKeyCredentialCreationOptions),
+    ...(publicKey as unknown as PublicKeyCredentialCreationOptions),
     challenge: isB64urlString(publicKey.challenge)
       ? b64urlToBuf(publicKey.challenge)
       : (publicKey.challenge as BufferSource),
@@ -93,7 +93,7 @@ export function requestOptionsFromJson(
       })
     : undefined;
   return {
-    ...((publicKey as unknown) as PublicKeyCredentialRequestOptions),
+    ...(publicKey as unknown as PublicKeyCredentialRequestOptions),
     challenge: isB64urlString(publicKey.challenge)
       ? b64urlToBuf(publicKey.challenge)
       : (publicKey.challenge as BufferSource),
@@ -140,8 +140,7 @@ export function credentialToJson(cred: PublicKeyCredential): Record<string, unkn
  */
 export const PASSKEY_PROMPT_TIMEOUT_MS = 45_000;
 
-const PASSKEYS_UNSUPPORTED =
-  "This browser does not support passkeys. Use a password instead.";
+const PASSKEYS_UNSUPPORTED = "This browser does not support passkeys. Use a password instead.";
 
 const PASSKEY_TIMED_OUT =
   "Passkey request timed out. This browser may not support passkeys — use a password instead.";

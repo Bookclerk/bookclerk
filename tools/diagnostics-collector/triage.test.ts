@@ -140,7 +140,10 @@ describe("handleTriage", () => {
       AI: {
         async run(model, input) {
           seen.push({ model, input });
-          return { response: '{"issues":[]}', usage: { prompt_tokens: 1000, completion_tokens: 100 } };
+          return {
+            response: '{"issues":[]}',
+            usage: { prompt_tokens: 1000, completion_tokens: 100 },
+          };
         },
       },
     };
@@ -164,7 +167,16 @@ describe("handleTriage", () => {
     const seen: ModelCall[] = [];
     const db = createD1();
     const issue = (number: number, title: string, state = "open", kind = "triage") =>
-      run(db, "INSERT INTO issues (number, title, state, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", number, title, state, kind, NOW, NOW);
+      run(
+        db,
+        "INSERT INTO issues (number, title, state, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        number,
+        title,
+        state,
+        kind,
+        NOW,
+        NOW,
+      );
     await issue(412, "[diagnostics] Scan fails\u0007 after\n\n   sign-\u200bin");
     await issue(410, "[diagnostics] untriaged reports", "open", "fallback");
     await issue(409, "[diagnostics] Old one", "closed");
@@ -181,7 +193,11 @@ describe("handleTriage", () => {
     };
     const res = await handleTriage(triageRequest(BATCH), env, { now: () => NOW });
     assert.equal(res.status, 200);
-    assert.deepEqual((await plan(res)).open_issues, [412, 408], "open triaged issues only, newest first");
+    assert.deepEqual(
+      (await plan(res)).open_issues,
+      [412, 408],
+      "open triaged issues only, newest first",
+    );
     const content = seen[0]?.input.messages[1]?.content ?? "";
     const data = `UNTRUSTED_DATA_BEGIN\n${JSON.stringify(BATCH)}\nUNTRUSTED_DATA_END`;
     assert.equal(
@@ -196,7 +212,14 @@ describe("handleTriage", () => {
     const seen: ModelCall[] = [];
     const db = createD1();
     for (let n = 1; n <= 40; n++) {
-      await run(db, "INSERT INTO issues (number, title, state, kind, created_at, updated_at) VALUES (?, ?, 'open', 'triage', ?, ?)", n, "[diagnostics] " + "中".repeat(100), NOW, NOW);
+      await run(
+        db,
+        "INSERT INTO issues (number, title, state, kind, created_at, updated_at) VALUES (?, ?, 'open', 'triage', ?, ?)",
+        n,
+        "[diagnostics] " + "中".repeat(100),
+        NOW,
+        NOW,
+      );
     }
     const env: Env = {
       TRIAGE_BUDGET: fakeBudget(),
@@ -210,21 +233,37 @@ describe("handleTriage", () => {
       },
     };
     const rates = MODELS[DEFAULT_MODEL];
-    const room = rates.context - MAX_OUTPUT_TOKENS - TEMPLATE_OVERHEAD_TOKENS - Buffer.byteLength(SYSTEM_PROMPT) - 200;
+    const room =
+      rates.context -
+      MAX_OUTPUT_TOKENS -
+      TEMPLATE_OVERHEAD_TOKENS -
+      Buffer.byteLength(SYSTEM_PROMPT) -
+      200;
     const batch = [{ report_id: "11111111-1111-4111-8111-111111111111", s: "a".repeat(room) }];
     const res = await handleTriage(triageRequest(batch), env, { now: () => NOW });
     assert.equal(res.status, 200);
     assert.deepEqual((await plan(res)).open_issues, []);
     assert.match(seen[0]?.input.messages[1]?.content ?? "", /^UNTRUSTED_DATA_BEGIN\n/);
     // A malformed batch is refused before the database is read.
-    const broken = { ...env, DASHBOARD_DB: Object.assign(createD1(), { prepare: () => { throw new Error("no reads expected"); } }) };
+    const broken = {
+      ...env,
+      DASHBOARD_DB: Object.assign(createD1(), {
+        prepare: () => {
+          throw new Error("no reads expected");
+        },
+      }),
+    };
     assert.equal((await handleTriage(triageRequest("["), broken, { now: () => NOW })).status, 400);
   });
 
   it("triages without the open issues when the dashboard cannot be read", async () => {
     const db = createD1();
     db.raw.exec("DROP TABLE issues");
-    const env: Env = { TRIAGE_BUDGET: fakeBudget(), DASHBOARD_DB: db, AI: { run: async () => ({ response: "{}" }) } };
+    const env: Env = {
+      TRIAGE_BUDGET: fakeBudget(),
+      DASHBOARD_DB: db,
+      AI: { run: async () => ({ response: "{}" }) },
+    };
     const res = await handleTriage(triageRequest(BATCH), env, { now: () => NOW });
     assert.equal(res.status, 200);
     assert.deepEqual((await plan(res)).open_issues, []);
@@ -268,7 +307,7 @@ describe("handleTriage", () => {
     };
     const res = await handleTriage(triageRequest(BATCH), env, { now: () => NOW });
     assert.equal(res.status, 502);
-    assert.ok(await budget.ledger.spent(utcDay(NOW)) > 0);
+    assert.ok((await budget.ledger.spent(utcDay(NOW))) > 0);
   });
 
   it("refuses an unknown model, a bad batch and an oversized batch", async () => {
@@ -305,27 +344,41 @@ describe("handleTriage", () => {
     const init: RequestInit & { duplex: "half" } = { method: "POST", body, duplex: "half" };
     const request = new Request("https://collector.test/triage", init);
     assert.equal(request.headers.get("content-length"), null);
-    const env = { TRIAGE_BUDGET: fakeBudget(), AI: { run: async () => assert.fail("model called") } };
+    const env = {
+      TRIAGE_BUDGET: fakeBudget(),
+      AI: { run: async () => assert.fail("model called") },
+    };
     assert.equal((await handleTriage(request, env)).status, 413);
     assert.ok(cancelled, "the rest of the body is cancelled");
     assert.ok(pulled <= 5, `read ${pulled} chunks`);
     const small = new Request("https://collector.test/triage", { method: "POST", body: "é[1]" });
     assert.equal(await readCapped(small, 5), "é[1]");
-    assert.equal(await readCapped(new Request("https://collector.test/triage", { method: "POST", body: "é[1]" }), 4), null);
+    assert.equal(
+      await readCapped(
+        new Request("https://collector.test/triage", { method: "POST", body: "é[1]" }),
+        4,
+      ),
+      null,
+    );
   });
 
   it("clamps the daily cap below the free allocation", async () => {
     const env: Env = {
       TRIAGE_BUDGET: fakeBudget(),
       TRIAGE_DAILY_NEURONS: "50000",
-      AI: { run: async () => ({ response: "{}", usage: { prompt_tokens: 1, completion_tokens: 1 } }) },
+      AI: {
+        run: async () => ({ response: "{}", usage: { prompt_tokens: 1, completion_tokens: 1 } }),
+      },
     };
     const body = await plan(await handleTriage(triageRequest(BATCH), env, { now: () => NOW }));
     assert.equal(body.cap, MAX_DAILY_NEURONS);
   });
 
   it("does not trust null or negative usage", async () => {
-    for (const usage of [{ prompt_tokens: null, completion_tokens: 0 }, { prompt_tokens: -500, completion_tokens: 1 }]) {
+    for (const usage of [
+      { prompt_tokens: null, completion_tokens: 0 },
+      { prompt_tokens: -500, completion_tokens: 1 },
+    ]) {
       const budget = fakeBudget();
       const env = { TRIAGE_BUDGET: budget, AI: { run: async () => ({ response: "{}", usage }) } };
       const body = await plan(await handleTriage(triageRequest(BATCH), env, { now: () => NOW }));
@@ -338,13 +391,22 @@ describe("handleTriage", () => {
     const budget = fakeBudget();
     const put = budget.put.bind(budget);
     let puts = 0;
-    budget.put = async (key: string, value: string, opts?: { expirationTtl: number }): Promise<void> => {
+    budget.put = async (
+      key: string,
+      value: string,
+      opts?: { expirationTtl: number },
+    ): Promise<void> => {
       if (++puts > 1) throw new Error("KV PUT failed: 429 Too Many Requests");
       return put(key, value, opts);
     };
     const env = {
       TRIAGE_BUDGET: budget,
-      AI: { run: async () => ({ response: '{"issues":[]}', usage: { prompt_tokens: 1, completion_tokens: 1 } }) },
+      AI: {
+        run: async () => ({
+          response: '{"issues":[]}',
+          usage: { prompt_tokens: 1, completion_tokens: 1 },
+        }),
+      },
     };
     const res = await handleTriage(triageRequest(BATCH), env, { now: () => NOW });
     assert.equal(res.status, 200);

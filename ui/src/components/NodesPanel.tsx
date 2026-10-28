@@ -409,9 +409,7 @@ export function NodesPanel({ onSessionExpired }: NodesPanelProps) {
   useEffect(() => {
     if (!canAssignOwner) return;
     listUsers()
-      .then((all) =>
-        setUsers(all.filter((user) => user.status === "active")),
-      )
+      .then((all) => setUsers(all.filter((user) => user.status === "active")))
       .catch(() => setUsers([]));
   }, [canAssignOwner]);
 
@@ -424,9 +422,9 @@ export function NodesPanel({ onSessionExpired }: NodesPanelProps) {
         <p className="text-sm text-ink/55">
           Every daemon reports its capacity, use, and running guests every 15 seconds through the
           shared database. The budget is the share of a node's CPU and memory the scheduler may
-          commit to plugin guests; the bar shows what running guests reserve and the marker what
-          the machine measures in use. Draining a node moves its scheduled plugins elsewhere;
-          plugins deployed by hand keep running.
+          commit to plugin guests; the bar shows what running guests reserve and the marker what the
+          machine measures in use. Draining a node moves its scheduled plugins elsewhere; plugins
+          deployed by hand keep running.
         </p>
       </div>
       {loadError || actionError ? (

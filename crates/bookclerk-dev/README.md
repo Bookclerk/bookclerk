@@ -46,7 +46,7 @@ migration mismatch (`DatabaseTooFarAhead`), run `cargo reset --yes` then
 `cargo dev` again.
 
 Adding a guest = new directory under `platform/` or `optional/` with `Cargo.toml`
-+ `plugin.toml` (workspace globs pick it up).
+and `plugin.toml` (workspace globs pick it up).
 
 ```bash
 cargo build-app --platform --print

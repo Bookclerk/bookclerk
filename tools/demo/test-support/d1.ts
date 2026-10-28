@@ -17,7 +17,8 @@ import { URL } from "node:url";
  */
 function sqlValue(value: unknown): SQLInputValue {
   if (value === undefined || value === null) return null;
-  if (typeof value === "number" || typeof value === "bigint" || typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "bigint" || typeof value === "string")
+    return value;
   if (value instanceof Uint8Array) return value;
   throw new TypeError(`cannot bind a ${typeof value}`);
 }
@@ -29,7 +30,15 @@ function sqlValue(value: unknown): SQLInputValue {
  * @returns The metadata.
  */
 function meta(changes: number): D1Meta & Record<string, unknown> {
-  return { duration: 0, size_after: 0, rows_read: 0, rows_written: changes, last_row_id: 0, changed_db: changes > 0, changes };
+  return {
+    duration: 0,
+    size_after: 0,
+    rows_read: 0,
+    rows_written: changes,
+    last_row_id: 0,
+    changed_db: changes > 0,
+    changes,
+  };
 }
 
 /** A prepared statement with bound values. */
@@ -66,7 +75,10 @@ class Statement implements D1PreparedStatement {
    * @returns Rows.
    */
   rows<T>(): T[] {
-    return this.db.prepare(this.sql).all(...this.params).map((r) => ({ ...r }) as T);
+    return this.db
+      .prepare(this.sql)
+      .all(...this.params)
+      .map((r) => ({ ...r }) as T);
   }
 
   /** @returns Rows. */
@@ -179,7 +191,9 @@ export class TestD1 implements D1Database {
 export function createD1(): TestD1 {
   const db = new DatabaseSync(":memory:");
   const dir = new URL("../migrations/", import.meta.url);
-  for (const name of readdirSync(dir).filter((n) => n.endsWith(".sql")).sort()) {
+  for (const name of readdirSync(dir)
+    .filter((n) => n.endsWith(".sql"))
+    .sort()) {
     db.exec(readFileSync(new URL(name, dir), "utf8"));
   }
   return new TestD1(db);

@@ -23,5 +23,4 @@ export const pageWidthClass =
 /**
  * Title detail dialog width classes — wider than form modals for commerce + reviews.
  */
-export const titleDetailDialogClass =
-  "w-full max-w-3xl lg:max-w-4xl xl:max-w-5xl";
+export const titleDetailDialogClass = "w-full max-w-3xl lg:max-w-4xl xl:max-w-5xl";

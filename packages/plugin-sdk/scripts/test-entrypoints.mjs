@@ -124,7 +124,11 @@ function wireEvent(overrides = {}) {
 // --- EventBatch + eventBatchResults --------------------------------------
 
 {
-  const batch = new EventBatch([wireEvent(), wireEvent({ eventId: "evt-2" }), wireEvent({ eventId: "evt-3" })]);
+  const batch = new EventBatch([
+    wireEvent(),
+    wireEvent({ eventId: "evt-2" }),
+    wireEvent({ eventId: "evt-3" }),
+  ]);
   assert.equal(batch.type, "book_acquired");
   batch.messages[0].reject("bad");
   batch.messages[1].deadLetter("park");
@@ -161,7 +165,13 @@ function wireEvent(overrides = {}) {
   const db = { execute: async () => {} };
   const plugin = new Plugin({}, { FIXED: 1 });
   const context = {
-    invocation: { id: "inv-1", accountId: "acct", deadlineUnixMs: 0, correlationId: "", causationId: "" },
+    invocation: {
+      id: "inv-1",
+      accountId: "acct",
+      deadlineUnixMs: 0,
+      correlationId: "",
+      causationId: "",
+    },
     config: jsonPayload({ greeting: "hi" }),
     secrets: jsonPayload({ token: "s3cr3t" }),
     events,
@@ -224,14 +234,22 @@ function wireQueueMessage(overrides = {}) {
   assert.equal(m.result, null);
   m.retry({ delaySeconds: 2.9, reason: "later" });
   m.ack();
-  assert.deepEqual(m.result, { kind: "retry", delaySeconds: 2, reason: "later" }, "first outcome wins");
+  assert.deepEqual(
+    m.result,
+    { kind: "retry", delaySeconds: 2, reason: "later" },
+    "first outcome wins",
+  );
 
   const empty = new QueueMessage(wireQueueMessage({ body: undefined, contentType: "" }));
   assert.equal(empty.body.byteLength, 0);
   assert.equal(empty.contentType, "json", "empty content type defaults to json");
   assert.equal(empty.json(), null);
 
-  const batch = new QueueBatch("jobs", [wireQueueMessage(), wireQueueMessage({ id: "msg-2" }), wireQueueMessage({ id: "msg-3" })]);
+  const batch = new QueueBatch("jobs", [
+    wireQueueMessage(),
+    wireQueueMessage({ id: "msg-2" }),
+    wireQueueMessage({ id: "msg-3" }),
+  ]);
   assert.equal(batch.queue, "jobs");
   assert.equal(batch.messages.length, 3);
   batch.messages[0].retry({ reason: "again" });
@@ -263,20 +281,26 @@ function wireQueueMessage(overrides = {}) {
       }
     }
   }
-  const notify = { send: async () => ({ messageIds: [] }), sendBatch: async () => ({ messageIds: [] }) };
+  const notify = {
+    send: async () => ({ messageIds: [] }),
+    sendBatch: async () => ({ messageIds: [] }),
+  };
   const plugin = new Plugin({}, { FIXED: 1 });
   const context = {
-    invocation: { id: "inv-q", accountId: "", deadlineUnixMs: 0, correlationId: "", causationId: "" },
+    invocation: {
+      id: "inv-q",
+      accountId: "",
+      deadlineUnixMs: 0,
+      correlationId: "",
+      causationId: "",
+    },
     queues: [{ name: "NOTIFY", queue: notify }],
   };
   const results = await plugin.bookclerkQueue(context, {
     queue: "jobs",
     messages: [wireQueueMessage(), wireQueueMessage({ id: "msg-2" })],
   });
-  assert.deepEqual(results, [
-    { kind: "ack" },
-    { kind: "retry", delaySeconds: 5, reason: "again" },
-  ]);
+  assert.deepEqual(results, [{ kind: "ack" }, { kind: "retry", delaySeconds: 5, reason: "again" }]);
   assert.deepEqual(seen, ["jobs", "inv-q", notify]);
   assert.equal(plugin.env.FIXED, 1, "static env survives the merge");
 
@@ -355,7 +379,11 @@ const jobInvocation = {
 
 {
   const job = new JobController(jobInvocation);
-  job.suspend({ checkpoint: { cursor: "abc" }, checkpointSchemaVersion: 3, wakeAt: 1_900_000_000_000 });
+  job.suspend({
+    checkpoint: { cursor: "abc" },
+    checkpointSchemaVersion: 3,
+    wakeAt: 1_900_000_000_000,
+  });
   job.retryLater({ reason: "ignored" });
   assert.deepEqual(jobOutcomeFor(job, undefined, undefined), {
     kind: "suspended",
@@ -364,7 +392,11 @@ const jobInvocation = {
   });
   const retry = new JobController(jobInvocation);
   retry.retryLater({ retryAt: new Date(1_900_000_000_000), reason: "busy" });
-  assert.deepEqual(retry.result, { kind: "retryable", message: "busy", retryAfterUnixMs: 1_900_000_000_000 });
+  assert.deepEqual(retry.result, {
+    kind: "retryable",
+    message: "busy",
+    retryAfterUnixMs: 1_900_000_000_000,
+  });
 }
 
 {
@@ -494,11 +526,17 @@ for (const [label, mod] of [
     `${label}: eventConsumer requires consumers; duplicates collapse`,
   );
   assert.deepEqual(
-    allowedEntrypointFamilies({ entrypoints: [], consumes: [], jobs: ["stream_copy"] }, ["jobRunner"]),
+    allowedEntrypointFamilies({ entrypoints: [], consumes: [], jobs: ["stream_copy"] }, [
+      "jobRunner",
+    ]),
     ["jobRunner"],
     `${label}: declared jobs enable jobRunner`,
   );
-  assert.deepEqual(allowedEntrypointFamilies(null, ["storage"]), [], `${label}: missing manifest fails closed`);
+  assert.deepEqual(
+    allowedEntrypointFamilies(null, ["storage"]),
+    [],
+    `${label}: missing manifest fails closed`,
+  );
   assert.deepEqual(
     allowedEntrypointFamilies(
       { entrypoints: [], consumes: [], jobs: [], queueConsumers: ["jobs"] },
@@ -508,7 +546,10 @@ for (const [label, mod] of [
     `${label}: queueConsumer requires [[queues.consumers]]; duplicates collapse`,
   );
   assert.deepEqual(
-    allowedEntrypointFamilies({ entrypoints: ["cli"], consumes: [], jobs: [] }, ["queueConsumer", "cli"]),
+    allowedEntrypointFamilies({ entrypoints: ["cli"], consumes: [], jobs: [] }, [
+      "queueConsumer",
+      "cli",
+    ]),
     ["cli"],
     `${label}: no queue consumers nulls queueConsumer`,
   );
@@ -525,7 +566,11 @@ for (const [label, mod] of [
   const adapter = new Adapter({}, { PLUGIN_DESCRIBE: JSON.stringify(manifest), BRIDGE_TOKEN: "t" });
 
   assert.deepEqual(
-    await adapter.openInvocation({ invocation: { id: "inv-1" } }, ["databaseAdapter", "storage", "jobRunner"]),
+    await adapter.openInvocation({ invocation: { id: "inv-1" } }, [
+      "databaseAdapter",
+      "storage",
+      "jobRunner",
+    ]),
     ["databaseAdapter"],
     `${label}: openInvocation keeps only manifest-declared families`,
   );
@@ -551,17 +596,33 @@ for (const [label, mod] of [
     cli: { commands: [] },
   });
   assert.equal(merged.id, "sqlite", `${label}: manifest id wins`);
-  assert.deepEqual(merged.capabilities.entrypoints, ["databaseAdapter"], `${label}: manifest capabilities win`);
+  assert.deepEqual(
+    merged.capabilities.entrypoints,
+    ["databaseAdapter"],
+    `${label}: manifest capabilities win`,
+  );
   assert.equal(merged.name, "Guest Name", `${label}: guest presentation is kept`);
   assert.equal(merged.version, "9.9.9", `${label}: guest version is kept`);
   assert.deepEqual(merged.features, ["rpcFeature"], `${label}: guest features are kept`);
   assert.deepEqual(merged.limits, { maxBatch: 7 }, `${label}: guest limits are kept`);
-  assert.equal(merged.cli.commands[0].name, "vacuum", `${label}: an empty guest cli keeps the manifest cli`);
+  assert.equal(
+    merged.cli.commands[0].name,
+    "vacuum",
+    `${label}: an empty guest cli keeps the manifest cli`,
+  );
   const guestCli = await adapter.describe({
     cli: { commands: [{ name: "compact", summary: "", args: [] }] },
   });
-  assert.equal(guestCli.cli.commands[0].name, "compact", `${label}: a guest cli with commands wins`);
-  assert.equal(guestCli.id, "sqlite", `${label}: partial guest describe still takes manifest identity`);
+  assert.equal(
+    guestCli.cli.commands[0].name,
+    "compact",
+    `${label}: a guest cli with commands wins`,
+  );
+  assert.equal(
+    guestCli.id,
+    "sqlite",
+    `${label}: partial guest describe still takes manifest identity`,
+  );
   await assert.rejects(
     () => adapter.describe(null),
     (err) => err instanceof Err && err.wireCode === "invalid_params",

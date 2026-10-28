@@ -12,7 +12,14 @@
 
 import type { Background } from "../env.ts";
 import { logAccess } from "./db.ts";
-import { authorizeUrl, exchangeCode, fetchUser, membershipRole, revokeUserToken, type GitHubConfig } from "./github.ts";
+import {
+  authorizeUrl,
+  exchangeCode,
+  fetchUser,
+  membershipRole,
+  revokeUserToken,
+  type GitHubConfig,
+} from "./github.ts";
 import { html, htmlResponse, redirect, type SafeHtml } from "./html.ts";
 import { messagePage } from "./pages.ts";
 import {
@@ -83,7 +90,8 @@ export const DEFAULT_NEXT = "/dash";
 export const MAX_NEXT_CHARS = 512;
 
 /** Dashboard pages a sign-in may return to (GET pages only). */
-const NEXT_PAGE = /^\/(?:dash|reports|issues|issues\/[1-9][0-9]{0,8}|reports\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+const NEXT_PAGE =
+  /^\/(?:dash|reports|issues|issues\/[1-9][0-9]{0,8}|reports\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 
 /** A query string kept with the return page: URL-encoded filter text only. */
 const NEXT_QUERY = /^\?[A-Za-z0-9._~%&=+/:@-]+$/;
@@ -145,7 +153,10 @@ function fromBase64url(text: string): string | null {
  *   trade with GitHub and the page to land on, or null when the callback
  *   must be refused.
  */
-export function parseCallback(search: string, cookieHeader: string): { code: string; verifier: string; next: string; } | null {
+export function parseCallback(
+  search: string,
+  cookieHeader: string,
+): { code: string; verifier: string; next: string } | null {
   const q = new URLSearchParams(String(search));
   const code = q.get("code") || "";
   const state = q.get("state") || "";
@@ -179,7 +190,9 @@ export async function startSignIn(request: Request, cfg: GitHubConfig): Promise<
   const state = randomToken(32);
   const verifier = randomToken(32);
   const next = safeNext(new URL(request.url).searchParams.get("next"));
-  const value = next ? `${state}.${verifier}.${base64url(new TextEncoder().encode(next))}` : `${state}.${verifier}`;
+  const value = next
+    ? `${state}.${verifier}.${base64url(new TextEncoder().encode(next))}`
+    : `${state}.${verifier}`;
   const url = authorizeUrl(cfg, {
     redirectUri: callbackUrl(request),
     state,
@@ -226,12 +239,21 @@ function signInFailed(step: string, reason: string, clear: string): Response {
  * @returns A page that moves on to the page the sign-in
  *   started from (or `/dash`), or an error page.
  */
-export async function finishSignIn(request: Request, env: { DASHBOARD_DB: D1Database; }, cfg: GitHubConfig, ctx: Background, now: number): Promise<Response> {
+export async function finishSignIn(
+  request: Request,
+  env: { DASHBOARD_DB: D1Database },
+  cfg: GitHubConfig,
+  ctx: Background,
+  now: number,
+): Promise<Response> {
   const clear = hostCookie(OAUTH_COOKIE, "", { maxAge: 0, sameSite: "Lax" });
   const parsed = parseCallback(new URL(request.url).search, request.headers.get("cookie") || "");
   if (!parsed) {
     return htmlResponse(
-      messagePage("Sign-in expired", html`<p>The sign-in link was used already or took too long. Start again from the sign-in page.</p>`),
+      messagePage(
+        "Sign-in expired",
+        html`<p>The sign-in link was used already or took too long. Start again from the sign-in page.</p>`,
+      ),
       400,
       {},
       [clear],
@@ -242,7 +264,11 @@ export async function finishSignIn(request: Request, env: { DASHBOARD_DB: D1Data
   let role;
   try {
     const { code, verifier } = parsed;
-    const exchanged = await exchangeCode(cfg, { code, redirectUri: callbackUrl(request), verifier });
+    const exchanged = await exchangeCode(cfg, {
+      code,
+      redirectUri: callbackUrl(request),
+      verifier,
+    });
     if ("error" in exchanged) return signInFailed("code exchange", exchanged.error, clear);
     let got;
     try {
@@ -254,9 +280,14 @@ export async function finishSignIn(request: Request, env: { DASHBOARD_DB: D1Data
     user = got.user;
     role = await membershipRole(cfg, user, now);
   } catch (err) {
-    console.error(`sign-in GitHub call failed: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(
+      `sign-in GitHub call failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return htmlResponse(
-      messagePage("GitHub could not be reached", html`<p>Bookclerk could not check your organization membership just now. Try again in a minute.</p>`),
+      messagePage(
+        "GitHub could not be reached",
+        html`<p>Bookclerk could not check your organization membership just now. Try again in a minute.</p>`,
+      ),
       502,
       {},
       [clear],
@@ -282,7 +313,10 @@ export async function finishSignIn(request: Request, env: { DASHBOARD_DB: D1Data
   // A 200 page that moves on by itself: the SameSite=Strict cookie set here
   // is not sent on a redirect chain that began on github.com, but it is on a
   // navigation this page starts.
-  return htmlResponse(sameSiteHop("Signing in", parsed.next, "Signed in."), 200, {}, [clear, session]);
+  return htmlResponse(sameSiteHop("Signing in", parsed.next, "Signed in."), 200, {}, [
+    clear,
+    session,
+  ]);
 }
 
 /**
@@ -313,9 +347,15 @@ export function sameSiteHop(title: string, target: string, lead: string): SafeHt
  * @returns 303 to the sign-in page, or 403 when the
  *   request did not come from this origin.
  */
-export async function signOut(request: Request, env: { DASHBOARD_DB: D1Database; }): Promise<Response> {
+export async function signOut(
+  request: Request,
+  env: { DASHBOARD_DB: D1Database },
+): Promise<Response> {
   if (!sameOrigin(request)) {
-    return htmlResponse(messagePage("Request refused", html`<p>Sign out from the dashboard's own button.</p>`), 403);
+    return htmlResponse(
+      messagePage("Request refused", html`<p>Sign out from the dashboard's own button.</p>`),
+      403,
+    );
   }
   return redirect("/", [await endSession(env.DASHBOARD_DB, request)]);
 }

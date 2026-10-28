@@ -11,15 +11,7 @@ import {
   type SetStateAction,
 } from "react";
 import { createPortal } from "react-dom";
-import {
-  Check,
-  Copy,
-  Headphones,
-  MoreHorizontal,
-  Search,
-  UserPlus,
-  X,
-} from "lucide-react";
+import { Check, Copy, Headphones, MoreHorizontal, Search, UserPlus, X } from "lucide-react";
 import { AddBranchDialog } from "@/components/AddBranchDialog";
 import { AvatarPickerDialog } from "@/components/AvatarPickerDialog";
 import { UserAvatar, userDisplayLabel } from "@/components/UserAvatar";
@@ -94,13 +86,7 @@ const PLAYBACK_NOW_MS = 5 * 60 * 1000;
 /** Refresh presence while the user-management panel is open. */
 const PRESENCE_POLL_MS = 30_000;
 
-type PresenceKind =
-  | "disabled"
-  | "listening"
-  | "active"
-  | "idle"
-  | "offline"
-  | "invited";
+type PresenceKind = "disabled" | "listening" | "active" | "idle" | "offline" | "invited";
 
 /**
  * Milliseconds since `iso`, or null when the timestamp is missing/invalid.
@@ -173,13 +159,7 @@ function presenceLabel(user: ListedUser): string {
  *
  * @param props - Listed user and optional size for the list vs detail avatar.
  */
-function UserPresenceIndicator({
-  user,
-  size = "sm",
-}: {
-  user: ListedUser;
-  size?: "sm" | "md";
-}) {
+function UserPresenceIndicator({ user, size = "sm" }: { user: ListedUser; size?: "sm" | "md" }) {
   const kind = presenceKind(user);
   const label = presenceLabel(user);
   if (kind === "disabled") {
@@ -213,9 +193,7 @@ function UserPresenceIndicator({
       <span
         className={cn(
           "absolute rounded-full border-2 border-dashed border-ink/40 bg-transparent",
-          size === "md"
-            ? "bottom-0 right-0 h-3.5 w-3.5"
-            : "bottom-0 right-0 h-3 w-3",
+          size === "md" ? "bottom-0 right-0 h-3.5 w-3.5" : "bottom-0 right-0 h-3 w-3",
         )}
         title={label}
         aria-label={label}
@@ -226,9 +204,7 @@ function UserPresenceIndicator({
     <span
       className={cn(
         "absolute rounded-full border-2 border-paper",
-        size === "md"
-          ? "bottom-0.5 right-0.5 h-3 w-3"
-          : "bottom-0 right-0 h-2.5 w-2.5",
+        size === "md" ? "bottom-0.5 right-0.5 h-3 w-3" : "bottom-0 right-0 h-2.5 w-2.5",
         kind === "active" && "bg-teal",
         kind === "idle" && "bg-brick",
         kind === "offline" && "bg-ink/25",
@@ -297,10 +273,7 @@ function ActionsOverflowMenu({
     );
     const margin = 8;
     const gap = 4;
-    const left = Math.min(
-      Math.max(margin, rect.right - menuW),
-      window.innerWidth - menuW - margin,
-    );
+    const left = Math.min(Math.max(margin, rect.right - menuW), window.innerWidth - menuW - margin);
     const below = rect.bottom + gap;
     const above = rect.top - gap - menuH;
     const fitsBelow = below + menuH <= window.innerHeight - margin;
@@ -367,9 +340,7 @@ function ActionsOverflowMenu({
               data-user-actions-menu=""
               className="fixed z-50 min-w-[11rem] rounded-md border border-ink/10 bg-paper py-1 shadow-lg"
               style={
-                pos
-                  ? { top: pos.top, left: pos.left }
-                  : { visibility: "hidden", top: 0, left: 0 }
+                pos ? { top: pos.top, left: pos.left } : { visibility: "hidden", top: 0, left: 0 }
               }
             >
               {children}
@@ -427,9 +398,7 @@ export function UserManagementPanel({
     inviteUrl?: string | null;
   } | null>(null);
   const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "disabled">(
-    "all",
-  );
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "disabled">("all");
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [impersonateBusy, setImpersonateBusy] = useState(false);
   const [menuOpenId, setMenuOpenId] = useState<number | null>(null);
@@ -678,9 +647,7 @@ export function UserManagementPanel({
     setError(null);
     try {
       const res = await patchUser(id, patch);
-      setUsers((current) =>
-        current.map((u) => (u.id === id ? { ...u, ...res.user } : u)),
-      );
+      setUsers((current) => current.map((u) => (u.id === id ? { ...u, ...res.user } : u)));
     } catch (err) {
       if (isApiError(err) && err.status === 409) {
         setError("Cannot demote or disable the last active owner.");
@@ -757,8 +724,8 @@ export function UserManagementPanel({
       <div className="space-y-1">
         <h2 className="text-lg font-semibold text-ink">Users</h2>
         <p className="text-sm text-ink/55">
-          Provision accounts, review store integrations, and see who is signed in
-          or actively listening.
+          Provision accounts, review store integrations, and see who is signed in or actively
+          listening.
         </p>
       </div>
 
@@ -772,9 +739,7 @@ export function UserManagementPanel({
         <div
           className={cn(
             "rounded-md border px-3 py-2 text-sm text-ink transition-colors duration-300",
-            inviteCopied
-              ? "border-teal/55 bg-teal/20"
-              : "border-teal/25 bg-teal/10",
+            inviteCopied ? "border-teal/55 bg-teal/20" : "border-teal/25 bg-teal/10",
           )}
         >
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -784,10 +749,7 @@ export function UserManagementPanel({
                 {claimTicket.inviteUrl?.trim() || claimTicket.ticket}
               </p>
               <p
-                className={cn(
-                  "text-xs",
-                  inviteCopied ? "font-medium text-teal" : "text-ink/50",
-                )}
+                className={cn("text-xs", inviteCopied ? "font-medium text-teal" : "text-ink/50")}
                 role="status"
                 aria-live="polite"
               >
@@ -821,9 +783,7 @@ export function UserManagementPanel({
           <Input
             aria-label="Owner login name"
             value={bootstrapForm.login_name}
-            onChange={(e) =>
-              setBootstrapForm((c) => ({ ...c, login_name: e.target.value }))
-            }
+            onChange={(e) => setBootstrapForm((c) => ({ ...c, login_name: e.target.value }))}
             placeholder="login name"
             autoComplete="off"
           />
@@ -832,18 +792,14 @@ export function UserManagementPanel({
             type="email"
             value={bootstrapForm.email}
             aria-invalid={!isOptionalEmailValid(bootstrapForm.email)}
-            onChange={(e) =>
-              setBootstrapForm((c) => ({ ...c, email: e.target.value }))
-            }
+            onChange={(e) => setBootstrapForm((c) => ({ ...c, email: e.target.value }))}
             placeholder="email"
             autoComplete="off"
           />
           <Input
             aria-label="Owner display name"
             value={bootstrapForm.display_name}
-            onChange={(e) =>
-              setBootstrapForm((c) => ({ ...c, display_name: e.target.value }))
-            }
+            onChange={(e) => setBootstrapForm((c) => ({ ...c, display_name: e.target.value }))}
             placeholder="display name"
             autoComplete="off"
           />
@@ -851,9 +807,7 @@ export function UserManagementPanel({
             aria-label="Owner password"
             type="password"
             value={bootstrapForm.password}
-            onChange={(e) =>
-              setBootstrapForm((c) => ({ ...c, password: e.target.value }))
-            }
+            onChange={(e) => setBootstrapForm((c) => ({ ...c, password: e.target.value }))}
             placeholder="optional password"
             autoComplete="new-password"
           />
@@ -869,29 +823,23 @@ export function UserManagementPanel({
         >
           <select
             aria-label="New user role"
-            value={roleChoices.includes(createForm.role) ? createForm.role : (roleChoices[0] ?? "member")}
-            onChange={(e) =>
-              setCreateForm((c) => ({ ...c, role: e.target.value }))
+            value={
+              roleChoices.includes(createForm.role) ? createForm.role : (roleChoices[0] ?? "member")
             }
+            onChange={(e) => setCreateForm((c) => ({ ...c, role: e.target.value }))}
             className={selectClassName}
           >
-            {roleChoices.includes("member") ? (
-              <option value="member">Member</option>
-            ) : null}
+            {roleChoices.includes("member") ? <option value="member">Member</option> : null}
             {roleChoices.includes("host") ? <option value="host">Host</option> : null}
             {roleChoices.includes("administrator") ? (
               <option value="administrator">Administrator</option>
             ) : null}
-            {roleChoices.includes("owner") ? (
-              <option value="owner">Owner</option>
-            ) : null}
+            {roleChoices.includes("owner") ? <option value="owner">Owner</option> : null}
           </select>
           <Input
             aria-label="New user login name"
             value={createForm.login_name}
-            onChange={(e) =>
-              setCreateForm((c) => ({ ...c, login_name: e.target.value }))
-            }
+            onChange={(e) => setCreateForm((c) => ({ ...c, login_name: e.target.value }))}
             placeholder="login name"
             autoComplete="off"
           />
@@ -900,18 +848,14 @@ export function UserManagementPanel({
             type="email"
             value={createForm.email}
             aria-invalid={!isOptionalEmailValid(createForm.email)}
-            onChange={(e) =>
-              setCreateForm((c) => ({ ...c, email: e.target.value }))
-            }
+            onChange={(e) => setCreateForm((c) => ({ ...c, email: e.target.value }))}
             placeholder="email"
             autoComplete="off"
           />
           <Input
             aria-label="New user display name"
             value={createForm.display_name}
-            onChange={(e) =>
-              setCreateForm((c) => ({ ...c, display_name: e.target.value }))
-            }
+            onChange={(e) => setCreateForm((c) => ({ ...c, display_name: e.target.value }))}
             placeholder="display name"
             autoComplete="off"
           />
@@ -919,9 +863,7 @@ export function UserManagementPanel({
             aria-label="New user password"
             type="password"
             value={createForm.password}
-            onChange={(e) =>
-              setCreateForm((c) => ({ ...c, password: e.target.value }))
-            }
+            onChange={(e) => setCreateForm((c) => ({ ...c, password: e.target.value }))}
             placeholder="optional password"
             autoComplete="new-password"
           />
@@ -930,9 +872,7 @@ export function UserManagementPanel({
               type="checkbox"
               className="h-4 w-4 accent-teal"
               checked={createForm.mint_invite}
-              onChange={(e) =>
-                setCreateForm((c) => ({ ...c, mint_invite: e.target.checked }))
-              }
+              onChange={(e) => setCreateForm((c) => ({ ...c, mint_invite: e.target.checked }))}
             />
             Invite link
           </label>
@@ -958,9 +898,7 @@ export function UserManagementPanel({
           aria-label="Filter by status"
           className={cn(selectClassName, "w-auto min-w-[8rem]")}
           value={statusFilter}
-          onChange={(e) =>
-            setStatusFilter(e.target.value as "all" | "active" | "disabled")
-          }
+          onChange={(e) => setStatusFilter(e.target.value as "all" | "active" | "disabled")}
         >
           <option value="all">All statuses</option>
           <option value="active">Active</option>
@@ -1022,9 +960,7 @@ export function UserManagementPanel({
                           <UserPresenceIndicator user={u} />
                         </UserAvatar>
                         <div className="min-w-0">
-                          <p className="truncate font-medium text-ink">
-                            {userDisplayLabel(u)}
-                          </p>
+                          <p className="truncate font-medium text-ink">{userDisplayLabel(u)}</p>
                           <p className="truncate text-xs text-ink/50">
                             {u.email?.trim() || u.login_name || "no login"}
                           </p>
@@ -1032,10 +968,7 @@ export function UserManagementPanel({
                       </div>
                       <div className="flex items-center">
                         <Badge
-                          className={cn(
-                            "normal-case tracking-normal",
-                            statusBadgeClass(u.status),
-                          )}
+                          className={cn("normal-case tracking-normal", statusBadgeClass(u.status))}
                         >
                           {u.status}
                         </Badge>
@@ -1072,25 +1005,17 @@ export function UserManagementPanel({
                         {u.listening ? (
                           <div className="flex items-start gap-1.5 text-xs text-teal">
                             {isPlaybackNow(u) ? (
-                              <WaveformThrobber
-                                size="xs"
-                                className="mt-0.5 shrink-0 text-teal"
-                              />
+                              <WaveformThrobber size="xs" className="mt-0.5 shrink-0 text-teal" />
                             ) : (
                               <Headphones className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                             )}
                             <span className="line-clamp-2">
                               {u.listening.title?.trim() || "Listening"}
-                              <span className="text-ink/45">
-                                {" "}
-                                · {u.listening.provider}
-                              </span>
+                              <span className="text-ink/45"> · {u.listening.provider}</span>
                             </span>
                           </div>
                         ) : (
-                          <p className="text-xs text-ink/45">
-                            {presenceLabel(u)}
-                          </p>
+                          <p className="text-xs text-ink/45">{presenceLabel(u)}</p>
                         )}
                         {u.last_seen_at || u.last_active_at ? (
                           <p className="text-[11px] text-ink/40">
@@ -1101,101 +1026,94 @@ export function UserManagementPanel({
                       <ActionsOverflowMenu
                         open={menuOpenId === u.id}
                         ariaLabel={`Actions for user ${u.id}`}
-                        onOpenChange={(next) =>
-                          setMenuOpenId(next ? u.id : null)
-                        }
+                        onOpenChange={(next) => setMenuOpenId(next ? u.id : null)}
                       >
-                            <button
-                              type="button"
-                              role="menuitem"
-                              className={MENU_ITEM_CLASS}
-                              onClick={() => {
-                                setMenuOpenId(null);
-                                setSelectedId(u.id);
-                              }}
-                            >
-                              View details
-                            </button>
-                            <button
-                              type="button"
-                              role="menuitem"
-                              className={MENU_ITEM_CLASS}
-                              disabled={busy || !canMutate(u)}
-                              onClick={() => {
-                                setMenuOpenId(null);
-                                void onResetUserPassword(u);
-                              }}
-                            >
-                              Reset password
-                            </button>
-                            <button
-                              type="button"
-                              role="menuitem"
-                              className={MENU_ITEM_CLASS}
-                              disabled={busy || u.status === "disabled" || !canMutate(u)}
-                              onClick={() => {
-                                setMenuOpenId(null);
-                                void onMintClaimTicket(u);
-                              }}
-                            >
-                              Remint invite
-                            </button>
-                            {canAddBranchFor(u) ? (
-                              <button
-                                type="button"
-                                role="menuitem"
-                                className={MENU_ITEM_CLASS}
-                                onClick={() => {
-                                  setMenuOpenId(null);
-                                  setBranchFor(u);
-                                }}
-                              >
-                                Add a branch
-                              </button>
-                            ) : null}
-                            {showOperatorChrome ? (
-                              <button
-                                type="button"
-                                role="menuitem"
-                                className={MENU_ITEM_CLASS}
-                                disabled={
-                                  impersonateBusy ||
-                                  session?.impersonating?.user_id === u.id
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className={MENU_ITEM_CLASS}
+                          onClick={() => {
+                            setMenuOpenId(null);
+                            setSelectedId(u.id);
+                          }}
+                        >
+                          View details
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className={MENU_ITEM_CLASS}
+                          disabled={busy || !canMutate(u)}
+                          onClick={() => {
+                            setMenuOpenId(null);
+                            void onResetUserPassword(u);
+                          }}
+                        >
+                          Reset password
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className={MENU_ITEM_CLASS}
+                          disabled={busy || u.status === "disabled" || !canMutate(u)}
+                          onClick={() => {
+                            setMenuOpenId(null);
+                            void onMintClaimTicket(u);
+                          }}
+                        >
+                          Remint invite
+                        </button>
+                        {canAddBranchFor(u) ? (
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className={MENU_ITEM_CLASS}
+                            onClick={() => {
+                              setMenuOpenId(null);
+                              setBranchFor(u);
+                            }}
+                          >
+                            Add a branch
+                          </button>
+                        ) : null}
+                        {showOperatorChrome ? (
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className={MENU_ITEM_CLASS}
+                            disabled={impersonateBusy || session?.impersonating?.user_id === u.id}
+                            onClick={() => {
+                              setMenuOpenId(null);
+                              void (async () => {
+                                setImpersonateBusy(true);
+                                try {
+                                  await startImpersonate(u.id);
+                                  await onSessionChange?.();
+                                } catch (err) {
+                                  setError(
+                                    err instanceof Error ? err.message : "Impersonate failed",
+                                  );
+                                } finally {
+                                  setImpersonateBusy(false);
                                 }
-                                onClick={() => {
-                                  setMenuOpenId(null);
-                                  void (async () => {
-                                    setImpersonateBusy(true);
-                                    try {
-                                      await startImpersonate(u.id);
-                                      await onSessionChange?.();
-                                    } catch (err) {
-                                      setError(
-                                        err instanceof Error
-                                          ? err.message
-                                          : "Impersonate failed",
-                                      );
-                                    } finally {
-                                      setImpersonateBusy(false);
-                                    }
-                                  })();
-                                }}
-                              >
-                                Impersonate
-                              </button>
-                            ) : null}
-                            <button
-                              type="button"
-                              role="menuitem"
-                              className={cn(MENU_ITEM_CLASS, "text-brick hover:bg-brick/5")}
-                              disabled={isDeleteDisabled(u)}
-                              onClick={() => {
-                                setMenuOpenId(null);
-                                void onDeleteUser(u);
-                              }}
-                            >
-                              Delete
-                            </button>
+                              })();
+                            }}
+                          >
+                            Impersonate
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className={cn(MENU_ITEM_CLASS, "text-brick hover:bg-brick/5")}
+                          disabled={isDeleteDisabled(u)}
+                          onClick={() => {
+                            setMenuOpenId(null);
+                            void onDeleteUser(u);
+                          }}
+                        >
+                          Delete
+                        </button>
                       </ActionsOverflowMenu>
                     </div>
                   </li>
@@ -1205,10 +1123,7 @@ export function UserManagementPanel({
           </ul>
         </div>
 
-        <aside
-          data-user-details=""
-          className="rounded-md border border-ink/10 bg-card p-4"
-        >
+        <aside data-user-details="" className="rounded-md border border-ink/10 bg-card p-4">
           {selected ? (
             <div className="space-y-4">
               <div className="flex items-start justify-between gap-2">
@@ -1254,22 +1169,15 @@ export function UserManagementPanel({
                       </UserAvatar>
                     )}
                     <div>
-                      <p className="font-semibold text-ink">
-                        {userDisplayLabel(selected)}
-                      </p>
+                      <p className="font-semibold text-ink">{userDisplayLabel(selected)}</p>
                       <p className="text-sm text-ink/55">
-                        {selected.email?.trim() ||
-                          selected.login_name ||
-                          "No email"}
+                        {selected.email?.trim() || selected.login_name || "No email"}
                       </p>
                     </div>
                   </div>
                 </div>
                 <Badge
-                  className={cn(
-                    "normal-case tracking-normal",
-                    statusBadgeClass(selected.status),
-                  )}
+                  className={cn("normal-case tracking-normal", statusBadgeClass(selected.status))}
                 >
                   {selected.status}
                 </Badge>
@@ -1283,16 +1191,11 @@ export function UserManagementPanel({
                     ) : (
                       <Headphones className="h-4 w-4 text-teal" />
                     )}
-                    {isPlaybackNow(selected)
-                      ? "Listening now"
-                      : "Recently listening"}
+                    {isPlaybackNow(selected) ? "Listening now" : "Recently listening"}
                   </div>
                   <p className="mt-1 text-ink/70">
                     {selected.listening.title?.trim() || "Untitled"}
-                    <span className="text-ink/45">
-                      {" "}
-                      · {selected.listening.provider}
-                    </span>
+                    <span className="text-ink/45"> · {selected.listening.provider}</span>
                   </p>
                 </div>
               ) : null}
@@ -1305,24 +1208,18 @@ export function UserManagementPanel({
                   aria-label={`Role for user ${selected.id}`}
                   value={selected.role}
                   disabled={busy || !selectedEditable}
-                  onChange={(e) =>
-                    void onPatchUser(selected.id, { role: e.target.value })
-                  }
+                  onChange={(e) => void onPatchUser(selected.id, { role: e.target.value })}
                   className={selectClassName}
                 >
                   {!roleChoices.includes(selected.role) ? (
                     <option value={selected.role}>{selected.role}</option>
                   ) : null}
-                  {roleChoices.includes("member") ? (
-                    <option value="member">Member</option>
-                  ) : null}
+                  {roleChoices.includes("member") ? <option value="member">Member</option> : null}
                   {roleChoices.includes("host") ? <option value="host">Host</option> : null}
                   {roleChoices.includes("administrator") ? (
                     <option value="administrator">Administrator</option>
                   ) : null}
-                  {roleChoices.includes("owner") ? (
-                    <option value="owner">Owner</option>
-                  ) : null}
+                  {roleChoices.includes("owner") ? <option value="owner">Owner</option> : null}
                 </select>
               </div>
               <div className="space-y-2">
@@ -1333,9 +1230,7 @@ export function UserManagementPanel({
                   aria-label={`Status for user ${selected.id}`}
                   value={selected.status}
                   disabled={busy || !selectedEditable}
-                  onChange={(e) =>
-                    void onPatchUser(selected.id, { status: e.target.value })
-                  }
+                  onChange={(e) => void onPatchUser(selected.id, { status: e.target.value })}
                   className={selectClassName}
                 >
                   <option value="active">Active</option>
@@ -1354,9 +1249,7 @@ export function UserManagementPanel({
                     const value = e.target.value;
                     setUsers((current) =>
                       current.map((user) =>
-                        user.id === selected.id
-                          ? { ...user, display_name: value }
-                          : user,
+                        user.id === selected.id ? { ...user, display_name: value } : user,
                       ),
                     );
                   }}
@@ -1379,15 +1272,11 @@ export function UserManagementPanel({
                     const value = e.target.value;
                     setUsers((current) =>
                       current.map((user) =>
-                        user.id === selected.id
-                          ? { ...user, login_name: value }
-                          : user,
+                        user.id === selected.id ? { ...user, login_name: value } : user,
                       ),
                     );
                   }}
-                  onBlur={(e) =>
-                    void onPatchUser(selected.id, { login_name: e.target.value })
-                  }
+                  onBlur={(e) => void onPatchUser(selected.id, { login_name: e.target.value })}
                 />
               </div>
 

@@ -78,6 +78,7 @@ jobs:
       job_windows_cluster: ${{ steps.resolve.outputs.job_windows_cluster }}
       job_envelope: ${{ steps.resolve.outputs.job_envelope }}
       job_site: ${{ steps.resolve.outputs.job_site }}
+      check_lint: ${{ steps.resolve.outputs.check_lint }}
       check_ui: ${{ steps.resolve.outputs.check_ui }}
       check_plugin_sdk_abi: ${{ steps.resolve.outputs.check_plugin_sdk_abi }}
       check_python_sdk: ${{ steps.resolve.outputs.check_python_sdk }}
@@ -258,6 +259,7 @@ jobs:
           # No npm cache for an unpublished OSV remediation bump.
           cache: ${{ !inputs.private-head && 'npm' || '' }}
           cache-dependency-path: |
+            tools/lint/package-lock.json
             ui/package-lock.json
             packages/plugin-sdk/package-lock.json
 
@@ -305,6 +307,10 @@ jobs:
           env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' && !inputs.private-head }}
+
+      - name: Prettier and markdownlint
+        if: needs.plan.outputs.check_lint == 'true'
+        run: python3 scripts/ci-exec.py run lint
 
       - name: UI lint, tests and build
         if: needs.plan.outputs.check_ui == 'true'
@@ -1070,7 +1076,19 @@ jobs:
 
   ci-gate:
     name: CI Gate
-    needs: [plan, check, test, e2e, release, confinement, native-gateway, tray, postgres, windows-cluster, envelope, site]
+    needs:
+      - plan
+      - check
+      - test
+      - e2e
+      - release
+      - confinement
+      - native-gateway
+      - tray
+      - postgres
+      - windows-cluster
+      - envelope
+      - site
     if: always()
     runs-on: ubuntu-latest
     steps:
