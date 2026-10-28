@@ -56,6 +56,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Callable
 
@@ -860,6 +861,11 @@ def parse_status_contexts(raw: bytes) -> frozenset[str]:
     return frozenset(_string(_object(entry, "status").get("context"), "status context") for entry in statuses)
 
 
+def utc_now() -> str:
+    """Returns the current time as an ISO 8601 UTC timestamp, such as ``2026-10-28T21:57:29Z``."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def parse_branch_rules(raw: bytes) -> frozenset[str]:
     """Reads ``GET /rules/branches/{branch}``: the active rules for a branch.
 
@@ -1133,6 +1139,11 @@ class GitHub:
         #: The in-progress check run this process created on each commit,
         #: completed after the next verdict on that commit is reported.
         self.open_checks: dict[str, int] = {}
+        #: When this process began checking each commit, as an ISO 8601 UTC
+        #: timestamp; every check run it reports there starts then.
+        self.started: dict[str, str] = {}
+        #: Returns the current time as an ISO 8601 UTC timestamp.
+        self.clock: Callable[[], str] = utc_now
         #: Whether each commit read so far carries a ``Bookclerk CLA`` commit
         #: status from before the check became a check run.
         self.legacy_statuses: dict[str, bool] = {}
@@ -1418,7 +1429,7 @@ class GitHub:
         """Reads the rule types that apply to ``SIGNATURE_BRANCH``."""
         return parse_branch_rules(self.call("GET", f"rules/branches/{SIGNATURE_BRANCH}?per_page={PAGE_SIZE}"))
 
-    def set_check(self, sha: str, state: CheckState, description: str, target_url: str) -> None:
+    def set_check(self, sha: str, state: CheckState, description: str, target_url: str, summary: str = "") -> None:
         """Reports the ``Bookclerk CLA`` check run on ``sha``.
 
         Every report creates a new check run. GitHub shows, and rulesets
@@ -1433,6 +1444,11 @@ class GitHub:
         * ``state``: in progress, passed or failed.
         * ``description``: the one-line title the checks list shows.
         * ``target_url``: the workflow run, linked as the check's details.
+        * ``summary``: the Markdown the check's page shows under the title;
+          empty repeats ``description``.
+
+        The run's start is the time this process began checking ``sha``,
+        so the checks list shows how long the check took.
 
         A commit that already carries a ``Bookclerk CLA`` commit status, from
         before the check became a check run, gets the same verdict as a
@@ -1444,12 +1460,16 @@ class GitHub:
         it answers a new in-progress check run or the commit's statuses
         with something unreadable.
         """
+        now = self.clock()
         body: dict[str, object] = {
             "name": CHECK_NAME,
             "details_url": target_url,
-            "output": {"title": description, "summary": description},
+            "output": {"title": description, "summary": summary or description},
+            "started_at": self.started.setdefault(sha, now),
             **state.body(),
         }
+        if state is not CheckState.CHECKING:
+            body["completed_at"] = now
         raw = self.report("POST", "check-runs", {"head_sha": sha, **body})
         if self.has_legacy_status(sha):
             self.report("POST", f"statuses/{sha}", {"state": state.legacy_status(), "context": CHECK_NAME, "description": description, "target_url": target_url})
@@ -1584,12 +1604,16 @@ def check_pull(event: Event, api: GitHub, number: int, cla_url: str, run_url: st
         verdict = evaluate(pull, commits, book, event.repo_id)
         blocked_by = blocking_pull(api, pull, book) if verdict.passed else None
         passed = verdict.passed and blocked_by is None
-        api.upsert_comment(pull.number, comments, render_comment(verdict, cla_url, blocked_by, recheck_command(api.reporter.login)), create=not passed)
+        body = render_comment(verdict, cla_url, blocked_by, recheck_command(api.reporter.login))
+        api.upsert_comment(pull.number, comments, body, create=not passed)
         if blocked_by is not None:
             description = f"#{blocked_by}, which shares this commit, still needs signatures."
         else:
             description = check_title(verdict)
-        api.set_check(pull.head_sha, CheckState.SUCCESS if passed else CheckState.FAILURE, description, run_url)
+        # The check's page repeats the comment, without its marker line, so
+        # it says who signed and who is left wherever the check is opened.
+        summary = body.removeprefix(COMMENT_MARKER).strip()
+        api.set_check(pull.head_sha, CheckState.SUCCESS if passed else CheckState.FAILURE, description, run_url, summary)
         # A run for a signature comment (another concurrency group) may have
         # recorded a signature after this run read the file, and posted its
         # check before this one. Reading the file again after posting means

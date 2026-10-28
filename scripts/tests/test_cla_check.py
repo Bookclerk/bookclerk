@@ -656,6 +656,8 @@ class FakeGitHub:
         self.legacy_posts: list[tuple[str, str, str]] = []
         #: Check runs by id: ``(sha, status, creator login)``.
         self.check_runs: dict[int, tuple[str, str, str]] = {}
+        #: The body of each check run created, in order.
+        self.check_bodies: list[dict] = []
         #: Who posted each of ``statuses``, in order.
         self.status_creators: list[dict] = []
         self.conflicts = 0
@@ -885,7 +887,8 @@ class FakeGitHub:
             return 201, b"{}"
         if method in ("POST", "PATCH") and route.split("/", 1)[0] == "check-runs":
             assert body is not None and body["name"] == "Bookclerk CLA"
-            assert body["output"]["title"] == body["output"]["summary"]
+            assert body["output"]["title"] and body["output"]["summary"]
+            assert body["started_at"] <= body.get("completed_at", body["started_at"])
             state = "pending" if body["status"] == "in_progress" else body.get("conclusion")
             assert (body["status"], state) in (("in_progress", "pending"), ("completed", "success"), ("completed", "failure"))
             if method == "PATCH":
@@ -904,6 +907,7 @@ class FakeGitHub:
             run_id, sha = 7000 + len(self.check_runs), body["head_sha"]
             self.check_runs[run_id] = (sha, body["status"], self.commenter_account()["login"])
             self.statuses.append((sha, {"state": state, "context": body["name"], "description": body["output"]["title"], "target_url": body["details_url"]}))
+            self.check_bodies.append(body)
             self.status_creators.append(self.commenter_account())
             return 201, json.dumps({"id": run_id, "status": body["status"]}).encode()
         return 404, b"{}"
@@ -1486,6 +1490,27 @@ class EndToEndTests(unittest.TestCase):
         raw = load("event_check_run__rerequested").replace(b'"slug": "bookclerk"', b'"slug": "impostor"')
         drive(fake, cla.parse_event("check_run", raw))
         self.assertEqual(fake.requests, [])
+
+    def test_the_check_page_says_who_signed_and_who_is_left(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE), commit(SHA_B, BOB)])
+        drive(fake, pr_event(fake))
+        summary = fake.check_bodies[-1]["output"]["summary"]
+        self.assertIn("Still to sign: @alice, @bob.", summary)
+        self.assertIn(cla.SIGN_PHRASE, summary)
+        self.assertNotIn(cla.COMMENT_MARKER, summary)
+        drive(fake, comment_event(ALICE, cla.SIGN_PHRASE))
+        self.assertIn("Signed on this pull request: @alice.", fake.check_bodies[-1]["output"]["summary"])
+
+    def test_a_verdict_starts_when_the_check_started(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        times = iter(["2026-10-28T21:57:29Z", "2026-10-28T21:57:41Z"])
+        reporter = cla.Reporter(fake.comment, APP["login"])
+        api = cla.GitHub(fake.send, "bookclerk/bookclerk", fake.write, BRANCH_FILES, reporter)
+        api.clock = lambda: next(times)
+        cla.run(pr_event(fake), api, CLA_URL, RUN_URL)
+        first, last = fake.check_bodies[0], fake.check_bodies[-1]
+        self.assertEqual((first["started_at"], "completed_at" in first), ("2026-10-28T21:57:29Z", False))
+        self.assertEqual((last["started_at"], last["completed_at"]), ("2026-10-28T21:57:29Z", "2026-10-28T21:57:41Z"))
 
     def test_a_status_left_from_before_the_check_run_gets_the_same_verdict(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
