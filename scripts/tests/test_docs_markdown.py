@@ -237,6 +237,25 @@ class TreeTest(unittest.TestCase):
             ),
         )
 
+    def test_strip_lint_comments_needs_a_bare_closing_fence(self) -> None:
+        source = "\n".join(
+            [
+                "```markdown",
+                "```not-a-closing-fence",
+                "<!-- markdownlint-disable -->",
+                "```",
+                "Text. <!-- markdownlint-disable-line MD001 -->",
+            ]
+        )
+        self.assertEqual(
+            dm.strip_lint_comments(source),
+            "\n".join(["```markdown", "```not-a-closing-fence", "<!-- markdownlint-disable -->", "```", "Text."]),
+        )
+
+    def test_strip_lint_comments_matches_code_span_runs_by_length(self) -> None:
+        line = "Use `` ` <!-- markdownlint-disable MD038 --> `` here. <!-- markdownlint-disable-line MD001 -->"
+        self.assertEqual(dm.strip_lint_comments(line), "Use `` ` <!-- markdownlint-disable MD038 --> `` here.")
+
     def test_python_modules_skip_private_and_templates(self) -> None:
         pkg = self.base / "src" / "pkg"
         for rel in ("__init__.py", "__main__.py", "_abi.py", "abi.py", "sub/__init__.py", "sub/x.py", "a_template/t.py"):

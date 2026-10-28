@@ -113,10 +113,10 @@ LINK_RE = re.compile(r"(?<!!)\[(?:[^\[\]]|\[[^\]]*\])*\]\(([^)\s]+)(?:\s+\"[^\"]
 # A markdownlint inline override (`<!-- markdownlint-disable-line MD038 -->`)
 # with the whitespace before it. The published tree leaves these out.
 LINT_COMMENT_RE = re.compile(r"\s*<!--\s*markdownlint-.*?-->")
-# An opening or closing code fence: its backtick or tilde run.
-FENCE_RUN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
-# A code span: a backtick run, its content and the closing run.
-CODE_SPAN_RE = re.compile(r"(`+[^`]*`+)")
+# A code fence line: its backtick or tilde run, then the rest of the line.
+FENCE_RUN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+# A code span: a backtick run, its content and a closing run of the same length.
+CODE_SPAN_RE = re.compile(r"(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)")
 
 
 class BuildError(RuntimeError):
@@ -222,6 +222,28 @@ def run(cmd: list[str], cwd: Path, env: dict[str, str] | None = None) -> None:
         raise BuildError(f"{cmd[0]} exited {result.returncode}")
 
 
+def strip_outside_code_spans(line: str) -> str:
+    """Remove markdownlint overrides from one line of prose, sparing code spans.
+
+    A code span opens and closes with backtick runs of the same length, so
+    a double-backtick span can hold a single backtick.
+
+    Args:
+        line: One line outside fenced code.
+
+    Returns:
+        The line without overrides outside its code spans.
+    """
+    kept: list[str] = []
+    start = 0
+    for span in CODE_SPAN_RE.finditer(line):
+        kept.append(LINT_COMMENT_RE.sub("", line[start : span.start()]))
+        kept.append(span.group(0))
+        start = span.end()
+    kept.append(LINT_COMMENT_RE.sub("", line[start:]))
+    return "".join(kept)
+
+
 def strip_lint_comments(text: str) -> str:
     """Remove markdownlint inline overrides from a page's prose.
 
@@ -243,15 +265,17 @@ def strip_lint_comments(text: str) -> str:
     dropped = False
     for line in text.split("\n"):
         run = FENCE_RUN_RE.match(line)
-        if run and (fence is None or run.group(1).startswith(fence)):
-            fence = run.group(1) if fence is None else None
+        if fence is None and run:
+            fence = run.group(1)
             out.append(line)
         elif fence is not None:
+            # A closing fence is a run of the opening character at least as
+            # long as the opening run, with nothing but spaces after it.
+            if run and run.group(1).startswith(fence) and run.group(2).strip() == "":
+                fence = None
             out.append(line)
         else:
-            # Odd-numbered pieces of the split are code spans.
-            pieces = CODE_SPAN_RE.split(line)
-            kept = "".join(p if i % 2 else LINT_COMMENT_RE.sub("", p) for i, p in enumerate(pieces))
+            kept = strip_outside_code_spans(line)
             if kept.strip() == "" and line.strip() != "":
                 dropped = True
                 continue
