@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.parse
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1073,9 +1074,25 @@ def powershell_quote(text: str) -> str:
 
 
 def sample_powershell(example: RequestExample) -> list[str]:
-    """Render a request as an ``Invoke-RestMethod`` call."""
+    """Render a request as an ``Invoke-RestMethod`` call.
+
+    A cookie credential goes in a ``WebRequestSession`` passed as
+    ``-WebSession``, since Windows PowerShell 5.1 ignores a ``Cookie``
+    entry in ``-Headers``; the ``Origin`` header stays in ``-Headers``.
+    """
+    lines: list[str] = []
     parts = [f"-Method {example.method.capitalize()}"] if example.method != "GET" else []
     headers = _sample_headers(example)
+    credential = example.credential
+    if credential is not None and credential.kind == "cookie":
+        host = urllib.parse.urlsplit(example.url).hostname or "localhost"
+        lines += [
+            "$session = New-Object Microsoft.PowerShell.Commands.WebRequestSession",
+            "$session.Cookies.Add((New-Object System.Net.Cookie("
+            f"{powershell_quote(credential.name)}, {powershell_quote(credential.value)}, '/', {powershell_quote(host)})))",
+        ]
+        parts.append("-WebSession $session")
+        headers = [(name, value) for name, value in headers if name != "Cookie"]
     if headers:
         parts.append("-Headers @{ " + "; ".join(f"{name} = {powershell_quote(value)}" for name, value in headers) + " }")
     body = example.body
@@ -1090,7 +1107,7 @@ def sample_powershell(example: RequestExample) -> list[str]:
     command = f"Invoke-RestMethod -Uri {powershell_quote(example.url)}"
     if parts:
         command += " `\n" + " `\n".join(f"    {part}" for part in parts)
-    return command.split("\n")
+    return lines + command.split("\n")
 
 
 def python_literal(value: Any) -> str:

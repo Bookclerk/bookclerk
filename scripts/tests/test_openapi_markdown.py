@@ -320,6 +320,15 @@ class RenderTest(unittest.TestCase):
         self.assertIn("/up?ids=a%20b%26c&all=true'", put)
         post = page.split("## `POST /up`")[1].split("\n## ")[0]
         self.assertIn("-b 'sid=<cookie>' \\\n    -H 'Origin: http://127.0.0.1:8787'", post)
+        # Windows PowerShell ignores a Cookie header, so the cookie rides a web session.
+        self.assertIn(
+            "$session = New-Object Microsoft.PowerShell.Commands.WebRequestSession\n"
+            "$session.Cookies.Add((New-Object System.Net.Cookie('sid', '<cookie>', '/', '127.0.0.1')))\n"
+            "Invoke-RestMethod -Uri 'http://127.0.0.1:8787/",
+            post,
+        )
+        self.assertIn("    -WebSession $session `\n    -Headers @{ Origin = 'http://127.0.0.1:8787' }\n```", post)
+        self.assertNotIn("Cookie = ", post)
         token = page.split("## `POST /token`")[1]
         self.assertIn("-d 'grant_type=a%2Fb%20c'", token.split("\n## ")[0])
         # A form with no required field guesses none of its alternatives.
